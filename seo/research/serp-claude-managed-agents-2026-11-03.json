@@ -1,0 +1,856 @@
+{
+  "version": 1,
+  "title": "SERP + competitor keywords \u2014 Claude Managed Agents",
+  "site": "https://openma.ai",
+  "generated_at_utc": "2026-11-03T11:59:19Z",
+  "timezone_note": "America/Detroit",
+  "session_id": "ses_ed2808ac-c28f-4fb5-9299-644c6319a8e2",
+  "location_language": {
+    "location_code": 2840,
+    "language_code": "en",
+    "device": "desktop"
+  },
+  "queries": {
+    "claude managed agents": {
+      "tool": "post_dataforseo_serp_google_organic_live",
+      "datetime": "2026-11-03 11:55:52 +00:00",
+      "item_types": [
+        "ai_overview",
+        "organic",
+        "video",
+        "people_also_ask",
+        "related_searches"
+      ],
+      "type_counts": {
+        "ai_overview": 1,
+        "organic": 8,
+        "video": 1,
+        "people_also_ask": 1,
+        "related_searches": 1
+      },
+      "ai_overview": true,
+      "openma_present": false,
+      "organics": [
+        {
+          "position": 2,
+          "title": "Claude Managed Agents just launched. my honest take ...",
+          "url": "https://google.com/goto?url=CAESnAEB6zswFeQIujprhOp1yoJqwgQftTILj4FhuYYo03tGTheYuQOzRejctHGA01gI7Xd7DVW7xsR_qKRWKAxLsS3Ye0iXfgIVmFwG_OFn_wwJ_50SCbrokPZVWkongJPpOD7tyU8smJAbx9q_Hd-oCzdUy0c5rt_fgKjBN8l3_D6lNrIAnKeTo-ZUb1GWtdZ_Y3ra7cE4odwCPXcdQgg",
+          "domain": "reddit.com",
+          "website_name": "Reddit\u00a0\u00b7\u00a0r/ClaudeAI",
+          "description": "The core idea: instead of managing your own agent infrastructure, Anthropic hosts it for you. Session state, credential storage, sandboxed\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "reddit"
+        },
+        {
+          "position": 4,
+          "title": "Claude Managed Agents: What It Actually Offers ... - Medium",
+          "url": "https://google.com/goto?url=CAESyAEB6zswFR7F5cPdZg7yAE1eN2c3rgvVzqiwGZpTH7n9YKo8vL147Ht1ItZkyyQn5cHf-AolWTvC5PHeUs48EEdBGmUvtr0-OnW_Keu3wtqam69pfX14Cm3Ac8xsB3SEZxHCPE8sCAj6WYxwxAYm00h40FleTgOHmRaybmnA7CxJGVD3ejlcKtTEhMa0ywIAaZWZAtn69sk7_NioHGpc9ZUb4lgx3YFZDOaFnH61LMBnoMErd4e8qII94DBd8kGGbEOnyDbynyljpA",
+          "domain": "medium.com",
+          "website_name": "Medium\u00a0\u00b7\u00a0unicodeveloper",
+          "description": "Claude Managed Agents is a managed infrastructure service from Anthropic that handles the execution environment for AI agents. Sandboxing, long-\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_ugc"
+        },
+        {
+          "position": 6,
+          "title": "Claude Managed Agents",
+          "url": "https://google.com/goto?url=CAESdQHrOzAVnGUeUdYeCfCRzuyjVICCijC5HKbEaAWpBMaxlWwCPoExkIl5V1iwNz-2yfL_C5-qnG2uJIt7yMdEGuuxSidbvOyac-vgBnGHq39nyfwHm7wZ7uWQmnZr0l04gZ98nu6DR_dOo5uytONfa2L6jKx-Wg",
+          "domain": "google.com",
+          "website_name": "Substack\u00a0\u00b7\u00a0Cobus Greyling on AI, Agents, Loop & Harness Engineering...",
+          "description": "Claude Managed Agents is a hosted service where Anthropic runs the agent on your behalf. Instead of building your own agent loop, managing tool\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_ugc"
+        },
+        {
+          "position": 7,
+          "title": "Claude Managed Agents",
+          "url": "https://google.com/goto?url=CAESewHrOzAVGHsWoBBYQjhJSzVAibKSR9_02LKfCLx2viPaKjh3LDyO4iA05i9EhpLR2Kfs3H8b1jLH13FuvsC1utIQbC4CaCzE4_osST7gvO-OnAYSEnZ-SqYhC0w2-zXaelWHo4Ag99957i1RPkL--_suNHQYsuRleqPifw",
+          "domain": "google.com",
+          "website_name": "assistant-ui",
+          "description": "Claude Managed Agents is Anthropic's hosted agent platform: Anthropic runs the agent loop and provisions a sandboxed container per session, and your client\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 8,
+          "title": "Claude Managed Agents",
+          "url": "https://news.ycombinator.com/item?id=47693047",
+          "domain": "news.ycombinator.com",
+          "website_name": "Hacker News",
+          "description": "> With Managed Agents, you define outcomes and success criteria, and Claude self-evaluates and iterates until it gets there (available in research preview,\u00a0... Read more",
+          "url_obfuscated": false,
+          "content_type": "forum_hn"
+        },
+        {
+          "position": 9,
+          "title": "Claude Agent SDK and Managed Agents: Where to Run ...",
+          "url": "https://google.com/goto?url=CAESggEB6zswFVnln4Crv6aTKK75nOs7Okv-EmbFQqDuySvXCpv--7_kks_3Zxf99ohvnSYLRAvClZ_0oRY7MtDwWQWfJYAsZB85-elHg6NoGmWvByTfL74YLtsJmT11BN-hfRA7KC_5c9s-1HQNDH3XdIw2cR_wx5Ng-J3QHukoJBGICdWA",
+          "domain": "google.com",
+          "website_name": "HatchWorks AI",
+          "description": "Jun 2, 2026 \u2014 The Claude Agent SDK runs agents in your process; Managed Agents is Anthropic's hosted service. What each is for and how to pick.",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 10,
+          "title": "Claude Managed Agents Quickstart (2026)",
+          "url": "https://google.com/goto?url=CAESZgHrOzAVwc3_LQIBgOHIjYYhz0s8t5fNrODrjANYGNhITm7Jc0g3wGq4ATRlY6LtK35LQNt_Tq8Aj0D7RGcv05Ba9mbJhQBxKJ0UkpPHKgoMissYEdJkLd7qB9Dvs-8j70CBd5MUKw",
+          "domain": "youtube.com",
+          "website_name": "YouTube\u00a0\u00b7\u00a0Agentic Intelligence w/ Michael Levan",
+          "description": "What's covered: 1. What Managed Agents are 2. How to create Agents and environments 3. Implementing various sessions 4.",
+          "url_obfuscated": true,
+          "content_type": "youtube"
+        },
+        {
+          "position": 11,
+          "title": "Claude Managed Agents Pricing: A Complete Breakdown ...",
+          "url": "https://google.com/goto?url=CAESeQHrOzAVO65wJGJ1M8wNa7N03_atn9uiwvF7i4FnTITyzMP-7LBCzjVht5YudmhljqvI_3VQGowJv7EOe6URusEpv-Xf_FIGddGoLX2XpyPr9NnTg1PBf42gJQMSaL2pPuam5A5lYT64aF_kcWiM88dlMApw54sv-QQ",
+          "domain": "truefoundry.com",
+          "website_name": "TrueFoundry",
+          "description": "Aug 1, 2026 \u2014 Learn how Claude Managed Agents pricing works, what you'll pay for agent execution, hidden infrastructure costs, and enterprise\u00a0...",
+          "url_obfuscated": true,
+          "content_type": "pricing"
+        }
+      ],
+      "ai_overview_refs": [
+        {
+          "title": "Claude Managed Agents overview - Claude Platform Docs",
+          "url": "https://platform.claude.com/docs/en/managed-agents/overview",
+          "domain": "platform.claude.com",
+          "source": "Claude Platform",
+          "text": "Best for Claude Managed Agents provides the harness and infrastructure for running Claude as an autonomous agent. Instead of building your own agent loop, tool exe..."
+        },
+        {
+          "title": "Claude Managed Agents: get to production 10x faster | Claude by Anthropic",
+          "url": "https://claude.com/resources/articles/claude-managed-agents",
+          "domain": "claude.com",
+          "source": "claude.com",
+          "text": "Claude Managed Agents explained Claude Managed Agents is a suite of composable APIs for building and deploying cloud-hosted agents at scale. It pairs an Anthropic"
+        },
+        {
+          "title": "Decoupling the Brain from the Hands: Claude Managed Agents (Part 1 of 4)",
+          "url": "https://www.youtube.com/watch?v=Uv0nAf_7tyU&t=119",
+          "domain": "www.youtube.com",
+          "source": "YouTube",
+          "text": "Decoupling the Brain from the Hands: Claude Managed Agents (Part 1 of 4) \u2014 Anthropic question especially as we get into the hands-on uh portion. all right let's le"
+        },
+        {
+          "title": "Claude Managed Agents just launched. my honest take after ...",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1sgzwqs/claude_managed_agents_just_launched_my_honest/",
+          "domain": "www.reddit.com",
+          "source": "Reddit",
+          "text": "Claude Managed Agents just launched. my honest take after reading through the whole thing Spent most of yesterday going through th..."
+        },
+        {
+          "title": "Claude Managed Agents: Deploy AI Agents That Run for Hours",
+          "url": "https://www.youtube.com/watch?v=DpfLbBuhHOg&t=26",
+          "domain": "www.youtube.com",
+          "source": "YouTube",
+          "text": "Claude Managed Agents: Deploy AI Agents That Run for Hours like you know build an entire application with hundreds of features. an..."
+        },
+        {
+          "title": "Scaling Managed Agents with stable interfaces - Anthropic",
+          "url": "https://www.anthropic.com/research/managed-agents",
+          "domain": "www.anthropic.com",
+          "source": "Anthropic",
+          "text": "Scaling Managed Agents: Decoupling the brain from the hands View more Get started with Claude Managed Agents by following our docs..."
+        }
+      ],
+      "paa": [
+        "Are Claude managed agents free?",
+        "Can Claude work with agents?",
+        "How much is Claude managed agent?",
+        "How do I get to Claude managed agents?"
+      ],
+      "related_searches": [
+        "Claude Managed Agents pricing",
+        "Claude managed agents examples",
+        "Claude managed agents reviews",
+        "Claude Managed Agents login",
+        "Claude managed agents reddit",
+        "Claude Managed Agents dreaming",
+        "Claude Managed Agents vs OpenClaw",
+        "Claude Managed Agents demo"
+      ],
+      "official_hits": [
+        {
+          "position": "aio_ref",
+          "domain": "platform.claude.com",
+          "title": "Claude Managed Agents overview - Claude Platform Docs",
+          "url": "https://platform.claude.com/docs/en/managed-agents/overview",
+          "via": "ai_overview"
+        },
+        {
+          "position": "aio_ref",
+          "domain": "claude.com",
+          "title": "Claude Managed Agents: get to production 10x faster | Claude by Anthropic",
+          "url": "https://claude.com/resources/articles/claude-managed-agents",
+          "via": "ai_overview"
+        },
+        {
+          "position": "aio_ref",
+          "domain": "www.anthropic.com",
+          "title": "Scaling Managed Agents with stable interfaces - Anthropic",
+          "url": "https://www.anthropic.com/research/managed-agents",
+          "via": "ai_overview"
+        }
+      ],
+      "task_cost_usd": 0.002
+    },
+    "claude managed agents alternative": {
+      "tool": "post_dataforseo_serp_google_organic_live",
+      "datetime": "2026-11-03 11:56:08 +00:00",
+      "item_types": [
+        "ai_overview",
+        "organic",
+        "related_searches"
+      ],
+      "type_counts": {
+        "ai_overview": 1,
+        "organic": 9,
+        "related_searches": 1
+      },
+      "ai_overview": true,
+      "openma_present": false,
+      "organics": [
+        {
+          "position": 2,
+          "title": "Open-source alternative to Claude's managed agents ...",
+          "url": "https://www.reddit.com/r/LocalLLM/comments/1shhszr/opensource_alternative_to_claudes_managed_agents/",
+          "domain": "www.reddit.com",
+          "website_name": "Reddit\u00a0\u00b7\u00a0r/LocalLLM",
+          "description": "Claude Managed Agents is powerful, but it's Claude-only and cloud-only. Your agents run on Anthropic's infrastructure, with Anthropic's pricing,\u00a0... Read more",
+          "url_obfuscated": false,
+          "content_type": "reddit"
+        },
+        {
+          "position": 3,
+          "title": "rogeriochaves/open-managed-agents: Self-hostable, ...",
+          "url": "https://google.com/goto?url=CAESbwHrOzAVVeMHIzDoh98a_LH6gbdBwjReRns4twJeW36Jce6sqw8NH5rpQnC1Qj3eBapSInFIr_KdHLIrpLZf1yXBAJUWv8Fhu8qKTbDNoLTEtKVidtr6WmBcuCt1pkJKRSA17_riTpPYXNvQ0eWP7Q",
+          "domain": "github.com",
+          "website_name": "GitHub",
+          "description": "An open-source alternative to Anthropic Claude Managed Agents. Use any LLM provider. Control access per team. Deploy on your infrastructure. Quickstart \u2022\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "github"
+        },
+        {
+          "position": 4,
+          "title": "Claude Managed Agents Alternatives: Top 5 Options for 2026",
+          "url": "https://www.truefoundry.com/blog/claude-managed-agents-alternatives",
+          "domain": "www.truefoundry.com",
+          "website_name": "TrueFoundry",
+          "description": "Sep 6, 2026 \u2014 An Open-Source Alternative to Claude Managed Agents, Up to 75% Cheaper \u00b7 2. Microsoft Agent Framework + Foundry Hosted Agents \u00b7 3. deepagents (\u00a0... Read more",
+          "url_obfuscated": false,
+          "content_type": "comparison"
+        },
+        {
+          "position": 5,
+          "title": "Claude Managed Agents: Features, Use Cases, and ...",
+          "url": "https://google.com/goto?url=CAEScQHrOzAVrFTjiutDIU0ioO2GxAWwHhLzFsM8VCqgiRbdxt_2XX3Gvma1g7y4veRTEqvVKUTs_Af9tOg9iDls5u4GYD5Wt1rvy9sOe69FCRk6govQeFAmav_nkbNTOuzDRYKT7wM-4wUla9rvC5hYFrrD",
+          "domain": "google.com",
+          "website_name": "Eigent AI",
+          "description": "Apr 9, 2026 \u2014 Claude Managed Agents is a fully managed runtime for building and deploying autonomous AI agents powered by Claude. Instead of building your own\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 6,
+          "title": "Claude Managed Agents: What It Actually Offers, the ...",
+          "url": "https://google.com/goto?url=CAESyAEB6zswFW5eHDiQvpJgYfluocJR8sWpfY3Z1wbkVQ3l_ecSCbwLvqwDQBVeuaNMagtgAqr_2vzaNUsnzHz8K35ScEdp2gS1hELusJ3-am65Uo9TrfsW-2RXnGkk_P0bobZoA1eWiwKWBMDl2-G2Odm4gprHsBntaM2GxP_MluIV2kE7Hpj8LW5UCR2HrE3Ku3rZ77u5b7VPnHAnCqckfKW7vBXFcp1aNFWtR-iZIJToKsH8e8wYzBVLWtKf1ASw2RcIZHkW6JXTpA",
+          "domain": "medium.com",
+          "website_name": "Medium\u00a0\u00b7\u00a0unicodeveloper",
+          "description": "Claude Managed Agents (and every self-hosted alternative) gives you the execution layer. ... What are the main open source alternatives to Claude\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_ugc"
+        },
+        {
+          "position": 7,
+          "title": "An open source rival to Claude Managed Agents just ...",
+          "url": "https://google.com/goto?url=CAESfgHrOzAVnaNivfpWL1h1QaRce_pSbc8UWsDy4a_jbhYt8KsZ6-EmS0YAC5pTzCHqnP0DsNLhEmEYPmGw0KLj9SGHyxkLNIBEuI85LMGBUqBLOwegDb0UfPdiHmSXvqob8c8yyRGRF8CThrhKdjW669uigAt-h67qtmheBI-pzw",
+          "domain": "google.com",
+          "website_name": "The New Stack",
+          "description": "Aug 19, 2026 \u2014 TrueFoundry's open source TrueForge challenges Claude Managed Agents with vendor-neutral model choice, claiming 50% lower agent costs and no\u00a0...",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 8,
+          "title": "Claude Managed Agents",
+          "url": "https://google.com/goto?url=CAESaAHrOzAV6PQbsB5DCAYnu7D25aIRw2kr6vf_kPvoRsDc_zqQTHmMV-Dwf2cmzqVmQWlMi801n0gZDgHOIf2fZc57Ik9-oP6QQ07WaCjEj79Gc1PritchLEQlyGESiDAGsmFPjdVo1GnC",
+          "domain": "news.ycombinator.com",
+          "website_name": "Hacker News",
+          "description": "it's Open source, multi-model (5 providers with fallback), from now, it runs locally but the architecture is designed for self-hosted deployment. Read more",
+          "url_obfuscated": true,
+          "content_type": "forum_hn"
+        },
+        {
+          "position": 9,
+          "title": "OpenClaw vs Claude Code Channels vs Managed Agents",
+          "url": "https://google.com/goto?url=CAESkQEB6zswFZ2NTZaxzJP6ifwY5Ub82azeb5HU6HL7ZSRhZCLDIBzy45OjIJWdZnzlAAPX8bHZEVev_vasM8f3SqTNDHmIlhUl8UB4xxOqwqq8o7o64pDDJ7fm0CYvWXbMDe_gJfrQJN9pT2wkO8--vLCC6f_tkoGcWD72mPmhZ74UKYk5gD67Ffq6eC838YfQTCHQ",
+          "domain": "google.com",
+          "website_name": "MindStudio",
+          "description": "Apr 9, 2026 \u2014 OpenClaw is an open-source runtime for Claude agents, designed for teams that need to run agents inside their own infrastructure. It wraps\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "comparison"
+        },
+        {
+          "position": 10,
+          "title": "Claude Managed Agents Alternatives: 7 Options for 2026",
+          "url": "https://google.com/goto?url=CAESewHrOzAVZooKNIrLwcvY_FQlLIgObiaZm-pmtFH_PyqvY_tgyDGk8tUtvf-2jkf2OpaQqYemmsZMmOmOFtKcoloK6sAX90wM6m_FyESw47lxRPY-TUQFVsybeMj9JNrbjowUiJcOzPryPS4r4LedOwHNrqo8sleg3ApAUQ",
+          "domain": "google.com",
+          "website_name": "Omnara",
+          "description": "Oct 9, 2026 \u2014 Compare 7 Claude Managed Agents alternatives for 2026: OpenAI's Agents API, Gemini, LangChain, DigitalOcean, AWS, Azure, and open-source\u00a0...",
+          "url_obfuscated": true,
+          "content_type": "comparison"
+        }
+      ],
+      "ai_overview_refs": [
+        {
+          "title": "Open",
+          "url": "https://www.reddit.com/r/LocalLLM/comments/1shhszr/opensource_alternative_to_claudes_managed_agents/",
+          "domain": "www.reddit.com",
+          "source": "Reddit",
+          "text": "Open-source alternative to Claude's managed agents\u2026 but you run it yourself Claude Managed Agents is powerful, but it's Claude-only and cloud-only. Your agents run..."
+        },
+        {
+          "title": "GitHub - rogeriochaves/open-managed-agents: Self-hostable, open-source alternative to Claude Managed Agents. Multi-LLM support (Anthropic, OpenAI, Ollama), enterprise governance (org/teams/RBAC) \u00b7 GitHub",
+          "url": "https://github.com/rogeriochaves/open-managed-agents",
+          "domain": "github.com",
+          "source": "GitHub",
+          "text": "Overview: Self-hostable, open-source alternative to Claude Managed Agents featuring multi-LLM support and enterprise governance. Providers: Anthropic, OpenAI, Goog..."
+        },
+        {
+          "title": "Claude Managed Agents Alternatives: Top 5 Options for 2026 - TrueFoundry",
+          "url": "https://www.truefoundry.com/blog/claude-managed-agents-alternatives",
+          "domain": "www.truefoundry.com",
+          "source": "TrueFoundry",
+          "text": "An Open-Source Alternative to Claude Managed Agents, Up to 75% Cheaper 4. OpenHands OpenHands (formerly OpenDevin) is the most mature autonomous software-engineeri..."
+        },
+        {
+          "title": "An open source rival to Claude Managed Agents just launched",
+          "url": "https://thenewstack.io/truefoundry-trueforge-claude-managed-agents/",
+          "domain": "thenewstack.io",
+          "source": "The New Stack",
+          "text": "An open source rival to Claude Managed Agents just launched TrueFoundry's open source TrueForge challenges Claude Managed Agents w..."
+        },
+        {
+          "title": "Claude Managed Agents: What It Actually Offers, the Honest Pros and ...",
+          "url": "https://medium.com/@unicodeveloper/claude-managed-agents-what-it-actually-offers-the-honest-pros-and-cons-and-how-to-run-agents-52369e5cff14",
+          "domain": "medium.com",
+          "source": "Medium",
+          "text": "Frequently Asked Questions * Is Claude Managed Agents available for all users? The core product (long-running sessions, sandboxing..."
+        },
+        {
+          "title": "Claude Managed Agents Alternatives: 7 Options for 2026",
+          "url": "https://www.omnara.com/guides/claude-managed-agents-alternatives",
+          "domain": "www.omnara.com",
+          "source": "Omnara",
+          "text": "Claude Managed Agents Alternatives in 2026 * Claude Managed Agents only runs Claude (4.5 and later). You can run the sandbox on yo..."
+        },
+        {
+          "title": "Claude Managed Agents: Features, Use Cases, and Alternatives",
+          "url": "https://www.eigent.ai/blog/claude-managed-agents-guide",
+          "domain": "www.eigent.ai",
+          "source": "Eigent AI",
+          "text": "No local option. There is no self-hosted or on-premises deployment. Managed means managed \u2014 you cannot run this on your own server..."
+        },
+        {
+          "title": "Claude Managed Agents Alternative: 2026 Options Compared",
+          "url": "https://www.agent37.com/blog/claude-managed-agents-alternative",
+          "domain": "www.agent37.com",
+          "source": "Agent 37",
+          "text": "The best Claude Managed Agents alternative depends on which part of the product you are replacing: AWS Bedrock AgentCore, Google's..."
+        }
+      ],
+      "paa": [],
+      "related_searches": [
+        "Claude managed agents alternative reddit",
+        "Claude managed agents alternative free",
+        "Claude managed agents alternative github",
+        "Open Managed Agents",
+        "Claude managed agents example",
+        "Open managed agents github",
+        "Multica agents",
+        "How to use Claude Managed Agents"
+      ],
+      "official_hits": [],
+      "task_cost_usd": 0.002
+    },
+    "claude managed agents pricing": {
+      "tool": "post_dataforseo_serp_google_organic_live",
+      "datetime": "2026-11-03 11:56:06 +00:00",
+      "item_types": [
+        "ai_overview",
+        "organic",
+        "related_searches"
+      ],
+      "type_counts": {
+        "ai_overview": 1,
+        "organic": 9,
+        "related_searches": 1
+      },
+      "ai_overview": true,
+      "openma_present": false,
+      "organics": [
+        {
+          "position": 2,
+          "title": "Claude Code Pricing 2026: Plans, Limits, Parallel Agent Cost",
+          "url": "https://google.com/goto?url=CAESgQEB6zswFZB-ZGEK-IkZJYJCcrqT9kF-DeFILLfkL9PaBTNkgYC_2Mk7dYjX3LxD9bsqge9NL7eZkj47HbaK-I8ffxh1aUcyTMV0wdMSjqmUhBUiq8sXJX7-12sPsFzhTcBbUjYrXpo25TkIT09VSdCl3Kme_K8q7CiTtTMm12aG1Ek",
+          "domain": "google.com",
+          "website_name": "CodeAgentSwarm",
+          "description": "3 days ago \u2014 Anthropic's pricing page lists: Free (no Claude Code), Pro at $20/month, Max at $100/month, Ultra at $200/month, Team from $20/seat and\u00a0...",
+          "url_obfuscated": true,
+          "content_type": "pricing"
+        },
+        {
+          "position": 3,
+          "title": "Anthropic Pricing 2026: Costs, Plans & Competitor",
+          "url": "https://google.com/goto?url=CAESaAHrOzAV0xKDBDvdARQO3XXly1QcuX9pBG7mvilSn-9G-KMZOVqJz-UwaoqNupRzHc2vptxunUx3iJm6EvCAHK1r_7q8vJuyEApV_mUfQ3knXupwr6wUGJC7mVGJmXoGKjhit23Nrb7C",
+          "domain": "google.com",
+          "website_name": "CheckThat.ai",
+          "description": "Jun 26, 2026 \u2014 Managed agents: This 2026 addition costs $0.08 per session-hour for active runtime, with standard token rates applying on top.",
+          "url_obfuscated": true,
+          "content_type": "pricing"
+        },
+        {
+          "position": 4,
+          "title": "Claude Code has announced that starting June 15th ...",
+          "url": "https://google.com/goto?url=CAESogEB6zswFanL50bQTLXMxNkPb2bbEkg3DYFPqlwqkQb4Aj588u8QHqASdxf1XOHXjjPY7C3xaJZRzzK9C6CXp4wCji-ZVgaQxnwWqtIB9x18RJ54Qp1JN4faI61baSudpVwOItKcrKUQhokUW_RdUTuv7KZtYBXCAvjZr3ykg8lYeqUFmdJ9Un-kPzIn7nlXIEScs2Mfn3W6ouRd8LEgpig0rOw",
+          "domain": "reddit.com",
+          "website_name": "Reddit\u00a0\u00b7\u00a0r/ClaudeCode",
+          "description": "Claude Code agent pricing details. How to check Claude Code credits ... Your agents inside Claude Code are still going to use your subscription. Read more",
+          "url_obfuscated": true,
+          "content_type": "reddit"
+        },
+        {
+          "position": 5,
+          "title": "AI Agent Cost Estimator: Claude, GPT and Gemini",
+          "url": "https://google.com/goto?url=CAEScwHrOzAVYkcMn-QFm4OpqTkd8Oj3m-Y_vPh31USrzuqrfN79JQUQQzGVroCJd_s12vU7m3htDaqo0zkp8UlagWEDX9EVSTi1LD5ImLg3XVrYBg9HG5qlRXc6KRv-09ELVK9V4pGIQuDO4QVs8FH_8jmfwiY",
+          "domain": "google.com",
+          "website_name": "Ovidius AI",
+          "description": "Oct 3, 2026 \u2014 Estimate what an AI agent costs per run, per month and per year on nine Claude, GPT and Gemini models at official list prices.",
+          "url_obfuscated": true,
+          "content_type": "pricing"
+        },
+        {
+          "position": 6,
+          "title": "Claude Enterprise Pricing, Explained",
+          "url": "https://google.com/goto?url=CAESeAHrOzAVQ038y1B2q67mmk-n7lKqeqQSsM_3ogsPW-OhIT919V8uYIcGA1RjBzD7v0ojfffco0CtzD5oKQgQMnRmv3yWnSTg1rcRt7uqeWG2jclm1RmL86bqqrMk0oIOX0umyVZZGBGFWr8VjuX50V-Scp1G7twI_g",
+          "domain": "google.com",
+          "website_name": "SSD Nodes",
+          "description": "5 days ago \u2014 As of October 2026 the seat is listed at $20 per user per month, billed annually. Usage is billed separately: every token your team spends\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "pricing"
+        },
+        {
+          "position": 7,
+          "title": "Claude Code Cost: Plans, API Rates, Real Spend",
+          "url": "https://www.agent37.com/blog/claude-code-cost",
+          "domain": "www.agent37.com",
+          "website_name": "Agent 37",
+          "description": "6 days ago \u2014 Claude Code cost starts at $20 per month on the Claude Pro plan, rises to $100 (Max 5x) or $200 (Max 20x) for heavier use, or runs pay-per-token\u00a0... Read more",
+          "url_obfuscated": false,
+          "content_type": "pricing"
+        },
+        {
+          "position": 8,
+          "title": "Claude AI Pricing: Choosing the Right Model",
+          "url": "https://google.com/goto?url=CAESgwEB6zswFRD9vqYgq86HuapErCWB0Feecx8qNvxnDXvGCm2Xu-USNTwtE91TYJqIw2RAJw4JFPNnKuAZjFKiFvUIlH3mwwJMRso0AuhuNcOid-PlQ31cXRWdfyLrAPruWcwxclCCedgHoqRGx07poDste-fT3ga2Jc7I8lozcCKao7BRkQ",
+          "domain": "google.com",
+          "website_name": "PromptLayer Blog",
+          "description": "Sep 16, 2025 \u2014 Free ($0/month): Claude 3.5 Haiku Input: $0.80 per million tokens Output: $4.00 per million tokens. Read ~$0.08\u2013$1.50/million tokens Web Search\u00a0...",
+          "url_obfuscated": true,
+          "content_type": "pricing"
+        },
+        {
+          "position": 9,
+          "title": "Plans, Max vs API, and How Much It Costs",
+          "url": "https://google.com/goto?url=CAESbwHrOzAV3iFc-JQDcfCp5gvuhnvdOnS3zqy3OeSaXbNp5FgpV7tyINQnIM2r5kqFWOJvfc7mHZWs6jWAWNUqDRaF22O_tFOAqOSwDMQCluoCtNECF24zRkc83EycP_uUnl_PzZviedRIG4BkMv_3qA",
+          "domain": "claude.com",
+          "website_name": "Claude Code Camp",
+          "description": "Claude Code costs $20/month on Pro, $100 (Max 5x) or $200 (Max 20x) for heavy daily use, and $25\u2013$125/seat on Team plans. On the API it's pay-as-you-go,\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "official"
+        },
+        {
+          "position": 10,
+          "title": "Anthropic Claude Enterprise Pricing Benchmarks 2026 - Vera AI",
+          "url": "https://vendorbenchmark.com/blog/anthropic-claude-enterprise-pricing-benchmark",
+          "domain": "vendorbenchmark.com",
+          "website_name": "vendorbenchmark.com",
+          "description": "Feb 8, 2026 \u2014 Benchmark data indicates ranges from $28 to $55/user/month depending on seat count, contract length, and included features. The wide range\u00a0... Read more",
+          "url_obfuscated": false,
+          "content_type": "pricing"
+        }
+      ],
+      "ai_overview_refs": [
+        {
+          "title": "Claude Managed Agents Pricing: A Complete Breakdown for 2026",
+          "url": "https://www.truefoundry.com/blog/claude-managed-agents-pricing",
+          "domain": "www.truefoundry.com",
+          "source": "TrueFoundry",
+          "text": "Claude Managed Agents pricing at a glance: \u2022 You pay for two things. Claude Managed Agents charges standard Claude API rates for input, output, cache writes, and c..."
+        },
+        {
+          "title": "Claude Managed Agents just launched. my honest take after ...",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1sgzwqs/claude_managed_agents_just_launched_my_honest/",
+          "domain": "www.reddit.com",
+          "source": "Reddit",
+          "text": "Claude Managed Agents just launched. my honest take after reading through the whole thing Spent most of yesterday going through the Claude Managed Agents docs and ..."
+        },
+        {
+          "title": "Claude Managed Agents: What It Actually Offers, the Honest Pros and ...",
+          "url": "https://medium.com/@unicodeveloper/claude-managed-agents-what-it-actually-offers-the-honest-pros-and-cons-and-how-to-run-agents-52369e5cff14",
+          "domain": "medium.com",
+          "source": "Medium",
+          "text": "Claude Managed Agents: What It Actually Offers, the Honest Pros and ... 1. The Problem It Solves 2. What Claude Managed Agents Actually Is 3. What You Actually Get..."
+        },
+        {
+          "title": "Claude Managed Agents: Technical Overview, Architecture, and Cost ...",
+          "url": "https://www.marvik.ai/blog/claude-managed-agents-technical-overview-architecture-and-cost-analysis",
+          "domain": "www.marvik.ai",
+          "source": "Marvik.ai",
+          "text": "The CFO View: Understanding Claude Managed Agents Pricing This is where the vision of experts becomes indispensable. Claude Manage..."
+        },
+        {
+          "title": "Krish Subramanian's Post - LinkedIn",
+          "url": "https://www.linkedin.com/posts/krishnansubramanian_anthropic-confirmed-claude-managed-agents-activity-7454542438733598721-clGv",
+          "domain": "www.linkedin.com",
+          "source": "LinkedIn",
+          "text": "Anthropic confirmed Claude Managed Agents pricing this week. Session runtime is $0.08 per session-hour, billed to the millisecond."
+        },
+        {
+          "title": "Anthropic Just Launched Managed Agents. Let's Talk About How We're Going to Pay for This",
+          "url": "https://www.finout.io/blog/anthropic-just-launched-managed-agents.-lets-talk-about-how-were-going-to-pay-for-this",
+          "domain": "www.finout.io",
+          "source": "Finout",
+          "text": "Product: Anthropic Claude Managed Agents fully managed runtime for autonomous AI agents. Pricing Axes: Tokens (Opus 4.6 at $5/M in..."
+        },
+        {
+          "title": "Claude Managed Agents: Features, Pricing & Alternatives",
+          "url": "https://www.therundown.ai/tools/claude-managed-agents",
+          "domain": "www.therundown.ai",
+          "source": "The Rundown AI",
+          "text": "Claude Managed Agents FAQs * What is Claude Managed Agents? It is Anthropic's API and managed runtime for building tool-using Clau..."
+        }
+      ],
+      "paa": [],
+      "related_searches": [
+        "Claude managed agents pricing reddit",
+        "Claude managed agents pricing calculator",
+        "Claude subscription pricing",
+        "Claude pricing 5x",
+        "Claude Code pricing 20x",
+        "Claude pricing Pro",
+        "Claude pricing plans yearly",
+        "Anthropic pricing plans"
+      ],
+      "official_hits": [
+        {
+          "position": 9,
+          "domain": "claude.com",
+          "title": "Plans, Max vs API, and How Much It Costs",
+          "via": "organic"
+        }
+      ],
+      "task_cost_usd": 0.002
+    }
+  },
+  "openma_present_any": false,
+  "anthropic_official_presence": {
+    "owns_organic_number_one": false,
+    "detail": "For seed \"claude managed agents\", Anthropic/Claude official URLs appear as AI Overview references (platform.claude.com docs, claude.com article, anthropic.com research) but top organic slots are Reddit, Medium, Substack, HN, YouTube, TrueFoundry \u2014 not a clean Anthropic #1 organic.",
+    "aio_refs_official": [
+      {
+        "title": "Claude Managed Agents overview - Claude Platform Docs",
+        "url": "https://platform.claude.com/docs/en/managed-agents/overview",
+        "domain": "platform.claude.com",
+        "source": "Claude Platform",
+        "text": "Best for Claude Managed Agents provides the harness and infrastructure for running Claude as an autonomous agent. Instead of building your own agent loop, tool exe..."
+      },
+      {
+        "title": "Claude Managed Agents: get to production 10x faster | Claude by Anthropic",
+        "url": "https://claude.com/resources/articles/claude-managed-agents",
+        "domain": "claude.com",
+        "source": "claude.com",
+        "text": "Claude Managed Agents explained Claude Managed Agents is a suite of composable APIs for building and deploying cloud-hosted agents at scale. It pairs an Anthropic"
+      },
+      {
+        "title": "Scaling Managed Agents with stable interfaces - Anthropic",
+        "url": "https://www.anthropic.com/research/managed-agents",
+        "domain": "www.anthropic.com",
+        "source": "Anthropic",
+        "text": "Scaling Managed Agents: Decoupling the brain from the hands View more Get started with Claude Managed Agents by following our docs..."
+      }
+    ]
+  },
+  "competitor_keywords_anthropic_cma": [
+    {
+      "keyword": "claude managed agents",
+      "search_volume": 9900,
+      "cpc": 3.55,
+      "competition_level": null,
+      "source": "labs_related_seed",
+      "serp_ownership": "Anthropic owns AI Overview refs (platform.claude.com + claude.com) but organic #1-ish is Reddit/UGC; official not clear organic #1"
+    },
+    {
+      "keyword": "claude managed agents pricing",
+      "search_volume": 260,
+      "cpc": 4.2,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "claude managed agents overview",
+      "search_volume": 30,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "claude managed agents reddit",
+      "search_volume": 30,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "claude managed agents vs openclaw",
+      "search_volume": 30,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "claude managed agents examples",
+      "search_volume": 10,
+      "cpc": 7.96,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "claude managed agents login",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "claude managed agents on aws",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "Anthropic pricing plans",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude Code pricing 20x",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude Managed Agents demo",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude Managed Agents dreaming",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude Managed Agents login",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude Managed Agents pricing",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude Managed Agents vs OpenClaw",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude managed agents alternative free",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "OSS/GitHub/TrueFoundry/comparisons dominate; Anthropic absent"
+    },
+    {
+      "keyword": "Claude managed agents alternative github",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "OSS/GitHub/TrueFoundry/comparisons dominate; Anthropic absent"
+    },
+    {
+      "keyword": "Claude managed agents alternative reddit",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "OSS/GitHub/TrueFoundry/comparisons dominate; Anthropic absent"
+    },
+    {
+      "keyword": "Claude managed agents example",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude managed agents examples",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude managed agents pricing calculator",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude managed agents pricing reddit",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude managed agents reddit",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude managed agents reviews",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Claude pricing 5x",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude pricing Pro",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude pricing plans yearly",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "Claude subscription pricing",
+      "search_volume": null,
+      "source": "serp_related_searches",
+      "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+    },
+    {
+      "keyword": "How to use Claude Managed Agents",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Multica agents",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Open Managed Agents",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    },
+    {
+      "keyword": "Open managed agents github",
+      "search_volume": null,
+      "source": "serp_related_searches"
+    }
+  ],
+  "content_types_winning": {
+    "reddit": 3,
+    "blog_ugc": 3,
+    "blog_vendor": 4,
+    "forum_hn": 2,
+    "youtube": 1,
+    "pricing": 8,
+    "github": 1,
+    "comparison": 3,
+    "official": 1
+  },
+  "gap_briefs_outlines_only": [
+    {
+      "priority": 1,
+      "slug": "/blog/claude-managed-agents-alternative",
+      "h1": "Claude Managed Agents Alternative: Model-Agnostic Managed Agents",
+      "meta_title": "Claude Managed Agents Alternative | OpenMA",
+      "meta_description": "Compare Claude Managed Agents vs self-host / multi-model managed agents. OpenMA positioning vs Anthropic-hosted runtime.",
+      "outline": [
+        "What Claude Managed Agents is (hosted harness, sandbox, session)",
+        "Who it is for / lock-in (Claude-only, Anthropic cloud)",
+        "Decision table: CMA vs OpenMA vs OSS open-managed-agents vs TrueFoundry",
+        "Pricing shape (session-hour + tokens) \u2014 link to pricing spoke",
+        "Migration / when to stay on CMA"
+      ],
+      "hub_spoke": "spoke under hub /ai-agent-platform or /managed-agents",
+      "target_keywords": [
+        "claude managed agents alternative",
+        "claude managed agents vs openclaw"
+      ]
+    },
+    {
+      "priority": 2,
+      "slug": "/blog/claude-managed-agents-pricing",
+      "h1": "Claude Managed Agents Pricing Explained (and Cheaper Paths)",
+      "meta_title": "Claude Managed Agents Pricing (2026) | OpenMA",
+      "meta_description": "Break down CMA session + token costs vs self-host and multi-model managed agents.",
+      "outline": [
+        "Official cost components (as publicly described)",
+        "Hidden costs (idle, tools, retries)",
+        "Worked example monthly",
+        "OpenMA / OSS cost contrast (outline only)"
+      ],
+      "hub_spoke": "spoke",
+      "target_keywords": [
+        "claude managed agents pricing"
+      ]
+    },
+    {
+      "priority": 3,
+      "slug": "/blog/claude-managed-agents",
+      "h1": "Claude Managed Agents: What It Is, Limits, and When to Use Something Else",
+      "meta_title": "Claude Managed Agents Overview | OpenMA",
+      "meta_description": "Plain-English overview of Anthropic Claude Managed Agents \u2014 docs map, limits, vs Agent SDK vs alternatives.",
+      "outline": [
+        "Definition + official docs map",
+        "Managed Agents vs Claude Agent SDK",
+        "Limits (model lock-in, data residency)",
+        "CTA: alternative / pricing spokes"
+      ],
+      "hub_spoke": "hub page for CMA cluster",
+      "target_keywords": [
+        "claude managed agents",
+        "claude managed agents overview"
+      ]
+    }
+  ],
+  "spend_notes": {
+    "provider_task_cost_sum_usd_approx": 0.16108,
+    "note": "AIsa metered settle may differ from DataForSEO task.cost; see account delta in report",
+    "skipped": [
+      "Regular SERP skipped (quoted ~$0.0775 > Advanced ~$0.0175)",
+      "Ads search volume batch skipped (budget)",
+      "Labs keywords-for-site langchain returned noise (non-agent head terms); not used as ownership evidence",
+      "Ranked-keywords-by-domain skipped (cost)"
+    ]
+  }
+}

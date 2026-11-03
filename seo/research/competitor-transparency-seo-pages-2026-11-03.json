@@ -1,0 +1,577 @@
+{
+  "generated": "2026-11-03T07:01:00-05:00",
+  "timezone": "America/Detroit",
+  "page_count": 24,
+  "exemplars": [
+    "https://docs.langchain.com/langsmith/fleet/comparison",
+    "https://docs.langchain.com/oss/python/deepagents/comparison"
+  ],
+  "top12_urls": [
+    "https://docs.langchain.com/langsmith/fleet/comparison",
+    "https://docs.langchain.com/oss/python/deepagents/comparison",
+    "https://everruns.com/compare/everruns-vs-claude-managed-agents/",
+    "https://www.truefoundry.com/blog/claude-managed-agents-alternatives",
+    "https://www.truefoundry.com/blog/engineering/trueforge-vs-claude-managed-agents-benchmark/",
+    "https://www.omnara.com/guides/claude-managed-agents-alternatives",
+    "https://www.agent37.com/blog/claude-managed-agents-alternative",
+    "https://openma.dev/blog/open-source-alternatives-to-claude-managed-agents-2026/",
+    "https://everruns.com/compare/everruns-vs-langgraph-platform/",
+    "https://mastra.ai/articles/mastra-agentcontroller-vs-langchain-deep-agents",
+    "https://developers.openai.com/cookbook/examples/agents_sdk/migrate-from-claude-agent-sdk/readme",
+    "https://www.inngest.com/compare-to-temporal"
+  ],
+  "pages": [
+    {
+      "url": "https://docs.langchain.com/langsmith/fleet/comparison",
+      "title": "Agent platform comparison",
+      "publisher": "LangChain / LangSmith Fleet (docs)",
+      "page_type": "official_docs_comparison",
+      "compares_against": [
+        "Claude Cowork",
+        "Amazon Quick",
+        "Google Workspace Studio",
+        "Microsoft Copilot"
+      ],
+      "planted_keywords_phrases": [
+        "Agent platform comparison",
+        "LangSmith Fleet",
+        "enterprise agent platform",
+        "model-agnostic",
+        "self-hosted",
+        "code export",
+        "Deep Agents",
+        "Claude Cowork",
+        "Amazon Quick",
+        "Google Workspace Studio",
+        "Microsoft Copilot",
+        "no-code agent builder",
+        "human-in-the-loop",
+        "centralized approvals inbox",
+        "observability",
+        "LangSmith tracing"
+      ],
+      "angle": "Docs-native feature-matrix SEO page positioning Fleet as the only self-host + code-export enterprise agent platform vs Cowork/Quick/Workspace Studio/Copilot."
+    },
+    {
+      "url": "https://docs.langchain.com/oss/python/deepagents/comparison",
+      "title": "Comparison with Claude Agent SDK",
+      "publisher": "LangChain / Deep Agents (docs)",
+      "page_type": "official_docs_comparison",
+      "compares_against": [
+        "Claude Agent SDK",
+        "Claude managed agents (mentioned)"
+      ],
+      "planted_keywords_phrases": [
+        "Comparison with Claude Agent SDK",
+        "Deep Agents",
+        "Managed Deep Agents",
+        "Claude Agent SDK",
+        "model provider",
+        "sandbox",
+        "multi-tenancy",
+        "self-host",
+        "Managed Deep Agents",
+        "LangSmith Fleet",
+        "Claude managed agents"
+      ],
+      "angle": "Harness-vs-harness transparency page: model-agnostic Deep Agents + managed/self-host vs Claude-only Agent SDK sandbox-in-process pattern."
+    },
+    {
+      "url": "https://docs.langchain.com/oss/javascript/deepagents/comparison",
+      "title": "Comparison with Claude Agent SDK",
+      "publisher": "LangChain / Deep Agents JS (docs)",
+      "page_type": "official_docs_comparison",
+      "compares_against": [
+        "Claude Agent SDK",
+        "Claude managed agents (mentioned)"
+      ],
+      "planted_keywords_phrases": [
+        "Comparison with Claude Agent SDK",
+        "Deep Agents",
+        "Managed Deep Agents",
+        "Claude Agent SDK",
+        "model provider",
+        "sandbox",
+        "multi-tenancy"
+      ],
+      "angle": "JS twin of the Python Deep Agents vs Claude Agent SDK comparison (same planted competitor keywords)."
+    },
+    {
+      "url": "https://www.langchain.com/resources/langchain-alternatives",
+      "title": "LangChain Alternatives: A Full Comparison for Agent Engineering",
+      "publisher": "LangChain (marketing)",
+      "page_type": "vendor_alternatives_seo",
+      "compares_against": [
+        "LlamaIndex",
+        "CrewAI",
+        "Microsoft Agent Framework",
+        "Temporal",
+        "Langfuse",
+        "Braintrust",
+        "Arize",
+        "Datadog"
+      ],
+      "planted_keywords_phrases": [
+        "LangChain Alternatives",
+        "agent engineering",
+        "LangGraph",
+        "LangSmith",
+        "Fleet",
+        "Sandboxes",
+        "human-in-the-loop",
+        "CrewAI",
+        "LlamaIndex",
+        "Microsoft Agent Framework",
+        "Temporal",
+        "Langfuse"
+      ],
+      "angle": "Owns the \u201cLangChain alternatives\u201d SERP with a checklist framing competitors as partial coverage vs integrated LangChain/LangGraph/LangSmith/Fleet loop."
+    },
+    {
+      "url": "https://everruns.com/compare/everruns-vs-claude-managed-agents/",
+      "title": "Everruns vs Claude Managed Agents",
+      "publisher": "Everruns",
+      "page_type": "vendor_vs_page",
+      "compares_against": [
+        "Claude Managed Agents"
+      ],
+      "planted_keywords_phrases": [
+        "Everruns vs Claude Managed Agents",
+        "durable agents",
+        "open-source",
+        "self-hostable",
+        "provider-neutral",
+        "Claude Managed Agents",
+        "Zero Data Retention",
+        "HIPAA",
+        "model providers"
+      ],
+      "angle": "Classic /compare transparency page: own-your-state MIT durable harness vs Anthropic-hosted Claude-only Managed Agents."
+    },
+    {
+      "url": "https://everruns.com/compare/everruns-vs-langgraph-platform/",
+      "title": "Everruns vs LangGraph Platform",
+      "publisher": "Everruns",
+      "page_type": "vendor_vs_page",
+      "compares_against": [
+        "LangGraph Platform",
+        "LangSmith Deployment"
+      ],
+      "planted_keywords_phrases": [
+        "Everruns vs LangGraph Platform",
+        "LangSmith Deployment",
+        "durable agents",
+        "self-host",
+        "MIT",
+        "per-node",
+        "usage + seats"
+      ],
+      "angle": "Positions Everruns as default-self-host durable runtime without LangSmith Deployment\u2019s Enterprise gate / metered node-run pricing."
+    },
+    {
+      "url": "https://everruns.com/compare/everruns-vs-mastra/",
+      "title": "Everruns vs Mastra",
+      "publisher": "Everruns",
+      "page_type": "vendor_vs_page",
+      "compares_against": [
+        "Mastra"
+      ],
+      "planted_keywords_phrases": [
+        "Everruns vs Mastra",
+        "durable engine",
+        "serverless",
+        "TypeScript",
+        "provider-neutral",
+        "open-core",
+        "wall-clock ceiling"
+      ],
+      "angle": "Durable Rust+Postgres platform vs Mastra\u2019s TypeScript serverless/open-core framework for long-running agents."
+    },
+    {
+      "url": "https://www.truefoundry.com/blog/claude-managed-agents-alternatives",
+      "title": "Claude Managed Agents Alternatives: Top 5 Agent Harnesses to Consider in 2026",
+      "publisher": "TrueFoundry",
+      "page_type": "vendor_alternatives_seo",
+      "compares_against": [
+        "Claude Managed Agents",
+        "TrueForge",
+        "Microsoft Agent Framework + Foundry Hosted Agents",
+        "deepagents (LangChain)",
+        "OpenHands",
+        "Pi"
+      ],
+      "planted_keywords_phrases": [
+        "Claude Managed Agents Alternatives",
+        "agent harness",
+        "model neutrality",
+        "TrueForge",
+        "open source alternative",
+        "deepagents",
+        "Microsoft Agent Framework",
+        "Foundry Hosted Agents",
+        "OpenHands",
+        "cost per completed task",
+        "sandbox economics"
+      ],
+      "angle": "High-intent \u201cCMA alternatives\u201d roundup that plants TrueForge as best open-source drop-in and ranks deepagents/Foundry/OpenHands/Pi."
+    },
+    {
+      "url": "https://www.truefoundry.com/blog/engineering/trueforge-vs-claude-managed-agents-benchmark/",
+      "title": "TrueForge: An Open-Source Alternative to Claude Managed Agents, Up to 75% Cheaper",
+      "publisher": "TrueFoundry",
+      "page_type": "vendor_benchmark_vs",
+      "compares_against": [
+        "Claude Managed Agents",
+        "deepagents (LangGraph)"
+      ],
+      "planted_keywords_phrases": [
+        "open-source alternative to Claude Managed Agents",
+        "TrueForge vs Claude Managed Agents",
+        "75% Cheaper",
+        "vendor-neutral agent harness",
+        "deepagents",
+        "Enterprise-Bench",
+        "cost per run"
+      ],
+      "angle": "Benchmark SEO page planting cost/accuracy keywords against CMA and deepagents to justify TrueForge as cheaper CMA alt."
+    },
+    {
+      "url": "https://trueforge.dev/benchmarking",
+      "title": "Benchmarking",
+      "publisher": "TrueForge docs",
+      "page_type": "official_docs_comparison",
+      "compares_against": [
+        "Claude Managed Agents",
+        "deepagents (LangGraph)"
+      ],
+      "planted_keywords_phrases": [
+        "TrueForge",
+        "Claude Managed Agents",
+        "deepagents",
+        "LangGraph",
+        "30% cheaper",
+        "75% cheaper",
+        "Enterprise-Bench",
+        "tokens / run"
+      ],
+      "angle": "Docs-hosted reproducible benchmark table vs CMA and deepagents (cost/token/accuracy)."
+    },
+    {
+      "url": "https://www.omnara.com/guides/claude-managed-agents-alternatives",
+      "title": "Claude Managed Agents Alternatives in 2026",
+      "publisher": "Omnara",
+      "page_type": "vendor_alternatives_seo",
+      "compares_against": [
+        "Claude Managed Agents",
+        "OpenAI Agents API",
+        "Gemini Managed Agents",
+        "LangChain Managed Deep Agents",
+        "DigitalOcean Managed Agents",
+        "Amazon Bedrock AgentCore",
+        "Microsoft Foundry Agent Service",
+        "Omnara"
+      ],
+      "planted_keywords_phrases": [
+        "Claude Managed Agents Alternatives",
+        "managed agent platform",
+        "OpenAI's Agents API",
+        "Managed Deep Agents",
+        "Bedrock AgentCore",
+        "Foundry Agent Service",
+        "self-host",
+        "session-hour",
+        "open source"
+      ],
+      "angle": "SERP-facing CMA alternatives guide comparing lab APIs + cloud runtimes + Omnara as open-source managed platform."
+    },
+    {
+      "url": "https://www.agent37.com/blog/claude-managed-agents-alternative",
+      "title": "Claude Managed Agents Alternative: What Actually Replaces It in 2026",
+      "publisher": "Agent37",
+      "page_type": "vendor_alternatives_seo",
+      "compares_against": [
+        "Claude Managed Agents",
+        "AWS Bedrock AgentCore",
+        "Google Gemini Enterprise Agent Platform",
+        "Azure Foundry Agent Service",
+        "TrueForge",
+        "OpenClaw",
+        "Agent37 Cloud",
+        "DIY VPS"
+      ],
+      "planted_keywords_phrases": [
+        "Claude Managed Agents Alternative",
+        "session-hour",
+        "Bedrock AgentCore",
+        "Foundry Agent Service",
+        "TrueForge",
+        "OpenClaw",
+        "flat-price",
+        "Zero Data Retention",
+        "HIPAA"
+      ],
+      "angle": "Updated Oct-2026 CMA replacement guide planting hyperscaler meters + OSS harnesses + Agent37 flat-price persistent boxes."
+    },
+    {
+      "url": "https://openma.dev/blog/open-source-alternatives-to-claude-managed-agents-2026/",
+      "title": "Open Source Alternatives to Claude Managed Agents in 2026",
+      "publisher": "Open Managed Agents / openma",
+      "page_type": "vendor_alternatives_seo",
+      "compares_against": [
+        "Claude Managed Agents",
+        "Open Managed Agents",
+        "LangGraph",
+        "AutoGen",
+        "CrewAI"
+      ],
+      "planted_keywords_phrases": [
+        "Open Source Alternatives to Claude Managed Agents",
+        "Open Managed Agents",
+        "drop-in compatible",
+        "/v1/agents",
+        "/v1/sessions",
+        "BYOK",
+        "self-host",
+        "LangGraph",
+        "AutoGen",
+        "CrewAI",
+        "managed-platform shape"
+      ],
+      "angle": "Defines \u201cplatform vs framework\u201d bar and plants Open Managed Agents as only drop-in CMA API-compatible OSS platform vs LangGraph/AutoGen/CrewAI."
+    },
+    {
+      "url": "https://mastra.ai/articles/mastra-agentcontroller-vs-langchain-deep-agents",
+      "title": "Mastra Agent Controller vs. LangChain Deep Agents",
+      "publisher": "Mastra",
+      "page_type": "vendor_vs_page",
+      "compares_against": [
+        "LangChain Deep Agents"
+      ],
+      "planted_keywords_phrases": [
+        "Mastra Agent Controller vs. LangChain Deep Agents",
+        "sessions",
+        "tool approvals",
+        "memory",
+        "subagents",
+        "observability",
+        "TypeScript",
+        "checkpointer"
+      ],
+      "angle": "Feature-matrix transparency article planting Mastra sessions/permissions vs Deep Agents/LangGraph checkpoint model for TS builders."
+    },
+    {
+      "url": "https://mastra.ai/blog/choosing-a-js-agent-framework",
+      "title": "Choosing a JavaScript Agent Framework",
+      "publisher": "Mastra",
+      "page_type": "vendor_vs_page",
+      "compares_against": [
+        "LangGraph.js",
+        "LangChain"
+      ],
+      "planted_keywords_phrases": [
+        "JavaScript Agent Framework",
+        "Mastra",
+        "LangGraph.js",
+        "Workflow Orchestration",
+        "serverless deployment",
+        "memory management"
+      ],
+      "angle": "Framework chooser SEO page with Mastra vs LangGraph.js capability table for JS agent builders."
+    },
+    {
+      "url": "https://developers.openai.com/cookbook/examples/agents_sdk/migrate-from-claude-agent-sdk/readme",
+      "title": "Migrate from the Claude Agent SDK to the OpenAI Agents SDK",
+      "publisher": "OpenAI (cookbook)",
+      "page_type": "official_migration_comparison",
+      "compares_against": [
+        "Claude Agent SDK"
+      ],
+      "planted_keywords_phrases": [
+        "Migrate from the Claude Agent SDK",
+        "OpenAI Agents SDK",
+        "sandbox as a tool",
+        "CLAUDE.md",
+        "AGENTS.md",
+        "skills",
+        "guardrails",
+        "approvals",
+        "handoffs"
+      ],
+      "angle": "Architecture migration guide that plants OpenAI harness-outside-sandbox pattern against Claude Agent SDK sandbox-contains-harness model."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/overview",
+      "title": "Claude Managed Agents overview",
+      "publisher": "Anthropic",
+      "page_type": "official_product_positioning",
+      "compares_against": [
+        "Messages API"
+      ],
+      "planted_keywords_phrases": [
+        "Claude Managed Agents",
+        "Messages API",
+        "agent harness",
+        "managed infrastructure",
+        "long-running tasks",
+        "self-hosted sandbox",
+        "stateful sessions",
+        "Zero Data Retention",
+        "HIPAA"
+      ],
+      "angle": "Official CMA overview with Messages-API vs Managed Agents table (internal product split, not multi-vendor transparency)."
+    },
+    {
+      "url": "https://www.inngest.com/compare-to-temporal",
+      "title": "Inngest vs Temporal: Durable execution that developers love",
+      "publisher": "Inngest",
+      "page_type": "vendor_vs_page",
+      "compares_against": [
+        "Temporal"
+      ],
+      "planted_keywords_phrases": [
+        "Inngest vs Temporal",
+        "Temporal alternatives",
+        "durable execution",
+        "No workers",
+        "step memoization",
+        "AI Agents",
+        "human-in-the-loop",
+        "step.run()"
+      ],
+      "angle": "Canonical durable-orchestration /compare page planting AI-agent step memoization + no-workers DX against Temporal workers/determinism."
+    },
+    {
+      "url": "https://dbggr.dev/articles/agent-frameworks-compared/",
+      "title": "AI agent SDKs compared: OpenAI, Claude, LangGraph, Pydantic AI (2026)",
+      "publisher": "Dbggr (third-party)",
+      "page_type": "independent_comparison",
+      "compares_against": [
+        "OpenAI Agents SDK",
+        "Claude Agent SDK",
+        "Pydantic AI",
+        "Google ADK",
+        "LangGraph",
+        "Microsoft Agent Framework",
+        "CrewAI",
+        "Mastra",
+        "Cloudflare Agents SDK",
+        "Claude Managed Agents",
+        "OpenAI Agents API",
+        "AWS AgentCore"
+      ],
+      "planted_keywords_phrases": [
+        "AI agent SDKs compared",
+        "OpenAI Agents SDK",
+        "Claude Agent SDK",
+        "Claude Managed Agents",
+        "OpenAI Agents API",
+        "LangGraph",
+        "Pydantic AI",
+        "Mastra",
+        "Cloudflare Agents SDK",
+        "managed loop",
+        "session-hour"
+      ],
+      "angle": "Broad 2026 frameworks + managed-loops encyclopedia that ranks on agent-SDK SERPs and plants CMA/Agents API pricing keywords."
+    },
+    {
+      "url": "https://type.com/compare",
+      "title": "type.com vs alternatives: managed agents and AI workspaces",
+      "publisher": "type.com",
+      "page_type": "vendor_compare_hub",
+      "compares_against": [
+        "Claude Enterprise / Cowork-adjacent team agents (hub)"
+      ],
+      "planted_keywords_phrases": [
+        "managed agents",
+        "AI workspaces",
+        "alternatives",
+        "type.com vs"
+      ],
+      "angle": "Compare hub for managed agents / AI workspaces (Cowork/Enterprise-adjacent team positioning SERP)."
+    },
+    {
+      "url": "https://type.com/blog/claude-cowork-alternatives-for-teams",
+      "title": "Claude Cowork alternatives for teams: 8 options in 2026",
+      "publisher": "type.com",
+      "page_type": "vendor_alternatives_seo",
+      "compares_against": [
+        "Claude Cowork",
+        "team AI agent platforms"
+      ],
+      "planted_keywords_phrases": [
+        "Claude Cowork alternatives",
+        "teams",
+        "AI agent platforms"
+      ],
+      "angle": "Cowork-alternatives SEO targeting team shared-agent use cases adjacent to Fleet\u2019s Cowork comparison set."
+    },
+    {
+      "url": "https://www.developersdigest.tech/blog/durable-ai-agent-frameworks-compared-2026",
+      "title": "Durable AI Agent Frameworks Compared: One Run, Four Stacks",
+      "publisher": "Developers Digest (third-party)",
+      "page_type": "independent_comparison",
+      "compares_against": [
+        "LangGraph",
+        "Mastra",
+        "Pydantic AI",
+        "OpenAI Agents SDK"
+      ],
+      "planted_keywords_phrases": [
+        "Durable AI Agent Frameworks Compared",
+        "LangGraph",
+        "Mastra",
+        "Pydantic AI",
+        "OpenAI Agents SDK",
+        "checkpointer",
+        "crash mid tool call"
+      ],
+      "angle": "Durability-focused four-stack comparison planting resume/checkpoint keywords across LangGraph/Mastra/Pydantic/OpenAI Agents SDK."
+    },
+    {
+      "url": "https://www.developersdigest.tech/blog/mastra-vs-langgraph-js-2026",
+      "title": "Mastra vs LangGraph.js: TypeScript Agent Frameworks Compared",
+      "publisher": "Developers Digest (third-party)",
+      "page_type": "independent_comparison",
+      "compares_against": [
+        "Mastra",
+        "LangGraph.js"
+      ],
+      "planted_keywords_phrases": [
+        "Mastra vs LangGraph.js",
+        "TypeScript Agent Frameworks",
+        "durable execution",
+        "checkpointing"
+      ],
+      "angle": "Independent TS framework face-off amplifying Mastra/LangGraph keyword competition."
+    },
+    {
+      "url": "https://paperclip.ing/blog/ai-agent-governance-platform-buyers-guide/",
+      "title": "AI Agent Governance Platform Buyer's Guide: 7 Tools Compared",
+      "publisher": "Paperclip",
+      "page_type": "independent_comparison",
+      "compares_against": [
+        "LangSmith Fleet",
+        "other governance platforms (7 tools)"
+      ],
+      "planted_keywords_phrases": [
+        "AI Agent Governance Platform",
+        "Buyer's Guide",
+        "LangSmith Fleet",
+        "approvals",
+        "RBAC"
+      ],
+      "angle": "Governance buyers-guide SEO that names Fleet controls and competes for enterprise agent-platform evaluation queries."
+    }
+  ],
+  "coverage_gaps": {
+    "openai_official_multi_vendor_compare": "No openai.com multi-vendor transparency matrix found; closest is Claude Agent SDK migration cookbook.",
+    "anthropic_official_multi_vendor_compare": "No Anthropic multi-vendor CMA comparison page; only Messages API vs CMA table in overview.",
+    "temporal_official_agent_vs_page": "Temporal has integration docs/blogs (OpenAI Agents SDK, LangGraph plugin) but no Fleet-style competitor comparison matrix found.",
+    "cloudflare_agents_official_compare": "Cloudflare Agents docs describe Durable Objects runtime; no /compare vs CMA/Fleet page found.",
+    "crewai_autogen_official_compare": "No strong CrewAI/AutoGen official competitor transparency pages found; AutoGen archived/migrating to Microsoft Agent Framework. Covered via openma/TrueFoundry/dbggr third-party pages.",
+    "mastra_durable_agents_docs": "https://mastra.ai/docs/harness/durable-agents is product docs (not competitor transparency).",
+    "inngest_durable_agents_docs": "https://www.inngest.com/docs/durable-execution/durable-agents is product docs; competitive SEO lives on /compare-to-temporal."
+  },
+  "method": "WebSearch + WebFetch; keywords from page H1/H2/table headers only; no invented volumes"
+}

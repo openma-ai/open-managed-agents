@@ -1,0 +1,729 @@
+{
+  "version": 1,
+  "title": "Composite SEO keyword ranking — volume × KD opportunity (openma.ai)",
+  "site": "https://openma.ai",
+  "generated_at_utc": "2026-11-03T12:10:14Z",
+  "timezone_note": "Box/local display America/Detroit (UTC-5); timestamps in UTC unless labeled",
+  "formula": {
+    "opportunity_score": "volume / max(KD, 1)",
+    "kd_source": "DataForSEO Labs keyword overview / bulk keyword difficulty via AIsa (field: difficulty)",
+    "volume_source": "DataForSEO Google Ads search volume / Labs related seed volumes via AIsa + SERP competitor extracts",
+    "no_invention": "Rows without numeric volume excluded. KD never invented; opportunity_score is null when KD missing.",
+    "selection": "Prefer CMA / OpenAI Agents / managed agents / agent platform / durable / alternative / pricing (and self-host/open-source alt) themes; include brand terms tagged brand_or_category=brand; cap adjacent brand flood (openclaw/hermes/cowork) so category demand is not drowned; ignore openma.dev",
+    "brand_tag_rule": "brand = openma|fleet|deep agents|openhands|qoder|ax (owner list) OR competitor product navigational (openclaw, hermes agent, claude cowork, langgraph, crewai, …) OR exact product queries (claude managed agents, openai agent builder/sdk/agentkit); else category"
+  },
+  "inputs": [
+    "aisa-keyword-expand-2026-11-03.json",
+    "serp-claude-managed-agents-2026-11-03.json",
+    "serp-openai-agents-api-2026-11-03.json",
+    "competitor-keywords-agents-platforms-2026-11-03.json",
+    "competitor-keywords-cma-alt.json",
+    "cma-and-competitor-seo-pages-2026-11-03.json (catalog caveat only)"
+  ],
+  "counts": {
+    "universe_with_numeric_volume": 379,
+    "universe_with_kd": 204,
+    "preferred_theme_with_volume": 224,
+    "top_n": 40,
+    "top_with_kd": 36,
+    "top_brand": 10,
+    "top_category": 30
+  },
+  "keywords": [
+    {
+      "rank": 1,
+      "keyword": "self-hosted ai agent",
+      "volume": 5400,
+      "kd": 0,
+      "opportunity_score": 5400.0,
+      "cluster": "Self-Host & Open-Source Agents",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 8.89,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 2,
+      "keyword": "claude agents sdk",
+      "volume": 12100,
+      "kd": 9,
+      "opportunity_score": 1344.44,
+      "cluster": "Claude / Agents SDK",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 6.14,
+      "intent": "navigational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 3,
+      "keyword": "claude agent sdk",
+      "volume": 12100,
+      "kd": 15,
+      "opportunity_score": 806.67,
+      "cluster": "Claude / Agents SDK",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 6.14,
+      "intent": "navigational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 4,
+      "keyword": "openclaw pricing",
+      "volume": 590,
+      "kd": 0,
+      "opportunity_score": 590.0,
+      "cluster": "CMA Pricing & Cost",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 15.86,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 5,
+      "keyword": "no code ai agent builder",
+      "volume": 5400,
+      "kd": 10,
+      "opportunity_score": 540.0,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 23.92,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 6,
+      "keyword": "open source ai agents",
+      "volume": 9900,
+      "kd": 19,
+      "opportunity_score": 521.05,
+      "cluster": "Self-Host & Open-Source Agents",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 8.56,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 7,
+      "keyword": "openai agent builder",
+      "volume": 5400,
+      "kd": 13,
+      "opportunity_score": 415.38,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03",
+        "serp-openai-agents-api-2026-11-03",
+        "serp-openai-agents-api-2026-11-03:volume_snapshot",
+        "competitor-keywords-agents-platforms-2026-11-03:volume_contrast"
+      ],
+      "cpc": 26.53,
+      "intent": "navigational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 8,
+      "keyword": "claude managed agents",
+      "volume": 9900,
+      "kd": 33,
+      "opportunity_score": 300.0,
+      "cluster": "What Is Claude Managed Agents",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03",
+        "serp-claude-managed-agents-2026-11-03",
+        "serp-openai-agents-api-2026-11-03:volume_snapshot",
+        "competitor-keywords-agents-platforms-2026-11-03:volume_contrast",
+        "competitor-keywords-cma-alt"
+      ],
+      "cpc": 3.55,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 9,
+      "keyword": "ai agent builder",
+      "volume": 6600,
+      "kd": 35,
+      "opportunity_score": 188.57,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 30.13,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 10,
+      "keyword": "claude cowork pricing",
+      "volume": 2900,
+      "kd": 21,
+      "opportunity_score": 138.1,
+      "cluster": "CMA Pricing & Cost",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 4.85,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 11,
+      "keyword": "open ai agent builder",
+      "volume": 1600,
+      "kd": 12,
+      "opportunity_score": 133.33,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 24.64,
+      "intent": "commercial",
+      "competition_level": "MEDIUM"
+    },
+    {
+      "rank": 12,
+      "keyword": "best no-code ai agent builder",
+      "volume": 90,
+      "kd": 0,
+      "opportunity_score": 90.0,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 20.2,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 13,
+      "keyword": "ai agent platform",
+      "volume": 2400,
+      "kd": 27,
+      "opportunity_score": 88.89,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 33.91,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 14,
+      "keyword": "ai agents vs agentic ai",
+      "volume": 1300,
+      "kd": 15,
+      "opportunity_score": 86.67,
+      "cluster": "Competitors & Comparisons",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 14.26,
+      "intent": "commercial",
+      "competition_level": "MEDIUM"
+    },
+    {
+      "rank": 15,
+      "keyword": "ai agent orchestration",
+      "volume": 590,
+      "kd": 8,
+      "opportunity_score": 73.75,
+      "cluster": "Agent Orchestration",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 20.28,
+      "intent": "commercial",
+      "competition_level": "MEDIUM"
+    },
+    {
+      "rank": 16,
+      "keyword": "no code ai agent platform",
+      "volume": 1000,
+      "kd": 16,
+      "opportunity_score": 62.5,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 17,
+      "keyword": "no-code ai agent platform",
+      "volume": 1000,
+      "kd": 17,
+      "opportunity_score": 58.82,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 18,
+      "keyword": "amazon bedrock managed agents",
+      "volume": 50,
+      "kd": 0,
+      "opportunity_score": 50.0,
+      "cluster": "Managed Agents (category)",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 2.36,
+      "intent": "navigational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 19,
+      "keyword": "aws managed agents",
+      "volume": 50,
+      "kd": 0,
+      "opportunity_score": 50.0,
+      "cluster": "Managed Agents (category)",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 4.95,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 20,
+      "keyword": "best open source ai agents",
+      "volume": 50,
+      "kd": 0,
+      "opportunity_score": 50.0,
+      "cluster": "Self-Host & Open-Source Agents",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 19.81,
+      "intent": "commercial",
+      "competition_level": "MEDIUM"
+    },
+    {
+      "rank": 21,
+      "keyword": "claude agent sdk documentation",
+      "volume": 50,
+      "kd": 0,
+      "opportunity_score": 50.0,
+      "cluster": "Claude / Agents SDK",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": "navigational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 22,
+      "keyword": "claude-agent-sdk pypi",
+      "volume": 50,
+      "kd": 0,
+      "opportunity_score": 50.0,
+      "cluster": "Claude / Agents SDK",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": "transactional",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 23,
+      "keyword": "voice ai agent platform",
+      "volume": 50,
+      "kd": 0,
+      "opportunity_score": 50.0,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 24.96,
+      "intent": "transactional",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 24,
+      "keyword": "anthropic managed agents",
+      "volume": 1300,
+      "kd": 28,
+      "opportunity_score": 46.43,
+      "cluster": "Managed Agents (category)",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 4.18,
+      "intent": "informational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 25,
+      "keyword": "openai agents",
+      "volume": 2900,
+      "kd": 68,
+      "opportunity_score": 42.65,
+      "cluster": "Other / Review",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 24.45,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 26,
+      "keyword": "omnara",
+      "volume": 590,
+      "kd": 14,
+      "opportunity_score": 42.14,
+      "cluster": "Competitors & Comparisons",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 15.67,
+      "intent": "informational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 27,
+      "keyword": "claude code sdk-typescript",
+      "volume": 40,
+      "kd": 0,
+      "opportunity_score": 40.0,
+      "cluster": "Claude / Agents SDK",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": "navigational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 28,
+      "keyword": "claude agent sdk vs claude code",
+      "volume": 70,
+      "kd": 2,
+      "opportunity_score": 35.0,
+      "cluster": "Claude / Agents SDK",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 7.57,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 29,
+      "keyword": "claude managed agents vs openclaw",
+      "volume": 30,
+      "kd": 0,
+      "opportunity_score": 30.0,
+      "cluster": "Adjacent Agents (OpenClaw / Hermes / Cowork)",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03",
+        "serp-claude-managed-agents-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 30,
+      "keyword": "oci ai agent platform",
+      "volume": 30,
+      "kd": 0,
+      "opportunity_score": 30.0,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": "navigational",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 31,
+      "keyword": "ai voice agent platform",
+      "volume": 1000,
+      "kd": 44,
+      "opportunity_score": 22.73,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 41.27,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 32,
+      "keyword": "open-source ai agent platform",
+      "volume": 590,
+      "kd": 29,
+      "opportunity_score": 20.34,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 1.91,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 33,
+      "keyword": "open source ai agent platform",
+      "volume": 590,
+      "kd": 33,
+      "opportunity_score": 17.88,
+      "cluster": "Self-Host & Open-Source Agents",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 2.89,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 34,
+      "keyword": "best free ai agent platform",
+      "volume": 50,
+      "kd": 3,
+      "opportunity_score": 16.67,
+      "cluster": "AI Agent Platforms",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 11.67,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 35,
+      "keyword": "claude managed agents pricing",
+      "volume": 260,
+      "kd": 17,
+      "opportunity_score": 15.29,
+      "cluster": "CMA Pricing & Cost",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03",
+        "serp-claude-managed-agents-2026-11-03",
+        "competitor-keywords-agents-platforms-2026-11-03:volume_contrast",
+        "competitor-keywords-cma-alt"
+      ],
+      "cpc": 4.2,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 36,
+      "keyword": "anthropic-ai/claude agent sdk",
+      "volume": 260,
+      "kd": 19,
+      "opportunity_score": 13.68,
+      "cluster": "Claude / Agents SDK",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "volume / max(KD, 1)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 8.06,
+      "intent": "transactional",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 37,
+      "keyword": "self hosted ai agents",
+      "volume": 5400,
+      "kd": null,
+      "opportunity_score": null,
+      "cluster": "Self-Host & Open-Source Agents",
+      "brand_or_category": "category",
+      "preferred_theme": true,
+      "score_basis": "KD missing — not scored (no invented KD)",
+      "sources": [
+        "aisa-keyword-expand-2026-11-03"
+      ],
+      "cpc": 8.89,
+      "intent": "commercial",
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 38,
+      "keyword": "openai agent sdk",
+      "volume": 4400,
+      "kd": null,
+      "opportunity_score": null,
+      "cluster": "OpenAI Agents / AgentKit",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "KD missing — not scored (no invented KD)",
+      "sources": [
+        "serp-openai-agents-api-2026-11-03"
+      ],
+      "cpc": null,
+      "intent": null,
+      "competition_level": "LOW"
+    },
+    {
+      "rank": 39,
+      "keyword": "openai agents sdk",
+      "volume": 4400,
+      "kd": null,
+      "opportunity_score": null,
+      "cluster": "OpenAI Agents / AgentKit",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "KD missing — not scored (no invented KD)",
+      "sources": [
+        "serp-openai-agents-api-2026-11-03",
+        "serp-openai-agents-api-2026-11-03:volume_snapshot",
+        "competitor-keywords-agents-platforms-2026-11-03:volume_contrast"
+      ],
+      "cpc": null,
+      "intent": null,
+      "competition_level": null
+    },
+    {
+      "rank": 40,
+      "keyword": "openai agentkit",
+      "volume": 1600,
+      "kd": null,
+      "opportunity_score": null,
+      "cluster": "OpenAI Agents / AgentKit",
+      "brand_or_category": "brand",
+      "preferred_theme": true,
+      "score_basis": "KD missing — not scored (no invented KD)",
+      "sources": [
+        "serp-openai-agents-api-2026-11-03",
+        "serp-openai-agents-api-2026-11-03:volume_snapshot",
+        "competitor-keywords-agents-platforms-2026-11-03:volume_contrast"
+      ],
+      "cpc": null,
+      "intent": null,
+      "competition_level": null
+    }
+  ]
+}

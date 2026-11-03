@@ -1,0 +1,634 @@
+{
+  "version": 1,
+  "title": "OpenMA SEO content plan — hub-spoke briefs",
+  "site": "https://openma.ai",
+  "generated_at_utc": "2026-11-03T12:20:00Z",
+  "timezone_note": "America/Detroit (UTC-5)",
+  "methodology": "AgriciDaniel/claude-seo seo-cluster: seed expansion → SERP-overlap clustering → hub-spoke",
+  "methodology_url": "https://github.com/AgriciDaniel/claude-seo/blob/main/skills/seo-cluster/SKILL.md",
+  "seed_keyword": "claude managed agents alternative",
+  "owner_rules": [
+    "outlines/title/meta/key points only — no long-form body",
+    "brand ≠ category demand",
+    "openma.dev deprecated — do not target",
+    "open-source/self-hosted prefix OK on category terms",
+    "OpenMA = orchestration/managed runtime (AX-like), not just coding agent",
+    "decoupling brain from hands OK as theme",
+    "no-code builder carefully — OMA low-code-ish not pure no-code (flag)"
+  ],
+  "inputs": [
+    "keyword-rank-volume-kd-2026-11-03.json",
+    "aisa-keyword-expand-2026-11-03.json",
+    "cluster-plan.json",
+    "serp-claude-managed-agents-2026-11-03.json",
+    "serp-openai-agents-api-2026-11-03.json",
+    "cma-and-competitor-seo-pages-2026-11-03.json",
+    "competitor-transparency-seo-pages-2026-11-03.json",
+    "competitor-keywords-agents-platforms-2026-11-03.json",
+    "competitor-keywords-cma-alt.json",
+    "gsc-overlay-fresh-2026-11-03.json"
+  ],
+  "serp_article_type_distribution": {
+    "source": "serp-*-2026-11-03.json organics[].content_type",
+    "queries": {
+      "claude managed agents": {
+        "reddit": 1,
+        "blog_ugc": 2,
+        "blog_vendor": 2,
+        "forum_hn": 1,
+        "youtube": 1,
+        "pricing": 1
+      },
+      "claude managed agents alternative": {
+        "comparison": 3,
+        "blog_vendor": 2,
+        "reddit": 1,
+        "github": 1,
+        "blog_ugc": 1,
+        "forum_hn": 1
+      },
+      "claude managed agents pricing": {
+        "pricing": 7,
+        "reddit": 1,
+        "official": 1
+      },
+      "openai agents api": {
+        "official": 1,
+        "github": 1,
+        "pricing": 1,
+        "blog_vendor": 1,
+        "review": 1,
+        "youtube": 2
+      },
+      "openai agents sdk": {
+        "tutorial": 2,
+        "blog_vendor": 2,
+        "blog_ugc": 2
+      },
+      "openai agentkit": {
+        "blog_ugc": 2,
+        "blog_vendor": 2,
+        "official": 2,
+        "reddit": 1,
+        "youtube": 1
+      }
+    },
+    "aggregate_cma_content_types_winning": {
+      "reddit": 3,
+      "blog_ugc": 3,
+      "blog_vendor": 4,
+      "forum_hn": 2,
+      "youtube": 1,
+      "pricing": 8,
+      "github": 1,
+      "comparison": 3,
+      "official": 1
+    }
+  },
+  "serp_overlap": {
+    "source": "cluster-plan.json serp_matrix",
+    "thresholds": {
+      "same_post": "7-10",
+      "same_cluster": "4-6",
+      "interlink": "2-3",
+      "separate": "0-1"
+    },
+    "note": "Tag family separate from CMA (overlap 0-1). Theme co-clusters (SDK/platform/self-hosted AI agents) labeled — pairwise SERP not run (budget)."
+  },
+  "pillar": {
+    "id": "pillar",
+    "slug": "/claude-managed-agents-alternative/",
+    "status": "NEW",
+    "h1": "Claude Managed Agents Alternatives: Open-Source & Self-Hosted Options",
+    "meta_title": "Claude Managed Agents Alternative (Open-Source) | OpenMA",
+    "meta_description": "Compare Claude Managed Agents to self-hosted, multi-model managed runtimes. OpenMA as open orchestration — not Claude-only cloud lock-in.",
+    "primary_keyword": {
+      "keyword": "claude managed agents alternative",
+      "volume": 10,
+      "kd": null,
+      "gsc_impr_28d": 13
+    },
+    "secondary_keywords": [
+      {
+        "keyword": "claude managed agents alternatives",
+        "volume": 10
+      },
+      {
+        "keyword": "open source claude managed agents",
+        "volume": 10
+      },
+      {
+        "keyword": "self hosted claude managed agents",
+        "volume": 10
+      }
+    ],
+    "template": "ultimate-guide",
+    "serp_format": "comparison/alternatives listicle",
+    "priority": "P0.1"
+  },
+  "pages": [
+    {
+      "id": "p0-1-pillar",
+      "priority": "P0.1",
+      "slug": "/claude-managed-agents-alternative/",
+      "status": "NEW",
+      "cluster": "pillar",
+      "h1": "Claude Managed Agents Alternatives: Open-Source & Self-Hosted Options",
+      "meta_title": "Claude Managed Agents Alternative (Open-Source) | OpenMA",
+      "meta_description": "Compare Claude Managed Agents to self-hosted, multi-model managed runtimes. OpenMA as open orchestration — not Claude-only cloud lock-in.",
+      "primary_keyword": {
+        "keyword": "claude managed agents alternative",
+        "volume": 10,
+        "kd": null
+      },
+      "secondary_keywords": [
+        "claude managed agents alternatives",
+        "open source alternative to claude managed agents",
+        "open source claude managed agents",
+        "self hosted claude managed agents"
+      ],
+      "template": "ultimate-guide",
+      "serp_format_match": "comparison (3) + blog_vendor",
+      "outline": [
+        "What CMA is — link what-is",
+        "Why look elsewhere (lock-in, residency, session-hour)",
+        "Decision table: OpenMA, TrueForge, Omnara, OpenAI Agents API, Bedrock/Foundry, DIY SDK",
+        "Platform vs coding-agent vs framework bar",
+        "Self-host/OSS path",
+        "Pricing pointer",
+        "Brain/hands theme",
+        "FAQ"
+      ],
+      "internal_links": [
+        "what-is-cma",
+        "pricing",
+        "vs-openma",
+        "oss-managed",
+        "self-host-howto",
+        "openai-compare",
+        "claude-agent-sdk",
+        "platform-hub",
+        "docs"
+      ]
+    },
+    {
+      "id": "p0-2-vs",
+      "priority": "P0.2",
+      "slug": "/blog/claude-managed-agents-vs-open-managed-agents/",
+      "status": "OPTIMIZE",
+      "cluster": "CMA Alternatives & Comparisons",
+      "serp_overlap_with_pillar": 5,
+      "gsc": {
+        "impr": 102,
+        "clicks": 0,
+        "pos": 29.3
+      },
+      "h1": "Claude Managed Agents vs OpenMA (Open Managed Agents)",
+      "meta_title": "Claude Managed Agents vs OpenMA | Comparison",
+      "meta_description": "Side-by-side: Anthropic-hosted CMA vs open-source, multi-model managed agent runtime. Sessions, sandboxes, lock-in, cost shape.",
+      "primary_keyword": {
+        "keyword": "openma vs claude managed agents",
+        "volume": null,
+        "kd": null
+      },
+      "secondary_keywords": [
+        "claude managed agents vs open managed agents",
+        "claude managed agents alternative",
+        "anthropic managed agents"
+      ],
+      "template": "comparison",
+      "serp_format_match": "comparison matrix",
+      "outline": [
+        "Feature matrix",
+        "When CMA wins vs OpenMA",
+        "Not coding-IDE compare",
+        "CTA pillar/pricing/docs"
+      ],
+      "internal_links": [
+        "pillar",
+        "pricing",
+        "what-is-cma",
+        "self-host",
+        "docs"
+      ]
+    },
+    {
+      "id": "p0-3-what-is",
+      "priority": "P0.3",
+      "slug": "/what-is-claude-managed-agents/",
+      "status": "NEW",
+      "cluster": "What Is Claude Managed Agents",
+      "h1": "What Is Claude Managed Agents?",
+      "meta_title": "What Is Claude Managed Agents? Overview | OpenMA",
+      "meta_description": "Plain-English overview of Anthropic’s managed agent runtime — vs Agent SDK, limits, and when to consider open alternatives.",
+      "primary_keyword": {
+        "keyword": "what is claude managed agents",
+        "volume": 90,
+        "kd": null
+      },
+      "also_targets_head": {
+        "keyword": "claude managed agents",
+        "volume": 9900,
+        "kd": 33
+      },
+      "secondary_keywords": [
+        "what are claude managed agents",
+        "claude managed agents overview",
+        "anthropic managed agents"
+      ],
+      "template": "explainer",
+      "serp_format_match": "blog_vendor / blog_ugc explainer; AI Overview = Anthropic docs",
+      "outline": [
+        "Definition + docs map",
+        "CMA vs Claude Agent SDK",
+        "Harness/sessions/brain-hands",
+        "Limits → CTA pillar/pricing"
+      ],
+      "internal_links": [
+        "pillar",
+        "pricing",
+        "sandbox",
+        "claude-agent-sdk",
+        "vs-openma"
+      ]
+    },
+    {
+      "id": "p0-4-pricing",
+      "priority": "P0.4",
+      "slug": "/blog/claude-managed-agents-pricing/",
+      "status": "NEW",
+      "cluster": "CMA Alternatives & Comparisons",
+      "h1": "Claude Managed Agents Pricing (2026): Session Runtime + Tokens",
+      "meta_title": "Claude Managed Agents Pricing Explained | OpenMA",
+      "meta_description": "Break down CMA session-hour and token costs, hidden spend, and cheaper self-host / multi-model paths.",
+      "primary_keyword": {
+        "keyword": "claude managed agents pricing",
+        "volume": 260,
+        "kd": 17
+      },
+      "secondary_keywords": [
+        "claude managed agents cost",
+        "anthropic managed agents pricing"
+      ],
+      "template": "review",
+      "serp_format_match": "pricing (7/9 organics)",
+      "outline": [
+        "Official cost components",
+        "Disambiguate vs Claude Code/Cowork pricing",
+        "Hidden costs",
+        "Worked monthly example",
+        "Self-host/OpenMA contrast"
+      ],
+      "internal_links": [
+        "pillar",
+        "vs-openma",
+        "what-is-cma",
+        "oss-managed"
+      ]
+    },
+    {
+      "id": "p0-5-self-hosted",
+      "priority": "P0.5",
+      "slug": "/self-hosted-ai-agents/",
+      "status": "NEW",
+      "cluster": "Self-Host & Open-Source Agents",
+      "cluster_evidence": "theme_co_cluster_serp_pairwise_not_run",
+      "h1": "Self-Hosted AI Agents: Run Agents on Your Infra",
+      "meta_title": "Self-Hosted AI Agents (Open-Source Runtime) | OpenMA",
+      "meta_description": "Why teams self-host AI agents — control, data residency, multi-model. OpenMA as open managed runtime you can deploy yourself.",
+      "primary_keyword": {
+        "keyword": "self-hosted ai agent",
+        "volume": 5400,
+        "kd": 0
+      },
+      "secondary_keywords": [
+        {
+          "keyword": "self hosted ai agents",
+          "volume": 5400,
+          "kd": null
+        },
+        {
+          "keyword": "best open source ai agents",
+          "volume": 50,
+          "kd": 0
+        }
+      ],
+      "template": "best-of",
+      "serp_format_match": "best-of/how-to hybrid (pairwise TBD)",
+      "outline": [
+        "Self-host vs vendor-managed",
+        "Runtime vs coding-agent vs frameworks",
+        "Security/residency/BYOK",
+        "Deploy path → how-to",
+        "OpenMA orchestration not IDE"
+      ],
+      "internal_links": [
+        "pillar",
+        "oss-agents",
+        "oss-platform",
+        "self-host-howto",
+        "orchestration"
+      ]
+    },
+    {
+      "id": "p0-6-oss-agents",
+      "priority": "P0.6",
+      "slug": "/open-source-ai-agents/",
+      "status": "NEW",
+      "cluster": "Self-Host & Open-Source Agents",
+      "companions": [
+        {
+          "slug": "/open-source-managed-agents/",
+          "primary": "open source managed agents",
+          "volume": 10,
+          "gsc_impr": 5,
+          "serp_overlap_with_pillar": 5
+        }
+      ],
+      "h1": "Open-Source AI Agents & Agent Platforms",
+      "meta_title": "Open-Source AI Agents & Platforms | OpenMA",
+      "meta_description": "Open-source AI agents and agent platforms — managed-runtime shape, self-host, multi-model. How OpenMA fits vs frameworks.",
+      "primary_keyword": {
+        "keyword": "open source ai agents",
+        "volume": 9900,
+        "kd": 19
+      },
+      "secondary_keywords": [
+        {
+          "keyword": "open source ai agent platform",
+          "volume": 590,
+          "kd": 33
+        },
+        {
+          "keyword": "open-source ai agent platform",
+          "volume": 590,
+          "kd": 29
+        }
+      ],
+      "template": "best-of",
+      "outline": [
+        "Platform vs libraries",
+        "Table OpenMA/TrueForge/OpenHands(coding)/AX(orchestration)/Omnara",
+        "Category phrases over brands",
+        "Link CMA alt"
+      ],
+      "internal_links": [
+        "pillar",
+        "self-hosted",
+        "open-source-managed-agents",
+        "orchestration",
+        "claude-agent-sdk"
+      ]
+    },
+    {
+      "id": "p0-7-claude-agent-sdk",
+      "priority": "P0.7",
+      "slug": "/blog/claude-agent-sdk-vs-managed-agents/",
+      "status": "NEW",
+      "cluster": "Claude / Agents SDK",
+      "cluster_evidence": "theme_co_cluster_serp_pairwise_not_run",
+      "h1": "Claude Agent SDK vs Managed Agents (and When to Migrate)",
+      "meta_title": "Claude Agent SDK vs Claude Managed Agents | OpenMA",
+      "meta_description": "Claude Agent SDK runs in your process; Managed Agents host the harness. Compare, then see model-agnostic runtime options.",
+      "primary_keyword": {
+        "keyword": "claude agents sdk",
+        "volume": 12100,
+        "kd": 9
+      },
+      "secondary_keywords": [
+        {
+          "keyword": "claude agent sdk",
+          "volume": 12100,
+          "kd": 15
+        },
+        {
+          "keyword": "claude agent sdk vs claude code",
+          "volume": 70,
+          "kd": 2
+        }
+      ],
+      "template": "comparison",
+      "serp_format_match": "comparison (Deep Agents vs Claude Agent SDK exemplar)",
+      "outline": [
+        "SDK scope",
+        "vs CMA hosted",
+        "vs OpenAI Agents SDK migrate narrative",
+        "Multi-model self-host gap → OpenMA",
+        "Brain/hands ≠ orchestration substrate"
+      ],
+      "internal_links": [
+        "what-is-cma",
+        "pillar",
+        "openai-compare",
+        "orchestration",
+        "docs"
+      ]
+    },
+    {
+      "id": "p0-8-openai",
+      "priority": "P0.8",
+      "slug": "/blog/openai-agents-api-vs-openma/",
+      "status": "NEW_OR_OPTIMIZE",
+      "existing_candidate": "/blog/openai-agents-api-self-hosted/",
+      "cluster": "CMA Alternatives & Comparisons / OpenAI",
+      "serp_overlap_openai_alt_with_pillar": 5,
+      "h1": "OpenAI Agents API & SDK vs Open Managed Agent Platforms",
+      "meta_title": "OpenAI Agents API / SDK Alternative | OpenMA",
+      "meta_description": "Agents API (managed Codex harness) vs Agents SDK (self-run) vs model-agnostic managed runtimes you can self-host.",
+      "primary_keyword": {
+        "keyword": "openai agents sdk",
+        "volume": 4400,
+        "kd": null
+      },
+      "secondary_keywords": [
+        {
+          "keyword": "openai agents api",
+          "volume": 480
+        },
+        {
+          "keyword": "openai agentkit",
+          "volume": 1600
+        },
+        {
+          "keyword": "openai agent builder",
+          "volume": 5400,
+          "kd": 13
+        }
+      ],
+      "template": "comparison",
+      "serp_format_match": "API: official+review; SDK: avoid pure tutorial — ship comparison/review",
+      "outline": [
+        "Naming map API/SDK/AgentKit",
+        "Durable execution (Temporal on SERP)",
+        "Migration/cost/data-control",
+        "Compare CMA and OpenMA",
+        "When OpenAI-only enough"
+      ],
+      "internal_links": [
+        "pillar",
+        "claude-agent-sdk",
+        "self-host",
+        "platform-hub"
+      ]
+    },
+    {
+      "id": "p0-9-platform",
+      "priority": "P0.9",
+      "slug": "/ai-agent-platform/",
+      "status": "NEW",
+      "cluster": "AI Agent Platforms / Orchestration",
+      "cluster_evidence": "theme_co_cluster_serp_pairwise_not_run",
+      "h1": "AI Agent Platform & Orchestration Runtime",
+      "meta_title": "AI Agent Platform & Orchestration | OpenMA",
+      "meta_description": "What an AI agent platform is — orchestration, sessions, sandboxes — vs builders and coding agents. OpenMA as open managed runtime.",
+      "primary_keyword": {
+        "keyword": "ai agent platform",
+        "volume": 2400,
+        "kd": 27
+      },
+      "secondary_keywords": [
+        {
+          "keyword": "ai agent orchestration",
+          "volume": 590,
+          "kd": 8
+        },
+        {
+          "keyword": "multi agent orchestration",
+          "volume": 880
+        }
+      ],
+      "template": "explainer",
+      "serp_format_match": "explainer + light comparison (Fleet pattern)",
+      "outline": [
+        "Category def AX-like runtime",
+        "Primitives sessions/sandbox/durability",
+        "Platform vs SDK vs no-code builder",
+        "OpenMA fit → CMA alt"
+      ],
+      "internal_links": [
+        "pillar",
+        "orchestration-optional",
+        "self-host",
+        "oss",
+        "sdk-spokes"
+      ],
+      "optional_spoke": {
+        "slug": "/ai-agent-orchestration/",
+        "primary": "ai agent orchestration",
+        "volume": 590,
+        "kd": 8
+      }
+    },
+    {
+      "id": "p0-10-builder-flagged",
+      "priority": "P0.10",
+      "slug": "/blog/ai-agent-builder-low-code/",
+      "status": "NEW",
+      "flag": "OMA is low-code-ish / config+code — NOT pure no-code. Do not claim no-code.",
+      "cluster": "AI Agent Platforms",
+      "h1": "AI Agent Builder: Low-Code Orchestration (Not Just No-Code)",
+      "meta_title": "AI Agent Builder & Low-Code Platforms | OpenMA",
+      "meta_description": "No-code AI agent builders are popular — but production agents need a real runtime. Where low-code orchestration fits vs pure no-code.",
+      "primary_keyword": {
+        "keyword": "ai agent builder",
+        "volume": 6600,
+        "kd": 35
+      },
+      "secondary_keywords": [
+        {
+          "keyword": "no code ai agent builder",
+          "volume": 5400,
+          "kd": 10
+        },
+        {
+          "keyword": "no code ai agent platform",
+          "volume": 1000,
+          "kd": 16
+        },
+        {
+          "keyword": "low code ai agent platform",
+          "volume": 210
+        },
+        {
+          "keyword": "openai agent builder",
+          "volume": 5400,
+          "kd": 13
+        }
+      ],
+      "template": "explainer",
+      "serp_format_match": "vendor blog / practical guide; avoid fake best no-code listicle",
+      "outline": [
+        "Intent split no-code vs production runtime",
+        "AgentKit reference",
+        "What still needs code",
+        "OpenMA honest low-code + runtime",
+        "CTA platform hub + docs"
+      ],
+      "internal_links": [
+        "platform-hub",
+        "openai-compare",
+        "pillar",
+        "docs"
+      ]
+    }
+  ],
+  "p1_pages": [
+    {
+      "slug": "/blog/self-host-managed-agents-platform/",
+      "primary": "how to self host managed agents platform",
+      "template": "how-to",
+      "serp_overlap_oss": 6
+    },
+    {
+      "slug": "/blog/claude-managed-agents-sandbox/",
+      "primary": "claude managed agents sandbox",
+      "volume": 10,
+      "template": "explainer"
+    },
+    {
+      "slug": "/blog/migrate-from-claude-agent-sdk/",
+      "template": "how-to"
+    },
+    {
+      "slug": "/blog/decoupling-brain-from-hands-agents/",
+      "template": "explainer",
+      "theme": "planted Anthropic research phrase"
+    }
+  ],
+  "p2_optimize_tag_cluster": [
+    {
+      "slug": "/claude-tag-alternative/",
+      "impr": 72
+    },
+    {
+      "slug": "/claude-tag-open-source/",
+      "impr": 62
+    },
+    {
+      "slug": "/self-hosted-claude-tag/",
+      "impr": 92
+    },
+    {
+      "slug": "/blog/self-hosted-claude-tag-open-source/",
+      "impr": 81
+    },
+    {
+      "slug": "/blog/claude-tag-open-source-alternative/",
+      "impr": 62,
+      "note": "cannibal risk"
+    }
+  ],
+  "publishing_order": [
+    "OPTIMIZE vs OpenMA comparison",
+    "NEW CMA alternative pillar",
+    "NEW what-is CMA + pricing",
+    "NEW self-hosted + open-source agents/platform + open-source managed agents",
+    "NEW Claude Agent SDK compare/migrate",
+    "NEW/OPTIMIZE OpenAI Agents API/SDK compare",
+    "NEW AI agent platform hub",
+    "NEW low-code builder (flagged) after platform hub",
+    "OPTIMIZE Tag landings + docs meta",
+    "SERP-overlap spot-check theme co-clusters before URL merges"
+  ],
+  "markdown": "content-plan-2026-11-03.md"
+}

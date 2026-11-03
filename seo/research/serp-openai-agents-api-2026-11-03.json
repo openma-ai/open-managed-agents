@@ -1,0 +1,715 @@
+{
+  "version": 1,
+  "title": "SERP + competitor keywords \u2014 OpenAI Agents API / SDK / AgentKit",
+  "site": "https://openma.ai",
+  "generated_at_utc": "2026-11-03T11:59:19Z",
+  "session_id": "ses_ed2808ac-c28f-4fb5-9299-644c6319a8e2",
+  "location_language": {
+    "location_code": 2840,
+    "language_code": "en"
+  },
+  "queries": {
+    "openai agents api": {
+      "datetime": "2026-11-03 11:55:53 +00:00",
+      "item_types": [
+        "ai_overview",
+        "organic",
+        "video",
+        "perspectives",
+        "related_searches"
+      ],
+      "type_counts": {
+        "ai_overview": 1,
+        "organic": 7,
+        "video": 1,
+        "perspectives": 1,
+        "related_searches": 1
+      },
+      "ai_overview": true,
+      "openma_present": false,
+      "organics": [
+        {
+          "position": 2,
+          "title": "Models and providers | OpenAI API",
+          "url": "https://google.com/goto?url=CAESdgHrOzAVSzQDwu1ktJAu8tsnAG1KFAcFE_zjKA-uVBVEWQdP-85Dpy0BMt1N737DQqRhZYOXbv8RkxRsHJq45V4J1hakA9Fne4fsqmcsJUQW7MDDJ7clPc0-Z7V0AkdbGM__n375R7bQUqx5bYJxIGiICN_bCQ8",
+          "domain": "openai.com",
+          "website_name": "OpenAI Developers",
+          "description": "Learn how to choose models, set defaults, and think about providers and transport in the OpenAI Agents SDK.",
+          "url_obfuscated": true,
+          "content_type": "official"
+        },
+        {
+          "position": 3,
+          "title": "Tools - OpenAI Agents SDK",
+          "url": "https://google.com/goto?url=CAESbwHrOzAVx1v7SAEgx8qjdkE_GJS0VHHIZweJ0bwskjBjJX5QBug95dpoKlfBINk3ceEclJtF-KDB0pO48gU2QCNPi9XTGXBHm7j1unKmn7n6DjFHE5diclMYFVyi9VRJGqj0k2n6mOt3n_OZyUzanQ",
+          "domain": "github.com",
+          "website_name": "GitHub Pages documentation",
+          "description": "Tools let agents take actions: things like fetching data, running code, calling external APIs, and even using a computer. The SDK supports five categories:. Read more",
+          "url_obfuscated": true,
+          "content_type": "github"
+        },
+        {
+          "position": 5,
+          "title": "OpenAI Agents API Review: Migration, Costs and Data Controls",
+          "url": "https://google.com/goto?url=CAESewHrOzAVmL7z4VImQk99Um29GSPf1Y23Agyd_-uSeVemyRrtpqp0eQrYg5rwEvQcdcCiSlbUHR3E-5fR8BoyWtRoZWKkeZiUfInc0T3BeyvjApsOvQhzK3F0SOzSfeyS94MTQR7r6eDWm0pcEhB34eL5XG9q6frwaJmImQ",
+          "domain": "google.com",
+          "website_name": "wavect.io",
+          "description": "Sep 13, 2026 \u2014 OpenAI Agents API provides a managed Codex harness, not a replacement for your business permissions or acceptance tests. Read more",
+          "url_obfuscated": true,
+          "content_type": "pricing"
+        },
+        {
+          "position": 6,
+          "title": "Introduction to the OpenAI Agents SDK and Responses API",
+          "url": "https://google.com/goto?url=CAESigEB6zswFWqc9yNJrouDqeXLANYtO6RXz_ByeqdAjLDBqfW9835YbhVENgE6JOggXWsOtN5gPQ58-4pMAS2LduTnieNCDcjCIdNrG3hU-a24eYZt7v68tfxeowizLMN77-K7Uev6QgP4WFkpuxsdnokahDMUE5SsuEw4SQizKZ146M80Qz_YonrheiE",
+          "domain": "google.com",
+          "website_name": "The New Stack",
+          "description": "How to get started with OpenAI's architecture for AI agents, which includes a new set of APIs and tools to build agentic applications.",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 8,
+          "title": "Early Access to OpenAI's Agents API: What We Learned ...",
+          "url": "https://google.com/goto?url=CAESsAEB6zswFS6xVnyoiSIl1NUGUG7eYCz7aBDQYY8uKksbIDnvuh_GxRvQBUZx6bfjMuxpIXtaxqjA2gnfG98bjPfq2s3Z9XinPGIwsG-AR8stTfF_XJTIBCptO5Ph8slza7PnBCNDsEeFpu0LdrJqpNUEazSoXDnik3GYkTgkCW4On4RtWwsZV5lAQO5F4Mw8xezVSPUGGKZyslvnEyoNvIb5-aRfsabznvkAPdO2eG70jg",
+          "domain": "google.com",
+          "website_name": "deepsense.ai",
+          "description": "Sep 11, 2026 \u2014 The Agents API puts the power of the Codex harness in developers' hands. Agents API was used during development and evaluation,",
+          "url_obfuscated": true,
+          "content_type": "review"
+        },
+        {
+          "position": 9,
+          "title": "OpenAI Agents API Just Launched \u2014 It's a Much Bigger Deal ...",
+          "url": "https://google.com/goto?url=CAESZgHrOzAVOo7a9fejCgM8xZgFclcbinMNCdxTT1qzHXA2DqIF7xNcGPR2Q2udW7cThVgmlmR6aoAAcO4VhQaYgPfnCJjx41fb1E8DyggQHvN4CGOI3c_o-RTqn8yAREBmnlN3OZ676Q",
+          "domain": "youtube.com",
+          "website_name": "YouTube\u00a0\u00b7\u00a0Mathify - Animate math by chatting with AI",
+          "description": null,
+          "url_obfuscated": true,
+          "content_type": "youtube"
+        },
+        {
+          "position": 10,
+          "title": "OpenAI Agents SDK Tutorial (FULL SERIES)",
+          "url": "https://www.youtube.com/watch?v=gFcAfU3V1Zo",
+          "domain": "www.youtube.com",
+          "website_name": "YouTube\u00a0\u00b7\u00a0Kody Simpson",
+          "description": null,
+          "url_obfuscated": false,
+          "content_type": "youtube"
+        }
+      ],
+      "ai_overview_refs": [],
+      "paa": [],
+      "related_searches": [
+        "Openai agents api python",
+        "Openai agents api tutorial",
+        "Openai agents api github",
+        "Openai agents api example",
+        "Openai agents api key",
+        "OpenAI agent SDK documentation",
+        "OpenAI Agents SDK tutorial",
+        "OpenAI agents tools"
+      ],
+      "official_hits": [
+        {
+          "position": 2,
+          "domain": "openai.com",
+          "title": "Models and providers | OpenAI API",
+          "via": "organic"
+        }
+      ],
+      "task_cost_usd": 0.002
+    },
+    "openai agents sdk": {
+      "datetime": "2026-11-03 11:56:11 +00:00",
+      "item_types": [
+        "ai_overview",
+        "video",
+        "organic",
+        "people_also_search",
+        "people_also_ask",
+        "perspectives",
+        "related_searches"
+      ],
+      "type_counts": {
+        "ai_overview": 1,
+        "video": 1,
+        "organic": 6,
+        "people_also_search": 1,
+        "people_also_ask": 1,
+        "perspectives": 1,
+        "related_searches": 1
+      },
+      "ai_overview": true,
+      "openma_present": false,
+      "organics": [
+        {
+          "position": 3,
+          "title": "OpenAI Agents SDK Tutorial: Building AI Systems That ...",
+          "url": "https://google.com/goto?url=CAESdwHrOzAVihm5N3fJfp5PI2m5IMbIGZEJFpZLpwBUr2UNG2vkZhaqlJC6jyY6ieNtXDHrod_E0qupjEDT42ROsu99E1hUjM_6uBtcVucL6Yz9jozvI2DyjXeFbCptLTuC9TCJ7D79DPrOw9LSs4MrVnmzS26rnakM",
+          "domain": "google.com",
+          "website_name": "DataCamp",
+          "description": "Mar 17, 2025 \u2014 The OpenAI Agents SDK is a Python framework that enables developers to build AI applications capable of making decisions and taking actions.",
+          "url_obfuscated": true,
+          "content_type": "tutorial"
+        },
+        {
+          "position": 4,
+          "title": "Production-ready agents with the OpenAI Agents SDK ...",
+          "url": "https://google.com/goto?url=CAESfAHrOzAVJlD6epFhY-02EY1uV4RTj6oH5qYZf-5PPUJi8I2OcFD5UMH21VvLo2cnxH3oleVviM9ftxRz4GHXptW1efVMY-OsEuZgJwh4O1ezbaU3fvrA7MMp2NCdmYqs5SaCuyKVRCsVEzXlFlUxSAy6ZWg9RjZLkI5wULA",
+          "domain": "temporal.io",
+          "website_name": "Temporal",
+          "description": "OpenAI and Temporal have teamed up to add Durable Execution to agents built using OpenAI's Agents SDK, and today we released the new integration in Public",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 5,
+          "title": "OpenAI updates its Agents SDK to help enterprises build ...",
+          "url": "https://google.com/goto?url=CAESrwEB6zswFWWZxxyKA7dOoBd8ikqyKMYG0QHfCwWKLg7dXP1xJcg2IyGo3dq5sz9aNucU-3hM5Bg4wShBInnt5SgDfwvWQ8rgo3daHA143PSkH2fDnoY-LuP1imPcOec8t_apBN2-4luZ-QO5hxhesYx38JBGVWJLczFLBgHHHEn2RoamidhG1s29zUd7nUbAVEuhvvwJNR_OWEFomRt2IIrmORfrctP2711FEZ6zW4Wx",
+          "domain": "google.com",
+          "website_name": "TechCrunch",
+          "description": "Apr 15, 2026 \u2014 The SDK's new capabilities include a sandboxing ability, which allows the agents to operate in controlled computer environments. This is\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 7,
+          "title": "OpenAI Agents SDK with local LLM",
+          "url": "https://google.com/goto?url=CAEShgEB6zswFZ4Iy6lwWYJBYIVz6bzpFCo_rbRb3THRjvJRTASqeWEeu74R92AMsa1njiKLeaIkygMuT8CVMB1uV_kYq1fX4MMNa-X9is0T0EEVmh7B5HYicvXBBACbR0c75uD4ZECciAQJogNgX_hN_KlkWvWT1YeelwJFAt06nKSb5B-ATvSS2g",
+          "domain": "medium.com",
+          "website_name": "Medium\u00a0\u00b7\u00a0Shamim Bhuiyan",
+          "description": "The OpenAI Agents SDK is a Python-based framework designed for building production-ready AI agent applications. It provides a streamlined\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_ugc"
+        },
+        {
+          "position": 8,
+          "title": "OpenAI Agents SDK: Getting Started - GetStream.io",
+          "url": "https://google.com/goto?url=CAESZwHrOzAVB7dM6c1nj1vODlx69PRHx042Mjee5VdCZBCQ8KJ-Uf5XVXg2wuiwUEMwxounJBN_w8MHMlDWGgwSBhwByhyL-LZPtl7brY3MrL2-HXMKVRjLxaijJtK52jG-Plp9c6PvUGk",
+          "domain": "google.com",
+          "website_name": "getstream.io",
+          "description": "Mar 17, 2025 \u2014 The latest open-source SDK provides developers a robust toolkit for building and deploying AI agents. more complex use cases.",
+          "url_obfuscated": true,
+          "content_type": "tutorial"
+        },
+        {
+          "position": 10,
+          "title": "Building AI Agents with OpenAI SDK | by Sweety Tripathi",
+          "url": "https://google.com/goto?url=CAESlQEB6zswFcma0Nkij_ZesqijohCJC7cNXQlVH6vTm9Z8rQ7FetOsf08NQ9KUjHkhtrPRynPmzf5cNeuW4WgvF1mxPjGc1hx_YXJlT0Hzsyy_tYBKy_zfIYgIOXs_xpDEP0Z_oammGNpNbqr4GthK7DcSkNHRSNdAXogSgETgPPosGNE4AHYeMQlU8RQYD_K1Rw0QCUt05g",
+          "domain": "medium.com",
+          "website_name": "Medium\u00a0\u00b7\u00a0Sweety Tripathi",
+          "description": "The OpenAI Agents SDK makes it much easier to build smart AI assistants that can think, use tools, and work together. Instead of just giving\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_ugc"
+        }
+      ],
+      "ai_overview_refs": [],
+      "paa": [
+        "How do I create a Python SDK?",
+        "What does OpenAI SDK do?",
+        "What are API agents?",
+        "What are the 5 types of agent in AI?"
+      ],
+      "related_searches": [
+        "Openai agents sdk github",
+        "OpenAI Agents SDK Python",
+        "OpenAI Agents SDK Temporal",
+        "Openai agents sdk tutorial",
+        "Building agents with OpenAI Agents SDK PDF",
+        "Openai agents sdk example",
+        "Azure OpenAI Agents SDK",
+        "OpenAI Agents SDK local model"
+      ],
+      "official_hits": [],
+      "task_cost_usd": 0.002
+    },
+    "openai agentkit": {
+      "datetime": "2026-11-03 11:56:10 +00:00",
+      "item_types": [
+        "ai_overview",
+        "organic",
+        "video",
+        "related_searches"
+      ],
+      "type_counts": {
+        "organic": 8,
+        "ai_overview": 1,
+        "video": 1,
+        "related_searches": 1
+      },
+      "ai_overview": true,
+      "openma_present": false,
+      "organics": [
+        {
+          "position": 1,
+          "title": "OpenAI AgentKit is Here: A step-by-step guide | by Christie C.",
+          "url": "https://google.com/goto?url=CAESlQEB6zswFVRbrAR6hzTqsO01wJNHAMKdtjFeEt2T6f28QRoA4XT2wgQNp4WeYUX4Lhv9Or6UXnBA6qwNkCAN8IHw3zUqtxbnaUpXUK6AXFueJ4udMwr13kxV6jlIFLlKAUYFgesUKLnvZklSg8iSogmdfKhuKLq9BeHJgzDPjyb-WAkbOaPEEmrRuCLSFsE8YmvuZJfI3w",
+          "domain": "medium.com",
+          "website_name": "Medium\u00a0\u00b7\u00a0Christie C.",
+          "description": "It's OpenAI's new end-to-end toolkit designed for building, deploying, and optimizing agents \u2014 complete with a visual builder, a connector\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "blog_ugc"
+        },
+        {
+          "position": 4,
+          "title": "Can Non\u2011Developers Use OpenAI AgentKit? A Practical ...",
+          "url": "https://google.com/goto?url=CAESigEB6zswFa7YTkDiD96Fvsj4bnI9-jofMNs0o2bxq0A0IQxoEViuo0p_Jyc38PCgme4kyFj9ODC0lWYL46gHsPo8z0Lacj9VyHU1EmBoVsV63e8xyp7quuiiLplNCZY7PLfEpqlxK2m6pI7ln3MiueZRrck_SnuiitRJZMn5ZRIZQVZA-nJYnBXUh5Y",
+          "domain": "google.com",
+          "website_name": "Skywork.ai",
+          "description": "Oct 7, 2025 \u2014 OpenAI's AgentKit aims to reduce friction between idea and execution. This guide helps you assess feasibility and complete a minimal, low-code\u00a0...",
+          "url_obfuscated": true,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 5,
+          "title": "OpenAI AgentKit workflow demo : r/AI_Agents",
+          "url": "https://google.com/goto?url=CAESjQEB6zswFfhS5D6o713PLi1XC8VU6g15YuS_1wUj68RxlJFe7PL1Oq0TIpbwOI-iXpiFkE6laMfBPdpB6_UfMB6BiyVJs7kM3HZvuV1owNOc2cRA74YDEvv-RdjzA-3ouTtoCvkkz4vjQUMCMucDuUBGDdwRr75kHoQJaTi7nsTDKCVWeb1WYmxYKH8y3ag",
+          "domain": "reddit.com",
+          "website_name": "Reddit\u00a0\u00b7\u00a0r/AI_Agents",
+          "description": "OpenAI AgentKit workflow demo. Tutorial. Just uploaded the youtube video doing a walkthrough, and built a workflow. Check it out if anyone's\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "reddit"
+        },
+        {
+          "position": 6,
+          "title": "Einf\u00fchrung von AgentKit, neuen Evals und RFT f\u00fcr Agents",
+          "url": "https://google.com/goto?url=CAESbwHrOzAVKb0ZZ5zk4g71epNNO_Y__g9bI9K5gN2WfWehKCceBhn6eddC34iuNqYFLMEqqLMWPv0GJUyuziEXxX7N_NwJYAXK5zpj3XazOVv1GLnhGx07q_Tfw8aAuw8NRJxckal4Z8KjV6j0KAsUSQ",
+          "domain": "openai.com",
+          "website_name": "OpenAI",
+          "description": "Oct 6, 2025 \u2014 Heute starten wir AgentKit, ein vollst\u00e4ndiges Set an Tools f\u00fcr Entwickler und Unternehmen, um Agents zu entwickeln, bereitzustellen und zu\u00a0... Read more",
+          "url_obfuscated": true,
+          "content_type": "official"
+        },
+        {
+          "position": 7,
+          "title": "Top Use Cases of OpenAI AgentKit in 2025",
+          "url": "https://skywork.ai/blog/ai-agent/agentkit-use-cases-2025",
+          "domain": "skywork.ai",
+          "website_name": "Skywork.ai",
+          "description": "Oct 7, 2025 \u2014 OpenAI AgentKit moved agentic apps from prototype to production by bundling a visual workflow canvas, embeddable chat UI, governance, and\u00a0...",
+          "url_obfuscated": false,
+          "content_type": "blog_vendor"
+        },
+        {
+          "position": 8,
+          "title": "AgentBuilder: A Novelty or A Tool? - API",
+          "url": "https://community.openai.com/t/agentbuilder-a-novelty-or-a-tool/1361895",
+          "domain": "community.openai.com",
+          "website_name": "OpenAI Developer Community",
+          "description": "Oct 10, 2025 \u2014 Hey everyone. As many, I have been digging into the recent developer releases: AgentKit + ChatKit. AgentBuilder looks great: a great medium",
+          "url_obfuscated": false,
+          "content_type": "official"
+        },
+        {
+          "position": 9,
+          "title": "OpenAI Just Changed AI Development Forever with AgentKit",
+          "url": "https://google.com/goto?url=CAESZgHrOzAVPJuTtBiEobRkmibz7cFvaHa_kdgTjsGiT33PG9fo7VpbQUt9B_h7IhwdBI4aiYbefv0evYGBkcSfk4jop6-cfLg4l4Lt1-tl37eAM6Zzath2ilx6V80JnWochIAS3pRjiA",
+          "domain": "youtube.com",
+          "website_name": "YouTube\u00a0\u00b7\u00a0Siddhardhan",
+          "description": "OpenAI just launched AgentKit \u2014 a complete toolkit to build, deploy, and optimize AI agents visually! In this video, I'll show you how to\u00a0...",
+          "url_obfuscated": true,
+          "content_type": "youtube"
+        },
+        {
+          "position": 10,
+          "title": "OpenAI Agent Builder - Cobus Greyling - Medium",
+          "url": "https://cobusgreyling.medium.com/openai-agent-builder-9da01ae73e84",
+          "domain": "cobusgreyling.medium.com",
+          "website_name": "Medium\u00a0\u00b7\u00a0Cobus Greyling",
+          "description": "OpenAI launched their visual Agent Builder, which is a flow builder to create agentic applications or orchestrate multiple AI Agents in one\u00a0... Read more",
+          "url_obfuscated": false,
+          "content_type": "blog_ugc"
+        }
+      ],
+      "ai_overview_refs": [],
+      "paa": [],
+      "related_searches": [
+        "Openai agentkit free",
+        "Openai agentkit github",
+        "Openai agentkit download",
+        "OpenAI ADK",
+        "Openai agent rft",
+        "OpenAI agent workspace",
+        "OpenAI orchestration framework",
+        "Openai chatbot builder"
+      ],
+      "official_hits": [
+        {
+          "position": 6,
+          "domain": "openai.com",
+          "title": "Einf\u00fchrung von AgentKit, neuen Evals und RFT f\u00fcr Agents",
+          "via": "organic"
+        },
+        {
+          "position": 8,
+          "domain": "community.openai.com",
+          "title": "AgentBuilder: A Novelty or A Tool? - API",
+          "via": "organic"
+        }
+      ],
+      "task_cost_usd": 0.002
+    }
+  },
+  "competitor_keywords_openai": [
+    {
+      "keyword": "openai agent builder",
+      "search_volume": 5400,
+      "cpc": 26.53,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agent sdk",
+      "search_volume": 4400,
+      "cpc": 26.72,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk",
+      "search_volume": 4400,
+      "cpc": 26.72,
+      "competition_level": null,
+      "source": "labs_related_seed",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agentkit",
+      "search_volume": 1600,
+      "cpc": 40.4,
+      "competition_level": null,
+      "source": "labs_related_seed",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agent kit",
+      "search_volume": 1000,
+      "cpc": 24.02,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agents api",
+      "search_volume": 480,
+      "cpc": 31.11,
+      "competition_level": null,
+      "source": "labs_related_seed",
+      "serp_ownership": "OpenAI Developers ranks high; product naming overlaps Agents SDK / Responses API"
+    },
+    {
+      "keyword": "openai frontier platform",
+      "search_volume": 320,
+      "cpc": 18.78,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "chatgpt agentkit",
+      "search_volume": 210,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agents sdk typescript",
+      "search_volume": 110,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents-python",
+      "search_volume": 110,
+      "cpc": 89.08,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "openai/agents sdk typescript",
+      "search_volume": 110,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agent platform",
+      "search_volume": 70,
+      "cpc": 21.03,
+      "competition_level": "MEDIUM",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "openai agent sdk documentation",
+      "search_volume": 70,
+      "cpc": 29.04,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk documentation",
+      "search_volume": 70,
+      "cpc": 29.04,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk github",
+      "search_volume": 70,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk python",
+      "search_volume": 70,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai-agents sdk github",
+      "search_volume": 70,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agent sdk typescript",
+      "search_volume": 40,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk js",
+      "search_volume": 40,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk skills",
+      "search_volume": 40,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai/agents sdk js",
+      "search_volume": 40,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk vs langgraph",
+      "search_volume": 30,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "agent sdk typescript",
+      "search_volume": 20,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "npm openai/agents",
+      "search_volume": 20,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "openai agent sdk skills",
+      "search_volume": 20,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agentkit github",
+      "search_volume": 20,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agentkit pricing",
+      "search_volume": 20,
+      "cpc": 5.27,
+      "competition_level": "MEDIUM",
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "pip install openai agents",
+      "search_volume": 20,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related"
+    },
+    {
+      "keyword": "openai agent sdk java",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agentkit download",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": "HIGH",
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agentkit free",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": null,
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agentkit reddit",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": null,
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agentkit tutorial",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": null,
+      "source": "labs_related",
+      "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+    },
+    {
+      "keyword": "openai agents sdk human-in the-loop",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk java",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk pricing",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": "LOW",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk tutorial",
+      "search_volume": 10,
+      "cpc": 21.35,
+      "competition_level": "MEDIUM",
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    },
+    {
+      "keyword": "openai agents sdk typescript github",
+      "search_volume": 10,
+      "cpc": null,
+      "competition_level": null,
+      "source": "labs_related",
+      "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+    }
+  ],
+  "volume_snapshot": {
+    "openai agents api": 480,
+    "openai agents sdk / agent sdk": 4400,
+    "openai agentkit": 1600,
+    "openai agent builder": 5400,
+    "claude managed agents": 9900,
+    "note": "Volumes from DataForSEO Labs related_keywords seed/items US/en; not invented"
+  },
+  "openma_present_any": false,
+  "gap_briefs_outlines_only": [
+    {
+      "priority": 1,
+      "slug": "/blog/openai-agents-sdk",
+      "h1": "OpenAI Agents SDK: What It Is and When You Need a Managed Runtime",
+      "meta_title": "OpenAI Agents SDK Explained | OpenMA",
+      "meta_description": "SDK vs hosted Agents API/AgentKit \u2014 durability, multi-model, production runtime gap.",
+      "outline": [
+        "SDK scope (tools, handoffs, tracing)",
+        "vs Agents API / AgentKit naming",
+        "Durable execution note (Temporal partnership on SERP)",
+        "OpenMA angle: model-agnostic managed runtime"
+      ],
+      "target_keywords": [
+        "openai agents sdk",
+        "openai agent sdk"
+      ]
+    },
+    {
+      "priority": 2,
+      "slug": "/blog/openai-agents-api",
+      "h1": "OpenAI Agents API vs Managed Agent Platforms",
+      "meta_title": "OpenAI Agents API | OpenMA",
+      "meta_description": "What the Agents API is (Codex harness) and gaps vs multi-model managed agents.",
+      "outline": [
+        "Product definition from launch coverage",
+        "Migration/cost/data-control themes from SERP reviews",
+        "Compare to CMA and OpenMA"
+      ],
+      "target_keywords": [
+        "openai agents api"
+      ]
+    },
+    {
+      "priority": 3,
+      "slug": "/blog/openai-agentkit",
+      "h1": "OpenAI AgentKit / Agent Builder: Visual Agents Without Lock-In Panic",
+      "meta_title": "OpenAI AgentKit Overview | OpenMA",
+      "meta_description": "AgentKit vs Agents SDK vs model-agnostic platforms.",
+      "outline": [
+        "AgentKit = builder+evals toolkit",
+        "Non-dev use cases on SERP",
+        "When teams outgrow OpenAI-only stack"
+      ],
+      "target_keywords": [
+        "openai agentkit",
+        "openai agent builder"
+      ]
+    }
+  ]
+}

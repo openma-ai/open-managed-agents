@@ -1,0 +1,888 @@
+{
+  "version": 1,
+  "title": "Competitor keyword sets \u2014 Anthropic CMA / OpenAI Agents / LangChain positioning",
+  "generated_at_utc": "2026-11-03T11:59:19Z",
+  "session_id": "ses_ed2808ac-c28f-4fb5-9299-644c6319a8e2",
+  "methodology": "Live Google organic SERP advanced (US/en) + Labs related_keywords volumes. keywords_for_site(langchain.com) attempted but discarded (noise). No invented volumes. openma.ai absent on all pulled SERPs.",
+  "volume_contrast": {
+    "claude managed agents": 9900,
+    "openai agent builder": 5400,
+    "openai agents sdk": 4400,
+    "openai agentkit": 1600,
+    "openai agents api": 480,
+    "claude managed agents pricing": 260,
+    "model-agnostic agent platform": null,
+    "durable AI agents": null,
+    "unit": "Google Ads-based monthly search volume via DataForSEO Labs related_keywords, location US"
+  },
+  "competitors": {
+    "anthropic_claude_managed_agents": {
+      "domains": [
+        "anthropic.com",
+        "claude.com",
+        "platform.claude.com"
+      ],
+      "owns_organic_1_for_seed": false,
+      "aio_official": true,
+      "keywords": [
+        {
+          "keyword": "claude managed agents",
+          "search_volume": 9900,
+          "cpc": 3.55,
+          "competition_level": null,
+          "source": "labs_related_seed",
+          "serp_ownership": "Anthropic owns AI Overview refs (platform.claude.com + claude.com) but organic #1-ish is Reddit/UGC; official not clear organic #1"
+        },
+        {
+          "keyword": "claude managed agents pricing",
+          "search_volume": 260,
+          "cpc": 4.2,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "claude managed agents overview",
+          "search_volume": 30,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "claude managed agents reddit",
+          "search_volume": 30,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "claude managed agents vs openclaw",
+          "search_volume": 30,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "claude managed agents examples",
+          "search_volume": 10,
+          "cpc": 7.96,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "claude managed agents login",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "claude managed agents on aws",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "Anthropic pricing plans",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude Code pricing 20x",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude Managed Agents demo",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude Managed Agents dreaming",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude Managed Agents login",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude Managed Agents pricing",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude Managed Agents vs OpenClaw",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude managed agents alternative free",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "OSS/GitHub/TrueFoundry/comparisons dominate; Anthropic absent"
+        },
+        {
+          "keyword": "Claude managed agents alternative github",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "OSS/GitHub/TrueFoundry/comparisons dominate; Anthropic absent"
+        },
+        {
+          "keyword": "Claude managed agents alternative reddit",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "OSS/GitHub/TrueFoundry/comparisons dominate; Anthropic absent"
+        },
+        {
+          "keyword": "Claude managed agents example",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude managed agents examples",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude managed agents pricing calculator",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude managed agents pricing reddit",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude managed agents reddit",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude managed agents reviews",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Claude pricing 5x",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude pricing Pro",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude pricing plans yearly",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "Claude subscription pricing",
+          "search_volume": null,
+          "source": "serp_related_searches",
+          "serp_ownership": "Third-party pricing blogs (TrueFoundry etc.); Anthropic weak on exact \"managed agents pricing\" organic"
+        },
+        {
+          "keyword": "How to use Claude Managed Agents",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Multica agents",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Open Managed Agents",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Open managed agents github",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        }
+      ],
+      "serp_winner_domains_seed": [
+        "reddit.com",
+        "medium.com",
+        "google.com",
+        "google.com",
+        "news.ycombinator.com",
+        "google.com",
+        "youtube.com",
+        "truefoundry.com"
+      ],
+      "content_types": {
+        "reddit": 1,
+        "blog_ugc": 2,
+        "blog_vendor": 2,
+        "forum_hn": 1,
+        "youtube": 1,
+        "pricing": 1
+      }
+    },
+    "openai_agents_api_sdk_agentkit": {
+      "domains": [
+        "openai.com",
+        "platform.openai.com",
+        "community.openai.com"
+      ],
+      "notes": "Naming cluster: Agents SDK (vol 4400) >> AgentKit (1600) >> Agents API (480). Agent Builder (5400) is largest adjacent.",
+      "keywords": [
+        {
+          "keyword": "openai agent builder",
+          "search_volume": 5400,
+          "cpc": 26.53,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agent sdk",
+          "search_volume": 4400,
+          "cpc": 26.72,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk",
+          "search_volume": 4400,
+          "cpc": 26.72,
+          "competition_level": null,
+          "source": "labs_related_seed",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agentkit",
+          "search_volume": 1600,
+          "cpc": 40.4,
+          "competition_level": null,
+          "source": "labs_related_seed",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agent kit",
+          "search_volume": 1000,
+          "cpc": 24.02,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agents api",
+          "search_volume": 480,
+          "cpc": 31.11,
+          "competition_level": null,
+          "source": "labs_related_seed",
+          "serp_ownership": "OpenAI Developers ranks high; product naming overlaps Agents SDK / Responses API"
+        },
+        {
+          "keyword": "openai frontier platform",
+          "search_volume": 320,
+          "cpc": 18.78,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "chatgpt agentkit",
+          "search_volume": 210,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agents sdk typescript",
+          "search_volume": 110,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents-python",
+          "search_volume": 110,
+          "cpc": 89.08,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "openai/agents sdk typescript",
+          "search_volume": 110,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agent platform",
+          "search_volume": 70,
+          "cpc": 21.03,
+          "competition_level": "MEDIUM",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "openai agent sdk documentation",
+          "search_volume": 70,
+          "cpc": 29.04,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk documentation",
+          "search_volume": 70,
+          "cpc": 29.04,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk github",
+          "search_volume": 70,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk python",
+          "search_volume": 70,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai-agents sdk github",
+          "search_volume": 70,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agent sdk typescript",
+          "search_volume": 40,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk js",
+          "search_volume": 40,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk skills",
+          "search_volume": 40,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai/agents sdk js",
+          "search_volume": 40,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk vs langgraph",
+          "search_volume": 30,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "agent sdk typescript",
+          "search_volume": 20,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "npm openai/agents",
+          "search_volume": 20,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "openai agent sdk skills",
+          "search_volume": 20,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agentkit github",
+          "search_volume": 20,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agentkit pricing",
+          "search_volume": 20,
+          "cpc": 5.27,
+          "competition_level": "MEDIUM",
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "pip install openai agents",
+          "search_volume": 20,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related"
+        },
+        {
+          "keyword": "openai agent sdk java",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agentkit download",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": "HIGH",
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agentkit free",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": null,
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agentkit reddit",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": null,
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agentkit tutorial",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": null,
+          "source": "labs_related",
+          "serp_ownership": "AgentKit SERP: Medium/UGC + some openai.com; builder phrase high volume"
+        },
+        {
+          "keyword": "openai agents sdk human-in the-loop",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk java",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk pricing",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": "LOW",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk tutorial",
+          "search_volume": 10,
+          "cpc": 21.35,
+          "competition_level": "MEDIUM",
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        },
+        {
+          "keyword": "openai agents sdk typescript github",
+          "search_volume": 10,
+          "cpc": null,
+          "competition_level": null,
+          "source": "labs_related",
+          "serp_ownership": "High volume; OpenAI docs appear on \"agents api\"; SDK SERP dominated by DataCamp/Temporal/tutorials \u2014 OpenAI official mixed"
+        }
+      ],
+      "serp_winner_domains": {
+        "openai agents api": [
+          "openai.com",
+          "github.com",
+          "google.com",
+          "google.com",
+          "google.com",
+          "youtube.com",
+          "www.youtube.com"
+        ],
+        "openai agents sdk": [
+          "google.com",
+          "temporal.io",
+          "google.com",
+          "medium.com",
+          "google.com",
+          "medium.com"
+        ],
+        "openai agentkit": [
+          "medium.com",
+          "google.com",
+          "reddit.com",
+          "openai.com",
+          "skywork.ai",
+          "community.openai.com",
+          "youtube.com",
+          "cobusgreyling.medium.com"
+        ]
+      }
+    },
+    "langchain_model_agnostic_positioning": {
+      "domains": [
+        "langchain.com",
+        "python.langchain.com",
+        "js.langchain.com",
+        "blog.langchain.com",
+        "docs.langchain.com"
+      ],
+      "contact_sales_phrase": "Model-Agnostic Agent Platform",
+      "exact_phrase_serp_owns": false,
+      "keywords": [
+        {
+          "keyword": "model-agnostic agent platform",
+          "search_volume": null,
+          "source": "user_seed_langchain_contact_sales",
+          "serp_ownership": "Phrase has NO Labs related volume; SERP is generic no-code/agent-platform roundups \u2014 langchain.com NOT in top organic for exact phrase",
+          "note": "From LangChain contact-sales positioning, not a proven demand keyword"
+        },
+        {
+          "keyword": "model agnostic agents",
+          "search_volume": null,
+          "source": "variant",
+          "serp_ownership": "Labs related empty"
+        },
+        {
+          "keyword": "langchain agents platform",
+          "search_volume": null,
+          "source": "variant",
+          "serp_ownership": "Labs related empty"
+        },
+        {
+          "keyword": "langchain",
+          "search_volume": null,
+          "source": "brand_inferred",
+          "serp_ownership": "Not pulled this run \u2014 brand demand exists elsewhere; skipped Ads dump"
+        },
+        {
+          "keyword": "langgraph",
+          "search_volume": null,
+          "source": "brand_inferred",
+          "note": "Common agent-orchestration associate; volume not pulled this run"
+        },
+        {
+          "keyword": "Model agnostic agent platform github",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        },
+        {
+          "keyword": "Model agnostic agent platform review",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        },
+        {
+          "keyword": "Model agnostic agent platform reddit",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        },
+        {
+          "keyword": "Best free AI agent platform",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        },
+        {
+          "keyword": "Best AI agent builder platform",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        },
+        {
+          "keyword": "Free AI agent builder no-code",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        },
+        {
+          "keyword": "Best no-code AI agent builder",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        },
+        {
+          "keyword": "AI agent builder platforms",
+          "search_volume": null,
+          "source": "serp_related_searches_model_agnostic"
+        }
+      ],
+      "serp_winner_domains_model_agnostic": [
+        "medium.com",
+        "reddit.com",
+        "google.com",
+        "google.com",
+        "openai.com",
+        "pickaxe.co",
+        "medium.com",
+        "google.com"
+      ],
+      "kfs_attempt": "post_dataforseo_labs_google_kw_for_site_live target=langchain.com limit=50 \u2014 returned unrelated head terms (conec/ao3/ai); NOT used"
+    },
+    "durable_agents_adjacent": {
+      "leader_on_serp": "temporal.io",
+      "also": [
+        "Microsoft Azure Durable Task",
+        "Mastra",
+        "Pydantic",
+        "Inngest",
+        "Diagrid"
+      ],
+      "keywords": [
+        {
+          "keyword": "durable AI agents",
+          "search_volume": null,
+          "source": "user_seed",
+          "serp_ownership": "Temporal.io leads organic; also Azure Durable Task, Mastra, Pydantic, Inngest \u2014 Labs related EMPTY (no Ads volume in related)"
+        },
+        {
+          "keyword": "durable agents",
+          "search_volume": null,
+          "source": "variant",
+          "serp_ownership": "Labs related empty"
+        },
+        {
+          "keyword": "agent durability",
+          "search_volume": null,
+          "source": "variant",
+          "serp_ownership": "Labs related empty"
+        },
+        {
+          "keyword": "Durable ai agents github",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Durable ai agents template",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Durable ai agents examples",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Durable ai agents framework",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Durable agents",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Durable Task extension for Microsoft Agent Framework",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Durable Task hub",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        },
+        {
+          "keyword": "Temporal durable agent",
+          "search_volume": null,
+          "source": "serp_related_searches"
+        }
+      ],
+      "labs_related_volume": "empty for durable AI agents / durable agents / agent durability"
+    }
+  },
+  "openma_presence": "none on any SERP pulled",
+  "top_page_briefs_by_cluster": {
+    "cma": [
+      {
+        "priority": 1,
+        "slug": "/blog/claude-managed-agents-alternative",
+        "h1": "Claude Managed Agents Alternative: Model-Agnostic Managed Agents",
+        "meta_title": "Claude Managed Agents Alternative | OpenMA",
+        "meta_description": "Compare Claude Managed Agents vs self-host / multi-model managed agents. OpenMA positioning vs Anthropic-hosted runtime.",
+        "outline": [
+          "What Claude Managed Agents is (hosted harness, sandbox, session)",
+          "Who it is for / lock-in (Claude-only, Anthropic cloud)",
+          "Decision table: CMA vs OpenMA vs OSS open-managed-agents vs TrueFoundry",
+          "Pricing shape (session-hour + tokens) \u2014 link to pricing spoke",
+          "Migration / when to stay on CMA"
+        ],
+        "hub_spoke": "spoke under hub /ai-agent-platform or /managed-agents",
+        "target_keywords": [
+          "claude managed agents alternative",
+          "claude managed agents vs openclaw"
+        ]
+      },
+      {
+        "priority": 2,
+        "slug": "/blog/claude-managed-agents-pricing",
+        "h1": "Claude Managed Agents Pricing Explained (and Cheaper Paths)",
+        "meta_title": "Claude Managed Agents Pricing (2026) | OpenMA",
+        "meta_description": "Break down CMA session + token costs vs self-host and multi-model managed agents.",
+        "outline": [
+          "Official cost components (as publicly described)",
+          "Hidden costs (idle, tools, retries)",
+          "Worked example monthly",
+          "OpenMA / OSS cost contrast (outline only)"
+        ],
+        "hub_spoke": "spoke",
+        "target_keywords": [
+          "claude managed agents pricing"
+        ]
+      },
+      {
+        "priority": 3,
+        "slug": "/blog/claude-managed-agents",
+        "h1": "Claude Managed Agents: What It Is, Limits, and When to Use Something Else",
+        "meta_title": "Claude Managed Agents Overview | OpenMA",
+        "meta_description": "Plain-English overview of Anthropic Claude Managed Agents \u2014 docs map, limits, vs Agent SDK vs alternatives.",
+        "outline": [
+          "Definition + official docs map",
+          "Managed Agents vs Claude Agent SDK",
+          "Limits (model lock-in, data residency)",
+          "CTA: alternative / pricing spokes"
+        ],
+        "hub_spoke": "hub page for CMA cluster",
+        "target_keywords": [
+          "claude managed agents",
+          "claude managed agents overview"
+        ]
+      }
+    ],
+    "openai": [
+      {
+        "priority": 1,
+        "slug": "/blog/openai-agents-sdk",
+        "h1": "OpenAI Agents SDK: What It Is and When You Need a Managed Runtime",
+        "meta_title": "OpenAI Agents SDK Explained | OpenMA",
+        "meta_description": "SDK vs hosted Agents API/AgentKit \u2014 durability, multi-model, production runtime gap.",
+        "outline": [
+          "SDK scope (tools, handoffs, tracing)",
+          "vs Agents API / AgentKit naming",
+          "Durable execution note (Temporal partnership on SERP)",
+          "OpenMA angle: model-agnostic managed runtime"
+        ],
+        "target_keywords": [
+          "openai agents sdk",
+          "openai agent sdk"
+        ]
+      },
+      {
+        "priority": 2,
+        "slug": "/blog/openai-agents-api",
+        "h1": "OpenAI Agents API vs Managed Agent Platforms",
+        "meta_title": "OpenAI Agents API | OpenMA",
+        "meta_description": "What the Agents API is (Codex harness) and gaps vs multi-model managed agents.",
+        "outline": [
+          "Product definition from launch coverage",
+          "Migration/cost/data-control themes from SERP reviews",
+          "Compare to CMA and OpenMA"
+        ],
+        "target_keywords": [
+          "openai agents api"
+        ]
+      },
+      {
+        "priority": 3,
+        "slug": "/blog/openai-agentkit",
+        "h1": "OpenAI AgentKit / Agent Builder: Visual Agents Without Lock-In Panic",
+        "meta_title": "OpenAI AgentKit Overview | OpenMA",
+        "meta_description": "AgentKit vs Agents SDK vs model-agnostic platforms.",
+        "outline": [
+          "AgentKit = builder+evals toolkit",
+          "Non-dev use cases on SERP",
+          "When teams outgrow OpenAI-only stack"
+        ],
+        "target_keywords": [
+          "openai agentkit",
+          "openai agent builder"
+        ]
+      }
+    ],
+    "model_agnostic": [
+      {
+        "slug": "/blog/model-agnostic-agent-platform",
+        "h1": "Model-Agnostic Agent Platform: Why Model Lock-In Breaks Production Agents",
+        "meta_title": "Model-Agnostic Agent Platform | OpenMA",
+        "meta_description": "What \u201cmodel-agnostic agent platform\u201d means vs Claude-only or OpenAI-only stacks (LangChain sales language \u2192 OpenMA positioning).",
+        "outline": [
+          "Define model-agnostic runtime vs framework (LangChain) vs hosted single-vendor (CMA/OpenAI)",
+          "Buyer pains from SERP: no-code builders, multi-model, vendor lock-in",
+          "Comparison table: LangChain/LangGraph vs CMA vs OpenAI Agents vs OpenMA",
+          "CTA"
+        ],
+        "note": "Exact phrase has no Labs volume \u2014 treat as positioning/category page, support with higher-volume CMA/OpenAI spokes"
+      }
+    ],
+    "durable": [
+      {
+        "slug": "/blog/durable-ai-agents",
+        "h1": "Durable AI Agents: State, Retries, and Production Runtimes",
+        "meta_title": "Durable AI Agents | OpenMA",
+        "meta_description": "What durable agents means (Temporal/Azure/Inngest pattern) and how managed agent platforms should expose durability.",
+        "outline": [
+          "Definition from Temporal/Azure SERP winners",
+          "Failure modes agents hit without durability",
+          "OpenMA durability checklist",
+          "Link CMA/OpenAI comparison"
+        ],
+        "note": "No Labs volume on exact seeds \u2014 Temporal owns educational SERP; use as spoke/thought-leadership not primary money page"
+      }
+    ]
+  },
+  "files_companion": [
+    "/workspace/oma-seo-cluster/serp-claude-managed-agents-2026-11-03.json",
+    "/workspace/oma-seo-cluster/serp-claude-managed-agents-2026-11-03.md",
+    "/workspace/oma-seo-cluster/serp-openai-agents-api-2026-11-03.json",
+    "/workspace/oma-seo-cluster/serp-openai-agents-api-2026-11-03.md"
+  ]
+}
