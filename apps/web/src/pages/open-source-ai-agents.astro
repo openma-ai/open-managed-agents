@@ -1,0 +1,204 @@
+---
+import Base from "../layouts/Base.astro";
+import ComparisonTable from "../components/ComparisonTable.astro";
+import FaqSection from "../components/FaqSection.astro";
+import RelatedGuides from "../components/RelatedGuides.astro";
+import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+
+const layerRows = [
+  ["Agent platform / managed runtime", "Runs agents as a service: API, durable sessions, sandboxes, event log, credentials, recovery", "You call it; it operates the agents"],
+  ["Agent harness", "The loop around a model: context, tool calls, compaction", "Embedded in a runtime or your app"],
+  ["Framework / library", "Primitives to express agent logic (graphs, roles, conversations)", "You build and host the platform around it"],
+  ["Coding agent", "An agent a developer drives to change software", "Developer tool; can run inside a runtime"],
+];
+
+const comparisonRows = [
+  ["OpenMA", "Orchestration / managed runtime", "Yes — agents, environments, sessions, events, vaults, memory stores", "Apache 2.0; multi-model; Claude Managed Agents and OpenAI Agents API compatible endpoints"],
+  ["TrueForge", "Agent harness", "Partial — harness-centric", "TrueFoundry's vendor-neutral harness, positioned as a CMA alternative"],
+  ["AX (Agent Executor)", "Orchestration runtime", "Task / workspace / gateway primitives", "Google's open agentic orchestration runtime for large agent workloads"],
+  ["Omnara", "Managed agent platform", "Yes, per vendor", "Positions itself as an open-source managed agent platform"],
+  ["OpenHands", "Coding agent (labeled)", "No — software-engineering agent", "Open-source coding agent; compare with Claude Code, not with runtimes"],
+  ["LangGraph / CrewAI / AutoGen", "Frameworks", "No — you assemble it", "Mature libraries for graphs, roles, and multi-agent conversations"],
+];
+
+const criteriaRows = [
+  ["Sessions", "Durable, resumable, survive process crashes"],
+  ["Sandboxes", "Tools run isolated from the API process; provider is replaceable"],
+  ["Multi-model", "Model is per-agent configuration, not a fork of the runtime"],
+  ["Self-host", "The whole control plane runs on your infrastructure without a license gate"],
+  ["Credentials", "Secrets are injected outside the sandbox"],
+  ["API", "A stable HTTP API with streaming, so any language can be a client"],
+];
+
+const faqItems = [
+  {
+    question: "What are open-source AI agents?",
+    answer:
+      "Agent software whose source is published under an open license. The term spans complete agent platforms, harnesses, frameworks, and coding agents — so compare projects within the same category.",
+  },
+  {
+    question: "What is the best open-source AI agent platform?",
+    answer:
+      "The one that meets the runtime criteria you need: durable sessions, isolated sandboxes, multi-model support, credential isolation, and self-hosting without a license gate. OpenMA is built to that bar; frameworks such as LangGraph or CrewAI are libraries you would build a platform around.",
+  },
+  {
+    question: "Is LangGraph an agent platform?",
+    answer:
+      "LangGraph is a framework for agent logic. A hosted runtime is offered separately by LangChain. On its own, it does not provide sandboxes, vaults, or an operator console.",
+  },
+  {
+    question: "Are open-source agents free?",
+    answer:
+      "The software is free to use under its license. You still pay for model usage, compute, and the time to operate it.",
+  },
+];
+
+const relatedLinks = [
+  { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "Buyers comparing Anthropic-hosted agents with open runtimes." },
+  { href: "/open-source-managed-agents/", anchor: "Open-source managed agents", note: "Shortlist of open runtimes with the managed-agent shape." },
+  { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Run agents on your own infrastructure." },
+  { href: "/ai-agent-platform/", anchor: "AI agent platform & orchestration", note: "The primitives behind an agent platform." },
+  { href: "/blog/claude-agent-sdk-vs-managed-agents/", anchor: "Claude Agent SDK", note: "SDK vs managed runtime, and when to migrate." },
+];
+
+const schemas = [
+  breadcrumbSchema([
+    { name: "Home", path: "/" },
+    { name: "Open-Source AI Agents", path: "/open-source-ai-agents/" },
+  ]),
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: "Open-Source AI Agents & Agent Platforms",
+    url: "https://openma.ai/open-source-ai-agents/",
+    description:
+      "Open-source AI agents and agent platforms compared by category: managed runtimes, harnesses, frameworks, and coding agents.",
+    about: [
+      { "@type": "Thing", name: "Open-source AI agents" },
+      { "@type": "Thing", name: "Open-source AI agent platform" },
+      { "@type": "Thing", name: "Open Managed Agents" },
+    ],
+  },
+  faqPageSchema(faqItems),
+];
+---
+
+<Base
+  title="Open-Source AI Agents & Platforms | OpenMA"
+  description="Open-source AI agents and agent platforms — managed-runtime shape, self-host, multi-model. How OpenMA fits vs frameworks."
+  canonical="/open-source-ai-agents/"
+  keywords="open source ai agents, open source ai agent platform, open-source ai agent platform, open source managed agents, best open source ai agents"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="site-container py-16 md:py-24 max-w-4xl">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        Open-source AI agents
+      </p>
+      <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-6">
+        Open-Source AI Agents &amp; Agent Platforms
+      </h1>
+      <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
+        "Open-source AI agents" lumps together very different projects:
+        complete agent platforms, harnesses, frameworks, and coding agents.
+        This guide sorts them by what they actually do, compares notable
+        projects within each category, and gives you the criteria for
+        choosing a platform you can run in production.
+      </p>
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">What "open-source AI agent platform" means</h2>
+    <h3 class="font-semibold text-xl mb-4">Platforms and managed runtimes vs libraries</h3>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+      A platform runs agents for you behind an API. A library helps you write
+      agent logic and leaves the running to you. Both are useful; they are
+      not interchangeable.
+    </p>
+    <ComparisonTable columns={["Layer", "What it does", "How you use it"]} rows={layerRows} caption="Layers of open-source agent software" />
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-4">Comparison table</h2>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+        Projects are grouped by category, not ranked. Third-party details
+        reflect each project's public positioning; check licenses and hosting
+        terms on their sites.
+      </p>
+      <ComparisonTable columns={["Project", "Category", "Managed-runtime shape", "Notes"]} rows={comparisonRows} caption="Open-source AI agent projects compared" />
+      <div class="grid md:grid-cols-3 gap-6 mt-10 text-sm">
+        <div>
+          <h3 class="font-semibold text-lg mb-2">OpenMA (orchestration / managed runtime)</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            A meta-harness: it manages sessions, sandboxes, tools, credentials,
+            and recovery around whichever harness and model you choose,
+            including Claude Code or Codex through ACP.
+          </p>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg mb-2">TrueForge, AX, Omnara</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            Each approaches the runtime layer differently — a vendor-neutral
+            harness, a declarative orchestration runtime for large workloads,
+            and a managed agent platform. Evaluate them with the criteria below.
+          </p>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg mb-2">OpenHands (coding agent)</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            A strong open-source software-engineering agent. It belongs in a
+            comparison with Claude Code and Codex, not with agent runtimes —
+            though a coding agent can run inside one.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Selection criteria</h2>
+    <h3 class="font-semibold text-xl mb-4">Sessions, sandboxes, multi-model, self-host</h3>
+    <ComparisonTable columns={["Criterion", "What good looks like"]} rows={criteriaRows} caption="Criteria for an open-source agent platform" />
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
+      If you are building on a model SDK rather than a platform, the
+      <a href="/blog/claude-agent-sdk-vs-managed-agents/">Claude Agent SDK</a> comparison shows
+      which of these you would need to add yourself. For the category view, see
+      <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a>.
+    </p>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16 grid md:grid-cols-2 gap-10 max-w-5xl">
+      <div>
+        <h2 class="font-display text-2xl font-bold mb-4">Open-source managed agents path</h2>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          If you want the "managed agents" shape popularized by Claude Managed
+          Agents and the OpenAI Agents API — but open and self-hostable — read
+          the <a href="/open-source-managed-agents/">open-source managed agents</a> shortlist, then
+          <a href="/self-hosted-ai-agents/">self-hosted AI agents</a> for deployment.
+        </p>
+      </div>
+      <div>
+        <h2 class="font-display text-2xl font-bold mb-4">Comparing with Anthropic's hosted agents</h2>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Evaluating Anthropic's hosted runtime against open options? The
+          <a href="/claude-managed-agents-alternative/">Claude Managed Agents alternative</a> guide
+          has the decision table.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-2xl font-bold mb-4">Pick a managed-runtime shape, then self-host OpenMA</h2>
+    <div class="flex flex-wrap gap-3">
+      <a href="https://docs.openma.ai/" class="site-button site-button-primary">OpenMA docs</a>
+      <a href="https://github.com/openma-ai/open-managed-agents" target="_blank" rel="noopener noreferrer" class="site-button">View on GitHub</a>
+    </div>
+  </section>
+
+  <FaqSection items={faqItems} />
+  <RelatedGuides links={relatedLinks} />
+</Base>

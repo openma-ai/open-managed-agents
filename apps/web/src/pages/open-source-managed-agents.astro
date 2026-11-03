@@ -1,0 +1,159 @@
+---
+import Base from "../layouts/Base.astro";
+import ComparisonTable from "../components/ComparisonTable.astro";
+import FaqSection from "../components/FaqSection.astro";
+import RelatedGuides from "../components/RelatedGuides.astro";
+import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+
+const criteriaRows = [
+  ["Agent resource", "Versioned agent definitions: model, prompt, tools, MCP, skills"],
+  ["Environment resource", "Declarative sandbox spec: packages, networking"],
+  ["Durable sessions", "Long-running, resumable, recover after crashes"],
+  ["Event stream", "Append-only event log streamed over SSE"],
+  ["Isolated execution", "Tools in a sandbox, not in the API process"],
+  ["Vaults", "Credentials injected outside the sandbox"],
+  ["Self-hostable control plane", "The whole runtime runs on your infrastructure"],
+];
+
+const shortlistRows = [
+  ["OpenMA", "Yes — Claude Managed Agents-compatible /v1 plus OpenAI Agents API adapter", "Yes — Node/Docker, Fly.io, Vercel (beta), Cloudflare", "Claude, OpenAI, DeepSeek, OpenRouter, custom", "Apache 2.0"],
+  ["TrueForge", "Harness-centric", "Yes, per vendor", "Multi-model", "Open source"],
+  ["Omnara", "Managed platform, per vendor", "Self-host option, per vendor", "Multi-model, per vendor", "Positions itself as open source"],
+  ["Claude Managed Agents (reference)", "Defines the shape", "No — self-hosted sandbox only", "Claude", "Proprietary"],
+];
+
+const faqItems = [
+  {
+    question: "What are managed agents?",
+    answer:
+      "A managed agent runtime runs AI agents as a service: you define agents and environments, start sessions, and stream events, while the runtime handles the loop, sandboxes, state, and recovery.",
+  },
+  {
+    question: "Is there an open-source version of Claude Managed Agents?",
+    answer:
+      "Claude Managed Agents itself is proprietary. OpenMA is an Apache 2.0 runtime that implements the same agents, environments, sessions, and events model and can be self-hosted.",
+  },
+  {
+    question: "Can open-source managed agents use Claude?",
+    answer:
+      "Yes. OpenMA runs Claude models with your Anthropic key, alongside other providers configured as Model Cards.",
+  },
+];
+
+const relatedLinks = [
+  { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "Full decision table across hosted and open options." },
+  { href: "/open-source-ai-agents/", anchor: "Open-source AI agents", note: "The wider field: platforms, harnesses, frameworks, coding agents." },
+  { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Why and how teams run agents on their own infra." },
+  { href: "/blog/claude-managed-agents-pricing/", anchor: "Claude Managed Agents pricing", note: "Model the hosted bill before choosing a path." },
+];
+
+const schemas = [
+  breadcrumbSchema([
+    { name: "Home", path: "/" },
+    { name: "Open-Source Managed Agents", path: "/open-source-managed-agents/" },
+  ]),
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: "Open-Source Managed Agents",
+    url: "https://openma.ai/open-source-managed-agents/",
+    description:
+      "Open-source managed agent runtimes compared by the managed-agents shape: agents, environments, sessions, events, sandboxes, and vaults.",
+    about: [
+      { "@type": "Thing", name: "Open-source managed agents" },
+      { "@type": "Thing", name: "Managed agents open source" },
+      { "@type": "Thing", name: "Open Managed Agents" },
+    ],
+  },
+  faqPageSchema(faqItems),
+];
+---
+
+<Base
+  title="Open-Source Managed Agents: Self-Hostable Runtimes | OpenMA"
+  description="Open-source managed agents compared: runtimes with agents, sessions, sandboxes and vaults you can self-host, with any model. Where OpenMA fits."
+  canonical="/open-source-managed-agents/"
+  keywords="open source managed agents, managed agents open source, open-source managed agents, open source claude managed agents, self hosted managed agents"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="site-container py-16 md:py-24 max-w-4xl">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        Open-source managed agents
+      </p>
+      <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-6">
+        Open-Source Managed Agents
+      </h1>
+      <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
+        Managed agents — the runtime model behind Claude Managed Agents and
+        the OpenAI Agents API — are useful precisely because someone else
+        runs the hard parts. Open-source managed agents give you the same
+        shape with the source in hand and the control plane on your own
+        infrastructure.
+      </p>
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Managed agents, open-sourced</h2>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
+      A managed agent runtime is not a framework. It exposes an HTTP API:
+      you create an agent and an environment, open a session, send a
+      message, and stream events back while the runtime runs the loop,
+      executes tools in a sandbox, persists every step, and recovers from
+      failures. Open-sourcing that layer means you can audit how credentials
+      and data are handled, run it where your data must live, and change the
+      parts that do not fit.
+    </p>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-4">Criteria for the managed-runtime shape</h2>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+        Use these as a checklist. A project missing several of them is a
+        framework or harness, which may still be the right tool — just not a
+        managed runtime.
+      </p>
+      <ComparisonTable columns={["Capability", "What to check"]} rows={criteriaRows} caption="Managed agent runtime checklist" />
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Shortlist table</h2>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+      Claude Managed Agents is included as the reference shape. Third-party
+      details reflect public positioning; verify them on each project's site.
+    </p>
+    <ComparisonTable columns={["Runtime", "Managed-agents API", "Self-host control plane", "Models", "License"]} rows={shortlistRows} caption="Open-source managed agent runtimes shortlist" />
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
+      Looking beyond managed runtimes to frameworks and coding agents? See
+      <a href="/open-source-ai-agents/">open-source AI agents</a>.
+    </p>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16 grid md:grid-cols-2 gap-10 max-w-5xl">
+      <div>
+        <h2 class="font-display text-2xl font-bold mb-4">Self-host next steps</h2>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
+          Start OpenMA locally with Docker Compose, then move to a Node
+          deployment with PostgreSQL or MySQL, or provision it on Cloudflare.
+          The <a href="https://docs.openma.ai/self-host/overview/">self-host overview</a> lists every path;
+          <a href="/self-hosted-ai-agents/">self-hosted AI agents</a> explains the trade-offs.
+        </p>
+      </div>
+      <div>
+        <h2 class="font-display text-2xl font-bold mb-4">vs Claude Managed Agents</h2>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          If you are choosing between Anthropic's hosted runtime and an open
+          one, read the <a href="/claude-managed-agents-alternative/">Claude Managed Agents alternative</a> guide
+          and the feature-level <a href="/blog/claude-managed-agents-vs-open-managed-agents/">Claude Managed Agents vs OpenMA</a> comparison.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <FaqSection items={faqItems} />
+  <RelatedGuides links={relatedLinks} />
+</Base>
