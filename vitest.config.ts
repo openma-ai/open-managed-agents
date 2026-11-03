@@ -430,6 +430,16 @@ export default defineConfig({
     // exact 30s timeouts; two workers keeps the suite deterministic on local
     // workerd while CI runners with fewer cores still use their natural limit.
     maxWorkers: 2,
+    // Reuse workers across files. Per-file isolate (Vitest default) under
+    // @cloudflare/vitest-plugin + miniflare caused WebSocket 1009
+    // "Message is too large" storms (workers exited unexpectedly) with 408
+    // isolates; isolate:false reuses the pool workers instead.
+    isolate: false,
+    // Vitest 5 fsModuleCache warm-snapshots are inlined into a single
+    // workerd WebSocket frame (cloudflare/workers-sdk#16349). Our graph
+    // exceeds the 32 MiB limit → 1009; disable the cache so modules are
+    // fetched one-at-a-time instead of one giant fetchWarmModules reply.
+    fsModuleCache: false,
     exclude: [
       "**/node_modules/**",
       "**/.git/**",

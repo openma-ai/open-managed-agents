@@ -75,7 +75,7 @@ afterAll(async () => {
   await rm(scratchRoot, { recursive: true, force: true });
 });
 
-describe.sequential("main-node MySQL composition root", () => {
+describe("main-node MySQL composition root", () => {
   it("upgrades known snapshots with Pi configuration and the usage attribution index", async () => {
     if (child) await killProcessTree(child);
     child = undefined;
