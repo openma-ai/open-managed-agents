@@ -7,5 +7,6 @@ export * from "./feishu-connect.js";
 export * from "./adapter.js";
 export * from "./feishu-adapter.js";
 export * from "./gitlab-adapter.js";
+export * from "./slack-adapter.js";
 export * from "./loops.js";
 export * from "./run.js";

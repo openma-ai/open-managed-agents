@@ -864,9 +864,9 @@ describe("deployment Loops", () => {
     expect(() =>
       registerLoopTemplates([
         { provider: "feishu", loop: custom("ok-one") },
-        { provider: "slack" as "feishu", loop: custom("bad-one") },
+        { provider: "linear" as "feishu", loop: custom("bad-one") },
       ]),
-    ).toThrow(/bad-one: provider must be feishu or gitlab/);
+    ).toThrow(/bad-one: provider must be one of feishu, gitlab, slack/);
     expect(loopTemplate("ok-one")).toBeUndefined();
     expect(() =>
       registerLoopTemplates([

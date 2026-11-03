@@ -138,7 +138,7 @@ function LoopStatus({ loop }: { loop: Loop }) {
   );
 }
 
-const PROVIDERS: Provider[] = ["feishu", "gitlab"];
+const PROVIDERS: Provider[] = ["feishu", "gitlab", "slack"];
 
 /** `/loops`: your Loops, in the list every other page uses. */
 export function LoopsPage() {

@@ -4,7 +4,7 @@
  * (`config.bond`, such as `feishu:cli_…`) and the Agent that answers
  * (`config.agentId`) are configuration fields like any other. Bonds are
  * listed only as the choices for that field, and linked through the Feishu
- * and GitLab connect flows.
+ * GitLab and Slack connect flows.
  *
  *   GET    /loop-templates           templates, with `bond` in each schema
  *   GET    /loops                    the workspace's Loops and their state
@@ -12,7 +12,7 @@
  *   PATCH  /loops/:id                { config?, enabled? }
  *   DELETE /loops/:id
  *   GET    /bonds?provider=          linked apps and instances (choices)
- *   GET    /bonds/:bond/resources    chats or projects, for list fields
+ *   GET    /bonds/:bond/resources    chats, projects or channels, for list fields
  *   DELETE /bonds/:bond              only when no Loop uses it
  */
 
@@ -26,6 +26,7 @@ import { Effect } from "effect";
 import { FEISHU_ADAPTER_KIND } from "./feishu-adapter.js";
 import type { FeishuConnectPrincipal, FeishuConnectService } from "./feishu-connect.js";
 import { GITLAB_ADAPTER_KIND } from "./gitlab-adapter.js";
+import { listSlackChannels, SLACK_ADAPTER_KIND } from "./slack-adapter.js";
 import type { MatterHost } from "./host.js";
 import {
   LoopConfigError,
@@ -34,13 +35,24 @@ import {
   normalizeLoopConfig,
   hostFields,
   splitLoopConfig,
+  type LoopProvider,
 } from "./loops.js";
 import { isScheduled } from "./schedule.js";
 import type { LoopRecord, MatterDatabase } from "./persistence.js";
 
-type Provider = "feishu" | "gitlab";
+type Provider = LoopProvider;
 
-const KINDS: Readonly<Record<Provider, string>> = { feishu: FEISHU_ADAPTER_KIND, gitlab: GITLAB_ADAPTER_KIND };
+const KINDS: Readonly<Record<Provider, string>> = {
+  feishu: FEISHU_ADAPTER_KIND,
+  gitlab: GITLAB_ADAPTER_KIND,
+  slack: SLACK_ADAPTER_KIND,
+};
+
+const BOND_NOUNS: Readonly<Record<Provider, string>> = {
+  feishu: "Feishu app",
+  gitlab: "GitLab instance",
+  slack: "Slack workspace",
+};
 
 /** `feishu:cli_…` ↔ adapter kind and connection key. */
 const parseBond = (value: unknown): { provider: Provider; kind: string; key: string } | undefined => {
@@ -136,10 +148,14 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
   const resolveBond = async (tenantId: string, value: unknown, provider: Provider) => {
     const bond = parseBond(value);
     if (bond === undefined || bond.provider !== provider) {
-      throw new ApiError(400, `Choose a ${provider === "feishu" ? "Feishu app" : "GitLab instance"} for this Loop`);
+      throw new ApiError(400, `Choose a ${BOND_NOUNS[provider]} for this Loop`);
     }
     const record =
-      bond.provider === "feishu" ? await db.apps.get(bond.key) : await db.gitlab.get(bond.key);
+      bond.provider === "feishu"
+        ? await db.apps.get(bond.key)
+        : bond.provider === "gitlab"
+          ? await db.gitlab.get(bond.key)
+          : await db.slack.get(bond.key);
     if (record === undefined || record.tenantId !== tenantId) throw new ApiError(404, "Bond not found");
     return { ...bond, record };
   };
@@ -247,6 +263,29 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
         });
       }
     }
+    if (provider === null || provider === "slack") {
+      for (const c of (await db.slack.list()).filter((s) => s.tenantId === tenantId)) {
+        const path = `/webhooks/slack/${c.id}`;
+        out.push({
+          id: bondId(SLACK_ADAPTER_KIND, c.id),
+          provider: "slack",
+          label: `${c.teamName} (${c.teamId})`,
+          connectedAt: c.connectedAt,
+          ...(await host.sharedState(c.id)),
+          loops: used(SLACK_ADAPTER_KIND, c.id),
+          details: {
+            teamId: c.teamId,
+            botUserId: c.botUserId,
+            ...(c.appId === undefined ? {} : { appId: c.appId }),
+            // How events arrive: the Request URL to paste into the Slack app, or Socket Mode.
+            ...(c.signingSecret === undefined
+              ? {}
+              : { requestUrl: options.publicUrl === undefined ? path : `${options.publicUrl}${path}` }),
+            socketMode: c.appToken !== undefined,
+          },
+        });
+      }
+    }
     return out;
   };
 
@@ -267,6 +306,8 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
           limit: 100,
         }),
       );
+    } else if (bond.provider === "slack" && "botToken" in record) {
+      return listSlackChannels(record, query, options.fetch);
     } else if ("token" in record) {
       page = await Effect.runPromise(
         makeGitLabResourceCatalog(providerFetch).list({
@@ -382,7 +423,8 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
           throw new ApiError(409, "Loops clone repositories with it; remove them from those Loops first");
         }
         if (bond.provider === "feishu") await db.apps.delete(bond.key);
-        else await db.gitlab.delete(bond.key);
+        else if (bond.provider === "gitlab") await db.gitlab.delete(bond.key);
+        else await db.slack.delete(bond.key);
         await host.reconcile();
         return new Response(null, { status: 204 });
       }

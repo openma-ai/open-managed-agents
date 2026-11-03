@@ -21,6 +21,8 @@ import {
   FeishuAppForm,
   FeishuLinker,
   GitLabLinker,
+  SlackLinker,
+  SlackCredentialReplacer,
   GitLabTokenReplacer,
   loopPath,
   MatterNotice,
@@ -139,6 +141,10 @@ export function BondsPage() {
           <ProviderIcon provider="gitlab" className="size-4" />
           {m.bonds.linkGitLab}
         </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => nav("/bonds/new?provider=slack")}>
+          <ProviderIcon provider="slack" className="size-4" />
+          {m.bonds.linkSlack}
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -223,7 +229,12 @@ export function BondDetailPage() {
     string,
     string,
   ][];
-  const newLoop = bond.provider === "feishu" ? `/loops/new?template=feishu-agent&bond=${encodeURIComponent(bond.id)}` : "/loops";
+  const newLoop =
+    bond.provider === "feishu"
+      ? `/loops/new?template=feishu-agent&bond=${encodeURIComponent(bond.id)}`
+      : bond.provider === "slack"
+        ? `/loops/new?template=slack-agent&bond=${encodeURIComponent(bond.id)}`
+        : "/loops";
 
   async function unlink() {
     if (!bond || !window.confirm(m.bonds.confirmDelete)) return;
@@ -291,6 +302,18 @@ export function BondDetailPage() {
             />
           </div>
         )}
+        {replacing && bond.provider === "slack" && (
+          <div className="mt-4 border-t border-border pt-4">
+            <SlackCredentialReplacer
+              connectionId={bond.id.replace(/^slack:/, "")}
+              onReplaced={() => {
+                setReplacing(false);
+                setNotice(m.bonds.secretReplaced);
+                setRevision((n) => n + 1);
+              }}
+            />
+          </div>
+        )}
       </MatterSection>
 
       {bond.provider === "feishu" && (
@@ -347,7 +370,7 @@ const returnPath = (value: string | null): string | undefined =>
   value !== null && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") ? value : undefined;
 
 /**
- * `/bonds/new?provider=feishu|gitlab[&return=/path]`: link an app. With
+ * `/bonds/new?provider=feishu|gitlab|slack[&return=/path]`: link an app. With
  * `return` (a Loop form), go back there with the new Bond chosen.
  */
 export function BondLinkPage() {
@@ -355,15 +378,24 @@ export function BondLinkPage() {
   const m = t.matter;
   const nav = useNavigate();
   const [params] = useSearchParams();
-  const provider: Provider = params.get("provider") === "gitlab" ? "gitlab" : "feishu";
+  const raw = params.get("provider");
+  const provider: Provider = raw === "gitlab" || raw === "slack" ? raw : "feishu";
   const back = returnPath(params.get("return"));
   const done = (id: string) =>
     nav(back === undefined ? bondPath(id) : `${back}${back.includes("?") ? "&" : "?"}bond=${encodeURIComponent(id)}`);
+  const title = provider === "feishu" ? m.bonds.linkFeishu : provider === "gitlab" ? m.bonds.linkGitLab : m.bonds.linkSlack;
+  const hint = provider === "gitlab" ? m.bonds.gitlabHint : provider === "slack" ? m.bonds.slackHint : undefined;
   return (
     <BondPageShell>
-      <MatterTitle provider={provider} title={provider === "feishu" ? m.bonds.linkFeishu : m.bonds.linkGitLab} />
-      <MatterSection title={m.providers[provider]} hint={provider === "feishu" ? undefined : m.bonds.gitlabHint}>
-        {provider === "feishu" ? <FeishuLinker onLinked={done} /> : <GitLabLinker onLinked={done} />}
+      <MatterTitle provider={provider} title={title} />
+      <MatterSection title={m.providers[provider]} hint={hint}>
+        {provider === "feishu" ? (
+          <FeishuLinker onLinked={done} />
+        ) : provider === "gitlab" ? (
+          <GitLabLinker onLinked={done} />
+        ) : (
+          <SlackLinker onLinked={done} />
+        )}
       </MatterSection>
       <div className="console-settings-actions">
         <Button variant="ghost" onClick={() => nav(back ?? "/bonds")}>

@@ -116,6 +116,34 @@ export interface GitLabConnectionRecord {
 
 export type GitLabConnectionInput = Omit<GitLabConnectionRecord, "connectedAt">;
 
+/** A connected Slack app installation (a Slack Bond) with its secrets opened. */
+export interface SlackConnectionRecord {
+  /** `slack-<hex>`: the connection key and the Events API path segment. */
+  readonly id: string;
+  /** The installation authority: the workspace id (`T…`), or the Enterprise
+   * org id (`E…`) of an org-wide install. Events for any other authority are
+   * refused. */
+  readonly teamId: string;
+  readonly teamName: string;
+  /** The bot user (`U…`): mentions of it are answered, its own messages never. */
+  readonly botUserId: string;
+  readonly botId?: string;
+  readonly appId?: string;
+  /** `xoxb-…`: posts the replies. */
+  readonly botToken: string;
+  /** Checks every Events API request (`X-Slack-Signature`); without it the
+   * Bond takes no HTTP events. */
+  readonly signingSecret?: string;
+  /** `xapp-…` with `connections:write`: Socket Mode; without it the Bond
+   * takes events only over HTTP. */
+  readonly appToken?: string;
+  readonly tenantId: string;
+  readonly userId?: string;
+  readonly connectedAt: string;
+}
+
+export type SlackConnectionInput = Omit<SlackConnectionRecord, "connectedAt">;
+
 /**
  * One Loop instance: a template (`feishu-agent`, `gitlab-mention`, …) with
  * its configuration, running on one Bond (a connected Feishu app or GitLab
@@ -167,6 +195,13 @@ export interface MatterDatabase {
     get(id: string): Promise<GitLabConnectionRecord | undefined>;
     delete(id: string): Promise<boolean>;
     forgetAgent(id: string): Promise<void>;
+  };
+  readonly slack: {
+    /** Insert or replace by id. */
+    save(connection: SlackConnectionInput): Promise<SlackConnectionRecord>;
+    list(): Promise<readonly SlackConnectionRecord[]>;
+    get(id: string): Promise<SlackConnectionRecord | undefined>;
+    delete(id: string): Promise<boolean>;
   };
   readonly loops: {
     list(): Promise<readonly LoopRecord[]>;
@@ -247,6 +282,10 @@ const tables = (kind: "sqlite" | "mysql"): string[] => {
       id ${key} PRIMARY KEY, base_url ${text} NOT NULL, token ${text} NOT NULL, username ${key} NOT NULL,
       webhook_secret ${text} NOT NULL, project_ids ${text} NOT NULL, tenant_id ${key} NOT NULL,
       user_id ${key}, agent_id ${key} NOT NULL, connected_at ${key} NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS openmatter_slack_connections (
+      id ${key} PRIMARY KEY, team_id ${key} NOT NULL, team_name ${text} NOT NULL, bot_user_id ${key} NOT NULL,
+      bot_id ${key}, app_id ${key}, bot_token ${text} NOT NULL, signing_secret ${text}, app_token ${text},
+      tenant_id ${key} NOT NULL, user_id ${key}, connected_at ${key} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS openmatter_loops (
       id ${key} PRIMARY KEY, tenant_id ${key} NOT NULL, bond_kind ${key} NOT NULL, bond_key ${key} NOT NULL,
       template ${key} NOT NULL, config_json ${text} NOT NULL, enabled ${int} NOT NULL,
@@ -312,6 +351,9 @@ const insertIgnore = (kind: "sqlite" | "mysql") =>
 const appSecretPurpose = (appId: string) => `feishu-app-secret:${appId}`;
 const gitlabTokenPurpose = (id: string) => `gitlab-token:${id}`;
 const gitlabWebhookPurpose = (id: string) => `gitlab-webhook-secret:${id}`;
+const slackBotTokenPurpose = (id: string) => `slack-bot-token:${id}`;
+const slackSigningSecretPurpose = (id: string) => `slack-signing-secret:${id}`;
+const slackAppTokenPurpose = (id: string) => `slack-app-token:${id}`;
 const deviceCodePurpose = (id: string) => `feishu-device-code:${id}`;
 
 const tokenDigest = (token: string): Buffer => createHash("sha256").update(token, "utf8").digest();
@@ -376,6 +418,54 @@ const createMatterDatabase = (
     ...(row.token_expires_at === null ? {} : { tokenExpiresAt: row.token_expires_at }),
     connectedAt: row.connected_at,
   });
+  type SlackRow = {
+    id: string;
+    team_id: string;
+    team_name: string;
+    bot_user_id: string;
+    bot_id: string | null;
+    app_id: string | null;
+    bot_token: string;
+    signing_secret: string | null;
+    app_token: string | null;
+    tenant_id: string;
+    user_id: string | null;
+    connected_at: string;
+  };
+  const toSlack = (row: SlackRow): SlackConnectionRecord => ({
+    id: row.id,
+    teamId: row.team_id,
+    teamName: row.team_name,
+    botUserId: row.bot_user_id,
+    ...(row.bot_id === null ? {} : { botId: row.bot_id }),
+    ...(row.app_id === null ? {} : { appId: row.app_id }),
+    botToken: box.open(row.bot_token, slackBotTokenPurpose(row.id)),
+    ...(row.signing_secret === null
+      ? {}
+      : { signingSecret: box.open(row.signing_secret, slackSigningSecretPurpose(row.id)) }),
+    ...(row.app_token === null ? {} : { appToken: box.open(row.app_token, slackAppTokenPurpose(row.id)) }),
+    tenantId: row.tenant_id,
+    ...(row.user_id === null ? {} : { userId: row.user_id }),
+    connectedAt: row.connected_at,
+  });
+  const slackColumns = [
+    "id",
+    "team_id",
+    "team_name",
+    "bot_user_id",
+    "bot_id",
+    "app_id",
+    "bot_token",
+    "signing_secret",
+    "app_token",
+    "tenant_id",
+    "user_id",
+    "connected_at",
+  ];
+  const getSlack = async (id: string) => {
+    const [row] = await sql.rows<SlackRow>(`SELECT * FROM openmatter_slack_connections WHERE id = ?`, [id]);
+    return row === undefined ? undefined : toSlack(row);
+  };
   type RegistrationRow = {
     id: string;
     tenant_id: string;
@@ -564,6 +654,31 @@ const createMatterDatabase = (
       forgetAgent: async (id) => {
         await sql.run(`UPDATE openmatter_gitlab_connections SET agent_id = '' WHERE id = ?`, [id]);
       },
+    },
+    slack: {
+      save: async (c) => {
+        await sql.run(upsert(sql.kind, "openmatter_slack_connections", slackColumns, "id"), [
+          c.id,
+          c.teamId,
+          c.teamName,
+          c.botUserId,
+          c.botId ?? null,
+          c.appId ?? null,
+          box.seal(c.botToken, slackBotTokenPurpose(c.id)),
+          c.signingSecret === undefined ? null : box.seal(c.signingSecret, slackSigningSecretPurpose(c.id)),
+          c.appToken === undefined ? null : box.seal(c.appToken, slackAppTokenPurpose(c.id)),
+          c.tenantId,
+          c.userId ?? null,
+          now().toISOString(),
+        ]);
+        return (await getSlack(c.id))!;
+      },
+      list: async () =>
+        (await sql.rows<SlackRow>(`SELECT * FROM openmatter_slack_connections ORDER BY connected_at, id`)).map(
+          toSlack,
+        ),
+      get: getSlack,
+      delete: async (id) => (await sql.run(`DELETE FROM openmatter_slack_connections WHERE id = ?`, [id])) > 0,
     },
     loops: {
       list: async () =>

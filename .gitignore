@@ -59,3 +59,4 @@ rl/tasks/terminal-bench/findings-*.md
 data/
 .env
 .vercel
+.pack/

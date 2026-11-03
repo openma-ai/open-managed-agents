@@ -52,3 +52,5 @@ allowBuilds:
 # Drop once those packages declare mysql2 as a range/peer dependency.
 overrides:
   mysql2: 3.24.6
+  # TEMP (#458): drop after @openma/matter-slack@0.2.8 is on npm (OpenMatter #59 merged; bootstrap publish pending).
+  '@openma/matter-slack': file:apps/matter/vendor/openma-matter-slack-0.2.8.tgz
