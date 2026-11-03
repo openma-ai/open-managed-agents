@@ -24,23 +24,24 @@ const shortlistRows = [
 
 const faqItems = [
   {
-    question: "What are managed agents?",
+    question: "What is an open-source managed agent runtime?",
     answer:
-      "A managed agent runtime runs AI agents as a service: you define agents and environments, start sessions, and stream events, while the runtime handles the loop, sandboxes, state, and recovery.",
+      "A runtime that implements the managed-agents shape (agents, environments, sessions, events, sandboxes, and credential isolation) with source you can self-host and change.",
   },
   {
-    question: "Is there an open-source version of Claude Managed Agents?",
+    question: "Which open-source runtime implements the Claude Managed Agents shape?",
     answer:
       "Claude Managed Agents itself is proprietary. OpenMA is an Apache 2.0 runtime that implements the same agents, environments, sessions, and events model and can be self-hosted.",
   },
   {
-    question: "Can open-source managed agents use Claude?",
+    question: "Can an open-source managed agent runtime use Claude?",
     answer:
       "Yes. OpenMA runs Claude models with your Anthropic key, alongside other providers configured as Model Cards.",
   },
 ];
 
 const relatedLinks = [
+  { href: "/ai-agent-platform/", anchor: "AI agent platform & orchestration", note: "The runtime primitives behind every managed agent platform." },
   { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "Full decision table across hosted and open options." },
   { href: "/open-source-ai-agents/", anchor: "Open-source AI agents", note: "The wider field: platforms, harnesses, frameworks, coding agents." },
   { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Why and how teams run agents on their own infra." },
@@ -55,13 +56,13 @@ const schemas = [
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
-    name: "Open-Source Managed Agents",
+    name: "Open-Source Managed Agent Runtimes Compared",
     url: "https://openma.ai/open-source-managed-agents/",
     description:
       "Open-source managed agent runtimes compared by the managed-agents shape: agents, environments, sessions, events, sandboxes, and vaults.",
     about: [
-      { "@type": "Thing", name: "Open-source managed agents" },
-      { "@type": "Thing", name: "Managed agents open source" },
+      { "@type": "Thing", name: "Open-source managed agent runtime" },
+      { "@type": "Thing", name: "Managed agent runtime comparison" },
       { "@type": "Thing", name: "Open Managed Agents" },
     ],
   },
@@ -70,32 +71,31 @@ const schemas = [
 ---
 
 <Base
-  title="Open-Source Managed Agents: Self-Hostable Runtimes | OpenMA"
-  description="Open-source managed agents compared: runtimes with agents, sessions, sandboxes and vaults you can self-host, with any model. Where OpenMA fits."
+  title="Open-Source Managed Agent Runtimes Compared | OpenMA"
+  description="Compare open-source managed agent runtimes by agents, sessions, sandboxes, and vaults you can self-host with any model. See where OpenMA fits in production."
   canonical="/open-source-managed-agents/"
-  keywords="open source managed agents, managed agents open source, open-source managed agents, open source claude managed agents, self hosted managed agents"
+  keywords="open-source managed agent runtime, open source managed agent runtimes, managed agent runtime comparison, self-hosted agent runtime, open source claude managed agents"
   schemas={schemas}
 >
   <section class="border-b border-[var(--color-border)]">
     <div class="site-container py-16 md:py-24 max-w-4xl">
       <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
-        Open-source managed agents
+        Open-source managed agent runtimes
       </p>
       <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-6">
-        Open-Source Managed Agents
+        Open-Source Managed Agent Runtimes Compared
       </h1>
       <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
-        Managed agents — the runtime model behind Claude Managed Agents and
-        the OpenAI Agents API — are useful precisely because someone else
-        runs the hard parts. Open-source managed agents give you the same
-        shape with the source in hand and the control plane on your own
-        infrastructure.
+        A managed agent runtime owns agents, sessions, sandboxes, and crash
+        recovery behind an API. This comparison covers the open-source
+        runtimes that implement that shape, the criteria that separate them
+        from frameworks, and where each option fits.
       </p>
     </div>
   </section>
 
   <section class="site-container py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-4">Managed agents, open-sourced</h2>
+    <h2 class="font-display text-3xl font-bold mb-4">The managed runtime shape</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
       A managed agent runtime is not a framework. It exposes an HTTP API:
       you create an agent and an environment, open a session, send a
@@ -111,24 +111,24 @@ const schemas = [
     <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold mb-4">Criteria for the managed-runtime shape</h2>
       <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
-        Use these as a checklist. A project missing several of them is a
-        framework or harness, which may still be the right tool — just not a
-        managed runtime.
+        Use these as a checklist when comparing runtimes. A project missing
+        several of them is a framework or harness, which may still be the
+        right tool — just not a managed runtime.
       </p>
       <ComparisonTable columns={["Capability", "What to check"]} rows={criteriaRows} caption="Managed agent runtime checklist" />
     </div>
   </section>
 
   <section class="site-container py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-4">Shortlist table</h2>
+    <h2 class="font-display text-3xl font-bold mb-4">Open-source managed agent runtimes compared</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
       Claude Managed Agents is included as the reference shape. Third-party
       details reflect public positioning; verify them on each project's site.
     </p>
     <ComparisonTable columns={["Runtime", "Managed-agents API", "Self-host control plane", "Models", "License"]} rows={shortlistRows} caption="Open-source managed agent runtimes shortlist" />
     <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
-      Looking beyond managed runtimes to frameworks and coding agents? See
-      <a href="/open-source-ai-agents/">open-source AI agents</a>.
+      This page compares runtimes only. For the wider field of frameworks,
+      harnesses, and coding agents, see <a href="/open-source-ai-agents/">open-source AI agents</a>.
     </p>
   </section>
 

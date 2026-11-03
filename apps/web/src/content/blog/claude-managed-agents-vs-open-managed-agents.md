@@ -16,11 +16,10 @@ or use hosted. Both expose agents, environments, sessions, and an event
 stream. What differs is who runs the control plane, which models you can
 use, and how the bill is shaped.
 
-This page is the side-by-side. If you are still surveying the whole
-market, start with the broader guide to
-[Claude Managed Agents alternatives](/claude-managed-agents-alternative/).
-If you need a primer on the hosted product first, read
-[what is Claude Managed Agents](/what-is-claude-managed-agents/).
+This page is the 1:1 side-by-side. For a wider view beyond these two
+products, the [Claude Managed Agents alternative](/claude-managed-agents-alternative/)
+guide covers the rest of the market. If you need a primer on the hosted
+product first, read [what is Claude Managed Agents](/what-is-claude-managed-agents/).
 
 ## Snapshot: two managed-runtime shapes
 
@@ -181,7 +180,7 @@ line item to infrastructure and operations you own.
    for vaults, sessions, and integrations.
 
 Compare the features, then try OpenMA on your own infrastructure with the
-[OpenMA documentation](https://docs.openma.ai/). Still shopping? The
-[Claude Managed Agents alternatives](/claude-managed-agents-alternative/)
-guide covers TrueForge, Omnara, OpenAI's Agents API, cloud agent
-services, and DIY SDK builds.
+[OpenMA documentation](https://docs.openma.ai/). This page stays a strict
+1:1 comparison of Claude Managed Agents and OpenMA; for other options, see
+the [Claude Managed Agents alternative](/claude-managed-agents-alternative/)
+guide.
