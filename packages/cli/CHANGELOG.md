@@ -1,5 +1,11 @@
 # @openma/cli
 
+## 0.7.2
+
+### Patch Changes
+
+- f529975: Fix `oma connect` to use authenticated MCP OAuth authorization and result polling with a private, single-use claim credential. Keep API keys and client secrets out of browser URLs and remove the random localhost callback listener.
+
 ## 0.7.1
 
 ### Patch Changes
