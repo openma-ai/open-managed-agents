@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
-import type { Agent } from "../src/domain/agent";
-import type { Deployment } from "../src/domain/deployment";
-import type { Environment } from "../src/domain/environment";
-import type { FileMetadata } from "../src/domain/file";
-import type { MemoryStore } from "../src/domain/memory-store";
-import type { Vault } from "../src/domain/vault";
+import type { Agent } from "@openma/core";
+import type { Deployment } from "@openma/core";
+import type { Environment } from "@openma/core";
+import type { FileMetadata } from "@openma/core";
+import type { MemoryStore } from "@openma/core";
+import type { Vault } from "@openma/core";
 import { DeploymentsApplicationService } from "../src/deployments/application";
-import type { DeploymentAgentSourcePort } from "../src/deployments/agent-source";
-import type { DeploymentEnvironmentSourcePort } from "../src/deployments/environment-source";
-import type { DeploymentFileSourcePort } from "../src/deployments/file-source";
-import type { DeploymentMemoryStoreSourcePort } from "../src/deployments/memory-store-source";
-import type { DeploymentSchedulePlannerPort } from "../src/deployments/schedule-planner";
-import type { DeploymentSessionLauncherPort } from "../src/deployments/session-launcher";
-import type { DeploymentVaultSourcePort } from "../src/deployments/vault-source";
-import type { DeploymentRunPersistencePort } from "../src/deployment-runs/persistence";
+import type { DeploymentAgentSourcePort } from "@openma/core";
+import type { DeploymentEnvironmentSourcePort } from "@openma/core";
+import type { DeploymentFileSourcePort } from "@openma/core";
+import type { DeploymentMemoryStoreSourcePort } from "@openma/core";
+import type { DeploymentSchedulePlannerPort } from "@openma/core";
+import type { DeploymentSessionLauncherPort } from "@openma/core";
+import type { DeploymentVaultSourcePort } from "@openma/core";
+import type { DeploymentRunPersistencePort } from "@openma/core";
 import type { DeploymentStore } from "@open-managed-agents/deployment-store";
 
 const agent: Agent = {

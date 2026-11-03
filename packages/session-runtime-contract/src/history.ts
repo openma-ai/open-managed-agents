@@ -1,39 +1,7 @@
-import type {
-  SessionBootstrapEvent,
-  SessionEventView,
-} from "@open-managed-agents/domain/sessions";
-
-export interface LoadSessionRuntimeHistoryRecord {
-  workspaceId: string;
-  sessionId: string;
-}
-
-export interface SessionRuntimeHistoryRecord {
-  /** Native Session revision read in the same snapshot as this history. */
-  revision?: number;
-  initialEvents: SessionBootstrapEvent[];
-  events: SessionEventView[];
-  /** Present only when every persisted event has a unique, trusted source position. */
-  orderedEvents?: OrderedSessionEvent[];
-}
-
-export interface SessionRuntimeHistorySourcePort {
-  load(
-    input: LoadSessionRuntimeHistoryRecord,
-  ): Promise<SessionRuntimeHistoryRecord | null>;
-}
-
-/** Position assigned atomically by the existing Session revision CAS. */
-export interface SessionEventSourcePosition {
-  revision: number;
-  index: number;
-}
-
-export interface OrderedSessionEvent {
-  event: SessionEventView;
-  position: SessionEventSourcePosition;
-  executionId?: string;
-}
+// Types moved to @openma/core (#434); the codecs below stay with the contract.
+import type { SessionEventView } from "@open-managed-agents/domain/sessions";
+import type { SessionEventSourcePosition } from "@openma/core/runtime/history";
+export type * from "@openma/core/runtime/history";
 
 /** Storage metadata is internal and must never become a public Managed event field. */
 export function encodeSessionEventDocument(

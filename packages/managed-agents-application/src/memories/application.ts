@@ -21,10 +21,10 @@ import type {
   RetrieveMemoryResult,
   UpdateMemoryCommand,
   UpdateMemoryResult,
-} from "../ports/memories";
-import type { MemoriesApplicationPort } from "../ports/memories";
-import type { MemoryContentDescriptorPort } from "./content-descriptor";
-import type { MemoryStoreForMemorySourcePort } from "./memory-store-source";
+} from "@openma/core";
+import type { MemoriesApplicationPort } from "@openma/core";
+import type { MemoryContentDescriptorPort } from "@openma/core";
+import type { MemoryStoreForMemorySourcePort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

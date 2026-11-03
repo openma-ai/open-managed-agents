@@ -16,10 +16,10 @@ import type {
   StopEnvironmentWorkResult,
   UpdateEnvironmentWorkCommand,
   UpdateEnvironmentWorkResult,
-} from "../ports/environment-work";
-import type { EnvironmentWorkAvailabilityWaiterPort } from "./availability-waiter";
-import type { EnvironmentWorkEnvironmentSourcePort } from "./environment-source";
-import type { EnvironmentWorkSessionCredentialIssuerPort } from "./credential-issuer";
+} from "@openma/core";
+import type { EnvironmentWorkAvailabilityWaiterPort } from "@openma/core";
+import type { EnvironmentWorkEnvironmentSourcePort } from "@openma/core";
+import type { EnvironmentWorkSessionCredentialIssuerPort } from "@openma/core";
 import type {
   EnvironmentWorkStore,
   EnvironmentWorkRecord,

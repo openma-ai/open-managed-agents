@@ -15,9 +15,9 @@ import type {
   RotateTunnelTokenCommand,
   RotateTunnelTokenResult,
   TunnelsApplicationPort,
-} from "../ports/tunnels";
-import type { TunnelProvisionerPort } from "./provisioner";
-import type { TunnelTokenManagerPort } from "./token-manager";
+} from "@openma/core";
+import type { TunnelProvisionerPort } from "@openma/core";
+import type { TunnelTokenManagerPort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

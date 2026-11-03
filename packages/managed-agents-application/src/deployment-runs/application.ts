@@ -1,4 +1,4 @@
-import type { DeploymentRun } from "../domain/deployment-run";
+import type { DeploymentRun } from "@openma/core";
 import type { DeploymentRunStore } from "@open-managed-agents/deployment-run-store";
 import type {
   DeploymentRunsApplicationPort,
@@ -6,7 +6,7 @@ import type {
   ListDeploymentRunsResult,
   RetrieveDeploymentRunQuery,
   RetrieveDeploymentRunResult,
-} from "../ports/deployment-runs";
+} from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

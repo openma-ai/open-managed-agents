@@ -1,4 +1,4 @@
-import type { Dream } from "../domain/dream";
+import type { Dream } from "@openma/core";
 import type {
   DreamStore,
   ReplaceDreamRecordResult,
@@ -13,10 +13,10 @@ import type {
   ListDreamsResult,
   RetrieveDreamQuery,
   RetrieveDreamResult,
-} from "../ports/dreams";
-import type { DreamExecutionSchedulerPort } from "./execution-scheduler";
-import type { DreamMemoryStoreSourcePort } from "./memory-store-source";
-import type { DreamSessionSourcePort } from "./session-source";
+} from "@openma/core";
+import type { DreamExecutionSchedulerPort } from "@openma/core";
+import type { DreamMemoryStoreSourcePort } from "@openma/core";
+import type { DreamSessionSourcePort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

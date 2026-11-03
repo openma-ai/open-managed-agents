@@ -3,7 +3,7 @@ import type {
   EnvironmentConfig,
   EnvironmentOpenMaExtensions,
   EnvironmentPackages,
-} from "../domain/environment";
+} from "@openma/core";
 import type {
   ArchiveEnvironmentCommand,
   ArchiveEnvironmentResult,
@@ -21,7 +21,7 @@ import type {
   RetrieveEnvironmentResult,
   UpdateEnvironmentCommand,
   UpdateEnvironmentResult,
-} from "../ports/environments";
+} from "@openma/core";
 import type { EnvironmentStore } from "@open-managed-agents/environment-store";
 
 const DEFAULT_PAGE_SIZE = 20;

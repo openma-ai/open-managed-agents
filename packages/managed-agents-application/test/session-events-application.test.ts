@@ -3,10 +3,10 @@ import type { SessionEventLogStore } from "@open-managed-agents/session-event-st
 import type {
   SentSessionEvent,
   StreamSessionEvent,
-} from "../src/ports/session-events";
+} from "@openma/core";
 import type { SessionEventView } from "@open-managed-agents/domain/sessions";
-import type { Session } from "../src/domain/session";
-import type { Environment } from "../src/domain/environment";
+import type { Session } from "@openma/core";
+import type { Environment } from "@openma/core";
 import { SessionEventsApplicationService } from "../src/index";
 
 class MemorySessionEventStore implements SessionEventLogStore {

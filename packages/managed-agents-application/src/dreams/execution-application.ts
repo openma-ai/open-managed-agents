@@ -1,13 +1,13 @@
-import type { Dream } from "../domain/dream";
+import type { Dream } from "@openma/core";
 import type { DreamStore, StoredDream } from "@open-managed-agents/dream-store";
-import type { DreamCuratorPort, DreamSessionDescriptor } from "./curator";
-import type { DreamMemoryWorkspacePort } from "./memory-workspace";
+import type { DreamCuratorPort, DreamSessionDescriptor } from "@openma/core";
+import type { DreamMemoryWorkspacePort } from "@openma/core";
 import type {
   DreamExecutionApplicationPort,
   ExecuteDreamCommand,
   ExecuteDreamResult,
-} from "./port";
-import type { DreamSessionSourcePort } from "./session-source";
+} from "@openma/core";
+import type { DreamSessionSourcePort } from "@openma/core";
 
 export interface DreamExecutionApplicationServiceDependencies {
   workspaceId: string;

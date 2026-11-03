@@ -11,9 +11,9 @@ export type {
   SessionListPosition,
   SessionResourceSecret,
   StoredSession,
-} from "@open-managed-agents/session-store";
+} from "@openma/core/storage/sessions";
 
 /** @deprecated v0 compatibility; v1 consumers use SessionStore. */
 export type {
   SessionStore as SessionPersistencePort,
-} from "@open-managed-agents/session-store";
+} from "@openma/core/storage/sessions";

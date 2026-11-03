@@ -33,8 +33,12 @@ test.after(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("this repo publishes cli and sdk and ignores the private harness package", () => {
-  assert.deepEqual(loadPublishedPackages(repoRoot).map((pkg) => pkg.name), ["@openma/cli", "@openma/sdk"]);
+test("this repo publishes cli, sdk and core and ignores the private harness package", () => {
+  assert.deepEqual(loadPublishedPackages(repoRoot).map((pkg) => pkg.name), [
+    "@openma/cli",
+    "@openma/core",
+    "@openma/sdk",
+  ]);
 });
 
 test("parses release versions including prerelease", () => {

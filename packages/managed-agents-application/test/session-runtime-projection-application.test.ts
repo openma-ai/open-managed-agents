@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Session } from "../src/domain/session";
+import type { Session } from "@openma/core";
 import { SessionRuntimeProjectionApplicationService } from "../src/index";
 
 const idleSession: Session = {

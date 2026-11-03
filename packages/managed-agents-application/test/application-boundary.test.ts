@@ -18,6 +18,8 @@ describe("Managed Agents application boundary", () => {
         specifier === "@earendil-works/pi-ai"
         || specifier.startsWith("@earendil-works/pi-ai/")
         || specifier === "@openma/common/protocol/managed"
+        || specifier === "@openma/core"
+        || specifier.startsWith("@openma/core/")
         || specifier === "@open-managed-agents/agent-store"
         || specifier === "@open-managed-agents/credential-store"
         || specifier === "@open-managed-agents/deployment-store"

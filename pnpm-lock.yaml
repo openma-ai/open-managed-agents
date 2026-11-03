@@ -60,6 +60,9 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
+      '@typescript/typescript6':
+        specifier: ^6.0.2
+        version: 6.0.2
       '@vitest/coverage-v8':
         specifier: 4.1.4
         version: 4.1.4(vitest@4.1.4)
@@ -78,6 +81,12 @@ importers:
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
+      rollup:
+        specifier: ^4.62.4
+        version: 4.62.4
+      rollup-plugin-dts:
+        specifier: ^6.5.1
+        version: 6.5.1(@typescript/typescript6@6.0.2)(rollup@4.62.4)(typescript@7.0.2)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -1107,6 +1116,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/agent-store-memory:
     dependencies:
@@ -1577,6 +1589,15 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
 
+  packages/core:
+    devDependencies:
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
   packages/cost-attribution: {}
 
   packages/cost-attribution-blaxel:
@@ -1608,6 +1629,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/credential-store-memory:
     dependencies:
@@ -1664,6 +1688,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/deployment-run-store-memory:
     dependencies:
@@ -1708,6 +1735,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/deployment-store-memory:
     dependencies:
@@ -1743,6 +1773,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/dream-store-memory:
     dependencies:
@@ -1876,6 +1909,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/environment-store-memory:
     dependencies:
@@ -1908,6 +1944,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/environment-work-store-memory:
     dependencies:
@@ -2026,13 +2065,20 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
 
-  packages/file-content-store: {}
+  packages/file-content-store:
+    dependencies:
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/file-store:
     dependencies:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/file-store-memory:
     dependencies:
@@ -2731,6 +2777,9 @@ importers:
       '@openma/common':
         specifier: ^0.9.1
         version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@open-managed-agents/session-store-memory':
         specifier: workspace:*
@@ -2739,7 +2788,11 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
 
-  packages/managed-agents-domain: {}
+  packages/managed-agents-domain:
+    dependencies:
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/managed-agents-runtime:
     dependencies:
@@ -3117,6 +3170,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/memory-document-store-memory:
     dependencies:
@@ -3170,6 +3226,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/memory-store-store-memory:
     dependencies:
@@ -4022,6 +4081,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/session-event-store-memory:
     dependencies:
@@ -4078,6 +4140,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/session-resource-store-memory:
     dependencies:
@@ -4147,6 +4212,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/session-runtime-sql:
     dependencies:
@@ -4181,6 +4249,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/session-store-memory:
     dependencies:
@@ -4215,6 +4286,9 @@ importers:
       '@open-managed-agents/session-runtime-contract':
         specifier: workspace:*
         version: link:../session-runtime-contract
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/session-thread-store-memory:
     dependencies:
@@ -4307,6 +4381,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/skill-store-memory:
     dependencies:
@@ -4399,6 +4476,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/tunnel-store-memory:
     dependencies:
@@ -4437,6 +4517,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/user-profile-store-memory:
     dependencies:
@@ -4488,6 +4571,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@openma/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/vault-store-memory:
     dependencies:
@@ -4876,6 +4962,10 @@ packages:
     resolution: {integrity: sha512-9NhCeYjq9+3uxgdtp20LSiJXJvN0FeCtNGpJxuMFZ1Kv3cWUNb6DOhJwUvcVCzKGR66cw4njwM6hrJLqgOwbcw==}
     engines: {node: '>=6.9.0'}
 
+  '@babel/code-frame@8.0.6':
+    resolution: {integrity: sha512-uMHhvmDmwFiLuiozaoRYTZHqMFuu3fem/X9JY78lohAuLoh8LSGGC8JqUzo2cVuBsBxkjMZNk56CE7ock8Xxkw==}
+    engines: {node: ^22.18.0 || >=24.11.0}
+
   '@babel/compat-data@7.29.0':
     resolution: {integrity: sha512-T1NCJqT/j9+cn8fvkt7jtwbLBfLC/1y1c7NtCeXFRgzGTsafi68MRv8yzkYSapBnFA6L3U2VSc02ciDzoAJhJg==}
     engines: {node: '>=6.9.0'}
@@ -4949,6 +5039,10 @@ packages:
   '@babel/helper-validator-identifier@7.29.7':
     resolution: {integrity: sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==}
     engines: {node: '>=6.9.0'}
+
+  '@babel/helper-validator-identifier@8.0.6':
+    resolution: {integrity: sha512-HYx0YmuchRxRSpnjvcNffnPS8DCauKNmnumIuHG3jnQAVewRA7kfJGwF13ayEpSZs7s4R/oBH4eppuXcAQd5JQ==}
+    engines: {node: ^22.18.0 || >=24.11.0}
 
   '@babel/helper-validator-option@7.27.1':
     resolution: {integrity: sha512-YvjJow9FxbhFFKDSuFnVCe2WxXk1zWc22fFePVNEaWJEu8IrZVlda6N0uHwzZrUM1il7NC9Mlp4MaJYbYd9JSg==}
@@ -6911,9 +7005,6 @@ packages:
   '@jridgewell/resolve-uri@3.1.2':
     resolution: {integrity: sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==}
     engines: {node: '>=6.0.0'}
-
-  '@jridgewell/sourcemap-codec@1.5.5':
-    resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
 
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
@@ -13077,6 +13168,17 @@ packages:
   robust-predicates@3.0.3:
     resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
 
+  rollup-plugin-dts@6.5.1:
+    resolution: {integrity: sha512-jODTXp3H7MK/Ur/ErtsrQ0G1GvaCmc3du+y5pNrdBMf6d7HlL2Nd/N6TkEr+f75CkUj01zEoEd7y2elH0eHi1Q==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@typescript/typescript6': ^6
+      rollup: ^3 || ^4
+      typescript: ^4.5 || ^5 || ^6 || ^7
+    peerDependenciesMeta:
+      '@typescript/typescript6':
+        optional: true
+
   rollup@4.62.4:
     resolution: {integrity: sha512-RXOqwaPsBGjMNMa4sQjDjHieHEZDFoj/Rdr46l2MU5DfEs16wHJPC2RPTPHWhNl+M3aI472LLqFkFKut4SblOg==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
@@ -14526,7 +14628,7 @@ snapshots:
     dependencies:
       '@astrojs/compiler': 2.13.1
       '@astrojs/yaml2ts': 0.2.3
-      '@jridgewell/sourcemap-codec': 1.5.5
+      '@jridgewell/sourcemap-codec': 1.6.0
       '@volar/kit': 2.4.28(@typescript/typescript6@6.0.2)
       '@volar/language-core': 2.4.28
       '@volar/language-server': 2.4.28
@@ -15069,6 +15171,12 @@ snapshots:
       js-tokens: 4.0.0
       picocolors: 1.1.1
 
+  '@babel/code-frame@8.0.6':
+    dependencies:
+      '@babel/helper-validator-identifier': 8.0.6
+      js-tokens: 10.0.0
+    optional: true
+
   '@babel/compat-data@7.29.0': {}
 
   '@babel/core@7.29.0':
@@ -15176,6 +15284,9 @@ snapshots:
   '@babel/helper-string-parser@7.27.1': {}
 
   '@babel/helper-validator-identifier@7.29.7': {}
+
+  '@babel/helper-validator-identifier@8.0.6':
+    optional: true
 
   '@babel/helper-validator-option@7.27.1': {}
 
@@ -16203,38 +16314,6 @@ snapshots:
       effect: 3.22.1
       zod: 4.4.3
 
-  '@httptoolkit/httpolyglot@3.0.1':
-    dependencies:
-      '@types/node': 26.6.6
-
-  '@httptoolkit/subscriptions-transport-ws@0.11.2(graphql@16.14.0)':
-    dependencies:
-      backo2: 1.0.2
-      eventemitter3: 3.1.2
-      graphql: 16.14.0
-      iterall: 1.3.0
-      symbol-observable: 1.2.0
-      ws: 8.20.0
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
-
-  '@httptoolkit/util@0.1.9': {}
-
-  '@httptoolkit/websocket-stream@6.0.1':
-    dependencies:
-      '@types/ws': 8.18.1
-      duplexify: 3.7.1
-      inherits: 2.0.4
-      isomorphic-ws: 4.0.1(ws@8.20.0)
-      readable-stream: 2.3.8
-      safe-buffer: 5.2.1
-      ws: 8.20.0
-      xtend: 4.0.2
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
-
   '@iconify/types@2.0.0': {}
 
   '@iconify/utils@3.1.3':
@@ -16624,8 +16703,6 @@ snapshots:
 
   '@jridgewell/resolve-uri@3.1.2': {}
 
-  '@jridgewell/sourcemap-codec@1.5.5': {}
-
   '@jridgewell/sourcemap-codec@1.6.0': {}
 
   '@jridgewell/trace-mapping@0.3.31':
@@ -16691,7 +16768,7 @@ snapshots:
 
   '@mdx-js/mdx@3.1.1':
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       '@types/estree-jsx': 1.0.5
       '@types/hast': 3.0.5
       '@types/mdx': 2.0.13
@@ -18719,7 +18796,7 @@ snapshots:
 
   '@rollup/pluginutils@5.3.0(rollup@4.62.4)':
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       estree-walker: 2.0.2
       picomatch: 4.0.7
     optionalDependencies:
@@ -19223,10 +19300,6 @@ snapshots:
       assertion-error: 2.0.1
 
   '@types/connect@3.4.38':
-    dependencies:
-      '@types/node': 26.6.6
-
-  '@types/cors@2.8.19':
     dependencies:
       '@types/node': 26.6.6
 
@@ -20788,10 +20861,6 @@ snapshots:
 
   destr@2.0.5: {}
 
-  destroyable-server@1.1.1:
-    dependencies:
-      '@types/node': 26.6.6
-
   detect-libc@2.1.2: {}
 
   detect-node-es@1.1.0: {}
@@ -21170,7 +21239,7 @@ snapshots:
 
   estree-walker@3.0.3:
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
 
   etag@1.8.1: {}
 
@@ -22956,54 +23025,6 @@ snapshots:
 
   mkdirp@3.0.1: {}
 
-  mockttp@4.3.1:
-    dependencies:
-      '@graphql-tools/schema': 10.0.33(graphql@16.14.0)
-      '@graphql-tools/utils': 11.1.0(graphql@16.14.0)
-      '@httptoolkit/httpolyglot': 3.0.1
-      '@httptoolkit/subscriptions-transport-ws': 0.11.2(graphql@16.14.0)
-      '@httptoolkit/util': 0.1.9
-      '@httptoolkit/websocket-stream': 6.0.1
-      '@peculiar/asn1-pkcs8': 2.7.0
-      '@peculiar/asn1-schema': 2.7.0
-      '@peculiar/asn1-x509': 2.7.0
-      '@peculiar/x509': 1.14.3
-      '@types/cors': 2.8.19
-      '@types/node': 26.6.6
-      async-mutex: 0.5.0
-      base64-arraybuffer: 1.0.2
-      cacheable-lookup: 6.1.0
-      common-tags: 1.8.2
-      connect: 3.7.0
-      cors: 2.8.6
-      destroyable-server: 1.1.1
-      express: 5.2.1
-      fast-json-patch: 3.1.1
-      get-port: 7.2.0
-      graphql: 16.14.0
-      graphql-http: 1.22.4(graphql@16.14.0)
-      graphql-subscriptions: 2.0.0(graphql@16.14.0)
-      graphql-tag: 2.12.6(graphql@16.14.0)
-      http-encoding: 2.2.0
-      http2-wrapper: 2.2.1
-      https-proxy-agent: 7.0.6
-      isomorphic-ws: 4.0.1(ws@8.20.0)
-      lodash: 4.18.1
-      lru-cache: 11.3.5
-      milliparsec: 5.1.1
-      native-duplexpair: 1.0.0
-      pac-proxy-agent: 7.2.0
-      parse-multipart-data: 1.5.0
-      read-tls-client-hello: 2.0.0
-      semver: 7.7.4
-      socks-proxy-agent: 8.0.5
-      urlpattern-polyfill: 10.1.0
-      ws: 8.20.0
-    transitivePeerDependencies:
-      - bufferutil
-      - supports-color
-      - utf-8-validate
-
   module-details-from-path@1.0.4: {}
 
   motion-dom@13.0.0:
@@ -23756,10 +23777,6 @@ snapshots:
 
   react@19.2.8: {}
 
-  read-tls-client-hello@2.0.0:
-    dependencies:
-      '@types/node': 26.6.6
-
   readable-stream@2.3.8:
     dependencies:
       core-util-is: 1.0.3
@@ -24059,6 +24076,18 @@ snapshots:
   reverse-arguments@1.0.0: {}
 
   robust-predicates@3.0.3: {}
+
+  rollup-plugin-dts@6.5.1(@typescript/typescript6@6.0.2)(rollup@4.62.4)(typescript@7.0.2):
+    dependencies:
+      '@jridgewell/remapping': 2.3.5
+      '@jridgewell/sourcemap-codec': 1.6.0
+      convert-source-map: 2.0.0
+      magic-string: 0.30.21
+      rollup: 4.62.4
+      typescript: 7.0.2
+    optionalDependencies:
+      '@babel/code-frame': 8.0.6
+      '@typescript/typescript6': 6.0.2
 
   rollup@4.62.4:
     dependencies:

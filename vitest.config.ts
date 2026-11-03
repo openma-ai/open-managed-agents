@@ -442,6 +442,7 @@ export default defineConfig({
       "scripts/migration-compatibility.test.mjs",
       "scripts/ci-impact-surfaces.test.mjs",
       "scripts/release-check.test.mjs",
+      "scripts/build-public-package.test.mjs",
       // Needs full git history and tags. The release-check CI job runs it;
       // workerd cannot import node:child_process from this file.
       "scripts/release-check.history.test.mjs",
@@ -531,6 +532,7 @@ export default defineConfig({
       "packages/session-thread-store-sql/test/**",
       "packages/session-runtime/test/**",
       "packages/vault-store-sql/test/**",
+      "packages/stores-sql/test/**",
     ],
     pool: cloudflarePool(cfWorkerOptions),
   },

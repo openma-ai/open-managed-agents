@@ -9,8 +9,8 @@ import type {
   RetrieveTunnelCertificateResult,
   TunnelCertificateQuery,
   TunnelCertificatesApplicationPort,
-} from "../ports/tunnel-certificates";
-import type { TunnelCertificateAuthorityPort } from "./certificate-authority";
+} from "@openma/core";
+import type { TunnelCertificateAuthorityPort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

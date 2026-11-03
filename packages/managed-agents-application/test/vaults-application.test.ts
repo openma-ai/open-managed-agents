@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Vault } from "../src/domain/vault";
+import type { Vault } from "@openma/core";
 import { VaultsApplicationService } from "../src/index";
 
 interface StoredVault {

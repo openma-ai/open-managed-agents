@@ -6,7 +6,7 @@ import type {
   MemoryDocumentStore,
   MemoryVersionListPosition,
 } from "@open-managed-agents/memory-document-store";
-import type { MemoryProjection } from "../ports/memories";
+import type { MemoryProjection } from "@openma/core";
 import type {
   ListMemoryVersionsQuery,
   ListMemoryVersionsResult,
@@ -16,7 +16,7 @@ import type {
   RedactMemoryVersionResult,
   RetrieveMemoryVersionQuery,
   RetrieveMemoryVersionResult,
-} from "../ports/memory-versions";
+} from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

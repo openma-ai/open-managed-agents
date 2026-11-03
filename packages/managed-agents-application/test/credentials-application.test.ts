@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Credential } from "../src/domain/credential";
+import type { Credential } from "@openma/core";
 import { CredentialsApplicationService } from "../src/index";
 
 interface StoredCredential {

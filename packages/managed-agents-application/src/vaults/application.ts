@@ -1,4 +1,4 @@
-import type { Vault } from "../domain/vault";
+import type { Vault } from "@openma/core";
 import type {
   ArchiveVaultCommand,
   ArchiveVaultResult,
@@ -13,7 +13,7 @@ import type {
   UpdateVaultCommand,
   UpdateVaultResult,
   VaultsApplicationPort,
-} from "../ports/vaults";
+} from "@openma/core";
 import type { VaultStore } from "@open-managed-agents/vault-store";
 
 const DEFAULT_PAGE_SIZE = 20;

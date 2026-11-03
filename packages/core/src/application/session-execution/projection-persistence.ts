@@ -1,0 +1,35 @@
+import type { Session } from "../domain/session.js";
+import type { StoredSession } from "../../storage/sessions.js";
+import type {
+  EnvironmentWorkExecutionFence,
+  RuntimeProducedSessionEvent,
+  SessionExecutionFence,
+} from "./port.js";
+
+export interface FindRuntimeProjectionSession {
+  workspaceId: string;
+  sessionId: string;
+}
+
+export interface ProjectSessionRuntimeState extends FindRuntimeProjectionSession {
+  expectedRevision: number;
+  events: RuntimeProducedSessionEvent[];
+  next: Session;
+  executionFence?: SessionExecutionFence;
+  environmentWorkFence?: EnvironmentWorkExecutionFence;
+}
+
+export type ProjectSessionRuntimeStateResult =
+  | { type: "projected"; record: StoredSession }
+  | { type: "not_found" }
+  | { type: "execution_fence_lost" }
+  | { type: "revision_conflict"; actualRevision: number };
+
+export interface SessionRuntimeProjectionPersistencePort {
+  findCurrent(
+    input: FindRuntimeProjectionSession,
+  ): Promise<StoredSession | null>;
+  project(
+    input: ProjectSessionRuntimeState,
+  ): Promise<ProjectSessionRuntimeStateResult>;
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SkillsApplicationService } from "../src/skills/application";
 import { SkillVersionsApplicationService } from "../src/skills/versions-application";
-import type { SkillPackageCompilerPort } from "../src/skills/package-compiler";
+import type { SkillPackageCompilerPort } from "@openma/core";
 import type { SkillStore } from "@open-managed-agents/skill-store";
 
 const archive = {

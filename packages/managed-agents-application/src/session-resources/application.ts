@@ -1,4 +1,4 @@
-import type { SessionResource } from "../domain/session-resource";
+import type { SessionResource } from "@openma/core";
 import type {
   AddSessionFileResourceCommand,
   AddSessionResourceResult,
@@ -11,8 +11,8 @@ import type {
   SessionResourcesApplicationPort,
   UpdateSessionResourceCommand,
   UpdateSessionResourceResult,
-} from "../ports/session-resources";
-import type { SessionFileSourcePort } from "./file-source";
+} from "@openma/core";
+import type { SessionFileSourcePort } from "@openma/core";
 import type { SessionResourceStore } from "@open-managed-agents/session-resource-store";
 
 export interface SessionResourcesApplicationServiceDependencies {

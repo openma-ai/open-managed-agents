@@ -22,5 +22,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openma/core": "workspace:*"
   }
 }

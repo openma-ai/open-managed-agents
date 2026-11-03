@@ -1,0 +1,91 @@
+{
+  "name": "@openma/core",
+  "version": "0.0.0",
+  "description": "OpenMA domain models and Ports: the types-only contract for custom stores, admission hooks and control-plane adapters.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./domain": "./src/domain/index.ts",
+    "./domain/*": "./src/domain/*/index.ts",
+    "./ports": "./src/application/ports.ts",
+    "./ports/*": "./src/application/ports/*.ts",
+    "./runtime/*": "./src/runtime/*.ts",
+    "./storage": "./src/storage/index.ts",
+    "./storage/*": "./src/storage/*.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-public-package.mjs --types-only",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "node ../../scripts/build-public-package.mjs --assert-pnpm-publish"
+  },
+  "publishConfig": {
+    "access": "public",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./domain": {
+        "types": "./dist/domain/index.d.ts",
+        "default": "./dist/domain/index.js"
+      },
+      "./domain/*": {
+        "types": "./dist/domain/*/index.d.ts",
+        "default": "./dist/domain/*/index.js"
+      },
+      "./ports": {
+        "types": "./dist/application/ports.d.ts",
+        "default": "./dist/application/ports.js"
+      },
+      "./ports/*": {
+        "types": "./dist/application/ports/*.d.ts",
+        "default": "./dist/application/ports/*.js"
+      },
+      "./runtime/*": {
+        "types": "./dist/runtime/*.d.ts",
+        "default": "./dist/runtime/*.js"
+      },
+      "./storage": {
+        "types": "./dist/storage/index.d.ts",
+        "default": "./dist/storage/index.js"
+      },
+      "./storage/*": {
+        "types": "./dist/storage/*.d.ts",
+        "default": "./dist/storage/*.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "keywords": [
+    "openma",
+    "managed-agents",
+    "agents",
+    "ports",
+    "types"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://openma.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openma-ai/open-managed-agents",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/openma-ai/open-managed-agents/issues"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.3"
+  }
+}

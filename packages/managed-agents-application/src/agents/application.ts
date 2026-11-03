@@ -27,7 +27,7 @@ import type { AgentStore } from "@open-managed-agents/agent-store";
 import type {
   AgentMultiagent,
   AgentMultiagentInput,
-} from "../domain/agent-definition";
+} from "@openma/core";
 import {
   resolveAgentSkills,
   resolveAgentTools,

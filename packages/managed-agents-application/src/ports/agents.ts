@@ -1,2 +1,2 @@
-// Application-owned inbound port compatibility module.
-export type * from "../agents/port";
+// Moved to @openma/core (#434). Kept so existing imports keep working.
+export type * from "@openma/core/ports/agents";

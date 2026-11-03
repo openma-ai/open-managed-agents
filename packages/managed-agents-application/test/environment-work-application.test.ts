@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { Environment } from "../src/domain/environment";
+import type { Environment } from "@openma/core";
 import type { EnvironmentWork } from "@open-managed-agents/domain/environment-work";
 import type {
   EnvironmentWorkStore,
   StoredEnvironmentWork,
 } from "@open-managed-agents/environment-work-store";
-import type { Session } from "../src/domain/session";
+import type { Session } from "@openma/core";
 import { EnvironmentWorkApplicationService } from "../src/environment-work/application";
-import type { EnvironmentWorkAvailabilityWaiterPort } from "../src/environment-work/availability-waiter";
-import type { EnvironmentWorkEnvironmentSourcePort } from "../src/environment-work/environment-source";
+import type { EnvironmentWorkAvailabilityWaiterPort } from "@openma/core";
+import type { EnvironmentWorkEnvironmentSourcePort } from "@openma/core";
 import { EnvironmentWorkEnqueuerService } from "../src/environment-work/enqueuer-application";
 
 const environment: Environment = {

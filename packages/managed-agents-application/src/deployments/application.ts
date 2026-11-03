@@ -3,8 +3,8 @@ import type {
   DeploymentPauseErrorType,
   DeploymentResource,
   DeploymentResourceSecret,
-} from "../domain/deployment";
-import type { DeploymentRun } from "../domain/deployment-run";
+} from "@openma/core";
+import type { DeploymentRun } from "@openma/core";
 import type {
   CreateDeploymentCommand,
   CreateDeploymentResult,
@@ -18,18 +18,18 @@ import type {
   RunDeploymentResult,
   UpdateDeploymentCommand,
   UpdateDeploymentResult,
-} from "../ports/deployments";
-import type { DeploymentAgentSourcePort } from "./agent-source";
-import type { DeploymentEnvironmentSourcePort } from "./environment-source";
-import type { DeploymentFileSourcePort } from "./file-source";
-import type { DeploymentMemoryStoreSourcePort } from "./memory-store-source";
+} from "@openma/core";
+import type { DeploymentAgentSourcePort } from "@openma/core";
+import type { DeploymentEnvironmentSourcePort } from "@openma/core";
+import type { DeploymentFileSourcePort } from "@openma/core";
+import type { DeploymentMemoryStoreSourcePort } from "@openma/core";
 import type {
   DeploymentStore,
   StoredDeployment,
 } from "@open-managed-agents/deployment-store";
-import type { DeploymentSchedulePlannerPort } from "./schedule-planner";
-import type { DeploymentVaultSourcePort } from "./vault-source";
-import type { DeploymentSessionLauncherPort } from "./session-launcher";
+import type { DeploymentSchedulePlannerPort } from "@openma/core";
+import type { DeploymentVaultSourcePort } from "@openma/core";
+import type { DeploymentSessionLauncherPort } from "@openma/core";
 import type { DeploymentRunStore } from "@open-managed-agents/deployment-run-store";
 
 const DEFAULT_PAGE_SIZE = 20;

@@ -4,9 +4,9 @@ import type {
   EnvironmentSessionWorkEnqueuerPort,
   StopEnvironmentSessionWork,
   StopEnvironmentSessionWorkResult,
-} from "./enqueuer";
-import type { EnvironmentWorkSessionCredentialIssuerPort } from "./credential-issuer";
-import type { EnvironmentWorkWakeupPort } from "./wakeup";
+} from "@openma/core";
+import type { EnvironmentWorkSessionCredentialIssuerPort } from "@openma/core";
+import type { EnvironmentWorkWakeupPort } from "@openma/core";
 import type { EnvironmentWorkStore } from "@open-managed-agents/environment-work-store";
 
 export interface EnvironmentWorkEnqueuerServiceDependencies {

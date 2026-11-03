@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@open-managed-agents/domain": "workspace:*"
+    "@open-managed-agents/domain": "workspace:*",
+    "@openma/core": "workspace:*"
   }
 }

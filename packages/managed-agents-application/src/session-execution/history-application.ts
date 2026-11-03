@@ -2,7 +2,7 @@ import type {
   LoadSessionRuntimeHistoryQuery,
   LoadSessionRuntimeHistoryResult,
   SessionRuntimeHistoryApplicationPort,
-} from "./port";
+} from "@openma/core";
 import type {
   SessionRuntimeHistorySourcePort,
 } from "@open-managed-agents/session-runtime-contract/history";

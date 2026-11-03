@@ -1,6 +1,3 @@
-export type * from "./bootstrap";
-export type * from "./event";
-export type * from "./resource";
-export type * from "./session";
-export type * from "./thread";
+// Moved to @openma/core (#434). Kept so existing imports keep working.
+export type * from "@openma/core/domain/sessions";
 export * from "./budget";

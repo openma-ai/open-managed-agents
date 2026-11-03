@@ -1,14 +1,2 @@
-export interface FileContentLocation {
-  workspaceId: string;
-  fileId: string;
-}
-
-export interface PutFileContent extends FileContentLocation {
-  content: Uint8Array;
-}
-
-export interface FileContentStore {
-  put(input: PutFileContent): Promise<void>;
-  get(input: FileContentLocation): Promise<Uint8Array | null>;
-  delete(input: FileContentLocation): Promise<void>;
-}
+// Moved to @openma/core (#434). Kept so existing imports keep working.
+export type * from "@openma/core/storage/file-content";

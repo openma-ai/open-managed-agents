@@ -10,7 +10,7 @@ import type {
   AgentToolDefaultConfig,
   AgentToolDefaultConfigInput,
   AgentToolInput,
-} from "../domain/agent-definition";
+} from "@openma/core";
 
 const DEFAULT_PERMISSION_POLICY: AgentPermissionPolicy = {
   type: "always_allow",

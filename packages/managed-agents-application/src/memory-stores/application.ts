@@ -14,7 +14,7 @@ import type {
   RetrieveMemoryStoreResult,
   UpdateMemoryStoreCommand,
   UpdateMemoryStoreResult,
-} from "../ports/memory-stores";
+} from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

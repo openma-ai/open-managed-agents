@@ -10,8 +10,8 @@ import type {
   RetrieveSkillQuery,
   RetrieveSkillResult,
   SkillsApplicationPort,
-} from "../ports/skills";
-import type { SkillPackageCompilerPort } from "./package-compiler";
+} from "@openma/core";
+import type { SkillPackageCompilerPort } from "@openma/core";
 
 export interface SkillsApplicationServiceDependencies {
   workspaceId: string;

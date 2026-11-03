@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemorySessionStore } from "@open-managed-agents/session-store-memory";
-import type { Agent } from "../src/domain/agent";
-import type { Environment } from "../src/domain/environment";
+import type { Agent } from "@openma/core";
+import type { Environment } from "@openma/core";
 import {
   SessionCreateAdmissionService,
   SessionsApplicationService,

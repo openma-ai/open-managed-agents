@@ -5,4 +5,4 @@ export type {
   ListPersistedSessionEvents,
   SessionEventListPosition,
   SessionEventLogStore as SessionEventPersistencePort,
-} from "@open-managed-agents/session-event-store";
+} from "@openma/core/storage/session-events";

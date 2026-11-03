@@ -1,13 +1,13 @@
 import { validateBudgetUpdate } from "./budget";
-import type { Agent } from "../domain/agent";
-import type { Session, SessionAgent } from "../domain/session";
-import type { SessionBootstrapEvent } from "../domain/session-bootstrap";
-import type { SessionThreadAgent } from "../domain/session-thread";
+import type { Agent } from "@openma/core";
+import type { Session, SessionAgent } from "@openma/core";
+import type { SessionBootstrapEvent } from "@openma/core";
+import type { SessionThreadAgent } from "@openma/core";
 import {
   resolveAgentSkills,
   resolveAgentTools,
 } from "../agents/definition-resolution";
-import type { AgentModelInput } from "../ports/agents";
+import type { AgentModelInput } from "@openma/core";
 import type {
   ArchiveSessionCommand,
   ArchiveSessionResult,
@@ -24,19 +24,20 @@ import type {
   SpendLimit,
   UpdateSessionCommand,
   UpdateSessionResult,
-} from "../ports/sessions";
-import type { SessionAgentSelector } from "../ports/sessions";
-import type { SessionAgentSourcePort } from "./agent-source";
-import type { SessionEnvironmentSourcePort } from "./environment-source";
+} from "@openma/core";
+import type { SessionAgentSelector } from "@openma/core";
+import type { SessionAgentSourcePort } from "@openma/core";
+import type { SessionEnvironmentSourcePort } from "@openma/core";
 import type { SessionStore } from "@open-managed-agents/session-store";
-import type { SessionResourceResolverPort } from "./resource-resolver";
-import type { SessionLifecycleCommandPort } from "../session-execution/lifecycle";
-import { sessionCreateDenialMessage, type SessionCreateAdmissionPort } from "./admission";
+import type { SessionResourceResolverPort } from "@openma/core";
+import type { SessionLifecycleCommandPort } from "@openma/core";
+import { sessionCreateDenialMessage } from "./admission";
+import type { SessionCreateAdmissionPort } from "@openma/core";
 import type {
   DeploymentSessionLauncherPort,
   LaunchDeploymentSession,
   LaunchDeploymentSessionResult,
-} from "../deployments/session-launcher";
+} from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -114,7 +115,7 @@ export interface SessionsApplicationServiceDependencies {
   ids: { nextSessionId(): string };
   /** Emits `session.updated` for budget changes and resumes a session paused
    * at budget_reached. Optional: without it budget changes are stored only. */
-  budgetEvents?: Pick<Required<import("../ports/session-events").SessionEventsApplicationPort>, "recordBudgetUpdate">;
+  budgetEvents?: Pick<Required<import("@openma/core").SessionEventsApplicationPort>, "recordBudgetUpdate">;
 }
 
 function snapshotThreadAgent(agent: Agent): SessionThreadAgent {

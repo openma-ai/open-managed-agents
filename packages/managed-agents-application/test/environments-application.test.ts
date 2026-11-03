@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Environment } from "../src/domain/environment";
+import type { Environment } from "@openma/core";
 import { EnvironmentsApplicationService } from "../src/index";
 
 interface StoredEnvironment {

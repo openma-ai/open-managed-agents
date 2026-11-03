@@ -1,0 +1,83 @@
+import type {
+  SendableSessionEvent,
+  SentSessionEvent,
+  SessionEventDeltaType,
+  SessionEventView,
+  StreamSessionEvent,
+} from "../domain/session-event.js";
+import type { Session } from "../../domain/sessions/index.js";
+
+export type * from "../domain/session-event.js";
+
+export interface SendSessionEventsCommand {
+  sessionId: string;
+  events: SendableSessionEvent[];
+  /** Retries of the same logical input return its original accepted events. */
+  idempotencyKey?: string;
+  /** Bind state-dependent validation to the existing native Session CAS. */
+  expectedRevision?: number;
+}
+
+export interface ListSessionEventsQuery {
+  sessionId: string;
+  pageSize?: number;
+  cursor?: string;
+  createdAfter?: string;
+  createdAtOrAfter?: string;
+  createdBefore?: string;
+  createdAtOrBefore?: string;
+  order?: "asc" | "desc";
+  types?: string[];
+}
+
+export interface SessionEventsPage {
+  events: SessionEventView[];
+  nextCursor: string | null;
+}
+
+export interface StreamSessionEventsQuery {
+  sessionId: string;
+  deltaEventTypes?: SessionEventDeltaType[];
+}
+
+export type SendSessionEventsResult =
+  | { type: "accepted"; events?: SentSessionEvent[] }
+  | { type: "idempotency_conflict"; message: string }
+  | { type: "version_conflict"; message: string }
+  | { type: "invalid_request"; message: string }
+  | { type: "admission_denied"; status: number; body: object }
+  | { type: "not_found" };
+
+export type ListSessionEventsResult =
+  | { type: "page"; page: SessionEventsPage }
+  | { type: "invalid_request"; message: string }
+  | { type: "not_found" };
+
+export type StreamSessionEventsResult =
+  | { type: "stream"; events: AsyncIterable<StreamSessionEvent> }
+  | { type: "not_found" };
+
+export interface RecordBudgetUpdateCommand {
+  sessionId: string;
+  /** The session as it was before the budget update was stored. */
+  previous: Session;
+}
+
+export type RecordBudgetUpdateResult =
+  | { type: "recorded"; resumed: boolean }
+  | { type: "not_found" };
+
+export interface SessionEventsApplicationPort {
+  /** Emit the official `session.updated` for a stored budget change and, when
+   * the change lifts a budget_reached pause, admit a continuation execution. */
+  recordBudgetUpdate?(command: RecordBudgetUpdateCommand): Promise<RecordBudgetUpdateResult>;
+  sendSessionEvents(
+    command: SendSessionEventsCommand,
+  ): Promise<SendSessionEventsResult>;
+  listSessionEvents(
+    query: ListSessionEventsQuery,
+  ): Promise<ListSessionEventsResult>;
+  streamSessionEvents(
+    query: StreamSessionEventsQuery,
+  ): Promise<StreamSessionEventsResult>;
+}

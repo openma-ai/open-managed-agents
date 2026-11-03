@@ -10,13 +10,14 @@ import type {
   StreamSessionEventsQuery,
   StreamSessionEventsResult,
   SessionEventsApplicationPort,
-} from "../ports/session-events";
+} from "@openma/core";
 import type { SessionEventLogStore } from "@open-managed-agents/session-event-store";
 import { sessionEventSortTime } from "@open-managed-agents/session-event-store";
-import type { SessionSourcePort } from "./session-source";
-import type { SessionEventStreamPort } from "./stream";
-import type { SessionEventDispatchPort } from "../session-execution/events";
-import { admitAllSessionWork, type SessionWorkAdmissionPort } from "../sessions/work-admission";
+import type { SessionSourcePort } from "@openma/core";
+import type { SessionEventStreamPort } from "@openma/core";
+import type { SessionEventDispatchPort } from "@openma/core";
+import { admitAllSessionWork } from "../sessions/work-admission";
+import type { SessionWorkAdmissionPort } from "@openma/core";
 import type {
   SessionExecutionContextSourcePort,
 } from "@open-managed-agents/session-runtime-contract/context";
@@ -29,7 +30,7 @@ import {
 import type {
   RecordBudgetUpdateCommand,
   RecordBudgetUpdateResult,
-} from "../ports/session-events";
+} from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -175,10 +176,10 @@ function toSentEvent(
 }
 
 function applyAcceptedEvents(
-  current: import("../domain/session").Session,
+  current: import("@openma/core").Session,
   events: SentSessionEvent[],
   acceptedAt: string,
-): import("../domain/session").Session {
+): import("@openma/core").Session {
   const next = structuredClone(current);
   if (acceptedAt > next.updatedAt) next.updatedAt = acceptedAt;
   for (const event of events) {

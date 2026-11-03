@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Agent } from "../src/domain/agent";
-import type { Deployment } from "../src/domain/deployment";
-import type { Environment } from "../src/domain/environment";
+import type { Agent } from "@openma/core";
+import type { Deployment } from "@openma/core";
+import type { Environment } from "@openma/core";
 import { SessionsApplicationService } from "../src/sessions/application";
 import { admitAllSessionCreates } from "../src/sessions/admission";
 

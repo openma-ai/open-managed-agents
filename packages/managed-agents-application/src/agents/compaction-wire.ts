@@ -2,7 +2,7 @@ import type {
   AgentContextManagement,
   AgentOpenAiModelSettings,
   AgentOpenMaExtensions,
-} from "../domain/agent";
+} from "@openma/core";
 import type {
   AgentContextManagementInput,
   AgentOpenMaInput,

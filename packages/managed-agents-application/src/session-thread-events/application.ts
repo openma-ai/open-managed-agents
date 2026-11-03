@@ -4,14 +4,14 @@ import type {
   SessionThreadEventsApplicationPort,
   StreamSessionThreadEventsQuery,
   StreamSessionThreadEventsResult,
-} from "../ports/session-thread-events";
-import type { SessionEventView } from "../ports/session-events";
+} from "@openma/core";
+import type { SessionEventView } from "@openma/core";
 import type { SessionThreadEventStore } from "@open-managed-agents/session-event-store";
-import type { SessionThreadEventStreamPort } from "./stream";
+import type { SessionThreadEventStreamPort } from "@openma/core";
 import type {
   SessionThreadContext,
   SessionThreadSourcePort,
-} from "./thread-source";
+} from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

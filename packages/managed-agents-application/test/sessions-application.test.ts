@@ -3,9 +3,9 @@ import type {
   SessionStore,
   StoredSession,
 } from "@open-managed-agents/session-store";
-import type { Agent } from "../src/domain/agent";
-import type { Environment } from "../src/domain/environment";
-import type { SessionView } from "../src/ports/sessions";
+import type { Agent } from "@openma/core";
+import type { Environment } from "@openma/core";
+import type { SessionView } from "@openma/core";
 import { SessionsApplicationService, admitAllSessionCreates } from "../src/index";
 
 class MemorySessionStore implements SessionStore {

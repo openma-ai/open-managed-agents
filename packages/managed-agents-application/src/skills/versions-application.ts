@@ -12,8 +12,8 @@ import type {
   RetrieveSkillVersionQuery,
   RetrieveSkillVersionResult,
   SkillVersionsApplicationPort,
-} from "../ports/skill-versions";
-import type { SkillPackageCompilerPort } from "./package-compiler";
+} from "@openma/core";
+import type { SkillPackageCompilerPort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

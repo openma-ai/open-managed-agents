@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionResource } from "../src/domain/session-resource";
+import type { SessionResource } from "@openma/core";
 import { SessionResourcesApplicationService } from "../src/index";
 
 interface ResourceRecord {

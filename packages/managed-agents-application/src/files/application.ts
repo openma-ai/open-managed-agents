@@ -1,4 +1,4 @@
-import type { FileMetadata } from "../domain/file";
+import type { FileMetadata } from "@openma/core";
 import type {
   DownloadFileQuery,
   DownloadFileResult,
@@ -11,7 +11,7 @@ import type {
   RetrieveFileMetadataResult,
   UploadFileCommand,
   UploadFileResult,
-} from "../ports/files";
+} from "@openma/core";
 import type { FileContentStore } from "@open-managed-agents/file-content-store";
 import type { FileStore } from "@open-managed-agents/file-store";
 

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import type {
   SessionEventView,
   StreamSessionEvent,
-} from "../src/ports/session-events";
-import type { Session } from "../src/domain/session";
-import type { SessionThread } from "../src/domain/session-thread";
+} from "@openma/core";
+import type { Session } from "@openma/core";
+import type { SessionThread } from "@openma/core";
 import { SessionThreadEventsApplicationService } from "../src/index";
 
 const event = (id: string, processedAt: string): SessionEventView => ({

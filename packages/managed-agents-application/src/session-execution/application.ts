@@ -1,11 +1,11 @@
-import type { Session, SessionStatus } from "../domain/session";
+import type { Session, SessionStatus } from "@openma/core";
 import type {
   RecordSessionRuntimeEventsCommand,
   RecordSessionRuntimeEventsResult,
   RuntimeProducedSessionEvent,
   SessionRuntimeProjectionApplicationPort,
-} from "./port";
-import type { SessionRuntimeProjectionPersistencePort } from "./projection-persistence";
+} from "@openma/core";
+import type { SessionRuntimeProjectionPersistencePort } from "@openma/core";
 
 export interface SessionRuntimeProjectionApplicationServiceDependencies {
   workspaceId: string;

@@ -4,7 +4,7 @@
 // session has `budget.max_list_cost` AND its model card has pricing. These
 // application rules cover the API surface: update validation and the
 // settle-only window while a session is paused at its cap.
-import type { MonetaryAmount, Session } from "../domain/session";
+import type { MonetaryAmount, Session } from "@openma/core";
 
 export const BUDGET_SETTLE_EVENT_TYPES = [
   "user.tool_confirmation",

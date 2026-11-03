@@ -1,19 +1,2 @@
-import type { Environment } from "@open-managed-agents/domain/environments";
-import type { Session } from "@open-managed-agents/domain/sessions";
-
-export interface FindSessionExecutionContext {
-  workspaceId: string;
-  sessionId: string;
-}
-
-export interface SessionExecutionContext {
-  session: Session;
-  environment: Environment;
-  revision: number;
-}
-
-export interface SessionExecutionContextSourcePort {
-  find(
-    input: FindSessionExecutionContext,
-  ): Promise<SessionExecutionContext | null>;
-}
+// Moved to @openma/core (#434). Kept so existing imports keep working.
+export type * from "@openma/core/runtime/context";

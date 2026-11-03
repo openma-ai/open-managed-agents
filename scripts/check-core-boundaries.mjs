@@ -6,6 +6,7 @@ import {
 } from "./provider-package-boundaries.mjs";
 
 const CORE_PACKAGES = [
+  "packages/core",
   "packages/execution-control",
   "packages/managed-agents-domain",
   "packages/managed-agents-application",

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEventView } from "@open-managed-agents/domain/sessions";
 import type { MarkSessionEventsProcessed } from "@open-managed-agents/session-event-store";
-import type { SentSessionEvent } from "../src/ports/session-events";
+import type { SentSessionEvent } from "@openma/core";
 import {
   isQueuedSessionEventType,
   markSessionEventsProcessed,

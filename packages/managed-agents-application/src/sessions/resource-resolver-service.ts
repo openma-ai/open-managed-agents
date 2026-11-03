@@ -1,13 +1,13 @@
-import type { SessionResource } from "../domain/session-resource";
-import type { SessionResourceInput } from "../domain/session-resource";
-import type { SessionFileSourcePort } from "../session-resources/file-source";
-import type { SessionMemoryStoreSourcePort } from "./memory-store-source";
+import type { SessionResource } from "@openma/core";
+import type { SessionResourceInput } from "@openma/core";
+import type { SessionFileSourcePort } from "@openma/core";
+import type { SessionMemoryStoreSourcePort } from "@openma/core";
 import type {
   ResolveSessionResources,
   ResolveSessionResourcesResult,
   ResolvedSessionResourceSecret,
   SessionResourceResolverPort,
-} from "./resource-resolver";
+} from "@openma/core";
 
 export interface SessionResourceResolverServiceDependencies {
   files: SessionFileSourcePort;

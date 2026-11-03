@@ -6,11 +6,11 @@ import type {
   RetrieveSessionThreadQuery,
   RetrieveSessionThreadResult,
   SessionThreadsApplicationPort,
-} from "../ports/session-threads";
-import type { Session } from "../domain/session";
-import type { SessionSourcePort } from "../session-events/session-source";
+} from "@openma/core";
+import type { Session } from "@openma/core";
+import type { SessionSourcePort } from "@openma/core";
 import type { SessionThreadStore } from "@open-managed-agents/session-thread-store";
-import type { SessionThreadLifecycleCommandPort } from "../session-execution/threads";
+import type { SessionThreadLifecycleCommandPort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

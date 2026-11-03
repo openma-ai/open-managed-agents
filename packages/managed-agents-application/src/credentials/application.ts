@@ -3,7 +3,7 @@ import type {
   CredentialAuth,
   CredentialOAuthRefresh,
   CredentialTokenEndpointAuth,
-} from "../domain/credential";
+} from "@openma/core";
 import type {
   ArchiveCredentialCommand,
   ArchiveCredentialResult,
@@ -26,14 +26,14 @@ import type {
   UpdateCredentialResult,
   ValidateCredentialCommand,
   ValidateCredentialResult,
-} from "../ports/credentials";
+} from "@openma/core";
 import type { CredentialStore } from "@open-managed-agents/credential-store";
 import type {
   CredentialValidationProbePort,
   CredentialValidationRotation,
-} from "./validation";
+} from "@openma/core";
 import type { CredentialCliCatalogPort } from "./cli-catalog";
-import type { CredentialVaultSourcePort } from "./vault-source";
+import type { CredentialVaultSourcePort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

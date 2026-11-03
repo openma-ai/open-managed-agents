@@ -1,1 +1,2 @@
-export type * from "./memory-store";
+// Moved to @openma/core (#434). Kept so existing imports keep working.
+export type * from "@openma/core/domain/memory-stores";

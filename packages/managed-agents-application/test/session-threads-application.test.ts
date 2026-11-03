@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Session } from "../src/domain/session";
-import type { SessionThread } from "../src/domain/session-thread";
+import type { Session } from "@openma/core";
+import type { SessionThread } from "@openma/core";
 import { SessionThreadsApplicationService } from "../src/index";
 
 const thread = (id: string, createdAt: string): SessionThread => ({

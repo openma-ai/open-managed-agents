@@ -12,4 +12,4 @@ export type {
   ListAgentVersionRecords,
   ReplaceAgentRecord,
   ReplaceAgentRecordResult,
-} from "@open-managed-agents/agent-store";
+} from "@openma/core/storage/agents";

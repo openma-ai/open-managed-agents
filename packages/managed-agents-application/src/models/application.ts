@@ -4,8 +4,8 @@ import type {
   ModelsApplicationPort,
   RetrieveModelQuery,
   RetrieveModelResult,
-} from "../ports/models";
-import type { ModelCatalogSourcePort } from "./catalog-source";
+} from "@openma/core";
+import type { ModelCatalogSourcePort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

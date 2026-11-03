@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FileMetadataView } from "../src/ports/files";
+import type { FileMetadataView } from "@openma/core";
 import { FilesApplicationService } from "../src/index";
 
 class InMemoryFilePersistence {

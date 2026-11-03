@@ -4,7 +4,7 @@ import type {
   AgentMultiagentPredefinedAgent,
   AgentMultiagentPredefinedAgentInput,
   AgentMultiagentSubagentsInput,
-} from "../domain/agent-definition";
+} from "@openma/core";
 
 type MergedPredefinedAgent =
   | AgentMultiagentPredefinedAgentInput

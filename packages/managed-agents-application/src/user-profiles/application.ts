@@ -12,8 +12,8 @@ import type {
   UpdateUserProfileCommand,
   UpdateUserProfileResult,
   UserProfilesApplicationPort,
-} from "../ports/user-profiles";
-import type { UserProfileEnrollmentIssuerPort } from "./enrollment-issuer";
+} from "@openma/core";
+import type { UserProfileEnrollmentIssuerPort } from "@openma/core";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;

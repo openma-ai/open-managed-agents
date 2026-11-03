@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionEventLogStore } from "@open-managed-agents/session-event-store";
-import type { Environment } from "../src/domain/environment";
-import type { Session } from "../src/domain/session";
+import type { Environment } from "@openma/core";
+import type { Session } from "@openma/core";
 import {
   SessionEventsApplicationService,
   type SessionWorkAdmissionDecision,
