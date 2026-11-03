@@ -1,6 +1,6 @@
 // Vitest config local to @open-managed-agents/session-runtime.
 //
-// The root vitest.config.ts pins everything to @cloudflare/vitest-pool-
+// The root vitest.config.ts pins everything to @cloudflare/vitest-plugin
 // workers, which runs in workerd — fine for code that lives in apps/agent
 // or apps/main, but breaks anything that needs Node-native bindings like
 // better-sqlite3. The adapter unit tests here use better-sqlite3 in

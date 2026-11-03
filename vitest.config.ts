@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
-import { cloudflarePool, cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflarePool, cloudflareTest } from "@cloudflare/vitest-plugin";
 import type { Plugin } from "vite";
 
 const requireFromConfig = createRequire(import.meta.url);
@@ -84,7 +84,7 @@ export default defineConfig({
   // alone doesn't expose it, only the plugin does.
   plugins: [stripUnpublishedDependencySourcemaps(), cloudflareTest(cfWorkerOptions)],
   resolve: {
-    // vitest-pool-workers bridges these into the miniflare/workerd runtime
+    // vitest-plugin bridges these into the miniflare/workerd runtime
     // by string match — RegExp entries only work for the vitest module graph
     // (Vite resolver), not for workerd's package resolution. So every
     // workspace package + subpath that workerd-side test code imports

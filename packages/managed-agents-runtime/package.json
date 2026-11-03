@@ -19,6 +19,6 @@
     "@openma/common": "^0.9.1"
   },
   "devDependencies": {
-    "vitest": "^4.1.3"
+    "vitest": "^5.0.5"
   }
 }

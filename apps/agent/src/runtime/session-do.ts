@@ -773,7 +773,7 @@ export class SessionDO extends DurableObject<Env> {
 
   // observability stub kept as a defensive no-op slot — was set to null when
   // we used cf-agents Agent (which auto-instantiated an observability sink that
-  // tripped SpanParent I/O isolation errors in vitest-pool-workers). After
+  // tripped SpanParent I/O isolation errors in vitest-plugin). After
   // dropping cf-agents the field is unused but harmless to keep so any
   // straggler `this.observability?.foo()` call elsewhere stays a no-op.
   observability: { emit?: (event: unknown) => void } | null = null;

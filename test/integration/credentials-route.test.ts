@@ -1,6 +1,6 @@
 // End-to-end integration test for OPE-7 + FK removal + services wiring.
 //
-// Drives the actual HTTP routes through vitest-pool-workers + miniflare:
+// Drives the actual HTTP routes through vitest-plugin + miniflare:
 //   - vault CRUD (still KV)
 //   - credential CRUD via the new c.var.services.credentials path
 //   - partial UNIQUE on (tenant, vault, mcp_server_url) WHERE active
