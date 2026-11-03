@@ -377,6 +377,8 @@ export {
   inferenceUsageFromSse,
   observeInferenceResponseUsage,
   withHostedInferenceBudget,
+  withHostedInferenceAdmission,
   type HostedInferenceEgress,
+  type HostedInferenceAdmissionDecision,
 } from "./usage.js";
 

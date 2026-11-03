@@ -14,7 +14,7 @@ import {
   decodeManagedStreamEvent,
   type ManagedStreamEvent,
 } from "@openma/common/protocol/managed";
-import { DEFAULT_BRIDGE_SERVER_URL } from "./bridge/lib/defaults.js";
+import { DEFAULT_API_BASE_URL, DEFAULT_BRIDGE_SERVER_URL } from "./bridge/lib/defaults.js";
 import { currentProfile } from "./bridge/lib/platform.js";
 import { withNetworkCause } from "./network-error.js";
 import { parseAgentWrite } from "./agent-write.js";
@@ -156,7 +156,7 @@ function loadConfig(): Config {
   const stored = readCredentials();
   if (envKey) {
     return {
-      baseUrl: envBase || stored?.base_url || "https://openma.dev",
+      baseUrl: envBase || stored?.base_url || DEFAULT_API_BASE_URL,
       apiKey: envKey,
       json: false,
       source: "env",
@@ -191,7 +191,7 @@ function loadConfigOptional(): Config {
   const envTenant = process.env.OMA_TENANT_ID;
   const stored = readCredentials();
   if (envKey) {
-    return { baseUrl: envBase || stored?.base_url || "https://openma.dev", apiKey: envKey, json: false, source: "env" };
+    return { baseUrl: envBase || stored?.base_url || DEFAULT_API_BASE_URL, apiKey: envKey, json: false, source: "env" };
   }
   if (stored) {
     const activeId = envTenant || stored.active_tenant_id;
@@ -200,7 +200,7 @@ function loadConfigOptional(): Config {
       return { baseUrl: envBase || stored.base_url, apiKey: profile.token, json: false, source: "stored" };
     }
   }
-  return { baseUrl: envBase || "https://openma.dev", apiKey: "", json: false, source: "missing" };
+  return { baseUrl: envBase || DEFAULT_API_BASE_URL, apiKey: "", json: false, source: "missing" };
 }
 
 // ─── API Client ───
@@ -240,10 +240,10 @@ async function apiFetch<T = unknown>(config: Config, path: string, init?: Reques
       "anthropic-beta": MANAGED_AGENTS_BETA,
       "content-type": "application/json",
       // Identify as a browser-compatible client. Node's default `node` UA
-      // gets rejected by Cloudflare's bot fight rules on api.openma.dev with
+      // gets rejected by Cloudflare's bot fight rules on the hosted API with
       // a 1010 ban; a Mozilla-style UA passes the integrity check while
       // still naming the actual client and product page for log readers.
-      "user-agent": "Mozilla/5.0 (compatible; OpenManagedAgents-CLI/0.1; +https://openma.dev)",
+      "user-agent": "Mozilla/5.0 (compatible; OpenManagedAgents-CLI/0.1; +https://openma.ai)",
       ...init?.headers,
     },
   });
@@ -279,7 +279,7 @@ async function rawStream(
     headers: {
       "x-api-key": config.apiKey,
       "anthropic-beta": MANAGED_AGENTS_BETA,
-      "user-agent": "Mozilla/5.0 (compatible; OpenManagedAgents-CLI/0.1; +https://openma.dev)",
+      "user-agent": "Mozilla/5.0 (compatible; OpenManagedAgents-CLI/0.1; +https://openma.ai)",
       ...init?.headers,
     },
   });
@@ -740,7 +740,7 @@ const commands: Cmd[] = [
     usage: "oma auth login [--base-url <url>] [--tenant <id>]", desc: "Open browser to authenticate; --tenant pre-picks a workspace",
     http: "POST   /v1/oma/me/cli-tokens (browser handoff via /cli/login)",
     async run(_config, args) {
-      const baseUrl = (flag(args, "--base-url") ?? process.env.OMA_BASE_URL ?? "https://openma.dev").replace(/\/+$/, "");
+      const baseUrl = (flag(args, "--base-url") ?? process.env.OMA_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/+$/, "");
       const tenant = flag(args, "--tenant");
       await authLogin(baseUrl, tenant);
     },
@@ -2301,7 +2301,7 @@ function usage() {
     oma api <resource>                         Show endpoints for a resource
 
 Environment:
-  OMA_BASE_URL   API base (default: https://openma.dev)
+  OMA_BASE_URL   API base (default: https://app.openma.ai)
   OMA_API_KEY    API key — overrides stored credentials when set
   XDG_CONFIG_HOME  Base dir for credentials (default: ~/.config)
 
@@ -2360,7 +2360,7 @@ async function main() {
         // Default browser-origin to wherever serverUrl points so a single
         // --server-url flips both the API endpoint AND the OAuth redirect.
         // Otherwise --server-url=https://app.staging.openma.dev would open
-        // the OAuth dance against prod openma.dev and the resulting code
+        // the OAuth dance against prod app.openma.ai and the resulting code
         // would fail at exchange ("invalid code"). Two separate flags are
         // still useful for split dev setups (web on one host, api on
         // another) — keep --browser-origin as an explicit override.

@@ -119,6 +119,26 @@ describe("Managed Agents API — POST /v1/sessions/:session_id/events", () => {
     });
   });
 
+
+  it("returns an admission hook denial with the hook's status and body", async () => {
+    const api = buildSessionEventsTestApi(makeSessionEventsPort({
+      sendSessionEvents: async () => ({
+        type: "admission_denied",
+        status: 429,
+        body: { error: { type: "host_denied", message: "denied by host" } },
+      }),
+    }));
+    const response = await api.fetch(new Request(`http://openma.test/v1/sessions/${sessionWire.id}/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01" },
+      body: JSON.stringify({ events: [{ type: "user.message", content: [{ type: "text", text: "continue" }] }] }),
+    }));
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({
+      error: { type: "host_denied", message: "denied by host" },
+    });
+  });
+
   it.each([
     {
       name: "a system.message that is not final",

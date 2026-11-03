@@ -239,6 +239,18 @@ export function buildSessionRoutes(
     if (result.type === "dependency_not_found") {
       return c.json(notFound(result.message), 404);
     }
+    // Admission rejections keep the legacy /v1/sessions body shape
+    // (`error` string, plus `balance_cents` for 402) so existing clients
+    // and the console billing UI keep working.
+    if (result.type === "rate_limited") {
+      return c.json({ error: result.message }, 429);
+    }
+    if (result.type === "payment_required") {
+      return c.json(
+        { error: result.message, balance_cents: result.balanceCents },
+        402,
+      );
+    }
 
     const session = serializeSession(result.session);
     if (session === null) {

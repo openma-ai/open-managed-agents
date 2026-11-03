@@ -14,6 +14,7 @@ import type {
 import { useApiQuery } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectOption } from "../components/Select";
 import { toast } from "sonner";
 import { Page } from "../components/Page";
@@ -262,8 +263,7 @@ export function EnvironmentDetail() {
           subtitle="Configure network access policies for sandboxes built from this environment."
         >
           <div className="space-y-4">
-            <Field label="Type">
-              <div className="w-48">
+            <Field label="Type" className="w-48 max-w-full">
                 <Select
                   value={networking.type}
                   onValueChange={(v) =>
@@ -276,7 +276,6 @@ export function EnvironmentDetail() {
                   <SelectOption value="unrestricted">Unrestricted</SelectOption>
                   <SelectOption value="limited">Limited</SelectOption>
                 </Select>
-              </div>
             </Field>
 
             <Toggle
@@ -449,7 +448,7 @@ export function EnvironmentDetail() {
           <Button variant="ghost" onClick={cancel} disabled={saving}>
             Cancel
           </Button>
-          <span className="text-xs text-fg-subtle ml-auto font-mono">
+          <span className="console-settings-resource-id text-xs text-fg-subtle font-mono">
             {env.id}
           </span>
         </div>
@@ -501,21 +500,7 @@ function Toggle({
   return (
     <Label className="flex items-center justify-between gap-4 min-h-11 sm:min-h-0 cursor-pointer">
       <span className="text-sm text-fg">{label}</span>
-      <Button variant="ghost"
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
-          checked ? "bg-brand" : "bg-bg-surface border border-border"
-        }`}
-      >
-        <span
-          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-bg shadow transition-transform ${
-            checked ? "translate-x-5" : "translate-x-0.5"
-          }`}
-        />
-      </Button>
+      <Switch checked={checked} onCheckedChange={onChange} />
     </Label>
   );
 }

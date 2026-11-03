@@ -131,7 +131,7 @@ export class OpenMA {
 
     this.anthropic = new Anthropic({
       ...anthropicOptions,
-      baseURL: options.baseURL ?? baseUrl ?? "https://openma.dev",
+      baseURL: options.baseURL ?? baseUrl ?? "https://app.openma.ai",
       authToken: options.authToken ?? bearer,
       defaultHeaders: mergeDefaultHeaders(defaultHeaders, {
         ...(activeTenantId ? { "x-active-tenant": activeTenantId } : {}),

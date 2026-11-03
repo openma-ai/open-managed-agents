@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MemorySessionStore } from "@open-managed-agents/session-store-memory";
 import type { Agent } from "../src/domain/agent";
 import type { Environment } from "../src/domain/environment";
-import { SessionsApplicationService } from "../src/index";
+import { SessionsApplicationService, admitAllSessionCreates } from "../src/index";
 
 const agent: Agent = {
   id: "agent_01",
@@ -36,6 +36,7 @@ describe("SessionsApplicationService session metadata persistence", () => {
   it("stores metadata on create and returns it on retrieve", async () => {
     const store = new MemorySessionStore();
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {

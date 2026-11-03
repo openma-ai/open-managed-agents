@@ -1,6 +1,6 @@
 {
   "name": "@openma/cli",
-  "version": "0.6.5",
+  "version": "0.7.1",
   "description": "CLI for the openma managed agents platform",
   "type": "module",
   "bin": {
@@ -32,7 +32,7 @@
     "llm"
   ],
   "license": "Apache-2.0",
-  "homepage": "https://openma.dev",
+  "homepage": "https://openma.ai",
   "repository": {
     "type": "git",
     "url": "https://github.com/openma-ai/open-managed-agents",

@@ -49,7 +49,8 @@ function emptyAnalyticsAccount(): Record<string, unknown[]> {
     d1StorageAdaptiveGroups: [],
     aiInferenceAdaptiveGroups: [],
     browserRenderingApiAdaptiveGroups: [],
-    containersMetricsAdaptiveGroups: [],
+    browserRenderingBrowserTimeUsageAdaptiveGroups: [],
+    containersUsageAdaptiveGroups: [],
   };
 }
 
@@ -228,13 +229,11 @@ describe("generateCostReport", () => {
         dimensions: { objectName: "SessionDO" },
       }],
       durableObjectsPeriodicGroups: [{
-        sum: { cpuTime: 0 },
-        max: { wallTime: 0, activeTime: 0 },
+        sum: { duration: 0, rowsRead: 0, rowsWritten: 0 },
       }],
       durableObjectsStorageGroups: [{ max: { storedBytes: 6 * gib } }],
       durableObjectsSqlStorageGroups: [{
-        sum: { rowsRead: 0, rowsWritten: 0 },
-        max: { databaseSizeBytes: 0 },
+        max: { storedBytes: 0 },
       }],
       kvOperationsAdaptiveGroups: [{
         sum: { requests: 11_000_000 },
@@ -254,17 +253,18 @@ describe("generateCostReport", () => {
       }],
       d1StorageAdaptiveGroups: [{ max: { databaseSizeBytes: 5 * gib } }],
       aiInferenceAdaptiveGroups: [{
-        sum: { neurons: 1_000 },
-        dimensions: { modelName: "test-model" },
+        sum: { totalNeurons: 1_000 },
+        dimensions: { modelId: "test-model" },
       }],
-      browserRenderingApiAdaptiveGroups: [{
-        sum: { requests: 1, durationMs: 11 * 3_600_000 },
+      browserRenderingApiAdaptiveGroups: [{ count: 1 }],
+      browserRenderingBrowserTimeUsageAdaptiveGroups: [{
+        sum: { totalSessionDurationMs: 11 * 3_600_000 },
       }],
-      containersMetricsAdaptiveGroups: [{
+      containersUsageAdaptiveGroups: [{
         sum: {
-          cpuTimeUs: 23_500 * 1_000_000,
-          memoryGiBSeconds: 90_000,
-          diskGBSeconds: 0,
+          cpuTimeSec: 23_500,
+          allocatedMemory: 90_000 * gib,
+          allocatedDisk: 0,
         },
       }],
     };

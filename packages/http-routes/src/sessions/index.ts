@@ -85,6 +85,18 @@ export interface SessionLifecycleHooks {
   preCreateGate?: (input: {
     tenantId: string;
     agentId: string;
+    environmentId: string;
+    isLocalRuntime: boolean;
+  }) => Promise<{ status: number; body: unknown } | null>;
+  /** Optional generic pre-turn admission hook for the legacy /v1/oma events
+   *  route. Returns null to proceed; { status, body } to short-circuit with
+   *  the hook's own response. The official /v1/sessions events route uses
+   *  the SessionEventsApplicationService work-admission port instead. */
+  preTurnGate?: (input: {
+    tenantId: string;
+    sessionId: string;
+    agentId: string;
+    environmentId: string;
     isLocalRuntime: boolean;
   }) => Promise<{ status: number; body: unknown } | null>;
   /** Refresh provider-tagged credentials for the given vault set + return
@@ -355,21 +367,23 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
 
     const agentIsLocalRuntime = !!agentSnapshot.runtime_binding;
 
+    let envId = body.environment_id ?? wrappedEnv;
+    if (!envId && agentIsLocalRuntime) {
+      envId = deps.localRuntimeEnvId ?? "env_local_runtime";
+    }
+
     if (deps.lifecycle?.preCreateGate) {
       const gate = await deps.lifecycle.preCreateGate({
         tenantId: t,
         agentId,
+        environmentId: envId ?? "",
         isLocalRuntime: agentIsLocalRuntime,
       });
       if (gate) return c.json(gate.body as object, gate.status as 402);
     }
 
-    let envId = body.environment_id ?? wrappedEnv;
     if (!envId) {
-      if (!agentIsLocalRuntime) {
-        return c.json({ error: "environment_id is required for cloud agents" }, 400);
-      }
-      envId = deps.localRuntimeEnvId ?? "env_local_runtime";
+      return c.json({ error: "environment_id is required for cloud agents" }, 400);
     }
 
     const envSnap = deps.loadEnvironment
@@ -701,15 +715,19 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
 
     // Official CMA settle-only window is enforced by SessionDO / Node managed
     // accept (requires_action / budget_reached → 400 for user.message, t307u).
-    // Propagate router 400s below.
-    // Events are appended one by one below, so a mixed batch (e.g.
-    // [user.interrupt, user.message] during requires_action) must be gated as
-    // a whole first: otherwise the interrupt lands and only the message 400s.
-    if (
-      body.events.length > 1 &&
-      body.events.some((ev) => ev.type === "user.message") &&
-      body.events.some((ev) => ev.type !== "user.message")
-    ) {
+    // Events are appended one by one below, so validate the whole batch first:
+    // a mixed batch (e.g. [user.interrupt, user.message]) during
+    // requires_action must not persist the interrupt and only then 400 the
+    // message. This also keeps the settle-only 400 ahead of the admission hook.
+    const needsBatchSettleCheck =
+      (body.events.length > 1 &&
+        body.events.some((ev) => ev.type === "user.message") &&
+        body.events.some((ev) => ev.type !== "user.message")) ||
+      // The admission hook below must not pre-empt the settle-only 400 for a
+      // lone user.message on CF (where preTurnGate is wired).
+      (deps.lifecycle?.preTurnGate !== undefined &&
+        body.events.some((ev) => ev.type === "user.message"));
+    if (needsBatchSettleCheck) {
       const recent = await router.getEvents(id, { order: "desc", limit: 200 });
       const reject = settleOnlyBatchRejection(
         wireEventsFromPage([...recent.data].reverse()),
@@ -718,6 +736,31 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       if (reject !== null) {
         return c.json({ type: "error", error: { type: "invalid_request_error", message: reject } }, 400);
       }
+    }
+
+    // Optional host admission hook for existing-session turns on the legacy
+    // /v1/oma route. Anything but a pure interrupt can wake or continue
+    // runtime work. Official /v1/sessions events use the SessionEvents
+    // application work-admission port.
+    if (deps.lifecycle?.preTurnGate && body.events.some((ev) => ev.type !== "user.interrupt")) {
+      const sessionRow = sess as unknown as {
+        agent_id?: string;
+        environment_id?: string;
+        agent_snapshot?: { runtime_binding?: unknown };
+      };
+      const environment = deps.loadEnvironment && sessionRow.environment_id
+        ? await deps.loadEnvironment({ tenantId: t, environmentId: sessionRow.environment_id })
+        : null;
+      const gate = await deps.lifecycle.preTurnGate({
+        tenantId: t,
+        sessionId: id,
+        agentId: sessionRow.agent_id ?? "",
+        environmentId: sessionRow.environment_id ?? "",
+        isLocalRuntime:
+          sessionRow.agent_snapshot?.runtime_binding != null ||
+          environment?.config?.type === "self_hosted",
+      });
+      if (gate) return c.json(gate.body as object, gate.status as 400);
     }
 
     for (const ev of body.events) {

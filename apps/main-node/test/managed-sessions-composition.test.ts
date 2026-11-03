@@ -1,3 +1,4 @@
+import { SessionCreateAdmissionService, admitAllSessionCreates } from "@open-managed-agents/managed-agents-application";
 import { ensureSessionExecutionCoordinatorSchema } from "@open-managed-agents/session-runtime-sql/coordination";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
@@ -106,6 +107,35 @@ describe("SqlManagedSessionsComposition", () => {
       .run();
   });
 
+  it("refuses a zero-balance cloud create before any session row, event, or execution is written", async () => {
+    await ensureSessionExecutionCoordinatorSchema(client);
+    await client.exec(`CREATE TABLE managed_session_initial_events (session_id TEXT, workspace_id TEXT, sequence INTEGER, document TEXT);`);
+    const cloudEnvironment = { ...environment, config: { type: "cloud" as const, networking: { type: "unrestricted" as const }, packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] } } };
+    await client.prepare("UPDATE managed_environments SET document = ?").bind(JSON.stringify(cloudEnvironment)).run();
+    const started: unknown[] = [];
+    const composition = new SqlManagedSessionsComposition({
+      admission: new SessionCreateAdmissionService({
+        clock: { now: () => new Date("2026-08-26T01:00:00.000Z") },
+        usageMeter: { canStartSandbox: async () => ({ ok: false, balanceCents: 0 }) },
+      }),
+      client, executionOutbox: true,
+      environments: new SqlSessionEnvironmentSource(client),
+      lifecycle: { sessionStarted: async (input) => { started.push(input); }, sessionStopped: async () => {} },
+      runtime: { sessionEventsAccepted: async () => {}, sessionThreadArchived: async () => {}, subscribe: () => (async function* () {})() },
+      sealer: { seal: async value => value },
+      clock: { now: () => new Date("2026-08-26T01:00:00.000Z") },
+      ids: { nextSessionId: () => "session_refused", nextEventId: () => "event_refused", nextOutcomeId: () => "outcome", nextResourceId: () => "resource" },
+    });
+    await expect(composition.portsFor("workspace_01").sessions.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: environment.id,
+      initialEvents: [{ type: "user.message", content: [{ type: "text", text: "First" }] }],
+    })).resolves.toEqual({ type: "payment_required", message: "Sandbox launch refused by usage meter", balanceCents: 0 });
+    for (const table of ["managed_sessions", "managed_session_events", "managed_session_executions", "managed_session_initial_events"]) {
+      await expect(client.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first()).resolves.toEqual({ count: 0 });
+    }
+    expect(started).toEqual([]);
+    await composition.stopAll();
+  });
+
   it.each(["self_hosted", "cloud"] as const)("only queues Node execution for cloud environments: %s", async (type) => {
     await ensureSessionExecutionCoordinatorSchema(client);
     await client.exec(`CREATE TABLE managed_session_initial_events (session_id TEXT, workspace_id TEXT, sequence INTEGER, document TEXT);`);
@@ -114,6 +144,7 @@ describe("SqlManagedSessionsComposition", () => {
       : { type: "cloud" as const, networking: { type: "unrestricted" as const }, packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] } } };
     await client.prepare("UPDATE managed_environments SET document = ?").bind(JSON.stringify(routedEnvironment)).run();
     const composition = new SqlManagedSessionsComposition({
+      admission: admitAllSessionCreates,
       client, executionOutbox: true,
       environments: new SqlSessionEnvironmentSource(client),
       lifecycle: { sessionStarted: async () => {}, sessionStopped: async () => {} },
@@ -134,6 +165,7 @@ describe("SqlManagedSessionsComposition", () => {
 
   it("reuses one tenant-scoped application graph while isolating workspaces", () => {
     const composition = new SqlManagedSessionsComposition({
+      admission: admitAllSessionCreates,
       client,
       environments: new SqlSessionEnvironmentSource(client),
       lifecycle: {
@@ -168,6 +200,7 @@ describe("SqlManagedSessionsComposition", () => {
   it("uses an explicitly composed event stream independently from runtime dispatch", async () => {
     const streamCalls: object[] = [];
     const composition = new SqlManagedSessionsComposition({
+      admission: admitAllSessionCreates,
       client,
       environments: new SqlSessionEnvironmentSource(client),
       lifecycle: {
@@ -239,6 +272,7 @@ describe("SqlManagedSessionsComposition", () => {
     };
     let nextEvent = 0;
     const composition = new SqlManagedSessionsComposition({
+      admission: admitAllSessionCreates,
       client,
       environments: new SqlSessionEnvironmentSource(client),
       lifecycle,
@@ -304,6 +338,7 @@ describe("SqlManagedSessionsComposition", () => {
   it("emits the Session Thread archive lifecycle only for the first transition", async () => {
     const archived: unknown[] = [];
     const composition = new SqlManagedSessionsComposition({
+      admission: admitAllSessionCreates,
       client,
       environments: new SqlSessionEnvironmentSource(client),
       lifecycle: {

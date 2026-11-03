@@ -1,6 +1,6 @@
 {
   "name": "@openma/sdk",
-  "version": "1.0.2",
+  "version": "1.1.1",
   "description": "OpenMA composition SDK: the official Anthropic Managed Agents client plus typed OpenMA extensions.",
   "type": "module",
   "main": "./dist/index.js",
@@ -39,7 +39,7 @@
     "sse"
   ],
   "license": "Apache-2.0",
-  "homepage": "https://openma.dev",
+  "homepage": "https://openma.ai",
   "repository": {
     "type": "git",
     "url": "https://github.com/openma-ai/open-managed-agents",

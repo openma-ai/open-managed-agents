@@ -152,3 +152,27 @@ export async function withHostedInferenceBudget(
   const response = await send();
   return observeInferenceResponseUsage(response, (usage) => egress.complete(usage));
 }
+
+/** Generic host admission decision for one hosted model request. */
+export type HostedInferenceAdmissionDecision =
+  | { type: "allowed" }
+  | { type: "denied"; status: number; body: unknown };
+
+/**
+ * Edge hook: let the host refuse a hosted model request before it is sent.
+ * Distinct from `budget_reached` (per-session max_list_cost). The response
+ * status and JSON body come verbatim from the host hook. A missing hook
+ * (Node / self-host) admits all.
+ */
+export async function withHostedInferenceAdmission(
+  admit: (() => Promise<HostedInferenceAdmissionDecision>) | null | undefined,
+  send: () => Promise<Response>,
+): Promise<Response> {
+  if (admit) {
+    const decision = await admit();
+    if (decision.type === "denied") {
+      return Response.json(decision.body ?? null, { status: decision.status });
+    }
+  }
+  return send();
+}

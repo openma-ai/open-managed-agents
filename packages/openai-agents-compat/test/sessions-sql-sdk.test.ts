@@ -1,3 +1,4 @@
+import { admitAllSessionCreates } from "@open-managed-agents/managed-agents-application";
 import { afterEach, describe, expect, it } from 'vitest';
 import OpenAI from 'openai';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -78,7 +79,7 @@ async function fixture() {
       async sessionThreadArchived() {},
       subscribe: () => (async function* () {})(),
     };
-    const composition = new SqlManagedSessionsComposition({ client, environments: new SqlSessionEnvironmentSource(client), lifecycle, runtime, sealer: sharedResources.secrets, clock, ids: { nextSessionId: () => `session_${++sequence}`, nextEventId: () => `event_${++sequence}`, nextOutcomeId: () => `outcome_${++sequence}`, nextResourceId: () => `resource_${++sequence}` } });
+    const composition = new SqlManagedSessionsComposition({ client, admission: admitAllSessionCreates, environments: new SqlSessionEnvironmentSource(client), lifecycle, runtime, sealer: sharedResources.secrets, clock, ids: { nextSessionId: () => `session_${++sequence}`, nextEventId: () => `event_${++sequence}`, nextOutcomeId: () => `outcome_${++sequence}`, nextResourceId: () => `resource_${++sequence}` } });
     cleanups.push(() => composition.stopAll());
     projection = new SessionRuntimeProjectionApplicationService({ workspaceId, persistence: composition.runtimeProjection });
     const ports = composition.portsFor(workspaceId);

@@ -3,6 +3,7 @@ import type { Agent } from "../src/domain/agent";
 import type { Deployment } from "../src/domain/deployment";
 import type { Environment } from "../src/domain/environment";
 import { SessionsApplicationService } from "../src/sessions/application";
+import { admitAllSessionCreates } from "../src/sessions/admission";
 
 const agent: Agent = {
   id: "agent_01",
@@ -74,6 +75,7 @@ describe("Sessions deployment launcher", () => {
       throw new Error(`unexpected ${operation} call`);
     };
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       agents: {
         findCurrent: async () => agent,
