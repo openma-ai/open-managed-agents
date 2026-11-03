@@ -129,52 +129,52 @@ const schemas = [
 
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-4">Comparison table</h2>
-      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
-        Projects are grouped by category, not ranked. Third-party details
-        reflect each project's public positioning; check licenses and hosting
-        terms on their sites.
+      <h2 class="font-display text-3xl font-bold mb-4">Selection criteria</h2>
+      <h3 class="font-semibold text-xl mb-4">Sessions, sandboxes, multi-model, self-host</h3>
+      <ComparisonTable columns={["Criterion", "What good looks like"]} rows={criteriaRows} caption="Criteria for an open-source agent platform" />
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
+        If you are building on a model SDK rather than a platform, the
+        <a href="/blog/claude-agent-sdk-vs-managed-agents/">Claude Agent SDK</a> comparison shows
+        which of these you would need to add yourself. For the category view, see
+        <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a>.
       </p>
-      <ComparisonTable columns={["Project", "Category", "Managed-runtime shape", "Notes"]} rows={comparisonRows} caption="Open-source AI agent projects compared" />
-      <div class="grid md:grid-cols-3 gap-6 mt-10 text-sm">
-        <div>
-          <h3 class="font-semibold text-lg mb-2">OpenMA (orchestration / managed runtime)</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            A meta-harness: it manages sessions, sandboxes, tools, credentials,
-            and recovery around whichever harness and model you choose,
-            including Claude Code or Codex through ACP.
-          </p>
-        </div>
-        <div>
-          <h3 class="font-semibold text-lg mb-2">TrueForge, AX, Omnara</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            Each approaches the runtime layer differently — a vendor-neutral
-            harness, a declarative orchestration runtime for large workloads,
-            and a managed agent platform. Evaluate them with the criteria below.
-          </p>
-        </div>
-        <div>
-          <h3 class="font-semibold text-lg mb-2">OpenHands (coding agent)</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            A strong open-source software-engineering agent. It belongs in a
-            comparison with Claude Code and Codex, not with agent runtimes —
-            though a coding agent can run inside one.
-          </p>
-        </div>
-      </div>
     </div>
   </section>
 
   <section class="site-container py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-4">Selection criteria</h2>
-    <h3 class="font-semibold text-xl mb-4">Sessions, sandboxes, multi-model, self-host</h3>
-    <ComparisonTable columns={["Criterion", "What good looks like"]} rows={criteriaRows} caption="Criteria for an open-source agent platform" />
-    <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
-      If you are building on a model SDK rather than a platform, the
-      <a href="/blog/claude-agent-sdk-vs-managed-agents/">Claude Agent SDK</a> comparison shows
-      which of these you would need to add yourself. For the category view, see
-      <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a>.
+    <h2 class="font-display text-3xl font-bold mb-4">Comparison table</h2>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+      Projects are grouped by category, not ranked. Third-party details
+      reflect each project's public positioning; check licenses and hosting
+      terms on their sites.
     </p>
+    <ComparisonTable columns={["Project", "Category", "Managed-runtime shape", "Notes"]} rows={comparisonRows} caption="Open-source AI agent projects compared" />
+    <div class="grid md:grid-cols-3 gap-6 mt-10 text-sm">
+      <div>
+        <h3 class="font-semibold text-lg mb-2">OpenMA (orchestration / managed runtime)</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          A meta-harness: it manages sessions, sandboxes, tools, credentials,
+          and recovery around whichever harness and model you choose,
+          including Claude Code or Codex through ACP.
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-lg mb-2">TrueForge, AX, Omnara</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Each approaches the runtime layer differently — a vendor-neutral
+          harness, a declarative orchestration runtime for large workloads,
+          and a managed agent platform. Evaluate them with the criteria above.
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-lg mb-2">OpenHands (coding agent)</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          A strong open-source software-engineering agent. It belongs in a
+          comparison with Claude Code and Codex, not with agent runtimes —
+          though a coding agent can run inside one.
+        </p>
+      </div>
+    </div>
   </section>
 
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>

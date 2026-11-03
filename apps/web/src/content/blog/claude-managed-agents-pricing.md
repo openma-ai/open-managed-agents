@@ -134,7 +134,7 @@ Two things fall out of the formula:
    hygiene are your biggest levers.
 2. For **long-running or always-on agents**, runtime becomes a real
    line item. Ten agents running around the clock are ~$584/month in
-   runtime alone, before tokens.
+   session runtime only, excluding model token costs.
 
 ## Cost shape vs self-host / OpenMA
 

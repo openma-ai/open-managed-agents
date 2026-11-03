@@ -11,7 +11,7 @@ const decisionRows = [
     "OpenMA",
     "Open managed agent runtime (meta-harness)",
     "Multi-model: Claude, OpenAI, DeepSeek, OpenRouter, custom gateways",
-    "Yes — Node/Docker, Fly.io, Vercel (beta), Cloudflare",
+    "Yes: Node/Docker, Fly.io, Vercel (beta), Cloudflare",
     "Apache 2.0",
     "Teams that want the CMA resource shape without Claude-only, Anthropic-hosted lock-in",
   ],
@@ -35,7 +35,7 @@ const decisionRows = [
     "OpenAI Agents API",
     "OpenAI-managed harness (Codex harness)",
     "OpenAI",
-    "No — self-hosted sandbox only",
+    "No, self-hosted sandbox only",
     "No (Agents SDK is open source)",
     "OpenAI-standardized teams that want a hosted runtime",
   ],
@@ -51,7 +51,7 @@ const decisionRows = [
     "DIY on the Claude Agent SDK",
     "In-process SDK you wrap yourself",
     "Claude",
-    "Yes — you build it",
+    "Yes, you build it",
     "SDK only",
     "Small teams with one agent and strong platform engineers",
   ],
@@ -103,7 +103,7 @@ const faqItems = [
   {
     question: "Is OpenMA a drop-in replacement?",
     answer:
-      "OpenMA keeps the Claude Managed Agents resource shape, so most clients switch by changing the base URL. Coverage is tracked per endpoint in the compatibility matrix in the docs — check the surfaces you rely on before migrating.",
+      "OpenMA keeps the Claude Managed Agents resource shape, so most clients switch by changing the base URL. Coverage is tracked per endpoint in the compatibility matrix in the docs; check the surfaces you rely on before migrating.",
   },
 ];
 
@@ -169,7 +169,7 @@ const schemas = [
           </h1>
           <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
             Claude Managed Agents gives you a hosted agent harness, sandboxes,
-            and long-running sessions — on Claude models, on Anthropic's
+            and long-running sessions, on Claude models, on Anthropic's
             cloud. If you need a different model, a different deployment
             boundary, or a different cost shape, this guide compares the real
             alternatives by the criteria that matter for a managed agent
@@ -203,8 +203,8 @@ const schemas = [
         servers, skills), an <strong>environment</strong> (the sandbox
         spec), start a <strong>session</strong>, and exchange
         <strong>events</strong> over a stream. Anthropic runs the agent
-        harness — the loop that builds context, calls Claude, and executes
-        tools — and bills session runtime plus tokens. For the full
+        harness (the loop that builds context, calls Claude, and executes
+        tools) and bills session runtime plus tokens. For the full
         breakdown, see <a href="/what-is-claude-managed-agents/">what Claude Managed Agents is</a>.
       </p>
       <h3 class="font-semibold text-xl mt-6 mb-2">How it differs from the Claude Agent SDK</h3>
@@ -225,33 +225,27 @@ const schemas = [
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold mb-8">Why teams look for a Claude Managed Agents alternative</h2>
-      <div class="grid md:grid-cols-3 gap-6 text-sm">
-        <div>
-          <h3 class="font-semibold text-lg mb-2">Model lock-in and multi-model needs</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            CMA runs Claude. Teams that route work by cost or capability, keep
-            a second vendor for resilience, or run open-weight models through
-            a gateway need a runtime that treats the model as configuration.
-          </p>
-        </div>
-        <div>
-          <h3 class="font-semibold text-lg mb-2">Data residency and infra control</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            The harness and session history live in Anthropic's cloud. Even
-            with a self-hosted sandbox, the control plane is not yours —
-            which matters when audit, residency, or customer contracts
-            dictate where conversation data and tool outputs are stored.
-          </p>
-        </div>
-        <div>
-          <h3 class="font-semibold text-lg mb-2">Session-hour + token economics</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            CMA bills tokens plus a session-runtime fee while sessions run.
-            Long-running or high-concurrency agents make that line visible.
-            The math is in <a href="/blog/claude-managed-agents-pricing/">session-hour and token economics</a>.
-          </p>
-        </div>
-      </div>
+      <ol class="space-y-5 text-[var(--color-fg-muted)] leading-relaxed list-decimal pl-5 max-w-3xl">
+        <li>
+          <strong class="text-[var(--color-fg)]">Model lock-in and multi-model needs.</strong>
+          CMA runs Claude. Teams that route work by cost or capability, keep
+          a second vendor for resilience, or run open-weight models through
+          a gateway need a runtime that treats the model as configuration.
+        </li>
+        <li>
+          <strong class="text-[var(--color-fg)]">Data residency and infra control.</strong>
+          The harness and session history live in Anthropic's cloud. Even
+          with a self-hosted sandbox, the control plane is not yours, which
+          matters when audit, residency, or customer contracts dictate where
+          conversation data and tool outputs are stored.
+        </li>
+        <li>
+          <strong class="text-[var(--color-fg)]">Session-hour + token economics.</strong>
+          CMA bills tokens plus a session-runtime fee while sessions run.
+          Long-running or high-concurrency agents make that line visible.
+          The math is in <a href="/blog/claude-managed-agents-pricing/">session-hour and token economics</a>.
+        </li>
+      </ol>
     </div>
   </section>
 
@@ -399,7 +393,7 @@ const schemas = [
     <ul class="space-y-3 text-[var(--color-fg-muted)] leading-relaxed list-disc pl-5 max-w-3xl">
       <li>You like the Claude Managed Agents API shape but need models beyond Claude.</li>
       <li>Session history, credentials, and outputs must stay on infrastructure you control.</li>
-      <li>You want to choose — or write — the harness and the sandbox provider.</li>
+      <li>You want to choose, or write, the harness and the sandbox provider.</li>
       <li>You want Claude-compatible and OpenAI Agents API-compatible endpoints over the same sessions.</li>
       <li>You are comfortable operating a service, or prefer the hosted option with BYOK models.</li>
     </ul>

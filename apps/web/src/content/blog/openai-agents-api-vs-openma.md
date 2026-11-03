@@ -86,8 +86,10 @@ managed runtime.
 
 ### Cost
 
-The managed API adds runtime and sandbox costs on top of model tokens;
-the SDK adds your own compute and operations. Compare cost per
+The managed API is billed separately from model tokens, and its runtime
+and sandbox components should be checked against
+[OpenAI's current pricing](https://openai.com/api/pricing/) rather than
+assumed. The SDK adds your own compute and operations. Compare cost per
 completed task, not per request — agents loop, retry, and call tools.
 
 ### Data control
@@ -106,7 +108,7 @@ session history, tool output, and credentials are stored.
 | Sessions | Hosted, durable | Hosted, durable |
 | Sandbox | Hosted or self-hosted sandbox | Cloud sandbox or self-hosted sandbox |
 | Control plane | OpenAI | Anthropic |
-| Pricing shape | Tokens + OpenAI's published runtime/sandbox charges | Tokens + $0.08 per running session-hour |
+| Pricing shape | Tokens + runtime and sandbox usage (see [OpenAI pricing](https://openai.com/api/pricing/)) | Tokens + $0.08 per running session-hour |
 
 The two are close peers. Each is the fastest path to production on its
 vendor's models, and each ties the control plane to that vendor. See

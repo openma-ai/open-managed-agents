@@ -24,7 +24,7 @@ const deploySteps = [
   "Pick a target: Node.js or Docker on your servers, Fly.io, Vercel (beta), or Cloudflare.",
   "Choose storage: SQLite for one host, PostgreSQL or MySQL for replicas, or Cloudflare D1 / Durable Objects; S3-compatible storage or R2 for blobs.",
   "Choose a sandbox driver: Docker, BoxLite, E2B, Daytona, Modal, Sprites, Cloudflare, and others.",
-  "Add model credentials as Model Cards — Anthropic, OpenAI, DeepSeek, OpenRouter, or a custom endpoint.",
+  "Add model credentials as Model Cards: Anthropic, OpenAI, DeepSeek, OpenRouter, or a custom endpoint.",
   "Create an agent and a session through the Console, CLI, or API, and point your SDK at your deployment.",
 ];
 
@@ -32,7 +32,7 @@ const faqItems = [
   {
     question: "What is a self-hosted AI agent?",
     answer:
-      "An AI agent whose runtime — the agent loop, session history, tool execution, and credentials — runs on infrastructure you control rather than a vendor's cloud. The model can still be a hosted API you call with your own key.",
+      "An AI agent whose runtime (the agent loop, session history, tool execution, and credentials) runs on infrastructure you control rather than a vendor's cloud. The model can still be a hosted API you call with your own key.",
   },
   {
     question: "Do I need to self-host the model too?",
@@ -106,8 +106,8 @@ const schemas = [
           </h1>
           <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
             Self-hosting an AI agent means running the part that matters for
-            control — the agent loop, session history, tool sandbox, and
-            credentials — on infrastructure you own, while still calling
+            control: the agent loop, session history, tool sandbox, and
+            credentials, on infrastructure you own, while still calling
             whichever model API you choose. This guide covers when that is
             worth it, what kind of software you actually need, and a
             deployment path with an open managed runtime.
@@ -178,25 +178,25 @@ const schemas = [
 
   <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-8">Why teams self-host</h2>
-    <div class="grid md:grid-cols-3 gap-6 text-sm">
-      <div>
-        <h3 class="font-semibold text-lg mb-2">Security and data residency</h3>
+    <div class="space-y-8 max-w-4xl">
+      <div class="grid md:grid-cols-[0.8fr_1.2fr] gap-4 md:gap-8 border-t border-[var(--color-border)] pt-6">
+        <h3 class="font-semibold text-lg">Security and data residency</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
           Agents see sensitive context: tickets, code, customer records, tool
           output. Self-hosting keeps that history and the sandbox inside your
           network, region, and audit tooling.
         </p>
       </div>
-      <div>
-        <h3 class="font-semibold text-lg mb-2">BYOK and model choice</h3>
+      <div class="grid md:grid-cols-[0.8fr_1.2fr] gap-4 md:gap-8 border-t border-[var(--color-border)] pt-6">
+        <h3 class="font-semibold text-lg">BYOK and model choice</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
           Bring your own keys and pay providers directly. Route agents to
           different models by task, keep a fallback vendor, or use a private
-          gateway — without changing the runtime.
+          gateway, without changing the runtime.
         </p>
       </div>
-      <div>
-        <h3 class="font-semibold text-lg mb-2">Control of the loop</h3>
+      <div class="grid md:grid-cols-[0.8fr_1.2fr] gap-4 md:gap-8 border-t border-[var(--color-border)] pt-6">
+        <h3 class="font-semibold text-lg">Control of the loop</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
           With an open runtime you can read the harness, change context
           engineering, and pick the sandbox. The trade-off is that you also
@@ -257,7 +257,7 @@ docker compose up -d</code></pre>
     <div class="site-container py-16 max-w-4xl">
       <h2 class="font-display text-3xl font-bold mb-4">Related open-source paths</h2>
       <p class="text-[var(--color-fg-muted)] leading-relaxed">
-        Self-hosting and open source usually go together, but not always —
+        Self-hosting and open source usually go together, but not always:
         some "open" projects gate the production runtime behind a license.
         Compare <a href="/open-source-ai-agents/">open-source AI agents</a> by
         category, or go straight to the
