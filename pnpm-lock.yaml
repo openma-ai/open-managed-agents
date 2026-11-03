@@ -6,7 +6,6 @@ settings:
 
 overrides:
   mysql2: 3.24.6
-  '@openma/matter-slack': file:apps/matter/vendor/openma-matter-slack-0.2.8.tgz
 
 importers:
 
@@ -1013,8 +1012,8 @@ importers:
         specifier: 0.2.8
         version: 0.2.8
       '@openma/matter-slack':
-        specifier: file:vendor/openma-matter-slack-0.2.8.tgz
-        version: file:apps/matter/vendor/openma-matter-slack-0.2.8.tgz(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.2.8
+        version: 0.2.8(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/matter-store-mysql':
         specifier: 0.2.8
         version: 0.2.8(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@types/node@26.6.6)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -7108,9 +7107,8 @@ packages:
   '@openma/matter-loop@0.2.8':
     resolution: {integrity: sha512-lg4IlA0IPbdaewMz0FCUihkq2KTSLCKEnVj6NGCJ6FAYgfp4Q3UPYAz8RwLUfAQRHp9rEdoRvE0655UHaeGUDQ==}
 
-  '@openma/matter-slack@file:apps/matter/vendor/openma-matter-slack-0.2.8.tgz':
-    resolution: {integrity: sha512-y820sShk/6ZMR294wT0jvFV88tNFJBibN0FvZ5CzxwPJmrN9cr88tFj/Kpv3pr0TbIaM3DFQjrDVUFNEBU4aBQ==, tarball: file:apps/matter/vendor/openma-matter-slack-0.2.8.tgz}
-    version: 0.2.8
+  '@openma/matter-slack@0.2.8':
+    resolution: {integrity: sha512-DP1iUe0IVZ8AawIj8x5j9Ebc8Yz/YraaFy0KgPlksdMqljY2/9MwHckKcVp8SSK2J19JLniG87ScMTc2/rKw6A==}
     peerDependencies:
       effect: ^3.22.1
 
@@ -16995,7 +16993,7 @@ snapshots:
 
   '@openma/matter-loop@0.2.8': {}
 
-  '@openma/matter-slack@file:apps/matter/vendor/openma-matter-slack-0.2.8.tgz(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@openma/matter-slack@0.2.8(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@openma/matter': 0.2.8(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/matter-loop': 0.2.8
