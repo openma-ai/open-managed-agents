@@ -18,16 +18,16 @@ function kv() {
 }
 
 describe("cfSessionCreateAdmission", () => {
-  it("maps USAGE_METER refusal to payment_required", async () => {
+  it("maps a USAGE_METER refusal to a 402 denial with the legacy body", async () => {
     const env = {
       USAGE_METER: {
         canStartSandbox: vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 })),
       },
     };
     await expect(cfSessionCreateAdmission(env as never, kv()).admit(input)).resolves.toEqual({
-      type: "payment_required",
-      message: "Insufficient balance",
-      balanceCents: 0,
+      type: "denied",
+      status: 402,
+      body: { error: "Insufficient balance", balance_cents: 0 },
     });
     expect(env.USAGE_METER.canStartSandbox).toHaveBeenCalledWith({ tenantId: "tenant_01", agentId: "agent_01" });
   });

@@ -4,7 +4,7 @@ import {
   SessionsApplicationService,
   type Agent,
   type Environment,
-  type SessionUsageMeterPort,
+  type SessionCreateAdmissionHookPort,
 } from "@open-managed-agents/managed-agents-application";
 import { buildSessionsTestApi } from "./test-api";
 
@@ -41,7 +41,7 @@ const cloudEnvironment: Environment = {
 };
 
 function harness(options: {
-  usageMeter?: SessionUsageMeterPort;
+  hook?: SessionCreateAdmissionHookPort;
   rateLimited?: boolean;
 }) {
   const inserts: unknown[] = [];
@@ -68,7 +68,7 @@ function harness(options: {
     },
     admission: new SessionCreateAdmissionService({
       rateLimiter: { exceeded: async () => options.rateLimited === true },
-      ...(options.usageMeter && { usageMeter: options.usageMeter }),
+      ...(options.hook && { hook: options.hook }),
       clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
       logger: { warn: () => {}, error: () => {} },
     }),
@@ -95,46 +95,48 @@ function harness(options: {
 }
 
 describe("Managed Agents API — POST /v1/sessions admission", () => {
-  it("returns 402 with balance_cents and persists nothing when the balance is 0", async () => {
-    const canStartSandbox = vi.fn(async () => ({
-      ok: false,
-      reason: "Insufficient balance",
-      balanceCents: 0,
+  it("returns the hook's status and body verbatim and persists nothing", async () => {
+    const admit = vi.fn(async () => ({
+      type: "denied" as const,
+      status: 402,
+      body: { error: "Over quota", detail: { limit: 3 } },
     }));
-    const { create, inserts, started } = harness({ usageMeter: { canStartSandbox } });
+    const { create, inserts, started } = harness({ hook: { admit } });
     const response = await create();
     expect(response.status).toBe(402);
     await expect(response.json()).resolves.toEqual({
-      error: "Insufficient balance",
-      balance_cents: 0,
+      error: "Over quota",
+      detail: { limit: 3 },
     });
-    expect(canStartSandbox).toHaveBeenCalledWith({
+    expect(admit).toHaveBeenCalledWith({
       workspaceId: "workspace_01",
       agentId: agent.id,
+      environmentId: cloudEnvironment.id,
+      isLocalRuntime: false,
     });
     expect(inserts).toEqual([]);
     expect(started).toEqual([]);
   });
 
   it("returns 429 when the create rate limit rejects", async () => {
-    const canStartSandbox = vi.fn(async () => ({ ok: true }));
+    const admit = vi.fn(async () => ({ type: "admitted" as const }));
     const { create, inserts, started } = harness({
       rateLimited: true,
-      usageMeter: { canStartSandbox },
+      hook: { admit },
     });
     const response = await create();
     expect(response.status).toBe(429);
     await expect(response.json()).resolves.toEqual({
       error: "Too many session creations — wait a minute",
     });
-    expect(canStartSandbox).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
     expect(inserts).toEqual([]);
     expect(started).toEqual([]);
   });
 
-  it("creates the session when the meter admits it", async () => {
+  it("creates the session when the hook admits it", async () => {
     const { create, inserts, started } = harness({
-      usageMeter: { canStartSandbox: async () => ({ ok: true }) },
+      hook: { admit: async () => ({ type: "admitted" }) },
     });
     const response = await create();
     expect(response.status).toBe(201);

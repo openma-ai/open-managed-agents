@@ -4,15 +4,18 @@
  * Every path that persists a new Session (POST /v1/sessions, Deployment
  * launches) runs `SessionCreateAdmissionService.admit` BEFORE anything is
  * persisted or any runtime work is admitted. The policy (order of checks,
- * self-hosted/local skip, fail-open on meter errors, rejection shapes) lives
- * here so Cloudflare and Node share one semantics; hosts only provide the
- * storage/binding adapters below.
+ * fail-open on hook errors, rejection shapes) lives here so Cloudflare and
+ * Node share one semantics; hosts only provide the storage/binding adapters
+ * and an optional, policy-free admission hook below.
  */
 
-/** Typed rejection mapped by the HTTP layer to 429 / 402. */
+/**
+ * Typed rejection. `rate_limited` maps to 429; a host hook denial carries its
+ * own HTTP status and body, which the HTTP layer returns verbatim.
+ */
 export type SessionCreateAdmissionRejection =
   | { type: "rate_limited"; message: string }
-  | { type: "payment_required"; message: string; balanceCents: number };
+  | { type: "denied"; status: number; body: unknown };
 
 export type SessionCreateAdmissionDecision =
   | { type: "admitted" }
@@ -24,8 +27,8 @@ export interface SessionCreateAdmissionInput {
   environmentId: string;
   /**
    * True when the Session runs on user-owned compute (self-hosted Environment,
-   * local runtime, or an Agent bound to a local daemon). The usage meter is
-   * skipped for these, matching the legacy `isLocalRuntime` behavior.
+   * local runtime, or an Agent bound to a local daemon). Passed through to
+   * the host hook, which decides.
    */
   isLocalRuntime: boolean;
 }
@@ -49,14 +52,11 @@ export interface SessionCreateDailyCounterPort {
   increment(input: { workspaceId: string; day: string; next: number }): Promise<void>;
 }
 
-/** Usage/billing meter adapter (e.g. CF USAGE_METER service binding). */
-export interface SessionUsageMeterPort {
-  canStartSandbox(input: { workspaceId: string; agentId: string }): Promise<{
-    ok: boolean;
-    reason?: string;
-    balanceCents?: number;
-  }>;
-}
+/**
+ * Optional host admission hook, consulted after the rate limit and daily cap.
+ * OSS carries no policy here; a denial's status and body come from the host.
+ */
+export type SessionCreateAdmissionHookPort = SessionCreateAdmissionPort;
 
 export interface SessionCreateAdmissionLogger {
   warn(message: string, fields: Record<string, unknown>): void;
@@ -66,15 +66,13 @@ export interface SessionCreateAdmissionLogger {
 export interface SessionCreateAdmissionServiceDependencies {
   rateLimiter?: SessionCreateRateLimiterPort;
   dailyCounter?: SessionCreateDailyCounterPort;
-  usageMeter?: SessionUsageMeterPort;
+  hook?: SessionCreateAdmissionHookPort;
   clock: { now(): Date };
   logger?: SessionCreateAdmissionLogger;
 }
 
 export const SESSION_CREATE_RATE_LIMIT_MESSAGE =
   "Too many session creations — wait a minute";
-export const SESSION_USAGE_REFUSED_MESSAGE =
-  "Sandbox launch refused by usage meter";
 
 const consoleLogger: SessionCreateAdmissionLogger = {
   warn: (message, fields) => console.warn(`[sessions] ${message}`, fields),
@@ -82,15 +80,15 @@ const consoleLogger: SessionCreateAdmissionLogger = {
 };
 
 /**
- * Shared admission policy: rate limit → daily cap → usage gate.
- * The usage gate fails OPEN on meter exceptions (logged), matching the
- * legacy behavior.
+ * Shared admission policy: rate limit → daily cap → host hook.
+ * The hook fails OPEN on exceptions and malformed denials (logged), matching
+ * the legacy behavior.
  */
 export class SessionCreateAdmissionService implements SessionCreateAdmissionPort {
   constructor(private readonly dependencies: SessionCreateAdmissionServiceDependencies) {}
 
   async admit(input: SessionCreateAdmissionInput): Promise<SessionCreateAdmissionDecision> {
-    const { rateLimiter, dailyCounter, usageMeter, clock } = this.dependencies;
+    const { rateLimiter, dailyCounter, hook, clock } = this.dependencies;
     const logger = this.dependencies.logger ?? consoleLogger;
 
     if (rateLimiter && (await rateLimiter.exceeded({ workspaceId: input.workspaceId }))) {
@@ -118,22 +116,21 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
       }
     }
 
-    if (usageMeter && !input.isLocalRuntime) {
+    if (hook) {
       try {
-        const gate = await usageMeter.canStartSandbox({
-          workspaceId: input.workspaceId,
-          agentId: input.agentId,
-        });
-        if (!gate.ok) {
-          return {
-            type: "payment_required",
-            message: gate.reason ?? SESSION_USAGE_REFUSED_MESSAGE,
-            balanceCents: gate.balanceCents ?? 0,
-          };
+        const decision = await hook.admit(input);
+        if (decision.type === "rate_limited") return decision;
+        if (
+          decision.type === "denied"
+          && Number.isInteger(decision.status)
+          && decision.status >= 400
+          && decision.status <= 599
+        ) {
+          return { type: "denied", status: decision.status, body: decision.body };
         }
       } catch (err) {
-        logger.error("usage meter canStartSandbox failed; admitting (fail-open)", {
-          op: "session.create.usage_gate_failed",
+        logger.error("session-create admission hook failed; admitting (fail-open)", {
+          op: "session.create.admission_hook_failed",
           workspace_id: input.workspaceId,
           agent_id: input.agentId,
           error_name: (err as Error)?.name ?? "unknown",
@@ -144,6 +141,15 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
 
     return { type: "admitted" };
   }
+}
+
+/** Human-readable message for a denial, for surfaces that only carry text. */
+export function sessionCreateDenialMessage(status: number, body: unknown): string {
+  return body !== null
+    && typeof body === "object"
+    && typeof (body as { error?: unknown }).error === "string"
+    ? (body as { error: string }).error
+    : `Session creation denied by admission hook (${status})`;
 }
 
 /** Admission with no adapters configured (self-hosted Node default). */

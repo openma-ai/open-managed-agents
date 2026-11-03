@@ -240,16 +240,13 @@ export function buildSessionRoutes(
       return c.json(notFound(result.message), 404);
     }
     // Admission rejections keep the legacy /v1/sessions body shape
-    // (`error` string, plus `balance_cents` for 402) so existing clients
-    // and the console billing UI keep working.
+    // (`error` string) so existing clients keep working.
     if (result.type === "rate_limited") {
       return c.json({ error: result.message }, 429);
     }
-    if (result.type === "payment_required") {
-      return c.json(
-        { error: result.message, balance_cents: result.balanceCents },
-        402,
-      );
+    // Host admission hook denial: status and body come from the hook.
+    if (result.type === "admission_denied") {
+      return c.json(result.body, result.status as 400);
     }
 
     const session = serializeSession(result.session);

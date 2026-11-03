@@ -31,7 +31,7 @@ import type { SessionEnvironmentSourcePort } from "./environment-source";
 import type { SessionStore } from "@open-managed-agents/session-store";
 import type { SessionResourceResolverPort } from "./resource-resolver";
 import type { SessionLifecycleCommandPort } from "../session-execution/lifecycle";
-import type { SessionCreateAdmissionPort } from "./admission";
+import { sessionCreateDenialMessage, type SessionCreateAdmissionPort } from "./admission";
 import type {
   DeploymentSessionLauncherPort,
   LaunchDeploymentSession,
@@ -330,7 +330,16 @@ export class SessionsApplicationService
       isLocalRuntime:
         environment.config.type === "self_hosted" || agent.openma?.runtimeBinding != null,
     });
-    if (admission.type !== "admitted") return admission;
+    if (admission.type === "rate_limited") return admission;
+    if (admission.type === "denied") {
+      return {
+        type: "admission_denied",
+        status: admission.status,
+        body: admission.body !== null && typeof admission.body === "object"
+          ? admission.body
+          : { error: admission.body ?? null },
+      };
+    }
 
     const timestamp = this.dependencies.clock.now().toISOString();
     const sessionId = this.dependencies.ids.nextSessionId();
@@ -459,7 +468,9 @@ export class SessionsApplicationService
         created.type === "dependency_not_found"
           ? "session_resource_not_found_error"
           : "session_creation_rejected_error",
-      message: created.message,
+      message: created.type === "admission_denied"
+        ? sessionCreateDenialMessage(created.status, created.body)
+        : created.message,
     };
   }
 

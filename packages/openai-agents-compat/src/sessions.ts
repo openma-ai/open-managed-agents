@@ -1,7 +1,7 @@
 import type { AgentSession } from "openai/resources/beta/agents/agents";
 import type { SessionsApplicationPort, SessionView, CreateSessionCommand } from "@open-managed-agents/managed-agents-application/ports/sessions";
 import type { SessionEventsApplicationPort, SendableSessionEvent } from "@open-managed-agents/managed-agents-application/ports/session-events";
-import { sessionInputIdentityPrefix, type SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
+import { sessionCreateDenialMessage, sessionInputIdentityPrefix, type SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
 import { OpenAIAgentsProtocolError, type OpenAIAgentsOperationRequest, type OpenAIAgentsOperationResponse, type OpenAIAgentsProtocolPort } from "@open-managed-agents/openai-agents-api";
 import { applyManagedEvents, createProjectionState, validateToolResult, type ProjectionState, type ManagedProjectionEvent } from "./projection";
 import { toManagedInputContent as inputContent } from "./session-mapping";
@@ -234,7 +234,7 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
       const command = await deps.mapping.prepareCreate(body);
       const created = await deps.sessions.createSession(command);
       if (created.type === "rate_limited") throw new OpenAIAgentsProtocolError(429, created.message);
-      if (created.type === "payment_required") throw new OpenAIAgentsProtocolError(402, created.message);
+      if (created.type === "admission_denied") throw new OpenAIAgentsProtocolError(created.status, sessionCreateDenialMessage(created.status, created.body));
       if (created.type !== "created") return invalid(created.message);
       const current = await snapshot(created.session.id);
       return body.stream === true ? {stream:stream(created.session.id,request.signal,true,current)} : {body:current.session};

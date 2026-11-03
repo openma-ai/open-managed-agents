@@ -119,7 +119,7 @@ export interface SqlManagedSessionsCompositionDependencies {
   environments: SessionEnvironmentSourcePort;
   lifecycle: SessionLifecycleCommandPort;
   /**
-   * Session-create admission (rate limit, daily cap, usage gate). Required:
+   * Session-create admission (rate limit, daily cap, host hook). Required:
    * hosts must wire it explicitly (CF: bindings; Node: its own adapters or
    * `admitAllSessionCreates`). Runs before any Session is persisted.
    */

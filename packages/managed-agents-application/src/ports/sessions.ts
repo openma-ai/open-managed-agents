@@ -103,7 +103,7 @@ export type CreateSessionResult =
   | { type: "invalid_request"; message: string }
   | { type: "dependency_not_found"; message: string }
   | { type: "rate_limited"; message: string }
-  | { type: "payment_required"; message: string; balanceCents: number };
+  | { type: "admission_denied"; status: number; body: object };
 
 export type RetrieveSessionResult =
   | { type: "found"; session: SessionView }

@@ -107,7 +107,7 @@ describe("SqlManagedSessionsComposition", () => {
       .run();
   });
 
-  it("refuses a zero-balance cloud create before any session row, event, or execution is written", async () => {
+  it("refuses a hook-denied cloud create before any session row, event, or execution is written", async () => {
     await ensureSessionExecutionCoordinatorSchema(client);
     await client.exec(`CREATE TABLE managed_session_initial_events (session_id TEXT, workspace_id TEXT, sequence INTEGER, document TEXT);`);
     const cloudEnvironment = { ...environment, config: { type: "cloud" as const, networking: { type: "unrestricted" as const }, packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] } } };
@@ -116,7 +116,7 @@ describe("SqlManagedSessionsComposition", () => {
     const composition = new SqlManagedSessionsComposition({
       admission: new SessionCreateAdmissionService({
         clock: { now: () => new Date("2026-08-26T01:00:00.000Z") },
-        usageMeter: { canStartSandbox: async () => ({ ok: false, balanceCents: 0 }) },
+        hook: { admit: async () => ({ type: "denied", status: 403, body: { error: "Workspace quota reached" } }) },
       }),
       client, executionOutbox: true,
       environments: new SqlSessionEnvironmentSource(client),
@@ -128,7 +128,7 @@ describe("SqlManagedSessionsComposition", () => {
     });
     await expect(composition.portsFor("workspace_01").sessions.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: environment.id,
       initialEvents: [{ type: "user.message", content: [{ type: "text", text: "First" }] }],
-    })).resolves.toEqual({ type: "payment_required", message: "Sandbox launch refused by usage meter", balanceCents: 0 });
+    })).resolves.toEqual({ type: "admission_denied", status: 403, body: { error: "Workspace quota reached" } });
     for (const table of ["managed_sessions", "managed_session_events", "managed_session_executions", "managed_session_initial_events"]) {
       await expect(client.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first()).resolves.toEqual({ count: 0 });
     }

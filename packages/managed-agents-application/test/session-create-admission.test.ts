@@ -18,29 +18,29 @@ const input = {
 };
 
 describe("SessionCreateAdmissionService", () => {
-  it("rejects with payment_required when the meter refuses", async () => {
+  it("returns a host hook denial with its status and body", async () => {
     const admission = new SessionCreateAdmissionService({
       clock,
-      usageMeter: { canStartSandbox: async () => ({ ok: false, balanceCents: 0 }) },
+      hook: { admit: async () => ({ type: "denied", status: 403, body: { error: "quota exceeded" } }) },
     });
     await expect(admission.admit(input)).resolves.toEqual({
-      type: "payment_required",
-      message: "Sandbox launch refused by usage meter",
-      balanceCents: 0,
+      type: "denied",
+      status: 403,
+      body: { error: "quota exceeded" },
     });
   });
 
-  it("rate limits before consulting the meter or the daily counter", async () => {
-    const canStartSandbox = vi.fn(async () => ({ ok: true }));
+  it("rate limits before consulting the hook or the daily counter", async () => {
+    const admit = vi.fn(async () => ({ type: "admitted" as const }));
     const get = vi.fn(async () => 0);
     const admission = new SessionCreateAdmissionService({
       clock,
       rateLimiter: { exceeded: async () => true },
       dailyCounter: { cap: () => 5, get, increment: async () => {} },
-      usageMeter: { canStartSandbox },
+      hook: { admit },
     });
     await expect(admission.admit(input)).resolves.toMatchObject({ type: "rate_limited" });
-    expect(canStartSandbox).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
   });
 
@@ -63,24 +63,32 @@ describe("SessionCreateAdmissionService", () => {
     });
   });
 
-  it("skips the usage meter for local / self-hosted runtimes", async () => {
-    const canStartSandbox = vi.fn(async () => ({ ok: false, balanceCents: 0 }));
-    const admission = new SessionCreateAdmissionService({ clock, usageMeter: { canStartSandbox } });
+  it("passes isLocalRuntime through to the hook", async () => {
+    const admit = vi.fn(async () => ({ type: "admitted" as const }));
+    const admission = new SessionCreateAdmissionService({ clock, hook: { admit } });
     await expect(admission.admit({ ...input, isLocalRuntime: true })).resolves.toEqual({ type: "admitted" });
-    expect(canStartSandbox).not.toHaveBeenCalled();
+    expect(admit).toHaveBeenCalledWith({ ...input, isLocalRuntime: true });
   });
 
-  it("fails open and logs when the meter throws", async () => {
+  it("admits when the hook returns a malformed denial status", async () => {
+    const admission = new SessionCreateAdmissionService({
+      clock,
+      hook: { admit: async () => ({ type: "denied", status: 200, body: {} }) },
+    });
+    await expect(admission.admit(input)).resolves.toEqual({ type: "admitted" });
+  });
+
+  it("fails open and logs when the hook throws", async () => {
     const logger = { warn: vi.fn(), error: vi.fn() };
     const admission = new SessionCreateAdmissionService({
       clock,
       logger,
-      usageMeter: { canStartSandbox: async () => { throw new Error("meter down"); } },
+      hook: { admit: async () => { throw new Error("hook down"); } },
     });
     await expect(admission.admit(input)).resolves.toEqual({ type: "admitted" });
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining("fail-open"),
-      expect.objectContaining({ op: "session.create.usage_gate_failed", error: "meter down" }),
+      expect.objectContaining({ op: "session.create.admission_hook_failed", error: "hook down" }),
     );
   });
 });
@@ -118,13 +126,13 @@ function service(admission: SessionCreateAdmissionPort, overrides: { agent?: Age
 describe("SessionsApplicationService admission", () => {
   const refuse = new SessionCreateAdmissionService({
     clock,
-    usageMeter: { canStartSandbox: async () => ({ ok: false, reason: "Insufficient balance", balanceCents: 0 }) },
+    hook: { admit: async () => ({ type: "denied", status: 403, body: { error: "Workspace quota reached" } }) },
   });
 
   it("persists nothing and starts no work when admission refuses", async () => {
     const { svc, sessionStarted } = service(refuse);
     await expect(svc.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: cloud.id }))
-      .resolves.toEqual({ type: "payment_required", message: "Insufficient balance", balanceCents: 0 });
+      .resolves.toEqual({ type: "admission_denied", status: 403, body: { error: "Workspace quota reached" } });
     await expect(svc.retrieveSession({ sessionId: "session_01" })).resolves.toEqual({ type: "not_found" });
     expect(sessionStarted).not.toHaveBeenCalled();
   });
@@ -139,7 +147,7 @@ describe("SessionsApplicationService admission", () => {
       },
       resourceSecrets: [],
     } as never);
-    expect(result).toEqual({ type: "rejected", errorType: "session_creation_rejected_error", message: "Insufficient balance" });
+    expect(result).toEqual({ type: "rejected", errorType: "session_creation_rejected_error", message: "Workspace quota reached" });
     expect(sessionStarted).not.toHaveBeenCalled();
   });
 
