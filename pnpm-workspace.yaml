@@ -46,3 +46,10 @@ allowBuilds:
   sharp: true
   ssh2: false
   workerd: true
+
+# @openma/matter-store-mysql and @openma/matter-inbox-mysql (published from
+# openma-ai/OpenMatter) pin mysql2 to an exact version. Force a single mysql2
+# across the workspace so apps/matter does not see two incompatible Pool types.
+# Drop once those packages declare mysql2 as a range/peer dependency.
+overrides:
+  mysql2: 3.24.6
