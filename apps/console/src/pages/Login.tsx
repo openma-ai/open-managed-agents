@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { motion } from "motion/react";
 import { useNavigate } from "react-router";
 import { authClient } from "../lib/auth-client";
 import { useAuth } from "../lib/auth";
@@ -100,8 +101,7 @@ export function Login() {
   // also soft-passes — both sides agree to skip the check.
   const turnstileSiteKey = authInfo?.turnstile_site_key ?? null;
   const [turnstileToken, setTurnstileToken] = useState("");
-  // Bumping this counter re-mounts the Turnstile widget after each form
-  // submission so the next attempt gets a fresh single-use token.
+  // Reset through the official API after a token is consumed; keep the widget mounted.
   const [turnstileNonce, setTurnstileNonce] = useState(0);
   const otpRef = useRef<HTMLInputElement>(null);
 
@@ -148,57 +148,29 @@ export function Login() {
 
   const clearOtp = () => setOtp("");
 
-  // Modes that trigger an outbound email — those need a Turnstile token.
-  // Verify modes (verify-signup, verify-login) submit OTP and don't send
-  // mail, so they don't need the widget.
+  // OTP submission itself does not send mail. Resend still needs a fresh token.
   const isEmailSendMode =
-    mode === "signup" ||
-    mode === "login" ||
-    mode === "otp-login" ||
-    mode === "forgot";
+    mode === "signup" || mode === "login" || mode === "otp-login" || mode === "forgot";
 
-  // Submit can fire before Turnstile has minted a token (user clicks fast,
-  // cold script load, etc.). Rather than disabling the button — which
-  // makes the form feel "not ready" — we let the click through and await
-  // the token via a queue. The widget's onToken callback drains all
-  // pending resolvers, then submit proceeds with the real request.
   const tokenRef = useRef("");
-  const pendingTokenResolvers = useRef<Array<(t: string) => void>>([]);
-  const handleTurnstileToken = (t: string) => {
-    tokenRef.current = t;
-    setTurnstileToken(t);
-    const queued = pendingTokenResolvers.current;
-    pendingTokenResolvers.current = [];
-    for (const resolve of queued) resolve(t);
-  };
-  const waitForTurnstileToken = (): Promise<string> => {
-    if (!turnstileSiteKey) return Promise.resolve(""); // soft-pass when unconfigured
-    if (tokenRef.current) return Promise.resolve(tokenRef.current);
-    // 30s ceiling so a stuck widget doesn't hang the form forever.
-    return new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingTokenResolvers.current = pendingTokenResolvers.current.filter((r) => r !== wrapped);
-        reject(new Error("Bot challenge timed out — refresh the page and try again"));
-      }, 30_000);
-      const wrapped = (t: string) => {
-        clearTimeout(timer);
-        resolve(t);
-      };
-      pendingTokenResolvers.current.push(wrapped);
-    });
-  };
-  const resetTurnstile = () => {
+  const clearTurnstileToken = () => {
     tokenRef.current = "";
     setTurnstileToken("");
+  };
+  const handleTurnstileToken = (token: string) => {
+    tokenRef.current = token;
+    setTurnstileToken(token);
+  };
+  const resetTurnstile = () => {
+    clearTurnstileToken();
     setTurnstileNonce((n) => n + 1);
   };
-
-  /** Build fetchOptions with the Turnstile token (await if it hasn't
-   *  arrived yet). Returns undefined when Turnstile isn't configured at
-   *  all — middleware soft-passes in that case. */
-  const buildTurnstileOpts = async () => {
+  const buildTurnstileOpts = () => {
     if (!turnstileSiteKey) return undefined;
-    const token = await waitForTurnstileToken();
+    const token = tokenRef.current;
+    if (!token) throw new Error("Complete the security verification first.");
+    // Each backend request consumes one token. Never reuse it for a second request.
+    clearTurnstileToken();
     return { headers: { "cf-turnstile-token": token } };
   };
 
@@ -208,9 +180,7 @@ export function Login() {
     setLoading(true);
 
     try {
-      // Block on Turnstile up front for email-send modes so any subsequent
-      // authClient call already has the header. The user just sees the
-      // submit button spin — they don't see a separate "verifying" state.
+      // The official success callback enables sending; never wait on an invented challenge timer.
       const turnstileFetchOpts = isEmailSendMode ? await buildTurnstileOpts() : undefined;
 
       if (mode === "signup") {
@@ -250,15 +220,11 @@ export function Login() {
             (error as { code?: string }).code === "EMAIL_NOT_VERIFIED" ||
             error.message?.toLowerCase().includes("verif");
           if (needsVerify) {
-            // Need a fresh token — the previous one was consumed by signIn.email.
-            const reSendOpts = await buildTurnstileOpts();
-            await authClient.emailOtp.sendVerificationOtp({
-              email,
-              type: "email-verification",
-              fetchOptions: reSendOpts,
-            });
+            // signIn already consumed the token. Let the OTP page's official
+            // widget obtain a fresh one before the user requests Resend.
             clearOtp();
             setMode("verify-signup");
+            setError("Complete the security verification and choose Resend to request an email code.");
           } else {
             throw new Error(error.message);
           }
@@ -609,21 +575,10 @@ export function Login() {
             </Field>
           )}
 
-          {isEmailSendMode && turnstileSiteKey && (
-            <div className="hidden" aria-hidden="true">
-              <Turnstile
-                key={turnstileNonce}
-                siteKey={turnstileSiteKey}
-                onToken={handleTurnstileToken}
-                onExpire={resetTurnstile}
-              />
-            </div>
-          )}
-
           <div
             role="group"
             aria-label={mode === "login" ? "Sign in actions" : "Form actions"}
-            className="flex flex-col gap-2 pt-1"
+            className="flex select-none flex-col gap-2 pt-1"
           >
             <Button
               type="submit"
@@ -634,9 +589,10 @@ export function Login() {
                 (!isOtpMode && !email) ||
                 (isOtpMode && otp.length < 6) ||
                 ((mode === "login" || mode === "signup") && !password) ||
-                (mode === "reset-otp" && !password)
+                (mode === "reset-otp" && !password) ||
+                (isEmailSendMode && !!turnstileSiteKey && !turnstileToken)
               }
-              className="h-10 w-full"
+              className="h-10 w-full disabled:pointer-events-auto"
             >
               {mode === "login"
                 ? "Sign in"
@@ -650,6 +606,18 @@ export function Login() {
                         ? "Reset password"
                         : "Verify"}
             </Button>
+            {turnstileSiteKey && (
+              <motion.div layout="position" initial={false} role="region" aria-label="Security verification">
+                <Turnstile
+                  resetKey={turnstileNonce}
+                  siteKey={turnstileSiteKey}
+                  onToken={handleTurnstileToken}
+                  onExpire={clearTurnstileToken}
+                  onError={clearTurnstileToken}
+                  appearance="always"
+                />
+              </motion.div>
+            )}
             {mode === "login" && (
               <Button
                 type="button"
@@ -676,7 +644,7 @@ export function Login() {
               variant="link"
               size="sm"
               onClick={handleResend}
-              disabled={loading}
+              disabled={loading || (!!turnstileSiteKey && !turnstileToken)}
               className={compactLinkClass}
             >
               Resend
@@ -699,10 +667,12 @@ export function Login() {
           </Button>
         )}
 
-        <div
+        <motion.div
+          layout="position"
+          initial={false}
           role="group"
           aria-label="Account options"
-          className="flex min-h-6 items-center justify-center gap-1 text-center text-sm text-fg-muted"
+          className="flex min-h-6 select-none items-center justify-center gap-1 text-center text-sm text-fg-muted"
         >
           {mode === "chooser" && emailEnabled && (
             <>
@@ -819,7 +789,7 @@ export function Login() {
               Go back
             </Button>
           )}
-        </div>
+        </motion.div>
       </div>
     </ModernLoginShell>
   );
