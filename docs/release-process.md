@@ -85,6 +85,53 @@ Alternatively, cherry-pick the fix onto the existing `release` branch
 (keep the freeze), then re-run the version path carefully — prefer a
 fresh cut via dispatch unless you know you need the same soak tip.
 
+## Related issues / acceptance
+
+**#411 (Scope B) — publish path for the public npm packages.** This section
+is the acceptance record for that scope. The pipeline itself landed in
+#455 (`.github/workflows/release.yml` + this document); the note below
+documents the accepted path. There is exactly **one** publish pipeline —
+nothing here introduces a second one, and no per-package publish workflow
+is allowed to exist alongside `release.yml`.
+
+The accepted path, end to end:
+
+1. **Changeset** — a PR that changes a published package ships a
+   `.changeset/<random>.md` describing the user-visible change
+   (`pnpm changeset`).
+2. **Cut `release`** — the `Release` workflow (scheduled, ~every 2 days, or
+   `workflow_dispatch`) fast-forwards the frozen `release` branch to
+   current `main` and opens/updates the **Version Packages** PR against
+   `release`.
+3. **Version Packages → `release`** — the user 「发」 approves by merging
+   the Version Packages PR **into `release`**, never straight into `main`.
+4. **OIDC publish** — that merge triggers the `publish` job, which runs
+   `node scripts/release-check.mjs --publish` and then `pnpm release`.
+   Changesets publishes the bumped packages to npm through npm's **OIDC
+   trusted publisher** (no `NPM_TOKEN`): `@openma/cli` and `@openma/sdk`
+   today, and any other public `@openma/*` package added later rides the
+   same changesets + OIDC path — one trusted publisher per package, one
+   workflow (`release.yml`). See
+   [Trusted publisher setup](#trusted-publisher-setup).
+5. **Sync PR → `main`** — after a successful publish the workflow opens (or
+   reuses) a `chore: sync release to main` PR so bumped versions and
+   consumed changesets land back on `main` before the next cut.
+
+**Hotfixes** use the same pipeline, just off-schedule: land the fix plus
+its changeset on `main`, run **Actions → Release → Run workflow**
+(`workflow_dispatch`), then merge Version Packages into `release`
+(user 「发」) to publish and sync. See
+[Hotfix](#hotfix-do-not-wait-for-the-schedule).
+
+Acceptance checklist for #411 Scope B:
+
+- [x] One changesets-based publish pipeline for the public packages.
+- [x] Releases cut from a frozen `release` branch, not on every `main` push.
+- [x] npm publish via OIDC trusted publisher — no long-lived `NPM_TOKEN`.
+- [x] Merging Version Packages into `release` (user 「发」) is the publish trigger.
+- [x] `release` → `main` sync PR closes the loop.
+- [x] Hotfix path available on demand via `workflow_dispatch`.
+
 ## Bump types
 
 - `patch` — bug fix, no API change. `0.3.1 → 0.3.2`

@@ -107,7 +107,7 @@ export function UserProfile() {
         <DropdownMenuGroup>
           <DropdownMenuItem asChild>
             <a
-              href="https://docs.openma.dev"
+              href="https://docs.openma.ai"
               target="_blank"
               rel="noopener noreferrer"
             >

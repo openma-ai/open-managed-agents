@@ -14,7 +14,7 @@ import * as schema from "./db/schema";
 
 /** Sender used when EMAIL_FROM is unset. Must be on a domain onboarded to
  *  Cloudflare Email Sending for the account that owns the SEND_EMAIL binding. */
-export const DEFAULT_EMAIL_FROM = "openma <noreply@openma.dev>";
+export const DEFAULT_EMAIL_FROM = "openma <noreply@openma.ai>";
 
 export function resolveEmailFrom(env: Pick<Env, "EMAIL_FROM">): string {
   const v = env.EMAIL_FROM?.trim();
@@ -116,14 +116,14 @@ export function createAuth(env: Env) {
     database: drizzleAdapter(db, { provider: "sqlite", schema }),
     trustedOrigins: ["*"],
     // Cross-subdomain session cookies. Hosted sets AUTH_COOKIE_DOMAIN
-    // to ".openma.dev" so the cookie minted on app.openma.dev is also
-    // sent on requests to openma.dev (apex landing) — lets the marketing
+    // to ".openma.ai" so the cookie minted on app.openma.ai is also
+    // sent on requests to openma.ai (apex landing) — lets the marketing
     // site show "logged in as X" without re-auth. Self-hosters leaving
     // the var unset get default per-host scoping.
     //
     // AUTH_COOKIE_NAME (optional, recommended for non-prod envs that
-    // share the openma.dev parent domain): override the session-token
-    // cookie name so a browser used against both prod (.openma.dev) and
+    // share the openma.ai parent domain): override the session-token
+    // cookie name so a browser used against both prod (.openma.ai) and
     // staging (.staging.openma.dev) doesn't end up with two same-named
     // cookies — browsers send both, server reads the first, and the
     // wrong-env token defeats sign-in.
@@ -294,7 +294,7 @@ export async function ensureTenant(
   // MAIN_DB itself in this mode, so the row lives in the same DB as the
   // tenant data — fine for single-D1 deployments.
   //
-  // Multi-shard mode (openma.dev's --env production): pickShardForNewTenant
+  // Multi-shard mode (openma.ai's --env production): pickShardForNewTenant
   // returns the open shard with lowest tenant_count; null when no shards
   // open → fall back to AUTH_DB_00 (= shard 0, the original openma-auth)
   // so signup never blocks on shard-pool exhaustion.
