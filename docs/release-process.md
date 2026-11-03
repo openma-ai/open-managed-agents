@@ -5,6 +5,10 @@ versioning and publishing for the public npm packages:
 
 - `@openma/cli` (`packages/cli`)
 - `@openma/sdk` (`packages/sdk`)
+- `@openma/core` (`packages/core`): domain models and Ports, types only
+- `@openma/stores-memory` (`packages/stores-memory`): in-memory store adapters
+- `@openma/stores-sql` (`packages/stores-sql`): SQL store adapters
+- `@openma/server` (`packages/server`): control-plane composition and `nodeDefaults()`
 
 `@openma/sdk` is a composition facade over `@anthropic-ai/sdk`: Managed Agents
 calls use the official SDK unchanged, while product-only routes are exposed
@@ -13,6 +17,15 @@ extension surface changes.
 
 All `@open-managed-agents/*` internal packages are private and never
 published — changesets is configured to skip them entirely.
+
+The four control-plane packages follow
+[ADR 0015](adr/0015-public-core-stores-server-packages.md). They are built by
+`scripts/build-public-package.mjs`, which bundles the private packages they
+use (listed as `devDependencies`) and fails the build if a published file or
+runtime dependency list still names one. Any change to a Port or type in
+`@openma/core` is a major release. Because `release-check` only sees a public
+package's own `src/`, add a changeset by hand when you change a private
+package that one of them bundles.
 
 ## TL;DR
 

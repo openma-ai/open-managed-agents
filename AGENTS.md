@@ -729,12 +729,17 @@ When investigating platform or agent issues, follow this loop. **Do not skip ste
 
 ---
 
-## Releasing `@openma/cli` and `@openma/sdk`
+## Releasing the public `@openma/*` packages
 
-We use [changesets](https://github.com/changesets/changesets) for the two
-public npm packages. Internal `@open-managed-agents/*` packages never publish.
+We use [changesets](https://github.com/changesets/changesets) for the public
+npm packages: `@openma/cli`, `@openma/sdk`, and the control-plane packages
+`@openma/core`, `@openma/stores-memory`, `@openma/stores-sql` and
+`@openma/server` ([ADR 0015](docs/adr/0015-public-core-stores-server-packages.md)).
+Internal `@open-managed-agents/*` packages never publish; the control-plane
+packages bundle the ones they need with `scripts/build-public-package.mjs`.
 
-**Per PR (only if you touched `packages/cli` or `packages/sdk`):**
+**Per PR (only if you touched a public package, or a private package that one
+of them bundles):**
 
 ```bash
 pnpm changeset
@@ -747,7 +752,7 @@ along with your code change. PRs that only touch console / workers / docs /
 internal packages don't need a changeset.
 
 CI job `release-check` runs in parallel with `verify` and does not install
-dependencies. It fails when shipped `packages/cli` or `packages/sdk` files
+dependencies. It fails when shipped files of a public package
 (`src/`, `README.md`, runtime dependencies) change without a changeset, and
 when a minor or major changeset or version bump lacks the `release:minor` or
 `release:major` label. Patch bumps need no label. `pnpm changeset --empty`
@@ -775,5 +780,5 @@ pnpm changeset pre exit         # next Version Packages PR rolls to stable
 ```
 
 Detailed flow + troubleshooting in [`docs/release-process.md`](docs/release-process.md).
-The trusted publisher config on npmjs.com must list `release.yml` for both
-public packages; without it the publish step 401s.
+The trusted publisher config on npmjs.com must list `release.yml` for every
+public package; without it the publish step 401s.

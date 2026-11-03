@@ -113,6 +113,7 @@ export default defineConfig({
             { label: 'Deploy on Fly.io', slug: 'self-host/fly' },
             { label: 'Deploy on Render', slug: 'self-host/render' },
             { label: 'Managed Runtime Host', slug: 'self-host/managed-runtime-host' },
+            { label: 'Assemble your own control plane', slug: 'self-host/assemble-control-plane' },
             { label: 'Sandbox & persistence', slug: 'self-host/sandbox-persistence' },
             {
               label: 'Execution backend contract',

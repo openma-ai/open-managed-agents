@@ -1,0 +1,215 @@
+---
+title: Assemble your own control plane
+description: Build a Node control plane from the published @openma packages, plug in your own store against the Port types, and replace admission hooks.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+You can build a Node control plane from npm packages instead of forking the
+repository. You keep the official application code (Agents, Sessions, Vaults,
+…), and you choose where each resource is stored and who may start work.
+
+| Package | Use it for |
+|---|---|
+| `@openma/core` | Port and domain **types** to implement against. No runtime code. |
+| `@openma/server` | `createApp`, the official modules and `nodeDefaults()`. |
+| `@openma/stores-memory` | In-memory stores. `nodeDefaults()` uses them for anything you do not pass. |
+| `@openma/stores-sql` | SQL stores for SQLite, Postgres or MySQL. |
+
+```sh
+npm install @openma/server @openma/core
+```
+
+<Aside>
+These packages give you the application Ports, the same objects the `/v1` HTTP
+routes call. They do not start an HTTP listener or a sandbox runtime. Cloudflare
+deployments are assembled with wrangler and are not covered here. The package
+split and the versioning rules are in
+[ADR 0015](https://github.com/openma-ai/open-managed-agents/blob/main/docs/adr/0015-public-core-stores-server-packages.md).
+</Aside>
+
+## Start with the defaults
+
+`nodeDefaults()` returns the module list for one workspace: clock, id
+generator, a store for every storage Port, admit-all admission hooks, and the
+`core` feature set (Agents, Environments, Memory Stores, Vaults, Deployment
+runs).
+
+```ts
+import { createApp, managedAgentsPortTokens, nodeDefaults } from "@openma/server";
+
+const app = createApp({ modules: nodeDefaults({ workspaceId: "ws_1" }) });
+await app.start();
+
+const agents = app.port(managedAgentsPortTokens.agents);
+const created = await agents.createAgent({ name: "Assistant", model: "claude-sonnet-4-6" });
+```
+
+Results are discriminated unions (`created`, `invalid_request`, `not_found`, …),
+not exceptions.
+
+## Write a store against the Port types
+
+A store implements one interface from `@openma/core/storage`. This one keeps
+Agents in any key-value service. The `KeyValue` interface stands in for a
+Redis or DynamoDB client.
+
+```ts
+import type {
+  AgentRecord, AgentStore, ArchiveAgentRecord, ArchiveAgentRecordResult,
+  CountAgentRecords, DeleteAgentRecordResult, FindAgentVersionRecord,
+  FindCurrentAgentRecord, InsertAgentRecord, ListAgentRecords,
+  ListAgentVersionRecords, ReplaceAgentRecord, ReplaceAgentRecordResult,
+} from "@openma/core/storage";
+
+export interface KeyValue {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  keys(prefix: string): Promise<string[]>;
+}
+
+export class KeyValueAgentStore implements AgentStore {
+  constructor(private readonly kv: KeyValue) {}
+
+  async insert({ workspaceId, agent }: InsertAgentRecord): Promise<AgentRecord> {
+    await this.kv.set(`agent:${workspaceId}:${agent.id}`, JSON.stringify(agent));
+    await this.kv.set(`agent-version:${workspaceId}:${agent.id}:${agent.version}`, JSON.stringify(agent));
+    return agent;
+  }
+
+  async findCurrent({ workspaceId, agentId }: FindCurrentAgentRecord): Promise<AgentRecord | null> {
+    const value = await this.kv.get(`agent:${workspaceId}:${agentId}`);
+    return value === null ? null : JSON.parse(value);
+  }
+
+  // Compare-and-set: the Port requires this to be atomic in a real store.
+  async replaceCurrent(input: ReplaceAgentRecord): Promise<ReplaceAgentRecordResult> {
+    const previous = await this.findCurrent(input);
+    if (previous === null) return { type: "not_found" };
+    if (previous.version !== input.expectedVersion || previous.archivedAt !== null) {
+      return { type: "version_conflict", actualVersion: previous.version };
+    }
+    await this.insert({ workspaceId: input.workspaceId, agent: input.next });
+    return { type: "replaced", agent: input.next };
+  }
+
+  // findVersion, archiveCurrent, listCurrent, listVersions, countCurrent and
+  // deleteCurrent follow the same pattern.
+  async findVersion(input: FindAgentVersionRecord): Promise<AgentRecord | null> { /* … */ }
+  async archiveCurrent(input: ArchiveAgentRecord): Promise<ArchiveAgentRecordResult> { /* … */ }
+  async listCurrent(input: ListAgentRecords): Promise<AgentRecord[]> { /* … */ }
+  async listVersions(input: ListAgentVersionRecords): Promise<AgentRecord[]> { /* … */ }
+  async countCurrent(input: CountAgentRecords): Promise<number> { /* … */ }
+  async deleteCurrent(input: FindCurrentAgentRecord): Promise<DeleteAgentRecordResult> { /* … */ }
+}
+```
+
+The complete class, tested against the Agents application, is
+[`packages/server/test/fixtures/kv-agent-store.ts`](https://github.com/openma-ai/open-managed-agents/blob/main/packages/server/test/fixtures/kv-agent-store.ts).
+The rules every store must keep are in
+[`PORT_BOUNDARIES.md`](https://github.com/openma-ai/open-managed-agents/blob/main/packages/managed-agents-application/PORT_BOUNDARIES.md):
+expected absence and conflicts are results, not exceptions; writes that check
+a version are atomic; every read and write is scoped by `workspaceId`.
+
+## Plug it in
+
+Pass the store by value. Every store you leave out stays in memory.
+
+```ts
+import { createApp, nodeDefaults } from "@openma/server";
+import { KeyValueAgentStore } from "./kv-agent-store";
+
+const app = createApp({
+  modules: nodeDefaults({
+    workspaceId: "ws_1",
+    stores: { agents: new KeyValueAgentStore(redisKeyValue) },
+  }),
+});
+```
+
+To keep the other resources in SQL, start from `sqlStores()` and override
+the one store you wrote:
+
+```ts
+import { createPostgresSqlClient, sqlStores } from "@openma/stores-sql";
+
+const sql = await createPostgresSqlClient(process.env.DATABASE_URL!);
+const stores = sqlStores(sql, {
+  credentialCipher, deploymentCipher, environmentWorkCipher, sessionSecrets,
+  overrides: { agents: new KeyValueAgentStore(redisKeyValue) },
+});
+
+const app = createApp({ modules: nodeDefaults({ workspaceId: "ws_1", stores }) });
+```
+
+The SQL stores expect the Node control-plane schema; they do not create
+tables. The [Node + Docker](/self-host/node-docker/) control plane applies the
+schema when it starts against a database, or you can apply the migrations in
+`apps/main-node/migrations` (Postgres) and `apps/main-node/migrations-sqlite`
+(SQLite; MySQL is derived from it) yourself.
+
+## Replace an admission hook
+
+By default every Session create and every new turn is admitted. A hook can
+refuse work before anything is persisted. Its denial carries the HTTP status
+and body the API returns.
+
+```ts
+const app = createApp({
+  modules: nodeDefaults({
+    workspaceId: "ws_1",
+    hooks: {
+      sessionCreate: {
+        async admit({ workspaceId }) {
+          const used = await sessionsToday(workspaceId);
+          return used < 500
+            ? { type: "admitted" }
+            : { type: "denied", status: 429, body: { error: "Daily Session quota reached" } };
+        },
+      },
+    },
+  }),
+});
+```
+
+`hooks.sessionWork` does the same for new turns, thread starts and model
+requests on an existing Session. `hooks.sessionCreateRateLimiter` and
+`hooks.sessionCreateDailyCounter` plug into the built-in checks that run before
+the create hook.
+
+## More than one workspace
+
+`createNodePlatform()` creates one `nodeDefaults()` app per workspace on first
+use. Options can be values, or functions of the workspace:
+
+```ts
+import { createNodePlatform } from "@openma/server";
+
+const platform = createNodePlatform({
+  stores,                                             // shared; rows are scoped by workspaceId
+  hooks: ({ workspaceId }) => ({ sessionCreate: hookFor(workspaceId) }),
+});
+const app = platform.app({ workspaceId: "ws_1" });
+```
+
+## Enable more features
+
+Features outside the `core` preset need adapters for their outbound Ports
+(for example the Sessions feature needs a runtime lifecycle Port). Turn the
+feature on and bind its Ports with `providePort`. The tokens are exported from
+`@openma/server/modules`:
+
+```ts
+import { nodeDefaults, providePort } from "@openma/server";
+import { fileContentStorePort } from "@openma/server/modules";
+
+nodeDefaults({
+  workspaceId: "ws_1",
+  features: { files: true },
+  modules: [providePort(fileContentStorePort, myBlobStore)],
+});
+```
+
+(`nodeDefaults({ fileContent })` is a shortcut for this one.) `createApp`
+reports a missing Port by name when the graph is built, before anything runs.
