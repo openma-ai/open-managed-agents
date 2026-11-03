@@ -21,6 +21,7 @@ describe("Managed Agents inbound port boundary", () => {
     ]);
     expect(Object.keys(resourcePortSources).sort()).toEqual([
       "../src/ports/agents.ts",
+      "../src/ports/cap-cli-device-flow.ts",
       "../src/ports/common.ts",
       "../src/ports/credentials.ts",
       "../src/ports/deployment-runs.ts",
@@ -29,6 +30,7 @@ describe("Managed Agents inbound port boundary", () => {
       "../src/ports/environment-work.ts",
       "../src/ports/environments.ts",
       "../src/ports/files.ts",
+      "../src/ports/mcp-oauth.ts",
       "../src/ports/memories.ts",
       "../src/ports/memory-stores.ts",
       "../src/ports/memory-versions.ts",

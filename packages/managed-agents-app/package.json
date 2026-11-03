@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@open-managed-agents/agent-store": "workspace:*",
+    "@open-managed-agents/cap": "workspace:*",
     "@open-managed-agents/credential-store": "workspace:*",
     "@open-managed-agents/deployment-run-store": "workspace:*",
     "@open-managed-agents/deployment-store": "workspace:*",

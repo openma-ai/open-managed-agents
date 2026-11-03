@@ -5,6 +5,7 @@
 @import "./styles/console-shell.css";
 @import "./styles/console-list.css";
 @import "./styles/console-pages.css";
+@import "./styles/console-overflow-text.css";
 
 /* Code highlight theme — light by default */
 @import "highlight.js/styles/github.css";

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { managedResolver } from "./helpers/managed-resolver";
 import { resolveProxyTargetByTenant, forwardHttpMcpProxyRequest } from "../../apps/main/src/routes/mcp-proxy";
 
 afterEach(() => {
@@ -69,8 +70,7 @@ describe("HTTP MCP proxy with a managed Work claim", () => {
         };
       }),
     };
-    const credentialSource = {
-      listByVaults: vi.fn(async ({ workspaceId, vaultIds }: any) => {
+    const listByVaults = vi.fn(async ({ workspaceId, vaultIds }: any) => {
         expect(workspaceId).toBe("workspace_01");
         expect(vaultIds).toEqual(["vault_01"]);
         return [{
@@ -88,8 +88,8 @@ describe("HTTP MCP proxy with a managed Work claim", () => {
             },
           },
         }];
-      }),
-    };
+      });
+    const credentialSource = managedResolver({ listByVaults });
 
     const response = await forwardHttpMcpProxyRequest({
       env: {} as any,
@@ -109,7 +109,7 @@ describe("HTTP MCP proxy with a managed Work claim", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("proxied-v1");
     expect(sessionSource.find).toHaveBeenCalledTimes(1);
-    expect(credentialSource.listByVaults).toHaveBeenCalledTimes(1);
+    expect(listByVaults).toHaveBeenCalledTimes(1);
     expect(services.sessions.get).not.toHaveBeenCalled();
     expect(services.credentials.listByVaults).not.toHaveBeenCalled();
   });

@@ -9,6 +9,7 @@
   "dependencies": {
     "@open-managed-agents/cap": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*",
     "@open-managed-agents/sessions-store": "workspace:*",
     "@open-managed-agents/shared": "workspace:*"
   }

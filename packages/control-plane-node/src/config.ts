@@ -5,6 +5,7 @@
 // createNodeControlPlane() inside NodeComponents. The control plane never
 // reads the environment itself.
 
+import type { McpOAuthPresetClient, McpOAuthPresetKey } from "@open-managed-agents/managed-agents-adapters-http";
 import type { SandboxImageCatalog } from "@open-managed-agents/sandbox";
 
 export type NodeEnvironment = Readonly<Record<string, string | undefined>>;
@@ -93,6 +94,9 @@ export interface NodeConfig {
     publicBaseUrl: string | undefined;
     gatewayOrigin: string;
     consoleDir: string | undefined;
+    /** CONSOLE_ORIGINS: origins a Console runs on besides this server's own.
+     * MCP OAuth only returns to (and reports to) those origins. */
+    consoleOrigins: string[];
     /** CONSOLE_BRANDING_DIR: branding.json plus the logo, favicon, and stylesheet it names. */
     brandingDir: string | undefined;
     metricsToken: string | undefined;
@@ -112,6 +116,9 @@ export interface NodeConfig {
     allowHosts: string[];
   };
   integrationsInternalToken: string | undefined;
+  /** `<PROVIDER>_OAUTH_CLIENT_ID` / `_SECRET`: OAuth clients for MCP servers
+   * whose authorization server does not accept dynamic registration. */
+  mcpOAuthPresets: Partial<Record<McpOAuthPresetKey, McpOAuthPresetClient>>;
   email: {
     host: string;
     port: number;
@@ -186,6 +193,9 @@ export function redactNodeConfig(config: NodeConfig): Record<string, unknown> {
         : { url: maskUrl(config.http.matter.url), proxySecret: "***" },
     },
     integrationsInternalToken: mask(config.integrationsInternalToken),
+    mcpOAuthPresets: Object.fromEntries(
+      Object.entries(config.mcpOAuthPresets).map(([key, preset]) => [key, { clientId: preset!.clientId, clientSecret: "***" }]),
+    ),
     email: config.email === null ? null : { ...config.email, pass: mask(config.email.pass) },
   };
 }

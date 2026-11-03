@@ -24,7 +24,7 @@ describe("loadNodeConfig", () => {
     expect(config.workspace).toEqual({ strategy: "ephemeral", checkpointIntervalMs: 60_000, sandboxLeaseTtlMs: 1_800_000 });
     expect(config.execution.ownerId).toMatch(/^node:\d+:/);
     expect(config.paths).toEqual({ sandboxWorkdir: "./data/sandboxes", sessionOutputs: "./data/session-outputs" });
-    expect(config.http).toEqual({ host: "0.0.0.0", port: 8787, gatewayOrigin: "http://localhost:8787", publicBaseUrl: undefined, consoleDir: undefined, metricsToken: undefined, apiKey: undefined });
+    expect(config.http).toEqual({ host: "0.0.0.0", port: 8787, gatewayOrigin: "http://localhost:8787", publicBaseUrl: undefined, consoleDir: undefined, consoleOrigins: [], brandingDir: undefined, matter: undefined, metricsToken: undefined, apiKey: undefined });
     expect(loadNodeConfig({ ...minimal, HOST: "127.0.0.1", PORT: "18787" }).http).toMatchObject({ host: "127.0.0.1", port: 18787 });
     expect(loadNodeConfig({ ...minimal, PORT: "0" }).http.port).toBe(0);
     expect(() => loadNodeConfig({ ...minimal, PORT: "70000" })).toThrow(/PORT must be an integer between 0 and 65535/);

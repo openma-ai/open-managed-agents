@@ -11,6 +11,7 @@
     "@open-managed-agents/app": "workspace:*",
     "@open-managed-agents/managed-agents-api": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/managed-credential-resolver": "workspace:*",
     "@open-managed-agents/oma-api": "workspace:*",
     "@open-managed-agents/oma-models": "workspace:*",
     "hono": "4.12.12"

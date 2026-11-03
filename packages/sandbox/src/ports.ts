@@ -217,6 +217,20 @@ export function supportsSessionOutputMount(
   }
 }
 
+export interface SandboxCredentialEgressBinding {
+  endpoint: string;
+  pass: string;
+}
+/** Native interception or a sandbox-resident relay implement the same capability. */
+export interface SandboxCredentialEgressPort {
+  prepareCredentialEgress(binding: SandboxCredentialEgressBinding): Promise<void>;
+  clearCredentialEgress(): Promise<void>;
+}
+export function supportsCredentialEgress(value: unknown): value is SandboxCredentialEgressPort {
+  const port = value as Partial<SandboxCredentialEgressPort> | null;
+  return port !== null && typeof port === "object" && typeof port.prepareCredentialEgress === "function" && typeof port.clearCredentialEgress === "function";
+}
+
 export interface SandboxPort {
   exec(command: string, timeout?: number): Promise<string>;
   /** Start a process without blocking. Returns handle for kill/status/logs. */
@@ -302,6 +316,10 @@ export function supportsDuplexProcess(
 export interface SandboxFactoryContext {
   /** Per-session id — adapters use it for naming, scoping, etc. */
   sessionId: string;
+  /** Opaque physical allocation generation. Cold allocations must never attach
+   * to a different generation, and cleanup must target only this generation.
+   * This is not a logical Session id or an execution authorization token. */
+  allocationId?: string;
   /** Per-session host workdir. LocalSubprocess uses this as the cwd
    *  for child processes; remote / VM adapters can ignore it. */
   workdir: string;
@@ -339,6 +357,10 @@ export type SandboxFactoryEnv = Readonly<Record<string, string | undefined>>;
  * control plane enables optional features from these declarations instead of
  * from deployment switches. */
 export interface SandboxFactoryCapabilities {
+  /** Create and cleanup address independent physical allocations. Factories
+   * must honor allocationId, or always create provider-assigned unique resources.
+   * Shared host state must use the supplied allocation-scoped workdir. */
+  allocationIsolation?: boolean;
   /** Sandboxes implement {@link SandboxPreparedBasePort}, and the factory
    * creates from {@link SandboxFactoryContext.preparedBase}. */
   preparedBase?: boolean;
@@ -362,11 +384,11 @@ export type SandboxFactory = ((
 /** Declare capabilities on a factory, e.g. a custom composition that wraps an
  * adapter: `withSandboxFactoryCapabilities(factory, { preparedBase: true })`. */
 export function withSandboxFactoryCapabilities(
-  factory: (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => Promise<SandboxPort>,
+  factory: SandboxFactory,
   capabilities: SandboxFactoryCapabilities,
 ): SandboxFactory {
   const wrapped = (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => factory(ctx, env);
-  return Object.assign(wrapped, { capabilities: { ...capabilities } });
+  return Object.assign(wrapped, { capabilities: { ...factory.capabilities, ...capabilities } });
 }
 
 /** SDK-style provider composition. `SandboxFactory` remains the v0 create

@@ -286,36 +286,6 @@ export class LocalSubprocessSandbox
     this.commandSecrets.push({ prefix: commandPrefix, secrets });
   }
 
-  async setOutboundContext(_opts?: { tenantId: string; sessionId: string }): Promise<void> {
-    // Wire outbound credential injection through the oma-vault sidecar
-    // (apps/oma-vault). The sidecar runs a mockttp HTTPS MITM proxy with a
-    // self-signed CA; we point the subprocess at it via standard
-    // HTTP(S)_PROXY env vars + tell node/curl/python to trust the local CA.
-    //
-    // Both env vars are read from the host process — they're set in
-    // docker-compose.yml (or the operator's env) and shared between
-    // main-node and the sandbox subprocess. If either is missing the agent
-    // just talks to upstreams directly with no credential injection — same
-    // as the CF path with no oma-vault binding.
-    const proxyUrl = process.env.OMA_VAULT_PROXY_URL;
-    const caCertPath = process.env.OMA_VAULT_CA_CERT;
-    if (!proxyUrl || !caCertPath) return;
-
-    const env: Record<string, string> = {
-      HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl,
-      http_proxy: proxyUrl,
-      https_proxy: proxyUrl,
-      // Node TLS: trust the vault CA in addition to system roots.
-      NODE_EXTRA_CA_CERTS: caCertPath,
-      // curl & python's `requests` (when REQUESTS_CA_BUNDLE not set).
-      SSL_CERT_FILE: caCertPath,
-      // Some tools look for this name specifically.
-      CURL_CA_BUNDLE: caCertPath,
-    };
-    await this.setEnvVars(env);
-  }
-
   /**
    * Bind a memory store into the sandbox at /mnt/memory/<storeName>.
    *
@@ -754,7 +724,7 @@ class BackgroundProcess implements ProcessHandle {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (ctx) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0]) => {
   rejectSandboxImageSelection("local-subprocess", ctx.image);
   rejectPreparedBase("local-subprocess", ctx.preparedBase);
   return new LocalSubprocessSandbox({
@@ -762,4 +732,4 @@ export const sandboxFactory: SandboxFactory = async (ctx) => {
     memoryRoot: ctx.memoryRoot,
     outputsRoot: ctx.outputsRoot,
   });
-};
+}, { capabilities: { allocationIsolation: true } });

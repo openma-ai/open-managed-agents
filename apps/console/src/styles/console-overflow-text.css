@@ -1,0 +1,39 @@
+/* Shared by plain-text TableCell opt-in and DataTable's default text renderer. */
+.console-overflow-text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.console-overflow-text > span {
+  display: block;
+  width: max-content;
+}
+
+.console-overflow-text[data-overflow="true"] {
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--console-pad-xl)), transparent);
+}
+
+.console-overflow-text:focus-visible {
+  outline: 1px solid var(--fg-muted);
+  outline-offset: -1px;
+  border-radius: var(--console-radius-sm);
+}
+
+@keyframes console-overflow-text-play {
+  from { transform: translateX(0); }
+  to { transform: translateX(var(--overflow-text-travel)); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .console-overflow-text[data-overflow="true"]:is(:hover, :focus) > span {
+    animation: console-overflow-text-play var(--overflow-text-duration) linear forwards;
+  }
+
+  /* Final characters remain fully visible once playback reaches the end. */
+  .console-overflow-text[data-overflow="true"][data-at-end="true"]:is(:hover, :focus) {
+    mask-image: linear-gradient(to right, transparent, #000 var(--console-pad-xl));
+  }
+}

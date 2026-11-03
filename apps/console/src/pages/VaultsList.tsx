@@ -171,7 +171,7 @@ export function VaultsList() {
           icon: <ArchiveIcon className="size-4" />,
           disabled: Boolean(vault.archived_at),
           onSelect: async () => {
-            if (!confirm(`Archive vault ${vault.display_name}? All its credentials will also be archived. Archive is one-way.`)) return;
+            if (!confirm(`Archive vault ${vault.display_name}? Its credentials will not be archived, but this vault cannot be used for credential injection after archive. Archive is one-way.`)) return;
             try {
               await managedApi.vaults.archive(vault.id);
               load();

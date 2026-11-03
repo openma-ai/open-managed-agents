@@ -206,6 +206,24 @@
   border-radius: 0 var(--console-radius-row) var(--console-radius-row) 0;
 }
 
+/* Vault-only geometry: reserve readable badge/date/action columns rather than
+   splitting all seven columns equally. The existing wrapper owns horizontal scroll. */
+.console-vault-credentials-table {
+  min-width: 1044px;
+}
+
+.console-vault-col-name { width: 160px; }
+.console-vault-col-id { width: 160px; }
+.console-vault-col-type { width: 152px; }
+.console-vault-col-target { /* Receives the remaining width (at least 180px). */ }
+.console-vault-col-status { width: 82px; }
+.console-vault-col-updated { width: 190px; }
+.console-vault-col-actions { width: 120px; }
+
+.console-vault-credentials-table td {
+  overflow: hidden;
+}
+
 .console-settings-page {
   padding: var(--settings-frame-inset);
 }

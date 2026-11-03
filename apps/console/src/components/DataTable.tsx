@@ -31,6 +31,7 @@ import { useI18n } from "../i18n";
 import { EmptyState, type EmptyStateKind } from "./EmptyState";
 import { RowContextMenu, type RowAction } from "./RowContextMenu";
 import { Skeleton } from "./Skeleton";
+import { OverflowText } from "./ui/overflow-text";
 
 export interface DataTableProps<T> {
   title?: string;
@@ -119,6 +120,14 @@ export function DataTable<T>({
     onColumnVisibilityChange: setColumnVisibility,
     getRowId: (row) => getRowId(row),
     getCoreRowModel: getCoreRowModel(),
+    defaultColumn: {
+      cell: ({ getValue }) => {
+        const value = getValue();
+        return typeof value === "string" || typeof value === "number"
+          ? <OverflowText>{value}</OverflowText>
+          : null;
+      },
+    },
   });
 
   const rows = table.getRowModel().rows;

@@ -16,6 +16,12 @@ export function createSessionRuntimeEnvironmentMetadata(): Record<string, string
   return encodeResourceMetadata({}, "environment_template", { session_runtime: true });
 }
 
+/** OpenAI Agents vault credentials are MCP credentials only; Managed
+ * `environment_variable` and the OpenMA `cap_cli` extension stay hidden. */
+function isMcpCredential(credential: { auth: { type: string } }): boolean {
+  return credential.auth.type === "mcp_oauth" || credential.auth.type === "static_bearer";
+}
+
 function result<T extends { type: string }>(value: T): T {
   if (value.type === "not_found") throw new OpenAIAgentsProtocolError(404, "Resource not found", undefined, "resource_not_found");
   if (value.type === "invalid_request") throw new OpenAIAgentsProtocolError(400, (value as T & { message: string }).message);
@@ -226,7 +232,7 @@ export function createResourcesHandler(deps: ResourceDependencies) {
       }
       case "vaults.credentials.retrieve": {
         const retrieved = result(await deps.credentials.retrieveCredential({ vaultId, credentialId }));
-        if (retrieved.type !== "found" || retrieved.credential.auth.type === "environment_variable") throw new OpenAIAgentsProtocolError(404, "Credential not found");
+        if (retrieved.type !== "found" || !isMcpCredential(retrieved.credential)) throw new OpenAIAgentsProtocolError(404, "Credential not found");
         return { body: await credentialWire(retrieved.credential) };
       }
       case "vaults.credentials.update": {
@@ -235,7 +241,7 @@ export function createResourcesHandler(deps: ResourceDependencies) {
         return { body: await credentialWire(updated.credential) };
       }
       case "vaults.credentials.list": {
-        const credentials = (await credentialRows(vaultId)).filter(credential => credential.auth.type !== "environment_variable");
+        const credentials = (await credentialRows(vaultId)).filter(isMcpCredential);
         return { body: page(await Promise.all(credentials.map(credentialWire)), query, new Map(credentials.map(credential => [credential.id, credential.archivedAt === null ? "active" : "archived"]))) };
       }
       case "vaults.credentials.delete": {

@@ -60,6 +60,9 @@ COPY apps/agent apps/agent
 COPY apps/console apps/console
 COPY tsconfig.json ./
 
+# Package the sandbox-owned relay for installation through sandbox adapters.
+RUN pnpm --filter @open-managed-agents/sandbox-egress build
+
 # Build console SPA. Vite produces /app/apps/console/dist; the runtime
 # stage sets CONSOLE_DIR to that path and main-node's serveStatic
 # middleware picks it up. Skip with --build-arg SKIP_CONSOLE=1 if you

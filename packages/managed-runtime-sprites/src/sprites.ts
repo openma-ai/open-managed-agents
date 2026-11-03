@@ -238,6 +238,11 @@ function stableName(sessionId: string): string {
   return `oma-${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}`;
 }
 
+function allocationName(context: SandboxFactoryContext): string {
+  return context.allocationId === undefined ? stableName(context.sessionId)
+    : stableName(JSON.stringify([context.workspaceId, context.environmentId, context.sessionId, context.allocationId]));
+}
+
 function labelHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
@@ -588,7 +593,7 @@ function createProviderWithClient(
       );
       acquisition.signal.throwIfAborted();
       const client = await resolveClient();
-      const name = stableName(context.sessionId);
+      const name = allocationName(context);
       const labels = ownershipLabels(
         acquisition.scope.environmentId,
         acquisition.scope.sessionId,
@@ -655,7 +660,7 @@ function createProviderWithClient(
       );
       validateSprite(
         sprite,
-        stableName(context.sessionId),
+        allocationName(context),
         acquisition.scope.environmentId,
         acquisition.scope.sessionId,
       );
@@ -744,12 +749,12 @@ export async function createSpritesSandbox(
   });
 }
 
-export const sandboxFactory: SandboxFactory = async (context, environment) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (context: SandboxFactoryContext, environment: SandboxFactoryEnv) => {
   // Sprites boot a fixed preinstalled runtime; there is no per-session image.
   rejectSandboxImageSelection("sprites", context.image);
   rejectPreparedBase("sprites", context.preparedBase);
   return createSpritesSandbox(context, environment);
-};
+}, { capabilities: { allocationIsolation: true } });
 
 export function createSpritesManagedRuntime(options: SpritesManagedRuntimeOptions) {
   const resolveClient = createClientResolver(options);

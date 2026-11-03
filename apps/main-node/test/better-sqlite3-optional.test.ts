@@ -46,7 +46,7 @@ describe("loadBetterSqlite3", () => {
 });
 
 describe("package manifests", () => {
-  it.each(["../package.json", "../../oma-vault/package.json"])(
+  it.each(["../package.json"])(
     "%s keeps better-sqlite3 optional",
     (rel) => {
       const pkg = JSON.parse(readFileSync(new URL(rel, import.meta.url), "utf8"));

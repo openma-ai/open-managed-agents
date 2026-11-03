@@ -1,0 +1,17 @@
+{
+  "name": "@open-managed-agents/managed-credential-resolver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test:node": "vitest run --config test/vitest.node.config.ts"
+  },
+  "dependencies": {
+    "@open-managed-agents/cap": "workspace:*",
+    "@open-managed-agents/credential-store": "workspace:*",
+    "@open-managed-agents/domain": "workspace:*"
+  }
+}

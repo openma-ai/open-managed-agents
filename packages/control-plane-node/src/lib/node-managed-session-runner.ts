@@ -168,7 +168,7 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   sandboxMode?(input: ManagedRunnerContext): SessionSandboxMode | Promise<SessionSandboxMode>;
   /** Start Pi's sandbox alongside the model; only sandbox operations wait for readiness. */
   backgroundPiSandbox?: boolean;
-  buildSandbox(input: ManagedRunnerContext & { signal?: AbortSignal }): Promise<SandboxExecutor>;
+  buildSandbox(input: ManagedRunnerContext & { signal?: AbortSignal; allocationId?: string }): Promise<SandboxExecutor>;
   /** Liveness probe used before reusing a warm sandbox and after a failed
    * sandbox operation. Default: the provider runtime Port's `status()`. */
   probeSandbox?(sandbox: SandboxExecutor): Promise<SandboxLiveness>;
@@ -186,6 +186,13 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     signal?: AbortSignal;
     /** The execution this sandbox is acquired for; absent outside a claim. */
     executionFence?: SessionExecutionFence;
+  }): Promise<void>;
+  /** Refresh lightweight Session environment after preparation and on every
+   * warm reuse, without restaging resources or rebuilding the sandbox. */
+  refreshSandboxEnvironment?(input: ManagedRunnerContext & {
+    sandbox: SandboxExecutor;
+    /** Cleanup receives the raw, allocation-bound sandbox after refresh drains. */
+    registerCleanup(cleanup: (sandbox: SandboxExecutor) => Promise<void>): void;
   }): Promise<void>;
   /** Fenced turn barrier for provider-neutral writable state reconciliation. */
   /** Extra runtime-state check before reusing a warm sandbox (for example
@@ -256,6 +263,13 @@ export class DefaultNodeManagedSessionRunner
   private readonly sandboxStarts = new ScopedSessionMap<Promise<void>>();
   private readonly subagentExecutions = new ScopedSessionMap<ManagedNodeSubagents>();
   private readonly workspaces = new ScopedSessionMap<ManagedWorkspaceState>();
+  private readonly pendingSandboxDisposals = new ScopedSessionMap<Promise<void>>();
+  private readonly sandboxRefreshes = new WeakMap<SandboxExecutor, {
+    sandbox: SandboxExecutor;
+    revoke: AbortController;
+    pending?: Promise<void>;
+    cleanups: Set<(sandbox: SandboxExecutor) => Promise<void>>;
+  }>();
 
   constructor(
     private readonly dependencies: DefaultNodeManagedSessionRunnerDependencies,
@@ -319,6 +333,7 @@ export class DefaultNodeManagedSessionRunner
     this.startupAborts.set(input, startup);
     try {
       if (signal.aborted) throw abortedError(signal);
+      this.assertSandboxDisposed(input);
       const fingerprint = this.sandboxFingerprint(input);
       const existing = this.sandboxes.get(input);
       if (this.dependencies.workspaceCheckpoints !== undefined && input.executionFence === undefined) {
@@ -339,23 +354,22 @@ export class DefaultNodeManagedSessionRunner
       if (reusable && existing !== undefined) {
         reusable = await untilAborted(this.probe(existing), signal) !== "lost";
       }
-      if (reusable) return;
-      if (existing !== undefined) {
-        const previousWorkspace = this.workspaces.get(input);
-        this.workspaces.delete(input);
-        if (previousWorkspace !== undefined) {
-          await previousWorkspace.port.release({
-            scope: previousWorkspace.scope,
-            fence: this.dependencies.workspaceCheckpoints!.runtimeFence(previousWorkspace.fence, previousWorkspace.scope.environmentId),
-            binding: previousWorkspace.binding,
-          });
+      if (reusable && existing !== undefined) {
+        try {
+          await this.refreshSandboxEnvironment(input, existing, signal);
+        } catch (error) {
+          const failure = signal.aborted ? abortedError(signal) : error;
+          // A successful status probe does not prove the command channel works.
+          // Fail this start explicitly; only a later attempt may cold-restore.
+          if (this.sandboxes.get(input) === existing) {
+            await this.discardSandbox(input, { abortTurn: false }).catch(() => undefined);
+          }
+          throw failure;
         }
-        this.sandboxes.delete(input);
-        this.sandboxRuntimes.delete(input);
-        this.runtimeGenerations.delete(input);
-        this.sandboxConfigurationFingerprints.delete(input);
-        // A lost sandbox may refuse to be destroyed; it is gone either way.
-        await untilAborted(existing.destroy?.().catch(() => undefined) ?? Promise.resolve(), signal);
+        return;
+      }
+      if (existing !== undefined) {
+        await untilAborted(this.discardSandbox(input, { abortTurn: false }).catch(() => undefined), signal);
       }
       const acquired = await this.acquireSandbox(input, signal);
       this.installSandbox(input, acquired, fingerprint);
@@ -364,6 +378,43 @@ export class DefaultNodeManagedSessionRunner
       if (this.startupAborts.get(input) === startup) {
         this.startupAborts.delete(input);
       }
+    }
+  }
+
+  private assertSandboxDisposed(input: { workspaceId: string; sessionId: string }): void {
+    if (this.pendingSandboxDisposals.get(input) !== undefined) {
+      throw new Error("Sandbox cleanup is incomplete; refusing to reacquire the Session resource");
+    }
+  }
+
+  private async refreshSandboxEnvironment(
+    context: ManagedRunnerContext,
+    sandbox: SandboxExecutor,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let refresh = this.sandboxRefreshes.get(sandbox);
+    if (refresh === undefined) {
+      const revoke = new AbortController();
+      refresh = {
+        sandbox: withSandboxExecutionGuard(sandbox, { isValid: () => !revoke.signal.aborted }),
+        revoke, cleanups: new Set(),
+      };
+      this.sandboxRefreshes.set(sandbox, refresh);
+    }
+    // Keep proxy identity stable for sandbox-local credential lifecycle state.
+    const unlink = linkAbort(signal, refresh.revoke);
+    const pending = Promise.resolve().then(() => {
+      if (signal.aborted) throw abortedError(signal);
+      return this.dependencies.refreshSandboxEnvironment?.({
+        ...context, sandbox: refresh.sandbox,
+        registerCleanup: (cleanup) => { refresh.cleanups.add(cleanup); },
+      });
+    });
+    refresh.pending = pending;
+    try {
+      await untilAborted(pending, signal);
+    } finally {
+      unlink();
     }
   }
 
@@ -377,6 +428,7 @@ export class DefaultNodeManagedSessionRunner
     input: Pick<StartNodeManagedSessionRuntime, "workspaceId" | "sessionId" | "session" | "environment" | "executionFence">,
     signal: AbortSignal,
   ): Promise<AcquiredSandbox> {
+    this.assertSandboxDisposed(input);
     const runtimeGeneration = this.dependencies.runtimeGenerations?.next()
       ?? `runtime_${randomUUID()}`;
     const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
@@ -384,17 +436,21 @@ export class DefaultNodeManagedSessionRunner
       mode: () => this.dependencies.sandboxMode?.(context) ?? "sandbox",
       create: () => {
         if (signal.aborted) throw abortedError(signal);
-        return this.dependencies.buildSandbox({ ...context, signal });
+        return this.dependencies.buildSandbox({ ...context, signal,
+          ...(this.dependencies.workspaceCheckpoints === undefined ? {} : { allocationId: runtimeGeneration }),
+        });
       },
-      prepare: (sandbox) => {
-        if (signal.aborted) return Promise.reject(abortedError(signal));
-        return this.dependencies.prepareSandbox?.({
+      prepare: async (sandbox) => {
+        if (signal.aborted) throw abortedError(signal);
+        await this.dependencies.prepareSandbox?.({
           ...context,
           sandbox,
           runtimeGeneration,
           signal,
           ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
-        }) ?? Promise.resolve();
+        });
+        if (signal.aborted) throw abortedError(signal);
+        await this.refreshSandboxEnvironment(context, sandbox, signal);
       },
     });
     const allocation = runtime.acquire();
@@ -434,14 +490,7 @@ export class DefaultNodeManagedSessionRunner
       }
       await untilAborted(runtime.prepare(), signal);
     } catch (error) {
-      if (workspace !== undefined) {
-        await workspace.port.release({
-          scope: workspace.scope,
-          fence: this.dependencies.workspaceCheckpoints!.runtimeFence(workspace.fence, workspace.scope.environmentId),
-          binding: workspace.binding,
-        }).catch(() => undefined);
-      }
-      await sandbox.destroy?.().catch(() => undefined);
+      await this.disposeSandbox(input, sandbox, workspace).catch(() => undefined);
       throw error;
     }
     return { sandbox, runtime, workspace, runtimeGeneration, restoredFromMs };
@@ -470,17 +519,10 @@ export class DefaultNodeManagedSessionRunner
     if (this.sandboxes.get(input) !== lost) return "";
     const fingerprint = this.sandboxConfigurationFingerprints.get(input) ?? "";
     const previousWorkspace = this.workspaces.get(input);
-    if (previousWorkspace !== undefined) {
-      await previousWorkspace.port.release({
-        scope: previousWorkspace.scope,
-        fence: this.dependencies.workspaceCheckpoints!.runtimeFence(previousWorkspace.fence, previousWorkspace.scope.environmentId),
-        binding: previousWorkspace.binding,
-      }).catch(() => undefined);
-    }
-    void lost.destroy?.().catch(() => undefined);
+    await this.disposeSandbox(input, lost, previousWorkspace).catch(() => undefined);
     const acquired = await this.acquireSandbox(input, signal);
     if (signal.aborted) {
-      await acquired.sandbox.destroy?.().catch(() => undefined);
+      await this.disposeSandbox(input, acquired.sandbox, acquired.workspace).catch(() => undefined);
       throw abortedError(signal);
     }
     // Until this turn reaches its barrier the replacement is as dirty as every
@@ -501,25 +543,83 @@ export class DefaultNodeManagedSessionRunner
     await this.discardSandbox(input);
   }
 
-  private async discardSandbox(input: { workspaceId: string; sessionId: string }): Promise<void> {
-    this.abortControllers.get(input)?.abort();
-    this.abortControllers.delete(input);
+  /**
+   * @param abortTurn cancel the Session turn that owns `abortControllers`.
+   * Sandbox startup passes `false`: with `backgroundPiSandbox` the turn is
+   * already running and is the caller awaiting this startup, so cancelling it
+   * here would abort the very turn that is waiting for the sandbox.
+   */
+  private async discardSandbox(
+    input: { workspaceId: string; sessionId: string },
+    options: { abortTurn?: boolean } = {},
+  ): Promise<void> {
+    if (options.abortTurn !== false) {
+      this.abortControllers.get(input)?.abort();
+      this.abortControllers.delete(input);
+    }
     const workspace = this.workspaces.get(input);
     this.workspaces.delete(input);
     const sandbox = this.sandboxes.get(input);
     this.sandboxes.delete(input);
-    if (workspace !== undefined) {
-      // The port only releases binding-local state; the published blob is immutable.
+    this.sandboxRuntimes.delete(input);
+    this.runtimeGenerations.delete(input);
+    this.sandboxConfigurationFingerprints.delete(input);
+    await this.disposeSandbox(input, sandbox, workspace);
+  }
+
+  private async disposeSandbox(
+    input: { workspaceId: string; sessionId: string },
+    sandbox: SandboxExecutor | undefined,
+    workspace?: ManagedWorkspaceState,
+  ): Promise<void> {
+    const refresh = sandbox === undefined ? undefined : this.sandboxRefreshes.get(sandbox);
+    refresh?.revoke.abort();
+    const release = async () => {
+      if (workspace === undefined) return;
+      // Release only the old binding; the published blob is immutable.
       await workspace.port.release({
         scope: workspace.scope,
         fence: this.dependencies.workspaceCheckpoints!.runtimeFence(workspace.fence, workspace.scope.environmentId),
         binding: workspace.binding,
       });
+    };
+    const previous = this.pendingSandboxDisposals.get(input);
+    let physicallyDeleted = false;
+    const destroy = previous ?? (async () => {
+      // Revocation blocks late calls, but an already-started provider call may
+      // still finish. Drain refresh before deleting a deterministic resource.
+      await refresh?.pending?.catch(() => undefined);
+      try {
+        if (sandbox !== undefined && refresh !== undefined) {
+          const cleanups = await Promise.allSettled([...refresh.cleanups].map((cleanup) => cleanup(sandbox)));
+          for (const result of cleanups) if (result.status === "rejected") throw result.reason;
+        }
+      } finally {
+        await sandbox?.destroy?.();
+        physicallyDeleted = true;
+      }
+    })();
+    if (previous === undefined && sandbox !== undefined) {
+      this.pendingSandboxDisposals.set(input, destroy);
+      const clearIfDeleted = () => {
+        // Ancillary cleanup errors still reach the caller, but a successful
+        // physical deletion cannot threaten the next allocation.
+        if (physicallyDeleted && this.pendingSandboxDisposals.get(input) === destroy) this.pendingSandboxDisposals.delete(input);
+      };
+      void destroy.then(clearIfDeleted, clearIfDeleted);
     }
-    this.sandboxRuntimes.delete(input);
-    this.runtimeGenerations.delete(input);
-    this.sandboxConfigurationFingerprints.delete(input);
-    await sandbox?.destroy?.();
+    // Bound the caller's wait, not the provider lifecycle. Keep the allocation
+    // gate closed until deletion succeeds, including after timeout or rejection.
+    const cleanup = new AbortController();
+    const timeout = setTimeout(() => cleanup.abort(), 5_000);
+    try {
+      const results = await untilAborted(Promise.allSettled([release(), destroy]), cleanup.signal);
+      for (const result of results) {
+        if (result.status === "rejected") throw result.reason;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async accept(input: NodeManagedSessionRunnerAcceptInput): Promise<void> {

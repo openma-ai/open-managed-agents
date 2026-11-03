@@ -32,7 +32,7 @@ runtime decides. SQLite needs only `DATABASE_PATH`; server databases use
 uses the selected server database; only SQLite mode uses a separate
 `auth.db`.
 
-`better-sqlite3` is an optional dependency of `main-node` and `oma-vault`:
+`better-sqlite3` is an optional dependency of `main-node`:
 it is installed by default, but a Postgres or MySQL image does not need its
 native addon. If it is missing or failed to build, a server-database
 deployment still starts, and SQLite mode refuses to start with a message
@@ -237,35 +237,21 @@ Session output manifests, and the difference between an official Managed
 Agents worker and an OpenMA-supervised harness, see
 [Managed Runtime Host](/self-host/managed-runtime-host/).
 
-## Vault sidecar (outbound credential injection)
+## Sandbox egress proxy (CLI credential injection)
 
-`docker compose up` brings up an `oma-vault` container alongside
-`oma-server`. It's a mockttp HTTPS MITM proxy — when the sandbox makes
-outbound calls to a host you registered a credential for, the proxy
-injects the matching `Authorization` header. **The agent process never
-sees the secret value**; it lives only in the proxy's lookup table.
+The sandbox owns credential interception: a local relay on loopback with its
+own CA, or the provider's native outbound adapter. Users only attach Vaults.
+The control plane exposes the same ordinary HTTPS `/v1/oma/egress` routes on
+Node and Cloudflare; it verifies the Session pass and current Vault bindings
+on every request, injects the real token upstream, and never returns it.
 
-Enable per-vault:
+There is no extra control-plane listener, shared CA, or proxy configuration.
+Sandboxes need access only to the ordinary HTTPS API. Local relay installation,
+readiness and warm repair run through the sandbox adapter. The standalone
+relay bundle is built with `pnpm --filter @open-managed-agents/sandbox-egress build`.
 
-```bash
-# Create a vault
-VID=$(curl -s -X POST localhost:8787/v1/vaults \
-  -H 'content-type: application/json' -H "x-api-key: $YOUR_KEY" \
-  -d '{"name":"github-prod"}' | jq -r .id)
-
-# Add a credential bound to api.github.com
-curl -s -X POST localhost:8787/v1/vaults/$VID/credentials \
-  -H 'content-type: application/json' -H "x-api-key: $YOUR_KEY" \
-  -d '{
-    "display_name":"github-pat",
-    "auth":{"type":"static_bearer","token":"ghp_xxx","mcp_server_url":"https://api.github.com"}
-  }'
-
-# Bind to a session — agent's `curl https://api.github.com/...` then sees
-# the Authorization header injected at the network layer
-```
-
-Skip the sidecar if you don't need it: `docker compose up oma-server`.
+Environment proxies are best effort, not network isolation: clients can bypass
+them, certificate pinning breaks interception, and SSH git does not use them.
 
 ## Console branding
 
@@ -308,11 +294,6 @@ is invalid or names a missing file.
   dir — exporting it only in your shell is silently ignored.
 - **`docker compose restart` does NOT re-read env.** After editing
   `.env`, use `docker compose up -d --force-recreate oma-server`.
-- **`oma-vault` and `oma-server` MUST agree on the backend.** If you
-  set `DATABASE_URL` to a Postgres URL on `oma-server` only, the vault
-  sidecar will fall back to its own SQLite and never see the credentials
-  you wrote. The bundled compose handles this for you; if you customise,
-  mirror the env.
 - **First boot from an old `oma.db`.** `main-node` runs idempotent
   `ALTER TABLE` for the unified-runtime turn marker columns on every
   start, so existing dbs upgrade in place. If you ever see
