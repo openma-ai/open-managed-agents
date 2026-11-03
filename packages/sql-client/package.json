@@ -22,7 +22,7 @@
   },
   "peerDependencies": {
     "better-sqlite3": "^13.0.3",
-    "mysql2": "^3.24.4",
+    "mysql2": "^3.24.6",
     "postgres": "^3.4.0"
   },
   "peerDependenciesMeta": {
@@ -41,7 +41,7 @@
     "@testcontainers/postgresql": "^12.1.0",
     "@types/node": "26.6.6",
     "better-sqlite3": "^13.0.3",
-    "mysql2": "^3.24.4",
+    "mysql2": "^3.24.6",
     "postgres": "^3.4.0",
     "vitest": "^4.1.3"
   }
