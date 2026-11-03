@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 import ComparisonTable from "../components/ComparisonTable.astro";
 import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
-import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
 
 const primitives = [
   {
@@ -72,6 +72,7 @@ const faqItems = [
 ];
 
 const relatedLinks = [
+  { href: "/what-is-claude-managed-agents/", anchor: "What Claude Managed Agents is", note: "The hosted runtime this platform category is often compared with." },
   { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "Decision table for buyers evaluating Anthropic's hosted runtime." },
   { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Run the platform on your own infrastructure." },
   { href: "/open-source-ai-agents/", anchor: "Open-source AI agents", note: "Open platforms, harnesses, frameworks, and coding agents." },
@@ -84,6 +85,14 @@ const schemas = [
     { name: "Home", path: "/" },
     { name: "AI Agent Platform", path: "/ai-agent-platform/" },
   ]),
+  articleSchema({
+    headline: "AI Agent Platform & Orchestration Runtime",
+    description:
+      "What an AI agent platform is: sessions, sandboxes, model routing, and durability, compared with SDKs, builders, and coding agents.",
+    url: "https://openma.ai/ai-agent-platform/",
+    datePublished: "2026-11-03",
+    dateModified: "2026-11-03",
+  }),
   {
     "@context": "https://schema.org",
     "@type": "WebPage",

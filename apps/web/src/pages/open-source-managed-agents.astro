@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 import ComparisonTable from "../components/ComparisonTable.astro";
 import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
-import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
 
 const criteriaRows = [
   ["Agent resource", "Versioned agent definitions: model, prompt, tools, MCP, skills"],
@@ -51,8 +51,16 @@ const relatedLinks = [
 const schemas = [
   breadcrumbSchema([
     { name: "Home", path: "/" },
-    { name: "Open-Source Managed Agents", path: "/open-source-managed-agents/" },
+    { name: "Open-Source Managed Agent Runtimes", path: "/open-source-managed-agents/" },
   ]),
+  articleSchema({
+    headline: "Open-Source Managed Agent Runtimes Compared",
+    description:
+      "Open-source managed agent runtimes compared by the managed-agents shape: agents, environments, sessions, events, sandboxes, and vaults.",
+    url: "https://openma.ai/open-source-managed-agents/",
+    datePublished: "2026-11-03",
+    dateModified: "2026-11-03",
+  }),
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
@@ -104,6 +112,11 @@ const schemas = [
       failures. Open-sourcing that layer means you can audit how credentials
       and data are handled, run it where your data must live, and change the
       parts that do not fit.
+    </p>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mt-4 max-w-3xl">
+      For the platform primitives behind these runtimes, see the
+      <a href="/ai-agent-platform/">AI agent platform guide</a>. For the hosted
+      cost baseline, see <a href="/blog/claude-managed-agents-pricing/">Claude Managed Agents pricing</a>.
     </p>
   </section>
 

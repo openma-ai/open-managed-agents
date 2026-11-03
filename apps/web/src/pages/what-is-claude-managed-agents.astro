@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 import ComparisonTable from "../components/ComparisonTable.astro";
 import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
-import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
 
 const DOCS = "https://platform.claude.com/docs/en/managed-agents";
 
@@ -79,6 +79,14 @@ const schemas = [
     { name: "Home", path: "/" },
     { name: "What Is Claude Managed Agents?", path: "/what-is-claude-managed-agents/" },
   ]),
+  articleSchema({
+    headline: "What Is Claude Managed Agents?",
+    description:
+      "A plain-English guide to Claude Managed Agents: building blocks, the difference from the Claude Agent SDK, limits, and open alternatives.",
+    url: "https://openma.ai/what-is-claude-managed-agents/",
+    datePublished: "2026-11-03",
+    dateModified: "2026-11-03",
+  }),
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
@@ -262,6 +270,11 @@ const schemas = [
         Need multi-model or self-hosting? Compare the
         <a href="/claude-managed-agents-alternative/">Claude Managed Agents alternative</a> options,
         or go straight to <a href="/blog/claude-managed-agents-vs-open-managed-agents/">Claude Managed Agents vs OpenMA</a>.
+      </p>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed">
+        If deployment control is the constraint, read
+        <a href="/self-hosted-ai-agents/">self-hosted AI agents</a>; if licensing and model
+        choice are, compare <a href="/open-source-ai-agents/">open-source AI agents</a>.
       </p>
       <div class="mt-8 flex flex-wrap gap-3">
         <a href="/claude-managed-agents-alternative/" class="site-button site-button-primary">Compare alternatives</a>

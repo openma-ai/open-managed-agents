@@ -4,6 +4,7 @@ import { getCollection, render } from "astro:content";
 import {
   blogPostSchema,
   breadcrumbSchema,
+  faqPageSchema,
   readingTimeMinutes,
 } from "../../lib/seo";
 
@@ -60,6 +61,9 @@ const schemas = [
     { name: "Blog", path: "/blog/" },
     { name: post.data.title, path: `/blog/${slug}/` },
   ]),
+  // Posts that render a FAQ section declare the same pairs in frontmatter
+  // so the visible answers and the FAQPage JSON-LD cannot drift apart.
+  ...(post.data.faq?.length ? [faqPageSchema(post.data.faq)] : []),
 ];
 ---
 

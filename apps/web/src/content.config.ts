@@ -17,6 +17,10 @@ const blog = defineCollection({
     updatedAt: z.coerce.date().optional(),
     author: z.string().default("openma"),
     tags: z.array(z.string()).default([]),
+    /** Optional FAQ pairs rendered in the post; also emitted as FAQPage JSON-LD. */
+    faq: z
+      .array(z.object({ question: z.string(), answer: z.string() }))
+      .optional(),
     /** Hide from /blog index. Useful for unlisted posts shared via direct link. */
     draft: z.boolean().default(false),
   }),

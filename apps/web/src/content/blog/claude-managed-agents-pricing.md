@@ -4,6 +4,17 @@ description: "Claude Managed Agents pricing explained: $0.08 per running session
 publishedAt: 2026-11-03
 author: openma
 tags: ["pricing", "claude", "managed-agents", "comparison", "self-hosted"]
+faq:
+  - question: "Are Claude Managed Agents free?"
+    answer: "No. There is no separate free tier for the runtime; you pay token usage plus $0.08 per running session-hour, billed through the Claude Platform."
+  - question: "How much does a Claude managed agent cost per hour?"
+    answer: "$0.08 per session-hour of running time, plus the tokens it consumes in that hour. The token portion is usually larger."
+  - question: "Is idle time billed?"
+    answer: "Session runtime is metered while the session is running. Idle sessions waiting for input do not accrue runtime."
+  - question: "Is there a Claude Managed Agents pricing calculator?"
+    answer: "Use the worked example above: sessions × running hours × $0.08, plus input and output tokens × your model's rates."
+  - question: "Is self-hosting cheaper?"
+    answer: "Sometimes. It removes the runtime fee and lets you mix models, but adds infrastructure and operations cost. Model both before deciding — start with the Claude Managed Agents vs OpenMA comparison, then the OpenMA docs once you have picked a hosting path."
 ---
 
 Claude Managed Agents (CMA) pricing has two moving parts: the **tokens**

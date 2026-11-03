@@ -150,6 +150,36 @@ export function breadcrumbSchema(crumbs: Array<{ name: string; path: string }>) 
   };
 }
 
+export interface ArticleSchemaInput {
+  headline: string;
+  description: string;
+  /** Absolute URL of the page. */
+  url: string;
+  datePublished: string;
+  dateModified: string;
+  type?: "Article" | "TechArticle";
+}
+
+/** Article/TechArticle schema for the long-form SEO landing pages. */
+export function articleSchema(p: ArticleSchemaInput) {
+  return {
+    "@context": "https://schema.org",
+    "@type": p.type ?? "TechArticle",
+    headline: p.headline,
+    description: p.description,
+    datePublished: p.datePublished,
+    dateModified: p.dateModified,
+    author: { "@type": "Organization", name: ORG_NAME, url: SITE_URL },
+    publisher: {
+      "@type": "Organization",
+      name: ORG_NAME,
+      logo: { "@type": "ImageObject", url: ORG_LOGO },
+    },
+    mainEntityOfPage: { "@type": "WebPage", "@id": p.url },
+    url: p.url,
+  };
+}
+
 export function faqPageSchema(items: Array<{ question: string; answer: string }>) {
   return {
     "@context": "https://schema.org",
