@@ -6,8 +6,7 @@
 // .github/workflows/deploy*.yml "Apply hosted overlay" step) with
 // one that imports + registers plugins from `hosted/console-plugins/*`.
 //
-// Today's hosted plugins:
-//   - Billing (Polar checkout / balance / subscription)
+// Hosted deployments may register extra plugins via overlay.
 //
 // The plugin shape mirrors the Layout NavGroup / NavItem types
 // deliberately — they're duplicated here instead of imported from
@@ -20,9 +19,7 @@
 // sidebar / header / theme. Use absolute paths.
 //
 // Plugin pages are responsible for their own data fetching — they
-// don't reach into OSS app state. A hosted billing page typically
-// hits a separate hosted worker domain (billing.openma.dev) with the
-// session cookie, no OSS API surface needed.
+// don't reach into OSS app state.
 
 import type { ReactNode, ComponentType } from "react";
 

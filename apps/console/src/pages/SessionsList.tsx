@@ -8,7 +8,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { ArchiveIcon, TrashIcon } from "lucide-react";
 import type { SessionCreateParams } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
-import { ApiError } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
 import { Modal } from "../components/Modal";
@@ -487,16 +486,9 @@ export function SessionsList() {
       const session = await managedApi.sessions.create(body);
       closeModal();
       nav(`/sessions/${session.id}`);
-    } catch (err) {
-      // 402 = no balance for cloud sandbox. Toast with the server's
-      // "Insufficient balance" message has already shown; close the
-      // modal and surface the Billing page so the user can top up
-      // without hunting in the sidebar.
-      if (err instanceof ApiError && err.status === 402) {
-        closeModal();
-        nav("/billing");
-      }
-      // Other failures: leave modal open so the user can adjust + retry.
+    } catch {
+      // Failures: toast already shown via api client; leave modal open
+      // so the user can adjust + retry.
     }
   };
 

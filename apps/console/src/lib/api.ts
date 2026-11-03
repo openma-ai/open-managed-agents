@@ -222,7 +222,7 @@ export function useApi() {
         // (re-login, switch tenant, retry) once they know it happened.
         //
         // Toast format: server message verbatim. The previous shape prefixed
-        // the API path (e.g. "/v1/sessions: Insufficient balance.") which
+        // the API path (e.g. "/v1/sessions: <server message>") which
         // leaked debug info into UX. Path + status still go to console for
         // dev triage.
         if (!shouldSilenceAuthError(path, res.status)) {
