@@ -32,7 +32,7 @@ Out of scope:
   — please report to the respective vendor.
 - Self-inflicted misconfigurations (e.g. running with `AUTH_DISABLED=1`
   in production).
-- Issues only reproducible against the hosted instance at `openma.dev`
+- Issues only reproducible against the hosted instance at `openma.ai`
   — those should go through the vendor's own channel.
 
 ## Supported Versions

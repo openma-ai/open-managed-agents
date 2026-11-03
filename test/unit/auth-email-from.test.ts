@@ -5,9 +5,9 @@ import {
 } from "../../apps/main/src/auth-config";
 
 describe("resolveEmailFrom", () => {
-  it("defaults to the openma.dev sender when EMAIL_FROM is unset", () => {
+  it("defaults to the openma.ai sender when EMAIL_FROM is unset", () => {
     expect(resolveEmailFrom({})).toBe(DEFAULT_EMAIL_FROM);
-    expect(DEFAULT_EMAIL_FROM).toBe("openma <noreply@openma.dev>");
+    expect(DEFAULT_EMAIL_FROM).toBe("openma <noreply@openma.ai>");
   });
 
   it("treats blank EMAIL_FROM as unset", () => {

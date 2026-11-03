@@ -4,8 +4,8 @@
 
 ## Hosted 验收（2026-09-16）
 
-- Claude SDK base URL：`https://app.openma.dev`。
-- OpenAI SDK base URL：`https://app.openma.dev/openai/v1`。
+- Claude SDK base URL：`https://app.openma.ai`。
+- OpenAI SDK base URL：`https://app.openma.ai/openai/v1`。
 - 使用真实 `deepseek-v4-flash` 验证：创建 Agent、读取/列出、创建 `environment: none` 会话、首轮回复、OpenAI SDK 续聊、Claude SDK 继续同一个原生会话。
 - 已验证无认证返回 401、跨租户资源返回 404，并在非默认 D1 分片验证消息执行；临时 API key、模型凭据、会话与路由已清理。
 - Node 与 Cloudflare 使用共享 `SessionSandboxRuntime` 负责沙箱选择和准备。`none` 不调用物理沙箱 provider，协议元数据在兼容层转换为内部执行模式。
