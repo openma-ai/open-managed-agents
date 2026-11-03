@@ -1,6 +1,6 @@
 ---
-title: "Claude Managed Agents Pricing (2026): Session Runtime + Tokens"
-description: "Break down CMA session-hour and token costs, hidden spend, and cheaper self-host / multi-model paths."
+title: "Claude Managed Agents Pricing: Runtime + Tokens | OpenMA"
+description: "Claude Managed Agents pricing explained: $0.08 per running session-hour plus Claude token costs, with a worked monthly example and the cost-saving paths."
 publishedAt: 2026-11-03
 author: openma
 tags: ["pricing", "claude", "managed-agents", "comparison", "self-hosted"]

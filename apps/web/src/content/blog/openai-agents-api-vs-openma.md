@@ -1,6 +1,6 @@
 ---
-title: "OpenAI Agents API & SDK vs Open Managed Agent Platforms"
-description: "Agents API (managed Codex harness) vs Agents SDK (self-run) vs model-agnostic managed runtimes you can self-host."
+title: "OpenAI Agents API vs OpenMA: Managed Runtimes | OpenMA"
+description: "OpenAI Agents API vs Agents SDK vs OpenMA: who runs the agent loop, where sessions live, sandbox options, and when a multi-model runtime fits your team."
 publishedAt: 2026-11-03
 author: openma
 tags: ["openai", "agents-api", "agents-sdk", "comparison", "self-hosted", "byok"]

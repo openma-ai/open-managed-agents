@@ -1,6 +1,6 @@
 ---
-title: "Claude Agent SDK vs Managed Agents (and When to Migrate)"
-description: "Claude Agent SDK runs in your process; Managed Agents host the harness. Compare, then see model-agnostic runtime options."
+title: "Claude Agent SDK vs Managed Agents: When to Migrate | OpenMA"
+description: "The Claude Agent SDK runs the harness in your process; Managed Agents hosts it. Compare state, sandboxes, recovery, and when to migrate to a managed runtime."
 publishedAt: 2026-11-03
 author: openma
 tags: ["claude", "agent-sdk", "managed-agents", "comparison", "migration"]

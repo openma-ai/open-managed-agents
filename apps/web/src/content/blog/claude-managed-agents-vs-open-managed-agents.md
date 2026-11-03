@@ -1,6 +1,6 @@
 ---
-title: "Claude Managed Agents vs OpenMA (Open Managed Agents)"
-description: "Side-by-side: Anthropic-hosted CMA vs open-source, multi-model managed agent runtime. Sessions, sandboxes, lock-in, cost shape."
+title: "Claude Managed Agents vs OpenMA: 1:1 Comparison | OpenMA"
+description: "Claude Managed Agents vs OpenMA compared 1:1: models, hosting, sessions, sandboxes, credentials, and cost shape — with clear guidance on when each wins."
 publishedAt: 2026-05-09
 updatedAt: 2026-11-03
 author: openma
