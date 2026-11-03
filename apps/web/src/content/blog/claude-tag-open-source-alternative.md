@@ -174,8 +174,8 @@ docker compose up -d
 
 Then open the Console, create an agent, and publish it into Slack from
 the integrations flow. For a full production deployment, start with the
-[self-host overview](https://docs.openma.dev/self-host/overview/) and
-the [Slack OAuth app setup](https://docs.openma.dev/self-host/oauth-apps/#slack).
+[self-host overview](https://docs.openma.ai/self-host/overview/) and
+the [Slack OAuth app setup](https://docs.openma.ai/self-host/oauth-apps/#slack).
 
 ## Bottom line
 

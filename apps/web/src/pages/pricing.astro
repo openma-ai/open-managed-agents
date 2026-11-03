@@ -1,0 +1,70 @@
+---
+import Base from "../layouts/Base.astro";
+import PricingCard from "../components/PricingCard.astro";
+import { breadcrumbSchema } from "../lib/seo";
+
+const title = "Hosted Pricing";
+const description =
+  "Self-host OpenMA for free forever. Hosted openma.ai is optional wallet-based sandbox compute — BYOK for the LLM.";
+---
+
+<Base
+  title={title}
+  description={description}
+  canonical="/pricing/"
+  keywords="openma pricing, hosted agents, byok, self-hosted free"
+  schemas={[
+    breadcrumbSchema([
+      { name: "Home", path: "/" },
+      { name: "Pricing", path: "/pricing/" },
+    ]),
+  ]}
+>
+  <section class="site-container py-16">
+    <h1 class="font-display text-4xl font-bold text-center mb-3">Hosted pricing</h1>
+    <p class="text-center text-[var(--color-fg-muted)] mb-12 max-w-2xl mx-auto leading-relaxed">
+      Self-host is free forever. The hosted service at
+      <a href="https://openma.ai">openma.ai</a> is for teams who'd rather not
+      run the infra themselves. BYOK for the LLM — we only charge for sandbox
+      compute.
+    </p>
+    <div class="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
+      <PricingCard
+        name="Free"
+        price="$0"
+        features={[
+          "$1 one-time trial credit",
+          "localRuntime unlimited",
+          "All integrations included",
+        ]}
+      />
+      <PricingCard
+        name="Pro"
+        price="$20"
+        badge="Most popular"
+        features={[
+          '<strong class="text-[var(--color-fg)]">$22</strong> credit (10% bonus)',
+          "~73 hours cloud sandbox",
+          "Auto-renewing wallet top-up",
+        ]}
+      />
+      <PricingCard
+        name="Max"
+        price="$100"
+        features={[
+          '<strong class="text-[var(--color-fg)]">$120</strong> credit (20% bonus)',
+          "~400 hours cloud sandbox",
+          "Priority email support",
+        ]}
+      />
+    </div>
+    <p class="text-center text-xs text-[var(--color-fg-subtle)] mt-8">
+      Self-host always remains free. Hosted is one packaging of the same
+      Apache 2.0 codebase.
+    </p>
+    <p class="text-center mt-10">
+      <a href="https://app.openma.ai/login" class="site-button">Try hosted</a>
+      <a href="https://docs.openma.ai/self-host/overview/" class="site-button ml-3">Self-host docs</a>
+    </p>
+  </section>
+</Base>

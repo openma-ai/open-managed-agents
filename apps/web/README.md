@@ -1,9 +1,9 @@
 # apps/web — openma marketing + blog
 
-Astro 5 static site. Lives at **www.openma.dev** (apex `openma.dev` is
+Astro 5 static site. Lives at **www.openma.ai** (apex `openma.ai` is
 currently the Console SPA on the main worker; merging this site with
 the apex is a deliberate later step that requires moving Console to
-`app.openma.dev`).
+`app.openma.ai`).
 
 ## Layout
 
@@ -42,7 +42,7 @@ pnpm --filter @open-managed-agents/web build
 
 ```bash
 pnpm --filter @open-managed-agents/web deploy
-# Builds + wrangler deploy → www.openma.dev
+# Builds + wrangler deploy → www.openma.ai
 ```
 
 ## Adding a blog post

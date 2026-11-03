@@ -39,7 +39,7 @@ The CLI lives in this repo (`packages/cli`).
 The CLI reads two env vars:
 
 ```bash
-export OMA_BASE_URL="https://app.openma.dev"
+export OMA_BASE_URL="https://app.openma.ai"
 export OMA_API_KEY="oma_..."
 ```
 
@@ -119,7 +119,7 @@ The openma API is **wire-compatible with the [Claude Managed Agents API](https:/
     import { OpenMA } from "@openma/sdk";
 
     const client = new OpenMA({
-      baseURL: "https://app.openma.dev",
+      baseURL: "https://app.openma.ai",
       apiKey: process.env.OMA_API_KEY!,
     });
 
@@ -145,7 +145,7 @@ The openma API is **wire-compatible with the [Claude Managed Agents API](https:/
     from anthropic import Anthropic
 
     client = Anthropic(
-        base_url="https://app.openma.dev",
+        base_url="https://app.openma.ai",
         api_key=os.environ["OMA_API_KEY"],
     )
 
@@ -176,7 +176,7 @@ The openma API is **wire-compatible with the [Claude Managed Agents API](https:/
     )
 
     client := anthropic.NewClient(
-        option.WithBaseURL("https://app.openma.dev"),
+        option.WithBaseURL("https://app.openma.ai"),
         option.WithAPIKey(os.Getenv("OMA_API_KEY")),
     )
 
@@ -308,7 +308,7 @@ TypeScript gets strong request and response types from `@openma/sdk`. Python and
     import { OpenMA } from "@openma/sdk";
 
     const client = new OpenMA({
-      baseURL: "https://app.openma.dev",
+      baseURL: "https://app.openma.ai",
       apiKey: process.env.OMA_API_KEY!,
     });
 
@@ -330,7 +330,7 @@ TypeScript gets strong request and response types from `@openma/sdk`. Python and
     from anthropic import Anthropic
 
     client = Anthropic(
-        base_url="https://app.openma.dev",
+        base_url="https://app.openma.ai",
         api_key=os.environ["OMA_API_KEY"],
     )
 
@@ -355,7 +355,7 @@ TypeScript gets strong request and response types from `@openma/sdk`. Python and
     )
 
     client := anthropic.NewClient(
-        option.WithBaseURL("https://app.openma.dev"),
+        option.WithBaseURL("https://app.openma.ai"),
         option.WithAPIKey(os.Getenv("OMA_API_KEY")),
     )
 

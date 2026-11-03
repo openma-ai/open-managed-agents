@@ -13,12 +13,12 @@
     "not_found_handling": "404-page"
   },
 
-  // OSS template defaults to www.openma.dev only — the hosted overlay
+  // OSS template defaults to www.openma.ai only — the hosted overlay
   // (openma-hosted/wrangler/web.jsonc) claims both apex + www and the
   // worker handles the redirect at runtime.
   "workers_dev": true,
   "routes": [
-    { "pattern": "www.openma.dev", "custom_domain": true }
+    { "pattern": "www.openma.ai", "custom_domain": true }
   ],
 
   "observability": { "enabled": true },

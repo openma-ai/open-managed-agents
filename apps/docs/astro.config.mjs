@@ -12,11 +12,11 @@ const FONT_HREF =
   'https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap';
 
 export default defineConfig({
-  site: 'https://docs.openma.dev',
+  site: 'https://docs.openma.ai',
   integrations: [
     starlight({
       title: 'openma',
-      description: 'Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.',
+      description: 'Open-source Claude Managed Agents alternative with OpenAI Agents API support. Self-host on Node + Docker or Cloudflare, or use hosted openma.ai.',
       // Root keeps the existing English URLs. `zh-cn` is Starlight's locale
       // directory; the language picker switches `/…` and `/zh-cn/…`.
       defaultLocale: 'root',
@@ -161,7 +161,7 @@ export default defineConfig({
           // without this prefix the Console link looks identical to
           // internal docs links.
           label: '↗ Console',
-          link: 'https://app.openma.dev',
+          link: 'https://app.openma.ai',
           attrs: { target: '_blank', rel: 'noopener' },
         },
       ],
