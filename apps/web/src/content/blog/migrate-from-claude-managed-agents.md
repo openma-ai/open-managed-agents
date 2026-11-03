@@ -287,9 +287,10 @@ rewriting clients.
 
 See [the side-by-side technical
 comparison](/blog/claude-managed-agents-vs-open-managed-agents/) for
-the architectural differences, and the [open-source alternatives
-landscape](/blog/open-source-alternatives-to-claude-managed-agents-2026/)
-for context on where this sits in the broader space.
+the architectural differences, and the guide to [Claude Managed Agents
+alternatives](/claude-managed-agents-alternative/) for context on where
+this sits in the broader space. If cost is driving the move, start with
+[Claude Managed Agents pricing](/blog/claude-managed-agents-pricing/).
 
 ## Get started
 

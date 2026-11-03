@@ -21,7 +21,11 @@ test("legacy Anthropic article URLs permanently redirect to the live Claude URLs
   const redirects = new Map([
     [
       "/blog/open-source-alternatives-to-anthropic-managed-agents-2026/",
+      "/claude-managed-agents-alternative/",
+    ],
+    [
       "/blog/open-source-alternatives-to-claude-managed-agents-2026/",
+      "/claude-managed-agents-alternative/",
     ],
     [
       "/blog/migrate-from-anthropic-managed-agents/",
@@ -73,6 +77,21 @@ test("extensionless marketing URLs permanently redirect to their trailing-slash 
     response.headers.get("location"),
     "https://openma.ai/blog/architecture-durable-objects-r2-brain-sandbox-split/?source=gsc",
   );
+});
+
+test("managed-agents guide landings redirect to their trailing-slash canonical", async () => {
+  for (const path of [
+    "/claude-managed-agents-alternative",
+    "/what-is-claude-managed-agents",
+    "/self-hosted-ai-agents",
+    "/open-source-ai-agents",
+    "/open-source-managed-agents",
+    "/ai-agent-platform",
+  ]) {
+    const response = await fetchFromWorker(`https://openma.ai${path}`);
+    assert.equal(response.status, 301, path);
+    assert.equal(response.headers.get("location"), `https://openma.ai${path}/`, path);
+  }
 });
 
 test("static assets bypass trailing-slash redirects", async () => {

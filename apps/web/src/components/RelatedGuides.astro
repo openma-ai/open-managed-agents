@@ -1,0 +1,30 @@
+---
+/**
+ * "Keep reading" link grid for the managed-agents guide pages. Anchor
+ * text is the target page's keyword, so pass descriptive anchors —
+ * never "click here".
+ */
+export interface Props {
+  links: Array<{ href: string; anchor: string; note: string }>;
+  heading?: string;
+}
+
+const { links, heading = "Related guides" } = Astro.props;
+---
+
+<section class="border-t border-[var(--color-border)]" aria-labelledby="related-guides" data-reveal>
+  <div class="site-container py-16">
+    <h2 id="related-guides" class="font-display text-2xl font-bold mb-6">{heading}</h2>
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {links.map((link) => (
+        <a
+          href={link.href}
+          class="block border border-[var(--color-border)] rounded-lg p-4 hover:border-[var(--color-brand)] transition-colors no-underline"
+        >
+          <div class="font-semibold text-sm mb-1 text-[var(--color-fg)]">{link.anchor}</div>
+          <p class="text-xs text-[var(--color-fg-muted)]">{link.note}</p>
+        </a>
+      ))}
+    </div>
+  </div>
+</section>

@@ -194,4 +194,4 @@ alternative worth testing.
 Related reading:
 [Claude Managed Agents vs Open Managed Agents](/blog/claude-managed-agents-vs-open-managed-agents/),
 [self-hosting on Cloudflare](/blog/self-host-agent-platform-cloudflare-workers/),
-and [the open-source alternatives landscape](/blog/open-source-alternatives-to-claude-managed-agents-2026/).
+and [Claude Managed Agents alternatives](/claude-managed-agents-alternative/).
