@@ -13,6 +13,8 @@ import {
 import { findPiCatalogModel } from "@open-managed-agents/managed-agents-application/agents/pi-model-catalog";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
+import { filterModelsByLifecycle } from "./model-lifecycle";
+
 export interface ModelCardCatalogRecord {
   model_id: string;
   model: string;
@@ -51,13 +53,16 @@ export class ModelCardCatalogSource implements ModelCatalogSourcePort {
     if (!Number.isInteger(input.limit) || input.limit < 1) {
       throw new Error("Model card page limit must be a positive integer");
     }
-    const models = (await this.cards.list({ tenantId: input.workspaceId }))
-      .filter((card) => card.archived_at === null)
-      .map(toModel)
-      .sort((left, right) =>
-        right.createdAt.localeCompare(left.createdAt) ||
-        right.id.localeCompare(left.id)
-      );
+    const models = filterModelsByLifecycle(
+      (await this.cards.list({ tenantId: input.workspaceId }))
+        .filter((card) => card.archived_at === null)
+        .map(toModel)
+        .sort((left, right) =>
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.id.localeCompare(left.id)
+        ),
+      input.lifecycle,
+    );
     const positionId = input.afterId ?? input.beforeId;
     const position = positionId === undefined
       ? undefined
@@ -90,9 +95,13 @@ function toModel(card: ModelCardCatalogRecord): Model {
     allowedFallbackModels: null,
     capabilities: piModel ? toCapabilities(piModel) : null,
     createdAt: card.created_at,
+    deprecatedAt: null,
     displayName: piModel?.name ?? card.model_id,
+    lifecycle: "active",
+    line: null,
     maxInputTokens: piModel?.contextWindow ?? null,
     maxTokens: piModel?.maxTokens ?? null,
+    retiresAt: null,
   };
 }
 
@@ -138,6 +147,7 @@ function toCapabilities(model: PiModel<Api>): NonNullable<Model["capabilities"]>
     batch: support(false),
     citations: support(false),
     codeExecution: support(false),
+    compaction: null,
     contextManagement: {
       clearThinking20251015: null,
       clearToolUses20250919: null,
@@ -154,6 +164,11 @@ function toCapabilities(model: PiModel<Api>): NonNullable<Model["capabilities"]>
     },
     imageInput: support(model.input.includes("image")),
     pdfInput: support(false),
+    serverTools: {
+      codeExecution: support(false),
+      supported: false,
+      webSearch: support(false),
+    },
     structuredOutputs: support(
       compat?.supportsStrictMode === true || compat?.supportsStrictTools === true,
     ),
@@ -161,6 +176,8 @@ function toCapabilities(model: PiModel<Api>): NonNullable<Model["capabilities"]>
       supported: reasoning,
       types: {
         adaptive: support(compat?.forceAdaptiveThinking === true),
+        betweenTools: support(false),
+        disabled: support(false),
         enabled: support(reasoning),
       },
     },

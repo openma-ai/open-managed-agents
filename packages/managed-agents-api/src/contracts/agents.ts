@@ -333,12 +333,23 @@ export const agentUpdateBodySchema: z.ZodType<AgentUpdateBody> = z
   })
   .strict();
 
+const agentExecutionIdentityResponseSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("service_account") }).strict(),
+  z
+    .object({
+      type: z.literal("aws_role"),
+      role_arn: z.string().min(1),
+    })
+    .strict(),
+]);
+
 export const agentResponseSchema = z
   .object({
     id: z.string().min(1),
     archived_at: z.string().nullable(),
     created_at: z.string(),
     description: z.string().nullable(),
+    execution_identity: agentExecutionIdentityResponseSchema,
     mcp_servers: z.array(agentMcpServerResponseSchema),
     metadata: z.record(z.string(), z.string()),
     model: agentModelResponseSchema,

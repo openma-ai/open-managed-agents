@@ -3,10 +3,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useMemo, useRef, useState } from "react";
 import { TrashIcon } from "lucide-react";
-import type { SkillListResponse } from "@anthropic-ai/sdk/resources/beta/skills/skills";
+import type { BetaSkill } from "@anthropic-ai/sdk/resources/beta/skills/skills";
 import type {
-  VersionListResponse,
-  VersionRetrieveResponse,
+  BetaSkillVersion,
 } from "@anthropic-ai/sdk/resources/beta/skills/versions";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
@@ -29,7 +28,7 @@ import {
 
 /* ---------- types ---------- */
 
-type Skill = SkillListResponse & { name?: string; description?: string };
+type Skill = BetaSkill & { name?: string; description?: string };
 
 interface SkillFile {
   filename: string;
@@ -37,9 +36,9 @@ interface SkillFile {
   encoding?: "utf8" | "base64";
 }
 
-type VersionSummary = VersionListResponse;
+type VersionSummary = BetaSkillVersion;
 
-type VersionDetail = VersionRetrieveResponse & {
+type VersionDetail = BetaSkillVersion & {
   files: SkillFile[];
 };
 
@@ -172,7 +171,7 @@ export function SkillsList() {
       const files = await extractManagedSkillFiles(createZip);
       await managedApi.skills.create({
         files,
-        ...(createTitle.trim() ? { display_title: createTitle.trim() } : {}),
+        ...(createTitle.trim() ? { display_name: createTitle.trim() } : {}),
       });
       setShowCreate(false);
       resetCreate();
@@ -193,14 +192,14 @@ export function SkillsList() {
     setNvError("");
     setNvZip(null);
     try {
-      if (!skill.latest_version) throw new Error("Skill has no versions");
+      if (!skill.latest_version_id) throw new Error("Skill has no versions");
       const [versionDetail, versionsRes, preview] = await Promise.all([
-        managedApi.skills.versions.retrieve(skill.latest_version, {
+        managedApi.skills.versions.retrieve(skill.latest_version_id, {
           skill_id: skill.id,
         }),
         managedApi.skills.versions.list(skill.id, { limit: 100 }),
         managedApi.skills.versions
-          .download(skill.latest_version, { skill_id: skill.id })
+          .download(skill.latest_version_id, { skill_id: skill.id })
           .then(async (res) => ({
             files: readSkillArchivePreview(new Uint8Array(await res.arrayBuffer())),
           }))
@@ -291,7 +290,7 @@ export function SkillsList() {
   // the modal's deleteSkill because the row's confirm copy uses the
   // skill's own title and there's no detail dialog to close after.
   const deleteSkillById = async (skill: Skill) => {
-    const name = skill.display_title || skill.name;
+    const name = skill.display_name || skill.name;
     if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
     try {
       await managedApi.skills.delete(skill.id);
@@ -312,15 +311,15 @@ export function SkillsList() {
     () => [
       {
         id: "name",
-        accessorKey: "display_title",
+        accessorKey: "display_name",
         header: "Name",
         cell: ({ row }) => (
           <div className="min-w-0">
             <div className="font-medium text-fg truncate">
-              {row.original.display_title || row.original.name || row.original.id}
+              {row.original.display_name || row.original.name || row.original.id}
             </div>
             <div className="text-xs text-fg-subtle font-mono truncate">
-              {row.original.source === "anthropic"
+              {row.original.source?.type === "anthropic"
                 ? row.original.name || row.original.id
                 : row.original.id}
             </div>
@@ -342,7 +341,7 @@ export function SkillsList() {
         header: "Source",
         cell: ({ row }) => {
           const tracked = skillSources.locks.get(row.original.id);
-          return row.original.source === "anthropic" ? (
+          return row.original.source?.type === "anthropic" ? (
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning-subtle text-warning">
               built-in
             </span>
@@ -362,11 +361,11 @@ export function SkillsList() {
       },
       {
         id: "version",
-        accessorFn: (s) => s.latest_version,
+        accessorFn: (s) => s.latest_version_id,
         header: "Version",
         cell: ({ row }) => (
           <span className="text-fg-muted">
-            {row.original.latest_version ? `v${row.original.latest_version}` : "—"}
+            {row.original.latest_version_id ? `v${row.original.latest_version_id}` : "—"}
           </span>
         ),
       },
@@ -457,7 +456,7 @@ export function SkillsList() {
           label: "Delete",
           icon: <TrashIcon className="size-4" />,
           destructive: true,
-          disabled: skill.source === "anthropic",
+          disabled: skill.source?.type === "anthropic",
           onSelect: () => void deleteSkillById(skill),
         },
       ]}
@@ -581,8 +580,8 @@ export function SkillsList() {
       <Modal
         open={!!detail}
         onClose={closeDetail}
-        title={detail?.display_title || detail?.name || detail?.id || ""}
-        subtitle={detail ? `${detail.id} · v${detail.latest_version}` : ""}
+        title={detail?.display_name || detail?.name || detail?.id || ""}
+        subtitle={detail ? `${detail.id} · v${detail.latest_version_id}` : ""}
         maxWidth="max-w-2xl"
         footer={
           <Button variant="ghost" onClick={closeDetail}>
@@ -610,7 +609,7 @@ export function SkillsList() {
                   Display Title
                 </Label>
                 <p className="text-sm font-medium">
-                  {detail.display_title || "—"}
+                  {detail.display_name || "—"}
                 </p>
               </div>
               <div>
@@ -676,7 +675,7 @@ export function SkillsList() {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <Label className="text-xs text-fg-muted">
-                  Files (v{detail.latest_version})
+                  Files (v{detail.latest_version_id})
                 </Label>
                 <Button variant="ghost"
                   onClick={startNewVersion}
@@ -787,12 +786,12 @@ export function SkillsList() {
                     <TableBody>
                       {detailVersions.map((v) => (
                         <TableRow
-                          key={v.version}
+                          key={v.id}
                           className="border-t border-border"
                         >
                           <TableCell className="px-4 py-2 font-mono text-xs">
-                            v{v.version}
-                            {v.version === detail.latest_version && (
+                            v{v.id}
+                            {v.id === detail.latest_version_id && (
                               <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-success-subtle text-success">
                                 latest
                               </span>

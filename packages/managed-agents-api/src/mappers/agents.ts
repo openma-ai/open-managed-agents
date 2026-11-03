@@ -233,6 +233,7 @@ export function toAgentResponse(agent: AgentView): object {
     archived_at: agent.archivedAt,
     created_at: agent.createdAt,
     description: agent.description,
+    execution_identity: { type: "service_account" },
     mcp_servers: agent.mcpServers.map(fromAgentMcpServerInput),
     metadata: agent.metadata,
     model: {

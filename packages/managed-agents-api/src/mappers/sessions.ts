@@ -197,6 +197,7 @@ export function toSessionAgentResponse(agent: SessionAgentView): object {
   return {
     id: agent.id,
     description: agent.description,
+    execution_identity: { type: "service_account" },
     mcp_servers: agent.mcpServers.map(fromAgentMcpServerInput),
     model: fromAgentModel(agent.model),
     multiagent:

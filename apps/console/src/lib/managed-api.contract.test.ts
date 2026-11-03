@@ -42,6 +42,8 @@ describe("Console Managed Agents client", () => {
 
   it("keeps Files pagination on the official Files API shape", async () => {
     const client = createManagedApiClient(request);
+    // The SDK 1.x `FileListParams` no longer types `before_id`, but the OpenMA
+    // server still accepts it and the console Files feed paginates with it.
     await client.files.list({ limit: 20, before_id: "file_1" });
 
     expect(request).toHaveBeenCalledWith(
@@ -150,14 +152,14 @@ describe("Console Managed Agents client", () => {
     const client = createManagedApiClient(request);
     const file = new File(["# Skill"], "SKILL.md", { type: "text/markdown" });
 
-    await client.skills.create({ files: [file], display_title: "Research" });
+    await client.skills.create({ files: [file], display_name: "Research" });
 
     const [path, init] = request.mock.calls[0] as [string, RequestInit];
     expect(path).toBe("/v1/skills");
     expect(init.method).toBe("POST");
     expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).getAll("files[]")).toEqual([file]);
-    expect((init.body as FormData).get("display_title")).toBe("Research");
+    expect((init.body as FormData).get("display_name")).toBe("Research");
   });
 
   it("covers the complete Deployment and Deployment Run SDK resources", async () => {

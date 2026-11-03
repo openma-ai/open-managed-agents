@@ -50,10 +50,24 @@ export function toSkillResponse(skill: SkillView): object {
   return {
     id: skill.id,
     created_at: skill.createdAt,
-    display_title: skill.displayTitle,
-    latest_version: skill.latestVersion,
-    source: skill.source,
+    display_name: skill.displayTitle ?? "",
+    latest_version_id: skill.latestVersion ?? "",
+    source: { type: toSkillSourceType(skill.source) },
     type: "skill",
     updated_at: skill.updatedAt,
   };
+}
+
+const SKILL_SOURCE_TYPES = [
+  "custom",
+  "anthropic",
+  "anthropic_example",
+  "plugin",
+] as const;
+
+/** Keeps the wire source inside the SDK 1.x source union. */
+function toSkillSourceType(source: string): (typeof SKILL_SOURCE_TYPES)[number] {
+  return (SKILL_SOURCE_TYPES as readonly string[]).includes(source)
+    ? (source as (typeof SKILL_SOURCE_TYPES)[number])
+    : "custom";
 }

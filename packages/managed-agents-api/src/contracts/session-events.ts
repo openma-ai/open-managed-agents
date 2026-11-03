@@ -1,5 +1,6 @@
 import type {
   BetaManagedAgentsSessionEvent,
+  BetaManagedAgentsSessionEventType,
   BetaManagedAgentsSessionEventsPageCursor,
   BetaManagedAgentsSendSessionEvents,
   BetaManagedAgentsStreamSessionEvents,
@@ -37,6 +38,51 @@ export type SessionEventListResponse = Pick<
 type SentWireEvent = NonNullable<BetaManagedAgentsSendSessionEvents["data"]>[number];
 type ListedWireEvent = BetaManagedAgentsSessionEvent;
 
+/** The session event types the SDK 1.x list filter accepts. */
+const SESSION_EVENT_TYPES = [
+  "user.message",
+  "user.interrupt",
+  "user.tool_confirmation",
+  "user.custom_tool_result",
+  "user.tool_result",
+  "user.define_outcome",
+  "agent.custom_tool_use",
+  "agent.message",
+  "agent.thinking",
+  "agent.mcp_tool_use",
+  "agent.mcp_tool_result",
+  "agent.tool_use",
+  "agent.tool_result",
+  "agent.thread_message_received",
+  "agent.thread_message_sent",
+  "agent.thread_context_compacted",
+  "session.error",
+  "session.status_rescheduled",
+  "session.status_running",
+  "session.status_idle",
+  "session.status_terminated",
+  "session.thread_created",
+  "session.thread_status_running",
+  "session.thread_status_idle",
+  "session.thread_status_terminated",
+  "session.thread_status_rescheduled",
+  "session.updated",
+  "session.usage",
+  "span.outcome_evaluation_start",
+  "span.outcome_evaluation_end",
+  "span.outcome_evaluation_ongoing",
+  "span.model_request_start",
+  "span.model_request_end",
+  "system.message",
+  "workflow_run.created",
+  "workflow_run.status_running",
+  "workflow_run.status_idle",
+  "workflow_run.status_ended",
+  "workflow_run.error",
+  "workflow_run.phase_started",
+  "workflow_run.phase_ended",
+] as const satisfies readonly BetaManagedAgentsSessionEventType[];
+
 export const sessionEventListQuerySchema = z
   .object({
     limit: z.coerce.number().int().min(1).optional(),
@@ -46,7 +92,7 @@ export const sessionEventListQuerySchema = z
     "created_at[lt]": z.string().min(1).optional(),
     "created_at[lte]": z.string().min(1).optional(),
     order: z.enum(["asc", "desc"]).optional(),
-    types: z.array(z.string().min(1)).optional(),
+    types: z.array(z.enum(SESSION_EVENT_TYPES)).optional(),
   })
   .strict();
 

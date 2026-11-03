@@ -16,9 +16,9 @@ vi.mock("../lib/useApiQuery", () => ({
       {
         type: "skill",
         id: "skill_review",
-        display_title: "code-review",
-        source: "custom",
-        latest_version: "1001",
+        display_name: "code-review",
+        source: { type: "custom" },
+        latest_version_id: "1001",
         created_at: "2026-10-01T00:00:00.000Z",
         updated_at: "2026-10-01T00:00:00.000Z",
       },

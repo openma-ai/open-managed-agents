@@ -21,6 +21,7 @@ function makeClient(
     apiKey: "test-key",
     baseURL: "http://openma.test",
     maxRetries: 0,
+    defaultHeaders: { "anthropic-beta": "skills-2025-10-02" },
     fetch: withAnthropicFormDataSupport(async (input, init) => {
       const request =
         input instanceof Request
@@ -72,8 +73,11 @@ describe("Skills API — /v1/skills/:skill_id/versions", () => {
       id: "skv_01",
       skill_id: "skill_01",
       type: "skill_version",
-      version: "1759178010641129",
+      name: "repository-guide",
+      description: "Guides repository changes",
     });
+    expect(version).not.toHaveProperty("version");
+    expect(version).not.toHaveProperty("directory");
   });
 
   it("retrieves a version using both identifiers", async () => {
@@ -121,7 +125,7 @@ describe("Skills API — /v1/skills/:skill_id/versions", () => {
     expect(calls).toEqual([
       { skillId: "skill_01", pageSize: 10, cursor: "version_page_01" },
     ]);
-    expect(page.data[0]?.version).toBe("1759178010641129");
+    expect(page.data[0]?.id).toBe("skv_01");
     expect(page.next_page).toBe("version_page_02");
   });
 

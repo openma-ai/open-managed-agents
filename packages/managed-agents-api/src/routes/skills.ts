@@ -46,15 +46,15 @@ export function buildSkillRoutes(
     if (files === null) {
       return c.json(invalidRequest("Request field files must contain files"), 400);
     }
-    const displayTitleValue = form.get("display_title");
-    if (displayTitleValue !== null && typeof displayTitleValue !== "string") {
-      return c.json(invalidRequest("Request field display_title must be text"), 400);
+    const displayNameValue = form.get("display_name") ?? form.get("display_title");
+    if (displayNameValue !== null && typeof displayNameValue !== "string") {
+      return c.json(invalidRequest("Request field display_name must be text"), 400);
     }
 
     const result = await resolveApplicationPort(source, c).createSkill(
       toCreateSkillCommand(
         await toSkillUploadFiles(files),
-        displayTitleValue ?? undefined,
+        displayNameValue ?? undefined,
       ),
     );
     if (result.type === "invalid_request") {

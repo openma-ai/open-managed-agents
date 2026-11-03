@@ -13,6 +13,7 @@ export function toListFilesQuery(query: FileListQuery): ListFilesQuery {
     ...(query.limit !== undefined && { pageSize: query.limit }),
     ...(query.before_id !== undefined && { beforeId: query.before_id }),
     ...(query.after_id !== undefined && { afterId: query.after_id }),
+    ...(query.page !== undefined && { afterId: query.page }),
     ...(query.scope_id !== undefined && { scopeId: query.scope_id }),
   };
 }

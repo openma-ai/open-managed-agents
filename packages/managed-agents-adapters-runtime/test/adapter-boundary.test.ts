@@ -28,6 +28,7 @@ describe("Managed runtime adapter boundary", () => {
       "../src/managed-session-memory-sync.ts",
       "../src/memory-content-descriptor.ts",
       "../src/model-card-catalog.ts",
+      "../src/model-lifecycle.ts",
       "../src/session-lifecycle-router.ts",
       "../src/skill-package-compiler.ts",
       "../src/webcrypto-tunnel-certificate-authority.ts",

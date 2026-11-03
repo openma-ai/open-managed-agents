@@ -27,6 +27,7 @@ export const agentWire: BetaManagedAgentsAgent = {
   archived_at: agentView.archivedAt,
   created_at: agentView.createdAt,
   description: agentView.description,
+  execution_identity: { type: "service_account" },
   mcp_servers: [],
   metadata: agentView.metadata,
   model: {

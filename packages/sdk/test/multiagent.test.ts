@@ -14,7 +14,7 @@ const patches: OpenMaAgentUpdateParams[] = [
 
 const threadAgent: OpenMaSessionThreadAgent = {
   id: "agent_child", type: "agent", name: "Child", version: 2,
-  description: null, mcp_servers: [], model: { id: "claude-opus-5" },
+  description: null, execution_identity: { type: "service_account" }, mcp_servers: [], model: { id: "claude-opus-5" },
   skills: [], system: null, tools: [],
 };
 const topology = {

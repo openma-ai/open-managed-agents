@@ -18,10 +18,12 @@ export function buildModelRoutes(
   const app = new Hono();
 
   app.get("/", async (c) => {
+    const lifecycle = c.req.queries("lifecycle[]") ?? [];
     const query = modelListQuerySchema.safeParse({
       after_id: c.req.query("after_id"),
       before_id: c.req.query("before_id"),
       limit: c.req.query("limit"),
+      ...(lifecycle.length > 0 && { lifecycle }),
     });
     if (!query.success) {
       return c.json(invalidRequest("Invalid Models list query"), 400);

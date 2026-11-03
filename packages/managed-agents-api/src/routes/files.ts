@@ -32,6 +32,7 @@ export function buildFileRoutes(
       limit: c.req.query("limit"),
       before_id: c.req.query("before_id"),
       after_id: c.req.query("after_id"),
+      page: c.req.query("page"),
       scope_id: c.req.query("scope_id"),
     });
     if (!query.success) {

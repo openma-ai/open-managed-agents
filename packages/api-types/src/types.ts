@@ -43,12 +43,17 @@ export interface ToolsetConfig {
   type: string; // "agent_toolset_20260401"
   default_config?: {
     enabled: boolean;
-    permission_policy?: { type: "always_allow" | "always_ask" };
+    permission_policy?: { type: "always_allow" | "always_ask" | "auto" };
   };
   configs?: Array<{
     name: string;
     enabled: boolean;
-    permission_policy?: { type: "always_allow" | "always_ask" };
+    permission_policy?: { type: "always_allow" | "always_ask" | "auto" };
+    allowed_domains?: string[];
+    blocked_domains?: string[];
+    max_content_tokens?: number | null;
+    url_sources?: unknown | null;
+    user_location?: unknown | null;
   }>;
 }
 

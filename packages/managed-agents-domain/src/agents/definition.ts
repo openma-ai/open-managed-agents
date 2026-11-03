@@ -2,7 +2,29 @@ import type { JsonObject } from "../json";
 
 export type AgentPermissionPolicy =
   | { type: "always_allow" }
-  | { type: "always_ask" };
+  | { type: "always_ask" }
+  | { type: "auto" };
+
+/** Names one tool in a web_fetch `only` or `except` list. */
+export interface AgentWebFetchURLSourceToolReference {
+  name: string;
+  type: "tool_reference";
+}
+
+export type AgentWebFetchURLSourceToolFilter =
+  | { type: "all" }
+  | { type: "none" }
+  | { type: "only"; tools: AgentWebFetchURLSourceToolReference[] }
+  | { type: "except"; tools: AgentWebFetchURLSourceToolReference[] };
+
+export type AgentWebFetchURLSourceUserInput = { type: "all" } | { type: "none" };
+
+/** Which sources contribute URLs the web_fetch tool may fetch. */
+export interface AgentWebFetchURLSources {
+  client_tool_results?: AgentWebFetchURLSourceToolFilter | null;
+  server_tool_results?: AgentWebFetchURLSourceToolFilter | null;
+  user_input?: AgentWebFetchURLSourceUserInput | null;
+}
 
 export interface AgentUrlMcpServerInput {
   name: string;
@@ -90,6 +112,7 @@ export type AgentToolConfigInput =
       allowedDomains?: string[];
       blockedDomains?: string[];
       maxContentTokens?: number | null;
+      urlSources?: AgentWebFetchURLSources | null;
     })
   | (AgentSimpleToolConfigInput<"web_search"> & {
       allowedDomains?: string[];
@@ -199,6 +222,7 @@ export type AgentToolConfig =
       allowedDomains?: string[];
       blockedDomains?: string[];
       maxContentTokens?: number | null;
+      urlSources?: AgentWebFetchURLSources | null;
     })
   | (AgentSimpleToolConfig<"web_search"> & {
       allowedDomains?: string[];

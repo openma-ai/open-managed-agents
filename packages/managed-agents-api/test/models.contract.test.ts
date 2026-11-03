@@ -13,6 +13,7 @@ const model = {
     batch: { supported: true },
     citations: { supported: true },
     codeExecution: { supported: true },
+    compaction: { summarize: { supported: true }, supported: true },
     contextManagement: {
       clearThinking20251015: { supported: true },
       clearToolUses20250919: { supported: true },
@@ -29,19 +30,30 @@ const model = {
     },
     imageInput: { supported: true },
     pdfInput: { supported: true },
+    serverTools: {
+      codeExecution: { supported: true },
+      supported: true,
+      webSearch: { supported: true },
+    },
     structuredOutputs: { supported: true },
     thinking: {
       supported: true,
       types: {
         adaptive: { supported: true },
+        betweenTools: { supported: false },
+        disabled: { supported: true },
         enabled: { supported: true },
       },
     },
   },
   createdAt: "2026-08-20T00:00:00.000Z",
+  deprecatedAt: null,
   displayName: "Claude Opus 5",
+  lifecycle: "active",
+  line: "opus",
   maxInputTokens: 1_000_000,
   maxTokens: 128_000,
+  retiresAt: null,
 } satisfies Model;
 
 function makePort(
@@ -92,6 +104,7 @@ describe("Models API", () => {
         batch: { supported: true },
         citations: { supported: true },
         code_execution: { supported: true },
+        compaction: { summarize: { supported: true }, supported: true },
         context_management: {
           clear_thinking_20251015: { supported: true },
           clear_tool_uses_20250919: { supported: true },
@@ -108,19 +121,30 @@ describe("Models API", () => {
         },
         image_input: { supported: true },
         pdf_input: { supported: true },
+        server_tools: {
+          code_execution: { supported: true },
+          supported: true,
+          web_search: { supported: true },
+        },
         structured_outputs: { supported: true },
         thinking: {
           supported: true,
           types: {
             adaptive: { supported: true },
+            between_tools: { supported: false },
+            disabled: { supported: true },
             enabled: { supported: true },
           },
         },
       },
       created_at: "2026-08-20T00:00:00.000Z",
+      deprecated_at: null,
       display_name: "Claude Opus 5",
+      lifecycle: "active",
+      line: "opus",
       max_input_tokens: 1_000_000,
       max_tokens: 128_000,
+      retires_at: null,
       type: "model",
     });
   });

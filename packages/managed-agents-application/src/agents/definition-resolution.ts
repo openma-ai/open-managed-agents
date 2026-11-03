@@ -50,6 +50,9 @@ function resolveToolConfig(
         ...(input.maxContentTokens !== undefined && {
           maxContentTokens: input.maxContentTokens,
         }),
+        ...(input.urlSources !== undefined && {
+          urlSources: input.urlSources,
+        }),
       };
     case "web_search":
       return {

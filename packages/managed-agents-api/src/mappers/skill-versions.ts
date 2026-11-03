@@ -65,10 +65,8 @@ export function toSkillVersionResponse(version: SkillVersionView): object {
     id: version.id,
     created_at: version.createdAt,
     description: version.description,
-    directory: version.directory,
     name: version.name,
     skill_id: version.skillId,
     type: "skill_version",
-    version: version.version,
   };
 }

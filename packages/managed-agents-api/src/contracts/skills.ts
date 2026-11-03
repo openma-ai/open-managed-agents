@@ -1,9 +1,7 @@
 import type {
-  SkillCreateResponse,
-  SkillDeleteResponse,
+  BetaDeletedSkill,
+  BetaSkill,
   SkillListParams,
-  SkillListResponse,
-  SkillRetrieveResponse,
 } from "@anthropic-ai/sdk/resources/beta/skills/skills";
 import { z } from "zod";
 
@@ -17,15 +15,19 @@ export const skillListQuerySchema = z
   })
   .strict();
 
-export const skillResponseSchema: z.ZodType<
-  SkillCreateResponse | SkillRetrieveResponse | SkillListResponse
-> = z
+const skillSourceSchema = z
+  .object({
+    type: z.enum(["custom", "anthropic", "anthropic_example", "plugin"]),
+  })
+  .strict();
+
+export const skillResponseSchema: z.ZodType<BetaSkill> = z
   .object({
     id: z.string().min(1),
     created_at: z.string(),
-    display_title: z.string().nullable(),
-    latest_version: z.string().nullable(),
-    source: z.string(),
+    display_name: z.string(),
+    latest_version_id: z.string(),
+    source: skillSourceSchema,
     type: z.literal("skill"),
     updated_at: z.string(),
   })
@@ -38,6 +40,6 @@ export const skillPageResponseSchema = z
   })
   .strict();
 
-export const deletedSkillResponseSchema: z.ZodType<SkillDeleteResponse> = z
+export const deletedSkillResponseSchema: z.ZodType<BetaDeletedSkill> = z
   .object({ id: z.string().min(1), type: z.literal("skill_deleted") })
   .strict();

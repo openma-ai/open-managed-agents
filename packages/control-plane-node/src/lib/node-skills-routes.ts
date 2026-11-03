@@ -40,6 +40,21 @@ interface SkillVersion {
   created_at: string;
 }
 
+
+/** Map stored skill metadata to the Anthropic Skills 1.x HTTP wire shape. */
+function toSkillWire(skill: Skill): object {
+  return {
+    id: skill.id,
+    created_at: skill.created_at,
+    display_name: skill.display_title,
+    latest_version_id: skill.latest_version,
+    source: { type: skill.source },
+    type: "skill" as const,
+    updated_at: skill.updated_at,
+  };
+}
+
+
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -274,10 +289,10 @@ export function buildNodeSkillsRoutes({
     const skill: Skill = {
       type: "skill",
       id,
-      display_title:
-        typeof form.get("display_title") === "string" && form.get("display_title")!.toString().trim()
-          ? form.get("display_title")!.toString().trim()
-          : parsed.name,
+      display_title: (() => {
+        const raw = form.get("display_name") ?? form.get("display_title");
+        return typeof raw === "string" && raw.trim() ? raw.trim() : parsed.name;
+      })(),
       name: parsed.name,
       description: parsed.description ?? "",
       source: "custom",
@@ -290,7 +305,7 @@ export function buildNodeSkillsRoutes({
       kv.put(metadataKey(id), JSON.stringify(skill)),
       kv.put(versionKey(id, versionId), JSON.stringify({ version: versionId, files: manifest, created_at: now } satisfies SkillVersion)),
     ]);
-    return c.json({ ...skill, files: parsed.files }, 201);
+    return c.json({ ...toSkillWire(skill), files: parsed.files }, 201);
   });
 
   app.get("/", async (c) => {
@@ -308,12 +323,12 @@ export function buildNodeSkillsRoutes({
         return raw ? (JSON.parse(raw) as Skill) : null;
       }))
     ).filter((skill): skill is Skill => skill !== null);
-    return c.json({ data: skills, has_more: false, next_page: null });
+    return c.json({ data: skills.map(toSkillWire), has_more: false, next_page: null });
   });
 
   app.get("/:id", async (c) => {
     const skill = await loadSkill(db, c.var.tenant_id, c.req.param("id"));
-    return skill ? c.json(skill) : c.json({ error: "Skill not found" }, 404);
+    return skill ? c.json(toSkillWire(skill)) : c.json({ error: "Skill not found" }, 404);
   });
 
   app.get("/:id/versions", async (c) => {

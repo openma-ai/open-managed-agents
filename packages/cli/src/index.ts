@@ -1132,9 +1132,9 @@ const commands: Cmd[] = [
     usage: "oma skills list", desc: "List skills",
     http: "GET    /v1/skills?source=custom|builtin",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; display_title: string; name: string; source: string }> }>(config, "/v1/skills");
+      const { data } = await apiFetch<{ data: Array<{ id: string; display_name: string; source: { type: string } }> }>(config, "/v1/skills");
       if (!data.length) { console.log("No skills."); return; }
-      table([["NAME", "ID", "SOURCE"], ...data.map(s => [s.display_title || s.name, s.id, s.source])]);
+      table([["NAME", "ID", "SOURCE"], ...data.map(s => [s.display_name || s.id, s.id, s.source?.type])]);
     },
   },
   {
