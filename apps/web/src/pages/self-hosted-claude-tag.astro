@@ -1,6 +1,6 @@
 ---
 import Base from "../layouts/Base.astro";
-import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import FaqSection from "../components/FaqSection.astro";
 
 const setupSteps = [
   "Run Open Managed Agents on Docker, Node.js, or Cloudflare Workers.",
@@ -34,10 +34,6 @@ const faqItems = [
 ];
 
 const schemas = [
-  breadcrumbSchema([
-    { name: "Home", path: "/" },
-    { name: "Self-Hosted Claude Tag", path: "/self-hosted-claude-tag/" },
-  ]),
   {
     "@context": "https://schema.org",
     "@type": "HowTo",
@@ -56,11 +52,12 @@ const schemas = [
       text,
     })),
   },
-  faqPageSchema(faqItems),
 ];
 ---
 
 <Base
+  ogImage="https://openma.ai/og/self-hosted-claude-tag.png"
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Self-Hosted Claude Tag", path: "/self-hosted-claude-tag/" }, ]}
   title="Self-Hosted Claude Tag: Open-Source Runtime for Tag-Style Agents | Open Managed Agents"
   description="Claude Tag is hosted. Open Managed Agents gives teams an open-source, self-hosted foundation for a Claude Tag-style workflow with BYOK, MCP, vaults, memory stores, and durable sessions."
   canonical="/self-hosted-claude-tag/"
@@ -163,17 +160,5 @@ const schemas = [
     </div>
   </section>
 
-  <section class="border-t border-[var(--color-border)]" data-reveal>
-    <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-8">FAQ</h2>
-      <div class="grid md:grid-cols-2 gap-8">
-        {faqItems.map((item) => (
-          <article>
-            <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
-            <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
-          </article>
-        ))}
-      </div>
-    </div>
-  </section>
+  <FaqSection items={faqItems} />
 </Base>

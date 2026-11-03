@@ -1,26 +1,49 @@
 ---
 /**
- * Visible FAQ block. Pass the same items to faqPageSchema() so the
- * FAQPage JSON-LD always matches the rendered questions.
+ * Visible FAQ block plus its FAQPage JSON-LD. The schema is generated
+ * from the same items that render on the page, so the two cannot drift.
+ * Answers may contain `[text](url)` links; JSON-LD gets the plain text.
+ * Use only where the FAQ is real page content.
  */
+import { faqAnswerHtml, faqPageSchema } from "../lib/seo";
+
 export interface Props {
   items: Array<{ question: string; answer: string }>;
   heading?: string;
+  /** "section": full-width landing block. "prose": inside a blog article. */
+  variant?: "section" | "prose";
+  columns?: 2 | 3;
 }
 
-const { items, heading = "FAQ" } = Astro.props;
+const { items, heading = "FAQ", variant = "section", columns = 2 } = Astro.props;
+const schema = JSON.stringify(faqPageSchema(items));
 ---
 
-<section class="border-t border-[var(--color-border)]" data-reveal>
-  <div class="site-container py-16">
-    <h2 class="font-display text-3xl font-bold mb-8">{heading}</h2>
-    <div class="grid md:grid-cols-2 gap-8">
+<script is:inline type="application/ld+json" set:html={schema} />
+{variant === "prose" ? (
+  <section class="mt-12" aria-labelledby="faq-heading">
+    <h2 id="faq-heading" class="font-display text-2xl font-bold mb-6">{heading}</h2>
+    <div class="prose">
       {items.map((item) => (
-        <article>
-          <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
-        </article>
+        <>
+          <h3>{item.question}</h3>
+          <p set:html={faqAnswerHtml(item.answer)} />
+        </>
       ))}
     </div>
-  </div>
-</section>
+  </section>
+) : (
+  <section class="border-t border-[var(--color-border)]" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">{heading}</h2>
+      <div class:list={["grid gap-8", columns === 3 ? "md:grid-cols-3" : "md:grid-cols-2"]}>
+        {items.map((item) => (
+          <article>
+            <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
+            <p class="text-[var(--color-fg-muted)] leading-relaxed" set:html={faqAnswerHtml(item.answer)} />
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+)}

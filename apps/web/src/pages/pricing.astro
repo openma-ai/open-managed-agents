@@ -1,7 +1,6 @@
 ---
 import Base from "../layouts/Base.astro";
 import PricingCard from "../components/PricingCard.astro";
-import { breadcrumbSchema } from "../lib/seo";
 
 const title = "Hosted Pricing";
 const description =
@@ -9,16 +8,11 @@ const description =
 ---
 
 <Base
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Pricing", path: "/pricing/" }, ]}
   title={title}
   description={description}
   canonical="/pricing/"
   keywords="openma pricing, hosted agents, byok, self-hosted free"
-  schemas={[
-    breadcrumbSchema([
-      { name: "Home", path: "/" },
-      { name: "Pricing", path: "/pricing/" },
-    ]),
-  ]}
 >
   <section class="site-container py-16">
     <h1 class="font-display text-4xl font-bold text-center mb-3">Hosted pricing</h1>

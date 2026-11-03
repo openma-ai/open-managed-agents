@@ -1,6 +1,6 @@
 ---
 import Base from "../layouts/Base.astro";
-import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import FaqSection from "../components/FaqSection.astro";
 
 const faqItems = [
   {
@@ -64,10 +64,6 @@ const comparisonRows = [
 ];
 
 const schemas = [
-  breadcrumbSchema([
-    { name: "Home", path: "/" },
-    { name: "Claude Tag Alternative", path: "/claude-tag-alternative/" },
-  ]),
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
@@ -82,11 +78,12 @@ const schemas = [
       { "@type": "Thing", name: "Open Managed Agents" },
     ],
   },
-  faqPageSchema(faqItems),
 ];
 ---
 
 <Base
+  ogImage="https://openma.ai/og/claude-tag-alternative.png"
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Claude Tag Alternative", path: "/claude-tag-alternative/" }, ]}
   title="Open-Source Claude Tag Alternative You Can Self-Host | OpenMA"
   description="Build a Claude Tag-style agent on Docker or Cloudflare with Slack, MCP, private tools, durable sessions and BYOK models. Apache-2.0."
   canonical="/claude-tag-alternative/"
@@ -211,17 +208,5 @@ const schemas = [
     </ol>
   </section>
 
-  <section class="border-t border-[var(--color-border)]" data-reveal>
-    <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-8">FAQ</h2>
-      <div class="grid md:grid-cols-2 gap-8">
-        {faqItems.map((item) => (
-          <article>
-            <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
-            <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
-          </article>
-        ))}
-      </div>
-    </div>
-  </section>
+  <FaqSection items={faqItems} />
 </Base>

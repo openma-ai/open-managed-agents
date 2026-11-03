@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 import ComparisonTable from "../components/ComparisonTable.astro";
 import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
-import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import { articleSchema } from "../lib/seo";
 
 const hostingRows = [
   ["Who runs the agent loop", "The vendor", "The vendor", "You"],
@@ -54,10 +54,6 @@ const relatedLinks = [
 ];
 
 const schemas = [
-  breadcrumbSchema([
-    { name: "Home", path: "/" },
-    { name: "Self-Hosted AI Agents", path: "/self-hosted-ai-agents/" },
-  ]),
   articleSchema({
     headline: "Self-Hosted AI Agents: Run Agents on Your Infra",
     description:
@@ -77,11 +73,12 @@ const schemas = [
       text,
     })),
   },
-  faqPageSchema(faqItems),
 ];
 ---
 
 <Base
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Self-Hosted AI Agents", path: "/self-hosted-ai-agents/" }, ]}
+  ogImage="https://openma.ai/og/self-hosted-ai-agents.png"
   title="Self-Hosted AI Agents (Open-Source Runtime) | OpenMA"
   description="Why teams self-host AI agents for control, data residency, and model choice, plus how OpenMA runs as an open managed runtime on your own infrastructure."
   canonical="/self-hosted-ai-agents/"

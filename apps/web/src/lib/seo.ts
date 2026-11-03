@@ -180,6 +180,25 @@ export function articleSchema(p: ArticleSchemaInput) {
   };
 }
 
+/** Strip `[text](url)` links to their text so FAQ answers stay plain in JSON-LD. */
+export function faqPlainText(answer: string): string {
+  return answer.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+
+/** Render `[text](url)` links in an FAQ answer as escaped HTML anchors. */
+export function faqAnswerHtml(answer: string): string {
+  const esc = (t: string) =>
+    t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  let out = "";
+  let last = 0;
+  for (const m of answer.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)) {
+    out += esc(answer.slice(last, m.index));
+    out += `<a href="${esc(m[2])}">${esc(m[1])}</a>`;
+    last = (m.index ?? 0) + m[0].length;
+  }
+  return out + esc(answer.slice(last));
+}
+
 export function faqPageSchema(items: Array<{ question: string; answer: string }>) {
   return {
     "@context": "https://schema.org",
@@ -189,7 +208,7 @@ export function faqPageSchema(items: Array<{ question: string; answer: string }>
       name: item.question,
       acceptedAnswer: {
         "@type": "Answer",
-        text: item.answer,
+        text: faqPlainText(item.answer),
       },
     })),
   };

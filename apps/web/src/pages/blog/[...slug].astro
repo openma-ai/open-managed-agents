@@ -1,10 +1,10 @@
 ---
 import Base from "../../layouts/Base.astro";
+import FaqSection from "../../components/FaqSection.astro";
 import { getCollection, render } from "astro:content";
 import {
   blogPostSchema,
   breadcrumbSchema,
-  faqPageSchema,
   readingTimeMinutes,
 } from "../../lib/seo";
 
@@ -23,6 +23,7 @@ function formatDate(d: Date) {
   return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 }
 
+const ogImage = `https://openma.ai/og/blog/${post.id}.png`;
 const minutes = readingTimeMinutes(post.body ?? "");
 const slug = post.id;
 
@@ -55,15 +56,13 @@ const schemas = [
     updatedAt: post.data.updatedAt,
     author: post.data.author,
     tags: post.data.tags,
+    image: ogImage,
   }),
   breadcrumbSchema([
     { name: "Home", path: "/" },
     { name: "Blog", path: "/blog/" },
     { name: post.data.title, path: `/blog/${slug}/` },
   ]),
-  // Posts that render a FAQ section declare the same pairs in frontmatter
-  // so the visible answers and the FAQPage JSON-LD cannot drift apart.
-  ...(post.data.faq?.length ? [faqPageSchema(post.data.faq)] : []),
 ];
 ---
 
@@ -72,6 +71,7 @@ const schemas = [
   description={post.data.description}
   canonical={`/blog/${slug}/`}
   ogType="article"
+  ogImage={ogImage}
   publishedAt={post.data.publishedAt}
   updatedAt={post.data.updatedAt}
   schemas={schemas}
@@ -120,6 +120,9 @@ const schemas = [
     <div class="prose">
       <Content />
     </div>
+
+    {/* Frontmatter `faq` renders here and emits matching FAQPage JSON-LD. */}
+    {post.data.faq?.length ? <FaqSection items={post.data.faq} variant="prose" /> : null}
 
     {related.length > 0 && (
       <aside class="mt-16 pt-8 border-t border-[var(--color-border)]" aria-labelledby="related-heading">

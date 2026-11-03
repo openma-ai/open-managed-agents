@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 import ComparisonTable from "../components/ComparisonTable.astro";
 import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
-import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import { articleSchema } from "../lib/seo";
 
 const primitives = [
   {
@@ -81,10 +81,6 @@ const relatedLinks = [
 ];
 
 const schemas = [
-  breadcrumbSchema([
-    { name: "Home", path: "/" },
-    { name: "AI Agent Platform", path: "/ai-agent-platform/" },
-  ]),
   articleSchema({
     headline: "AI Agent Platform & Orchestration Runtime",
     description:
@@ -107,11 +103,12 @@ const schemas = [
       { "@type": "Thing", name: "Open Managed Agents" },
     ],
   },
-  faqPageSchema(faqItems),
 ];
 ---
 
 <Base
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "AI Agent Platform", path: "/ai-agent-platform/" }, ]}
+  ogImage="https://openma.ai/og/ai-agent-platform.png"
   title="AI Agent Platform & Orchestration Runtime | OpenMA"
   description="What an AI agent platform is: orchestration, sessions, sandboxes, model routing, and durability — compared with SDKs, builders, and coding agents today."
   canonical="/ai-agent-platform/"

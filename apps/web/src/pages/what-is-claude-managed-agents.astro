@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 import ComparisonTable from "../components/ComparisonTable.astro";
 import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
-import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import { articleSchema } from "../lib/seo";
 
 const DOCS = "https://platform.claude.com/docs/en/managed-agents";
 
@@ -75,10 +75,6 @@ const relatedLinks = [
 ];
 
 const schemas = [
-  breadcrumbSchema([
-    { name: "Home", path: "/" },
-    { name: "What Is Claude Managed Agents?", path: "/what-is-claude-managed-agents/" },
-  ]),
   articleSchema({
     headline: "What Is Claude Managed Agents?",
     description:
@@ -100,11 +96,12 @@ const schemas = [
       { "@type": "Thing", name: "Agent harness" },
     ],
   },
-  faqPageSchema(faqItems),
 ];
 ---
 
 <Base
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "What Is Claude Managed Agents?", path: "/what-is-claude-managed-agents/" }, ]}
+  ogImage="https://openma.ai/og/what-is-claude-managed-agents.png"
   title="What Is Claude Managed Agents? Plain-English Guide | OpenMA"
   description="A plain-English guide to Claude Managed Agents: its four building blocks, how it differs from the Claude Agent SDK, limits, and the open alternatives."
   canonical="/what-is-claude-managed-agents/"

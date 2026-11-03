@@ -6,6 +6,7 @@ import { getCollection } from "astro:content";
 import { softwareApplicationSchema } from "../lib/seo";
 import PricingCard from "../components/PricingCard.astro";
 import BlogPostCard from "../components/BlogPostCard.astro";
+import RelatedGuides from "../components/RelatedGuides.astro";
 
 const posts = (await getCollection("blog", ({ data }) => !data.draft))
   .sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf())
@@ -233,6 +234,18 @@ const schemas = [softwareApplicationSchema()];
       </p>
     </div>
   </section>
+
+  <RelatedGuides
+    heading="Guides and comparisons"
+    links={[
+      { href: "/what-is-claude-managed-agents/", anchor: "What is Claude Managed Agents?", note: "How Anthropic's hosted agent runtime works and what it bills for." },
+      { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternatives", note: "Open-source and self-hosted runtimes, compared by hosting, models and license." },
+      { href: "/open-source-managed-agents/", anchor: "Open-source managed agents", note: "Runtimes you can run yourself, with sessions, sandboxes and an API." },
+      { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Run agents on your own servers or Cloudflare account." },
+      { href: "/ai-agent-platform/", anchor: "AI agent platform", note: "What a platform adds on top of an SDK: orchestration, state and recovery." },
+      { href: "/open-source-ai-agents/", anchor: "Open-source AI agents", note: "Open-source agents and agent platforms, grouped by what they do." },
+    ]}
+  />
 
   <!-- Recent blog -->
   {posts.length > 0 && (

@@ -1,0 +1,30 @@
+---
+/**
+ * Visible breadcrumb trail plus BreadcrumbList JSON-LD from one list.
+ * The last crumb is the current page.
+ */
+import { breadcrumbSchema } from "../lib/seo";
+
+export interface Props {
+  crumbs: Array<{ name: string; path: string }>;
+}
+
+const { crumbs } = Astro.props;
+const schema = JSON.stringify(breadcrumbSchema(crumbs));
+---
+
+<script is:inline type="application/ld+json" set:html={schema} />
+<nav aria-label="Breadcrumb" class="text-xs text-[var(--color-fg-subtle)]">
+  <ol class="flex flex-wrap gap-2">
+    {crumbs.map((c, i) => (
+      <>
+        {i > 0 && <li aria-hidden="true">/</li>}
+        {i < crumbs.length - 1 ? (
+          <li><a href={c.path} class="hover:underline">{c.name}</a></li>
+        ) : (
+          <li class="text-[var(--color-fg-muted)] truncate max-w-[24em]" aria-current="page" title={c.name}>{c.name}</li>
+        )}
+      </>
+    ))}
+  </ol>
+</nav>
