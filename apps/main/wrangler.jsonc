@@ -30,8 +30,7 @@
       "/health",
       "/linear/*",
       "/linear-setup/*",
-      "/agents/runtime/*",
-      "/billing-api/*"
+      "/agents/runtime/*"
     ]
   },
 
@@ -85,10 +84,7 @@
   // Workers AI for generating embeddings
   "ai": { "binding": "AI" },
 
-  // Service bindings to agent + integrations workers. USAGE_METER is a
-  // hosted-only binding (packages/billing/) and is added in
-  // env.production below — the OSS Env declares the duck-typed contract
-  // so canStartSandbox / recordUsage soft-skip when missing.
+  // Service bindings to agent + integrations workers.
   "services": [
     { "binding": "SANDBOX_sandbox_default", "service": "sandbox-default" },
     { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" }
@@ -230,9 +226,7 @@
       "ai": { "binding": "AI" },
       "services": [
         { "binding": "SANDBOX_sandbox_default", "service": "sandbox-default" },
-        { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" },
-        { "binding": "USAGE_METER", "service": "managed-agents-billing", "entrypoint": "UsageMeter" },
-        { "binding": "USAGE_METER_HTTP", "service": "managed-agents-billing" }
+        { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" }
       ],
       "limits": { "cpu_ms": 300000 },
       "observability": { "enabled": true },
@@ -306,9 +300,6 @@
       "services": [
         { "binding": "SANDBOX_sandbox_default", "service": "sandbox-default-staging" },
         { "binding": "INTEGRATIONS", "service": "managed-agents-integrations-staging" }
-        // USAGE_METER intentionally omitted on staging — packages/billing
-        // isn't deployed there. The OSS contract is duck-typed optional,
-        // so canStartSandbox/recordUsage soft-skip when binding is absent.
       ],
       "durable_objects": {
         "bindings": [
