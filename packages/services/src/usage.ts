@@ -1,10 +1,9 @@
-// Hybrid resource-billing — OSS-side usage event recorder.
+// Generic usage event recorder.
 //
 // OSS counts raw resource usage in INTEGER seconds and writes one row per
-// resource-emit into per-tenant `usage_events`. The hosted billing worker
-// (managed-agents-billing) pulls unbilled rows via the internal HTTP API,
-// applies a rate map, debits credit_ledger, then ack's the ids. Rates,
-// money, ledger — all hosted. OSS knows none of it.
+// resource-emit into per-tenant `usage_events`. Downstream operators may
+// pull unbilled rows via the internal HTTP API and ack ids after their
+// own reconciliation. Rates / money / ledger are out of scope for OSS.
 //
 // Three resource kinds today:
 //   session_alive_seconds   — wall-clock from session create to terminate
@@ -70,21 +69,21 @@ export interface UsageStore {
   recordUsage(e: UsageEventInput): Promise<void>;
   /**
    * Return up to `limit` unbilled rows for `tenantId` with id > `since`.
-   * Ordered by id ASC so the billing worker can checkpoint with a single
+   * Ordered by id ASC so a reconciler can checkpoint with a single
    * cursor. Pass since=0 to fetch from the beginning.
    */
   listUnbilled(tenantId: string, since: number, limit: number): Promise<UsageEventRow[]>;
   /**
    * Read the immutable usage ledger for attribution and reconciliation.
    * Unlike listUnbilled this intentionally includes acknowledged rows: billing
-   * status must never erase historical usage from a cost report.
+   * status must never erase historical usage from a cost / usage report.
    */
   listUsage(query: UsageHistoryQuery): Promise<UsageEventRow[]>;
   /**
    * Return DISTINCT tenant_ids that have at least one unbilled event on
-   * this store. Used by the billing reconcile API's cross-shard fan-out
-   * to discover which tenants on each shard have work pending — without
-   * the caller having to pre-enumerate the tenant set.
+   * this store. Used by cross-shard fan-out reconcilers to discover
+   * which tenants on each shard have work pending — without the caller
+   * having to pre-enumerate the tenant set.
    */
   listUnbilledTenants(): Promise<Array<{ tenant_id: string }>>;
   /** Mark the given ids as billed. Idempotent — re-acking already-acked rows is a no-op. */

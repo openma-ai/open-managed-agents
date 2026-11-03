@@ -509,7 +509,7 @@ The same demo works on the Postgres compose unchanged.
 | Console UI (vite dev or built `dist`) | ✓ talks to main-node via `/auth/*` + `/v1/*` |
 | Integrations (linear / github / slack) — read-side CRUD on publications, installations, dispatch rules | ✓ wired via `@open-managed-agents/integrations-adapters-node` (set `PLATFORM_ROOT_SECRET`). |
 | Integrations write-side OAuth callbacks + setup pages + webhook ingest + publication-create | ✓ wired via `@open-managed-agents/http-routes` `buildIntegrationsGatewayRoutes` + `NodeInstallBridge`. Linear / GitHub / Slack OAuth callbacks land on main-node directly. Webhook receivers (with synthesized `user.message` resume into the bound session), GitHub `refresh-by-vault`, the Linear MCP `/linear/mcp/:sessionId` route, and publication-create endpoints (`start-a1` / `credentials` / `handoff-link` / `personal-token`) all run in-process. |
-| `/billing-api/*`, `/v1/internal/usage_events` | ✗  CF-only by design. Talks to a `USAGE_METER` worker not in this repo. Self-host operators bring their own metering or skip. |
+| `/v1/oma/internal/usage_events` | ✓  Generic usage-event export (optional). Self-host operators may consume or ignore. |
 | `/v1/runtimes` (RuntimeRoom DO) | ✗  CF-only (DO + WebSocket-backed) |
 | Cron / queue handlers | ✗  CF-only (P3 will land scheduler abstraction) |
 
@@ -811,9 +811,9 @@ client_id / client_secret pairs go on the App row at install time, not in
 env. CF stays unchanged: same gateway worker, same INTEGRATIONS service
 binding, same shared INTEGRATIONS_DB.
 
-`/billing-api/*` and `/v1/internal/usage_events` are CF-only by design
-(both call out to a `USAGE_METER` worker that lives in a separate repo).
-Self-host operators run their own metering or skip the billing pipeline.
+`/v1/oma/internal/usage_events` exports raw usage rows for operators who
+want to reconcile their own metering. Self-host deployments leave the
+guard secret unset and the endpoint returns 503.
 
 ## Local provider chaos lab
 

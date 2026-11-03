@@ -345,7 +345,7 @@ app.use("/v1/*", servicesMiddleware);
 // resolved off `c.var.services` so the per-tenant D1 binding flows
 // through; CF-only callbacks (model card validation, field-size limits,
 // shard assignment, KV-backed api-key storage, MAIN_DB membership reads,
-// USAGE_METER + refresh + GitHub fast-path lifecycle hooks) get plumbed
+// refresh + GitHub fast-path lifecycle hooks) get plumbed
 // in via closures over `c` so they always see the per-request services
 // container without leaking globals.
 
@@ -906,7 +906,7 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
   const services = (ctx.var as unknown as { services: { kv: KvStore } }).services;
   return new SqlManagedSessionsComposition({
     client,
-    // Rate limit + daily cap + USAGE_METER gate, evaluated by the shared
+    // Rate limit + daily cap + optional usage-meter port, evaluated by the shared
     // Sessions application before any Session row or work is persisted.
     admission: cfSessionCreateAdmission(ctx.env, services.kv),
     // Optional generic host hook for new turns on existing Sessions.
@@ -1519,50 +1519,6 @@ app.route("/v1/oma/models", buildOmaModelsHttpRoutes({
 }));
 app.route("/v1/oma/stats", statsRoutes);
 
-// Billing-API proxy needs the session-resolved tenant_id, so it must
-// run authMiddleware first. The proxy handler below short-circuits
-// before tenantDb/services middlewares (it doesn't need them).
-app.use("/billing-api/*", authMiddleware);
-app.use("/billing-api/*", rateLimitMiddleware);
-
-// Billing-API proxy — same-origin escape hatch for hosted plugins.
-//
-// Hosted Console (apps/console plugins/billing/) lives on app.openma.dev
-// while the billing worker lives on billing.openma.dev. Direct browser
-// → billing-worker calls would need CORS + a spoofable tenant header,
-// since better-auth cookies don't cross subdomain boundaries by default
-// and the billing worker has no auth middleware.
-//
-// Solution: proxy /billing-api/* through here. authMiddleware above has
-// already resolved c.var.tenant_id from the session cookie; we forward
-// to the USAGE_METER_HTTP service binding and inject x-oma-tenant-id
-// server-side so the header is no longer client-controlled.
-//
-// In self-host (OSS-only) USAGE_METER_HTTP is unbound and this returns
-// 404 — the hosted billing plugin isn't loaded there anyway, so no
-// browser code reaches this route.
-app.all("/billing-api/*", async (c) => {
-  const meter = (c.env as { USAGE_METER_HTTP?: Fetcher }).USAGE_METER_HTTP;
-  if (!meter) return c.json({ error: "billing not configured" }, 404);
-  const tenantId = c.get("tenant_id" as never) as string | undefined;
-  if (!tenantId) return c.json({ error: "unauthorized" }, 401);
-
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace(/^\/billing-api/, "");
-
-  const headers = new Headers(c.req.raw.headers);
-  headers.set("x-oma-tenant-id", tenantId);
-  headers.delete("cookie"); // billing worker doesn't need it; reduces leak surface
-
-  const init: RequestInit = {
-    method: c.req.method,
-    headers,
-    body: c.req.method === "GET" || c.req.method === "HEAD"
-      ? null
-      : await c.req.raw.clone().arrayBuffer(),
-  };
-  return meter.fetch(url.toString(), init);
-});
 // HTTP MCP gateway accepts either the local bridge's workspace bearer or the
 // current Work-scoped sessions_token. authMiddleware resolves both; the route
 // then validates that the requested server belongs to the same Session.

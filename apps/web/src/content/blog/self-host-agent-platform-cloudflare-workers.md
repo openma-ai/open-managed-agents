@@ -232,8 +232,8 @@ What this guide doesn't cover:
   important thing to script is `PLATFORM_ROOT_SECRET` rotation —
   see [the encryption design notes in the repo](https://github.com/openma-ai/open-managed-agents/tree/main/docs).
 - **Observability.** Workers Analytics Engine + Logpush is the
-  default; the `packages/cf-billing/src/cf-analytics.ts` module
-  emits usage events you can query for billing.
+  default; `packages/cost-attribution-cloudflare` can build a cost
+  report from Cloudflare usage signals for operators who want it.
 
 ## Why Cloudflare specifically
 

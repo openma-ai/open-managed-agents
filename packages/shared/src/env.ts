@@ -132,11 +132,11 @@ export interface Env {
   // Shared with apps/integrations gateway. Gates /v1/oma/internal/* endpoints.
   // Must match INTEGRATIONS_INTERNAL_SECRET on the integrations worker.
   INTEGRATIONS_INTERNAL_SECRET?: string;
-  // Shared with packages/billing/ in openma-hosted. Gates the
-  // /v1/oma/internal/usage_events read+ack endpoints used by the hosted
-  // billing reconcile cron. Self-host deployments leave it unset and
-  // the endpoint returns 503; the OSS billing path is unreachable
-  // without an out-of-band billing worker anyway.
+  // Gates /v1/oma/internal/usage_events read+ack (raw usage export).
+  // Self-host deployments leave it unset and the endpoint returns 503.
+  // NOTE: name retained temporarily — openma-hosted reconcile still
+  // authenticates with this bearer; rename + hosted companion change
+  // are a follow-up (do not drop while hosted depends on it).
   BILLING_INTERNAL_SECRET?: string;
   // Optional generic admission hook (service binding / WorkerEntrypoint RPC)
   // consulted before new turns, session-thread starts and hosted model

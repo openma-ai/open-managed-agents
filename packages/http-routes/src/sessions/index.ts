@@ -6,7 +6,7 @@
 // node:fs — those concerns live in the runtime adapters and the
 // optional CF-only callbacks in `deps`.
 //
-// The complex session-create flow (USAGE_METER gate, GitHub fast-path
+// The complex session-create flow (GitHub fast-path
 // token mint, refreshProviderCredentialsForSession, R2 file copy on
 // resource attach, R2 outputs cascade-delete) is plumbed through
 // optional `deps.lifecycle` hooks so the package can stay environment-
@@ -80,8 +80,9 @@ export interface OutputsAdapter {
 }
 
 export interface SessionLifecycleHooks {
-  /** Pre-create gate (USAGE_METER.canStartSandbox). Returns null to
-   *  proceed; { status, body } to short-circuit. */
+  /** Optional pre-create admission gate. Returns null to proceed;
+   *  { status, body } to short-circuit. Hosted charging does not live
+   *  here; generic admission ports arrive via #428 / #433. */
   preCreateGate?: (input: {
     tenantId: string;
     agentId: string;
@@ -189,7 +190,7 @@ export interface SessionRoutesDeps {
   /** Optional debug-token gate for POST /v1/sessions/:id/__debug_recovery__.
    *  When unset the route 404s. */
   debugRecoveryToken?: string;
-  /** CF lifecycle hooks (USAGE_METER, refresh, fast-path, etc.). All
+  /** CF lifecycle hooks (refresh, fast-path, etc.). All
    *  optional — Node leaves them undefined and the package degrades
    *  gracefully (no-op). */
   lifecycle?: SessionLifecycleHooks;

@@ -72,7 +72,7 @@ open-managed-agents/
 │   ├── integrations-core/         # provider 中立的端口/类型
 │   ├── integrations-adapters-cf/  # CF（D1）适配
 │   ├── eval-core/ event-log/      # trajectory + 事件库
-│   ├── cf-billing/                # 用量计费
+│   ├── cf-billing/                # CF Worker binding helpers + cost attribution re-export
 │   ├── acp-runtime/               # ACP（Agent Client Protocol）本地 daemon
 │   ├── cli/                       # `oma` 命令行
 │   └── sdk/                       # `@openma/sdk` 公网 TS SDK
@@ -238,7 +238,7 @@ Astro Starlight，部署到 `docs.openma.dev`。脚本通过 `pnpm --filter` 触
 | **存储抽象层** | `agents-store`, `sessions-store`, `environments-store`, `vaults-store`, `credentials-store`, `memory-store`, `files-store`, `model-cards-store`, `evals-store`, `outbound-snapshots-store`, `session-secrets-store`, `tenant-dbs-store` | 12 个 *领域服务* — 每个都遵循「port + in-memory fake + CF 适配」三件套 |
 | **服务容器与多租户** | `services`, `tenant-db` | 把 12 个 store 装进同一个 `Services` 接口；解析 per-request 的 D1 binding |
 | **集成端口与适配** | `integrations-core`, `integrations-adapters-cf`, `linear`, `github`, `slack` | provider 中立的 ports → CF（D1）实现 → 三家具体 provider |
-| **对外 SDK / CLI / 计费 / 本地 daemon** | `sdk`, `cli`, `cf-billing`, `acp-runtime` | 用户面对面的产物 |
+| **对外 SDK / CLI / cost helpers / 本地 daemon** | `sdk`, `cli`, `cf-billing`, `acp-runtime` | 用户面对面的产物 |
 
 ### 5.1 类型基座：`api-types` 与 `shared`
 
@@ -338,7 +338,7 @@ apps/integrations (HTTP 网关)
 |---|---|---|
 | [`packages/sdk`](packages/sdk) `@openma/sdk` | 业务集成方（Node/Bun/Deno/Browser/Workers） | composition façade：`client.beta === client.anthropic.beta`，Managed Agents 的 types / cursor / SSE / errors 全部透传官方 SDK；OpenMA 扩展严格位于 `client.oma` |
 | [`packages/cli`](packages/cli) `oma` | 终端用户 / agent 自己 | `oma agents/sessions/memory/linear/bridge/...`；其中 `bridge daemon` 以 launchd plist 在用户 Mac 启动，并维持到 `apps/main` 的 WS 长连接 |
-| [`packages/cf-billing`](packages/cf-billing) | 平台运营 | 把 token 用量翻成 CF Workers 计费抽象 |
+| [`packages/cf-billing`](packages/cf-billing) | 平台运营 | CF Worker script-settings helpers + cost-attribution-cloudflare re-export |
 | [`packages/acp-runtime`](packages/acp-runtime) | 本地 daemon | 实现 [Agent Client Protocol](https://github.com/anthropics/agent-client-protocol)；侦测本机 Claude Code/Codex 等是否安装并暴露给 daemon |
 
 ### 5.7 RL 自训练子系统：`rl/`

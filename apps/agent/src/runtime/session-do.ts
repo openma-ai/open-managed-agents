@@ -23,7 +23,7 @@ import {
   generateOutcomeId,
   classifyExternalError,
   AuthError,
-  BillingError,
+  PaymentRequiredError,
   admitViaSessionAdmissionHook,
   SessionAdmissionDeniedError,
   ConfigError,
@@ -2385,9 +2385,9 @@ export class SessionDO extends DurableObject<Env> {
 
         // AMA RetryStatusTerminal: certain model errors are unrecoverable
         // and must transition the session to `terminated` state. Today we
-        // catch the billing-fatal HTTP statuses (402 payment required,
-        // 403 forbidden — Anthropic returns these when an org is out of
-        // credit / over spend cap; retrying the same key won't succeed).
+        // catch payment/quota-fatal HTTP statuses (402 payment required,
+        // 403 forbidden — providers return these when an org is over its
+        // spend cap; retrying the same key won't succeed).
         // Other terminal sources (MCP auth refresh failure) live in the
         // tools.ts / main proxy path and are not visible here.
         if (
@@ -2395,7 +2395,7 @@ export class SessionDO extends DurableObject<Env> {
           err.cause.kind === "model_error" &&
           (err.cause.status === 402 || err.cause.status === 403)
         ) {
-          this.terminate("billing");
+          this.terminate("payment_required");
         }
         // The promoted row is the same events row with processed_at now
         // set (no separate queue row to delete). Status auto-derives from
@@ -6749,7 +6749,7 @@ export class SessionDO extends DurableObject<Env> {
       // silently fell off the list and the user saw a hard failure.
       //
       // Boundary wrappers (wrapSandboxWithLazyWarmup, the streamText
-      // boundary, the USAGE_METER boundary) re-throw native errors as
+      // boundary, ) re-throw native errors as
       // typed OmaErrors via classifyExternalError, so most well-known
       // fatal conditions arrive here as the right class already.
       // For errors that escaped the boundaries (D1, KV, future SDKs),
@@ -6760,7 +6760,7 @@ export class SessionDO extends DurableObject<Env> {
       // prompt fails again, but the session stays usable for a new prompt.
       // Caught 2026-05-11 sess-y2bfxm1de4e1zqxm: retries burned tokens.
       const isSessionTerminal =
-        classified instanceof BillingError ||
+        classified instanceof PaymentRequiredError ||
         classified instanceof ConfigError ||
         classified instanceof AuthError;
       const isModelTurnDead = classified instanceof ModelError;
@@ -6838,7 +6838,7 @@ export class SessionDO extends DurableObject<Env> {
         history.append(terminalError);
         this.broadcastEvent(terminalError, activeFence);
         this.terminate(
-          classified instanceof BillingError ? "billing"
+          classified instanceof PaymentRequiredError ? "payment_required"
             : classified instanceof AuthError ? "auth"
               : classified instanceof ConfigError ? "config"
                 : "fatal_error",
@@ -6986,8 +6986,8 @@ export class SessionDO extends DurableObject<Env> {
    *
    * Reasons currently emitted:
    *   - "session_deleted" — DELETE /v1/sessions/:id (destroy path)
-   *   - "billing"         — model rejected request (402/403); not
-   *                         recoverable without operator intervention
+   *   - "payment_required"— model/provider rejected request (402/403);
+   *                         not recoverable without operator intervention
    *
    * Follow-up sources to wire (see AMA RetryStatusTerminal):
    *   - "mcp_auth"  — MCP server permanent-auth-failure path lives in
@@ -7003,7 +7003,7 @@ export class SessionDO extends DurableObject<Env> {
       ctrl.abort();
     }
     this._threadAbortControllers.clear();
-    // Hybrid-billing: emit session_alive_seconds covering wall-clock
+    // Usage metering: emit session_alive_seconds covering wall-clock
     // (created_at_ms → now) on terminate. Idempotent via
     // session_alive_billed; fire-and-forget so the terminate path can
     // proceed if the usage_events write hiccups.
