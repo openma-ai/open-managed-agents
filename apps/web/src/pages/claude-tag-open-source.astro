@@ -1,6 +1,6 @@
 ---
 import Base from "../layouts/Base.astro";
-import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import FaqSection from "../components/FaqSection.astro";
 
 const faqItems = [
   {
@@ -21,10 +21,6 @@ const faqItems = [
 ];
 
 const schemas = [
-  breadcrumbSchema([
-    { name: "Home", path: "/" },
-    { name: "Open-Source Claude Tag", path: "/claude-tag-open-source/" },
-  ]),
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
@@ -38,11 +34,12 @@ const schemas = [
       { "@type": "Thing", name: "Claude Tag alternative" },
     ],
   },
-  faqPageSchema(faqItems),
 ];
 ---
 
 <Base
+  ogImage="https://openma.ai/og/claude-tag-open-source.png"
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Open-Source Claude Tag", path: "/claude-tag-open-source/" }, ]}
   title="Open-Source Claude Tag: Build Tag-Style Agents with OpenMA"
   description="Claude Tag is not open source. Open Managed Agents is an Apache 2.0 foundation for building Claude Tag-style agents with BYOK, MCP tools, vaults, memory stores, and self-hosted deployment."
   canonical="/claude-tag-open-source/"
@@ -124,15 +121,5 @@ const schemas = [
     </div>
   </section>
 
-  <section class="site-container py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-8">FAQ</h2>
-    <div class="grid md:grid-cols-3 gap-8">
-      {faqItems.map((item) => (
-        <article>
-          <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
-        </article>
-      ))}
-    </div>
-  </section>
+  <FaqSection items={faqItems} columns={3} />
 </Base>

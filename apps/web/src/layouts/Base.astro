@@ -3,6 +3,7 @@ import "../styles/global.css";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/jetbrains-mono";
 import { organizationSchema, websiteSchema } from "../lib/seo";
+import Breadcrumbs from "../components/Breadcrumbs.astro";
 
 export interface Props {
   title: string;
@@ -19,6 +20,8 @@ export interface Props {
   schemas?: Array<Record<string, unknown>>;
   /** Comma-separated keywords for the page (used in meta keywords + JSON-LD). */
   keywords?: string;
+  /** Visible breadcrumb trail + BreadcrumbList JSON-LD. Last item is this page. */
+  breadcrumbs?: Array<{ name: string; path: string }>;
 }
 
 const {
@@ -31,6 +34,7 @@ const {
   ogImage,
   schemas = [],
   keywords,
+  breadcrumbs,
 } = Astro.props;
 
 const SITE = "https://openma.ai";
@@ -156,6 +160,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
         <!-- Desktop nav -->
         <nav class="hidden lg:flex items-center gap-1 text-sm" aria-label="Primary">
           <a href="/deploy/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Deploy</a>
+          <a href="/claude-managed-agents-alternative/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Compare</a>
           <a href="/#ecosystem" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Ecosystem</a>
           <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-ink)]">Backchat</a>
           <a href="/blog/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Blog</a>
@@ -248,6 +253,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
               aria-label="Mobile primary"
             >
               <a href="/deploy/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Deploy</a>
+              <a href="/claude-managed-agents-alternative/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Compare</a>
               <a href="/#ecosystem" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Ecosystem</a>
               <a href="https://backchat.openma.ai" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Backchat</a>
               <a href="/blog/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Blog</a>
@@ -272,32 +278,58 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     </header>
 
     <main id="main">
+      {breadcrumbs && breadcrumbs.length > 1 && (
+        <div class="site-container pt-6">
+          <Breadcrumbs crumbs={breadcrumbs} />
+        </div>
+      )}
       <slot />
     </main>
 
     <footer class="border-t border-[var(--color-border)] mt-20">
-      <div class="site-container py-8 text-sm text-[var(--color-fg-muted)] flex flex-wrap gap-x-8 gap-y-2 justify-between">
-        <div>© {new Date().getFullYear()} Open Managed Agents. Apache 2.0 licensed.</div>
-        <nav class="flex flex-wrap gap-x-3 gap-y-1" aria-label="Footer">
-          <a href="/deploy/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Deploy</a>
-          <a href="/claude-managed-agents-alternative/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">CMA Alternative</a>
-          <a href="/ai-agent-platform/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">AI Agent Platform</a>
-          <a href="/claude-tag-alternative/" class="py-2 px-2 -mx-2 rounded hover:bg-[var(--color-bg-surface)]">Claude Tag</a>
-          <a href="/claude-tag-open-source/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Open Source Tag</a>
-          <a href="/self-hosted-claude-tag/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Self-hosted Tag</a>
-          <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-ink)]">Backchat</a>
-          <a href="/blog/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Blog</a>
-          <a href="/pricing/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Pricing</a>
-          <a href="https://docs.openma.ai" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Docs</a>
-          <a
-            href="https://github.com/openma-ai/open-managed-agents"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]"
-            >GitHub</a
-          >
-          <a href="/blog/rss.xml" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">RSS</a>
+      <div class="site-container py-12 text-sm text-[var(--color-fg-muted)]">
+        <nav class="grid grid-cols-2 md:grid-cols-4 gap-8" aria-label="Footer">
+          <div>
+            <h2 class="font-semibold text-[var(--color-fg)] mb-3">Product</h2>
+            <ul class="space-y-1">
+              <li><a href="/deploy/" class="py-1 hover:text-[var(--color-fg)]">Deploy</a></li>
+              <li><a href="/pricing/" class="py-1 hover:text-[var(--color-fg)]">Pricing</a></li>
+              <li><a href="https://docs.openma.ai" class="py-1 hover:text-[var(--color-fg)]">Docs</a></li>
+              <li><a href="https://backchat.openma.ai" class="py-1 hover:text-[var(--color-fg)]">Backchat</a></li>
+              <li><a href="https://github.com/openma-ai/open-managed-agents" class="py-1 hover:text-[var(--color-fg)]" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+            </ul>
+          </div>
+          <div>
+            <h2 class="font-semibold text-[var(--color-fg)] mb-3">Compare</h2>
+            <ul class="space-y-1">
+              <li><a href="/claude-managed-agents-alternative/" class="py-1 hover:text-[var(--color-fg)]">Claude Managed Agents alternatives</a></li>
+              <li><a href="/blog/claude-managed-agents-vs-open-managed-agents/" class="py-1 hover:text-[var(--color-fg)]">Claude Managed Agents vs OpenMA</a></li>
+              <li><a href="/open-source-managed-agents/" class="py-1 hover:text-[var(--color-fg)]">Open-source managed agents</a></li>
+              <li><a href="/claude-tag-alternative/" class="py-1 hover:text-[var(--color-fg)]">Claude Tag alternative</a></li>
+              <li><a href="/claude-tag-open-source/" class="py-1 hover:text-[var(--color-fg)]">Open-source Claude Tag</a></li>
+              <li><a href="/self-hosted-claude-tag/" class="py-1 hover:text-[var(--color-fg)]">Self-hosted Claude Tag</a></li>
+            </ul>
+          </div>
+          <div>
+            <h2 class="font-semibold text-[var(--color-fg)] mb-3">Guides</h2>
+            <ul class="space-y-1">
+              <li><a href="/what-is-claude-managed-agents/" class="py-1 hover:text-[var(--color-fg)]">What is Claude Managed Agents?</a></li>
+              <li><a href="/blog/claude-managed-agents-pricing/" class="py-1 hover:text-[var(--color-fg)]">Claude Managed Agents pricing</a></li>
+              <li><a href="/ai-agent-platform/" class="py-1 hover:text-[var(--color-fg)]">AI agent platform</a></li>
+              <li><a href="/self-hosted-ai-agents/" class="py-1 hover:text-[var(--color-fg)]">Self-hosted AI agents</a></li>
+              <li><a href="/open-source-ai-agents/" class="py-1 hover:text-[var(--color-fg)]">Open-source AI agents</a></li>
+              <li><a href="/blog/migrate-from-claude-managed-agents/" class="py-1 hover:text-[var(--color-fg)]">Migrate from Claude Managed Agents</a></li>
+            </ul>
+          </div>
+          <div>
+            <h2 class="font-semibold text-[var(--color-fg)] mb-3">Blog</h2>
+            <ul class="space-y-1">
+              <li><a href="/blog/" class="py-1 hover:text-[var(--color-fg)]">All posts</a></li>
+              <li><a href="/blog/rss.xml" class="py-1 hover:text-[var(--color-fg)]">RSS</a></li>
+            </ul>
+          </div>
         </nav>
+        <div class="mt-10">© {new Date().getFullYear()} Open Managed Agents. Apache 2.0 licensed.</div>
       </div>
     </footer>
 

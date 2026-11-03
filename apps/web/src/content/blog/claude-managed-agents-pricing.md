@@ -14,7 +14,7 @@ faq:
   - question: "Is there a Claude Managed Agents pricing calculator?"
     answer: "Use the worked example above: sessions × running hours × $0.08, plus input and output tokens × your model's rates."
   - question: "Is self-hosting cheaper?"
-    answer: "Sometimes. It removes the runtime fee and lets you mix models, but adds infrastructure and operations cost. Model both before deciding. Start with the Claude Managed Agents vs OpenMA comparison, then the OpenMA docs once you have picked a hosting path."
+    answer: "Sometimes. It removes the runtime fee and lets you mix models, but adds infrastructure and operations cost. Model both before deciding. Start with the [Claude Managed Agents vs OpenMA](/blog/claude-managed-agents-vs-open-managed-agents/) comparison, then the [OpenMA docs](https://docs.openma.ai/) once you have picked a hosting path."
 ---
 
 Claude Managed Agents (CMA) pricing has two moving parts: the **tokens**
@@ -171,28 +171,3 @@ For the broader view of options, see
 and the shortlist of
 [open-source managed agents](/open-source-managed-agents/).
 
-## FAQ
-
-**Are Claude Managed Agents free?**
-No. New API accounts get a small amount of free credit for testing.
-After that, Managed Agents usage is billed as tokens plus $0.08 per
-running session-hour through the Claude Platform.
-
-**How much does a Claude managed agent cost per hour?**
-$0.08 per session-hour of running time, plus the tokens it consumes in
-that hour. The token portion is usually larger.
-
-**Is idle time billed?**
-Session runtime is metered while the session is running. Idle sessions
-waiting for input do not accrue runtime.
-
-**Is there a Claude Managed Agents pricing calculator?**
-Use the worked example above: sessions × running hours × $0.08, plus
-input and output tokens × your model's rates.
-
-**Is self-hosting cheaper?**
-Sometimes. It removes the runtime fee and lets you mix models, but adds
-infrastructure and operations cost. Model both before deciding. Start
-with the [Claude Managed Agents vs OpenMA](/blog/claude-managed-agents-vs-open-managed-agents/)
-comparison, then the [OpenMA docs](https://docs.openma.ai/) once you
-have picked a hosting path.

@@ -48,8 +48,15 @@ python3 -c "from PIL import Image; img = Image.open('favicon-192.png').convert('
 
 Requires `rsvg-convert` (`brew install librsvg`) and Python 3 with Pillow (`pip install Pillow`).
 
-## What's not generated automatically
+## Per-page OG cards
 
-- Per-post OG images — `BlogPostSchemaInput.image` already supports
-  per-post overrides. Wire `astro-og-canvas` later if blog volume
-  justifies bespoke cards.
+`og/<slug>.png` (landing pages) and `og/blog/<slug>.png` (posts) are
+1200×630 cards in the `og-default.svg` style. Regenerate after adding a
+post or changing a title:
+
+```bash
+cd apps/web && python3 scripts/og-images.py   # needs cairosvg
+```
+
+`tests/seo.node.mjs` fails the build check if a page points at a card
+that does not exist.

@@ -156,6 +156,18 @@ export default defineConfig({
           ],
         },
         {
+          // Guides on the marketing site. External links, so the ↗ glyph
+          // applies here too (see the Console entry below).
+          label: 'Guides',
+          collapsed: true,
+          items: [
+            { label: '↗ What is Claude Managed Agents?', link: 'https://openma.ai/what-is-claude-managed-agents/' },
+            { label: '↗ Claude Managed Agents alternatives', link: 'https://openma.ai/claude-managed-agents-alternative/' },
+            { label: '↗ Self-hosted AI agents', link: 'https://openma.ai/self-hosted-ai-agents/' },
+            { label: '↗ Open-source managed agents', link: 'https://openma.ai/open-source-managed-agents/' },
+          ],
+        },
+        {
           // ↗ glyph in label is load-bearing: Starlight 0.38.4 doesn't
           // paint an external-link affordance on sidebar entries, so
           // without this prefix the Console link looks identical to

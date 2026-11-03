@@ -192,3 +192,34 @@ test("OpenAI Agents API article is published with a GitHub project path", async 
   assert.match(blogIndex, /href="\/blog\/openai-agents-api-self-hosted\/"/);
   assert.match(sitemap, /\/blog\/openai-agents-api-self-hosted\//);
 });
+
+test("FAQ and breadcrumb JSON-LD parse and match visible page content", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const { existsSync } = await import("node:fs");
+  const pages = [
+    "ai-agent-platform", "claude-managed-agents-alternative", "open-source-managed-agents",
+    "self-hosted-ai-agents", "what-is-claude-managed-agents", "open-source-ai-agents",
+    "claude-tag-alternative", "claude-tag-open-source", "self-hosted-claude-tag",
+  ];
+  const posts = (await readdir(new URL("../src/content/blog/", import.meta.url)))
+    .filter((f) => f.endsWith(".md")).map((f) => `blog/${f.replace(/\.md$/, "")}`);
+  const decode = (t) => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  for (const page of [...pages, ...posts]) {
+    const html = await readFile(new URL(`../dist/${page}/index.html`, import.meta.url), "utf8");
+    const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+      .map((m) => JSON.parse(m[1]));
+    const crumbs = blocks.filter((b) => b["@type"] === "BreadcrumbList");
+    assert.equal(crumbs.length, 1, `${page}: one BreadcrumbList`);
+    assert.match(html, /aria-label="Breadcrumb"/, `${page}: visible breadcrumbs`);
+    const text = decode(html.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<[^>]+>/g, ""));
+    for (const faq of blocks.filter((b) => b["@type"] === "FAQPage")) {
+      for (const q of faq.mainEntity) {
+        assert.ok(text.includes(q.name), `${page}: visible question "${q.name}"`);
+        assert.ok(text.includes(q.acceptedAnswer.text), `${page}: visible answer for "${q.name}"`);
+      }
+    }
+    const og = html.match(/property="og:image" content="https:\/\/openma\.ai([^"]+)"/)[1];
+    assert.match(og, /^\/og\//, `${page}: per-page og:image`);
+    assert.ok(existsSync(new URL(`../public${og}`, import.meta.url)), `${page}: ${og} exists`);
+  }
+});

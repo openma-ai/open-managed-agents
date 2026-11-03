@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 import ComparisonTable from "../components/ComparisonTable.astro";
 import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
-import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
+import { articleSchema } from "../lib/seo";
 
 const criteriaRows = [
   ["Agent resource", "Versioned agent definitions: model, prompt, tools, MCP, skills"],
@@ -49,10 +49,6 @@ const relatedLinks = [
 ];
 
 const schemas = [
-  breadcrumbSchema([
-    { name: "Home", path: "/" },
-    { name: "Open-Source Managed Agent Runtimes", path: "/open-source-managed-agents/" },
-  ]),
   articleSchema({
     headline: "Open-Source Managed Agent Runtimes Compared",
     description:
@@ -74,11 +70,12 @@ const schemas = [
       { "@type": "Thing", name: "Open Managed Agents" },
     ],
   },
-  faqPageSchema(faqItems),
 ];
 ---
 
 <Base
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Open-Source Managed Agent Runtimes", path: "/open-source-managed-agents/" }, ]}
+  ogImage="https://openma.ai/og/open-source-managed-agents.png"
   title="Open-Source Managed Agent Runtimes Compared | OpenMA"
   description="Compare open-source managed agent runtimes by agents, sessions, sandboxes, and vaults you can self-host with any model. See where OpenMA fits in production."
   canonical="/open-source-managed-agents/"
