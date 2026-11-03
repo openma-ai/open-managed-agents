@@ -125,7 +125,7 @@ async function claim(workspaceId: string, sessionId: string): Promise<SessionExe
 const params = (workspaceId: string, sessionId: string, action: ActorConfig["action"], root: string, fence?: SessionExecutionFence, marker?: string): ActorConfig =>
   ({ ...base, workspaceId, sessionId, action, root, ...(fence && { fence }), ...(marker && { marker }) });
 
-describe.sequential("real MySQL + MinIO, independent process and sandbox storage chaos", () => {
+describe("real MySQL + MinIO, independent process and sandbox storage chaos", () => {
   it("restores workspace and reads ordinary outputs in fresh processes after the writer and old sandbox are destroyed", async () => {
     const workspaceId = `tenant_${randomUUID()}`, sessionId = `session_${randomUUID()}`;
     const fence = await claim(workspaceId, sessionId);

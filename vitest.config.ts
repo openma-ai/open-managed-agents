@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
-import { cloudflarePool, cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflarePool, cloudflareTest } from "@cloudflare/vitest-plugin";
 import type { Plugin } from "vite";
 
 const requireFromConfig = createRequire(import.meta.url);
@@ -84,7 +84,7 @@ export default defineConfig({
   // alone doesn't expose it, only the plugin does.
   plugins: [stripUnpublishedDependencySourcemaps(), cloudflareTest(cfWorkerOptions)],
   resolve: {
-    // vitest-pool-workers bridges these into the miniflare/workerd runtime
+    // vitest-plugin bridges these into the miniflare/workerd runtime
     // by string match — RegExp entries only work for the vitest module graph
     // (Vite resolver), not for workerd's package resolution. So every
     // workspace package + subpath that workerd-side test code imports
@@ -430,6 +430,14 @@ export default defineConfig({
     // exact 30s timeouts; two workers keeps the suite deterministic on local
     // workerd while CI runners with fewer cores still use their natural limit.
     maxWorkers: 2,
+    // Vitest 5 fsModuleCache warm-snapshots are inlined into a single
+    // workerd WebSocket frame by @cloudflare/vitest-plugin
+    // (cloudflare/workers-sdk#16349). Our import graph exceeds the 32 MiB
+    // limit → WS 1009 "Message is too large" / pool workers exit. Disable
+    // the cache so modules are fetched one-at-a-time. Do NOT set
+    // isolate:false here — reused module graphs bleed vi.mock / D1 setup
+    // across files in this suite.
+    fsModuleCache: false,
     exclude: [
       "**/node_modules/**",
       "**/.git/**",

@@ -15,6 +15,6 @@
     "@open-managed-agents/session-thread-store": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "^4.1.3"
+    "vitest": "^5.0.5"
   }
 }

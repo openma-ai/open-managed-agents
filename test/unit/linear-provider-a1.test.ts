@@ -57,7 +57,7 @@ describe("LinearProvider — publication-first install (OAuth)", () => {
     expect(pub!.installationId).toBe("");
     // No App row was inserted — credentials live on the pub row in the
     // publication-first flow.
-    expect(c.installations.listByUser("usr_a", "linear")).resolves.toHaveLength(0);
+    await expect(c.installations.listByUser("usr_a", "linear")).resolves.toHaveLength(0);
   });
 
   it("startPublication rejects missing required fields", async () => {

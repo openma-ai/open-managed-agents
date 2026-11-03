@@ -71,6 +71,6 @@
     "@open-managed-agents/tunnel-store-memory": "workspace:*",
     "@open-managed-agents/user-profile-store-memory": "workspace:*",
     "@open-managed-agents/vault-store-memory": "workspace:*",
-    "vitest": "^4.1.3"
+    "vitest": "^5.0.5"
   }
 }

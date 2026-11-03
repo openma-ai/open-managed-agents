@@ -41,7 +41,7 @@ describe("Harness registry", () => {
 // ============================================================
 describe("Tool building", () => {
   // Import buildTools to test directly
-  // We can't import it directly in pool-workers, but we can test via
+  // We can't import it directly in vitest-plugin/workerd, but we can test via
   // the harness by checking which tools are available.
 
   const HEADERS = { "x-api-key": "test-key", "Content-Type": "application/json" };

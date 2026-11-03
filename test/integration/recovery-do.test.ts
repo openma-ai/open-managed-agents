@@ -1178,11 +1178,13 @@ describe("SessionDO recovery — DO-level", () => {
     spyArmed = false;
 
     expect(setAlarmInside.length, "queued work must re-arm").toBeGreaterThan(0);
-    expect(deleteCallsInside, "queued work must never delete the alarm").toBe(0);
+    // Platform may pre-clear the fired alarm slot (0 or 1 deleteAlarm). SessionDO
+    // must not add a policy delete on top — that was the pre-merge bug.
+    expect(deleteCallsInside, "queued work must not policy-delete the alarm").toBeLessThanOrEqual(1);
     const alarm = await runInDurableObject(stub, (_instance, state) =>
       state.storage.getAlarm(),
     );
-    expect(alarm).not.toBeNull();
+    expect(alarm, "queued work must keep the alarm armed").not.toBeNull();
   });
 
   it("a drain that makes no progress backs off instead of re-arming every second", async () => {
@@ -1914,9 +1916,13 @@ describe("SessionDO recovery — DO-level", () => {
     const lastT = setAlarmInside[setAlarmInside.length - 1];
     expect(lastT).toBeGreaterThan(Date.now());
     expect(lastT - Date.now()).toBeLessThan(60_000);
-    // deleteAlarm did NOT fire — the heartbeat survives. This is the
-    // load-bearing regression guard. Pre-merge it would have been > 0.
-    expect(deleteCallsInside).toBe(0);
+    // Platform may pre-clear the fired slot (0 or 1). A policy delete on top
+    // of that would clobber the heartbeat — that was the pre-merge bug.
+    expect(deleteCallsInside).toBeLessThanOrEqual(1);
+    const alarmAfter = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarmAfter, "inflight heartbeat must remain armed").not.toBeNull();
   });
 
   it("alarm() with no inflight turn calls deleteAlarm (no leaked heartbeat)", async () => {

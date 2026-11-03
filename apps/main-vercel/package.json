@@ -24,6 +24,6 @@
     "@vercel/sandbox": "^3.2.1"
   },
   "devDependencies": {
-    "vitest": "^4.1.3"
+    "vitest": "^5.0.5"
   }
 }

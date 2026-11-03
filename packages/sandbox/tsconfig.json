@@ -6,7 +6,7 @@
     "types": [
       "node",
       "@cloudflare/workers-types",
-      "@cloudflare/vitest-pool-workers/types"
+      "@cloudflare/vitest-plugin/types"
     ]
   },
   "include": ["src"],

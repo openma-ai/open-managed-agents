@@ -1,6 +1,6 @@
 // Vitest config local to apps/main-node.
 //
-// The root vitest.config.ts pins to @cloudflare/vitest-pool-workers
+// The root vitest.config.ts pins to @cloudflare/vitest-plugin
 // (workerd). main-node tests need the Node thread pool because they
 // spawn real child processes (test/crash-recovery.test.ts) and use
 // better-sqlite3.
