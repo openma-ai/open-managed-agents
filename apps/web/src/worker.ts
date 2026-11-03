@@ -2,9 +2,11 @@
 //   - http://*  → 301 → https://*  (HTTPS is canonical, kills the
 //     "Alternate page with proper canonical tag" GSC noise we'd
 //     otherwise rack up on every URL)
-//   - www.openma.dev/* → 301 → openma.dev/*  (apex is canonical)
-//   - openma.dev/{login,sessions,agents,...} → 301 → app.openma.dev/...
+//   - www.* → apex (openma.ai production; staging *.openma.dev still works)
+//   - apex/{login,sessions,agents,...} → 301 → app.<apex>/...
 //     (old bookmarks from when apex was the Console SPA)
+//   - /docs → https://docs.openma.ai/; /sitemap.xml → /sitemap-index.xml;
+//     dead blog slug → /blog/
 //   - everything else: pass through to env.ASSETS (Astro static)
 //
 // CF custom-domain rules can't do hostname-level redirects on their own,
@@ -15,7 +17,7 @@ interface Env {
   ASSETS: { fetch: typeof fetch };
 }
 
-// Top-level paths that belong to the Console SPA at app.openma.dev. Old
+// Top-level paths that belong to the Console SPA at app.*. Old
 // bookmarks, accidentally-shared apex links, and external backlinks
 // (forums, Twitter, our own historical CLI versions) all 301 to app.*
 // instead of 404'ing against the marketing site.
@@ -60,17 +62,36 @@ const LEGACY_MARKETING_REDIRECTS: Record<string, string> = {
     "/blog/migrate-from-claude-managed-agents/",
   "/blog/anthropic-managed-agents-vs-open-managed-agents/":
     "/blog/claude-managed-agents-vs-open-managed-agents/",
+  // GSC dead URL — original post never shipped under this slug.
+  "/blog/why-agent-as-a-service/": "/blog/",
+  // Astro emits sitemap-index.xml; crawlers still probe /sitemap.xml.
+  "/sitemap.xml": "/sitemap-index.xml",
+};
+
+// Off-site redirects kept absolute so apex /docs does not 404 against
+// the marketing asset bundle.
+const EXTERNAL_REDIRECTS: Record<string, string> = {
+  "/docs": "https://docs.openma.ai/",
+  "/docs/": "https://docs.openma.ai/",
 };
 
 const MARKETING_PATHS = new Set([
   "/claude-tag-alternative",
   "/claude-tag-open-source",
   "/self-hosted-claude-tag",
+  "/pricing",
+  "/deploy",
 ]);
 
 function legacyMarketingRedirect(pathname: string): string | undefined {
   const canonicalPath = pathname.endsWith("/") ? pathname : `${pathname}/`;
-  return LEGACY_MARKETING_REDIRECTS[canonicalPath];
+  return LEGACY_MARKETING_REDIRECTS[canonicalPath] ??
+    LEGACY_MARKETING_REDIRECTS[pathname];
+}
+
+function externalRedirect(pathname: string): string | undefined {
+  return EXTERNAL_REDIRECTS[pathname] ??
+    EXTERNAL_REDIRECTS[pathname.endsWith("/") ? pathname.slice(0, -1) : `${pathname}/`];
 }
 
 function isConsolePath(pathname: string): boolean {
@@ -80,7 +101,7 @@ function isConsolePath(pathname: string): boolean {
 }
 
 // www → apex: drop the leading "www." subdomain. Works for both prod
-// (www.openma.dev → openma.dev) and staging (www.staging.openma.dev →
+// (www.openma.ai → openma.ai) and staging (www.staging.openma.dev →
 // staging.openma.dev). Keeps the path + query intact.
 function wwwToApex(url: URL): URL {
   const out = new URL(url.toString());
@@ -134,6 +155,11 @@ export default {
 
     if (url.hostname.startsWith("www.")) {
       return Response.redirect(wwwToApex(url).toString(), 301);
+    }
+
+    const offsite = externalRedirect(url.pathname);
+    if (offsite) {
+      return Response.redirect(offsite, 301);
     }
 
     const legacyMarketingPath = legacyMarketingRedirect(url.pathname);
