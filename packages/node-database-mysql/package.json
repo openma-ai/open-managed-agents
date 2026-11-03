@@ -17,7 +17,7 @@
   },
   "peerDependencies": {
     "drizzle-orm": "^0.45.2",
-    "mysql2": "^3.24.4"
+    "mysql2": "^3.24.6"
   },
   "peerDependenciesMeta": {
     "drizzle-orm": {
@@ -30,7 +30,7 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "drizzle-orm": "^0.45.2",
-    "mysql2": "^3.24.4",
+    "mysql2": "^3.24.6",
     "vitest": "^4.1.3"
   }
 }
