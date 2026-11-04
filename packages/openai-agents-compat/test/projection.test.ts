@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptInput, applyManagedEvents, createProjectionState, validateToolResult } from '../src/projection';
+import { acceptInput, applyManagedEvents, createProjectionState, executionTurnId, validateToolResult } from '../src/projection';
 
 const fresh = (sessionId = 'session_one') => createProjectionState({ sessionId, agentId: 'agent_one', createdAt: 1 });
 const context = { observedAt: 10 };
@@ -10,6 +10,30 @@ const idle = (id: string, extras = {}) => ({ id, type: 'session.status_idle', st
 const onlyTurn = (state: any) => state.turns[state.turnOrder[0]];
 
 describe('Ordered managed event projection', () => {
+  it('resolves an execution whose id is its first input event id and caches it for the lane', () => {
+    let state = acceptInput(fresh(), [message('sevt_input')], context).state;
+    state = applyManagedEvents(state, [running('start'), output('out', 'done'), idle('end')], { observedAt: 11, executionId: 'sevt_input' }).state;
+    const turn = onlyTurn(state);
+    expect(turn.status).toBe('completed');
+    expect(executionTurnId(state, 'root', 'sevt_input')).toBe(turn.id);
+    expect(state.executionTurns['root:sevt_input']).toBe(turn.id);
+    expect(executionTurnId(state, 'root', 'unknown')).toBeNull();
+  });
+
+  it('never resolves a subagent execution in the root lane', () => {
+    let state = acceptInput(fresh(), [message('input')], context).state;
+    state = applyManagedEvents(state, [running('start'), { id: 'child-open', type: 'session.thread_created', sessionThreadId: 'sthr_child', agentName: 'helper' }], { observedAt: 11, executionId: 'input' }).state;
+    state = applyManagedEvents(state, [
+      { id: 'child_input', type: 'agent.thread_message_received', sessionThreadId: 'sthr_child', fromSessionThreadId: 'sthr_primary', content: [{ type: 'text', text: 'go' }] },
+      { id: 'child-running', type: 'session.thread_status_running', sessionThreadId: 'sthr_child' },
+      { id: 'child-idle', type: 'session.thread_status_idle', sessionThreadId: 'sthr_child', stopReason: { type: 'end_turn' } },
+    ], { observedAt: 12, executionId: 'child_input' }).state;
+    const child = executionTurnId(state, 'sthr_child', 'child_input');
+    expect(child && state.turns[child]).toMatchObject({ subagent_id: 'sthr_child', status: 'completed' });
+    expect(executionTurnId(state, 'root', 'child_input')).toBeNull();
+    expect(state.executionTurns['root:child_input']).toBeUndefined();
+  });
+
   it('keeps steering in one durable turn, preserves observed order, and replays without duplicate output', () => {
     const original = fresh();
     const accepted = acceptInput(original, [message('z_input')], context);

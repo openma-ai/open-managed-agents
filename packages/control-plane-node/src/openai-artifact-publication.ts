@@ -1,6 +1,7 @@
 import type { FileOrigin, Session, SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
 import type { FilesApplicationPort } from "@open-managed-agents/managed-agents-application/ports/files";
-import { applyManagedEvents, createProjectionState, publishSessionArtifact, readManagedSessionMappingMetadata, type ManagedProjectionEvent, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
+import type { Logger } from "@open-managed-agents/observability";
+import { applyManagedEvents, createProjectionState, executionTurnId, publishSessionArtifact, readManagedSessionMappingMetadata, type ManagedProjectionEvent, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { DefaultNodeManagedSessionRunnerDependencies } from "./lib/node-managed-session-runner";
 
@@ -10,6 +11,8 @@ export interface NodeOpenAIArtifactPublisherDependencies {
   secrets: ResourceSecretSealer;
   isFenceActive(fence: SessionExecutionFence): Promise<boolean>;
   environmentId(session: Session): string;
+  /** Receives one structured record per skipped publication. */
+  logger?: Pick<Logger, "debug" | "info" | "warn">;
 }
 type AfterExecution = NonNullable<DefaultNodeManagedSessionRunnerDependencies["afterExecution"]>;
 type PublicationInput = Parameters<AfterExecution>[0];
@@ -51,10 +54,14 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
   async function publish(input: PublicationInput): Promise<void> {
     const { session, workspaceId, executionFence, sandbox } = input;
     if (executionFence.workspaceId !== workspaceId || executionFence.sessionId !== session.id) throw new Error("Artifact execution fence does not belong to this Session");
+    const skip = (level: "debug" | "info" | "warn", reason: string, details: Record<string, unknown> = {}): void => {
+      deps.logger?.[level]({ op: "main-node.openai_agents.artifact_publication_skipped", reason, workspaceId, sessionId: session.id, executionId: executionFence.executionId, ...details }, "Agents API artifact publication skipped");
+    };
     const saved = await readManagedSessionMappingMetadata(session, deps.secrets);
-    if (saved?.environment.type !== "openai_hosted") return;
+    if (saved?.environment.type !== "openai_hosted") return skip("debug", "environment_not_openai_hosted", { environmentType: saved?.environment.type ?? null });
     const found = await deps.historyForWorkspace(workspaceId).loadSessionRuntimeHistory({ sessionId: session.id });
-    if (found.type !== "found" || !found.orderedEvents) return;
+    if (found.type !== "found") return skip("warn", "history_not_found", { historyResult: found.type });
+    if (!found.orderedEvents) return skip("warn", "history_unordered");
     const createdAt = Math.floor(Date.parse(session.createdAt) / 1000);
     let state = createProjectionState({ sessionId: session.id, agentId: session.agent.id, createdAt });
     state = applyManagedEvents(state, found.initialEvents.map((event, index) => ({ ...event, id: `bootstrap_${session.id}:${index}` })), { observedAt: createdAt }).state;
@@ -66,8 +73,12 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
         if (event.type === "agent.session.turn.completed") completedByExecution.add(event.turn_id);
       }
     }
-    const turnId = state.executionTurns[`root:${encodeURIComponent(executionFence.executionId)}`];
-    if (!turnId || !completedByExecution.has(turnId) || state.turns[turnId]?.status !== "completed" || state.turns[turnId]?.subagent_id !== null) return;
+    const turnId = executionTurnId(state, "root", executionFence.executionId);
+    if (!turnId) return skip("warn", "execution_turn_not_found");
+    const turn = state.turns[turnId];
+    if (turn?.status !== "completed") return skip("info", "turn_not_completed", { turnId, turnStatus: turn?.status ?? null });
+    if (turn.subagent_id !== null) return skip("info", "turn_not_root", { turnId, subagentId: turn.subagent_id });
+    if (!completedByExecution.has(turnId)) return skip("info", "turn_not_completed_by_execution", { turnId });
     const environmentId = deps.environmentId(session);
     const assertFence = async () => { if (!await deps.isFenceActive(executionFence)) throw new Error("Artifact publication lost the execution fence"); };
     const requireCompletedTurn = async (origin: FileOrigin) => {

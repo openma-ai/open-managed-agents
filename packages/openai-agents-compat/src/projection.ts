@@ -76,6 +76,18 @@ const clone = <T>(value: T): T => structuredClone(value);
 export function createProjectionState(input: { sessionId: string; agentId: string; createdAt: number }): ProjectionState {
   return { version: 1, ...input, status: 'idle', error: null, requiredActions: [], usage: null, turns: {}, turnOrder: [], items: {}, itemOrder: [], itemLanes: {}, outputIndices: {}, completedItems: {}, subagents: {}, subagentOrder: [], lanes: { root: { currentTurnId: null, ambiguous: false } }, calls: {}, inputTurns: {}, executionTurns: {}, seenEventIds: {}, workItems: {}, workItemLanes: {}, parentToolLanes: {}, unresolved: [] };
 }
+const executionTurnKey = (lane: string, executionId: string): string => `${encodeURIComponent(lane)}:${encodeURIComponent(executionId)}`;
+function assignedExecutionTurn(state: ProjectionState, lane: string, executionId: string): Turn | undefined {
+  const assigned = own(state.executionTurns, executionTurnKey(lane, executionId)) ?? own(state.inputTurns, executionId);
+  const turn = assigned ? own(state.turns, assigned) : undefined;
+  return turn && (turn.subagent_id ?? 'root') === lane ? turn : undefined;
+}
+/** Resolves the Turn a native execution was attributed to in `lane`, using the
+ * same rules as event application. `executionTurns` is an internal cache;
+ * callers must use this query instead of reading projection indexes. */
+export function executionTurnId(state: ProjectionState, lane: string, executionId: string): string | null {
+  return assignedExecutionTurn(state, lane, executionId)?.id ?? null;
+}
 export function validateToolResult(state: ProjectionState, input: { turnId: string; callId: string }): void {
   const call = own(state.calls, input.callId);
   const turn = call && own(state.turns, call.turnId);
@@ -132,10 +144,14 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
   }
   function locateTurn(name: string): Turn | undefined {
     const execution = context.executionId;
-    const executionKey = execution && `${encodeURIComponent(name)}:${encodeURIComponent(execution)}`;
-    const assigned = execution && (own(state.executionTurns, executionKey!) ?? own(state.inputTurns, execution));
-    const assignedTurn = assigned ? own(state.turns, assigned) : undefined;
-    if (assignedTurn && (assignedTurn.subagent_id ?? 'root') === name) return assignedTurn;
+    const executionKey = execution && executionTurnKey(name, execution);
+    const assignedTurn = execution ? assignedExecutionTurn(state, name, execution) : undefined;
+    if (assignedTurn) {
+      // Keep the cache complete even when the assignment came from inputTurns
+      // (execution id === first input event id); lane ownership is checked first.
+      put(state.executionTurns, executionKey!, assignedTurn.id);
+      return assignedTurn;
+    }
     const current = lane(name).currentTurnId;
     const turn = current ? own(state.turns, current) : undefined;
     if (turn && executionKey) put(state.executionTurns, executionKey, turn.id);
@@ -147,7 +163,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     const id = turnId(state, name, source);
     const next: Turn = { id, agent_id: name === 'root' ? state.agentId : name, object: 'agent.session.turn', session_id: state.sessionId, subagent_id: name === 'root' ? null : name, created_at: at, started_at: null, completed_at: null, status: 'queued', error: null, usage: null };
     put(state.turns, id, next); state.turnOrder.push(id); lane(name).currentTurnId = id; lane(name).ambiguous = false;
-    if (context.executionId) put(state.executionTurns, `${encodeURIComponent(name)}:${encodeURIComponent(context.executionId)}`, id);
+    if (context.executionId) put(state.executionTurns, executionTurnKey(name, context.executionId), id);
     emitTurn(next, source, 'created'); return next;
   }
   function itemIndex(item: AgentSessionItem, name: string): number | null {
