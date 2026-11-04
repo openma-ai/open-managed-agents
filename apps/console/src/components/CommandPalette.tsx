@@ -1,5 +1,6 @@
 import { useEffect, useState, type ComponentType } from "react";
 import { useLocation, useNavigate } from "react-router";
+import { CalendarClockIcon } from "lucide-react";
 
 import {
   CommandDialog,
@@ -48,6 +49,7 @@ function useCommands(): NavCommand[] {
     { label: t.nav.dashboard, to: "/", icon: DashboardIcon },
     { label: t.nav.agents, to: "/agents", icon: AgentIcon },
     { label: t.nav.sessions, to: "/sessions", icon: SessionsIcon },
+    { label: t.nav.deployments, to: "/deployments", icon: CalendarClockIcon, aliases: "schedules cron runs triggers" },
     { label: t.nav.files, to: "/files", icon: FilesIcon },
     { label: t.nav.evalRuns, to: "/evals", icon: SessionsIcon, aliases: "evaluations evals" },
     { label: t.nav.environments, to: "/environments", icon: EnvIcon, aliases: "envs sandboxes" },

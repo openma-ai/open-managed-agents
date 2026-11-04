@@ -119,6 +119,8 @@ export interface ComboboxProps<T> {
   excludeIds?: string[];
   disabled?: boolean;
   className?: string;
+  /** Id for the trigger so an external `<Label htmlFor>` can name it. */
+  id?: string;
   /** Page size for each fetch. Default 20. */
   pageLimit?: number;
   /** Product-only server search. Standard Managed resources do not expose
@@ -140,6 +142,7 @@ export function Combobox<T>({
   excludeIds,
   disabled,
   className,
+  id,
   pageLimit = 20,
   searchParam,
   pagination = "managed",
@@ -258,6 +261,7 @@ export function Combobox<T>({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="ghost"
+          id={id}
           type="button"
           role="combobox"
           aria-haspopup="listbox"

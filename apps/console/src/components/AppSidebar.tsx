@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type { ComponentType } from "react";
-import { LinkIcon, RepeatIcon, SearchIcon, UsersIcon } from "lucide-react";
+import { CalendarClockIcon, LinkIcon, RepeatIcon, SearchIcon, UsersIcon } from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 import { useScrollFade } from "@/hooks/useScrollFade";
 
@@ -47,6 +47,7 @@ function useNavGroups(): NavGroup[] {
       items: [
         { to: "/agents", label: t.nav.agents, icon: AgentIcon },
         { to: "/sessions", label: t.nav.sessions, icon: SessionsIcon },
+        { to: "/deployments", label: t.nav.deployments, icon: CalendarClockIcon },
         { to: "/files", label: t.nav.files, icon: FilesIcon },
         { to: "/evals", label: t.nav.evalRuns, icon: SessionsIcon },
       ],
