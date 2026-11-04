@@ -15,6 +15,9 @@
  *   the new CHANGELOG entry covers every such pull request since the previous
  *   tag, the heading matches the version, and `.changeset/pre.json` agrees
  *   with the npm dist-tag changesets will publish (`latest`, or the pre tag).
+ * - Fail when that version already has a tag at a different commit, unless the
+ *   existing tag is an ancestor of HEAD (GitHub pull merge refs after a sync
+ *   PR publish point at a merge commit while tags stay on the release tip).
  *
  * `node scripts/release-check.mjs --publish` is the same coverage check at
  * publish time (version ahead of the previous tag). It does not read labels.
@@ -694,6 +697,18 @@ export function auditRepository(cwd) {
   };
 }
 
+
+/**
+ * Null when the planned `@openma/<pkg>@<ver>` tag is free or already at HEAD /
+ * an ancestor of HEAD. Otherwise an error string (tag points elsewhere).
+ */
+function existingTagConflict(cwd, planned, headSha) {
+  const existing = gitOk(cwd, ["rev-parse", `${planned}^{commit}`]);
+  if (!existing || existing === headSha) return null;
+  if (execStatus(cwd, ["merge-base", "--is-ancestor", existing, headSha]) === 0) return null;
+  return `${planned} already points at ${existing.slice(0, 7)}, not ${headSha.slice(0, 7)}`;
+}
+
 function checkPullRequest(cwd, env) {
   const base = resolveBase(cwd, env);
   const packages = loadPublishedPackages(cwd);
@@ -748,10 +763,8 @@ function checkPullRequest(cwd, env) {
       errors.push(...evaluatePackageRelease(cwd, pkg, null, "HEAD", headVersion));
     }
     const planned = `${pkg.name}@${headVersion}`;
-    const existing = gitOk(cwd, ["rev-parse", `${planned}^{commit}`]);
-    if (existing && existing !== headSha) {
-      errors.push(`${planned} already points at ${existing.slice(0, 7)}, not ${headSha.slice(0, 7)}`);
-    }
+    const conflict = existingTagConflict(cwd, planned, headSha);
+    if (conflict) errors.push(conflict);
   }
   if (errors.length > 0) fail("release check failed", errors);
   else console.log("release check passed.");

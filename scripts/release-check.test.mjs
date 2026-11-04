@@ -250,6 +250,30 @@ test("promoting a beta to the next minor stable requires release:minor", () => {
   assert.equal(run(cwd, { GITHUB_EVENT_NAME: "pull_request", RELEASE_LABELS: "release:minor" }).code, 0);
 });
 
+test("sync PR merge ref may reuse an already-published tag that is an ancestor of HEAD", () => {
+  const cwd = releaseRepo({ changelogBody: "Shipped (#2).\n", consume: true });
+  const tip = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+  git(cwd, ["tag", "@openma/cli@0.1.1"]);
+  // Simulate GitHub Actions checkout of pull/*/merge: merge release tip into main.
+  git(cwd, ["checkout", "main"]);
+  git(cwd, ["merge", "--no-ff", "-m", "Merge release into main", tip]);
+  const ok = run(cwd, { GITHUB_EVENT_NAME: "pull_request" });
+  assert.equal(ok.code, 0, ok.stderr + ok.stdout);
+  assert.doesNotMatch(ok.stderr, /already points at/);
+
+  // Tag for this version at an unrelated (non-ancestor) commit must still fail.
+  const conflicted = releaseRepo({ changelogBody: "Shipped (#2).\n", consume: true });
+  git(conflicted, ["checkout", "--orphan", "foreign-tag"]);
+  writePackage(conflicted, "9.9.9");
+  writeFileSync(path.join(conflicted, "packages/cli/CHANGELOG.md"), "# @openma/cli\n\n## 9.9.9\n\nForeign.\n");
+  commit(conflicted, "chore: foreign history");
+  git(conflicted, ["tag", "@openma/cli@0.1.1"]);
+  git(conflicted, ["checkout", "release"]);
+  const bad = run(conflicted, { GITHUB_EVENT_NAME: "pull_request" });
+  assert.equal(bad.code, 1, bad.stdout);
+  assert.match(bad.stderr, /already points at/);
+});
+
 test("unreleased pull requests are notices and do not fail when the version is unchanged", () => {
   const cwd = scaffold();
   writeFileSync(path.join(cwd, "packages/cli/src/index.js"), "export const value = 2;\n");
