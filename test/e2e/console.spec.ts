@@ -176,6 +176,7 @@ test.describe.serial("Console E2E", () => {
     const links = [
       { name: "Agents", heading: "Agents" },
       { name: "Sessions", heading: "Sessions" },
+      { name: "Deployments", heading: "Deployments" },
       { name: "Environments", heading: "Environments" },
       { name: "Credential Vaults", heading: "Credential Vaults" },
       { name: "Skills", heading: "Skills" },

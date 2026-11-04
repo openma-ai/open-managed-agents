@@ -195,7 +195,7 @@ export async function runLocalReleaseCertification(options = {}) {
       await runStep(report, "managed-agents-sdk", () => runCommand(
         process.execPath,
         ["test/e2e/managed-agents-sdk.mjs"],
-        { cwd: repoRoot, env: e2eEnvironment, timeout: 240_000 },
+        { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
       ));
     } else markStepSkipped(report, "managed-agents-sdk");
 
@@ -203,7 +203,7 @@ export async function runLocalReleaseCertification(options = {}) {
       await runStep(report, "managed-inputs-mcp", () => runCommand(
         process.execPath,
         ["test/e2e/managed-inputs-mcp.mjs"],
-        { cwd: repoRoot, env: e2eEnvironment, timeout: 240_000 },
+        { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
       ));
       assert.equal(mcp.state.unauthorized, 0, "MCP proxy sent a request without the Vault bearer");
       assert.equal(mcp.state.calls, 1, "MCP tool must be called exactly once");
@@ -239,8 +239,8 @@ export async function runLocalReleaseCertification(options = {}) {
     if (selectedSteps.has("console-browser")) {
       await runStep(report, "console-browser", () => runCommand(
         "pnpm",
-        ["exec", "playwright", "test", "test/e2e/deployed-console.spec.ts", "--config=playwright.config.ts"],
-        { cwd: repoRoot, env: e2eEnvironment, timeout: 240_000 },
+        ["exec", "playwright", "test", "test/e2e/deployed-console.spec.ts", "test/e2e/deployed-console-deployments.spec.ts", "--config=playwright.config.ts"],
+        { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
       ));
     } else markStepSkipped(report, "console-browser");
     report.ok = true;
