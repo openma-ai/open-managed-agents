@@ -316,7 +316,7 @@ export function DeploymentsList() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {error && (
-        <div role="alert" className="px-[var(--list-frame-inset)] py-3 text-sm text-danger">
+        <div role="alert" className="pl-[var(--list-content-inset)] pr-[var(--list-frame-inset)] py-3 text-sm text-danger">
           {m.loadFailed} <Button variant="outline" size="sm" onClick={refresh}>{m.retry}</Button>
         </div>
       )}

@@ -76,6 +76,11 @@
   --sidebar-row-inset: var(--console-pad-sm);
   --sidebar-track-gap: var(--console-gap-xl);
   --list-frame-inset: var(--console-pad-lg);
+  /* List content starts on the same axis as the first breadcrumb label.
+     When the sidebar restore control is visible it sits before the crumb,
+     so --list-content-inset grows by that chrome (see console-shell.css). */
+  --list-content-inset: var(--list-frame-inset);
+  --topbar-gap: var(--console-gap-lg);
   --detail-frame-inset: 56px;
   --detail-rail-w: 360px;
   --detail-layout-gap: var(--console-pad-2xl);

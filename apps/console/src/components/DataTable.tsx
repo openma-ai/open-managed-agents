@@ -164,7 +164,7 @@ export function DataTable<T>({
   const showCreate = Boolean(onCreate && createLabel);
   const tableWidth = Math.max(table.getTotalSize(), 1);
   const tableMinWidth = `${tableWidth}px`;
-  const trackMinWidth = `calc(${tableWidth}px + var(--list-frame-inset) + var(--list-frame-inset))`;
+  const trackMinWidth = `calc(${tableWidth}px + var(--list-content-inset) + var(--list-frame-inset))`;
   const renderColgroup = () => (
     <colgroup>
       {visibleColumns.map((column) => (
@@ -182,7 +182,7 @@ export function DataTable<T>({
         aria-label={title}
       >
         {subtitle && (
-          <header className="flex items-start justify-between px-[var(--list-frame-inset)] pt-5 pb-3">
+          <header className="flex items-start justify-between pl-[var(--list-content-inset)] pr-[var(--list-frame-inset)] pt-5 pb-3">
             <div>
               <h1 className="text-xl font-semibold">{title}</h1>
               <p className="mt-1 text-sm text-fg-muted">{subtitle}</p>
@@ -285,7 +285,7 @@ export function DataTable<T>({
           }}
         >
           {isEmpty ? (
-            <div className={subtitle ? "px-[var(--list-frame-inset)] pt-2" : "console-list-empty"}>
+            <div className={subtitle ? "pl-[var(--list-content-inset)] pr-[var(--list-frame-inset)] pt-2" : "console-list-empty"}>
               <EmptyState
                 className={subtitle ? "flex min-h-[350px] flex-col items-center justify-center [&>div]:max-w-sm" : undefined}
                 title={emptyTitle}

@@ -83,7 +83,7 @@ describe("DataTable Linear list contract", () => {
     expect(headerTrack).toHaveClass("console-data-track");
     expect(bodyTrack).toHaveClass("console-data-track");
     expect(headerTrack?.getAttribute("style")).toBe(
-      "min-width: calc(360px + var(--list-frame-inset) + var(--list-frame-inset));",
+      "min-width: calc(360px + var(--list-content-inset) + var(--list-frame-inset));",
     );
     expect(bodyTrack?.getAttribute("style")).toBe(headerTrack?.getAttribute("style"));
     expect(headerWidths).toEqual(["width: 240px;", "width: 120px;"]);
@@ -129,10 +129,10 @@ describe("DataTable Linear list contract", () => {
       /\.console-data-grid-viewport::-webkit-scrollbar\s*\{[^}]*width: 0;[^}]*height: 0;/,
     );
     expect(styles).toMatch(
-      /\.console-list-toolbar\s*\{[^}]*padding-inline: var\(--list-frame-inset\);/,
+      /\.console-list-toolbar\s*\{[^}]*padding-left: var\(--list-content-inset\);[^}]*padding-right: var\(--list-frame-inset\);/,
     );
     expect(styles).toMatch(
-      /\.console-data-track\s*\{[^}]*box-sizing: border-box;[^}]*padding-inline: var\(--list-frame-inset\);/,
+      /\.console-data-track\s*\{[^}]*box-sizing: border-box;[^}]*padding-left: var\(--list-content-inset\);[^}]*padding-right: var\(--list-frame-inset\);/,
     );
   });
 

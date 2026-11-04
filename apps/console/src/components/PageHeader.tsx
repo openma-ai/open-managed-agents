@@ -82,7 +82,7 @@ export function PageHeader({
         </div>
       )}
       {tableHeader && (
-        <div className="px-[var(--list-frame-inset)]">
+        <div className="pl-[var(--list-content-inset)] pr-[var(--list-frame-inset)]">
           {tableHeader}
         </div>
       )}

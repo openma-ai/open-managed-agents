@@ -262,6 +262,14 @@ describe("DeploymentsList", () => {
 
 describe("DeploymentNew", () => {
 
+  it("does not render an in-page breadcrumb on Create deployment", async () => {
+    renderAt("/deployments/new");
+    expect(screen.getByRole("heading", { level: 1, name: "Create deployment" })).toBeInTheDocument();
+    // Crumbs live in AppShell only — a page-local <nav> / Deployments link is a regression.
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Deployments" })).not.toBeInTheDocument();
+  });
+
   it("shows General, Trigger and Resources with Manual selected", async () => {
     renderAt("/deployments/new");
     expect(screen.getByRole("heading", { level: 1, name: "Create deployment" })).toBeInTheDocument();
