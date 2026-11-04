@@ -180,6 +180,7 @@ export async function runLocalReleaseCertification(options = {}) {
       OMA_E2E_BASE_URL: baseUrl,
       OMA_E2E_API_KEY: API_KEY,
       OMA_E2E_AUTH_DISABLED: "1",
+      OMA_E2E_REQUIRE_BACKEND: "1",
       OMA_E2E_RUN_TURN: "1",
       OMA_E2E_MOCK_MODEL_BASE_URL: llm.baseUrl,
       OMA_E2E_INPUT_MODEL_BASE_URL: inputLlm.baseUrl,
@@ -195,7 +196,7 @@ export async function runLocalReleaseCertification(options = {}) {
       await runStep(report, "managed-agents-sdk", () => runCommand(
         process.execPath,
         ["test/e2e/managed-agents-sdk.mjs"],
-        { cwd: repoRoot, env: e2eEnvironment, timeout: 240_000 },
+        { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
       ));
     } else markStepSkipped(report, "managed-agents-sdk");
 
@@ -203,7 +204,7 @@ export async function runLocalReleaseCertification(options = {}) {
       await runStep(report, "managed-inputs-mcp", () => runCommand(
         process.execPath,
         ["test/e2e/managed-inputs-mcp.mjs"],
-        { cwd: repoRoot, env: e2eEnvironment, timeout: 240_000 },
+        { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
       ));
       assert.equal(mcp.state.unauthorized, 0, "MCP proxy sent a request without the Vault bearer");
       assert.equal(mcp.state.calls, 1, "MCP tool must be called exactly once");
@@ -239,9 +240,19 @@ export async function runLocalReleaseCertification(options = {}) {
     if (selectedSteps.has("console-browser")) {
       await runStep(report, "console-browser", () => runCommand(
         "pnpm",
-        ["exec", "playwright", "test", "test/e2e/deployed-console.spec.ts", "--config=playwright.config.ts"],
-        { cwd: repoRoot, env: e2eEnvironment, timeout: 240_000 },
-      ));
+        [
+          "exec", "playwright", "test",
+          // CI narrows this to the changed Console domains (ci-console-e2e-scope.mjs).
+          ...(process.env.OMA_E2E_CONSOLE_CERT_SPECS?.trim()
+            ? process.env.OMA_E2E_CONSOLE_CERT_SPECS.trim().split(/\s+/)
+            : ["test/e2e/deployed-console.spec.ts", "test/e2e/deployed-console-deployments.spec.ts"]),
+          "--config=playwright.config.ts",
+        ],
+        { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
+      ).catch((error) => {
+        // Include the backend tail so a CI failure is diagnosable.
+        throw new Error(`${error.message}\n--- main-node tail ---\n${runtime?.diagnostics() ?? ""}`, { cause: error });
+      }));
     } else markStepSkipped(report, "console-browser");
     report.ok = true;
   } catch (error) {

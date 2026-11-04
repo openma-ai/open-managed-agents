@@ -115,10 +115,14 @@ export interface ComboboxProps<T> {
   placeholder?: string;
   /** Hide the search input (still scrollable). Default false. */
   noSearch?: boolean;
+  searchPlaceholder?: string;
+  emptyText?: string;
   /** Item ids to filter out client-side (e.g. already-picked agents). */
   excludeIds?: string[];
   disabled?: boolean;
   className?: string;
+  /** Id for the trigger so an external `<Label htmlFor>` can name it. */
+  id?: string;
   /** Page size for each fetch. Default 20. */
   pageLimit?: number;
   /** Product-only server search. Standard Managed resources do not expose
@@ -137,9 +141,12 @@ export function Combobox<T>({
   getTextLabel,
   placeholder = "Select...",
   noSearch = false,
+  searchPlaceholder = "Search...",
+  emptyText = "No results",
   excludeIds,
   disabled,
   className,
+  id,
   pageLimit = 20,
   searchParam,
   pagination = "managed",
@@ -258,6 +265,7 @@ export function Combobox<T>({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="ghost"
+          id={id}
           type="button"
           role="combobox"
           aria-haspopup="listbox"
@@ -289,7 +297,7 @@ export function Combobox<T>({
             <CommandInput
               value={input}
               onValueChange={setInput}
-              placeholder="Search..."
+              placeholder={searchPlaceholder}
               autoFocus
             />
           )}
@@ -298,7 +306,7 @@ export function Combobox<T>({
               <CommandEmpty>
                 {debouncedInput
                   ? `No results for "${debouncedInput}"`
-                  : "No results"}
+                  : emptyText}
               </CommandEmpty>
             )}
             {visible.map((it) => {

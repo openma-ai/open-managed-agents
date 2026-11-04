@@ -1,6 +1,6 @@
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { EyeIcon, EyeOffIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, SearchIcon, SettingsIcon, PlusIcon } from "lucide-react";
 import {
   flexRender,
   getCoreRowModel,
@@ -30,10 +30,12 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "../i18n";
 import { EmptyState, type EmptyStateKind } from "./EmptyState";
 import { RowContextMenu, type RowAction } from "./RowContextMenu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "./Skeleton";
 import { OverflowText } from "./ui/overflow-text";
 
 export interface DataTableProps<T> {
+  selectable?: boolean;
   title?: string;
   subtitle?: ReactNode;
   createLabel?: string;
@@ -67,6 +69,8 @@ export interface DataTableProps<T> {
  * colgroups; horizontal body scroll is mirrored into the clipped header. */
 export function DataTable<T>({
   title,
+  selectable = false,
+  subtitle,
   createLabel,
   onCreate,
   headerActions,
@@ -91,6 +95,7 @@ export function DataTable<T>({
   children,
   footer,
 }: DataTableProps<T>) {
+  const { t } = useI18n();
   const { pathname } = useLocation();
   const storageKey = `dt-cols:${pathname}`;
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => {
@@ -113,10 +118,33 @@ export function DataTable<T>({
     }
   }, [storageKey, columnVisibility]);
 
+  const [rowSelection, setRowSelection] = useState({});
   const table = useReactTable({
     data,
-    columns,
-    state: { columnVisibility },
+    columns: selectable ? [
+      {
+        id: "selection",
+        size: 40,
+        enableHiding: false,
+        header: ({ table }) => (
+          <Checkbox
+            aria-label={t.common.selectAll}
+            checked={table.getIsAllRowsSelected() || (table.getIsSomeRowsSelected() && "indeterminate")}
+            onCheckedChange={(value) => table.toggleAllRowsSelected(!!value)}
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            aria-label={`${t.common.selectRow} ${row.id}`}
+            checked={row.getIsSelected()}
+            onCheckedChange={(value) => row.toggleSelected(!!value)}
+          />
+        ),
+      },
+      ...columns,
+    ] : columns,
+    state: { columnVisibility, rowSelection },
+    onRowSelectionChange: setRowSelection,
     onColumnVisibilityChange: setColumnVisibility,
     getRowId: (row) => getRowId(row),
     getCoreRowModel: getCoreRowModel(),
@@ -136,7 +164,7 @@ export function DataTable<T>({
   const showCreate = Boolean(onCreate && createLabel);
   const tableWidth = Math.max(table.getTotalSize(), 1);
   const tableMinWidth = `${tableWidth}px`;
-  const trackMinWidth = `calc(${tableWidth}px + var(--list-frame-inset) + var(--list-frame-inset))`;
+  const trackMinWidth = `calc(${tableWidth}px + var(--list-content-inset) + var(--list-frame-inset))`;
   const renderColgroup = () => (
     <colgroup>
       {visibleColumns.map((column) => (
@@ -153,6 +181,20 @@ export function DataTable<T>({
         data-testid="data-table-list-root"
         aria-label={title}
       >
+        {subtitle && (
+          <header className="flex items-start justify-between pl-[var(--list-content-inset)] pr-[var(--list-frame-inset)] pt-5 pb-3">
+            <div>
+              <h1 className="text-xl font-semibold">{title}</h1>
+              <p className="mt-1 text-sm text-fg-muted">{subtitle}</p>
+            </div>
+            {showCreate && (
+              <Button onClick={onCreate}>
+                <PlusIcon className="size-4" aria-hidden="true" />
+                {createLabel}
+              </Button>
+            )}
+          </header>
+        )}
         <div
           className="console-list-fixed-header"
           data-scrolled={String(gridScrolled)}
@@ -165,11 +207,11 @@ export function DataTable<T>({
             aria-label={title ? `${title} controls` : "List controls"}
           >
             {headerActions}
-            {showCreate && <Button onClick={onCreate}>{createLabel}</Button>}
+            {showCreate && !subtitle && <Button onClick={onCreate}>{createLabel}</Button>}
             {filters}
-            <div className="console-list-toolbar-spacer" />
+            {!subtitle && <div className="console-list-toolbar-spacer" />}
             {onSearchChange && (
-              <InputGroup className="console-list-search">
+              <InputGroup className={cn("console-list-search", subtitle && "order-first mr-2 w-80 shrink-0")}>
                 <InputGroupAddon>
                   <SearchIcon className="size-3.5 opacity-50" />
                 </InputGroupAddon>
@@ -183,7 +225,7 @@ export function DataTable<T>({
                 />
               </InputGroup>
             )}
-            <ColumnVisibilityMenu table={table} />
+            {!subtitle && <ColumnVisibilityMenu table={table} />}
           </div>
 
           {!isEmpty && (
@@ -243,8 +285,9 @@ export function DataTable<T>({
           }}
         >
           {isEmpty ? (
-            <div className="console-list-empty">
+            <div className={subtitle ? "pl-[var(--list-content-inset)] pr-[var(--list-frame-inset)] pt-2" : "console-list-empty"}>
               <EmptyState
+                className={subtitle ? "flex min-h-[350px] flex-col items-center justify-center [&>div]:max-w-sm" : undefined}
                 title={emptyTitle}
                 body={emptySubtitle}
                 action={emptyAction}
@@ -384,7 +427,7 @@ function SkeletonRows({ columnCount }: { columnCount: number }) {
           <div className="console-data-cell-inner">
             <Skeleton
               className={cn(
-                "h-3",
+                "h-3 bg-fg/10",
                 columnIndex === 0
                   ? rowIndex % 2 === 0
                     ? "w-[55%]"

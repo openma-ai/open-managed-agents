@@ -145,9 +145,20 @@
   height: var(--shell-top-h);
   flex: 0 0 var(--shell-top-h);
   align-items: center;
-  gap: 8px;
+  gap: var(--topbar-gap);
   padding-inline: var(--list-frame-inset);
   border-bottom: 1px solid transparent;
+}
+
+/* Collapse: the restore button sits flush on the frame edge and its own
+   inline padding is the shared gutter, so the glyph has the same space on
+   its left (to the frame) and right (to the crumb), and lines up with the
+   list title. */
+.console-shell[data-sidebar-state="desktop-hidden"] .console-topbar,
+.console-shell[data-sidebar-state="desktop-preview"] .console-topbar,
+.console-shell[data-sidebar-state="mobile-hidden"] .console-topbar {
+  padding-left: 0;
+  gap: 0;
 }
 
 .console-page-header-slot {
@@ -180,9 +191,10 @@
 
 .console-sidebar-restore {
   display: inline-flex;
-  width: var(--control-h);
+  width: auto;
   height: var(--control-h);
-  flex: 0 0 var(--control-h);
+  flex: 0 0 auto;
+  padding-inline: var(--list-content-inset);
   align-items: center;
   justify-content: center;
   border: 0;
@@ -197,8 +209,8 @@
 }
 
 .console-sidebar-restore svg {
-  width: 15px;
-  height: 15px;
+  width: var(--shell-restore-icon);
+  height: var(--shell-restore-icon);
 }
 
 .console-sidebar-hover-zone {

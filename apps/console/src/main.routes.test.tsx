@@ -29,12 +29,17 @@ describe("Console route loading", () => {
   });
 
   it("retains detail params, breadcrumb parents, aliases and the unknown-route fallback", () => {
-    for (const group of ["agents", "sessions", "environments", "vaults", "memory", "evals", "loops", "bonds"]) {
+    for (const group of ["agents", "sessions", "deployments", "environments", "vaults", "memory", "evals", "loops", "bonds"]) {
       const matches = matchRoutes(observed.routes, `/${group}/audit-id`)!;
       expect(matches.at(-1)!.params.id).toBe("audit-id");
       expect(matches.some(({ route }) => route.handle?.crumb)).toBe(true);
       expect(typeof matches.at(-1)!.route.lazy).toBe("function");
     }
+    const newDeployment = matchRoutes(observed.routes, "/deployments/new")!;
+    expect(newDeployment.at(-1)!.route.path).toBe("new");
+    expect(newDeployment.map(({ route }) => route.handle?.crumb)).toEqual(
+      expect.arrayContaining(["Deployments", "New"]),
+    );
     expect(matchRoutes(observed.routes, "/integrations/feishu/old")!.at(-1)!.route.path).toBe("feishu/*");
     expect(matchRoutes(observed.routes, "/unknown-path")!.at(-1)!.route.path).toBe("*");
   });

@@ -1,3 +1,4 @@
+import { RowActionsMenu } from "../components/TableRowActions";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -6,7 +7,7 @@ import { useNavigate } from "react-router";
 import { Controller, useFieldArray, useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { ArchiveIcon, TrashIcon } from "lucide-react";
+import { ArchiveIcon, TrashIcon, InfoIcon } from "lucide-react";
 import type { SessionCreateParams } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
@@ -18,6 +19,11 @@ import { Combobox } from "../components/Combobox";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
+import { useAuth } from "../lib/auth";
+import { useI18n } from "../i18n";
+import { SearchPicker } from "./deployments/shared";
+import { costLabel } from "./session-detail/budget";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { readManagedMetadataObject } from "../lib/managed-metadata";
 
 import type { SessionRecord as Session } from "../types/session";
@@ -34,15 +40,7 @@ type AgentLite = {
 // Session status options for the toolbar status chip. "any" maps to no
 // server filter; the other four match the SessionStatus union in
 // @anthropic-ai/sdk (idle | running | rescheduling | terminated).
-type StatusValue = "any" | "idle" | "running" | "rescheduling" | "terminated";
-
-const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
-  { value: "any", label: "All" },
-  { value: "idle", label: "Idle" },
-  { value: "running", label: "Running" },
-  { value: "rescheduling", label: "Rescheduling" },
-  { value: "terminated", label: "Terminated" },
-];
+type StatusValue = "active" | "any" | "idle" | "running" | "rescheduling" | "terminated";
 
 // ────────────────────────────────────────────────────────────────────────
 // Form schema (zod)
@@ -201,6 +199,15 @@ function EvalBadge({ metadata }: { metadata?: Record<string, string> }) {
 export function SessionsList() {
   const managedApi = useManagedApi();
   const nav = useNavigate();
+  const { t } = useI18n();
+  const { user } = useAuth();
+  const m = t.sessions;
+  const d = t.deployments;
+  const STATUS_OPTIONS = [{ value: "active", label: d.active }, { value: "any", label: d.all }, ...(["idle", "running", "rescheduling", "terminated"] as const).map(value => ({ value, label: m[value] }))];
+  const [deploymentId, setDeploymentId] = useState("");
+  const [createdBy, setCreatedBy] = useState("");
+  const { items: deployments, hasMore: moreDeployments, isLoadingMore: loadingDeployments, loadMore: loadDeployments, error: deploymentError } = useInfiniteApiQuery<{id: string; name: string}>("/v1/deployments", { limit: 200 });
+  useEffect(() => { if (moreDeployments && !loadingDeployments && !deploymentError) loadDeployments(); }, [moreDeployments, loadingDeployments, deploymentError, loadDeployments]);
   const [agents, setAgents] = useState<AgentLite[]>([]);
   // Agent's MCP servers (from /v1/agents/{id} fetched on pick). Used to
   // warn the user when their selected vaults don't carry credentials for
@@ -235,7 +242,7 @@ export function SessionsList() {
   // reflects exactly what the server returned (no client-side faking).
   const [search, setSearch] = useState("");
   const [filterAgent, setFilterAgent] = useState("");
-  const [status, setStatus] = useState<StatusValue>("any");
+  const [status, setStatus] = useState<StatusValue>("active");
   const [created, setCreated] = useState<{ after?: number; before?: number }>({});
 
   // Sessions table — cursor-paginated, server-side filtered. Any change to
@@ -244,7 +251,9 @@ export function SessionsList() {
   const sessionsParams = useMemo(
     () => ({
       ...(filterAgent ? { agent_id: filterAgent } : {}),
-      ...(status !== "any" ? { "statuses[]": status } : {}),
+      ...(status !== "any" && status !== "active" ? { "statuses[]": status } : {}),
+      ...(status === "any" ? { include_archived: "true" } : {}),
+      ...(deploymentId ? { deployment_id: deploymentId } : {}),
       ...(created.after !== undefined
         ? { "created_at[gte]": new Date(created.after).toISOString() }
         : {}),
@@ -252,7 +261,7 @@ export function SessionsList() {
         ? { "created_at[lte]": new Date(created.before).toISOString() }
         : {}),
     }),
-    [filterAgent, status, created.after, created.before],
+    [filterAgent, status, deploymentId, created.after, created.before],
   );
   const {
     items: sessions,
@@ -261,7 +270,12 @@ export function SessionsList() {
     isLoadingMore,
     loadMore,
     refresh: refreshSessions,
+    error: sessionsError,
   } = useInfiniteApiQuery<Session>("/v1/sessions", { limit: 20, params: sessionsParams });
+
+  useEffect(() => {
+    if ((search.trim() || createdBy || status === "active") && hasMore && !isLoadingMore && !sessionsError) loadMore();
+  }, [search, createdBy, status, hasMore, isLoadingMore, sessionsError, loadMore]);
 
   // ── Form (react-hook-form + zod) ──
   const resolver = useMemo(
@@ -479,6 +493,7 @@ export function SessionsList() {
         agent: data.agent,
         environment_id: data.environment_id,
         title: data.title || undefined,
+        ...(user?.email ? { metadata: { created_by: user.email } } : {}),
       };
       if (data.vault_ids.length > 0) body.vault_ids = data.vault_ids;
       if (resources.length > 0) body.resources = resources;
@@ -520,11 +535,12 @@ export function SessionsList() {
 
   const displayed = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
-    if (!needle) return sessions;
     return sessions.filter((session) =>
-      `${session.title ?? ""}\n${session.id}`.toLocaleLowerCase().includes(needle),
+      (status !== "active" || (!session.archived_at && session.status !== "terminated")) &&
+      (!createdBy || session.metadata?.created_by === createdBy) &&
+      (!needle || session.id.toLocaleLowerCase().includes(needle)),
     );
-  }, [search, sessions]);
+  }, [search, sessions, status, createdBy]);
 
   // Active-filter chip displays — kept undefined when matching the
   // default so the chip reads "Status ▾" rather than "Status: All ▾".
@@ -549,10 +565,14 @@ export function SessionsList() {
 
   const filters = (
     <>
+      <FilterChip label={d.createdBy} active={!!createdBy} display={createdBy || d.anyone} onClear={() => setCreatedBy("")}>
+        <PopoverContent className="w-72 p-0"><FacetedFilter value={createdBy} onValueChange={setCreatedBy} options={[{value: "", label: d.anyone}, ...[...new Set(sessions.map(s => s.metadata?.created_by).filter((v): v is string => !!v))].map(value => ({value, label: value}))]} searchPlaceholder={d.createdBy} /></PopoverContent>
+      </FilterChip>
+      <CreatedFilterChip value={created} onChange={setCreated} />
       <FilterChip
-        label="Agent"
+        label={d.agent}
         active={!!filterAgent}
-        display={agentDisplay}
+        display={agentDisplay || d.all}
         onClear={() => setFilterAgent("")}
       >
         <PopoverContent
@@ -565,16 +585,17 @@ export function SessionsList() {
             options={agentOptions}
             value={filterAgent}
             onValueChange={(v) => setFilterAgent(v)}
-            searchPlaceholder="Agent..."
+            searchPlaceholder={d.searchAgents}
           />
         </PopoverContent>
       </FilterChip>
 
+      <SearchPicker variant="filter" label={`${m.deployment} ${deployments.find(item => item.id === deploymentId)?.name || d.all}`} options={[...(deploymentId ? [{value: "", label: d.all}] : []), ...deployments.map(item => ({value: item.id, label: `${item.name} (${item.id})`}))]} value={deploymentId} onValueChange={setDeploymentId} searchPlaceholder={d.searchPlaceholder} empty={m.noDeployments} />
       <FilterChip
-        label="Status"
-        active={status !== "any"}
+        label={d.status}
+        active={status !== "active"}
         display={statusDisplay}
-        onClear={() => setStatus("any")}
+        onClear={() => setStatus("active")}
       >
         <PopoverContent
           align="start"
@@ -586,12 +607,11 @@ export function SessionsList() {
             options={STATUS_OPTIONS}
             value={status}
             onValueChange={(v) => setStatus(v as StatusValue)}
-            searchPlaceholder="Status..."
+            searchPlaceholder={d.status}
           />
         </PopoverContent>
       </FilterChip>
 
-      <CreatedFilterChip value={created} onChange={setCreated} />
     </>
   );
 
@@ -631,78 +651,115 @@ export function SessionsList() {
     return !!row?.[key];
   };
 
+  const actionsFor = (session: Session) => {
+    const archived = Boolean(session.archived_at);
+    const label = session.title?.trim() || session.id;
+    return [
+      {
+        label: archived ? "Unarchive" : "Archive",
+        icon: <ArchiveIcon className="size-4" />,
+        disabled: archived,
+        onSelect: async () => {
+          try {
+            await managedApi.sessions.archive(session.id);
+            refreshSessions();
+          } catch {}
+        },
+      },
+      {
+        label: "Delete",
+        icon: <TrashIcon className="size-4" />,
+        destructive: true,
+        onSelect: async () => {
+          if (!confirm(`Delete session "${label}"? This can't be undone.`)) return;
+          try {
+            await managedApi.sessions.delete(session.id);
+            refreshSessions();
+          } catch {}
+        },
+      },
+    ];
+  };
+
   // TanStack column defs. Order, filtering, and search all flow through
   // server params now — no per-column sort/filter UI. Required columns
   // (id, name) opt out of the Columns hide menu so the user can't end
   // up with a table that has nothing identifying.
-  const columns = useMemo<ColumnDef<Session>[]>(
-    () => [
-      {
-        id: "id",
-        accessorKey: "id",
-        header: "ID",
-        cell: ({ row }) => (
-          <span title={row.original.id} className="font-mono text-xs text-fg-muted">
-            {row.original.id}
-          </span>
-        ),
-        enableHiding: false,
-      },
-      {
-        id: "name",
-        accessorFn: (s) => s.title ?? "",
-        header: "Name",
-        cell: ({ row }) => (
-          <span className="inline-flex items-center gap-2 font-medium text-fg">
-            {row.original.title || "Untitled"}
-            <LinearBadge metadata={row.original.metadata} />
-            <SlackBadge metadata={row.original.metadata} />
-            <EvalBadge metadata={row.original.metadata} />
-          </span>
-        ),
-        enableHiding: false,
-      },
-      {
-        id: "status",
-        accessorFn: (s) => s.status ?? "idle",
-        header: "Status",
-        cell: ({ row }) => (
-          <span
-            className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(row.original.status)}`}
-          >
-            {row.original.status || "idle"}
-          </span>
-        ),
-      },
-      {
-        id: "agent",
-        accessorFn: (s) => s.agent.id,
-        header: "Agent",
-        cell: ({ row }) => (
-          <span className="text-fg-muted font-mono text-xs">{row.original.agent.id}</span>
-        ),
-      },
-      {
-        id: "created",
-        accessorFn: (s) => s.created_at,
-        header: "Created",
-        cell: ({ row }) => (
-          <span className="text-fg-muted">
-            {new Date(row.original.created_at).toLocaleDateString()}
-          </span>
-        ),
-      },
-    ],
-    [refreshSessions],
-  );
+  const columns: ColumnDef<Session>[] = [
+    {
+      id: "id",
+      accessorKey: "id",
+      header: t.common.id,
+      cell: ({ row }) => (
+        <span title={row.original.id} className="font-mono text-xs text-fg-muted">
+          {row.original.id}
+        </span>
+      ),
+      enableHiding: false,
+    },
+    {
+      id: "name",
+      accessorFn: (s) => s.title ?? "",
+      header: t.common.name,
+      cell: ({ row }) => (
+        <span className="inline-flex items-center gap-2 font-medium text-fg">
+          {row.original.title || m.untitledSession}
+          <LinearBadge metadata={row.original.metadata} />
+          <SlackBadge metadata={row.original.metadata} />
+          <EvalBadge metadata={row.original.metadata} />
+        </span>
+      ),
+      enableHiding: false,
+    },
+    {
+      id: "status",
+      accessorFn: (s) => s.status ?? "idle",
+      header: d.status,
+      cell: ({ row }) => (
+        <span
+          className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(row.original.status)}`}
+        >
+          {m[row.original.status || "idle"]}
+        </span>
+      ),
+    },
+    {
+      id: "agent",
+      accessorFn: (s) => s.agent.id,
+      header: d.agent,
+      cell: ({ row }) => (
+        <span className="text-fg-muted font-mono text-xs">{row.original.agent.id}</span>
+      ),
+    },
+    {
+      id: "cost", header: () => <TooltipProvider><Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1" tabIndex={0}>{m.budgetCost}<InfoIcon className="size-3" /></span></TooltipTrigger><TooltipContent>{m.costHint}</TooltipContent></Tooltip></TooltipProvider>,
+      cell: ({row}) => costLabel(row.original.usage, m.budgetUnpriced),
+    },
+    { id: "tokens", header: m.tokensInOut, cell: ({row}) => `${row.original.usage?.input_tokens ?? 0} / ${row.original.usage?.output_tokens ?? 0}` },
+    { id: "creator", header: d.createdBy, cell: ({row}) => row.original.metadata?.created_by || "—" },
+    {
+      id: "created",
+      accessorFn: (s) => s.created_at,
+      header: t.common.created,
+      cell: ({ row }) => (
+        <span className="text-fg-muted">
+          {new Date(row.original.created_at).toLocaleDateString()}
+        </span>
+      ),
+    },
+    { id: "actions", header: () => <span className="sr-only">{t.common.actions}</span>, size: 48, cell: ({row}) => <RowActionsMenu label={`${t.common.actions}: ${row.original.id}`} actions={actionsFor(row.original)} /> },
+  ];
 
-  const hasActiveFilter = !!search || !!filterAgent || status !== "any" || created.after !== undefined || created.before !== undefined;
+  const hasActiveFilter = !!search || !!filterAgent || status !== "active" || !!deploymentId || !!createdBy || created.after !== undefined || created.before !== undefined;
 
   return (
     <DataTable<Session>
-      createLabel="+ New session"
+      selectable
+      title={t.nav.sessions}
+      subtitle={m.subtitle}
+      createLabel={m.createSession}
       onCreate={openModal}
-      searchPlaceholder="Search sessions..."
+      searchPlaceholder={m.findSession}
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
@@ -710,47 +767,19 @@ export function SessionsList() {
       loading={loading}
       getRowId={(s) => s.id}
       onRowClick={(s) => nav(`/sessions/${s.id}`)}
-      rowActions={(session) => {
-        const archived = Boolean(session.archived_at);
-        const label = session.title?.trim() || session.id;
-        return [
-          {
-            label: archived ? "Unarchive" : "Archive",
-            icon: <ArchiveIcon className="size-4" />,
-            disabled: archived,
-            onSelect: async () => {
-              try {
-                await managedApi.sessions.archive(session.id);
-                refreshSessions();
-              } catch {}
-            },
-          },
-          {
-            label: "Delete",
-            icon: <TrashIcon className="size-4" />,
-            destructive: true,
-            onSelect: async () => {
-              if (!confirm(`Delete session "${label}"? This can't be undone.`)) return;
-              try {
-                await managedApi.sessions.delete(session.id);
-                refreshSessions();
-              } catch {}
-            },
-          },
-        ];
-      }}
+      rowActions={actionsFor}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
-      emptyTitle={hasActiveFilter ? "No matching sessions" : "No sessions yet"}
+      emptyTitle={hasActiveFilter ? m.noMatchingSessions : m.noActive}
       emptyKind="session"
       emptyAction={!hasActiveFilter && (
-        <Button onClick={openModal}>+ New session</Button>
+        <Button variant="outline" onClick={() => setStatus("any")}>{m.showAll}</Button>
       )}
       emptySubtitle={
         hasActiveFilter
-          ? "Try different filters."
-          : "Sessions will appear here once created through the API."
+          ? d.tryDifferentFilters
+          : m.activeEmptyBody
       }
       columns={columns}
     >

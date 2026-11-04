@@ -82,6 +82,19 @@ const protectedRoutes: RouteObject[] = [
       },
     ],
   },
+  {
+    path: "deployments",
+    handle: { crumb: "Deployments" },
+    children: [
+      { index: true, lazy: async () => ({ Component: (await import("./pages/DeploymentsList")).DeploymentsList }) },
+      { path: "new", lazy: async () => ({ Component: (await import("./pages/DeploymentNew")).DeploymentNew }), handle: { crumb: "New" } },
+      {
+        path: ":id",
+        lazy: async () => ({ Component: (await import("./pages/DeploymentDetail")).DeploymentDetail }),
+        handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Deployment" },
+      },
+    ],
+  },
   { path: "files", lazy: async () => ({ Component: (await import("./pages/FilesList")).FilesList }), handle: { crumb: "Files" } },
   {
     path: "evals",

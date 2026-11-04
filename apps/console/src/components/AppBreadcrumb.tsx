@@ -1,3 +1,4 @@
+import { useI18n } from "../i18n";
 import { Fragment } from "react";
 import { Link, useMatches, type UIMatch } from "react-router";
 import { ChevronRightIcon } from "lucide-react";
@@ -44,6 +45,7 @@ type CrumbHandle = { crumb?: CrumbValue | ((m: UIMatch) => CrumbValue) };
  */
 export function AppBreadcrumb() {
   const matches = useMatches();
+  const { t } = useI18n();
 
   const crumbs = matches
     .map((m) => {
@@ -52,7 +54,9 @@ export function AppBreadcrumb() {
         typeof handle.crumb === "function" ? handle.crumb(m) : handle.crumb;
       if (!raw) return null;
       const c = typeof raw === "string" ? { label: raw } : raw;
-      return { label: c.label, to: c.to ?? m.pathname };
+      const label = m.pathname === "/deployments" ? t.nav.deployments
+        : m.pathname === "/deployments/new" ? t.deployments.createDeployment : c.label;
+      return { label, to: c.to ?? m.pathname };
     })
     .filter((c): c is { label: string; to: string } => c !== null);
 

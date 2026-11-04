@@ -36,6 +36,7 @@ interface FacetedFilterProps {
   value: string;
   onValueChange: (value: string) => void;
   searchPlaceholder?: string;
+  emptyText?: React.ReactNode;
 }
 
 export function FacetedFilter({
@@ -43,12 +44,13 @@ export function FacetedFilter({
   value,
   onValueChange,
   searchPlaceholder = "Search...",
+  emptyText = "No matches.",
 }: FacetedFilterProps) {
   return (
     <Command>
       <CommandInput placeholder={searchPlaceholder} />
       <CommandList>
-        <CommandEmpty>No matches.</CommandEmpty>
+        <CommandEmpty>{emptyText}</CommandEmpty>
         <CommandGroup>
           {options.map((opt) => {
             const selected = opt.value === value;

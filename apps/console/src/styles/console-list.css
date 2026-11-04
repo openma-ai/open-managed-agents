@@ -34,7 +34,8 @@
   align-items: center;
   gap: 6px;
   padding-block: var(--list-toolbar-pad-top) var(--list-toolbar-pad-bottom);
-  padding-inline: var(--list-frame-inset);
+  padding-left: var(--list-content-inset);
+  padding-right: var(--list-frame-inset);
   border: 0;
   background: var(--surface-route);
 }
@@ -154,7 +155,8 @@
 .console-data-track {
   box-sizing: border-box;
   width: 100%;
-  padding-inline: var(--list-frame-inset);
+  padding-left: var(--list-content-inset);
+  padding-right: var(--list-frame-inset);
 }
 
 .console-data-header-cushion {
@@ -279,13 +281,17 @@
 }
 
 .console-list-footer {
-  padding: var(--list-frame-inset);
+  padding-block: var(--list-frame-inset);
+  padding-left: var(--list-content-inset);
+  padding-right: var(--list-frame-inset);
 }
 
 .console-list-empty {
   display: flex;
   min-height: 100%;
-  padding: var(--list-frame-inset);
+  padding-block: var(--list-frame-inset);
+  padding-left: var(--list-content-inset);
+  padding-right: var(--list-frame-inset);
 }
 
 .console-list-empty > * {

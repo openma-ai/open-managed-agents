@@ -68,6 +68,7 @@ test("root Cloudflare test discovery excludes generated and Node-only trees", ()
     );
     const nodeOnlyPackageTests = collectedFiles.filter((path) =>
       path === "scripts/check-dependency-sources.test.mjs" ||
+      path === "scripts/ci-console-e2e-scope.test.mjs" ||
       path === "scripts/migration-compatibility.test.mjs" ||
       path === "scripts/release-check.test.mjs" ||
       path === "scripts/release-check.history.test.mjs" ||

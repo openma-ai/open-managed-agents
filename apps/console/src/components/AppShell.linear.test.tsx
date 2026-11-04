@@ -2,8 +2,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
 
 import { AppShell } from "./AppShell";
 
@@ -86,6 +86,45 @@ describe("AppShell Linear composition", () => {
 
     expect(breadcrumb).toContain("gap-1.5 text-base");
     expect(breadcrumb).toContain('cn("font-medium text-foreground"');
+  });
+
+  it("uses one shared gutter around the collapsed restore glyph", () => {
+    const tokens = readFileSync(resolve(process.cwd(), "src/styles/console-tokens.css"), "utf8");
+    const shell = readFileSync(resolve(process.cwd(), "src/styles/console-shell.css"), "utf8");
+
+    expect(tokens).toContain("--list-content-inset: var(--list-frame-inset);");
+    expect(tokens).toContain("--shell-restore-icon: 15px;");
+    // Same token on both sides of the glyph: frame edge -> glyph, glyph -> crumb.
+    expect(shell).toMatch(
+      /\.console-sidebar-restore\s*\{[^}]*padding-inline: var\(--list-content-inset\);/,
+    );
+    expect(shell).toMatch(
+      /data-sidebar-state="desktop-hidden"[\s\S]*?\.console-topbar\s*\{[^}]*padding-left: 0;[^}]*gap: 0;/,
+    );
+    // No derived arithmetic for the restore gutter.
+    expect(shell).not.toMatch(/--shell-restore-icon\)\)\s*\/\s*2/);
+  });
+
+  it("keeps crumb navigation out of page components", () => {
+    // Hard gate: pages must not ship their own <nav> crumbs. AppBreadcrumb in the
+    // shell owns the trail; a page-local "Parent / Current" nav duplicates it.
+    const pagesRoot = resolve(process.cwd(), "src/pages");
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = resolve(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith(".tsx") || entry.name.includes(".test.")) continue;
+        if (/<nav[\s>]/.test(readFileSync(full, "utf8"))) {
+          offenders.push(relative(pagesRoot, full));
+        }
+      }
+    };
+    walk(pagesRoot);
+    expect(offenders).toEqual([]);
   });
 
   it("places the breadcrumb on the shell header above the route surface", () => {

@@ -206,19 +206,22 @@ export async function createMockLlmServer(options = {}) {
   };
 
   const server = createServer(async (req, res) => {
-    if (req.method === "GET" && req.url === "/health") {
+    // Match on pathname: Anthropic-compatible clients may append a query
+    // (e.g. `?beta=true` for beta Messages).
+    const pathname = new URL(req.url ?? "/", "http://mock.local").pathname;
+    if (req.method === "GET" && pathname === "/health") {
       jsonResponse(res, 200, { ok: true, requests: state.requests });
       return;
     }
-    if (req.method === "GET" && req.url === "/v1/models") {
+    if (req.method === "GET" && pathname === "/v1/models") {
       jsonResponse(res, 200, {
         data: [{ type: "model", id: "claude-chaos-local", display_name: "OpenMA chaos fixture" }],
         has_more: false,
       });
       return;
     }
-    if (req.method !== "POST" || req.url !== "/v1/messages") {
-      jsonResponse(res, 404, { type: "error", error: { type: "not_found", message: "not found" } });
+    if (req.method !== "POST" || pathname !== "/v1/messages") {
+      jsonResponse(res, 404, { type: "error", error: { type: "not_found", message: `not found: ${req.method} ${req.url}` } });
       return;
     }
 

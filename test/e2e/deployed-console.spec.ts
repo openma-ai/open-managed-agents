@@ -5,9 +5,16 @@ const deployedBaseURL = process.env.OMA_E2E_BASE_URL?.replace(/\/$/, "");
 const apiKey = process.env.OMA_E2E_API_KEY;
 const turnModel = process.env.OMA_E2E_MODEL;
 const mockModelBaseURL = process.env.OMA_E2E_MOCK_MODEL_BASE_URL?.replace(/\/$/, "");
+const requireBackend = process.env.OMA_E2E_REQUIRE_BACKEND === "1" || process.env.CI === "true";
+
+function requireEnv(ok: boolean, message: string) {
+  if (ok) return;
+  if (requireBackend) throw new Error(message);
+  test.skip(true, message);
+}
 
 test.describe("deployed Console smoke", () => {
-  test.skip(!deployedBaseURL, "OMA_E2E_BASE_URL is required for deployed smoke");
+  requireEnv(Boolean(deployedBaseURL), "OMA_E2E_BASE_URL is required for deployed smoke");
 
   test("serves the app and boots without browser errors", async ({ page }) => {
     const pageErrors: string[] = [];
@@ -18,9 +25,19 @@ test.describe("deployed Console smoke", () => {
     });
     expect(response?.status()).toBe(200);
     await expect(page.locator("#root")).not.toBeEmpty();
-    await page.getByRole("button", { name: "Continue with email" }).click();
-    await expect(page.locator('input[type="email"]')).toBeVisible();
-    await expect(page.locator('input[type="password"]')).toBeVisible();
+    // Login.tsx renders "Continue with email" only when /auth-info advertises
+    // email_password. Servers with AUTH_DISABLED=1 (release certification)
+    // report false and the Console auto-redirects or shows no email option.
+    const authInfo = await (await page.request.get(`${deployedBaseURL}/auth-info`)).json() as {
+      email_password?: boolean;
+    };
+    if (authInfo.email_password !== false) {
+      await page.getByRole("button", { name: "Continue with email" }).click();
+      await expect(page.locator('input[type="email"]')).toBeVisible();
+      await expect(page.locator('input[type="password"]')).toBeVisible();
+    } else {
+      await expect(page.getByRole("button", { name: "Continue with email" })).toHaveCount(0);
+    }
     expect(pageErrors).toEqual([]);
   });
 
@@ -31,8 +48,8 @@ test.describe("deployed Console smoke", () => {
   });
 
   test("round-trips a Managed Agent and Session through the Console", async ({ page }) => {
-    test.skip(
-      !apiKey || (!turnModel && !mockModelBaseURL),
+    requireEnv(
+      Boolean(apiKey) && Boolean(turnModel || mockModelBaseURL),
       "OMA_E2E_API_KEY plus OMA_E2E_MODEL or OMA_E2E_MOCK_MODEL_BASE_URL are required",
     );
     test.setTimeout(120_000);
@@ -51,6 +68,7 @@ test.describe("deployed Console smoke", () => {
     const pageErrors: string[] = [];
     const apiFailures: Array<{ method: string; path: string; status: number }> = [];
     const cleanupErrors: unknown[] = [];
+    let bodyFailed = false;
 
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("response", (response) => {
@@ -185,6 +203,10 @@ test.describe("deployed Console smoke", () => {
 
       expect(pageErrors).toEqual([]);
       expect(apiFailures).toEqual([]);
+    } catch (error) {
+      // Surface the real failure; cleanup errors must not mask it.
+      bodyFailed = true;
+      throw error;
     } finally {
       if (session) {
         await client.beta.sessions.delete(session.id).catch((error) => cleanupErrors.push(error));
@@ -205,8 +227,11 @@ test.describe("deployed Console smoke", () => {
           }
         }).catch((error) => cleanupErrors.push(error));
       }
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(cleanupErrors, "Console E2E cleanup failed");
+      if (cleanupErrors.length > 0 && !bodyFailed) {
+        throw new AggregateError(
+          cleanupErrors,
+          `Console E2E cleanup failed: ${cleanupErrors.map((e) => (e instanceof Error ? e.message : String(e))).join("; ")}`,
+        );
       }
     }
   });

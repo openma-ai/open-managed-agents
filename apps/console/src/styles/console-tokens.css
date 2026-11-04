@@ -1,8 +1,10 @@
 :root {
-  /* Shared brand ships white-on-coral in light mode (3.41:1). Reuse
-     its dark ink for readable action labels without changing the coral. */
-  --brand-fg: #1a0e09;
-  /* Linear template geometry, with OpenMA's existing coral brand and warm
+  /* Console uses black primary actions with contrasting white labels. */
+  --brand: #111111;
+  --brand-hover: #000000;
+  --brand-subtle: #f4f4f4;
+  --brand-fg: #ffffff;
+  /* Linear template geometry, with Console's black primary and warm
      neutral materials. Components consume these aliases instead of
      reintroducing approximate spacing values. */
   --console-pad-xs: 6px;
@@ -74,6 +76,10 @@
   --sidebar-row-inset: var(--console-pad-sm);
   --sidebar-track-gap: var(--console-gap-xl);
   --list-frame-inset: var(--console-pad-lg);
+  /* List content inset; also the restore glyph gutter on both sides. */
+  --list-content-inset: var(--list-frame-inset);
+  --topbar-gap: var(--console-gap-lg);
+  --shell-restore-icon: 15px;
   --detail-frame-inset: 56px;
   --detail-rail-w: 360px;
   --detail-layout-gap: var(--console-pad-2xl);
@@ -112,6 +118,10 @@
 }
 
 .dark {
+  --brand: #f5f5f5;
+  --brand-hover: #ffffff;
+  --brand-subtle: #262626;
+  --brand-fg: #111111;
   --surface-row-hover: color-mix(in srgb, var(--fg) 7%, var(--surface-stage));
   --surface-row-selected: color-mix(in srgb, var(--fg) 11%, var(--surface-stage));
   --data-row-bg: color-mix(in srgb, var(--fg) 5%, var(--surface-route));

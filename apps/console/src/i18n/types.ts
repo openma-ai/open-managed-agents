@@ -12,6 +12,21 @@ export type Locale = "en" | "zh-CN";
 export interface Messages {
   // Common / shared
   common: {
+    createdPresets: {
+      "any": string;
+      "today": string;
+      "last-hour": string;
+      "last-day": string;
+      "last-7d": string;
+      "last-30d": string;
+      "custom": string;
+    };
+    from: string;
+    to: string;
+
+    selectAll: string;
+    selectRow: string;
+
     loading: string;
     cancel: string;
     create: string;
@@ -57,6 +72,7 @@ export interface Messages {
     dashboard: string;
     agents: string;
     sessions: string;
+    deployments: string;
     files: string;
     evalRuns: string;
     infrastructure: string;
@@ -187,6 +203,21 @@ export interface Messages {
 
   // Sessions list
   sessions: {
+    subtitle: string;
+    createSession: string;
+    findSession: string;
+    deployment: string;
+    noDeployments: string;
+    noActive: string;
+    activeEmptyBody: string;
+    showAll: string;
+    tokensInOut: string;
+    costHint: string;
+    idle: string;
+    running: string;
+    rescheduling: string;
+    terminated: string;
+
     newSession: string;
     searchSessions: string;
     noMatchingSessions: string;
@@ -224,6 +255,13 @@ export interface Messages {
 
   // Environments list
   environments: {
+    subtitle: string;
+    createEnvironment: string;
+    scope: string;
+    updatedAt: string;
+    archivedAt: string;
+    type: string;
+
     newEnvironment: string;
     searchEnvironments: string;
     noMatchingEnvironments: string;
@@ -295,6 +333,159 @@ export interface Messages {
     searchRuntimes: string;
     noMatchingRuntimes: string;
     noRuntimesYet: string;
+  };
+
+  // Deployments: list, create form and detail
+  deployments: {
+    newDeployment: string;
+    searchAgents: string;
+    noAgents: string;
+    searchEnvironments: string;
+    noEnvironments: string;
+    upload: string;
+    fileId: string;
+    dropFile: string;
+    chooseFile: string;
+    uploading: string;
+    uploadFailed: string;
+    cloud: string;
+    organization: string;
+    account: string;
+
+    invalidCron: string;
+    meridiem: string;
+    am: string;
+    pm: string;
+    repositoryMountPlaceholder: string;
+    fileMountPlaceholder: string;
+    loadFailed: string;
+    retry: string;
+
+    subtitle: string;
+    createDeployment: string;
+    searchPlaceholder: string;
+    createdBy: string;
+    anyone: string;
+    agent: string;
+    status: string;
+    active: string;
+    paused: string;
+    archived: string;
+    all: string;
+    trigger: string;
+    manual: string;
+    schedule: string;
+    emptyTitle: string;
+    emptyBody: string;
+    noMatching: string;
+    tryDifferentFilters: string;
+    runNow: string;
+    runStarted: string;
+    pause: string;
+    resume: string;
+    archive: string;
+    confirmArchive: string;
+
+    newSubtitle: string;
+    general: string;
+    generalHint: string;
+    name: string;
+    namePlaceholder: string;
+    selectAgent: string;
+    manageAgents: string;
+    environment: string;
+    selectEnvironment: string;
+    manageEnvironments: string;
+    initialMessage: string;
+    initialMessagePlaceholder: string;
+    initialMessageHint: string;
+    optional: string;
+    budget: string;
+    budgetHint: string;
+    budgetInvalid: string;
+    triggerHint: string;
+    manualHint: string;
+    frequency: string;
+    frequencies: {
+      every_minute: string;
+      hourly: string;
+      daily: string;
+      weekdays: string;
+      weekly: string;
+      custom: string;
+    };
+    timezone: string;
+    at: string;
+    atMinute: string;
+    day: string;
+    weekdayNames: string[];
+    invalidTime: string;
+    editCron: string;
+    cronExpression: string;
+    cronHint: string;
+    nextRuns: string;
+    nextRunsHint: string;
+    noUpcomingRuns: string;
+    resources: string;
+    resourcesHint: string;
+    vaults: string;
+    addVault: string;
+    manageVaults: string;
+    searchVaults: string;
+    noVaults: string;
+    removeVault: string;
+    sessionResources: string;
+    sessionResourcesHint: string;
+    addResource: string;
+    githubRepository: string;
+    file: string;
+    memoryStore: string;
+    removeResource: string;
+    repositoryUrl: string;
+    authorizationToken: string;
+    checkout: string;
+    checkoutNone: string;
+    checkoutBranch: string;
+    checkoutCommit: string;
+    branchName: string;
+    commitSha: string;
+    mountPath: string;
+    selectFile: string;
+    manageFiles: string;
+    noFiles: string;
+    selectMemoryStore: string;
+    manageMemoryStores: string;
+    access: string;
+    readWrite: string;
+    readOnly: string;
+    instructions: string;
+    instructionsPlaceholder: string;
+    required: string;
+    unsavedTitle: string;
+    unsavedBody: string;
+    stay: string;
+    leave: string;
+
+    notFound: string;
+    archivedNotice: string;
+    pausedManually: string;
+    pausedByError: string;
+    properties: string;
+    agentVersion: string;
+    created: string;
+    updated: string;
+    lastRun: string;
+    upcomingRuns: string;
+    none: string;
+    runs: string;
+    runsEmpty: string;
+    runsHint: string;
+    run: string;
+    session: string;
+    result: string;
+    runSucceeded: string;
+    runFailed: string;
+    loadMore: string;
   };
 
   // Matter: Loops (automations) and Bonds (linked apps)
