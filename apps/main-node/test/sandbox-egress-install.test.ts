@@ -7,14 +7,15 @@ import type { SandboxPort } from "@open-managed-agents/sandbox";
 import { LocalSubprocessSandbox } from "../../../packages/sandbox/src/adapters/local-subprocess";
 import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner";
 import { mkdtemp, rm } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 const scope = { workspaceId: "workspace", sessionId: "session", vaultIds: ["vault"] };
 const input = (sandbox: SandboxPort) => ({ sandbox, scope, relay: { endpoint: "https://control.example", pass: "" }, issuePass: async () => "session-pass", placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("sandbox credential egress installation boundary", () => {
   it.each(["stop", "refresh failure", "cold refresh failure"])("terminates a real local health relay on %s after refresh revocation", async (reason) => {
-    const root = await mkdtemp(resolve(".egress-lifecycle-"));
+    const root = await mkdtemp(join(tmpdir(), "oma-egress-lifecycle-"));
     const raw = new LocalSubprocessSandbox({ workdir: root });
     const write = raw.writeFile.bind(raw);
     raw.writeFile = (path, content) => write(path, path.endsWith("/relay.cjs")
