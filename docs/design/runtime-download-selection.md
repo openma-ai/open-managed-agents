@@ -224,7 +224,7 @@ Replace that coupling with a **Runtime-local path and stable `directory_id`**. D
 
 Only the machine owner can authorize custom roots: `oma bridge allow-dir <path>`, or a **local confirmation prompt** the first time Console references a path. Remote clients may request approval but cannot add authorized paths themselves. Runtime ownership is one `owner_user_id`; Environment visibility or remote API access does not bypass local approval.
 
-An authorized root authorizes its **whole subtree**. The Environment owns `placement: sandbox|host`, `directories: [{ directory_id, subpath?, edit_mode }]` with `edit_mode: in_place|worktree`, and `primary`, a zero-based entry index selecting the start cwd. Each subpath is relative. Other entries become additional workspace roots, such as ACP additional directories or Claude Code `--add-dir`; support is harness-dependent. Reject unsupported multi-root placement explicitly. The Environment also owns per-repo `repositories: [{ directory_id, base_branch?, existing_checkout? }]`, a branch slug template and a reference to the Runtime retention settings.
+An authorized root authorizes its **whole subtree**. The Environment owns `placement: sandbox|host`, `directories: [{ directory_id, subpath?, edit_mode }]` with `edit_mode: in_place|worktree`, and `primary`, a zero-based entry index selecting the start cwd. Each subpath is relative. Other entries become additional workspace roots, such as ACP additional directories or Claude Code `--add-dir`; support is harness-dependent. Reject unsupported multi-root placement explicitly. The Environment also owns per-repo `repositories: [{ directory_id, base_branch?, existing_checkout? }]` and a branch slug template. Retention is configured on the Runtime, not the Environment.
 
 Validate when the Environment is saved and re-check in the daemon at Session launch/resume: roots must be locally authorized and current; resolve roots and requested paths to real paths, including symlinks and `..`, and check containment by path components. Reject duplicate or overlapping ancestor/descendant entries, including effective paths after checkout mapping, non-Git entries using anything but `in_place`, and custom directories combined with GitHub repository injection. Console browsing stays within authorized roots.
 
@@ -287,7 +287,7 @@ Extend the Environment attachment rather than using Agent/GitHub paths as placem
 }
 ```
 
-`directories[]` contains the Environment's selected authorized roots/subpaths and per-entry modes; `primary` selects the start cwd. An empty list with no primary chooses managed scratch for host mode. Sandbox uses no host directory IDs. `repositories[]` identifies each deduped repo through a configured directory ID; reject conflicting checkout options. `branch_slug_template` configures branch naming, and `retention` references the Runtime settings above. Validate on Environment save and re-check at Session launch as specified above.
+`directories[]` contains the Environment's selected authorized roots/subpaths and per-entry modes; `primary` selects the start cwd. An empty list with no primary chooses managed scratch for host mode. Sandbox uses no host directory IDs. `repositories[]` identifies each deduped repo through a configured directory ID; reject conflicting checkout options. `branch_slug_template` configures branch naming. Validate on Environment save and re-check at Session launch as specified above.
 
 | Surface | Proposed shape |
 |---|---|
@@ -299,7 +299,7 @@ Extend the Environment attachment rather than using Agent/GitHub paths as placem
 | Local CLI | `oma bridge allow-dir /srv/projects`, `oma bridge dirs list`; local revoke blocks new starts/resumes |
 | Environment CLI | `oma env create --runtime <id> --placement host --directory <id>[:<subpath>][@worktree\|@in_place] [--directory …] --primary <index>`; `--directory` is repeatable. Sandbox uses `--placement sandbox` without directory flags |
 | Session CLI | `oma sessions create --agent <id> --env <id> [--slug <slug>]`; starts from the Environment configuration |
-| Console | Runtime shows owner, capabilities and authorized roots. The Environment editor owns Runtime, Sandbox/Host, directory/subpath picker, primary, per-entry edit modes, per-repo worktree/Use existing and base ref, branch slug template and Runtime retention reference. Session view shows effective paths, branches and queue state; non-Git stays in place |
+| Console | Runtime shows owner, capabilities and authorized roots. The Environment editor owns Runtime, Sandbox/Host, directory/subpath picker, primary, per-entry edit modes, per-repo worktree/Use existing and base ref and branch slug template. Session view shows effective paths, branches and queue state; non-Git stays in place |
 
 Console must state: **“Served directories pick the start cwd and additional workspace roots and are not a sandbox. Commands run with the Runtime user's permissions.”** A remotely requested new root remains pending until local owner approval. Archive starts automatic retention cleanup; show the expiry, shared disk cap, reclaimed bytes, Delete now action, autosave/output-export status and concrete cleanup blockers. Serving a plain folder never introduces a GitHub OAuth prerequisite.
 
