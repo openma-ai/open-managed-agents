@@ -8,6 +8,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { useI18n } from "../i18n";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -151,7 +152,7 @@ export function msToDateInput(ms: number | undefined): string {
  * etc. depending on the resource.
  */
 export function CreatedFilterChip({
-  label = "Created",
+  label,
   value,
   onChange,
 }: {
@@ -160,12 +161,13 @@ export function CreatedFilterChip({
   value: { after?: number; before?: number };
   onChange: (v: { after?: number; before?: number }) => void;
 }) {
+  const { t } = useI18n();
   const [preset, setPreset] = useState<CreatedPreset>("any");
   const [customAfter, setCustomAfter] = useState<number | undefined>(value.after);
   const [customBefore, setCustomBefore] = useState<number | undefined>(value.before);
 
   const active = value.after !== undefined || value.before !== undefined;
-  const display = preset === "any" ? undefined : CREATED_PRESET_LABELS[preset];
+  const display = t.common.createdPresets[preset];
 
   const apply = (next: CreatedPreset, opts?: { after?: number; before?: number }) => {
     setPreset(next);
@@ -182,7 +184,7 @@ export function CreatedFilterChip({
 
   return (
     <FilterChip
-      label={label}
+      label={label ?? t.common.created}
       active={active}
       display={display}
       onClear={() => {
@@ -209,14 +211,14 @@ export function CreatedFilterChip({
               preset === p && "text-fg font-medium",
             )}
           >
-            {CREATED_PRESET_LABELS[p]}
+            {t.common.createdPresets[p]}
             {preset === p && <CheckIcon className="size-3.5 text-brand" />}
           </Button>
         ))}
         {preset === "custom" && (
           <div className="mt-1 pt-2 border-t border-border space-y-2 px-1 pb-1">
             <Label className="block">
-              <span className="text-xs text-fg-muted mb-1 block">From</span>
+              <span className="text-xs text-fg-muted mb-1 block">{t.common.from}</span>
               <Input
                 type="date"
                 value={msToDateInput(customAfter)}
@@ -229,7 +231,7 @@ export function CreatedFilterChip({
               />
             </Label>
             <Label className="block">
-              <span className="text-xs text-fg-muted mb-1 block">To</span>
+              <span className="text-xs text-fg-muted mb-1 block">{t.common.to}</span>
               <Input
                 type="date"
                 value={msToDateInput(customBefore)}

@@ -13,6 +13,8 @@ behavior; these pages use OMA's existing components and styling.
 - [Detail and runs](detail.png)
 - [Detail in Simplified Chinese](detail-zh-CN.png)
 
+The complete strict 22-state review, including the remaining backend timing gap, is in [acceptance/CHECKLIST.md](acceptance/CHECKLIST.md). The committed fixture capture script is `apps/console/scripts/capture-448-acceptance.mjs`.
+
 ## API mapping and differences from the reference
 
 The UI uses the existing `/v1/deployments` and `/v1/deployment_runs` APIs.
@@ -26,7 +28,7 @@ locally, loading remaining deployment pages when needed. Agent and status
 filters are sent to the backend. All excludes archived deployments, matching
 the backend's default list behavior.
 
-File resources select existing uploads; upload is available on the Files page.
+File resources support inline upload/drop and direct File ID entry through the existing Files API.
 GitHub repositories and memory stores support the options accepted by the
 existing creation API. Schedule previews are advisory and use the browser's
 timezone initially; saved deployment details use the server's upcoming runs.

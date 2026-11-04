@@ -12,6 +12,21 @@ export type Locale = "en" | "zh-CN";
 export interface Messages {
   // Common / shared
   common: {
+    createdPresets: {
+      "any": string;
+      "today": string;
+      "last-hour": string;
+      "last-day": string;
+      "last-7d": string;
+      "last-30d": string;
+      "custom": string;
+    };
+    from: string;
+    to: string;
+
+    selectAll: string;
+    selectRow: string;
+
     loading: string;
     cancel: string;
     create: string;
@@ -188,6 +203,21 @@ export interface Messages {
 
   // Sessions list
   sessions: {
+    subtitle: string;
+    createSession: string;
+    findSession: string;
+    deployment: string;
+    noDeployments: string;
+    noActive: string;
+    activeEmptyBody: string;
+    showAll: string;
+    tokensInOut: string;
+    costHint: string;
+    idle: string;
+    running: string;
+    rescheduling: string;
+    terminated: string;
+
     newSession: string;
     searchSessions: string;
     noMatchingSessions: string;
@@ -225,6 +255,13 @@ export interface Messages {
 
   // Environments list
   environments: {
+    subtitle: string;
+    createEnvironment: string;
+    scope: string;
+    updatedAt: string;
+    archivedAt: string;
+    type: string;
+
     newEnvironment: string;
     searchEnvironments: string;
     noMatchingEnvironments: string;
@@ -300,6 +337,21 @@ export interface Messages {
 
   // Deployments: list, create form and detail
   deployments: {
+    newDeployment: string;
+    searchAgents: string;
+    noAgents: string;
+    searchEnvironments: string;
+    noEnvironments: string;
+    upload: string;
+    fileId: string;
+    dropFile: string;
+    chooseFile: string;
+    uploading: string;
+    uploadFailed: string;
+    cloud: string;
+    organization: string;
+    account: string;
+
     invalidCron: string;
     meridiem: string;
     am: string;

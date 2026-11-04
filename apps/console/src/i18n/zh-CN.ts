@@ -2,6 +2,21 @@ import type { Messages } from "./types";
 
 export const zhCN: Messages = {
   common: {
+    createdPresets: {
+      "any": "所有时间",
+      "today": "今天",
+      "last-hour": "最近一小时",
+      "last-day": "最近 24 小时",
+      "last-7d": "最近 7 天",
+      "last-30d": "最近 30 天",
+      "custom": "自定义范围",
+    },
+    from: "从",
+    to: "至",
+
+    selectAll: "选择所有行",
+    selectRow: "选择行",
+
     loading: "加载中…",
     cancel: "取消",
     create: "创建",
@@ -175,6 +190,21 @@ export const zhCN: Messages = {
   },
 
   sessions: {
+    subtitle: "追踪和调试 Open Managed Agents 会话。",
+    createSession: "创建会话",
+    findSession: "按 ID 查找会话",
+    deployment: "部署",
+    noDeployments: "暂无部署。",
+    noActive: "暂无活跃会话",
+    activeEmptyBody: "新会话将显示在此处。此视图隐藏已归档和已终止的会话。",
+    showAll: "显示所有会话",
+    tokensInOut: "输入 / 输出 Token",
+    costHint: "按公开标价计算的累计费用。",
+    idle: "空闲",
+    running: "运行中",
+    rescheduling: "重新调度中",
+    terminated: "已终止",
+
     newSession: "+ 新建会话",
     searchSessions: "搜索会话…",
     noMatchingSessions: "没有匹配的会话",
@@ -210,6 +240,13 @@ export const zhCN: Messages = {
   },
 
   environments: {
+    subtitle: "用于会话或代码执行等容器的配置模板。",
+    createEnvironment: "创建环境",
+    scope: "范围",
+    updatedAt: "更新时间",
+    archivedAt: "归档时间",
+    type: "类型",
+
     newEnvironment: "+ 新建环境",
     searchEnvironments: "搜索环境…",
     noMatchingEnvironments: "没有匹配的环境",
@@ -277,12 +314,27 @@ export const zhCN: Messages = {
   },
 
   deployments: {
+    newDeployment: "新建部署",
+    searchAgents: "按名称或精确 ID 搜索智能体",
+    noAgents: "暂无智能体。",
+    searchEnvironments: "按名称或精确 ID 搜索环境",
+    noEnvironments: "暂无环境。",
+    upload: "上传",
+    fileId: "文件 ID",
+    dropFile: "将文件拖放到此处",
+    chooseFile: "选择文件",
+    uploading: "上传中…",
+    uploadFailed: "文件上传失败，请重试。",
+    cloud: "云端",
+    organization: "组织",
+    account: "账户",
+
     invalidCron: "Cron 表达式无效。请使用五个字段及有效的取值范围。",
     meridiem: "上午 / 下午",
     am: "上午",
     pm: "下午",
     repositoryMountPlaceholder: "/workspace/repo-name（默认）",
-    fileMountPlaceholder: "/mnt/session/uploads/<file_id>（默认）",
+    fileMountPlaceholder: "/uploads/myfile.txt",
     loadFailed: "无法加载部署，请重试。",
     retry: "重试",
 
@@ -349,7 +401,7 @@ export const zhCN: Messages = {
     cronExpression: "Cron 表达式",
     cronHint: "分 时 日 月 星期 —— * 任意，*/5 每 5 个，1-5 范围",
     nextRuns: "接下来 5 次运行",
-    nextRunsHint: "为分散负载，运行会在计划时间之后的短时间窗口内开始。显示的是目标时间，不是精确的开始时间。",
+    nextRunsHint: "显示的是目标时间，不是精确的开始时间。",
     noUpcomingRuns: "该计划没有即将到来的运行。",
     resources: "资源",
     resourcesHint: "每次运行可使用的凭证和资源。",

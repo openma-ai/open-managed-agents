@@ -66,7 +66,7 @@ type ResourceDraft =
       ref: string;
       mountPath: string;
     }
-  | { key: number; kind: "file"; fileId: string; mountPath: string }
+  | { key: number; kind: "file"; fileId: string; mountPath: string; mode: "upload" | "id"; filename: string }
   | {
       key: number;
       kind: "memory_store";
@@ -168,6 +168,9 @@ function toResource(draft: ResourceDraft): Resource {
 interface Choice {
   id: string;
   name: string;
+  updated_at?: string;
+  config?: { type: string };
+  scope?: string;
 }
 
 export function DeploymentNew() {
@@ -183,7 +186,6 @@ export function DeploymentNew() {
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [vaults, setVaults] = useState<Choice[]>([]);
-  const [files, setFiles] = useState<Choice[]>([]);
   const [stores, setStores] = useState<Choice[]>([]);
   const nextKey = useRef(1);
   const leaving = useRef(false);
@@ -195,14 +197,10 @@ export function DeploymentNew() {
     let cancelled = false;
     void Promise.all([
       managedApi.vaults.list({ limit: 200 }).catch(() => ({ data: [] })),
-      managedApi.files
-        .list({ limit: 200 })
-        .catch(() => ({ data: [] as { id: string; filename: string }[] })),
       managedApi.memoryStores.list({ limit: 200 }).catch(() => ({ data: [] })),
-    ]).then(([vaultPage, filePage, storePage]) => {
+    ]).then(([vaultPage, storePage]) => {
       if (cancelled) return;
       setVaults(vaultPage.data.map((vault) => ({ id: vault.id, name: vault.display_name })));
-      setFiles(filePage.data.map((file) => ({ id: file.id, name: file.filename })));
       setStores(storePage.data.map((store) => ({ id: store.id, name: store.name })));
     });
     return () => {
@@ -310,17 +308,17 @@ export function DeploymentNew() {
       kind === "github"
         ? { key, kind, url: "", token: "", checkout: "none", ref: "", mountPath: "" }
         : kind === "file"
-          ? { key, kind, fileId: "", mountPath: "" }
+          ? { key, kind, fileId: "", mountPath: "", mode: "upload", filename: "" }
           : { key, kind, storeId: "", access: "read_write", instructions: "" };
     set("resources", [...draft.resources, resource]);
   };
-  const updateResource = (index: number, patch: Partial<ResourceDraft>) =>
-    set(
-      "resources",
-      draft.resources.map((resource, i) =>
-        i === index ? ({ ...resource, ...patch } as ResourceDraft) : resource,
+  const updateResource = (key: number, patch: Partial<ResourceDraft>) =>
+    setDraft((current) => ({
+      ...current,
+      resources: current.resources.map((resource) =>
+        resource.key === key ? ({ ...resource, ...patch } as ResourceDraft) : resource,
       ),
-    );
+    }));
   const removeResource = (index: number) =>
     set("resources", draft.resources.filter((_, i) => i !== index));
 
@@ -334,15 +332,16 @@ export function DeploymentNew() {
 
   return (
     <Page className="console-settings-page">
+      <nav className="mb-5 text-sm text-fg-muted" aria-label={m.newDeployment}><Link to="/deployments">{t.nav.deployments}</Link> / {m.newDeployment}</nav>
       <form
-        className="mx-auto w-full max-w-3xl"
+        className="mx-auto w-full max-w-3xl [&>section:first-of-type]:border-t-0 [&>section:first-of-type]:pt-0"
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <header className="mb-8">
+        <header className="sticky top-0 z-10 mb-8 bg-bg py-3">
           <h1 className="text-xl font-semibold tracking-tight text-fg">{m.createDeployment}</h1>
           <p className="mt-1 text-sm text-fg-muted">{m.newSubtitle}</p>
         </header>
@@ -350,6 +349,7 @@ export function DeploymentNew() {
         <FormSection title={m.general} hint={m.generalHint}>
           <Field id="deployment-name" label={m.name} error={errorFor("name")}>
             <Input
+              autoFocus
               id="deployment-name"
               name="oma-deployment-name"
               autoComplete="off"
@@ -368,6 +368,8 @@ export function DeploymentNew() {
               id="deployment-agent"
               value={draft.agentId}
               onValueChange={(value) => set("agentId", value)}
+              searchPlaceholder={m.searchAgents}
+              emptyText={m.noAgents}
               endpoint="/v1/agents"
               getValue={(agent) => agent.id}
               getLabel={(agent) => (
@@ -389,11 +391,14 @@ export function DeploymentNew() {
               id="deployment-environment"
               value={draft.environmentId}
               onValueChange={(value) => set("environmentId", value)}
+              searchPlaceholder={m.searchEnvironments}
+              emptyText={m.noEnvironments}
               endpoint="/v1/environments"
               getValue={(environment) => environment.id}
               getLabel={(environment) => (
                 <span>
-                  {environment.name} <span className="text-sm text-fg-subtle">({environment.id})</span>
+                  {environment.name}
+                  <span className="block text-xs text-fg-subtle">{environment.updated_at && new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-Math.floor((Date.now() - Date.parse(environment.updated_at)) / 86400000), "day")} · {environment.config?.type === "cloud" ? m.cloud : environment.config?.type} · {environment.scope === "organization" ? m.organization : environment.scope === "account" ? m.account : "—"}</span>
                 </span>
               )}
               getTextLabel={(environment) => `${environment.name} (${environment.id})`}
@@ -403,6 +408,7 @@ export function DeploymentNew() {
           <Field
             id="deployment-message"
             label={m.initialMessage}
+            hintAfter
             hint={m.initialMessageHint}
             error={errorFor("message")}
           >
@@ -514,6 +520,7 @@ export function DeploymentNew() {
                 <div key={resource.key} className="rounded-lg border border-border p-4">
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <span className="text-sm font-medium text-fg">{kindLabel(resource.kind)}</span>
+                    {resource.kind === "memory_store" && <ManageLink to="/memory" label={m.manageMemoryStores} />}
                     <Button
                       type="button"
                       variant="ghost"
@@ -527,8 +534,7 @@ export function DeploymentNew() {
                   <ResourceFields
                     resource={resource}
                     index={index}
-                    update={(patch) => updateResource(index, patch)}
-                    files={files}
+                    update={(patch) => updateResource(resource.key, patch)}
                     stores={stores}
                     errorFor={errorFor}
                   />
@@ -541,7 +547,7 @@ export function DeploymentNew() {
                     <ChevronDownIcon className="size-3.5" aria-hidden="true" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
+                <DropdownMenuContent align="start" className="min-w-48">
                   <DropdownMenuItem onSelect={() => addResource("github")}>
                     <GitBranchIcon /> {m.githubRepository}
                   </DropdownMenuItem>
@@ -557,7 +563,7 @@ export function DeploymentNew() {
           </Field>
         </FormSection>
 
-        <div className="flex justify-end gap-2 border-t border-border pt-4">
+        <div className="sticky bottom-0 z-10 flex justify-end gap-2 border-t border-border bg-bg py-4">
           <Button type="button" variant="outline" onClick={() => nav("/deployments")}>
             {t.common.cancel}
           </Button>
@@ -568,6 +574,8 @@ export function DeploymentNew() {
       </form>
 
       <Modal
+        confirmation
+        maxWidth="max-w-md"
         open={blocker.state === "blocked"}
         onClose={() => blocker.reset?.()}
         title={m.unsavedTitle}
@@ -621,6 +629,7 @@ function ScheduleFields({
       <div className="grid gap-4 sm:grid-cols-2">
         <Field id="deployment-frequency" label={m.frequency}>
           <Select
+            position="popper"
             id="deployment-frequency"
             value={draft.frequency}
             onValueChange={(value) => changeFrequency(value as CronFrequency)}
@@ -645,7 +654,7 @@ function ScheduleFields({
       </div>
 
       {draft.frequency === "custom" ? (
-        <Field id="deployment-cron" label={m.cronExpression} hint={m.cronHint} error={error}>
+        <Field id="deployment-cron" label={m.cronExpression} hintAfter hint={m.cronHint} error={error}>
           <Input
             id="deployment-cron"
             className="font-mono"
@@ -673,6 +682,7 @@ function ScheduleFields({
               {draft.frequency === "weekly" && (
                 <Field id="deployment-weekday" label={m.day}>
                   <Select
+            position="popper"
                     id="deployment-weekday"
                     className="w-40"
                     value={String(draft.weekday)}
@@ -765,19 +775,29 @@ function ResourceFields({
   resource,
   index,
   update,
-  files,
   stores,
   errorFor,
 }: {
   resource: ResourceDraft;
   index: number;
   update: (patch: Partial<ResourceDraft>) => void;
-  files: Choice[];
   stores: Choice[];
   errorFor: (key: string) => string | undefined;
 }) {
   const { t } = useI18n();
   const m = t.deployments;
+  const managedApi = useManagedApi();
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(false);
+  const upload = async (file?: File) => {
+    if (!file || uploading) return;
+    setUploading(true);
+    setUploadError(false);
+    try {
+      const result = await managedApi.files.upload({ file });
+      update({ fileId: result.id, filename: result.filename });
+    } catch { setUploadError(true); } finally { setUploading(false); }
+  };
   const id = (field: string) => `deployment-resource-${index}-${field}`;
 
   if (resource.kind === "github") {
@@ -807,6 +827,7 @@ function ResourceFields({
         <div className="grid gap-3 sm:grid-cols-2">
           <Field id={id("checkout")} label={m.checkout} optional={m.optional}>
             <Select
+            position="popper"
               id={id("checkout")}
               value={resource.checkout}
               onValueChange={(value) =>
@@ -852,27 +873,26 @@ function ResourceFields({
   if (resource.kind === "file") {
     return (
       <div className="space-y-3">
-        <Field
-          id={id("file")}
-          label={m.file}
-          error={errorFor(`resource.${index}.file`)}
-          aside={<ManageLink to="/files" label={m.manageFiles} />}
-          hint={files.length === 0 ? m.noFiles : undefined}
-        >
-          <Select
-            id={id("file")}
-            value={resource.fileId}
-            placeholder={m.selectFile}
-            onValueChange={(value) => update({ fileId: value })}
-          >
-            {files.map((file) => (
-              <SelectOption key={file.id} value={file.id}>
-                {file.name} ({file.id})
-              </SelectOption>
-            ))}
-          </Select>
-        </Field>
-        <Field id={id("mount")} label={m.mountPath} optional={m.optional}>
+        <Tabs value={resource.mode} onValueChange={(mode) => update({ mode: mode as "upload" | "id" })}>
+          <TabsList aria-label={m.file}>
+            <TabsTrigger value="upload">{m.upload}</TabsTrigger>
+            <TabsTrigger value="id">{m.fileId}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {resource.mode === "upload" ? (
+          <div className="rounded-lg border border-border p-4 text-center" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void upload(event.dataTransfer.files[0]); }}>
+            <p className="mb-3 text-sm">{uploading ? m.uploading : resource.filename || m.dropFile}</p>
+            <Label htmlFor={id("upload")} className="inline-flex cursor-pointer rounded-md border border-border px-3 py-1.5">{m.chooseFile}</Label>
+            <Input id={id("upload")} aria-label={m.chooseFile} type="file" className="sr-only" disabled={uploading} onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = ""; }} />
+          </div>
+        ) : (
+          <Field id={id("file")} label={m.fileId} error={errorFor(`resource.${index}.file`)}>
+            <Input id={id("file")} value={resource.fileId} placeholder="file_..." onChange={(event) => update({ fileId: event.target.value })} />
+          </Field>
+        )}
+        {uploadError && <p role="alert" className="text-sm text-danger">{m.uploadFailed}</p>}
+        {errorFor(`resource.${index}.file`) && resource.mode === "upload" && <p role="alert" className="text-sm text-danger">{errorFor(`resource.${index}.file`)}</p>}
+        <Field id={id("mount")} label={m.mountPath} hideLabel>
           <Input
             id={id("mount")}
             className="font-mono"
@@ -892,9 +912,10 @@ function ResourceFields({
         id={id("store")}
         label={m.memoryStore}
         error={errorFor(`resource.${index}.store`)}
-        aside={<ManageLink to="/memory" label={m.manageMemoryStores} />}
+        hideLabel
       >
         <Select
+            position="popper"
           id={id("store")}
           value={resource.storeId}
           placeholder={m.selectMemoryStore}
@@ -909,6 +930,7 @@ function ResourceFields({
       </Field>
       <Field id={id("access")} label={m.access}>
         <Select
+            position="popper"
           id={id("access")}
           value={resource.access}
           onValueChange={(value) => update({ access: value as "read_write" | "read_only" })}
@@ -936,6 +958,8 @@ function Field({
   label,
   optional,
   hint,
+  hintAfter,
+  hideLabel,
   error,
   aside,
   children,
@@ -944,21 +968,24 @@ function Field({
   label: string;
   optional?: string;
   hint?: string;
+  hintAfter?: boolean;
+  hideLabel?: boolean;
   error?: string;
   aside?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div>
-      <div className="mb-1.5 flex items-center justify-between gap-2">
+      <div className={hideLabel ? "sr-only" : "mb-1.5 flex items-center justify-between gap-2"}>
         <Label htmlFor={id} className="text-sm font-medium text-fg">
           {label}
           {optional && <span className="font-normal text-fg-subtle"> {optional}</span>}
         </Label>
         {aside}
       </div>
-      {hint && <p className="mb-1.5 text-xs text-fg-subtle">{hint}</p>}
+      {hint && !hintAfter && <p className="mb-1.5 whitespace-pre-line text-xs text-fg-subtle">{hint}</p>}
       {children}
+      {hint && hintAfter && <p className="mt-1.5 text-xs text-fg-subtle">{hint}</p>}
       {error && (
         <p className="mt-1 text-xs text-danger" role="alert">
           {error}

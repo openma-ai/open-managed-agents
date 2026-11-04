@@ -4,20 +4,14 @@ import { toast } from "sonner";
 import {
   ArchiveIcon,
   CalendarClockIcon,
-  MoreHorizontalIcon,
   PauseIcon,
   PlayIcon,
+  PlusIcon,
   RotateCcwIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { RowActionsMenu } from "../components/TableRowActions";
 import { PopoverContent } from "@/components/ui/popover";
 
 import { DataTable, type ColumnDef } from "../components/DataTable";
@@ -321,10 +315,6 @@ export function DeploymentsList() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="px-[var(--list-frame-inset)] pt-5">
-        <h1 className="text-xl font-semibold tracking-tight text-fg">{t.nav.deployments}</h1>
-        <p className="mt-1 text-sm text-fg-muted">{m.subtitle}</p>
-      </header>
       {error && (
         <div role="alert" className="px-[var(--list-frame-inset)] py-3 text-sm text-danger">
           {m.loadFailed} <Button variant="outline" size="sm" onClick={refresh}>{m.retry}</Button>
@@ -332,7 +322,9 @@ export function DeploymentsList() {
       )}
       <div className="min-h-0 flex-1">
         <DataTable<Deployment>
+          selectable
           title={t.nav.deployments}
+          subtitle={m.subtitle}
           createLabel={m.createDeployment}
           onCreate={create}
           searchPlaceholder={m.searchPlaceholder}
@@ -351,45 +343,9 @@ export function DeploymentsList() {
           emptyTitle={filtered ? m.noMatching : m.emptyTitle}
           emptySubtitle={filtered ? m.tryDifferentFilters : m.emptyBody}
           emptyIcon={<CalendarClockIcon className="size-9" aria-hidden="true" />}
-          emptyAction={!filtered && <Button onClick={create}>{m.createDeployment}</Button>}
+          emptyAction={!filtered && <Button variant="outline" onClick={create}><PlusIcon className="size-4" aria-hidden="true" />{m.createDeployment}</Button>}
         />
       </div>
     </div>
-  );
-}
-
-/** Visible per-row menu for the Actions column; the same actions are also
- *  on the row's context menu. */
-function RowActionsMenu({ label, actions }: { label: string; actions: RowAction[] }) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon-sm" aria-label={label}>
-          <MoreHorizontalIcon className="size-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      {/* React bubbles portal clicks to the row, which would open the detail page. */}
-      <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
-        {actions.map((action, index) => (
-          <ActionItem key={index} action={action} separate={Boolean(action.destructive) && index > 0} />
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function ActionItem({ action, separate }: { action: RowAction; separate: boolean }) {
-  return (
-    <>
-      {separate && <DropdownMenuSeparator />}
-      <DropdownMenuItem
-        disabled={action.disabled}
-        variant={action.destructive ? "destructive" : "default"}
-        onSelect={action.onSelect}
-      >
-        {action.icon}
-        {action.label}
-      </DropdownMenuItem>
-    </>
   );
 }

@@ -47,6 +47,8 @@ interface ModalProps {
    *  `max-w-2xl`). Modal applies `!important` internally to beat
    *  shadcn's baked-in `sm:max-w-sm` cap. Default: `max-w-lg`. */
   maxWidth?: string;
+  /** Center a short confirmation over a dimmed backdrop. */
+  confirmation?: boolean;
   children: ReactNode;
   footer?: ReactNode;
 }
@@ -57,6 +59,7 @@ export function Modal({
   title,
   subtitle,
   maxWidth = "max-w-lg",
+  confirmation = false,
   children,
   footer,
 }: ModalProps): JSX.Element {
@@ -72,10 +75,13 @@ export function Modal({
       }}
     >
       <DialogContent
+        overlayClassName={confirmation ? "bg-black/35" : undefined}
+        showCloseButton={!confirmation}
         aria-describedby={subtitle ? undefined : undefined}
         className={cn(
           "console-modal max-h-[calc(85vh-var(--overlay-top))] flex flex-col gap-0 p-0",
           widthClass,
+          confirmation && "top-1/2 -translate-y-1/2",
         )}
       >
         <DialogHeader className="gap-1 px-6 py-4">

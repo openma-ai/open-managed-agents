@@ -115,6 +115,8 @@ export interface ComboboxProps<T> {
   placeholder?: string;
   /** Hide the search input (still scrollable). Default false. */
   noSearch?: boolean;
+  searchPlaceholder?: string;
+  emptyText?: string;
   /** Item ids to filter out client-side (e.g. already-picked agents). */
   excludeIds?: string[];
   disabled?: boolean;
@@ -139,6 +141,8 @@ export function Combobox<T>({
   getTextLabel,
   placeholder = "Select...",
   noSearch = false,
+  searchPlaceholder = "Search...",
+  emptyText = "No results",
   excludeIds,
   disabled,
   className,
@@ -293,7 +297,7 @@ export function Combobox<T>({
             <CommandInput
               value={input}
               onValueChange={setInput}
-              placeholder="Search..."
+              placeholder={searchPlaceholder}
               autoFocus
             />
           )}
@@ -302,7 +306,7 @@ export function Combobox<T>({
               <CommandEmpty>
                 {debouncedInput
                   ? `No results for "${debouncedInput}"`
-                  : "No results"}
+                  : emptyText}
               </CommandEmpty>
             )}
             {visible.map((it) => {

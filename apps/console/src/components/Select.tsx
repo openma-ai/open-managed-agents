@@ -34,6 +34,7 @@ interface SelectProps {
   value: string;
   onValueChange: (value: string) => void;
   placeholder?: string;
+  position?: "popper" | "item-aligned";
   /** When true, renders disabled. */
   disabled?: boolean;
   /** Optional name; emitted as the underlying form input. */
@@ -51,6 +52,7 @@ export function Select({
   value,
   onValueChange,
   placeholder,
+  position,
   disabled,
   name,
   "aria-describedby": ariaDescribedBy,
@@ -76,7 +78,7 @@ export function Select({
       >
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
-      <ShadcnSelectContent>{children}</ShadcnSelectContent>
+      <ShadcnSelectContent position={position}>{children}</ShadcnSelectContent>
     </ShadcnSelect>
   );
 }

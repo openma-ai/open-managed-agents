@@ -117,7 +117,7 @@ export function SearchPicker({
   empty?: ReactNode;
   id?: string;
   /** `field` renders like a select trigger; `ghost` like an inline action. */
-  variant?: "field" | "ghost";
+  variant?: "field" | "ghost" | "filter";
   icon?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -127,23 +127,22 @@ export function SearchPicker({
         <Button
           id={id}
           type="button"
-          variant={variant === "field" ? "outline" : "ghost"}
+          variant={variant === "ghost" ? "ghost" : "outline"}
           className={cn(
             variant === "field" && "w-full justify-between font-normal",
             variant === "ghost" && "px-2",
+            variant === "filter" && "w-auto max-w-72 shrink-0 font-normal",
           )}
           aria-haspopup="dialog"
           aria-expanded={open}
         >
           {icon}
           <span className="truncate">{label}</span>
-          {variant === "field" && <ChevronDownIcon className="size-4 opacity-60" aria-hidden="true" />}
+          {variant !== "ghost" && <ChevronDownIcon className="size-4 opacity-60" aria-hidden="true" />}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={4} collisionPadding={8} className="w-80 p-0">
-        {options.length === 0 && empty ? (
-          <p className="px-3 py-3 text-sm text-fg-subtle">{empty}</p>
-        ) : (
+
           <FacetedFilter
             options={options}
             value={value}
@@ -151,9 +150,9 @@ export function SearchPicker({
               onValueChange(next);
               setOpen(false);
             }}
+            emptyText={empty}
             searchPlaceholder={searchPlaceholder}
           />
-        )}
       </PopoverContent>
     </Popover>
   );

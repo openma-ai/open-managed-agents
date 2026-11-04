@@ -2,6 +2,21 @@ import type { Messages } from "./types";
 
 export const en: Messages = {
   common: {
+    createdPresets: {
+      "any": "All time",
+      "today": "Today",
+      "last-hour": "Last hour",
+      "last-day": "Last 24 hours",
+      "last-7d": "Last 7 days",
+      "last-30d": "Last 30 days",
+      "custom": "Custom range",
+    },
+    from: "From",
+    to: "To",
+
+    selectAll: "Select all rows",
+    selectRow: "Select row",
+
     loading: "Loading…",
     cancel: "Cancel",
     create: "Create",
@@ -176,6 +191,21 @@ export const en: Messages = {
   },
 
   sessions: {
+    subtitle: "Trace and debug Open Managed Agents sessions.",
+    createSession: "Create session",
+    findSession: "Find session by ID",
+    deployment: "Deployment",
+    noDeployments: "No deployments yet.",
+    noActive: "No active sessions",
+    activeEmptyBody: "New sessions will appear here. Archived and terminated sessions are hidden from this view.",
+    showAll: "Show all sessions",
+    tokensInOut: "Tokens in / out",
+    costHint: "Cumulative cost priced at public list rates.",
+    idle: "Idle",
+    running: "Running",
+    rescheduling: "Rescheduling",
+    terminated: "Terminated",
+
     newSession: "+ New session",
     searchSessions: "Search sessions…",
     noMatchingSessions: "No matching sessions",
@@ -212,6 +242,13 @@ export const en: Messages = {
   },
 
   environments: {
+    subtitle: "Configuration template for containers, such as sessions or code execution.",
+    createEnvironment: "Create environment",
+    scope: "Scope",
+    updatedAt: "Updated at",
+    archivedAt: "Archived at",
+    type: "Type",
+
     newEnvironment: "+ New environment",
     searchEnvironments: "Search environments…",
     noMatchingEnvironments: "No matching environments",
@@ -280,12 +317,27 @@ export const en: Messages = {
   },
 
   deployments: {
+    newDeployment: "New deployment",
+    searchAgents: "Search agents by name or exact ID",
+    noAgents: "No agents yet.",
+    searchEnvironments: "Search environments by name or exact ID",
+    noEnvironments: "No environments yet.",
+    upload: "Upload",
+    fileId: "File ID",
+    dropFile: "Drop a file here",
+    chooseFile: "Choose a file",
+    uploading: "Uploading…",
+    uploadFailed: "Unable to upload file. Try again.",
+    cloud: "Cloud",
+    organization: "Organization",
+    account: "Account",
+
     invalidCron: "Invalid cron expression. Use five fields with valid ranges.",
     meridiem: "AM / PM",
     am: "AM",
     pm: "PM",
     repositoryMountPlaceholder: "/workspace/repo-name (default)",
-    fileMountPlaceholder: "/mnt/session/uploads/<file_id> (default)",
+    fileMountPlaceholder: "/uploads/myfile.txt",
     loadFailed: "Unable to load deployments. Try again.",
     retry: "Retry",
 
@@ -357,7 +409,7 @@ export const en: Messages = {
     cronHint: "minute hour day month weekday — * any, */5 every 5th, 1-5 range",
     nextRuns: "Next 5 runs",
     nextRunsHint:
-      "Runs start within a short window after the scheduled time to spread load. Times shown are targets, not exact start times.",
+      "Times shown are targets, not exact start times.",
     noUpcomingRuns: "This schedule has no upcoming runs.",
     resources: "Resources",
     resourcesHint: "Credentials and resources available to each run.",

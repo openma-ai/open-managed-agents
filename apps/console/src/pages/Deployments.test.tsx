@@ -9,6 +9,8 @@ import { I18nProvider } from "../i18n";
 import { server } from "../mocks/server";
 import { DeploymentDetail } from "./DeploymentDetail";
 import { DeploymentNew } from "./DeploymentNew";
+import { SessionsList } from "./SessionsList";
+import { EnvironmentsList } from "./EnvironmentsList";
 import { DeploymentsList } from "./DeploymentsList";
 
 vi.mock("../lib/auth", () => ({
@@ -65,6 +67,8 @@ function renderAt(path: string) {
       { path: "/deployments", element: <DeploymentsList /> },
       { path: "/deployments/new", element: <DeploymentNew /> },
       { path: "/deployments/:id", element: <DeploymentDetail /> },
+      { path: "/sessions", element: <SessionsList /> },
+      { path: "/environments", element: <EnvironmentsList /> },
       { path: "/sessions/:id", element: <p>Session page</p> },
     ],
     { initialEntries: [path] },
@@ -247,7 +251,6 @@ describe("DeploymentsList", () => {
   });
 });
 
-describe("DeploymentNew", () => {
   async function fillGeneral(user: ReturnType<typeof userEvent.setup>) {
     await user.type(screen.getByLabelText("Name"), "Nightly triage");
     await user.click(screen.getByRole("combobox", { name: "Agent" }));
@@ -256,6 +259,8 @@ describe("DeploymentNew", () => {
     await user.click(await screen.findByRole("option", { name: /prod/ }));
     await user.type(screen.getByLabelText("Initial message"), "Triage the inbox");
   }
+
+describe("DeploymentNew", () => {
 
   it("shows General, Trigger and Resources with Manual selected", async () => {
     renderAt("/deployments/new");
@@ -339,8 +344,8 @@ describe("DeploymentNew", () => {
     await fillGeneral(user);
     await user.click(screen.getByRole("button", { name: /Add resource/ }));
     await user.click(await screen.findByRole("menuitem", { name: "File" }));
-    await user.click(screen.getByRole("combobox", { name: "Select a file" }));
-    await user.click(await screen.findByRole("option", { name: /input.csv/ }));
+    await user.click(screen.getByRole("tab", { name: "File ID" }));
+    await user.type(screen.getByLabelText("File ID"), "file_1");
     await user.type(screen.getByLabelText(/Mount path/), "/workspace/input.csv");
     await user.click(screen.getByRole("button", { name: /Add resource/ }));
     await user.click(await screen.findByRole("menuitem", { name: "Memory store" }));
@@ -554,5 +559,105 @@ describe("DeploymentDetail", () => {
     );
     renderAt("/deployments/depl_gone");
     expect(await screen.findByText("Deployment not found.")).toBeInTheDocument();
+  });
+});
+
+
+describe("strict #448 acceptance", () => {
+  it("uploads a file inline as multipart and submits its returned ID", async () => {
+    const user = userEvent.setup();
+    let uploaded = "";
+    const append = vi.spyOn(FormData.prototype, "append");
+    let body: {resources?: unknown} = {};
+    server.use(
+      http.post("*/v1/files", async ({request}) => {
+        expect(request.headers.get("content-type")).toContain("multipart/form-data");
+        uploaded = await request.text();
+        return HttpResponse.json({id: "file_uploaded", filename: "brief.txt"});
+      }),
+      http.post("*/v1/deployments", async ({request}) => { body = await request.json() as typeof body; return HttpResponse.json(deployment()); }),
+      http.get("*/v1/deployments/depl_1", () => HttpResponse.json(deployment())),
+      http.get("*/v1/deployment_runs", () => page([])),
+    );
+    renderAt("/deployments/new");
+    await fillGeneral(user);
+    await user.click(screen.getByRole("button", {name: "Add resource"}));
+    await user.click(await screen.findByRole("menuitem", {name: "File"}));
+    expect(screen.getByText("Drop a file here")).toBeVisible();
+    await user.upload(screen.getByLabelText("Choose a file"), new File(["hello"], "brief.txt", {type: "text/plain"}));
+    await screen.findByText("brief.txt");
+    // jsdom File and Node fetch use different Blob realms. Assert the UI
+    // passes the original file; the capture script checks multipart bytes in Chromium.
+    expect(uploaded).toContain('name="file"');
+    expect(append).toHaveBeenCalledWith("file", expect.objectContaining({name: "brief.txt"}));
+    await user.click(screen.getByRole("button", {name: "Create deployment"}));
+    await waitFor(() => expect(body.resources).toEqual([{type: "file", file_id: "file_uploaded"}]));
+  });
+
+  it("keeps the file draft on upload failure and allows retry", async () => {
+    const user = userEvent.setup();
+    server.use(http.post("*/v1/files", () => HttpResponse.json({error: {message: "failed"}}, {status: 500})));
+    renderAt("/deployments/new");
+    await user.click(screen.getByRole("button", {name: "Add resource"}));
+    await user.click(await screen.findByRole("menuitem", {name: "File"}));
+    await user.upload(screen.getByLabelText("Choose a file"), new File(["hello"], "brief.txt"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unable to upload file. Try again.");
+    expect(screen.getByLabelText("Choose a file")).toBeEnabled();
+  });
+
+  it("preserves the search field and exact empty copy in empty pickers", async () => {
+    const user = userEvent.setup();
+    server.use(http.get("*/v1/agents", () => page([])), http.get("*/v1/vaults", () => page([])));
+    renderAt("/deployments/new");
+    await user.click(screen.getByLabelText("Agent"));
+    expect(await screen.findByText("No agents yet.")).toBeVisible();
+    expect(screen.getByPlaceholderText("Search agents by name or exact ID")).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", {name: "Add vault"}));
+    expect(await screen.findByText("None in this workspace yet.")).toBeVisible();
+    expect(screen.getByPlaceholderText("Search vaults by name or exact ID")).toBeVisible();
+  });
+
+  it("shows active Sessions empty copy, then includes archived sessions when showing all", async () => {
+    const user = userEvent.setup();
+    const queries: URLSearchParams[] = [];
+    server.use(http.get("*/v1/sessions", ({request}) => { queries.push(new URL(request.url).searchParams); return page([]); }), http.get("*/v1/deployments", () => page([])));
+    renderAt("/sessions");
+    expect(await screen.findByText("No active sessions")).toBeVisible();
+    expect(screen.getByText("New sessions will appear here. Archived and terminated sessions are hidden from this view.")).toBeVisible();
+    await user.click(screen.getByRole("button", {name: "Deployment All"}));
+    expect(await screen.findByText("No deployments yet.")).toBeVisible();
+    expect(screen.getByPlaceholderText("Search by name or exact ID")).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", {name: "Show all sessions"}));
+    await waitFor(() => expect(queries.some(q => q.get("include_archived") === "true")).toBe(true));
+  });
+
+  it("sends deployment_id through the existing Sessions endpoint", async () => {
+    const user = userEvent.setup();
+    const queries: URLSearchParams[] = [];
+    server.use(http.get("*/v1/sessions", ({request}) => { queries.push(new URL(request.url).searchParams); return page([]); }), http.get("*/v1/deployments", () => page([deployment()])));
+    renderAt("/sessions");
+    await screen.findByText("No active sessions");
+    await user.click(screen.getByRole("button", {name: "Deployment All"}));
+    await user.click(await screen.findByRole("option", {name: /Nightly triage/}));
+    await waitFor(() => expect(queries.some(q => q.get("deployment_id") === "depl_1")).toBe(true));
+  });
+
+  it("shows all Sessions skeleton columns while the list is pending", async () => {
+    server.use(http.get("*/v1/sessions", () => new Promise(() => {})), http.get("*/v1/deployments", () => page([])));
+    renderAt("/sessions");
+    for (const name of ["ID", "Name", "Status", "Agent", "Cost", "Tokens in / out", "Created by", "Created"]) {
+      expect(screen.getByRole("columnheader", {name})).toBeVisible();
+    }
+    expect(document.querySelectorAll(".console-data-row-skeleton")).toHaveLength(10);
+  });
+
+  it("renders Environment scope, updated and archived columns from the API", async () => {
+    server.use(http.get("*/v1/environments", () => page([{...environment, config: {type: "cloud"}, scope: "organization", updated_at: "2026-10-29T12:00:00Z", created_at: "2026-10-28T12:00:00Z", archived_at: null}])));
+    renderAt("/environments");
+    expect(await screen.findByRole("cell", {name: "Organization"})).toBeVisible();
+    for (const name of ["ID", "Name", "Type", "Scope", "Updated at", "Archived at"]) expect(screen.getByRole("columnheader", {name})).toBeVisible();
+    expect(screen.queryByRole("columnheader", {name: "Status"})).not.toBeInTheDocument();
   });
 });
