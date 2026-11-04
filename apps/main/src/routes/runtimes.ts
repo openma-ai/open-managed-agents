@@ -3,6 +3,7 @@
  *
  *   /v1/oma/runtimes/*               — browser, requires user auth (authMiddleware)
  *     POST /connect-runtime        → mint one-time `code` (5-min TTL, single-use)
+ *     POST /pairing-tokens         → mint headless `omrp_<code>_<state>` token + install command
  *     GET  /                       → list my registered runtimes
  *     DELETE /:id                  → revoke runtime + all its tokens
  *
@@ -26,10 +27,16 @@
 
 import { Hono } from "hono";
 import type { Env, AgentConfig } from "@open-managed-agents/shared";
-import { skillFileR2Key } from "@open-managed-agents/shared";
+import {
+  formatRuntimePairingToken,
+  skillFileR2Key,
+  type RuntimePairingTokenResponse,
+} from "@open-managed-agents/shared";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/known-agents";
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
+import { SqlSessionEnvironmentSource } from "@open-managed-agents/managed-agents-adapters-sql";
+import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 
 /** Browser-facing routes — mounted under /v1/oma/runtimes. */
 export const runtimesRoutes = new Hono<{
@@ -40,7 +47,7 @@ export const runtimesRoutes = new Hono<{
 /** Daemon-facing routes — mounted under /agents/runtime. NO authMiddleware. */
 export const runtimeDaemonRoutes = new Hono<{
   Bindings: Env;
-  Variables: { services: Services };
+  Variables: { services: Services; tenantDb?: D1Database };
 }>();
 
 const CODE_TTL_SECONDS = 5 * 60;
@@ -102,6 +109,52 @@ runtimesRoutes.post("/connect-runtime", async (c) => {
     .run();
 
   return c.json({ code, expires_at: expiresAt });
+});
+
+const PAIRING_TTL_DEFAULT_SECONDS = 60 * 60;
+const PAIRING_TTL_MIN_SECONDS = CODE_TTL_SECONDS;
+const PAIRING_TTL_MAX_SECONDS = 24 * 60 * 60;
+
+// POST /v1/oma/runtimes/pairing-tokens — headless pairing. Same row as the
+// browser flow (`connect_runtime_codes`), but the server also picks the
+// `state` and returns both as one `omrp_<code>_<state>` token the user
+// pastes into `oma bridge setup --token`. Exchange is the unchanged
+// /agents/runtime/exchange, so single-use + expiry semantics are shared.
+runtimesRoutes.post("/pairing-tokens", async (c) => {
+  const userId = c.get("user_id");
+  const tenantId = c.get("tenant_id");
+  if (!userId || !tenantId) return c.json({ error: "unauthorized" }, 401);
+
+  const body = (await c.req.json().catch(() => ({}))) as { ttl_seconds?: unknown };
+  const ttl = body.ttl_seconds ?? PAIRING_TTL_DEFAULT_SECONDS;
+  if (
+    typeof ttl !== "number" || !Number.isInteger(ttl) ||
+    ttl < PAIRING_TTL_MIN_SECONDS || ttl > PAIRING_TTL_MAX_SECONDS
+  ) {
+    return c.json(
+      { error: `ttl_seconds must be an integer between ${PAIRING_TTL_MIN_SECONDS} and ${PAIRING_TTL_MAX_SECONDS}` },
+      400,
+    );
+  }
+
+  const code = generateCode();
+  const state = generateCode();
+  const expiresAt = Math.floor(Date.now() / 1000) + ttl;
+  await c.env.MAIN_DB
+    .prepare(
+      `INSERT INTO "connect_runtime_codes" (code, user_id, tenant_id, state, expires_at) VALUES (?, ?, ?, ?, ?)`,
+    )
+    .bind(code, userId, tenantId, state, expiresAt)
+    .run();
+
+  const pairingToken = formatRuntimePairingToken({ code, state });
+  const serverUrl = new URL(c.req.url).origin;
+  const response: RuntimePairingTokenResponse = {
+    pairing_token: pairingToken,
+    expires_at: expiresAt,
+    install_command: `npx -y @openma/cli bridge setup --server-url=${serverUrl} --token=${pairingToken}`,
+  };
+  return c.json(response, 201);
 });
 
 // GET /v1/oma/runtimes — list user's runtimes.
@@ -701,7 +754,17 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   // skipped so the child doesn't see odd "X=" entries.
   const services2 = c.get("services");
   const sessionResources = await services2.sessions.listResourcesBySession({ sessionId: sid });
-  const env: Array<{ name: string; value: string }> = [];
+  // Environment overlay first (Amp `--amp-env` style): an Environment
+  // attached to THIS runtime contributes its `_oma.runtime.env` to the
+  // host runner. Per-session env resources below override it by name.
+  const environmentEnv = await runtimeEnvironmentOverlay(
+    c.var.tenantDb ?? c.env.MAIN_DB,
+    ok.tenant_id,
+    (session as { environment_id?: string | null }).environment_id ?? null,
+    ok.runtime_id,
+  );
+  const env: Array<{ name: string; value: string }> = Object.entries(environmentEnv)
+    .map(([name, value]) => ({ name, value }));
   for (const row of sessionResources) {
     const r = row.resource as { type?: string; name?: string };
     if ((r.type === "env" || r.type === "env_secret") && r.name) {
@@ -710,12 +773,38 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
         sessionId: sid,
         resourceId: row.id,
       });
-      if (value) env.push({ name: r.name, value });
+      if (!value) continue;
+      const existing = env.findIndex((e) => e.name === r.name);
+      if (existing >= 0) env.splice(existing, 1);
+      env.push({ name: r.name, value });
     }
   }
 
   return c.json({ files, local_skill_blocklist, mcp_servers, env });
 });
+
+/**
+ * `_oma.runtime.env` of the session's Environment, but only when that
+ * Environment is attached to the runtime asking. A daemon never receives
+ * another runtime's overlay, and a missing/archived Environment or a
+ * lookup failure degrades to "no overlay" rather than failing the spawn.
+ */
+export async function runtimeEnvironmentOverlay(
+  db: D1Database,
+  tenantId: string,
+  environmentId: string | null,
+  runtimeId: string,
+): Promise<Record<string, string>> {
+  if (!environmentId) return {};
+  try {
+    const environment = await new SqlSessionEnvironmentSource(new CfD1SqlClient(db))
+      .find({ workspaceId: tenantId, environmentId });
+    const attachment = environment?.archivedAt === null ? environment.openma?.runtime : undefined;
+    return attachment?.runtimeId === runtimeId ? { ...attachment.env } : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Render the spawn-cwd file bundle for a given (OMA agent config, ACP agent).

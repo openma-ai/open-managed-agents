@@ -1099,3 +1099,118 @@ describe("GET /v1/oma/runtimes — workspace API key", () => {
     expect(ids).not.toContain(ridB);
   });
 });
+
+describe("Runtime pairing tokens + Environment env overlay", () => {
+  beforeAll(async () => {
+    await api("/health").catch(() => {});
+  });
+
+  async function seedUserWithKey(): Promise<{ tenantId: string; userId: string; key: string }> {
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const tenantId = `tn_pair_${suffix}`;
+    const userId = `u_pair_${suffix}`;
+    const now = Math.floor(Date.now() / 1000);
+    await env.AUTH_DB
+      .prepare(`INSERT OR IGNORE INTO "tenant" (id, name, createdAt, updatedAt) VALUES (?, ?, ?, ?)`)
+      .bind(tenantId, tenantId, now * 1000, now * 1000)
+      .run();
+    await env.AUTH_DB
+      .prepare(
+        `INSERT OR REPLACE INTO "user" (id, name, email, emailVerified, tenantId, role, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(userId, "Pair User", `${userId}@test.local`, 1, tenantId, "owner", now * 1000, now * 1000)
+      .run();
+    await env.AUTH_DB
+      .prepare(`INSERT OR REPLACE INTO "membership" (user_id, tenant_id, role, created_at) VALUES (?, ?, ?, ?)`)
+      .bind(userId, tenantId, "owner", now)
+      .run();
+    const key = `oma_pair_${Math.random().toString(36).slice(2)}`;
+    await env.CONFIG_KV.put(
+      `apikey:${await sha256Hex(key)}`,
+      JSON.stringify({
+        id: `ak_${suffix}`,
+        tenant_id: tenantId,
+        user_id: userId,
+        name: "pair key",
+        created_at: new Date().toISOString(),
+        credential: { type: "workspace" },
+      }),
+    );
+    return { tenantId, userId, key };
+  }
+
+  function mint(key: string, body: unknown = {}) {
+    return api("/v1/oma/runtimes/pairing-tokens", {
+      method: "POST",
+      headers: { "x-api-key": key, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("mints a single-use token that the unchanged /exchange accepts once", async () => {
+    const { parseRuntimePairingToken } = await import("@open-managed-agents/api-types");
+    const { key, tenantId } = await seedUserWithKey();
+
+    const res = await mint(key, { ttl_seconds: 600 });
+    expect(res.status).toBe(201);
+    const minted = await res.json();
+    expect(minted.pairing_token).toMatch(/^omrp_[0-9a-f]+_[0-9a-f]+$/);
+    expect(minted.install_command).toContain(`--token=${minted.pairing_token}`);
+    expect(minted.expires_at - Math.floor(Date.now() / 1000)).toBeGreaterThan(590);
+
+    const parts = parseRuntimePairingToken(minted.pairing_token);
+    expect(parts).not.toBeNull();
+    const exchange = (machine: string) => api("/agents/runtime/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...parts, machine_id: machine, hostname: "headless", os: "linux", version: "0.0.1-test", multi_tenant: true,
+      }),
+    });
+    const first = await exchange(`m_${tenantId}`);
+    expect(first.status).toBe(200);
+    const body = await first.json();
+    expect(body.token).toMatch(/^sk_machine_/);
+    expect(body.tenants.map((t: { id: string }) => t.id)).toEqual([tenantId]);
+
+    const replay = await exchange(`m2_${tenantId}`);
+    expect(replay.status).toBe(400);
+    expect((await replay.json()).error).toMatchObject({ message: "code already used" });
+  });
+
+  it("rejects out-of-range ttl and unauthenticated callers", async () => {
+    const { key } = await seedUserWithKey();
+    for (const ttl_seconds of [10, 7 * 24 * 3600, 1.5, "3600"]) {
+      expect((await mint(key, { ttl_seconds })).status).toBe(400);
+    }
+    const anon = await api("/v1/oma/runtimes/pairing-tokens", { method: "POST" });
+    expect(anon.status).toBe(401);
+  });
+
+  it("serves an Environment overlay only to the runtime it is attached to", async () => {
+    const { runtimeEnvironmentOverlay } = await import("../../apps/main/src/routes/runtimes");
+    const workspaceId = `tn_ovl_${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
+    const put = async (id: string, document: object, archivedAt: number | null = null) => {
+      await env.MAIN_DB
+        .prepare(
+          `INSERT INTO managed_environments (workspace_id, id, document, revision, created_at, updated_at, archived_at)
+           VALUES (?, ?, ?, 1, ?, ?, ?)`,
+        )
+        .bind(workspaceId, id, JSON.stringify(document), now, now, archivedAt)
+        .run();
+    };
+    const base = { config: { type: "self_hosted" }, metadata: {}, name: "laptop", description: null };
+    await put("env_attached", { ...base, id: "env_attached", openma: { runtime: { runtimeId: "rt_a", env: { FOO: "bar" } } } });
+    await put("env_archived", { ...base, id: "env_archived", openma: { runtime: { runtimeId: "rt_a", env: { FOO: "x" } } } }, now);
+    await put("env_plain", { ...base, id: "env_plain" });
+
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_attached", "rt_a")).resolves.toEqual({ FOO: "bar" });
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_attached", "rt_b")).resolves.toEqual({});
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, "tn_other", "env_attached", "rt_a")).resolves.toEqual({});
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_archived", "rt_a")).resolves.toEqual({});
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_plain", "rt_a")).resolves.toEqual({});
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, null, "rt_a")).resolves.toEqual({});
+  });
+});
