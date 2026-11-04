@@ -22,6 +22,10 @@ export interface Props {
   keywords?: string;
   /** Visible breadcrumb trail + BreadcrumbList JSON-LD. Last item is this page. */
   breadcrumbs?: Array<{ name: string; path: string }>;
+  /** BCP 47 language of this page. Default "en". */
+  lang?: string;
+  /** hreflang alternates (including this page). Emitted only when >1. */
+  alternates?: Array<{ hreflang: string; path: string }>;
 }
 
 const {
@@ -35,6 +39,8 @@ const {
   schemas = [],
   keywords,
   breadcrumbs,
+  lang = "en",
+  alternates = [],
 } = Astro.props;
 
 const SITE = "https://openma.ai";
@@ -55,7 +61,7 @@ const finalOgImage = ogImage ?? `${SITE}/og-default.png`;
 const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
 ---
 <!DOCTYPE html>
-<html lang="en">
+<html lang={lang}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -63,6 +69,12 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     <meta name="description" content={desc} />
     {keywords && <meta name="keywords" content={keywords} />}
     <link rel="canonical" href={url} />
+    {alternates.length > 1 && alternates.map((a) => (
+      <link rel="alternate" hreflang={a.hreflang} href={`${SITE}${a.path}`} />
+    ))}
+    {alternates.length > 1 && (
+      <link rel="alternate" hreflang="x-default" href={`${SITE}${(alternates.find((a) => a.hreflang === "en") ?? alternates[0]).path}`} />
+    )}
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
 
     <!-- Color scheme — let browsers pick chrome that matches our theme. -->
@@ -102,7 +114,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     <meta property="og:url" content={url} />
     <meta property="og:type" content={ogType} />
     <meta property="og:site_name" content="Open Managed Agents" />
-    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale" content={lang.startsWith("zh") ? "zh_CN" : "en_US"} />
     <meta property="og:image" content={finalOgImage} />
     <meta property="og:image:type" content="image/png" />
     <meta property="og:image:width" content="1200" />

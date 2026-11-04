@@ -100,6 +100,10 @@ export function softwareApplicationSchema() {
 }
 
 export interface BlogPostSchemaInput {
+  /** Path override (e.g. /zh/blog/<slug>/). Defaults to /blog/<slug>/. */
+  path?: string;
+  /** BCP 47 language tag for inLanguage. */
+  inLanguage?: string;
   title: string;
   description: string;
   slug: string;
@@ -112,7 +116,7 @@ export interface BlogPostSchemaInput {
 }
 
 export function blogPostSchema(p: BlogPostSchemaInput) {
-  const url = `${SITE_URL}/blog/${p.slug}/`;
+  const url = `${SITE_URL}${p.path ?? `/blog/${p.slug}/`}`;
   return {
     "@context": "https://schema.org",
     "@type": "BlogPosting",
@@ -134,6 +138,7 @@ export function blogPostSchema(p: BlogPostSchemaInput) {
     mainEntityOfPage: { "@type": "WebPage", "@id": url },
     url,
     keywords: p.tags.join(", "),
+    ...(p.inLanguage ? { inLanguage: p.inLanguage } : {}),
   };
 }
 

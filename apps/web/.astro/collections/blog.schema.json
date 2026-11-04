@@ -48,12 +48,39 @@
           "type": "string",
           "default": "openma"
         },
+        "lang": {
+          "type": "string",
+          "enum": [
+            "en",
+            "zh"
+          ],
+          "default": "en"
+        },
         "tags": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": []
+        },
+        "faq": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string"
+              },
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "question",
+              "answer"
+            ],
+            "additionalProperties": false
+          }
         },
         "draft": {
           "type": "boolean",
