@@ -15,9 +15,16 @@
  *   the new CHANGELOG entry covers every such pull request since the previous
  *   tag, the heading matches the version, and `.changeset/pre.json` agrees
  *   with the npm dist-tag changesets will publish (`latest`, or the pre tag).
+ * - Fail when the version already has a tag at a commit that is not part of
+ *   HEAD's history. A tag at HEAD, or at an ancestor of HEAD, is accepted:
+ *   GitHub checks out `pull/<n>/merge`, so a post-publish sync pull request
+ *   runs against an ephemeral merge commit whose history contains the release
+ *   tip the tag points at.
  *
  * `node scripts/release-check.mjs --publish` is the same coverage check at
  * publish time (version ahead of the previous tag). It does not read labels.
+ * The publish path keeps the stricter rule: the tag it publishes must point at
+ * the exact commit that is published.
  *
  * `node scripts/release-check.mjs --audit` reports historical tags. It always
  * exits 0. `--registry` also compares npm dist-tags.
@@ -694,6 +701,31 @@ export function auditRepository(cwd) {
   };
 }
 
+/**
+ * The `@openma/<pkg>@<version>` tag this release would publish may already
+ * exist:
+ *
+ * - No tag: the tag name is free.
+ * - At HEAD: the release is already tagged at this commit.
+ * - At an ancestor of HEAD: the release was tagged at an earlier commit that
+ *   HEAD contains. GitHub checks out `pull/<n>/merge` for pull requests, so
+ *   HEAD is an ephemeral merge commit whose history holds the release tip the
+ *   tag points at. Post-publish sync pull requests look exactly like this.
+ * - Anywhere else: the tag points at a history HEAD does not contain. That is a
+ *   conflicting retag and must fail.
+ *
+ * `allowAncestor` is off for the publish path: there the tag has to point at
+ * the exact commit that gets published.
+ *
+ * @returns {string|null} error message, or null when the tag is acceptable
+ */
+function plannedTagConflict(cwd, planned, headSha, { allowAncestor = false } = {}) {
+  const existing = gitOk(cwd, ["rev-parse", `${planned}^{commit}`]);
+  if (!existing || existing === headSha) return null;
+  if (allowAncestor && execStatus(cwd, ["merge-base", "--is-ancestor", existing, headSha]) === 0) return null;
+  return `${planned} already points at ${existing.slice(0, 7)}, not ${headSha.slice(0, 7)}`;
+}
+
 function checkPullRequest(cwd, env) {
   const base = resolveBase(cwd, env);
   const packages = loadPublishedPackages(cwd);
@@ -748,10 +780,8 @@ function checkPullRequest(cwd, env) {
       errors.push(...evaluatePackageRelease(cwd, pkg, null, "HEAD", headVersion));
     }
     const planned = `${pkg.name}@${headVersion}`;
-    const existing = gitOk(cwd, ["rev-parse", `${planned}^{commit}`]);
-    if (existing && existing !== headSha) {
-      errors.push(`${planned} already points at ${existing.slice(0, 7)}, not ${headSha.slice(0, 7)}`);
-    }
+    const conflict = plannedTagConflict(cwd, planned, headSha, { allowAncestor: true });
+    if (conflict) errors.push(conflict);
   }
   if (errors.length > 0) fail("release check failed", errors);
   else console.log("release check passed.");
@@ -779,10 +809,10 @@ function checkPublish(cwd, env) {
     console.log(`Publishing ${pkg.name}@${headVersion} (previous tag ${previous?.tag ?? "(none)"}).`);
     errors.push(...evaluatePackageRelease(cwd, pkg, previous?.sha ?? null, "HEAD", headVersion));
     const planned = `${pkg.name}@${headVersion}`;
-    const existing = gitOk(cwd, ["rev-parse", `${planned}^{commit}`]);
-    if (existing && existing !== headSha) {
-      errors.push(`${planned} already points at ${existing.slice(0, 7)}, not ${headSha.slice(0, 7)}`);
-    }
+    // The publish path stays strict: the tag must point at the commit that is
+    // published, not merely at one of its ancestors.
+    const conflict = plannedTagConflict(cwd, planned, headSha);
+    if (conflict) errors.push(conflict);
   }
   if (env.GITHUB_REF?.startsWith("refs/tags/")) {
     const tag = env.GITHUB_REF.slice("refs/tags/".length);
