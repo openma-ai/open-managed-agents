@@ -1,5 +1,11 @@
 # @openma/sdk
 
+## 1.1.2
+
+### Patch Changes
+
+- 4fa0828: Bump @anthropic-ai/sdk from 0.120.0 to 1.3.0 and adapt types for the 1.x / API 2026-10-21 breaking changes (including CLI skills list display_name / source.type).
+
 ## 1.1.1
 
 ### Patch Changes
