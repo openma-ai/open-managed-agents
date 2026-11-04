@@ -11,6 +11,9 @@ Related: [ADR 0005](../adr/0005-self-hosted-worker-runtime-resources.md), [v1-ar
 1. One machine is one **Runtime**. A Runtime is a peer API resource to Environment (`/v1/oma/runtimes`) and is never nested under it.
 2. A **Runtime** pairs the whole machine once (identity and connection), owned by one user (`owner_user_id`). It reports Git, Docker, supported sandbox modes and available resources. An **Environment** binds a Runtime and chooses placement and directories; a **Session** runs within it, and the daemon re-validates locally. Cloud-provisioned Environments remain available separately.
 3. An Amp `--amp-env`-style **env + secrets overlay**, configured in the Console, is injected into the host runner (its shell, MCP servers and plugins).
+4. **Converge Runtime ACP install root** on Backchat's layout: `~/.oma/acp/registry/…`. Do not keep a separate Martty install-root layout.
+5. **Skills: one copy in the unified cache**; sessions soft-link into that cache (not skillId@version-only mounts as the sole storage).
+6. **Skill update strategy matches cloud / CMA:** Agent binds `{ skill_id, type, version? }` with omitted version → `"latest"`; materialize resolves `latest` to a concrete Skill Version into the unified cache; session soft-links point at that concrete content. Updating a skill creates a new Version and moves `latestVersion`; **running Sessions do not hot-swap** — they keep the Agent snapshot from create time. Pinned versions stay pinned; `latest` picks up new content only on a new Session (or an explicit rebinding). No local-only auto-refresh / background re-link.
 
 ---
 
