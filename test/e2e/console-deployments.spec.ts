@@ -30,6 +30,7 @@ import {
 const backendURL = (process.env.OMA_E2E_LOCAL_API_URL ?? "http://localhost:8787").replace(/\/$/, "");
 const apiKey = process.env.OMA_E2E_LOCAL_API_KEY ?? "dev-test-key-change-me";
 const model = process.env.OMA_E2E_MODEL ?? "claude-sonnet-4-6";
+const requireBackend = process.env.OMA_E2E_REQUIRE_BACKEND === "1" || process.env.CI === "true";
 
 test.describe("Console Deployments (local backend)", () => {
   test.skip(Boolean(process.env.OMA_E2E_BASE_URL), "Local suite; deployed runs use deployed-console-deployments.spec.ts");
@@ -40,8 +41,16 @@ test.describe("Console Deployments (local backend)", () => {
     const probe = await fetch(`${backendURL}/v1/deployments?limit=1`, { headers: { "x-api-key": apiKey } })
       .then((response) => response.status)
       .catch(() => 0);
-    test.skip(probe === 0, `Local backend is not reachable at ${backendURL}`);
-    test.skip(probe === 401, "Local backend rejects OMA_E2E_LOCAL_API_KEY (set API_KEY for wrangler dev)");
+    if (probe === 0) {
+      const message = `Local backend is not reachable at ${backendURL}`;
+      if (requireBackend) throw new Error(message);
+      test.skip(true, message);
+    }
+    if (probe === 401) {
+      const message = "Local backend rejects OMA_E2E_LOCAL_API_KEY (set API_KEY for the backend)";
+      if (requireBackend) throw new Error(message);
+      test.skip(true, message);
+    }
 
     await authenticateConsoleWithApiKey(page, apiKey);
     await runDeploymentsFlow({ page, api: apiKeyClient(backendURL, apiKey), origin: "", model });

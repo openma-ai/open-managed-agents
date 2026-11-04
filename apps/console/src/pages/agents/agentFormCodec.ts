@@ -202,6 +202,9 @@ const RESPONSE_ONLY_KEYS = new Set([
   "created_at",
   "updated_at",
   "archived_at",
+  // Server-owned identity projection (SDK 1.3+). Echoing it into
+  // agents.update fails the strict update body schema.
+  "execution_identity",
 ]);
 
 /** Advanced harness ids (`_oma.harness`). Pi is the platform default; `ai-sdk` is deprecated. */

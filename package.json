@@ -86,6 +86,7 @@
     "test:e2e:external-worker-conformance": "tsx scripts/environment-worker-conformance.ts",
     "test:provider-chaos": "node --test apps/main-node/test/provider-chaos-cluster.test.mjs",
     "test:e2e:release": "bash test/e2e/release-gate.sh",
+    "test:e2e:console": "playwright test test/e2e/console.spec.ts test/e2e/console-deployments.spec.ts --config=playwright.config.ts",
     "test:e2e:deployed-console": "playwright test test/e2e/deployed-console.spec.ts test/e2e/deployed-console-deployments.spec.ts --config=playwright.config.ts",
     "test:coverage:protocol": "vitest run --config vitest.protocol.config.ts --coverage",
     "test:coverage:pi": "vitest run --config vitest.pi.config.ts --coverage",

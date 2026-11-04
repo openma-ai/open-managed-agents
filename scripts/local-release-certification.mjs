@@ -180,6 +180,7 @@ export async function runLocalReleaseCertification(options = {}) {
       OMA_E2E_BASE_URL: baseUrl,
       OMA_E2E_API_KEY: API_KEY,
       OMA_E2E_AUTH_DISABLED: "1",
+      OMA_E2E_REQUIRE_BACKEND: "1",
       OMA_E2E_RUN_TURN: "1",
       OMA_E2E_MOCK_MODEL_BASE_URL: llm.baseUrl,
       OMA_E2E_INPUT_MODEL_BASE_URL: inputLlm.baseUrl,
@@ -239,9 +240,19 @@ export async function runLocalReleaseCertification(options = {}) {
     if (selectedSteps.has("console-browser")) {
       await runStep(report, "console-browser", () => runCommand(
         "pnpm",
-        ["exec", "playwright", "test", "test/e2e/deployed-console.spec.ts", "test/e2e/deployed-console-deployments.spec.ts", "--config=playwright.config.ts"],
+        [
+          "exec", "playwright", "test",
+          // CI narrows this to the changed Console domains (ci-console-e2e-scope.mjs).
+          ...(process.env.OMA_E2E_CONSOLE_CERT_SPECS?.trim()
+            ? process.env.OMA_E2E_CONSOLE_CERT_SPECS.trim().split(/\s+/)
+            : ["test/e2e/deployed-console.spec.ts", "test/e2e/deployed-console-deployments.spec.ts"]),
+          "--config=playwright.config.ts",
+        ],
         { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
-      ));
+      ).catch((error) => {
+        // Include the backend tail so a CI failure is diagnosable.
+        throw new Error(`${error.message}\n--- main-node tail ---\n${runtime?.diagnostics() ?? ""}`, { cause: error });
+      }));
     } else markStepSkipped(report, "console-browser");
     report.ok = true;
   } catch (error) {

@@ -14,12 +14,19 @@ const deployedBaseURL = process.env.OMA_E2E_BASE_URL?.replace(/\/$/, "");
 const apiKey = process.env.OMA_E2E_API_KEY;
 const model = process.env.OMA_E2E_MODEL ?? "claude-sonnet-4-6";
 const mockModelBaseURL = process.env.OMA_E2E_MOCK_MODEL_BASE_URL?.replace(/\/$/, "");
+const requireBackend = process.env.OMA_E2E_REQUIRE_BACKEND === "1" || process.env.CI === "true";
+
+function requireEnv(ok: boolean, message: string) {
+  if (ok) return;
+  if (requireBackend) throw new Error(message);
+  test.skip(true, message);
+}
 
 test.describe("deployed Console Deployments", () => {
-  test.skip(!deployedBaseURL, "OMA_E2E_BASE_URL is required for deployed smoke");
+  requireEnv(Boolean(deployedBaseURL), "OMA_E2E_BASE_URL is required for deployed smoke");
 
   test("lists, creates, opens, runs, pauses and archives a Deployment", async ({ page }) => {
-    test.skip(!apiKey, "OMA_E2E_API_KEY is required");
+    requireEnv(Boolean(apiKey), "OMA_E2E_API_KEY is required");
     test.setTimeout(120_000);
 
     const api = apiKeyClient(deployedBaseURL!, apiKey!);

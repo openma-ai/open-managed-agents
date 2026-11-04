@@ -28,6 +28,11 @@ jobs:
       cf: ${{ steps.classify.outputs.cf }}
       node: ${{ steps.classify.outputs.node }}
       meta_only: ${{ steps.classify.outputs.meta_only }}
+      console_e2e: ${{ steps.console_scope.outputs.console_e2e }}
+      console_domains: ${{ steps.console_scope.outputs.console_domains }}
+      console_local_specs: ${{ steps.console_scope.outputs.console_local_specs }}
+      console_cert_specs: ${{ steps.console_scope.outputs.console_cert_specs }}
+      domain_test_commands: ${{ steps.console_scope.outputs.domain_test_commands }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -76,6 +81,17 @@ jobs:
           set -euo pipefail
           node --test scripts/ci-impact-surfaces.test.mjs
           node scripts/ci-impact-surfaces.mjs --write-github-output < /tmp/ci-changed-files.txt
+
+      # Console browser E2E is scoped by domain: the changed domain's Console
+      # specs and suites for the changed layer plus its adjacent layers
+      # (frontend<->backend<->storage/cli/sdk) within the same domain.
+      - name: Select Console E2E domains
+        id: console_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/ci-console-e2e-scope.test.mjs
+          node scripts/ci-console-e2e-scope.mjs --write-github-output < /tmp/ci-changed-files.txt
 
   docs:
     needs: changes
@@ -248,6 +264,47 @@ jobs:
       # Script: .github/actions/enable-kvm (also used by release.yml).
       - name: Enable KVM for Litebox
         uses: ./.github/actions/enable-kvm
+
+      # ── Console browser E2E (domain-scoped; mock LLM only) ──────────────
+      # Never calls a real model provider: local specs need no model, and the
+      # certification lane points agents at the in-process mock LLM server.
+      # Throwaway API_KEY / PLATFORM_ROOT_SECRET are generated per run.
+      - name: Domain-scoped tests (changed layer + one surrounding layer)
+        if: needs.changes.outputs.domain_test_commands != ''
+        timeout-minutes: 15
+        env:
+          DOMAIN_TEST_COMMANDS: ${{ needs.changes.outputs.domain_test_commands }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r cmd; do
+            [[ -z "$cmd" ]] && continue
+            echo "::group::$cmd"
+            bash -c "$cmd"
+            echo "::endgroup::"
+          done <<< "$DOMAIN_TEST_COMMANDS"
+
+      - name: Console local E2E (main-node)
+        if: needs.changes.outputs.console_e2e == 'true' && needs.changes.outputs.console_local_specs != ''
+        timeout-minutes: 15
+        env:
+          OMA_E2E_REQUIRE_BACKEND: "1"
+          OMA_E2E_STATE_DIR: ${{ runner.temp }}/oma-console-e2e
+        run: |
+          set -euo pipefail
+          test/e2e/start-local-backend.sh
+          export OMA_E2E_LOCAL_API_KEY="$(cat "$OMA_E2E_STATE_DIR/api-key")"
+          trap 'kill "$(cat "$OMA_E2E_STATE_DIR/main-node.pid")" 2>/dev/null || true' EXIT
+          pnpm exec playwright test ${{ needs.changes.outputs.console_local_specs }} \
+            --config=playwright.config.ts --workers=1
+
+      - name: Console certification browser E2E
+        if: needs.changes.outputs.console_e2e == 'true' && needs.changes.outputs.console_cert_specs != ''
+        timeout-minutes: 15
+        env:
+          OMA_LOCAL_RELEASE_ONLY: console-browser
+          OMA_E2E_REQUIRE_BACKEND: "1"
+          OMA_E2E_CONSOLE_CERT_SPECS: ${{ needs.changes.outputs.console_cert_specs }}
+        run: node scripts/local-release-certification.mjs
 
       - name: MySQL integration tests
         run: pnpm test:integration:mysql

@@ -72,6 +72,21 @@ describe("agentFormCodec lossless update", () => {
     expect(parseAgentConfigText('{"name":"Coder"}', "json")).toEqual({ name: "Coder" });
   });
 
+  it("strips response-only execution_identity from update payloads", () => {
+    const agent = {
+      ...sampleAgent(),
+      execution_identity: { type: "service_account" },
+    } as AgentRecord;
+    const form = agentToForm(agent);
+    form.description = "Edited through the Console";
+    const payload = mergeFormIntoConfig(form, agentToPreservedConfig(agent), {
+      forUpdate: true,
+    });
+    expect(payload.description).toBe("Edited through the Console");
+    expect(payload).not.toHaveProperty("execution_identity");
+    expect(agentToPreservedConfig(agent)).not.toHaveProperty("execution_identity");
+  });
+
   it("preserves model.speed on a name-only edit", () => {
     const agent = sampleAgent();
     const form = agentToForm(agent);
