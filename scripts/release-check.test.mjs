@@ -275,6 +275,39 @@ test("--publish checks changelog coverage and dist-tag intent without labels", (
   assert.match(drifted.stderr, /not in pre mode/);
 });
 
+test("a pull request passes when the planned tag already points at HEAD", () => {
+  const cwd = releaseRepo({ changelogBody: "Shipped (#2).\n", consume: true });
+  git(cwd, ["tag", "@openma/cli@0.1.1"]);
+  const result = run(cwd, { GITHUB_EVENT_NAME: "pull_request" });
+  assert.equal(result.code, 0, result.stderr + result.stdout);
+  assert.doesNotMatch(result.stderr, /already points at/);
+});
+
+test("a sync pull request passes when the planned tag is an ancestor of the merge commit", () => {
+  const cwd = releaseRepo({ changelogBody: "Shipped (#2).\n", consume: true });
+  git(cwd, ["tag", "@openma/cli@0.1.1"]);
+  mergePullRequestRef(cwd);
+  const result = run(cwd, { GITHUB_EVENT_NAME: "pull_request" });
+  assert.equal(result.code, 0, result.stderr + result.stdout);
+  assert.doesNotMatch(result.stderr, /already points at/);
+});
+
+test("a pull request fails when the planned tag points at an unrelated commit", () => {
+  const cwd = releaseRepo({ changelogBody: "Shipped (#2).\n", consume: true });
+  tagUnrelatedCommit(cwd);
+  const result = run(cwd, { GITHUB_EVENT_NAME: "pull_request" });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /@openma\/cli@0\.1\.1 already points at/);
+});
+
+test("--publish keeps failing when the tag to publish points at another commit", () => {
+  const cwd = releaseRepo({ changelogBody: "Shipped (#2).\n", consume: true });
+  tagUnrelatedCommit(cwd);
+  const result = run(cwd, {}, ["--publish"]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /@openma\/cli@0\.1\.1 already points at/);
+});
+
 function run(cwd, extra, args = []) {
   const env = { ...process.env };
   for (const key of ["GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_REF_NAME", "GITHUB_BASE_REF", "BASE_REF", "RELEASE_LABELS", "PR_LABELS", "GITHUB_ACTIONS"]) {
@@ -348,6 +381,24 @@ function featureBranch(cwd) {
 
 function checkout(cwd, branch) {
   git(cwd, ["checkout", "-b", branch]);
+}
+
+// GitHub checks out `pull/<n>/merge` for pull requests: a detached merge commit
+// of the pull request head into the base branch. The base branch ref itself
+// stays where it was, so the tagged release tip is only an ancestor of HEAD.
+function mergePullRequestRef(cwd) {
+  git(cwd, ["checkout", "--detach", "main"]);
+  git(cwd, ["merge", "--no-ff", "-m", "Merge release into main", "release"]);
+}
+
+// Tags the planned version on a commit outside the release history: a
+// conflicting retag that the release check has to reject.
+function tagUnrelatedCommit(cwd) {
+  git(cwd, ["checkout", "-b", "foreign", "main"]);
+  writeFileSync(path.join(cwd, "packages/cli/README.md"), "foreign history\n");
+  commit(cwd, "chore: unrelated history");
+  git(cwd, ["tag", "@openma/cli@0.1.1"]);
+  git(cwd, ["checkout", "release"]);
 }
 
 function commit(cwd, message) {
