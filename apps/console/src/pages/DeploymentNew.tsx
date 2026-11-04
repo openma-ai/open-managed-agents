@@ -332,7 +332,6 @@ export function DeploymentNew() {
 
   return (
     <Page className="console-settings-page">
-      <nav className="mb-5 text-sm text-fg-muted" aria-label={m.newDeployment}><Link to="/deployments">{t.nav.deployments}</Link> / {m.newDeployment}</nav>
       <form
         className="mx-auto w-full max-w-3xl [&>section:first-of-type]:border-t-0 [&>section:first-of-type]:pt-0"
         noValidate
