@@ -241,7 +241,7 @@ export class SqlSessionEventStore
         relatedThreadId(event),
         event.id,
         event.type,
-        encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }),
+        encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }, executionBatches.find(batch => batch.events.some(input => input.id === event.id))?.id),
         timestamp(sortTime(event, input.nextSession.updatedAt)),
         input.workspaceId,
         input.sessionId,
@@ -377,16 +377,34 @@ export class SqlSessionEventStore
         `SELECT document, processed_at FROM managed_session_events
           WHERE workspace_id = ? AND session_id = ? AND id = ?`,
       ).bind(input.workspaceId, input.sessionId, eventId).first<SessionEventRow>();
-      if (row === null) continue;
+      if (row === null) {
+        const prefix = `bootstrap_${input.sessionId}:`;
+        if (!eventId.startsWith(prefix)) continue;
+        const sequence = Number(eventId.slice(prefix.length));
+        if (!Number.isSafeInteger(sequence) || sequence < 0) continue;
+        const initial = await this.client.prepare(`SELECT document FROM managed_session_initial_events
+          WHERE workspace_id = ? AND session_id = ? AND sequence = ?`)
+          .bind(input.workspaceId, input.sessionId, sequence).first<{ document: string }>();
+        if (!initial) continue;
+        const decoded = decodeSessionEventDocument(initial.document);
+        if (!decoded.position || decoded.consumedByExecutionId) continue;
+        const event = { ...decoded.event, id: eventId, processedAt: input.processedAt } as SessionEventView;
+        const document = encodeSessionEventDocument(event, decoded.position, decoded.executionId, input.consumedByExecutionId);
+        const updated = await this.client.prepare(`UPDATE managed_session_initial_events SET document = ?
+          WHERE workspace_id = ? AND session_id = ? AND sequence = ? AND document = ?`)
+          .bind(document, input.workspaceId, input.sessionId, sequence, initial.document).run();
+        if (updated.meta.changes === 1) out.push(event);
+        continue;
+      }
       const decoded = decodeSessionEventDocument(row.document);
-      if (decoded.event.processedAt != null) {
+      if (decoded.consumedByExecutionId !== undefined || (decoded.event.processedAt != null && input.consumedByExecutionId === undefined)) {
         out.push(decodeRow(row));
         continue;
       }
-      const event = { ...decoded.event, processedAt: input.processedAt } as SessionEventView;
+      const event = { ...decoded.event, processedAt: decoded.event.processedAt ?? input.processedAt } as SessionEventView;
       const document = decoded.position === undefined
         ? JSON.stringify(event)
-        : encodeSessionEventDocument(event, decoded.position, decoded.executionId);
+        : encodeSessionEventDocument(event, decoded.position, decoded.executionId, input.consumedByExecutionId);
       // Compare-and-set on the queued document so concurrent stampers keep
       // the first processing time.
       const result = await this.client.prepare(

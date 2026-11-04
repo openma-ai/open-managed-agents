@@ -59,6 +59,7 @@ describe("SessionCreateAdmissionService", () => {
     expect(counts.get("workspace_01:2026-08-26")).toBe(1);
     await expect(admission.admit(input)).resolves.toEqual({
       type: "rate_limited",
+      reason: "daily_quota",
       message: "Daily session creation limit reached (1/day for this tenant). Resets at 00:00 UTC.",
     });
   });

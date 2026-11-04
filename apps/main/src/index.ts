@@ -1,3 +1,4 @@
+import { normalizeOpenAIAgentsErrorResponse } from '@open-managed-agents/openai-agents-api';
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode } from "@open-managed-agents/openai-agents-compat";
 import { CapCliDeviceFlowApplicationService, McpOAuthCliService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
@@ -1438,14 +1439,7 @@ app.route("/v1/oma/environments", legacyEnvironmentsRoutes);
 // Keep API requests ahead of the Console asset fallback.
 app.use("/openai/*", async (c, next) => {
   await next();
-  if (c.res.status !== 401 && c.res.status !== 403 && c.res.status !== 429) return;
-  const status = c.res.status;
-  c.res = new Response(JSON.stringify({ error: {
-    message: status === 401 ? "Authentication required" : status === 403 ? "Permission denied" : "Rate limit exceeded",
-    type: status === 401 ? "authentication_error" : status === 403 ? "permission_error" : "rate_limit_error",
-    param: null,
-    code: status === 401 ? "invalid_api_key" : status === 403 ? "insufficient_permissions" : "rate_limit_exceeded",
-  } }), { status, headers: { ...Object.fromEntries(c.res.headers), "content-type": "application/json" } });
+  c.res = await normalizeOpenAIAgentsErrorResponse(c.res);
 });
 app.use("/openai/*", authMiddleware);
 app.use("/openai/*", rateLimitMiddleware);
@@ -1994,6 +1988,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     sessionId: string;
     eventIds: string[];
     processedAt: string;
+    consumedByExecutionId?: string;
   }): Promise<
     | { type: "marked"; events: unknown[] }
     | { type: "not_found" }
@@ -2002,15 +1997,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       opts.workspaceId,
     );
     const store = new SqlSessionEventPersistence(new CfD1SqlClient(tenantDb));
-    const { markSessionEventsProcessed } = await import(
-      "@open-managed-agents/managed-agents-application"
-    );
-    const marked = await markSessionEventsProcessed(store, {
-      workspaceId: opts.workspaceId,
-      sessionId: opts.sessionId,
-      eventIds: opts.eventIds,
-      processedAt: opts.processedAt,
-    });
+    const marked = await store.markProcessed(opts);
     return { type: "marked", events: marked };
   }
 

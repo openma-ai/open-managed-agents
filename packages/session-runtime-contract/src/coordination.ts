@@ -348,3 +348,19 @@ export function annotateHeldAfterExhaustedEvents<T extends { id: string; process
 // Shared lease/sweep policy lives beside the execution coordinator contract so
 // every adapter (Node SQL store, CF SessionDO) applies identical decisions.
 export * from "./coordination-policy";
+
+/** One consumption boundary for every host: persist ownership and processing
+ * time atomically before re-emitting or handing inputs to the harness. */
+export async function consumeSessionInputs<T>(
+  store: { markProcessed(input: { workspaceId: string; sessionId: string; eventIds: string[]; processedAt: string; consumedByExecutionId: string }): Promise<T[]> },
+  input: { workspaceId: string; sessionId: string; inputs: readonly { id: string }[]; consumingExecutionId: string; processedAt: string },
+  emit: (events: T[]) => void | Promise<void>,
+): Promise<T[]> {
+  if (!input.inputs.length) return [];
+  if (!input.consumingExecutionId || !Number.isFinite(Date.parse(input.processedAt))) throw new Error('Invalid input consumption context');
+  const events = await store.markProcessed({ workspaceId: input.workspaceId, sessionId: input.sessionId,
+    eventIds: [...new Set(input.inputs.map(event => event.id))], processedAt: input.processedAt,
+    consumedByExecutionId: input.consumingExecutionId });
+  if (events.length) await emit(events);
+  return events;
+}

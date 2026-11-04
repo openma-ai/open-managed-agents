@@ -1,3 +1,4 @@
+import { encodeSessionEventDocument } from '@open-managed-agents/session-runtime-contract/history';
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   FindCurrentSessionRecord,
@@ -120,7 +121,10 @@ export class SqlSessionStore implements SessionStore {
               (session_id, workspace_id, sequence, document)
              VALUES (?, ?, ?, ?)`,
           )
-          .bind(session.id, input.workspaceId, sequence, JSON.stringify(event)),
+          .bind(session.id, input.workspaceId, sequence, executionOutbox === true
+            ? encodeSessionEventDocument({ ...event, id: `bootstrap_${session.id}:${sequence}`, processedAt: null } as never,
+                { revision: 1, index: sequence }, bootstrapBatches.find(batch => batch.events.some(input => input.id === `bootstrap_${session.id}:${sequence}`))?.id)
+            : JSON.stringify(event)),
       ),
       ...sealedResourceSecrets.map((secret) =>
         this.client

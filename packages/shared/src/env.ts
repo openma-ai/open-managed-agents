@@ -269,6 +269,7 @@ export interface Env {
       sessionId: string;
       eventIds: string[];
       processedAt: string;
+    consumedByExecutionId?: string;
     }): Promise<
       | { type: "marked"; events: unknown[] }
       | { type: "not_found" }

@@ -69,6 +69,8 @@ export interface MarkSessionEventsProcessed {
   workspaceId: string;
   sessionId: string;
   eventIds: string[];
+  /** Execution which consumed this input; written in the processing CAS. */
+  consumedByExecutionId?: string;
   /** RFC 3339 processing time to stamp on events that are still queued. */
   processedAt: string;
 }

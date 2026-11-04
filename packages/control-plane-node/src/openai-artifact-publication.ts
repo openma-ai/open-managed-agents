@@ -72,10 +72,10 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
     const laneId = source ? sessionExecutionLaneId(source) : null;
     if (laneId !== null && laneId !== "sthr_primary") return skip("info", "execution_not_root_lane", { laneId });
     let state = createProjectionState({ sessionId: session.id, agentId: session.agent.id, createdAt });
-    state = applyManagedEvents(state, bootstrapEvents, { observedAt: createdAt }).state;
+    if (!found.orderedInitialEvents) state = applyManagedEvents(state, bootstrapEvents, { observedAt: createdAt }).state;
     const completedByExecution = new Set<string>();
-    for (const row of found.orderedEvents) {
-      const result = applyManagedEvents(state, [row.event as ManagedProjectionEvent], { observedAt: createdAt, executionId: row.executionId });
+    for (const row of [...(found.orderedInitialEvents ?? []), ...found.orderedEvents]) {
+      const result = applyManagedEvents(state, [row.event as ManagedProjectionEvent], { observedAt: createdAt, executionId: row.executionId, consumedByExecutionId: row.consumedByExecutionId });
       state = result.state;
       if (row.executionId === executionFence.executionId) for (const event of result.events) {
         if (event.type === "agent.session.turn.completed") completedByExecution.add(event.turn_id);

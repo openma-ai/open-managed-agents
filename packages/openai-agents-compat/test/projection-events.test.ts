@@ -217,12 +217,30 @@ describe('Factual tool and subagent projections', () => {
     expect(closed.events.some((e: any) => e.type === 'agent.session.subagent.closed')).toBe(true);
   });
 
-  it('uses execution-to-input linkage for late output instead of moving it into a newer turn', () => {
+  it('preserves late original-execution output as incomplete without reopening or moving its turn', () => {
     const first = apply([{ id: 'start1', type: 'session.status_running' }, { id: 'done1', type: 'session.status_idle', stopReason: { type: 'end_turn' } }], fresh(), { executionId: 'input' }).state;
     const second = acceptInput(first, [{ id: 'new_input', type: 'user.message', content: [{ type: 'text', text: 'Next' }] }], { observedAt: 4 }).state;
     const late = apply([{ id: 'late_fact', type: 'agent.message', content: [{ type: 'text', text: 'Late delivery from old execution' }] }], second, { executionId: 'input' });
-    expect(late.state.items.late_fact.turn_id).toBe(first.turnOrder[0]);
+    expect(late.state.items.late_fact).toMatchObject({ turn_id: first.turnOrder[0], status: 'incomplete', content: [{ type: 'output_text', text: 'Late delivery from old execution' }] });
+    expect(late.state.turns[first.turnOrder[0]]).toEqual(first.turns[first.turnOrder[0]]);
     expect(late.state.turns[second.turnOrder[1]].status).toBe('queued');
+  });
+
+  it('opens a new turn for a new execution output even without a running marker', () => {
+    const first = apply([
+      { id: 'start_old', type: 'session.status_running' },
+      { id: 'done_old', type: 'session.status_idle', stopReason: { type: 'end_turn' } },
+    ], fresh(), { executionId: 'input' }).state;
+    const next = apply([
+      { id: 'new_fact', type: 'agent.message', content: [{ type: 'text', text: 'New execution output' }] },
+      { id: 'done_new', type: 'session.status_idle', stopReason: { type: 'end_turn' } },
+    ], first, { executionId: 'outcome_execution' }).state;
+    expect(next.turnOrder).toHaveLength(2);
+    expect(next.items.new_fact).toMatchObject({ turn_id: next.turnOrder[1], status: 'completed' });
+    expect(next.turns[first.turnOrder[0]]).toEqual(first.turns[first.turnOrder[0]]);
+    const lateRunning = apply([{ id: 'late_running', type: 'session.status_running' }], next, { executionId: 'input' });
+    expect(lateRunning.state.turnOrder).toEqual(next.turnOrder);
+    expect(lateRunning.state.turns).toEqual(next.turns);
   });
 
   it('rejects cross-session facts instead of contaminating an existing projection', () => {

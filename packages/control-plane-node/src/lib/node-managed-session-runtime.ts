@@ -13,7 +13,7 @@ import type {
   SessionEventDispatchPort,
 } from "@open-managed-agents/session-runtime-contract/dispatch";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
-import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import { consumeSessionInputs, SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
   settleOnlyReason,
 } from "@open-managed-agents/session-runtime-contract";
@@ -33,10 +33,6 @@ import {
 } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type {
   SessionRuntimeProjectionApplicationPort,
-} from "@open-managed-agents/managed-agents-application";
-import {
-  isQueuedSessionEventType,
-  markSessionEventsProcessed,
 } from "@open-managed-agents/managed-agents-application";
 import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
 import type {
@@ -494,7 +490,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
             const steered = await rawTakeSteering();
             if (steered.length === 0) return steered;
             const stamp = { ...accepted, events: steered };
-            await this.markQueuedInputsProcessed(stamp);
+            await this.markQueuedInputsProcessed({ ...stamp, executionFence: fence });
             return steered;
           };
       await this.dependencies.engine.accept({
@@ -505,7 +501,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
       await this.outputChains.get(input);
       if (interrupting && plan.release.length > 0 && !signal.aborted) {
         const drain = { ...accepted, events: plan.release };
-        await this.markQueuedInputsProcessed(drain);
+        await this.markQueuedInputsProcessed({ ...drain, executionFence: fence });
         await this.dependencies.engine.accept({
           ...drain,
           ...(fence !== undefined && { executionFence: fence }),
@@ -596,20 +592,18 @@ export class DefaultNodeManagedSessionRuntimeDriver
   ): Promise<void> {
     const processing = this.dependencies.eventProcessing;
     if (processing === undefined) return;
-    const eventIds = input.events
-      .filter((event) => isQueuedSessionEventType(event.type))
-      .map((event) => event.id);
-    if (eventIds.length === 0) return;
-    await markSessionEventsProcessed(
+    const inputs = input.events.filter(event => event.type !== "user.interrupt");
+    if (inputs.length === 0) return;
+    await consumeSessionInputs(
       processing.storeFor(input.workspaceId),
       {
         workspaceId: input.workspaceId,
         sessionId: input.sessionId,
-        eventIds,
+        inputs,
+        consumingExecutionId: input.executionFence?.executionId ?? inputs[0]!.id,
         processedAt: this.nextEventStamp(input),
       },
-      {
-        emit: (events) => {
+      (events) => {
           for (const event of events) {
             this.realtime.publish({
               workspaceId: input.workspaceId,
@@ -617,7 +611,6 @@ export class DefaultNodeManagedSessionRuntimeDriver
               frame: { event: event as unknown as StreamSessionEvent },
             });
           }
-        },
       },
     );
   }

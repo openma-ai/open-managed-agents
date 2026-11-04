@@ -37,7 +37,7 @@ export class WebCryptoTunnelCertificateAuthority
     const begin = pem.indexOf(BEGIN) + BEGIN.length;
     const end = pem.indexOf(END, begin);
     const encoded = pem.slice(begin, end).replace(/\s+/gu, "");
-    let der: Uint8Array;
+    let der: Uint8Array<ArrayBuffer>;
     try {
       const binary = atob(encoded);
       der = Uint8Array.from(binary, (character) => character.charCodeAt(0));

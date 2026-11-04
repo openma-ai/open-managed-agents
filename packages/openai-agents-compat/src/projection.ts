@@ -10,6 +10,7 @@ export interface ProjectionContext {
   laneId?: string | null;
   rootLaneId?: string;
   executionId?: string;
+  consumedByExecutionId?: string;
   /** Stable identity of an ordered delivery, required for ID-less delta events. */
   batchId?: string;
   session?: AgentSession;
@@ -37,7 +38,8 @@ export interface ProjectionState {
   lanes: Record<string, LaneState>;
   calls: Record<string, CallState>;
   inputTurns: Record<string, string>;
-  executionTurns: Record<string, string>;
+  /** Source facts retained for attribution queries; never an execution-to-turn cache. */
+  eventLog: Array<{ event: ManagedProjectionEvent; executionId?: string; consumedByExecutionId?: string }>;
   seenEventIds: Record<string, true>;
   /** Replay-only indexes over common events; native event history remains authoritative. */
   workItems: Record<string, WorkItemSnapshot>;
@@ -74,17 +76,26 @@ const turnId = (state: ProjectionState, lane: string, source: string): string =>
 const clone = <T>(value: T): T => structuredClone(value);
 
 export function createProjectionState(input: { sessionId: string; agentId: string; createdAt: number }): ProjectionState {
-  return { version: 1, ...input, status: 'idle', error: null, requiredActions: [], usage: null, turns: {}, turnOrder: [], items: {}, itemOrder: [], itemLanes: {}, outputIndices: {}, completedItems: {}, subagents: {}, subagentOrder: [], lanes: { root: { currentTurnId: null, ambiguous: false } }, calls: {}, inputTurns: {}, executionTurns: {}, seenEventIds: {}, workItems: {}, workItemLanes: {}, parentToolLanes: {}, unresolved: [] };
+  return { version: 1, ...input, status: 'idle', error: null, requiredActions: [], usage: null, turns: {}, turnOrder: [], items: {}, itemOrder: [], itemLanes: {}, outputIndices: {}, completedItems: {}, subagents: {}, subagentOrder: [], lanes: { root: { currentTurnId: null, ambiguous: false } }, calls: {}, inputTurns: {}, eventLog: [], seenEventIds: {}, workItems: {}, workItemLanes: {}, parentToolLanes: {}, unresolved: [] };
 }
-const executionTurnKey = (lane: string, executionId: string): string => `${encodeURIComponent(lane)}:${encodeURIComponent(executionId)}`;
 function assignedExecutionTurn(state: ProjectionState, lane: string, executionId: string): Turn | undefined {
-  const assigned = own(state.executionTurns, executionTurnKey(lane, executionId)) ?? own(state.inputTurns, executionId);
+  for (const row of lane === 'root' ? state.eventLog : [...state.eventLog].reverse()) {
+    const input = row.event.type.startsWith('user.') || row.event.type === 'session.updated';
+    if ((input ? row.consumedByExecutionId ?? row.executionId : row.executionId) !== executionId) continue;
+    const event = row.event;
+    const id = event.id;
+    if (!id) continue;
+    const callId = str(field(event, 'toolUseId', 'tool_use_id')) ?? str(field(event, 'customToolUseId', 'custom_tool_use_id'));
+    const assigned = own(state.inputTurns, id) ?? own(state.items, id)?.turn_id ??
+      (event.type === 'user.tool_confirmation' && callId ? own(state.calls, callId)?.turnId : undefined) ?? turnId(state, lane, id);
+    const turn = assigned ? own(state.turns, assigned) : undefined;
+    if (turn && (turn.subagent_id ?? 'root') === lane) return turn;
+  }
+  const assigned = own(state.inputTurns, executionId);
   const turn = assigned ? own(state.turns, assigned) : undefined;
   return turn && (turn.subagent_id ?? 'root') === lane ? turn : undefined;
 }
-/** Resolves the Turn a native execution was attributed to in `lane`, using the
- * same rules as event application. `executionTurns` is an internal cache;
- * callers must use this query instead of reading projection indexes. */
+/** Resolve ownership from source events and their projected items/turns. */
 export function executionTurnId(state: ProjectionState, lane: string, executionId: string): string | null {
   return assignedExecutionTurn(state, lane, executionId)?.id ?? null;
 }
@@ -142,29 +153,19 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     const next = { currentTurnId: null, ambiguous: false };
     put(state.lanes, name, next); return next;
   }
+  let execution = context.executionId;
   function locateTurn(name: string): Turn | undefined {
-    const execution = context.executionId;
-    const executionKey = execution && executionTurnKey(name, execution);
-    const assignedTurn = execution ? assignedExecutionTurn(state, name, execution) : undefined;
-    if (assignedTurn) {
-      // Keep the cache complete even when the assignment came from inputTurns
-      // (execution id === id of the first non-system.message event of its lane
-      // batch, see sessionExecutionEventBatches); lane ownership is checked first.
-      put(state.executionTurns, executionKey!, assignedTurn.id);
-      return assignedTurn;
-    }
+    const assigned = execution ? assignedExecutionTurn(state, name, execution) : undefined;
+    if (assigned) return assigned;
     const current = lane(name).currentTurnId;
-    const turn = current ? own(state.turns, current) : undefined;
-    if (turn && executionKey) put(state.executionTurns, executionKey, turn.id);
-    return turn;
+    return current ? own(state.turns, current) : undefined;
   }
-  function startTurn(name: string, source: string, at: number): Turn {
-    const current = locateTurn(name);
+  function startTurn(name: string, source: string, at: number, independent = false): Turn {
+    const current = independent ? (execution ? assignedExecutionTurn(state, name, execution) : undefined) : locateTurn(name);
     if (current && !isTerminal(current)) return current;
     const id = turnId(state, name, source);
     const next: Turn = { id, agent_id: name === 'root' ? state.agentId : name, object: 'agent.session.turn', session_id: state.sessionId, subagent_id: name === 'root' ? null : name, created_at: at, started_at: null, completed_at: null, status: 'queued', error: null, usage: null };
     put(state.turns, id, next); state.turnOrder.push(id); lane(name).currentTurnId = id; lane(name).ambiguous = false;
-    if (context.executionId) put(state.executionTurns, executionTurnKey(name, context.executionId), id);
     emitTurn(next, source, 'created'); return next;
   }
   function itemIndex(item: AgentSessionItem, name: string): number | null {
@@ -265,9 +266,18 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     const startIdentity = event.type === 'event_start' ? str(record(event.event).id) : null;
     const id = event.id ?? committedIdentity ?? startIdentity ?? (context.batchId ? `${context.batchId}:${index}` : event.type.endsWith('_start') || event.type.endsWith('_end') ? streamIdentity ?? undefined : undefined);
     if (!id) throw new ProjectionError('missing_event_identity', `Event ${event.type} needs a stable ID or batchId`);
+    const source = record(raw.source_position);
+    const admittedExecution = context.executionId ?? str(source.execution_id) ?? undefined;
+    const consumer = context.consumedByExecutionId ?? str(source.consumed_by_execution_id) ?? undefined;
+    const isInput = event.type.startsWith('user.') || event.type === 'session.updated';
+    // B2 input rows are mutable until consumed. Do not commit a public item or
+    // dedupe identity before that fact exists; polling must revisit the row.
+    if (isInput && admittedExecution && !consumer && (Object.hasOwn(event, 'processedAt') || source.execution_id !== undefined) && event.type !== 'user.interrupt') continue;
+    execution = isInput ? consumer ?? admittedExecution : admittedExecution;
     const seenKey = `${encodeURIComponent(name)}:${encodeURIComponent(event.type)}:${encodeURIComponent(id)}`;
     if (own(state.seenEventIds, seenKey)) continue;
     put(state.seenEventIds, seenKey, true);
+    state.eventLog.push({ event: clone(event), executionId: admittedExecution, consumedByExecutionId: consumer });
     const at = eventTime(event, context);
     const beforeStatus = state.status;
     const beforeActions = JSON.stringify(state.requiredActions);
@@ -303,7 +313,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         }
       }
     } else if (event.type === 'user.message') {
-      const turn = startTurn(name, id, at); put(state.inputTurns, id, turn.id);
+      const turn = startTurn(name, id, at, consumer !== undefined); put(state.inputTurns, id, turn.id);
       saveItem({ id, type: 'message', turn_id: turn.id, role: 'user', content: inputContent(event.content), phase: null, status: 'completed' }, name, id, false);
     } else if (event.type === 'user.custom_tool_result' || event.type === 'user.tool_result' || event.type === 'agent.tool_result' || event.type === 'agent.mcp_tool_result') {
       const callId = str(field(event, 'customToolUseId', 'custom_tool_use_id')) ?? str(field(event, 'toolUseId', 'tool_use_id')) ?? str(field(event, 'mcpToolUseId', 'mcp_tool_use_id'));
@@ -324,6 +334,12 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
       if (call.kind === 'custom' && !isTerminal(turn) && !Object.values(state.calls).some(value => value.turnId === turn.id && value.kind === 'custom' && value.pending)) turn.status = 'queued';
     } else {
       let turn = locateTurn(name);
+      const output = event.type === 'agent.message' || event.type === 'agent.thinking' || event.type === 'agent.custom_tool_use' || event.type === 'agent.tool_use' || event.type === 'agent.mcp_tool_use' || event.type === 'event_start' || event.type === 'event_delta' || /^agent\.(message|thinking)(_stream_start|_chunk|_stream_end)$/.test(event.type);
+      // A different execution opens a turn even when its first observed output
+      // has no running marker (e.g. outcome/budget continuation). Late delivery
+      // from the original execution stays visible there as incomplete; it never
+      // reopens the terminal turn or changes artifact completion provenance.
+      if (output && turn && isTerminal(turn) && execution && !assignedExecutionTurn(state, name, execution)) turn = startTurn(name, id, at, true);
       if (event.type === 'session.thread_created') {
         if (name === 'root') { unresolved(event, id, 'Thread creation is missing its child identity'); continue; }
         const parent = str(field(event, 'parentThreadId', 'parent_thread_id')) ?? context.laneId ?? 'root';
@@ -333,6 +349,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         const sent = event.type === 'agent.thread_message_sent';
         const peer = str(sent ? field(event, 'toSessionThreadId', 'to_session_thread_id') : field(event, 'fromSessionThreadId', 'from_session_thread_id'));
         if (!peer) { unresolved(event, id, 'Inter-agent message is missing its peer identity'); continue; }
+        if (!sent && name === 'root' && turn && isTerminal(turn)) continue;
         if (!sent && (!turn || isTerminal(turn))) turn = startTurn(name, id, at);
         if (!turn) { unresolved(event, id, 'Inter-agent message has no observed sender turn'); continue; }
         const selfId = name === 'root' ? state.agentId : name;
@@ -348,7 +365,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         const child = own(state.subagents, name);
         const resuming = child?.status === 'closed';
         if (resuming) { child.status = 'active'; child.closed_at = null; emit({ type: 'agent.session.subagent.active', event_id: eventId(id, 'subagent.active'), subagent: child }); }
-        if ((!turn || isTerminal(turn)) && child && !resuming) turn = startTurn(name, id, at);
+        if ((!turn || isTerminal(turn) && !(name === 'root' && execution && assignedExecutionTurn(state, name, execution))) && (child || execution) && !resuming) turn = startTurn(name, id, at);
         if (resuming && (!turn || isTerminal(turn))) continue;
         if (!turn) { unresolved(event, id, 'Running event has no observed input or subagent opening'); continue; }
         if (!isTerminal(turn)) { turn.status = 'in_progress'; turn.started_at ??= at; lane(name).ambiguous = false; emitTurn(turn, id, 'in_progress'); }
@@ -379,7 +396,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         const content = texts(event.content);
         const itemId = canonical ? str(data.message_id) ?? id : id;
         const previousItem = own(state.items, itemId);
-        const item: AgentSessionItem = { id: itemId, type: 'message', turn_id: turn.id, role: 'assistant', content, phase: event.phase === 'commentary' ? 'commentary' : event.phase === 'final_answer' || event.phase === 'finalAnswer' ? 'final_answer' : null, status: isTerminal(turn) ? terminalStatus(turn) : previousItem?.type === 'message' ? previousItem.status : 'in_progress' };
+        const item: AgentSessionItem = { id: itemId, type: 'message', turn_id: turn.id, role: 'assistant', content, phase: event.phase === 'commentary' ? 'commentary' : event.phase === 'final_answer' || event.phase === 'finalAnswer' ? 'final_answer' : null, status: isTerminal(turn) ? 'incomplete' : previousItem?.type === 'message' ? previousItem.status : 'in_progress' };
         saveItem(item, name, id, isTerminal(turn));
       } else if (event.type === 'agent.custom_tool_use' || event.type === 'agent.tool_use' || event.type === 'agent.mcp_tool_use') {
         if (!turn) { unresolved(event, id, 'Tool call has no observed turn association'); continue; }
@@ -396,7 +413,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         if (!turn) { unresolved(event, id, 'Thinking item has no observed turn association'); continue; }
         const existing = own(state.items, id);
         const summary = existing?.type === 'reasoning' ? existing.summary : texts(event.content).map(part => ({ type: 'summary_text' as const, text: part.text }));
-        saveItem({ id, type: 'reasoning', turn_id: turn.id, status: isTerminal(turn) ? terminalStatus(turn) : existing?.type === 'reasoning' ? existing.status : 'in_progress', summary }, name, id, isTerminal(turn));
+        saveItem({ id, type: 'reasoning', turn_id: turn.id, status: isTerminal(turn) ? 'incomplete' : existing?.type === 'reasoning' ? existing.status : 'in_progress', summary }, name, id, isTerminal(turn));
       } else if (event.type === 'event_start' || event.type === 'event_delta' || /^agent\.(message|thinking)(_stream_start|_chunk|_stream_end)$/.test(event.type)) {
         if (!turn) { unresolved(event, id, 'Stream update has no observed turn association'); continue; }
         const nested = record(event.event);
@@ -410,7 +427,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         if (thinking) {
           const summary = existing?.type === 'reasoning' ? clone(existing.summary) : [];
           if (delta !== null) { if (summary.length === 0) summary.push({ type: 'summary_text', text: '' }); summary[0].text += delta; }
-          const item: AgentSessionItem = { id: itemId, type: 'reasoning', turn_id: turn.id, status: ending ? aborted ? 'incomplete' : terminalStatus(turn) : 'in_progress', summary };
+          const item: AgentSessionItem = { id: itemId, type: 'reasoning', turn_id: turn.id, status: isTerminal(turn) || aborted ? 'incomplete' : ending ? terminalStatus(turn) : 'in_progress', summary };
           saveItem(item, name, id, ending);
           if (delta !== null) emit({ type: 'agent.session.turn.reasoning_summary_text.delta', event_id: eventId(id, 'reasoning.delta'), session_id: state.sessionId, turn_id: turn.id, item_id: itemId, output_index: state.outputIndices[itemId], summary_index: 0, delta });
         } else {
@@ -420,7 +437,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
             if (part?.type === 'output_text') part.text += delta;
             else content.push({ type: 'output_text', text: delta });
           }
-          const item: AgentSessionItem = { id: itemId, type: 'message', turn_id: turn.id, role: 'assistant', content, phase: existing?.type === 'message' ? existing.phase : null, status: ending ? aborted ? 'incomplete' : terminalStatus(turn) : 'in_progress' };
+          const item: AgentSessionItem = { id: itemId, type: 'message', turn_id: turn.id, role: 'assistant', content, phase: existing?.type === 'message' ? existing.phase : null, status: isTerminal(turn) || aborted ? 'incomplete' : ending ? terminalStatus(turn) : 'in_progress' };
           saveItem(item, name, id, ending);
           if (delta !== null) emit({ type: 'agent.session.turn.output_text.delta', event_id: eventId(id, 'text.delta'), session_id: state.sessionId, turn_id: turn.id, item_id: itemId, output_index: state.outputIndices[itemId], content_index: 0, delta });
         }

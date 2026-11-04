@@ -11,7 +11,7 @@
 
 /** Typed rejection mapped by the HTTP layer to 429 / 402. */
 export type SessionCreateAdmissionRejection =
-  | { type: "rate_limited"; message: string }
+  | { type: "rate_limited"; message: string; reason?: "daily_quota" }
   | { type: "payment_required"; message: string; balanceCents: number };
 
 export type SessionCreateAdmissionDecision =
@@ -111,6 +111,7 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
           });
           return {
             type: "rate_limited",
+            reason: "daily_quota",
             message: `Daily session creation limit reached (${cap}/day for this tenant). Resets at 00:00 UTC.`,
           };
         }

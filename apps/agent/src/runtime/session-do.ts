@@ -64,6 +64,8 @@ import {
   type ExecutionLeaseRecord,
   type QueuedInputRecord,
   type ScheduleWakeRecord,
+  consumeSessionInputs,
+  takeQueuedSteeringInputs,
   type SessionExecution,
   type SessionExecutionFence,
 } from "@open-managed-agents/session-runtime-contract/coordination";
@@ -1962,8 +1964,7 @@ export class SessionDO extends DurableObject<Env> {
     const stampMs = Date.parse(stamp);
     event.processed_at = stamp;
     this.queue.stampProcessed(row.seq, Number.isFinite(stampMs) ? stampMs : nowMs);
-    // Canonical D1 stamp (null → processed_at) before live re-emit.
-    this.markAcceptedEventsProcessed([row.event_id], stamp);
+    // Canonical consumption is awaited by the caller before local promotion.
     sdoLog("queue.stamp", {
       session_id: this._state?.session_id,
       thread_id: row.session_thread_id,
@@ -1971,7 +1972,7 @@ export class SessionDO extends DurableObject<Env> {
       seq: row.seq,
       processed_at: stamp,
     });
-    this.broadcastEvent(event);
+    if (!this.env.MAIN_MCP?.managedSessionEventsMarkProcessed) this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
       event_id: row.event_id,
@@ -1995,32 +1996,25 @@ export class SessionDO extends DurableObject<Env> {
    */
   private async takeSteeringInputs(threadId: string): Promise<SessionEvent[]> {
     const store = await this.getExecutionStore();
+    const fence = this._executionFences.get(threadId);
+    const stamp = this.processedClock.nowIso();
+    const inputs = store !== null
+      ? await takeQueuedSteeringInputs(store, {
+          workspaceId: this.state.tenant_id!, sessionId: this.state.session_id!, laneId: threadId,
+          steeredAt: stamp, excludeExecutionId: fence?.executionId,
+        })
+      : this.queue.listQueue(threadId).filter(row => row.type === "user.message").map(row => ({ id: row.event_id }));
     const out: SessionEvent[] = [];
-    for (const row of this.queue.listQueue(threadId)) {
-      // CMA: every mid-turn user.message steers into the current turn at the
-      // next LLM/tool-call boundary (coherent turn / after-call absorb).
-      // Ordinary mid-run accept is the only path — no explicit Steer API.
-      // Do not leave ordinary mid-sends for after-turn / next-agent-turn drain.
-      if (row.type !== "user.message") continue;
-      if (store !== null) {
-        const result = await store.steerQueued({
-          workspaceId: this.state.tenant_id!,
-          sessionId: this.state.session_id!,
-          executionId: row.event_id,
-          steeredAt: new Date().toISOString(),
-        });
-        if (result.type !== "steered") continue;
-      }
-      // Steered frame first so clients place the stamped re-emit inside the
-      // running turn instead of briefly deferring it as the next turn.
-      this.broadcastEvent({
-        type: "system.user_message_steered",
-        event_id: row.event_id,
-        session_thread_id: row.session_thread_id,
-        steered_at: Date.now(),
-      } as unknown as SessionEvent);
-      const event = this.promoteQueueRow(row);
-      out.push(event);
+    if (!inputs.length) return out;
+    for (const input of inputs) {
+      this.broadcastEvent({ type: "system.user_message_steered", event_id: input.id,
+        session_thread_id: threadId, steered_at: Date.parse(stamp) } as unknown as SessionEvent);
+    }
+    await this.consumeAcceptedInputs(inputs, fence?.executionId ?? inputs[0]!.id, stamp);
+    for (const input of inputs) {
+      const row = this.queueRowForEvent(input.id);
+      if (row) out.push(this.promoteQueueRow(row));
+      else if ('type' in input) out.push(encodeRuntimeSessionEvent(input as never) as SessionEvent);
     }
     return out;
   }
@@ -2157,6 +2151,7 @@ export class SessionDO extends DurableObject<Env> {
             }
           }
           try {
+            await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
             for (const rawEvent of execution.events) {
               if (rawEvent.type === "system.message") continue;
               if (rawEvent.type === "session.updated") {
@@ -2310,6 +2305,7 @@ export class SessionDO extends DurableObject<Env> {
         source: "local_queue",
         event_id: row.event_id,
       });
+      await this.consumeAcceptedInputs([{ id: row.event_id }], row.event_id, this.processedClock.nowIso());
       const event = this.promoteQueueRow(row);
 
       const turnName = `turn:${row.seq}`;
@@ -4833,6 +4829,20 @@ export class SessionDO extends DurableObject<Env> {
    * starts processing them, then re-broadcast the same ids with
    * `processed_at` set (Claude Managed Agents semantics).
    */
+  private async consumeAcceptedInputs(inputs: readonly { id: string }[], consumingExecutionId: string, processedAt: string): Promise<void> {
+    const binding = this.env.MAIN_MCP;
+    const workspaceId = this._state?.tenant_id, sessionId = this._state?.session_id;
+    if (!binding?.managedSessionEventsMarkProcessed || !workspaceId || !sessionId) return;
+    await this._managedProjectionChain;
+    await consumeSessionInputs({ markProcessed: async command => {
+      const result = await binding.managedSessionEventsMarkProcessed(command);
+      if (result.type !== "marked") throw new Error("Session input consumption failed");
+      return result.events;
+    } }, { workspaceId, sessionId, inputs, consumingExecutionId, processedAt }, events => {
+      for (const event of events) this.broadcastEvent(encodeRuntimeSessionEvent(event as never) as SessionEvent);
+    });
+  }
+
   private markAcceptedEventsProcessed(
     eventIds: string[],
     processedAt: string,
