@@ -132,6 +132,10 @@ export function createNodeMcpProxyBinding(
             headers,
             body,
             accessToken,
+            // Client lifecycle: hangup/session delete aborts the upstream hop
+            // deterministically instead of leaving an orphaned undici stream
+            // whose termination can escape as an unhandled rejection.
+            signal: request.signal,
             fetcher: dependencies.fetcher,
           }),
         dependencies.fetcher,
@@ -182,6 +186,9 @@ export function buildNodeHttpMcpProxyRoutes(
           headers: inboundHeaders,
           body,
           accessToken,
+          // Client lifecycle: hangup/session delete aborts the upstream hop
+          // deterministically instead of leaving an orphaned undici stream.
+          signal: context.req.raw.signal,
           fetcher: dependencies.fetcher,
         }),
       dependencies.fetcher,

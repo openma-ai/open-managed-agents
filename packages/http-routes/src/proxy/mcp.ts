@@ -28,6 +28,8 @@ export interface SendMcpUpstreamInput {
   readonly body: BodyInit | null;
   /** Vault bearer injected as `Authorization: Bearer …`. */
   readonly accessToken: string;
+  /** Abort with the caller (client hangup / session delete) — fork#17. */
+  readonly signal?: AbortSignal | null;
   readonly fetcher?: typeof fetch;
 }
 
@@ -41,6 +43,7 @@ export function sendMcpUpstream(input: SendMcpUpstreamInput): Promise<Response> 
     set: { authorization: `Bearer ${input.accessToken}` },
     drop: MCP_PROXY_WITHHELD_HEADERS,
     dropPrefixes: MCP_PROXY_WITHHELD_PREFIXES,
+    ...(input.signal !== undefined ? { signal: input.signal } : {}),
     ...(input.fetcher ? { fetcher: input.fetcher } : {}),
   });
 }
