@@ -282,7 +282,6 @@ Extend the Environment attachment rather than using Agent/GitHub paths as placem
     "primary": 0,
     "repositories": [{ "directory_id": "dir_shop", "base_branch": "main" }],
     "branch_slug_template": "oma/<shortId>/<slug>",
-    "retention": { "runtime_id": "rt_buildbox" },
     "env": { "NODE_ENV": "development" }
   }}
 }
