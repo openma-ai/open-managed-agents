@@ -20,7 +20,7 @@ describe('Ordered managed event projection', () => {
     expect(executionTurnId(state, 'root', 'unknown')).toBeNull();
   });
 
-  it('never resolves a subagent execution in the root lane', () => {
+  it('does not resolve a subagent execution in the root lane through its input assignment', () => {
     let state = acceptInput(fresh(), [message('input')], context).state;
     state = applyManagedEvents(state, [running('start'), { id: 'child-open', type: 'session.thread_created', sessionThreadId: 'sthr_child', agentName: 'helper' }], { observedAt: 11, executionId: 'input' }).state;
     state = applyManagedEvents(state, [

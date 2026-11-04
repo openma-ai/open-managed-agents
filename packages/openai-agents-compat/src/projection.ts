@@ -148,7 +148,8 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     const assignedTurn = execution ? assignedExecutionTurn(state, name, execution) : undefined;
     if (assignedTurn) {
       // Keep the cache complete even when the assignment came from inputTurns
-      // (execution id === first input event id); lane ownership is checked first.
+      // (execution id === id of the first non-system.message event of its lane
+      // batch, see sessionExecutionEventBatches); lane ownership is checked first.
       put(state.executionTurns, executionKey!, assignedTurn.id);
       return assignedTurn;
     }

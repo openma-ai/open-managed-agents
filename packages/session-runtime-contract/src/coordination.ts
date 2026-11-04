@@ -232,6 +232,14 @@ export function sessionBootstrapExecutionEvents(input: {
   });
 }
 
+/** Lane that `sessionExecutionEventBatches` assigns an input event to. An
+ * execution's id is the id of the first event of its lane batch, so this also
+ * names the lane of the execution started by that event. */
+export function sessionExecutionLaneId(event: object): string {
+  const laneId = "sessionThreadId" in event ? event.sessionThreadId : undefined;
+  return typeof laneId === "string" ? laneId : "sthr_primary";
+}
+
 /** Split one SDK event batch into independently executable thread lanes. */
 export function sessionExecutionEventBatches(
   events: readonly SentSessionEvent[],
@@ -243,9 +251,7 @@ export function sessionExecutionEventBatches(
       continue;
     }
     if (event.type === "session.updated" && event.resume !== true) continue;
-    const laneId = "sessionThreadId" in event
-      ? event.sessionThreadId ?? "sthr_primary"
-      : "sthr_primary";
+    const laneId = sessionExecutionLaneId(event);
     const current = lanes.get(laneId);
     if (current === undefined) {
       lanes.set(laneId, {

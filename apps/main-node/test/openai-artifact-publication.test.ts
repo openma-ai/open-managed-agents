@@ -3,14 +3,19 @@ import { resourcesFixture } from "../../../packages/openai-agents-compat/test/he
 import { encodeResourceMetadata } from "../../../packages/openai-agents-compat/src/resource-metadata";
 import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
 
-/** Native execution ids are the id of the first input event in the batch
- * (`sessionExecutionId`); bootstrap input ids are `bootstrap_${sessionId}:${index}`. */
-async function fixture(mode = "completed", environmentType = "openai_hosted", round: "bootstrap" | "follow_up" = "follow_up") {
+/** `sessionExecutionEventBatches` splits each event batch per lane and uses the
+ * id of the lane's first event other than `system.message` as the execution id;
+ * bootstrap event ids are `bootstrap_${sessionId}:${index}`. */
+type Round = "bootstrap" | "bootstrap_after_outcome" | "bootstrap_after_system" | "follow_up";
+async function fixture(mode = "completed", environmentType = "openai_hosted", round: Round = "follow_up") {
   const resources = resourcesFixture();
   const session: any = { id: "session", environmentId: "native-env", agent: { id: "agent" }, createdAt: new Date(100000).toISOString(), metadata: encodeResourceMetadata({}, "session", { sealed: await resources.secrets.seal(JSON.stringify({ agent: {}, environment: { type: environmentType }, environmentId: "native-env" })) }) };
   const input = { type: "user.message", content: [{ type: "text", text: "make file" }] };
-  const initialEvents: any[] = round === "bootstrap" ? [input] : [];
-  const executionId = round === "bootstrap" ? "bootstrap_session:0" : "sevt_input";
+  const outcome = { type: "user.define_outcome", description: "File exists", rubric: { type: "text", content: "report.bin exists" }, maxIterations: 1 };
+  const system = { type: "system.message", content: [{ type: "text", text: "Be brief" }] };
+  const initialEvents: any[] = round === "bootstrap" ? [input] : round === "bootstrap_after_outcome" ? [outcome, input] : round === "bootstrap_after_system" ? [system, input] : [];
+  // A leading system.message is skipped; a leading define_outcome starts the batch.
+  const executionId = round === "bootstrap" || round === "bootstrap_after_outcome" ? "bootstrap_session:0" : round === "bootstrap_after_system" ? "bootstrap_session:1" : "sevt_input";
   const facts: any[] = round === "bootstrap" ? [] : [{ event: { ...input, id: executionId } }];
   facts.push({ executionId, event: { id: "running", type: "session.status_running" } });
   if (mode === "cancelled") facts.push({ event: { id: "cancel", type: "user.interrupt" } });
@@ -61,6 +66,17 @@ describe("Node OpenAI immutable output publication", () => {
     expect(f.skipped()).toEqual([]);
   });
 
+  it.each([
+    ["user.define_outcome", "bootstrap_after_outcome", "bootstrap_session:0"],
+    ["system.message", "bootstrap_after_system", "bootstrap_session:1"],
+  ] as const)("publishes bootstrap outputs when bootstrap event 0 is %s", async (_type, round, executionId) => {
+    const f = await fixture("completed", "openai_hosted", round);
+    expect(f.executionId).toBe(executionId);
+    await f.publish(f.input);
+    expect(await f.published()).toMatchObject([{ origin: { type: "session_output", turnId: `turn_session:root:${encodeURIComponent("bootstrap_session:1")}`, path: "/workspace/outputs/report.bin" } }]);
+    expect(f.skipped()).toEqual([]);
+  });
+
   it.each(["cancelled", "failed", "requires_action"])("publishes nothing for %s even though a native idle fact was committed", async mode => {
     const f = await fixture(mode); await f.publish(f.input);
     expect(await f.published()).toEqual([]); expect(f.sandbox.exec).not.toHaveBeenCalled();
@@ -96,18 +112,51 @@ describe("Node OpenAI immutable output publication", () => {
     expect(await f.published()).toMatchObject([{ origin: { turnId: "turn_session:root:sevt_input" } }]);
   });
 
-  it("does not attribute a subagent execution to the root lane", async () => {
-    const f = await fixture();
+  const openChild = (f: Awaited<ReturnType<typeof fixture>>) => {
+    // The root execution opens the child thread before it goes idle.
+    f.facts.splice(f.facts.findIndex(row => row.event.id === "idle"), 0, { executionId: f.executionId, event: { id: "child-open", type: "session.thread_created", sessionThreadId: "sthr_child", agentName: "helper" } });
     f.facts.push(
-      { executionId: f.executionId, event: { id: "child-open", type: "session.thread_created", sessionThreadId: "sthr_child", agentName: "helper" } },
-      { executionId: "child_input", event: { id: "child_input", type: "agent.thread_message_received", sessionThreadId: "sthr_child", fromSessionThreadId: "sthr_primary", content: [{ type: "text", text: "go" }] } },
+      { event: { id: "child_input", type: "agent.thread_message_received", sessionThreadId: "sthr_child", fromSessionThreadId: "sthr_primary", content: [{ type: "text", text: "go" }] } },
       { executionId: "child_input", event: { id: "child-running", type: "session.thread_status_running", sessionThreadId: "sthr_child" } },
       { executionId: "child_input", event: { id: "child-idle", type: "session.thread_status_idle", sessionThreadId: "sthr_child", stopReason: { type: "end_turn" } } },
     );
+  };
+
+  it("does not attribute a subagent execution to the root lane and logs it below warn", async () => {
+    const f = await fixture();
+    openChild(f);
     await f.publish(f.fence("child_input"));
     expect(await f.published()).toEqual([]);
     expect(f.sandbox.exec).not.toHaveBeenCalled();
-    expect(f.skipped()).toEqual(["execution_turn_not_found"]);
+    expect(f.skipped()).toEqual(["execution_not_root_lane"]);
+    expect(f.logger.info).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reason: "execution_not_root_lane", laneId: "sthr_child", executionId: "child_input" }), expect.any(String));
+    expect(f.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("does not publish to root for a subagent execution that also commits root-lane facts", async () => {
+    const f = await fixture();
+    openChild(f);
+    // The child's reply lands on the primary lane under the child's execution.
+    f.facts.push({ executionId: "child_input", event: { id: "child-reply", type: "agent.thread_message_received", sessionThreadId: "sthr_primary", fromSessionThreadId: "sthr_child", content: [{ type: "text", text: "done" }] } });
+    await f.publish(f.fence("child_input"));
+    expect(await f.published()).toEqual([]);
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+    expect(f.skipped()).toEqual(["execution_not_root_lane"]);
+  });
+
+  it("still publishes the root execution that opened a subagent thread", async () => {
+    const f = await fixture();
+    openChild(f);
+    await f.publish(f.input);
+    expect(await f.published()).toMatchObject([{ origin: { turnId: "turn_session:root:sevt_input" } }]);
+    expect(f.skipped()).toEqual([]);
+  });
+
+  it("warns only for an execution that resolves to no turn", async () => {
+    const f = await fixture();
+    await f.publish(f.fence("unknown_execution"));
+    expect(await f.published()).toEqual([]);
+    expect(f.logger.warn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reason: "execution_turn_not_found", executionId: "unknown_execution" }), expect.any(String));
   });
 
   it("rejects publication after loss of execution ownership before writing any bytes", async () => {

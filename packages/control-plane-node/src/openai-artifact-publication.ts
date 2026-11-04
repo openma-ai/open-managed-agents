@@ -2,7 +2,7 @@ import type { FileOrigin, Session, SessionRuntimeHistoryApplicationPort } from "
 import type { FilesApplicationPort } from "@open-managed-agents/managed-agents-application/ports/files";
 import type { Logger } from "@open-managed-agents/observability";
 import { applyManagedEvents, createProjectionState, executionTurnId, publishSessionArtifact, readManagedSessionMappingMetadata, type ManagedProjectionEvent, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
-import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
+import { sessionExecutionLaneId, type SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { DefaultNodeManagedSessionRunnerDependencies } from "./lib/node-managed-session-runner";
 
 export interface NodeOpenAIArtifactPublisherDependencies {
@@ -63,8 +63,16 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
     if (found.type !== "found") return skip("warn", "history_not_found", { historyResult: found.type });
     if (!found.orderedEvents) return skip("warn", "history_unordered");
     const createdAt = Math.floor(Date.parse(session.createdAt) / 1000);
+    const bootstrapEvents = found.initialEvents.map((event, index) => ({ ...event, id: `bootstrap_${session.id}:${index}` }));
+    // An execution id is the id of the first event of its lane batch
+    // (`sessionExecutionEventBatches`), so that event names the execution's
+    // lane. Subagent executions never own root outputs, whatever root-lane
+    // facts they also commit.
+    const source = [...bootstrapEvents, ...found.orderedEvents.map(row => row.event)].find(event => event.id === executionFence.executionId);
+    const laneId = source ? sessionExecutionLaneId(source) : null;
+    if (laneId !== null && laneId !== "sthr_primary") return skip("info", "execution_not_root_lane", { laneId });
     let state = createProjectionState({ sessionId: session.id, agentId: session.agent.id, createdAt });
-    state = applyManagedEvents(state, found.initialEvents.map((event, index) => ({ ...event, id: `bootstrap_${session.id}:${index}` })), { observedAt: createdAt }).state;
+    state = applyManagedEvents(state, bootstrapEvents, { observedAt: createdAt }).state;
     const completedByExecution = new Set<string>();
     for (const row of found.orderedEvents) {
       const result = applyManagedEvents(state, [row.event as ManagedProjectionEvent], { observedAt: createdAt, executionId: row.executionId });
@@ -77,7 +85,6 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
     if (!turnId) return skip("warn", "execution_turn_not_found");
     const turn = state.turns[turnId];
     if (turn?.status !== "completed") return skip("info", "turn_not_completed", { turnId, turnStatus: turn?.status ?? null });
-    if (turn.subagent_id !== null) return skip("info", "turn_not_root", { turnId, subagentId: turn.subagent_id });
     if (!completedByExecution.has(turnId)) return skip("info", "turn_not_completed_by_execution", { turnId });
     const environmentId = deps.environmentId(session);
     const assertFence = async () => { if (!await deps.isFenceActive(executionFence)) throw new Error("Artifact publication lost the execution fence"); };
