@@ -116,16 +116,36 @@ function patchOpenMa(
   const next: EnvironmentOpenMaExtensions = { ...current };
   if (patch?.sandboxImage === null) delete next.sandboxImage;
   else if (patch?.sandboxImage !== undefined) next.sandboxImage = patch.sandboxImage;
+  if (patch?.runtime === null) delete next.runtime;
+  else if (patch?.runtime !== undefined) {
+    next.runtime = { runtimeId: patch.runtime.runtimeId, env: { ...patch.runtime.env } };
+  }
   return Object.keys(next).length === 0 ? undefined : next;
 }
+
+// POSIX-portable env names; keeps the overlay safe to export in any shell.
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function openMaConflict(
   config: EnvironmentConfig,
   openma: EnvironmentOpenMaExtensions | undefined,
 ): string | null {
-  return config.type === "self_hosted" && openma?.sandboxImage !== undefined
-    ? "_oma.sandbox_image is only supported for cloud environments"
-    : null;
+  if (config.type === "self_hosted" && openma?.sandboxImage !== undefined) {
+    return "_oma.sandbox_image is only supported for cloud environments";
+  }
+  // An Environment either provisions a sandbox (cloud) or attaches to an
+  // existing Runtime (self_hosted) — never both.
+  if (config.type === "cloud" && openma?.runtime !== undefined) {
+    return "_oma.runtime is only supported for self_hosted environments";
+  }
+  if (openma?.runtime !== undefined) {
+    if (openma.runtime.runtimeId.trim().length === 0) {
+      return "_oma.runtime.runtime_id must not be empty";
+    }
+    const bad = Object.keys(openma.runtime.env).find((name) => !ENV_NAME.test(name));
+    if (bad !== undefined) return `_oma.runtime.env has an invalid variable name: ${bad}`;
+  }
+  return null;
 }
 
 function patchMetadata(

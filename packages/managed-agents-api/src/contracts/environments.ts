@@ -11,12 +11,22 @@ import { z } from "zod";
  * OpenMA Environment extension. `sandbox_image` is an alias from the
  * operator's SANDBOX_IMAGES catalog (GET /v1/oma/sandbox_images); `null`
  * on update clears it back to the deployment default image.
+ *
+ * `runtime` attaches a `self_hosted` Environment to an existing Runtime
+ * (`/v1/oma/runtimes`) with a plain env overlay for the host runner.
+ * It replaces the whole attachment on update; `null` detaches.
  */
+export interface OpenMaEnvironmentRuntimeAttachment {
+  runtime_id: string;
+  env?: Record<string, string>;
+}
 export interface OpenMaEnvironmentExtensionBody {
   sandbox_image?: string | null;
+  runtime?: OpenMaEnvironmentRuntimeAttachment | null;
 }
 export interface OpenMaEnvironmentExtensionResponse {
   sandbox_image?: string;
+  runtime?: Required<OpenMaEnvironmentRuntimeAttachment>;
 }
 
 export type EnvironmentCreateBody = Omit<EnvironmentCreateParams, "betas"> & {
@@ -31,15 +41,24 @@ export type OpenMaEnvironmentResponse = BetaEnvironment & {
   _oma?: OpenMaEnvironmentExtensionResponse;
 };
 
+const openMaRuntimeAttachmentSchema = z
+  .object({
+    runtime_id: z.string().min(1),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
 const openMaEnvironmentExtensionSchema = z
   .object({
     sandbox_image: z.string().min(1).nullable().optional(),
+    runtime: openMaRuntimeAttachmentSchema.nullable().optional(),
   })
   .strict();
 
 const openMaEnvironmentExtensionResponseSchema = z
   .object({
     sandbox_image: z.string().min(1).optional(),
+    runtime: openMaRuntimeAttachmentSchema.required().optional(),
   })
   .strict();
 

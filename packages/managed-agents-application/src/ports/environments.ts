@@ -42,6 +42,8 @@ export type EnvironmentView = Environment;
 /** `null` clears a field on update; absent leaves it unchanged. */
 export interface EnvironmentOpenMaInput {
   sandboxImage?: string | null;
+  /** Replaces the whole attachment; `null` detaches the Runtime. */
+  runtime?: { runtimeId: string; env?: Record<string, string> | null } | null;
 }
 
 export interface CreateEnvironmentCommand {

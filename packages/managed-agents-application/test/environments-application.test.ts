@@ -246,6 +246,64 @@ describe("EnvironmentsApplicationService", () => {
     })).resolves.toMatchObject({ type: "invalid_request" });
   });
 
+  it("attaches a self_hosted environment to a Runtime with an env overlay", async () => {
+    let nextId = 0;
+    const service = new EnvironmentsApplicationService({
+      workspaceId: "workspace_01",
+      store: new InMemoryEnvironmentPersistence(),
+      clock: { now: () => new Date("2026-08-26T22:00:00.000Z") },
+      ids: { nextEnvironmentId: () => `env_0${++nextId}` },
+    });
+
+    const attached = await service.createEnvironment({
+      name: "Laptop",
+      config: { type: "self_hosted" },
+      openma: { runtime: { runtimeId: "rt_1", env: { NODE_ENV: "development" } } },
+    });
+    expect(attached).toMatchObject({
+      type: "created",
+      environment: { openma: { runtime: { runtimeId: "rt_1", env: { NODE_ENV: "development" } } } },
+    });
+
+    // Replace semantics: a new attachment without env clears the old overlay.
+    const moved = await service.updateEnvironment({
+      environmentId: "env_01",
+      openma: { runtime: { runtimeId: "rt_2" } },
+    });
+    expect(moved).toMatchObject({
+      environment: { openma: { runtime: { runtimeId: "rt_2", env: {} } } },
+    });
+
+    const detached = await service.updateEnvironment({
+      environmentId: "env_01",
+      openma: { runtime: null },
+    });
+    if (detached.type !== "updated") throw new Error("expected updated");
+    expect(detached.environment).not.toHaveProperty("openma");
+
+    // Sandbox XOR Runtime: a cloud environment cannot attach a Runtime.
+    await expect(service.createEnvironment({
+      name: "Cloud",
+      openma: { runtime: { runtimeId: "rt_1" } },
+    })).resolves.toEqual({
+      type: "invalid_request",
+      message: "_oma.runtime is only supported for self_hosted environments",
+    });
+    await expect(service.createEnvironment({
+      name: "Bad env",
+      config: { type: "self_hosted" },
+      openma: { runtime: { runtimeId: "rt_1", env: { "BAD-NAME": "x" } } },
+    })).resolves.toEqual({
+      type: "invalid_request",
+      message: "_oma.runtime.env has an invalid variable name: BAD-NAME",
+    });
+    await expect(service.createEnvironment({
+      name: "Blank",
+      config: { type: "self_hosted" },
+      openma: { runtime: { runtimeId: "  " } },
+    })).resolves.toMatchObject({ type: "invalid_request" });
+  });
+
   it("keeps an archived environment read-only", async () => {
     const persistence = new InMemoryEnvironmentPersistence();
     const service = new EnvironmentsApplicationService({
