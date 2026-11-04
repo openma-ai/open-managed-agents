@@ -150,6 +150,16 @@
   border-bottom: 1px solid transparent;
 }
 
+/* Collapse: pull topbar left so the restore glyph (not the hit box)
+   shares the list title's left edge. Icon is centered in --control-h. */
+.console-shell[data-sidebar-state="desktop-hidden"] .console-topbar,
+.console-shell[data-sidebar-state="desktop-preview"] .console-topbar,
+.console-shell[data-sidebar-state="mobile-hidden"] .console-topbar {
+  padding-left: calc(
+    var(--list-content-inset) + 1px - (var(--control-h) - var(--shell-restore-icon)) / 2
+  );
+}
+
 .console-page-header-slot {
   flex: 0 0 auto;
   border-bottom: 1px solid transparent;
@@ -197,8 +207,8 @@
 }
 
 .console-sidebar-restore svg {
-  width: 15px;
-  height: 15px;
+  width: var(--shell-restore-icon);
+  height: var(--shell-restore-icon);
 }
 
 .console-sidebar-hover-zone {

@@ -88,15 +88,17 @@ describe("AppShell Linear composition", () => {
     expect(breadcrumb).toContain('cn("font-medium text-foreground"');
   });
 
-  it("keeps list content on the same left edge as the topbar leading control", () => {
+  it("optically aligns the collapsed restore glyph with list content", () => {
     const tokens = readFileSync(resolve(process.cwd(), "src/styles/console-tokens.css"), "utf8");
     const shell = readFileSync(resolve(process.cwd(), "src/styles/console-shell.css"), "utf8");
 
     expect(tokens).toContain("--list-content-inset: var(--list-frame-inset);");
-    expect(tokens).toContain("--topbar-gap: var(--console-gap-lg);");
-    // Collapsed sidebar must NOT push list content past the restore button.
-    expect(shell).not.toMatch(/--list-content-inset:\s*calc\(/);
+    expect(tokens).toContain("--shell-restore-icon: 15px;");
     expect(shell).toContain("gap: var(--topbar-gap);");
+    // Hit-box is wider than the glyph; pad so the icon — not the box — matches the title.
+    expect(shell).toMatch(
+      /data-sidebar-state="desktop-hidden"[\s\S]*\.console-topbar\s*\{[\s\S]*padding-left: calc\(\s*var\(--list-content-inset\) \+ 1px - \(var\(--control-h\) - var\(--shell-restore-icon\)\) \/ 2/,
+    );
   });
 
   it("keeps crumb navigation out of page components", () => {
