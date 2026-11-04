@@ -26,7 +26,9 @@ import {
   sandboxImageWireValue,
   useSandboxImages,
 } from "../components/SandboxImageSelect";
-import type { OpenMaEnvironment } from "../lib/managed-api";
+import type { OpenMaEnvironment, OpenMaEnvironmentExtension } from "../lib/managed-api";
+import { RuntimeAttachmentFields } from "../components/RuntimeAttachmentFields";
+import { formatEnvOverlay, parseEnvOverlay, runtimeAttachmentPatch } from "../lib/env-overlay";
 
 // =================================================================
 // Types
@@ -94,6 +96,9 @@ export function EnvironmentDetail() {
   const [metadataRows, setMetadataRows] = useState<MetadataRow[]>([]);
   const [sandboxImage, setSandboxImage] = useState(DEFAULT_SANDBOX_IMAGE);
   const sandboxImages = useSandboxImages();
+  const [runtimeId, setRuntimeId] = useState("");
+  const [envOverlayText, setEnvOverlayText] = useState("");
+  const envOverlay = parseEnvOverlay(envOverlayText);
   // Initial load via TQ. Re-renders when the cache is populated; the
   // applyEnv side-effect below seeds the editable form state once per
   // fetched payload (id changes between renders → form re-seeds).
@@ -137,6 +142,8 @@ export function EnvironmentDetail() {
 
     setMetadataRows(metadataToRows(e.metadata));
     setSandboxImage(e._oma?.sandbox_image ?? DEFAULT_SANDBOX_IMAGE);
+    setRuntimeId(e._oma?.runtime?.runtime_id ?? "");
+    setEnvOverlayText(formatEnvOverlay(e._oma?.runtime?.env));
   }
 
   async function save() {
@@ -153,15 +160,18 @@ export function EnvironmentDetail() {
           : { type: "self_hosted" };
 
       const storedImage = env._oma?.sandbox_image ?? DEFAULT_SANDBOX_IMAGE;
-      const body: EnvironmentUpdateParams & { _oma?: { sandbox_image: string | null } } = {
+      const runtimePatch = runtimeAttachmentPatch(env._oma?.runtime, runtimeId, envOverlay.env);
+      const omaPatch: OpenMaEnvironmentExtension = {
+        // Only sent when changed, so an untouched form stays plain CMA.
+        ...(sandboxImage !== storedImage && { sandbox_image: sandboxImageWireValue(sandboxImage) }),
+        ...(runtimePatch !== undefined && { runtime: runtimePatch }),
+      };
+      const body: EnvironmentUpdateParams & { _oma?: OpenMaEnvironmentExtension } = {
         name: name.trim(),
         description: description.trim() || null,
         config,
         metadata: rowsToMetadataPatch(env.metadata, metadataRows),
-        // Only sent when changed, so an untouched form stays plain CMA.
-        ...(sandboxImage !== storedImage && {
-          _oma: { sandbox_image: sandboxImageWireValue(sandboxImage) },
-        }),
+        ...(Object.keys(omaPatch).length > 0 && { _oma: omaPatch }),
       };
 
       const updated = await managedApi.environments.update(id, body);
@@ -254,6 +264,23 @@ export function EnvironmentDetail() {
                 onValueChange={setSandboxImage}
               />
             </div>
+          </SectionCard>
+        )}
+
+        {/* Runtime attachment — self_hosted only. The Runtime itself is a
+            peer resource managed on the Runtimes page. */}
+        {env.config.type === "self_hosted" && (
+          <SectionCard
+            title="Runtime"
+            subtitle="Run sessions on a paired machine and inject an env overlay into its runner."
+          >
+            <RuntimeAttachmentFields
+              idPrefix="env-detail"
+              runtimeId={runtimeId}
+              onRuntimeIdChange={setRuntimeId}
+              envText={envOverlayText}
+              onEnvTextChange={setEnvOverlayText}
+            />
           </SectionCard>
         )}
 
@@ -442,7 +469,7 @@ export function EnvironmentDetail() {
 
         {/* Footer actions */}
         <div className="console-settings-actions" data-testid="settings-actions">
-          <Button onClick={save} loading={saving} disabled={!name.trim()}>
+          <Button onClick={save} loading={saving} disabled={!name.trim() || envOverlay.errors.length > 0}>
             Save changes
           </Button>
           <Button variant="ghost" onClick={cancel} disabled={saving}>

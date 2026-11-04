@@ -21,8 +21,21 @@ import {
   SandboxImageSelect,
   useSandboxImages,
 } from "../components/SandboxImageSelect";
+import { RuntimeAttachmentFields } from "../components/RuntimeAttachmentFields";
+import { parseEnvOverlay } from "../lib/env-overlay";
+import type { OpenMaEnvironment } from "../lib/managed-api";
 
 type StatusValue = "any" | "active" | "archived";
+type Hosting = "cloud" | "runtime";
+
+const EMPTY_FORM = {
+  name: "",
+  description: "",
+  hosting: "cloud" as Hosting,
+  sandboxImage: DEFAULT_SANDBOX_IMAGE,
+  runtimeId: "",
+  envText: "",
+};
 
 const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
   { value: "any", label: "All" },
@@ -30,13 +43,23 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
   { value: "archived", label: "Archived" },
 ];
 
+/** "runtime" for an Environment attached to a paired machine, else the CMA type. */
+function hostingLabel(environment: Env): string {
+  if ((environment as OpenMaEnvironment)._oma?.runtime) return "runtime";
+  return (environment.config?.type as string) || "cloud";
+}
+
 export function EnvironmentsList() {
   const managedApi = useManagedApi();
   const nav = useNavigate();
   const { t } = useI18n();
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "", sandboxImage: DEFAULT_SANDBOX_IMAGE });
+  const [form, setForm] = useState(EMPTY_FORM);
   const sandboxImages = useSandboxImages();
+  const overlay = parseEnvOverlay(form.envText);
+  const canCreate =
+    form.name.trim() !== "" &&
+    (form.hosting === "cloud" || (form.runtimeId !== "" && overlay.errors.length === 0));
 
   // Server-driven filter state. Each piece flows into envsParams below
   // → useInfiniteApiQuery resets to page 1 on params change → the list
@@ -69,17 +92,28 @@ export function EnvironmentsList() {
   }, [envs, search, status]);
 
   const create = async () => {
-    await managedApi.environments.create({
-      name: form.name,
-      config: { type: "cloud" },
-      description: form.description || undefined,
-      // Omitted for the default image so the request stays plain CMA.
-      ...(form.sandboxImage !== DEFAULT_SANDBOX_IMAGE && {
-        _oma: { sandbox_image: form.sandboxImage },
-      }),
-    });
+    await managedApi.environments.create(
+      form.hosting === "runtime"
+        ? {
+            // Attach to an existing Runtime: no sandbox is provisioned, so the
+            // CMA shape is `self_hosted` and the Runtime rides in `_oma`.
+            name: form.name,
+            config: { type: "self_hosted" },
+            description: form.description || undefined,
+            _oma: { runtime: { runtime_id: form.runtimeId, env: overlay.env } },
+          }
+        : {
+            name: form.name,
+            config: { type: "cloud" },
+            description: form.description || undefined,
+            // Omitted for the default image so the request stays plain CMA.
+            ...(form.sandboxImage !== DEFAULT_SANDBOX_IMAGE && {
+              _oma: { sandbox_image: form.sandboxImage },
+            }),
+          },
+    );
     setShowCreate(false);
-    setForm({ name: "", description: "", sandboxImage: DEFAULT_SANDBOX_IMAGE });
+    setForm(EMPTY_FORM);
     load();
   };
 
@@ -133,12 +167,10 @@ export function EnvironmentsList() {
     },
     {
       id: "type",
-      accessorFn: (e) => (e.config?.type as string) || "cloud",
+      accessorFn: hostingLabel,
       header: t.environments.type,
       cell: ({ row }) => (
-        <span className="text-fg-muted">
-          {row.original.config?.type === "cloud" ? t.deployments.cloud : row.original.config?.type}
-        </span>
+        <span className="text-fg-muted">{hostingLabel(row.original)}</span>
       ),
     },
     { id: "scope", header: t.environments.scope, cell: ({row}) => row.original.scope === "organization" ? t.deployments.organization : row.original.scope === "account" ? t.deployments.account : "—" },
@@ -214,11 +246,11 @@ export function EnvironmentsList() {
         open={showCreate}
         onClose={() => setShowCreate(false)}
         title="Add Environment"
-        subtitle="Environments provide isolated sandboxes for code execution."
+        subtitle="Provision an isolated sandbox, or run on a machine you already paired."
         footer={
           <>
             <Button variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button>
-            <Button onClick={create} disabled={!form.name}>Create</Button>
+            <Button onClick={create} disabled={!canCreate}>Create</Button>
           </>
         }
       >
@@ -235,13 +267,27 @@ export function EnvironmentsList() {
             <p className="text-xs text-fg-subtle mt-1">{form.name.length}/50 characters</p>
           </div>
           <div>
-            <span className="text-sm text-fg-muted block mb-1">Hosting Type</span>
-            <Select value="cloud" onValueChange={() => {}} disabled>
-              <SelectOption value="cloud">Cloud</SelectOption>
+            <Label htmlFor="env-create-hosting" className="text-sm text-fg-muted block mb-1">Hosting Type</Label>
+            <Select
+              id="env-create-hosting"
+              value={form.hosting}
+              onValueChange={(hosting) => setForm({ ...form, hosting: hosting as Hosting })}
+            >
+              <SelectOption value="cloud">Cloud — provision a sandbox</SelectOption>
+              <SelectOption value="runtime">Attach to existing Runtime</SelectOption>
             </Select>
             <p className="text-xs text-fg-subtle mt-1">This cannot be changed after creation.</p>
           </div>
-          {sandboxImages.length > 0 && (
+          {form.hosting === "runtime" && (
+            <RuntimeAttachmentFields
+              idPrefix="env-create"
+              runtimeId={form.runtimeId}
+              onRuntimeIdChange={(runtimeId) => setForm({ ...form, runtimeId })}
+              envText={form.envText}
+              onEnvTextChange={(envText) => setForm({ ...form, envText })}
+            />
+          )}
+          {form.hosting === "cloud" && sandboxImages.length > 0 && (
             <div>
               <Label htmlFor="env-create-sandbox-image" className="text-sm text-fg-muted block mb-1">Sandbox image</Label>
               <SandboxImageSelect
