@@ -150,14 +150,15 @@
   border-bottom: 1px solid transparent;
 }
 
-/* Collapse: pull topbar left so the restore glyph (not the hit box)
-   shares the list title's left edge. Icon is centered in --control-h. */
+/* Collapse: the restore button sits flush on the frame edge and its own
+   inline padding is the shared gutter, so the glyph has the same space on
+   its left (to the frame) and right (to the crumb), and lines up with the
+   list title. */
 .console-shell[data-sidebar-state="desktop-hidden"] .console-topbar,
 .console-shell[data-sidebar-state="desktop-preview"] .console-topbar,
 .console-shell[data-sidebar-state="mobile-hidden"] .console-topbar {
-  padding-left: calc(
-    var(--list-content-inset) + 1px - (var(--control-h) - var(--shell-restore-icon)) / 2
-  );
+  padding-left: 0;
+  gap: 0;
 }
 
 .console-page-header-slot {
@@ -190,9 +191,10 @@
 
 .console-sidebar-restore {
   display: inline-flex;
-  width: var(--control-h);
+  width: auto;
   height: var(--control-h);
-  flex: 0 0 var(--control-h);
+  flex: 0 0 auto;
+  padding-inline: var(--list-content-inset);
   align-items: center;
   justify-content: center;
   border: 0;

@@ -88,17 +88,21 @@ describe("AppShell Linear composition", () => {
     expect(breadcrumb).toContain('cn("font-medium text-foreground"');
   });
 
-  it("optically aligns the collapsed restore glyph with list content", () => {
+  it("uses one shared gutter around the collapsed restore glyph", () => {
     const tokens = readFileSync(resolve(process.cwd(), "src/styles/console-tokens.css"), "utf8");
     const shell = readFileSync(resolve(process.cwd(), "src/styles/console-shell.css"), "utf8");
 
     expect(tokens).toContain("--list-content-inset: var(--list-frame-inset);");
     expect(tokens).toContain("--shell-restore-icon: 15px;");
-    expect(shell).toContain("gap: var(--topbar-gap);");
-    // Hit-box is wider than the glyph; pad so the icon — not the box — matches the title.
+    // Same token on both sides of the glyph: frame edge -> glyph, glyph -> crumb.
     expect(shell).toMatch(
-      /data-sidebar-state="desktop-hidden"[\s\S]*\.console-topbar\s*\{[\s\S]*padding-left: calc\(\s*var\(--list-content-inset\) \+ 1px - \(var\(--control-h\) - var\(--shell-restore-icon\)\) \/ 2/,
+      /\.console-sidebar-restore\s*\{[^}]*padding-inline: var\(--list-content-inset\);/,
     );
+    expect(shell).toMatch(
+      /data-sidebar-state="desktop-hidden"[\s\S]*?\.console-topbar\s*\{[^}]*padding-left: 0;[^}]*gap: 0;/,
+    );
+    // No derived arithmetic for the restore gutter.
+    expect(shell).not.toMatch(/--shell-restore-icon\)\)\s*\/\s*2/);
   });
 
   it("keeps crumb navigation out of page components", () => {
