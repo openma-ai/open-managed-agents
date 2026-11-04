@@ -9,7 +9,7 @@ Related: [ADR 0005](../adr/0005-self-hosted-worker-runtime-resources.md), [v1-ar
 **Owner decisions this memo follows.**
 
 1. One machine is one **Runtime**. A Runtime is a peer API resource to Environment (`/v1/oma/runtimes`) and is never nested under it.
-2. A **Runtime** pairs the whole machine once (identity and connection), owned by one user (`owner_user_id`). It reports Git, Docker, supported sandbox modes and available resources. An **Environment** binds a Runtime and chooses placement rules; a **Session** selects within those rules, and the daemon re-validates locally. Cloud-provisioned Environments remain available separately.
+2. A **Runtime** pairs the whole machine once (identity and connection), owned by one user (`owner_user_id`). It reports Git, Docker, supported sandbox modes and available resources. An **Environment** binds a Runtime and chooses placement and directories; a **Session** runs within it, and the daemon re-validates locally. Cloud-provisioned Environments remain available separately.
 3. An Amp `--amp-env`-style **env + secrets overlay**, configured in the Console, is injected into the host runner (its shell, MCP servers and plugins).
 
 ---
@@ -122,7 +122,7 @@ oma runtime rm <id>                    # exists: revoke
 | `Environment._oma.runtime { runtime_id, env }` | **Implemented** across domain, application, contract and mapper | Current schema allows attachment only on `self_hosted` and rejects cloud + runtime. This is an existing schema constraint, not the target placement rule: a Runtime can own a local sandbox. Extend the attachment with placement fields described below. Env names must match `[A-Za-z_][A-Za-z0-9_]*`. The write replaces the whole attachment, `null` detaches, and it is omitted on the wire when unset (the official SDK still parses it). Stored in the existing `document` JSON, so no migration. |
 | Bundle merges the Environment overlay | **Implemented** | `GET /agents/runtime/sessions/:sid/bundle` reads the session's Environment. The overlay is served **only if** the Environment is live and `_oma.runtime.runtime_id` equals the authenticated runtime. Session `env` resources override it by name. |
 | `_oma.runtime.secret_env` (write-only names → sealed values) | Phase 2 | Reuse the `session-secrets-store` sealing (`CfManagedSessionSecretSealer`) keyed by environment. GET returns names only. Alternatively, reference vault credentials of type `command_secret`. |
-| Session placement from the Environment | Phase 2 | When `environment._oma.runtime` is set, a Session selects multiple allowed directories with a primary cwd and additional roots (harness-dependent); session create derives `runtime_binding.runtime_id` from it and needs only the ACP agent from the Agent. If the Agent already has a different `runtime_binding`, reject with 409 rather than guess. |
+| Session placement from the Environment | Phase 2 | When `environment._oma.runtime` is set, a Session starts from its configured directories, primary cwd and additional roots (harness-dependent); session create derives `runtime_binding.runtime_id` from it and needs only the ACP agent from the Agent. If the Agent already has a different `runtime_binding`, reject with 409 rather than guess. |
 | `GET /v1/oma/runtimes/:id`, `PATCH {name, labels}` | Phase 2 | Display name and labels (Buildkite-style tags) for picker filtering and future pools. |
 | Pending pairing-token list + revoke | Phase 2 | `GET/DELETE /v1/oma/runtimes/pairing-tokens`. Store a `sha256(code)` instead of the plaintext code; the existing browser flow stores plaintext. |
 | Runtime ownership | Decided | One user owns each Runtime (`owner_user_id`). Pairing, Environment attachment and directory authorization must respect that identity; workspace membership alone grants no machine access. |
@@ -149,7 +149,7 @@ oma runtime rm <id>                    # exists: revoke
 | Environments list "Type" column shows `runtime` for attached environments | **Implemented** |
 | Runtime detail page (agents, local skills, Environments attached, last sessions, pending pairing tokens) | Phase 2 |
 | Overlay **secrets** rows (masked, write-only) and an "effective env" preview with precedence | Phase 2 |
-| Environment placement editor and Session directory picker | Proposed: sandbox/host, default/custom directories, allowed edit modes; Session selects multiple authorized roots/subpaths and marks a primary |
+| Environment placement editor and Session view | Proposed: Environment owns placement, directory/subpath picker, primary and edit modes; Session shows effective paths, branches and queue state |
 | Session create: when the Environment is attached and the runtime is offline, warn (the session would queue) | Phase 2 |
 
 ### 3d. Pairing / auth model
@@ -194,11 +194,13 @@ oma runtime rm <id>                    # exists: revoke
 
 ---
 
-## Session placement: sandbox vs host, default vs custom directories
+## Environment placement: sandbox vs host, default vs custom directories
 
 ### Layers and placement choices
 
-Pair the **whole machine once**, independent of folders or GitHub. The Runtime reports Git present, Docker present, supported sandbox modes, resources and online status. The Environment binds `runtime_id` and defines allowed placement, directories and edit modes. A Session chooses within that policy. The daemon checks capabilities, current policy and real paths immediately before launch/resume, rejecting unavailable or out-of-bounds choices without silently falling back to scratch or in-place editing.
+Pair the **whole machine once**, independent of folders or GitHub. The Runtime reports Git present, Docker present, supported sandbox modes, resources and online status. The Environment binds `runtime_id` and chooses placement, directories and edit modes. A Session references the Environment and runs within it, carrying no directory choices and at most an optional `slug` for branch naming. The daemon checks capabilities, current policy and real paths immediately before launch/resume, rejecting unavailable or out-of-bounds choices without silently falling back to scratch or in-place editing.
+
+The Environment placement design must account for Deployments ([#448](https://github.com/openma-ai/open-managed-agents/issues/448)).
 
 The two axes are **sandbox or host** and **custom directory or default directory**. There are three effective combinations; custom host directories are never mounted into sandbox mode.
 
@@ -206,7 +208,7 @@ The two axes are **sandbox or host** and **custom directory or default directory
 |---|---|---|
 | Sandbox | Independent container/microVM on the Runtime machine's own resources; no host directory mounts. Runtime retention covers the container and persisted volumes/snapshots (see below) | Files arrive through resources, e.g. clone a GitHub repository inside the sandbox |
 | Host, default directory | Today's per-session scratch directory `~/.oma/bridge/sessions/<12hex>/` | GitHub repository and other resource injection remain allowed |
-| Host, custom directories | One Session selects multiple allowed roots/subpaths at once (Amp-style); primary sets start cwd, others are additional workspace roots (harness-dependent). Per-entry in-place editing or per-repository Git worktrees | No GitHub repository resource injection, avoiding duplicate copies and ambiguous cwd; an optional Git credential (token) alone may enable push/PR |
+| Host, custom directories | The Environment selects roots/subpaths and primary start cwd; others are additional workspace roots (harness-dependent). Each Session instantiates the configured in-place entries or Git worktrees | No GitHub repository resource injection, avoiding duplicate copies and ambiguous cwd; an optional Git credential (token) alone may enable push/PR |
 
 Initial sandbox implementation reuses **self-hosted OpenSandbox with its Docker backend**. OMA already has an OpenSandbox provider; register each resulting sandbox as owned by that Runtime. Later backend candidates: Apple Containerization or Lima on macOS, Firecracker on Linux, and Microsoft LiteBox on Windows. LiteBox is MIT-licensed and has a Linux-on-Windows userland runner; it is early/unstable and toolchain support is unverified.
 
@@ -222,24 +224,24 @@ Replace that coupling with a **Runtime-local path and stable `directory_id`**. D
 
 Only the machine owner can authorize custom roots: `oma bridge allow-dir <path>`, or a **local confirmation prompt** the first time Console references a path. Remote clients may request approval but cannot add authorized paths themselves. Runtime ownership is one `owner_user_id`; Environment visibility or remote API access does not bypass local approval.
 
-An authorized root authorizes its **whole subtree**. Session placement takes `directories: [{ directory_id, subpath?, edit_mode? }]` (one or more), each selected from the Environment's allowed directories, plus `primary`, a zero-based entry index. Each subpath is relative. `primary` defaults to the entry for the Environment's `default_directory`; require an explicit primary if that directory is absent or ambiguous. The primary entry's effective path is the agent's start cwd. Other entries are exposed as additional workspace roots, such as ACP additional directories or Claude Code `--add-dir`; support is harness-dependent. Reject unsupported multi-root placement explicitly.
+An authorized root authorizes its **whole subtree**. The Environment owns `placement: sandbox|host`, `directories: [{ directory_id, subpath?, edit_mode }]` with `edit_mode: in_place|worktree`, and `primary`, a zero-based entry index selecting the start cwd. Each subpath is relative. Other entries become additional workspace roots, such as ACP additional directories or Claude Code `--add-dir`; support is harness-dependent. Reject unsupported multi-root placement explicitly. The Environment also owns per-repo `repositories: [{ directory_id, base_branch?, existing_checkout? }]`, a branch slug template and a reference to the Runtime retention settings.
 
-Validate each entry independently: resolve the authorized root and requested path to real paths, including symlinks and `..`, and reject anything outside that root. Check containment by path components, revalidate before execution, and reject stale/revoked roots. Console browsing stays within authorized roots. Reject duplicate or overlapping ancestor/descendant entries within one Session, including effective paths after checkout mapping.
+Validate when the Environment is saved and re-check in the daemon at Session launch/resume: roots must be locally authorized and current; resolve roots and requested paths to real paths, including symlinks and `..`, and check containment by path components. Reject duplicate or overlapping ancestor/descendant entries, including effective paths after checkout mapping, non-Git entries using anything but `in_place`, and custom directories combined with GitHub repository injection. Console browsing stays within authorized roots.
 
-Pin the Runtime and primary on the Session, and directory ID, policy revision, canonical source path, effective path and edit mode per entry. Pin repository identity, checkout choice and resolved base/HEAD SHAs per repository, with one slug per Session. Preserve these bindings on resume. Moving a root or reinstalling a Runtime must not silently bind existing sessions to different files.
+Session pinning records the Environment policy revision, Runtime and primary, plus each entry's directory ID, canonical source path, resolved effective path and edit mode. Pin repository identity, checkout choice and resolved base/HEAD SHAs per repository, with one slug per Session. Preserve these bindings on resume. Moving a root or reinstalling a Runtime must not silently bind existing sessions to different files.
 
 ### In-place concurrency and optional worktrees
 
 Runs on the **same canonical in-place directory are serialized through a queue**, Multica-style. Aliases resolving to the same directory share a lease. A Session using several in-place directories acquires all leases in stable canonical-path-sorted order to avoid deadlock. Hold leases through tool/subprocess activity and reconcile them after daemon restart; separate worktrees allow parallel checkouts. Cross-session ancestor/descendant conflicts remain an open question.
 
-Edit mode is per entry. Non-Git entries stay `in_place`; report missing Git/worktree capability rather than downgrading silently. Git entries may use a per-session managed workspace:
+Edit mode is configured per Environment entry. Non-Git entries stay `in_place`; report missing Git/worktree capability rather than downgrading silently. Git entries may use a per-session managed workspace:
 
-- Follow Backchat's [`prepare()` in worktree-manager.ts](https://github.com/openma-ai/backchat/blob/92f1bf3/src/main/worktree-manager.ts) and [workspace selection](https://github.com/openma-ai/backchat/blob/92f1bf3/docs/workspace-selection.md). Create one managed workspace directory per Session on the Runtime, e.g. `~/.oma/bridge/workspaces/<sessionShortId>/`, containing one worktree per distinct repository named `NN-<safeName(repoBasename)>` (`01-`, `02-`, ...). Validate destinations under this OMA-managed root; sanitize names and reject collisions.
-- Dedupe repository identity using the real `--show-toplevel` and Git common directory, so sibling checkouts of the same repository count once. Selected directories in the same repository share one worktree; each entry's effective path is that worktree plus its relative path inside its source repository. Require consistent checkout/edit-mode choices for entries sharing a repository.
-- Use one Session slug and branch name for the whole workspace, `oma/<shortId>/<slug>`, created in every managed repository. Optional `base_branch` refs are per repository, defaulting to current HEAD; resolve and pin SHAs. If the local branch already exists, check it out instead; an explicit base must be an ancestor of that branch. Record the checked-out HEAD and `createdBranchRepos`; only branches OMA created may ever be deleted, using `git branch -d`.
+- Follow Backchat's [`prepare()` in worktree-manager.ts](https://github.com/openma-ai/backchat/blob/92f1bf3/src/main/worktree-manager.ts) and [workspace selection](https://github.com/openma-ai/backchat/blob/92f1bf3/docs/workspace-selection.md). Each Session instantiates its own managed workspace from the Environment worktree entries on the Runtime at `~/.oma/bridge/workspaces/<sessionShortId>/`, containing one worktree per distinct repository named `NN-<safeName(repoBasename)>` (`01-`, `02-`, ...). Validate destinations under this OMA-managed root; sanitize names and reject collisions.
+- Dedupe repository identity using the real `--show-toplevel` and Git common directory, so sibling checkouts of the same repository count once. Environment entries in the same repository share one worktree; each entry's effective path is that worktree plus its relative path inside its source repository. Require consistent checkout/edit-mode choices for entries sharing a repository.
+- Use the Environment branch slug template with one Session slug and branch name for the whole workspace, for example `oma/<shortId>/<slug>`, created in every managed repository. Environment `base_branch` refs are per repository, defaulting to current HEAD; resolve and pin SHAs. If the local branch already exists, check it out instead; an explicit base must be an ancestor of that branch. Record the checked-out HEAD and `createdBranchRepos`; only branches OMA created may ever be deleted, using `git branch -d`.
 - Write an ownership manifest in the workspace directory: Session ID, canonical source directories, roots with source/effective paths, worktrees with `repoRoot/path/head/branch`, resolved bases and `createdBranchRepos`. Refuse reuse without a matching manifest or with different source directories; revalidate recorded paths and Git registration on reuse.
 - Creation is all-or-nothing: do not start the agent until every entry is prepared. On failure, roll back worktrees created in this attempt, preserving pre-existing checkouts and branches. Use the autosave-before-removal path below for rollback too; retain ownership records and mark `cleanup_blocked` if safe removal fails.
-- **Use existing:** per repository, users may choose an existing checkout, including the source checkout itself (in place), instead of creating a managed worktree. Apply local authorization and real-path containment checks to that checkout and map each entry's relative path into it. Treat it as in-place for leases and never claim cleanup ownership. No cross-repository conflict analysis is performed.
+- **Use existing:** the Environment may configure an existing checkout per repository, including the source checkout itself (in place), instead of creating a managed worktree. Apply local authorization and real-path containment checks to that checkout and map each entry's relative path into it. Treat it as in-place for leases and never claim cleanup ownership. No cross-repository conflict analysis is performed.
 - Worktrees do not automatically receive dirty, untracked or ignored source files. Backchat rollback/removal uses `git worktree remove --force` plus `rm -rf`; OMA diverges by autosaving work to its owned branch before removing the worktree, including during rollback, under the ownership and force guards below.
 
 ### Archive and cleanup
@@ -273,36 +275,41 @@ Extend the Environment attachment rather than using Agent/GitHub paths as placem
   "_oma": { "runtime": {
     "runtime_id": "rt_buildbox",
     "placement": "host",
-    "directories": ["dir_shop", "dir_notes"],
-    "default_directory": "dir_shop",
-    "edit_mode": "in_place",
+    "directories": [
+      { "directory_id": "dir_shop", "subpath": "src", "edit_mode": "worktree" },
+      { "directory_id": "dir_notes", "edit_mode": "in_place" }
+    ],
+    "primary": 0,
+    "repositories": [{ "directory_id": "dir_shop", "base_branch": "main" }],
+    "branch_slug_template": "oma/<shortId>/<slug>",
+    "retention": { "runtime_id": "rt_buildbox" },
     "env": { "NODE_ENV": "development" }
   }}
 }
 ```
 
-`placement: sandbox|host`; `directories[]` restricts the locally authorized roots available to each Session, which may select multiple roots/subpaths together; `default_directory` selects one of them. An empty list and null default choose managed scratch for host mode. Sandbox uses no host directory IDs. `edit_mode: in_place|worktree` supplies the default; any permitted Session override must be bounded explicitly by Environment policy and local capabilities. Reject incompatible combinations, including non-Git worktree and custom directories plus GitHub repository injection.
+`directories[]` contains the Environment's selected authorized roots/subpaths and per-entry modes; `primary` selects the start cwd. An empty list with no primary chooses managed scratch for host mode. Sandbox uses no host directory IDs. `repositories[]` identifies each deduped repo through a configured directory ID; reject conflicting checkout options. `branch_slug_template` configures branch naming, and `retention` references the Runtime settings above. Validate on Environment save and re-check at Session launch as specified above.
 
 | Surface | Proposed shape |
 |---|---|
 | Runtime API | `GET /v1/oma/runtimes/:id` includes `owner_user_id`, capabilities and resources; `GET /v1/oma/runtimes/:id/directories` lists locally approved stable IDs, canonical paths, Git capability and policy revision |
 | Directory approval | Console may create a pending request; only authenticated local owner confirmation/`allow-dir` commits authorization. No remote path-add endpoint grants access |
-| Session API | Existing create endpoint takes Environment plus `_oma.placement { directories: [{ directory_id, subpath?, edit_mode? }], primary?, slug?, repositories?: [{ directory_id, base_branch?, existing_checkout? }] }`. One or more entries; `primary` is an entry index, defaulting to Environment `default_directory`. Repository options use a selected directory ID to identify the deduped repo; reject conflicting options. Slug is per Session, base refs and checkout choices per repo. Return per-entry pinned paths/modes and queue state, per-repo branch/base/HEAD SHAs, primary cwd, additional roots and sandbox ID when applicable |
+| Session API | Placement input is the Environment ID only, with an optional Session `slug` for branch naming. Return effective primary cwd, additional roots, per-entry pinned paths/modes and queue state, per-repo branches/base/HEAD SHAs and sandbox ID when applicable. Directory and checkout choices come from the Environment |
 | Cleanup API | Archive starts retention; daemon expiry and Console Delete now share worktree autosave/removal or sandbox output export/removal as described above. Report reclaimed bytes. Report `pending`, `cleanup_blocked`, `removed` and retained unmerged branches; branch expiry follows a second retention window |
 | Runtime cleanup config | `oma bridge config` / Console Runtime settings: `worktree_retention_days` (default 30; 0 deletes at archive), `sandbox_retention_days` (default 30; 0 cleans up at archive), shared optional `max_workspace_bytes` evicting oldest archived Session resources first, idle sandbox timeout and separate LRU image-cache size cap |
 | Local CLI | `oma bridge allow-dir /srv/projects`, `oma bridge dirs list`; local revoke blocks new starts/resumes |
-| Environment CLI | `oma env create --runtime <id> --placement host --directory <id> [--directory <id> …] --default-directory <id> --edit-mode in_place`; sandbox uses `--placement sandbox` without directory flags |
-| Session CLI | `oma sessions create --agent <id> --env <id> --directory <id>[:<subpath>] [--directory <id>[:<subpath>] …] [--primary <index>] [--slug <slug>]`; entry-scoped `--edit-mode <index>=worktree`, repo-scoped `--base-branch <id>=<ref>` / `--use-existing <id>=<checkout>`. Explicit scratch/sandbox follows Environment policy |
-| Console | Runtime shows owner, capabilities and authorized roots. Environment selects Runtime, Sandbox/Host, then default/custom directories and edit mode. Session picker selects multiple permitted roots/subpaths and marks a primary; shows per-entry edit mode, per-repo worktree/Use existing and base ref, Session slug, effective paths and queue state; non-Git stays in place |
+| Environment CLI | `oma env create --runtime <id> --placement host --directory <id>[:<subpath>][@worktree\|@in_place] [--directory …] --primary <index>`; `--directory` is repeatable. Sandbox uses `--placement sandbox` without directory flags |
+| Session CLI | `oma sessions create --agent <id> --env <id> [--slug <slug>]`; starts from the Environment configuration |
+| Console | Runtime shows owner, capabilities and authorized roots. The Environment editor owns Runtime, Sandbox/Host, directory/subpath picker, primary, per-entry edit modes, per-repo worktree/Use existing and base ref, branch slug template and Runtime retention reference. Session view shows effective paths, branches and queue state; non-Git stays in place |
 
 Console must state: **“Served directories pick the start cwd and additional workspace roots and are not a sandbox. Commands run with the Runtime user's permissions.”** A remotely requested new root remains pending until local owner approval. Archive starts automatic retention cleanup; show the expiry, shared disk cap, reclaimed bytes, Delete now action, autosave/output-export status and concrete cleanup blockers. Serving a plain folder never introduces a GitHub OAuth prerequisite.
 
 ## 5. Open questions
 
 1. How should existing Agent `runtime_binding` and GitHub `local_path` sessions migrate to Environment authority? Keep a 409 on conflicting bindings; decide when to deprecate Agent machine placement.
-2. How should Environment policy express allowed Session edit-mode overrides, and should Git worktrees be the first-use default or an explicit choice?
+2. Should Git worktrees be the first-use default or an explicit choice in the Environment editor?
 3. How are path moves, symlink replacement, Windows casing/drives and removable mounts reconciled for pinned entries and the managed workspace root?
-4. Within one Session, overlapping entries are rejected. Should the in-place queue also lock ancestor/descendant directories across Sessions? How are crashed leases and background processes reconciled, and does revoking a root stop existing runs?
+4. Within one Environment configuration, overlapping entries are rejected. Should the in-place queue also lock ancestor/descendant directories across Sessions? How are crashed leases and background processes reconciled, and does revoking a root stop existing runs?
 5. What OpenSandbox lifecycle, networking, resource limits and credential policy apply on each Runtime? What toolchain validation gates future backends, particularly LiteBox?
 6. How should submodules, nested repositories, LFS and unborn/bare repositories preserve work during autosave? How should Console present `cleanup_blocked`, disk-cap pressure and retained unmerged branch notices? Ignored output disposal and retention defaults are decided above.
 7. Seal overlay secrets or reference vaults? Add per-user/per-Runtime overlays beyond session > Environment > daemon precedence? Should overlays reach the daemon itself?
