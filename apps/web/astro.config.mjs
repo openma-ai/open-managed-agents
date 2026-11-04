@@ -12,6 +12,9 @@ export default defineConfig({
   trailingSlash: "always",
   integrations: [
     sitemap({
+      // Blog i18n: /zh/blog/<slug>/ pairs with /blog/<slug>/ by path, so the
+      // sitemap emits xhtml:link hreflang alternates for translated posts.
+      i18n: { defaultLocale: "en", locales: { en: "en", zh: "zh-Hans" } },
       // Per-route priority + changefreq hints. Google ignores priority
       // mostly but Bing + smaller crawlers use them.
       serialize(item) {
@@ -31,7 +34,7 @@ export default defineConfig({
         } else if (url.pathname === "/blog/") {
           item.priority = 0.9;
           item.changefreq = "weekly";
-        } else if (url.pathname.startsWith("/blog/")) {
+        } else if (url.pathname.startsWith("/blog/") || url.pathname.startsWith("/zh/blog/")) {
           item.priority = 0.7;
           item.changefreq = "monthly";
         } else {

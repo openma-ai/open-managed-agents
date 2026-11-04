@@ -1,0 +1,37 @@
+---
+import Base from "../../../layouts/Base.astro";
+import { getCollection } from "astro:content";
+import { postPath } from "../../../lib/blog-i18n";
+
+const posts = (await getCollection("blog", ({ data }) => !data.draft && data.lang === "zh"))
+  .sort((a, b) => b.data.publishedAt.valueOf() - a.data.publishedAt.valueOf());
+
+function formatDate(d: Date) {
+  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
+}
+---
+
+<Base
+  title="博客（中文）"
+  description="Open Managed Agents 中文博客：agent、沙箱与基础设施相关的文章。"
+  canonical="/zh/blog/"
+  lang="zh-Hans"
+>
+  <div class="max-w-3xl mx-auto px-4 py-12">
+    <h1 class="font-display text-4xl font-bold mb-2">博客</h1>
+    <p class="text-[var(--color-fg-muted)] mb-12"><a href="/blog/" hreflang="en" lang="en" class="underline">English posts</a></p>
+    <ul class="space-y-8">
+      {posts.map((post) => (
+        <li>
+          <article>
+            <div class="text-xs text-[var(--color-fg-subtle)] mb-1">{formatDate(post.data.publishedAt)}</div>
+            <h2 class="font-display text-2xl font-semibold mb-1">
+              <a href={postPath(post)} class="text-[var(--color-fg)]">{post.data.title}</a>
+            </h2>
+            <p class="text-[var(--color-fg-muted)]">{post.data.description}</p>
+          </article>
+        </li>
+      ))}
+    </ul>
+  </div>
+</Base>

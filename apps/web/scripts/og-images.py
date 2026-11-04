@@ -33,6 +33,8 @@ LANDING = {
 
 def card(headline: str, eyebrow: str, path: str) -> str:
     size, width = 64, 24
+    # cairosvg has no per-glyph fallback, so CJK titles get a CJK face.
+    family = "Noto Serif CJK SC" if re.search(r"[\u3000-\u9fff]", headline) else "DM Sans"
     lines = textwrap.wrap(headline, width)
     if len(lines) > 3:
         size, width = 52, 30
@@ -47,7 +49,7 @@ def card(headline: str, eyebrow: str, path: str) -> str:
 <g opacity="0.18" transform="translate(960, 80)"><rect width="160" height="36" fill="#f84f32" rx="4"/><rect y="56" width="160" height="36" fill="#f84f32" rx="4"/><rect y="112" width="160" height="36" fill="#f84f32" rx="4"/></g>
 <g transform="translate(80, 100)">{LOGO}<text x="82" y="0" font-family="JetBrains Mono, monospace" font-weight="700" font-size="36" fill="#16181d">openma</text></g>
 <text x="80" y="200" font-family="DM Sans, sans-serif" font-weight="500" font-size="22" letter-spacing="3" fill="#ea580c">{escape(eyebrow)}</text>
-<text font-family="DM Sans, sans-serif" font-weight="700" font-size="{size}" fill="#16181d">{tspans}</text>
+<text font-family="{family}" font-weight="700" font-size="{size}" fill="#16181d">{tspans}</text>
 <text x="80" y="560" font-family="JetBrains Mono, monospace" font-weight="500" font-size="22" fill="#4a4f5a">openma.ai{escape(path)}</text>
 <rect y="620" width="1200" height="10" fill="#f84f32"/>
 </svg>'''
@@ -66,3 +68,8 @@ for md in sorted((ROOT / "src" / "content" / "blog").glob("*.md")):
     m = re.search(r'^title:\s*"?(.*?)"?\s*$', md.read_text(), re.M)
     title = re.sub(r"\s*\|\s*OpenMA$", "", m.group(1))
     render(f"blog/{md.stem}", title, "BLOG", f"/blog/{md.stem}/")
+
+# Chinese posts: src/content/blog/zh/<slug>.md -> /zh/blog/<slug>/, og/blog/zh/<slug>.png
+for md in sorted((ROOT / "src" / "content" / "blog" / "zh").glob("*.md")):
+    m = re.search(r'^title:\s*"?(.*?)"?\s*$', md.read_text(), re.M)
+    render(f"blog/zh/{md.stem}", m.group(1), "BLOG", f"/zh/blog/{md.stem}/")

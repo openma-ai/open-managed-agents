@@ -16,6 +16,12 @@ const blog = defineCollection({
     publishedAt: z.coerce.date(),
     updatedAt: z.coerce.date().optional(),
     author: z.string().default("openma"),
+    /**
+     * Post language. English posts live at src/content/blog/<slug>.md and are
+     * served at /blog/<slug>/. Chinese posts live at src/content/blog/zh/<slug>.md
+     * and are served at /zh/blog/<slug>/. Same <slug> = translations of each other.
+     */
+    lang: z.enum(["en", "zh"]).default("en"),
     tags: z.array(z.string()).default([]),
     /** Optional FAQ pairs rendered in the post; also emitted as FAQPage JSON-LD. */
     faq: z
