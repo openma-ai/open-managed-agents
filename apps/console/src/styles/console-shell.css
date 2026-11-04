@@ -134,13 +134,6 @@
   box-shadow: var(--shadow-route);
 }
 
-/* Sidebar restore sits before AppBreadcrumb; list pages share that start edge. */
-.console-shell[data-sidebar-state="desktop-hidden"],
-.console-shell[data-sidebar-state="desktop-preview"],
-.console-shell[data-sidebar-state="mobile-hidden"] {
-  --list-content-inset: calc(var(--list-frame-inset) + var(--control-h) + var(--topbar-gap));
-}
-
 .console-shell[data-sidebar-state="desktop-hidden"] .console-route-surface,
 .console-shell[data-sidebar-state="desktop-preview"] .console-route-surface {
   border: 1px solid var(--border-chrome);

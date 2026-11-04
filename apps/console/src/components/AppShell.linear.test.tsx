@@ -88,15 +88,15 @@ describe("AppShell Linear composition", () => {
     expect(breadcrumb).toContain('cn("font-medium text-foreground"');
   });
 
-  it("list content inset tracks the restore control ahead of the crumb", () => {
+  it("keeps list content on the same left edge as the topbar leading control", () => {
     const tokens = readFileSync(resolve(process.cwd(), "src/styles/console-tokens.css"), "utf8");
     const shell = readFileSync(resolve(process.cwd(), "src/styles/console-shell.css"), "utf8");
 
     expect(tokens).toContain("--list-content-inset: var(--list-frame-inset);");
     expect(tokens).toContain("--topbar-gap: var(--console-gap-lg);");
-    expect(shell).toMatch(
-      /\.console-shell\[data-sidebar-state="desktop-hidden"\],[\s\S]*--list-content-inset: calc\(var\(--list-frame-inset\) \+ var\(--control-h\) \+ var\(--topbar-gap\)\);/,
-    );
+    // Collapsed sidebar must NOT push list content past the restore button.
+    expect(shell).not.toMatch(/--list-content-inset:\s*calc\(/);
+    expect(shell).toContain("gap: var(--topbar-gap);");
   });
 
   it("keeps crumb navigation out of page components", () => {
