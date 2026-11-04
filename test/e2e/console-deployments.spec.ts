@@ -8,12 +8,15 @@ import {
 /**
  * Local real-backend Console Deployments coverage.
  *
- * Prerequisites (same stack as console.spec.ts / e2e-local.sh):
- *   - wrangler dev on :8787 with D1 migrations applied and the static
- *     workspace key configured, e.g.
- *       wrangler dev -c apps/main/wrangler.jsonc --var API_KEY:dev-test-key-change-me
- *     (or API_KEY in apps/main/.dev.vars; agent worker optional)
+ * Prerequisites (same ports as console.spec.ts):
+ *   - a backend on :8787 that accepts a workspace API key, e.g. main-node:
+ *       API_KEY=oma-local-e2e-key PLATFORM_ROOT_SECRET=<32+ chars> PORT=8787 \
+ *         pnpm --filter @open-managed-agents/main-node start
+ *     (wrangler dev also works once its API_KEY / PLATFORM_ROOT_SECRET reach
+ *     the Worker env)
  *   - vite dev on :5173 (playwright.config starts `pnpm run dev:console`)
+ *   - OMA_E2E_LOCAL_API_KEY=<that key> (defaults to dev-test-key-change-me,
+ *     the key used by e2e-local.sh); OMA_E2E_LOCAL_API_URL overrides :8787
  *
  * Local signup requires an emailed OTP, so the browser uses the same auth as
  * deployed-console.spec.ts: only `/auth/get-session` is mocked and the
