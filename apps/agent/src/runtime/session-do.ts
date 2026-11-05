@@ -2204,6 +2204,12 @@ export class SessionDO extends DurableObject<Env> {
             // be rejected as stale.  This is the commit barrier between the
             // harness side effects and execution settlement.
             await this._managedProjectionChain;
+            // Node parity (runner `afterExecution`): terminal facts are
+            // committed and this attempt still holds its fence, so completed
+            // root-turn outputs become Agents API artifacts before settle.
+            if (threadId === "sthr_primary" && !signal.aborted) {
+              await this.publishAgentsApiArtifacts(fence);
+            }
             return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
           } catch (err) {
             turnFailed = true;
@@ -3913,23 +3919,12 @@ export class SessionDO extends DurableObject<Env> {
       if (!path) return new Response("path query param required", { status: 400 });
       try {
         const sandbox = await this.getOrCreateSandbox();
-        // SandboxExecutor.readFile returns string (UTF-8 decoded). For binary
-        // safety we call the underlying SDK's base64 read directly.
-        // Workaround until we widen SandboxExecutor with readFileBytes:
-        // ask sandbox to base64 the file via shell, then decode here.
-        const out = await sandbox.exec(
-          `base64 -w0 -- '${path.replace(/'/g, "'\\''")}' 2>&1`,
-          15000,
-        );
-        // exec returns "exit=N\n<stdout>"
-        const m = out.match(/^exit=(\d+)\n([\s\S]*)$/);
-        if (!m || m[1] !== "0") {
-          return new Response(`read failed: ${out.slice(0, 300)}`, { status: 404 });
+        let bytes: Uint8Array;
+        try {
+          bytes = await readSandboxFileBytes(sandbox, path, 15000);
+        } catch (err) {
+          return new Response(`read failed: ${(err as Error).message.slice(0, 300)}`, { status: 404 });
         }
-        const b64 = m[2].trim();
-        const bin = atob(b64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         return new Response(bytes, {
           headers: { "Content-Type": "application/octet-stream" },
         });
@@ -4667,6 +4662,41 @@ export class SessionDO extends DurableObject<Env> {
       // Warmup failed — broadcast error event and re-throw to prevent harness from running
       this.broadcastEvent(createSandboxWarmupFailureEvent(err));
       throw err;
+    }
+  }
+
+  /** Agents API artifact publication for an execution whose terminal just
+   * committed. Main owns the sealed Session mapping, Files and the fence
+   * check (shared publisher, idempotent by path + content); this DO only
+   * serves its sandbox outputs. A copy failure is reported and never turns
+   * the completed execution into a failure. */
+  private async publishAgentsApiArtifacts(executionFence: SessionExecutionFence): Promise<void> {
+    const binding = this.env.MAIN_MCP;
+    const tenantId = this.state.tenant_id;
+    const sessionId = this.state.session_id;
+    if (binding?.publishManagedSessionArtifacts === undefined || !tenantId || !sessionId) return;
+    try {
+      await binding.publishManagedSessionArtifacts({
+        tenantId,
+        sessionId,
+        executionFence,
+        outputManifest: async () => sandboxStdout(
+          await this.getOrCreateSandbox(),
+          "cd /workspace && if test -d ./outputs; then find ./outputs -type f -print0 | base64 -w0; fi",
+          30_000,
+        ),
+        readOutput: async (path: string) => readSandboxFileBytes(await this.getOrCreateSandbox(), path, 60_000),
+      });
+    } catch (error) {
+      logWarn(
+        {
+          op: "session_do.openai_agents.artifact_publication_failed",
+          session_id: sessionId,
+          execution_id: executionFence.executionId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "Completed Session output could not be published as an Agents API artifact",
+      );
     }
   }
 
@@ -8499,4 +8529,19 @@ type SessionScheduleType = "scheduled" | "delayed" | "cron" | "interval";
  *  boundary (CMA coherent turn / after-call), not deferred to after-turn drain. */
 export function agentAdvertisesSteering(agent: { metadata?: Record<string, unknown> } | null | undefined): boolean {
   return agent?.metadata?.["oma.session.steering"] === "enabled";
+}
+
+/** Stdout of a CF sandbox command (`exit=N\n<stdout>`); throws on failure. */
+async function sandboxStdout(sandbox: SandboxExecutor, command: string, timeoutMs: number): Promise<string> {
+  const out = await sandbox.exec(command, timeoutMs);
+  const match = out.match(/^exit=(\d+)\n([\s\S]*)$/);
+  if (!match || match[1] !== "0") throw new Error(out.slice(0, 300));
+  return match[2]!;
+}
+
+/** Binary-safe file read: SandboxExecutor.readFile is UTF-8 only, so the
+ * sandbox base64-encodes and this side decodes. */
+async function readSandboxFileBytes(sandbox: SandboxExecutor, path: string, timeoutMs: number): Promise<Uint8Array> {
+  const encoded = (await sandboxStdout(sandbox, `base64 -w0 -- '${path.replace(/'/g, "'\\''")}' 2>&1`, timeoutMs)).trim();
+  return Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
 }

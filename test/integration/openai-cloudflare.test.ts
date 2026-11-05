@@ -33,7 +33,7 @@ describe("Cloudflare OpenAI Agents mount", () => {
   it("creates hosted sessions through the native session application", async () => {
     const response = await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6" }, environment: { type: "openai_hosted" } }) });
     const session = await response.json() as { id: string };
-    expect(response.status, JSON.stringify(session)).toBe(200);
+    expect(response.status, JSON.stringify(session)).toBe(201);
     const retrieved = await request(`/agents/sessions/${session.id}`);
     expect(await retrieved.json()).toMatchObject({ id: session.id, environment: { type: "openai_hosted" } });
   });
@@ -48,7 +48,7 @@ describe("Cloudflare OpenAI Agents mount", () => {
     try {
       const response = await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6" }, environment: { type: "none" }, input: "Hello" }) });
       const session = await response.json() as { id: string };
-      expect(response.status, JSON.stringify(session)).toBe(200);
+      expect(response.status, JSON.stringify(session)).toBe(201);
       const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(JSON.stringify(["default", session.id])));
       await runInDurableObject(stub, async (instance) => {
         const runtime = instance as unknown as {

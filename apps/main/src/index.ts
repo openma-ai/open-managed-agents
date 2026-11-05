@@ -1,6 +1,6 @@
 import { normalizeOpenAIAgentsErrorResponse } from '@open-managed-agents/openai-agents-api';
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
-import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode } from "@open-managed-agents/openai-agents-compat";
+import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode, createOpenAIArtifactPublisher, outputPathsFromManifest, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
 import { CapCliDeviceFlowApplicationService, McpOAuthCliService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
@@ -1634,6 +1634,36 @@ export default {
 // them by class_name in durable_objects.bindings + migrations.
 export { RuntimeRoom } from "./runtime-room";
 
+/** True while `fence` still owns its running execution in tenant D1. Main
+ * revalidates this before every fenced mutation requested by a SessionDO. */
+async function cfExecutionFenceActive(
+  client: CfD1SqlClient,
+  scope: { tenantId: string; sessionId: string },
+  fence: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence,
+): Promise<boolean> {
+  if (
+    fence.workspaceId !== scope.tenantId
+    || fence.sessionId !== scope.sessionId
+    || !Number.isSafeInteger(fence.generation)
+    || fence.generation < 1
+  ) return false;
+  const active = await client.prepare(
+    `SELECT 1 AS active FROM managed_session_executions
+      WHERE workspace_id = ? AND id = ? AND session_id = ?
+        AND state = 'running' AND attempt_id = ? AND owner_id = ?
+        AND generation = ? AND lease_expires_at_ms > ?`,
+  ).bind(
+    fence.workspaceId,
+    fence.executionId,
+    fence.sessionId,
+    fence.attemptId,
+    fence.ownerId,
+    fence.generation,
+    Date.now(),
+  ).first<{ active: number }>();
+  return active !== null;
+}
+
 /**
  * RPC entrypoint for the agent worker (cloud agent path) to forward MCP
  * requests through main's credential-injection layer without exposing the
@@ -1899,29 +1929,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
         sessionId: opts.sessionId,
         runtimeGeneration: opts.runtimeGeneration,
         executionFence: opts.executionFence,
-        isFenceActive: async (fence) => {
-          if (
-            fence.workspaceId !== opts.tenantId
-            || fence.sessionId !== opts.sessionId
-            || !Number.isSafeInteger(fence.generation)
-            || fence.generation < 1
-          ) return false;
-          const active = await client.prepare(
-            `SELECT 1 AS active FROM managed_session_executions
-              WHERE workspace_id = ? AND id = ? AND session_id = ?
-                AND state = 'running' AND attempt_id = ? AND owner_id = ?
-                AND generation = ? AND lease_expires_at_ms > ?`,
-          ).bind(
-            fence.workspaceId,
-            fence.executionId,
-            fence.sessionId,
-            fence.attemptId,
-            fence.ownerId,
-            fence.generation,
-            Date.now(),
-          ).first<{ active: number }>();
-          return active !== null;
-        },
+        isFenceActive: (fence) => cfExecutionFenceActive(client, opts, fence),
       },
     );
   }
@@ -1935,6 +1943,44 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     const versions = managedSkillsApplication(opts.tenantId, tenantDb)
       .port(managedAgentsPortTokens.skillVersions);
     return resolveManagedSkillArchive(versions, opts);
+  }
+
+  /**
+   * Agents API artifact publication for a SessionDO execution whose terminal
+   * just committed, while it still holds its fence (same contract as the
+   * Node runner's `afterExecution`). Runs here because only main can open
+   * the Session's sealed Agents API mapping; the DO passes its sandbox's
+   * `/workspace/outputs` as RPC callbacks, read only for unpublished paths.
+   */
+  async publishManagedSessionArtifacts(opts: {
+    tenantId: string;
+    sessionId: string;
+    executionFence: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence;
+    /** `find ./outputs -type f -print0 | base64` run in `/workspace`. */
+    outputManifest: () => Promise<string>;
+    readOutput: (path: string) => Promise<Uint8Array>;
+  }): Promise<{ type: "published" } | { type: "not_found" }> {
+    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
+    const client = new CfD1SqlClient(tenantDb);
+    const session = await new SqlSessionSource(client).find({ workspaceId: opts.tenantId, sessionId: opts.sessionId });
+    if (session === null) return { type: "not_found" };
+    const blobs = (await getCfServicesForTenant(this.env, opts.tenantId)).filesBlob;
+    if (blobs === null) throw new Error("FILES_BUCKET binding is required for Agents API artifacts");
+    const secrets = new CfManagedSessionSecretSealer(this.env.PLATFORM_ROOT_SECRET);
+    await createOpenAIArtifactPublisher({
+      historyForWorkspace: (workspaceId) => new SessionRuntimeHistoryApplicationService({ workspaceId, source: new SqlSessionRuntimeHistorySource(client) }),
+      filesForWorkspace: (workspaceId) => managedFilesApplicationFor({ workspaceId, tenantDb, blobs }),
+      environmentType: async (candidate) => (await readManagedSessionMappingMetadata(candidate, secrets))?.environment.type ?? null,
+      isFenceActive: (fence) => cfExecutionFenceActive(client, opts, fence),
+      environmentId: (candidate) => `oai_env_${candidate.id}`,
+    })({
+      workspaceId: opts.tenantId,
+      session,
+      executionFence: opts.executionFence,
+      // Main validates the DO-supplied manifest: paths stay in /workspace/outputs.
+      outputs: { listPaths: async () => outputPathsFromManifest(await opts.outputManifest()), read: (path) => opts.readOutput(path) },
+    });
+    return { type: "published" };
   }
 
   async managedSessionEventProduced(opts: {
