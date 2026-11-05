@@ -1,5 +1,15 @@
 # @openma/cli
 
+## 0.7.4
+
+### Patch Changes
+
+- ca10397: Add headless runtime pairing: `oma runtime pair [--ttl <seconds>]` mints a one-time setup command, and `oma bridge setup --token <omrp_…>` (or `OMA_PAIRING_TOKEN`) pairs a machine without a browser.
+- ca10397: Run attached Runtime sandbox sessions in local per-session LiteBox instances with retained ownership and selected skill package copies.
+- ca10397: Reuse one embedded LiteBox provider per Runtime sandbox registry and honor optional BOXLITE_HOME so concurrent sessions do not deadlock on the home lock.
+- ca10397: Ignore protected system and Runtime-owned keys in session environment overlays, with key-only warnings.
+- ca10397: Cache managed Skill Versions once per Runtime and link session skills to immutable content, preserving resolved versions across restarts with Windows junction/copy fallbacks.
+
 ## 0.7.3
 
 ### Patch Changes
