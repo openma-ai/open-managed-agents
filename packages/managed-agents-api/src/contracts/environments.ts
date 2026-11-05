@@ -18,6 +18,7 @@ import { z } from "zod";
  */
 export interface OpenMaEnvironmentRuntimeAttachment {
   runtime_id: string;
+  placement?: "sandbox" | "host";
   env?: Record<string, string>;
 }
 export interface OpenMaEnvironmentExtensionBody {
@@ -44,6 +45,7 @@ export type OpenMaEnvironmentResponse = BetaEnvironment & {
 const openMaRuntimeAttachmentSchema = z
   .object({
     runtime_id: z.string().min(1),
+    placement: z.enum(["sandbox", "host"]).optional(),
     env: z.record(z.string(), z.string()).optional(),
   })
   .strict();

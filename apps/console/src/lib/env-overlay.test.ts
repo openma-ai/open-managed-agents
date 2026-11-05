@@ -25,9 +25,12 @@ describe("env overlay text", () => {
     expect(runtimeAttachmentPatch(undefined, "", {})).toBeUndefined();
     expect(runtimeAttachmentPatch(stored, "rt_1", { A: "1" })).toBeUndefined();
     expect(runtimeAttachmentPatch(stored, "", {})).toBeNull();
-    expect(runtimeAttachmentPatch(stored, "rt_2", { A: "1" })).toEqual({ runtime_id: "rt_2", env: { A: "1" } });
-    expect(runtimeAttachmentPatch(stored, "rt_1", {})).toEqual({ runtime_id: "rt_1", env: {} });
-    expect(runtimeAttachmentPatch(undefined, "rt_1", {})).toEqual({ runtime_id: "rt_1", env: {} });
+    expect(runtimeAttachmentPatch(stored, "rt_1", { A: "1" }, "sandbox"))
+      .toEqual({ runtime_id: "rt_1", placement: "sandbox", env: { A: "1" } });
+    expect(runtimeAttachmentPatch({ ...stored, placement: "sandbox" }, "rt_1", { A: "1" }, "sandbox")).toBeUndefined();
+    expect(runtimeAttachmentPatch(stored, "rt_2", { A: "1" })).toEqual({ placement: "host", runtime_id: "rt_2", env: { A: "1" } });
+    expect(runtimeAttachmentPatch(stored, "rt_1", {})).toEqual({ placement: "host", runtime_id: "rt_1", env: {} });
+    expect(runtimeAttachmentPatch(undefined, "rt_1", {})).toEqual({ placement: "host", runtime_id: "rt_1", env: {} });
   });
 
   it("round-trips through formatEnvOverlay", () => {

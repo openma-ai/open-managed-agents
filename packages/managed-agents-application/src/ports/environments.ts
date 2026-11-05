@@ -43,7 +43,7 @@ export type EnvironmentView = Environment;
 export interface EnvironmentOpenMaInput {
   sandboxImage?: string | null;
   /** Replaces the whole attachment; `null` detaches the Runtime. */
-  runtime?: { runtimeId: string; env?: Record<string, string> | null } | null;
+  runtime?: { runtimeId: string; placement?: "sandbox" | "host"; directories?: unknown; env?: Record<string, string> | null } | null;
 }
 
 export interface CreateEnvironmentCommand {

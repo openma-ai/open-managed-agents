@@ -1194,6 +1194,15 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
     expect(JSON.stringify(result.files)).not.toContain("Later agent instructions");
   });
 
+  it("delivers explicit sandbox placement and runtime ownership in the bundle", async () => {
+    const { bundle, post, environment, runtimeId } = await bundleFixture();
+    expect((await (await bundle()).json()).runtime).toEqual({ runtime_id: runtimeId, placement: "host" });
+    await post(`/v1/environments/${environment.id}`, { _oma: { runtime: { runtime_id: runtimeId, placement: "sandbox" } } }, 200);
+    expect((await (await bundle()).json()).runtime).toEqual({ runtime_id: runtimeId, placement: "sandbox" });
+    await post(`/v1/environments/${environment.id}`, { _oma: { runtime: { runtime_id: "rt_elsewhere", placement: "sandbox" } } }, 200);
+    expect((await bundle()).status).toBe(500);
+  });
+
   it("serves managed skill references from the Session snapshot without text extracts", async () => {
     const skills = [{ type: "custom", skill_id: "skill_cache_latest" },
       { type: "custom", skill_id: "skill_cache_pinned", version: "version_1" }];
@@ -1227,11 +1236,10 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
     expect((await bundle()).status).toBe(404);
   });
 
-  it("reads current overlay edits but omits detached, mismatched and archived attachments", async () => {
+  it("reads current overlay edits and rejects unavailable or mismatched Environment policy", async () => {
     const { bundle, post, environment, runtimeId } = await bundleFixture();
     for (const [runtime, expected] of [
       [{ runtime_id: runtimeId, env: { OVERLAY: "edited", EMPTY: "" } }, [{ name: "OVERLAY", value: "edited" }, { name: "EMPTY", value: "" }]],
-      [{ runtime_id: "rt_elsewhere", env: { OVERLAY: "must-not-leak" } }, []],
       [null, []],
     ] as const) {
       await post(`/v1/environments/${environment.id}`, { _oma: { runtime } }, 200);
@@ -1243,7 +1251,7 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
       _oma: { runtime: { runtime_id: runtimeId, env: { OVERLAY: "archived" } } },
     }, 200);
     await post(`/v1/environments/${environment.id}/archive`, {}, 200);
-    expect((await (await bundle()).json()).env).toEqual([]);
+    expect((await bundle()).status).toBe(500);
   });
 
   it("preserves legacy session env precedence and blocks archived legacy bundles", async () => {
@@ -1328,9 +1336,9 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
     await put("env_plain", { ...base, id: "env_plain" });
 
     await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_attached", "rt_a")).resolves.toEqual({ FOO: "bar" });
-    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_attached", "rt_b")).resolves.toEqual({});
-    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, "tn_other", "env_attached", "rt_a")).resolves.toEqual({});
-    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_archived", "rt_a")).resolves.toEqual({});
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_attached", "rt_b")).rejects.toThrow("does not match");
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, "tn_other", "env_attached", "rt_a")).rejects.toThrow("unavailable");
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_archived", "rt_a")).rejects.toThrow("unavailable");
     await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_plain", "rt_a")).resolves.toEqual({});
     await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, null, "rt_a")).resolves.toEqual({});
   });

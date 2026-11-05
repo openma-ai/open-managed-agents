@@ -118,7 +118,7 @@ function patchOpenMa(
   else if (patch?.sandboxImage !== undefined) next.sandboxImage = patch.sandboxImage;
   if (patch?.runtime === null) delete next.runtime;
   else if (patch?.runtime !== undefined) {
-    next.runtime = { runtimeId: patch.runtime.runtimeId, env: { ...patch.runtime.env } };
+    next.runtime = { runtimeId: patch.runtime.runtimeId, placement: patch.runtime.placement ?? "host", env: { ...patch.runtime.env } };
   }
   return Object.keys(next).length === 0 ? undefined : next;
 }
@@ -129,7 +129,13 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 function openMaConflict(
   config: EnvironmentConfig,
   openma: EnvironmentOpenMaExtensions | undefined,
+  input?: EnvironmentOpenMaInput,
 ): string | null {
+  if (input?.runtime && "directories" in input.runtime) {
+    return input.runtime.placement === "sandbox"
+      ? "_oma.runtime.directories is forbidden for sandbox placement"
+      : "_oma.runtime.directories is not yet supported for host placement";
+  }
   if (config.type === "self_hosted" && openma?.sandboxImage !== undefined) {
     return "_oma.sandbox_image is only supported for cloud environments";
   }
@@ -139,6 +145,9 @@ function openMaConflict(
     return "_oma.runtime is only supported for self_hosted environments";
   }
   if (openma?.runtime !== undefined) {
+    if (!["host", "sandbox"].includes(openma.runtime.placement ?? "host")) {
+      return "_oma.runtime.placement must be sandbox or host";
+    }
     if (openma.runtime.runtimeId.trim().length === 0) {
       return "_oma.runtime.runtime_id must not be empty";
     }
@@ -182,7 +191,7 @@ export class EnvironmentsApplicationService
     }
     const config = normalizeConfig(command.config);
     const openma = patchOpenMa(undefined, command.openma);
-    const conflict = openMaConflict(config, openma);
+    const conflict = openMaConflict(config, openma, command.openma);
     if (conflict !== null) return { type: "invalid_request", message: conflict };
     const timestamp = this.dependencies.clock.now().toISOString();
     const environment: Environment = {
@@ -252,7 +261,7 @@ export class EnvironmentsApplicationService
       if (openma === undefined) delete next.openma;
       else next.openma = openma;
     }
-    const conflict = openMaConflict(next.config, next.openma);
+    const conflict = openMaConflict(next.config, next.openma, command.openma);
     if (conflict !== null) return { type: "invalid_request", message: conflict };
     const replaced = await this.dependencies.store.replace({
       workspaceId: this.dependencies.workspaceId,

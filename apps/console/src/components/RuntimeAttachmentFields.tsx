@@ -31,12 +31,16 @@ export function useRuntimeOptions(): { runtimes: RuntimeOption[]; loading: boole
 export function RuntimeAttachmentFields({
   idPrefix,
   runtimeId,
+  placement,
+  onPlacementChange,
   onRuntimeIdChange,
   envText,
   onEnvTextChange,
 }: {
   idPrefix: string;
   runtimeId: string;
+  placement: "host" | "sandbox";
+  onPlacementChange: (placement: "host" | "sandbox") => void;
   onRuntimeIdChange: (runtimeId: string) => void;
   envText: string;
   onEnvTextChange: (text: string) => void;
@@ -71,6 +75,18 @@ export function RuntimeAttachmentFields({
         <p className="text-xs text-fg-subtle mt-1">
           To use this overlay, select an agent configured for the same Runtime.
           Attaching this environment does not yet choose where sessions run.
+        </p>
+      </div>
+      <div>
+        <Label htmlFor={`${idPrefix}-placement`}>Placement</Label>
+        <Select id={`${idPrefix}-placement`} value={placement} onValueChange={(value) => onPlacementChange(value as "host" | "sandbox")}>
+          <SelectOption value="host">Host</SelectOption>
+          <SelectOption value="sandbox">Sandbox (LiteBox on Runtime)</SelectOption>
+        </Select>
+        <p className="text-xs text-fg-subtle mt-1">
+          {placement === "sandbox"
+            ? "Runs in a separate LiteBox for each session on this Runtime. Requires local LiteBox and a prepared ACP image. Host directories and GitHub local paths are not supported."
+            : "Commands run with the Runtime user's permissions. Custom directories are not yet supported."}
         </p>
       </div>
       <div>

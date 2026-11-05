@@ -14,7 +14,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --banner:js=\"#!/usr/bin/env node\nimport { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --external:@boxlite-ai/boxlite --outfile=dist/index.js --banner:js=\"#!/usr/bin/env node\nimport { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/index.ts",
@@ -54,6 +54,16 @@
     "typescript": "^7.0.2",
     "vitest": "^5.0.5",
     "ws": "^8.18.0",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "@open-managed-agents/sandbox": "workspace:*",
+    "@open-managed-agents/managed-runtime-boxlite": "workspace:*"
+  },
+  "peerDependencies": {
+    "@boxlite-ai/boxlite": "^0.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@boxlite-ai/boxlite": {
+      "optional": true
+    }
   }
 }

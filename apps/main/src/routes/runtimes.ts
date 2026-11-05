@@ -780,13 +780,13 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   // Environment overlay first (Amp `--amp-env` style): an Environment
   // attached to THIS runtime contributes its `_oma.runtime.env` to the
   // host runner. Per-session env resources below override it by name.
-  const environmentEnv = await runtimeEnvironmentOverlay(
+  const runtimeAttachment = await runtimeEnvironmentAttachment(
     tenantDb,
     ok.tenant_id,
     managedSession?.environmentId ?? legacySession?.environment_id ?? null,
     ok.runtime_id,
   );
-  const env: Array<{ name: string; value: string }> = Object.entries(environmentEnv)
+  const env: Array<{ name: string; value: string }> = Object.entries(runtimeAttachment?.env ?? {})
     .map(([name, value]) => ({ name, value }));
   for (const row of sessionResources) {
     const r = row.resource as { type?: string; name?: string };
@@ -804,33 +804,35 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   }
 
   return c.json({ files, local_skill_blocklist, mcp_servers, env,
+    runtime: { runtime_id: ok.runtime_id, placement: runtimeAttachment?.placement ?? "host" },
     ...(skillCache ? { managed_skills: (agent.skills ?? []).map((s) => ({
       skill_id: s.skill_id, type: s.type, version: s.version ?? "latest",
     })) } : {}),
   });
 });
 
-/**
- * `_oma.runtime.env` of the session's Environment, but only when that
- * Environment is attached to the runtime asking. A daemon never receives
- * another runtime's overlay, and a missing/archived Environment or a
- * lookup failure degrades to "no overlay" rather than failing the spawn.
- */
+/** Overlay and placement share the same fail-closed Environment lookup. */
 export async function runtimeEnvironmentOverlay(
   db: D1Database,
   tenantId: string,
   environmentId: string | null,
   runtimeId: string,
 ): Promise<Record<string, string>> {
-  if (!environmentId) return {};
-  try {
-    const environment = await new SqlSessionEnvironmentSource(new CfD1SqlClient(db))
-      .find({ workspaceId: tenantId, environmentId });
-    const attachment = environment?.archivedAt === null ? environment.openma?.runtime : undefined;
-    return attachment?.runtimeId === runtimeId ? { ...attachment.env } : {};
-  } catch {
-    return {};
-  }
+  return (await runtimeEnvironmentAttachment(db, tenantId, environmentId, runtimeId))?.env ?? {};
+}
+
+/** Placement is execution policy: lookup failures and mismatched attachments
+ * must fail closed rather than silently launching a sandbox session on host. */
+async function runtimeEnvironmentAttachment(
+  db: D1Database, tenantId: string, environmentId: string | null, runtimeId: string,
+) {
+  if (!environmentId) return undefined;
+  const environment = await new SqlSessionEnvironmentSource(new CfD1SqlClient(db))
+    .find({ workspaceId: tenantId, environmentId });
+  if (!environment || environment.archivedAt !== null) throw new Error("Session Environment unavailable");
+  const attachment = environment.openma?.runtime;
+  if (attachment && attachment.runtimeId !== runtimeId) throw new Error("Environment Runtime does not match Agent Runtime");
+  return attachment;
 }
 
 /**

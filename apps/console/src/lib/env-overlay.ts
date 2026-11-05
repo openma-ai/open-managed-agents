@@ -41,15 +41,17 @@ export function parseEnvOverlay(text: string): ParsedEnvOverlay {
  * whole replacement attachment.
  */
 export function runtimeAttachmentPatch(
-  stored: { runtime_id: string; env: Record<string, string> } | undefined,
+  stored: { runtime_id: string; placement?: "host" | "sandbox"; env: Record<string, string> } | undefined,
   runtimeId: string,
   env: Record<string, string>,
-): { runtime_id: string; env: Record<string, string> } | null | undefined {
+  placement: "host" | "sandbox" = "host",
+): { runtime_id: string; placement: "host" | "sandbox"; env: Record<string, string> } | null | undefined {
   if (runtimeId === "") return stored === undefined ? undefined : null;
   const unchanged =
     stored?.runtime_id === runtimeId &&
+    (stored.placement ?? "host") === placement &&
     formatEnvOverlay(stored.env) === formatEnvOverlay(env);
-  return unchanged ? undefined : { runtime_id: runtimeId, env };
+  return unchanged ? undefined : { runtime_id: runtimeId, placement, env };
 }
 
 export function formatEnvOverlay(env: Record<string, string> | undefined): string {

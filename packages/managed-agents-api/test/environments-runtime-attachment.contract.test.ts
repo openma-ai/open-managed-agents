@@ -58,7 +58,7 @@ describe("Managed Agents API — Environment _oma.runtime", () => {
     expect(calls).toEqual([{
       name: "laptop",
       config: { type: "self_hosted" },
-      openma: { runtime: { runtimeId: "rt_1", env: { NODE_ENV: "development" } } },
+      openma: { runtime: { runtimeId: "rt_1", placement: "host", env: { NODE_ENV: "development" } } },
     }]);
     expect(await response.json()).toMatchObject({
       config: { type: "self_hosted" },
@@ -77,7 +77,7 @@ describe("Managed Agents API — Environment _oma.runtime", () => {
     await post(app, "/v1/environments/env_01", { _oma: { runtime: { runtime_id: "rt_2" } } });
     const detached = await post(app, "/v1/environments/env_01", { _oma: { runtime: null } });
     expect(calls).toEqual([
-      { environmentId: "env_01", openma: { runtime: { runtimeId: "rt_2", env: {} } } },
+      { environmentId: "env_01", openma: { runtime: { runtimeId: "rt_2", placement: "host", env: {} } } },
       { environmentId: "env_01", openma: { runtime: null } },
     ]);
     expect(await detached.json()).not.toHaveProperty("_oma");
@@ -94,6 +94,32 @@ describe("Managed Agents API — Environment _oma.runtime", () => {
       const response = await post(app, "/v1/environments", { name: "x", _oma: { runtime } });
       expect(response.status).toBe(400);
     }
+  });
+
+  it("round-trips sandbox placement through the mapper", async () => {
+    const app = api(makeEnvironmentsPort({
+      createEnvironment: async (command) => {
+        expect(command.openma?.runtime).toEqual({ runtimeId: "rt_1", placement: "sandbox", env: {} });
+        return { type: "created", environment: { ...selfHostedView(), openma: { runtime: { runtimeId: "rt_1", placement: "sandbox", env: {} } } } };
+      },
+    }));
+    const response = await post(app, "/v1/environments", {
+      name: "sandbox", config: { type: "self_hosted" },
+      _oma: { runtime: { runtime_id: "rt_1", placement: "sandbox" } },
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ _oma: { runtime: { placement: "sandbox", runtime_id: "rt_1", env: {} } } });
+  });
+
+  it.each(["sandbox", "host"])("rejects any directories field for %s on create and update", async (placement) => {
+    const app = api(makeEnvironmentsPort({}));
+    for (const directories of [[], [{ directory_id: "dir_1" }], null]) {
+      for (const path of ["/v1/environments", "/v1/environments/env_01"]) {
+        const response = await post(app, path, { name: "x", _oma: { runtime: { runtime_id: "rt_1", placement, directories } } });
+        expect(response.status).toBe(400);
+      }
+    }
+    expect((await post(app, "/v1/environments", { name: "x", _oma: { runtime: { runtime_id: "rt_1", placement: "cloud" } } })).status).toBe(400);
   });
 
   it("stays readable by the official SDK", async () => {

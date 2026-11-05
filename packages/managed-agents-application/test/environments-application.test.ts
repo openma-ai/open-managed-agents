@@ -304,6 +304,28 @@ describe("EnvironmentsApplicationService", () => {
     })).resolves.toMatchObject({ type: "invalid_request" });
   });
 
+  it("defaults placement to host and validates sandbox placement on create/update", async () => {
+    const service = new EnvironmentsApplicationService({
+      workspaceId: "workspace_01", store: new InMemoryEnvironmentPersistence(),
+      clock: { now: () => new Date("2026-11-05T00:00:00Z") }, ids: { nextEnvironmentId: () => "env_placement" },
+    });
+    expect(await service.createEnvironment({ name: "host", config: { type: "self_hosted" }, openma: { runtime: { runtimeId: "rt_1" } } }))
+      .toMatchObject({ type: "created", environment: { openma: { runtime: { placement: "host" } } } });
+    expect(await service.updateEnvironment({ environmentId: "env_placement", openma: { runtime: { runtimeId: "rt_1", placement: "sandbox" } } }))
+      .toMatchObject({ type: "updated", environment: { openma: { runtime: { placement: "sandbox" } } } });
+    for (const placement of ["sandbox", "host"] as const) {
+      for (const directories of [[], [{ directory_id: "dir_1" }], null]) {
+        const openma = { runtime: { runtimeId: "rt_1", placement, directories } };
+        expect(await service.createEnvironment({ name: "bad", config: { type: "self_hosted" }, openma }))
+          .toMatchObject({ type: "invalid_request", message: expect.stringContaining("directories") });
+        expect(await service.updateEnvironment({ environmentId: "env_placement", openma }))
+          .toMatchObject({ type: "invalid_request", message: expect.stringContaining("directories") });
+      }
+    }
+    expect(await service.updateEnvironment({ environmentId: "env_placement", config: { type: "cloud" } }))
+      .toMatchObject({ type: "invalid_request" });
+  });
+
   it("keeps an archived environment read-only", async () => {
     const persistence = new InMemoryEnvironmentPersistence();
     const service = new EnvironmentsApplicationService({

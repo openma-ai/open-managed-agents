@@ -227,10 +227,10 @@ export type OpenMaFileListParams = WithoutBetas<FileListParams> & {
 export interface OpenMaEnvironmentExtension {
   sandbox_image?: string | null;
   /** Attach a `self_hosted` Environment to a paired Runtime; `null` detaches. */
-  runtime?: { runtime_id: string; env?: Record<string, string> } | null;
+  runtime?: { runtime_id: string; placement?: "host" | "sandbox"; env?: Record<string, string> } | null;
 }
 export type OpenMaEnvironment = BetaEnvironment & {
-  _oma?: { sandbox_image?: string; runtime?: { runtime_id: string; env: Record<string, string> } };
+  _oma?: { sandbox_image?: string; runtime?: { runtime_id: string; placement?: "host" | "sandbox"; env: Record<string, string> } };
 };
 type EnvironmentWriteExtension = { _oma?: OpenMaEnvironmentExtension };
 

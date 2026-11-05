@@ -34,6 +34,7 @@ const EMPTY_FORM = {
   hosting: "cloud" as Hosting,
   sandboxImage: DEFAULT_SANDBOX_IMAGE,
   runtimeId: "",
+  placement: "host" as "host" | "sandbox",
   envText: "",
 };
 
@@ -45,7 +46,8 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 
 /** "runtime" for an Environment attached to a paired machine, else the CMA type. */
 function hostingLabel(environment: Env): string {
-  if ((environment as OpenMaEnvironment)._oma?.runtime) return "runtime";
+  const runtime = (environment as OpenMaEnvironment)._oma?.runtime;
+  if (runtime) return `runtime · ${runtime.placement ?? "host"}`;
   return (environment.config?.type as string) || "cloud";
 }
 
@@ -95,12 +97,11 @@ export function EnvironmentsList() {
     await managedApi.environments.create(
       form.hosting === "runtime"
         ? {
-            // Attach to an existing Runtime: no sandbox is provisioned, so the
-            // CMA shape is `self_hosted` and the Runtime rides in `_oma`.
+            // The paired Runtime owns both host and sandbox execution.
             name: form.name,
             config: { type: "self_hosted" },
             description: form.description || undefined,
-            _oma: { runtime: { runtime_id: form.runtimeId, env: overlay.env } },
+            _oma: { runtime: { runtime_id: form.runtimeId, placement: form.placement, env: overlay.env } },
           }
         : {
             name: form.name,
@@ -282,6 +283,8 @@ export function EnvironmentsList() {
             <RuntimeAttachmentFields
               idPrefix="env-create"
               runtimeId={form.runtimeId}
+              placement={form.placement}
+              onPlacementChange={(placement) => setForm({ ...form, placement })}
               onRuntimeIdChange={(runtimeId) => setForm({ ...form, runtimeId })}
               envText={form.envText}
               onEnvTextChange={(envText) => setForm({ ...form, envText })}

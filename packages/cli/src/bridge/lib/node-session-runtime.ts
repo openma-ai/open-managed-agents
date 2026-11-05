@@ -1,8 +1,9 @@
 import { materializeManagedSkills, configureManagedSkills, managedSkillInstructions, type SkillBinding, type MaterializedSkill } from "./managed-skills.js";
 import { spawn as childSpawn } from "node:child_process";
 
-import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
-import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
+import type { AcpRuntime, SessionOptions } from "@open-managed-agents/acp-runtime";
+import { RuntimeSandboxRegistry, runtimePlacement, resolvePlacementRuntime, type RuntimeAttachment } from "./runtime-placement.js";
+import { prepareSandboxBundle } from "./sandbox-session-bundle.js";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
 
 import { setupClaudeConfigDir } from "./claude-config-dir.js";
@@ -33,7 +34,8 @@ interface BundleEnvVar {
   value: string;
 }
 
-interface SessionBundle {
+export interface SessionBundle {
+  runtime?: RuntimeAttachment;
   managed_skills?: SkillBinding[];
   files: BundleFile[];
   local_skill_blocklist?: string[];
@@ -42,17 +44,46 @@ interface SessionBundle {
 }
 
 export function createNodeSessionManagerRuntimeDependencies(): SessionManagerRuntimeDependencies {
+  const registry = new RuntimeSandboxRegistry();
+  // Key by the agent spec: the common runtime may shallow-copy SessionOptions
+  // to add a recovered ACP session id, but preserves this spec on resume.
+  const placements = new WeakMap<SessionOptions["agent"], AcpRuntime>();
+  const bundleDirs = new Map<string, string>();
   return {
-    acpRuntime: createAcpRuntime({
-      type: "local",
-      spawner: new NodeSpawner(),
-    }),
-    prepareSession: prepareNodeSession,
-    releaseSession: removeSessionCwd,
+    acpRuntime: {
+      start(options) {
+        const runtime = placements.get(options.agent);
+        if (!runtime) throw new Error("Session placement was not prepared");
+        return runtime.start(options);
+      },
+    },
+    async prepareSession(input) {
+      const bundle = await fetchSessionBundle(input.environment, input.command.sessionId, input.command.agentId);
+      const placement = runtimePlacement(bundle?.runtime, input.command.cwd);
+      const scratchDir = await ensureSessionCwd(input.command.sessionId);
+      if (placement === "sandbox") {
+        const sandbox = await registry.acquire(input.command.sessionId, bundle!.runtime!.runtime_id, scratchDir, process.env, input.scope.id);
+        const options = await prepareSandboxBundle(input, bundle!, sandbox, scratchDir);
+        placements.set(options.agent, resolvePlacementRuntime(sandbox));
+        bundleDirs.set(input.command.sessionId, "/workspace");
+        return options;
+      }
+      const options = await prepareNodeSession(input, bundle);
+      placements.set(options.agent, resolvePlacementRuntime());
+      bundleDirs.set(input.command.sessionId, scratchDir);
+      return options;
+    },
+    bundleDir: (sessionId) => bundleDirs.get(sessionId),
+    async releaseSession(sessionId) {
+      // Keep owned sandbox records/files for resume; retention is not M1.
+      // Explicit session disposal only stops the ACP process in the common runtime.
+      bundleDirs.delete(sessionId);
+      if (!registry.owned.has(sessionId)) await removeSessionCwd(sessionId);
+    },
   };
 }
 
-async function prepareNodeSession(input: SessionManagerPreparationInput) {
+async function prepareNodeSession(input: SessionManagerPreparationInput, bundle: SessionBundle | null) {
   const agent = resolveKnownAgent(input.command.agentId);
   if (!agent) {
     throw new Error(`unknown ACP agent: ${input.command.agentId}`);
@@ -78,11 +109,6 @@ async function prepareNodeSession(input: SessionManagerPreparationInput) {
   let bundleMcpServers: BundleMcpServer[] = [];
   let bundleEnv: BundleEnvVar[] = [];
   try {
-    const bundle = await fetchSessionBundle(
-      input.environment,
-      input.command.sessionId,
-      agent.id,
-    );
     if (bundle) {
       managedSkills = await materializeManagedSkills({
         sessionDir: scratchDir, skills: bundle.managed_skills ?? [],
@@ -171,7 +197,7 @@ async function fetchSessionBundle(
   const url = new URL(
     `${environment.apiUrl.replace(/\/$/, "")}/agents/runtime/sessions/${encodeURIComponent(sessionId)}/bundle`,
   );
-  url.searchParams.set("agent_id", agentId);
+  url.searchParams.set("agent_id", resolveKnownAgent(agentId)?.id ?? agentId);
   url.searchParams.set("skill_cache", "1");
   const response = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${environment.runtimeToken}` },

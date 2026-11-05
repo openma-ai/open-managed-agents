@@ -96,6 +96,7 @@ export function EnvironmentDetail() {
   const [metadataRows, setMetadataRows] = useState<MetadataRow[]>([]);
   const [sandboxImage, setSandboxImage] = useState(DEFAULT_SANDBOX_IMAGE);
   const sandboxImages = useSandboxImages();
+  const [placement, setPlacement] = useState<"host" | "sandbox">("host");
   const [runtimeId, setRuntimeId] = useState("");
   const [envOverlayText, setEnvOverlayText] = useState("");
   const envOverlay = parseEnvOverlay(envOverlayText);
@@ -142,6 +143,7 @@ export function EnvironmentDetail() {
 
     setMetadataRows(metadataToRows(e.metadata));
     setSandboxImage(e._oma?.sandbox_image ?? DEFAULT_SANDBOX_IMAGE);
+    setPlacement(e._oma?.runtime?.placement ?? "host");
     setRuntimeId(e._oma?.runtime?.runtime_id ?? "");
     setEnvOverlayText(formatEnvOverlay(e._oma?.runtime?.env));
   }
@@ -160,7 +162,7 @@ export function EnvironmentDetail() {
           : { type: "self_hosted" };
 
       const storedImage = env._oma?.sandbox_image ?? DEFAULT_SANDBOX_IMAGE;
-      const runtimePatch = runtimeAttachmentPatch(env._oma?.runtime, runtimeId, envOverlay.env);
+      const runtimePatch = runtimeAttachmentPatch(env._oma?.runtime, runtimeId, envOverlay.env, placement);
       const omaPatch: OpenMaEnvironmentExtension = {
         // Only sent when changed, so an untouched form stays plain CMA.
         ...(sandboxImage !== storedImage && { sandbox_image: sandboxImageWireValue(sandboxImage) }),
@@ -277,6 +279,8 @@ export function EnvironmentDetail() {
             <RuntimeAttachmentFields
               idPrefix="env-detail"
               runtimeId={runtimeId}
+              placement={placement}
+              onPlacementChange={setPlacement}
               onRuntimeIdChange={setRuntimeId}
               envText={envOverlayText}
               onEnvTextChange={setEnvOverlayText}

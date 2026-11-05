@@ -93,7 +93,7 @@ function toOpenMaInput(
     ...(extension.runtime !== undefined && {
       runtime: extension.runtime === null
         ? null
-        : { runtimeId: extension.runtime.runtime_id, env: extension.runtime.env ?? {} },
+        : { runtimeId: extension.runtime.runtime_id, placement: extension.runtime.placement ?? "host", env: extension.runtime.env ?? {} },
     }),
   };
 }
@@ -146,7 +146,7 @@ function fromOpenMa(openma: NonNullable<EnvironmentView["openma"]>): object {
   return {
     ...(openma.sandboxImage !== undefined && { sandbox_image: openma.sandboxImage }),
     ...(openma.runtime !== undefined && {
-      runtime: { runtime_id: openma.runtime.runtimeId, env: openma.runtime.env },
+      runtime: { runtime_id: openma.runtime.runtimeId, placement: openma.runtime.placement ?? "host", env: openma.runtime.env },
     }),
   };
 }

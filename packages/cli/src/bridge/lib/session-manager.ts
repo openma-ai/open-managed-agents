@@ -134,6 +134,7 @@ export interface SessionManagerPreparationInput {
 export interface SessionManagerRuntimeDependencies {
   acpRuntime: AcpRuntime;
   prepareSession(input: SessionManagerPreparationInput): Promise<SessionOptions>;
+  bundleDir?(sessionId: string): string | undefined;
   releaseSession?(sessionId: string): Promise<void>;
   /** Test/platform clock for bounded cancel and drain waits. */
   runtimeScheduler?: ManagedAgentsRuntimeScheduler;
@@ -153,6 +154,7 @@ interface BundleEnvVar {
   value: string;
 }
 interface SessionBundle {
+  runtime?: { placement?: "host" | "sandbox" };
   managed_skills?: SkillBinding[];
   files: BundleFile[];
   /** Per-agent local-skill blocklist — daemon hides any skill with id in
@@ -233,7 +235,7 @@ export class SessionManager {
         session_id: event.sessionId,
         tenant_id: scope?.id ?? "",
         acp_session_id: event.acpSessionId,
-        scratchDir: sessionScratchDirPath(event.sessionId),
+        scratchDir: this.#runtimeDependencies?.bundleDir?.(event.sessionId) ?? sessionScratchDirPath(event.sessionId),
         freshSpawn: true,
       }));
     } else {
@@ -454,6 +456,7 @@ export class SessionManager {
       // inline) regardless of which alias the AgentConfig row stores.
       const bundle = await this.#fetchBundle(p.session_id, agent.id);
       if (bundle) {
+        if (bundle.runtime?.placement === "sandbox") throw new Error("Sandbox placement requires Node session runtime dependencies");
         managedSkills = await materializeManagedSkills({
           sessionDir: scratchDir, skills: bundle.managed_skills ?? [],
           apiUrl: this.#env.apiUrl, tenantId, agentApiKey: tenantKey,
