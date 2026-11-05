@@ -82,6 +82,14 @@ export function createKhaFixture(enabled = true) {
     sendSessionEvents: async (command) => {
       if (!owner(c) || !sessions.has(command.sessionId)) return { type: "not_found" };
       const input = command.events[0];
+      if (input.type === "user.interrupt") {
+        const interrupted = append(command.sessionId, input);
+        if (sessions.get(command.sessionId)!.status === "running") {
+          sessions.get(command.sessionId)!.status = "idle";
+          append(command.sessionId, { type: "session.status_idle", stopReason: { type: "end_turn" } });
+        }
+        return { type: "accepted", events: [interrupted] };
+      }
       if (input.type !== "user.message") throw new Error("Fixture accepts messages only");
       const user = append(command.sessionId, input);
       append(command.sessionId, { type: "session.status_running" });

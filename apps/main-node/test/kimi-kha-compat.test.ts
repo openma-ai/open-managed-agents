@@ -185,6 +185,38 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     await stream.cancel();
   });
 
+  it("forwards interrupt, reports unsupported message-free continue, and accepts a new turn", async () => {
+    const f = client(), id = await f.seed();
+    const interrupt = { type: "steer", events: [{ type: "user.interrupt", data: {} }] };
+    conforms("SendEventsRequest", interrupt);
+    f.sessions.get(id)!.status = "running";
+    const stopped = await f.request(`/sessions/${id}/events`, interrupt);
+    expect(stopped.status).toBe(202);
+    expect(await stopped.json()).toEqual({}); // No fabricated epoch or queued event ID.
+    expect(f.calls.at(-1)?.body).toEqual({ events: [{ type: "user.interrupt" }] });
+    expect((await (await f.request(`/sessions/${id}`)).json()).status).toBe("idle");
+    expect((await f.request(`/sessions/${id}/events`, { events: [{ type: "user.interrupt" }] })).status).toBe(202);
+    const before = f.events.get(id)!.length;
+    const continued = await f.app.request(`/kha/v1/sessions/${id}/continue`, { method: "POST", headers });
+    expect(continued.status).toBe(501);
+    expect((await continued.json()).error.message).toContain("message-free continue");
+    const fenced = await f.request(`/sessions/${id}/events`, {
+      events: [{ type: "user.interrupt", data: { expected_control_epoch: "1" } }],
+    });
+    expect(fenced.status).toBe(501);
+    expect(f.events.get(id)).toHaveLength(before);
+    expect((await f.request(`/sessions/${id}/events`, { events: [...interrupt.events, ...message.events] })).status).toBe(400);
+    expect((await f.request(`/sessions/${id}/events`, message)).status).toBe(200);
+    expect(f.events.get(id)!.at(-1)).toMatchObject({ type: "session.status_idle", stopReason: { type: "end_turn" } });
+    for (const [authorization, status] of [["Bearer invalid", 401], ["Bearer other", 404]] as const) {
+      expect((await f.request(`/sessions/${id}/events`, interrupt, { authorization })).status).toBe(status);
+      expect((await f.app.request(`/kha/v1/sessions/${id}/continue`, { method: "POST", headers: { ...headers, authorization } })).status).toBe(status);
+    }
+    expect((await f.app.request("/kha/v1/sessions/missing/continue", { method: "POST", headers })).status).toBe(404);
+    f.sessions.get(id)!.status = "terminated";
+    expect((await f.app.request(`/kha/v1/sessions/${id}/continue`, { method: "POST", headers })).status).toBe(409);
+  });
+
   it("tails native keyset pages with bounded overlap and no repeated history scan", async () => {
     const f = client(), id = await f.seed();
     await f.request(`/sessions/${id}/events`, message);
@@ -230,7 +262,7 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
       ["/environments", { name: "missing config" }],
       ["/environments", { name: "setup", config: { type: "cloud", setup_script: "echo unsupported" } }],
       ["/sessions", { agent_id: f.agentId, environment_id: "env_1", resources: [] }],
-      [`/sessions/${id}/events`, { events: [{ type: "user.interrupt", data: {} }] }],
+      [`/sessions/${id}/events`, { events: [{ type: "user.interrupt", data: { unknown: true } }] }],
       [`/sessions/${id}/events`, { events: [...message.events, ...message.events] }],
     ] as const) expect((await f.request(path, body)).status).toBe(400);
     for (const path of ["/agents?page_size=0", "/agents?official_only=true", "/artifacts", `/artifacts/${artifact.id}?version=2`, `/sessions/${id}/events/stream?include_deltas=invalid`]) {

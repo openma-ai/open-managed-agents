@@ -31,12 +31,21 @@ const sessionInput = z.object({
   agent_version: z.string().regex(/^[1-9]\d*$/).refine((v) => Number.isSafeInteger(Number(v))).optional(),
   title: z.string().max(256).optional(), metadata: metadata.optional(),
 }).strict();
-const eventsInput = z.object({
+const messageInput = z.object({
   type: z.literal("next_turn").optional(),
   events: z.array(z.object({ type: z.literal("user.message"),
     data: z.object({ content: z.array(text).optional() }).strict(),
   }).strict()).min(1).max(1),
 }).strict();
+
+const interruptInput = z.object({
+  // Kimi ignores scheduling mode for interrupt; it must be the only event.
+  type: z.enum(["next_turn", "steer"]).optional(),
+  events: z.tuple([z.object({ type: z.literal("user.interrupt"),
+    data: z.object({ expected_control_epoch: z.string().regex(/^(0|[1-9][0-9]{0,18})$/).optional() }).strict().optional(),
+  }).strict()]),
+}).strict();
+const eventsInput = z.union([messageInput, interruptInput]);
 
 class CompatError extends Error {
   constructor(readonly status: number, message: string, readonly param?: string) { super(message); }
@@ -173,13 +182,34 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
   });
   app.post("/sessions/:id/events", async (c) => {
     const body = await input(c, eventsInput);
-    const result = await json(c, `/sessions/${encodeURIComponent(c.req.param("id"))}/events`, {
-      events: body.events.map((event) => ({ type: event.type,
+    const path = `/sessions/${encodeURIComponent(c.req.param("id"))}`;
+    const firstInput = body.events[0];
+    if (firstInput.type === "user.interrupt") {
+      if (firstInput.data?.expected_control_epoch !== undefined) {
+        await json(c, path); // Authorize and check existence before reporting the gap.
+        throw new CompatError(501, "OMA has no control_epoch fencing; expected_control_epoch cannot be enforced");
+      }
+      await json(c, `${path}/events`, { events: [{ type: "user.interrupt" }] });
+      // Native acceptance is asynchronous. No Kimi control epoch or completed
+      // cancellation is implied, and interrupt is not a queued Kimi input ID.
+      return c.json({}, 202);
+    }
+    const result = await json(c, `${path}/events`, {
+      events: [firstInput].map((event) => ({ type: event.type,
         content: event.data.content?.length ? event.data.content : [{ type: "text", text: "Continue." }],
       })),
     });
     const first = z.array(object).parse(result.data ?? [])[0];
     return c.json(first?.id ? { event_id: first.id } : {});
+  });
+
+  app.post("/sessions/:id/continue", async (c) => {
+    query(c, []);
+    const current = await json(c, `/sessions/${encodeURIComponent(c.req.param("id"))}`);
+    if (current.status === "terminated" || current.archived_at != null) {
+      throw new CompatError(409, "A terminated or archived session cannot continue");
+    }
+    throw new CompatError(501, "OMA has no message-free continue or durable interrupted/control_epoch state; send a new user.message to start a new turn. Native interrupt preserves queued work but does not pause it");
   });
 
   // Native next_page is an opaque keyset boundary. At the tail it is absent,
