@@ -1,6 +1,6 @@
 # Runtime discovery, download, pairing and selection: design memo
 
-Status: **Draft** (updated 2026-11-05) · Branch `draft/runtime-download-selection`
+Status: **Draft** (updated 2026-11-05; owner decisions + T3/peer recommendations recorded) · Branch `draft/runtime-download-selection`
 Issues: [#449](https://github.com/openma-ai/open-managed-agents/issues/449) (Amp-style env+secrets overlay), [#415](https://github.com/openma-ai/open-managed-agents/issues/415) (Console product-surface gaps)
 Related: [ADR 0005](../adr/0005-self-hosted-worker-runtime-resources.md), [v1-architecture](../v1-architecture.md), [archive/external-agent-runtime](../archive/external-agent-runtime.md)
 
@@ -9,11 +9,15 @@ Related: [ADR 0005](../adr/0005-self-hosted-worker-runtime-resources.md), [v1-ar
 **Owner decisions this memo follows.**
 
 1. One machine is one **Runtime**. A Runtime is a peer API resource to Environment (`/v1/oma/runtimes`) and is never nested under it.
-2. A **Runtime** pairs the whole machine once (identity and connection), owned by one user (`owner_user_id`). It reports Git, Docker, supported sandbox modes and available resources. An **Environment** binds a Runtime and chooses placement and directories; a **Session** runs within it, and the daemon re-validates locally. Cloud-provisioned Environments remain available separately.
+2. A **Runtime** pairs the whole machine once (identity and connection). It still records a pairing `owner_user_id` for audit, but **authorization is workspace-centric**, not user-centric (see Decisions §5). It reports Git, Docker/LiteBox capability, supported sandbox modes and available resources. An **Environment** binds a Runtime and chooses placement and directories; a **Session** runs within it, and the daemon re-validates locally. Cloud-provisioned Environments remain available separately.
 3. An Amp `--amp-env`-style **env + secrets overlay**, configured in the Console, is injected into the host runner (its shell, MCP servers and plugins).
 4. **Converge Runtime ACP install root** on Backchat's layout: `~/.oma/acp/registry/…`. Do not keep a separate Martty install-root layout.
 5. **Skills: one copy in the unified cache**; sessions soft-link into that cache (not skillId@version-only mounts as the sole storage).
 6. **Skill update strategy matches cloud / CMA:** Agent binds `{ skill_id, type, version? }` with omitted version → `"latest"`; materialize resolves `latest` to a concrete Skill Version into the unified cache; session soft-links point at that concrete content. Updating a skill creates a new Version and moves `latestVersion`; **running Sessions do not hot-swap** — they keep the Agent snapshot from create time. Pinned versions stay pinned; `latest` picks up new content only on a new Session (or an explicit rebinding). No local-only auto-refresh / background re-link.
+7. **Permissions are workspace-centric.** Shared Environments on a Runtime are authorized by workspace membership/grant, not by per-user ownership alone. Users may clear Runtime/Environment state from the machine or from Console.
+8. **Git worktree edit mode defaults on** for eligible Git entries; the Environment editor lets the user cancel/opt out to `in_place` (or Use existing).
+9. **Sessions must not know about each other.** No cross-session directory awareness, coordination UI, or privacy-motivated hard reject of overlapping ancestor/descendant paths across Sessions. Leases may still serialize the same real path silently without sessions seeing each other.
+10. **Initial Runtime-owned sandbox backend = LiteBox**, talking to the **local daemon**; the daemon talks to the OMA control plane. This is distinct from Cloud Environment `SANDBOX_PROVIDER=litebox` on the Node control-plane path. Do not treat OpenSandbox Docker as the Runtime-attached default unless a later decision reopens it.
 
 ---
 
@@ -138,7 +142,7 @@ oma runtime rm <id>                    # exists: revoke
 | Session placement from the Environment | Phase 2 | When `environment._oma.runtime` is set, a Session starts from its configured directories, primary cwd and additional roots (harness-dependent); session create derives `runtime_binding.runtime_id` from it and needs only the ACP agent from the Agent. If the Agent already has a different `runtime_binding`, reject with 409 rather than guess. |
 | `GET /v1/oma/runtimes/:id`, `PATCH {name, labels}` | Phase 2 | Display name and labels (Buildkite-style tags) for picker filtering and future pools. |
 | Pending pairing-token list + revoke | Phase 2 | `GET/DELETE /v1/oma/runtimes/pairing-tokens`. Store a `sha256(code)` instead of the plaintext code; the existing browser flow stores plaintext. |
-| Runtime ownership | Decided | One user owns each Runtime (`owner_user_id`). Pairing, Environment attachment and directory authorization must respect that identity; workspace membership alone grants no machine access. |
+| Runtime ownership / grants | Decided (refined) | Pairing still records `owner_user_id` for audit. **Environment attachment and use are workspace-centric:** workspace membership/grant authorizes attaching and editing a shared Environment on a Runtime. Local directory approval remains a machine-side grant (`allow-dir` / local confirm). Users may clear Runtime/Environment state from the machine or Console. |
 
 ### 3b. CLI commands
 
@@ -183,7 +187,7 @@ oma runtime rm <id>                    # exists: revoke
 ### 3f. Milestones
 
 - **M1 (this draft):** headless pairing (API, CLI, Console), Environment `_oma.runtime` + env overlay (API, Console create and edit), overlay delivered to the daemon bundle, unified host skill cache + Session soft-links with concrete-version pinning, tests.
-- **M2:** Environment-authoritative placement and local directory grants, Runtime-owned OpenSandbox, in-place queues and safe worktrees, loopback PKCE and device authorization, sealed `secret_env`, runtime display name and labels, Runtime detail page, pending-token revoke, hashed codes, `oma env` CLI verbs.
+- **M2:** Environment-authoritative placement and local directory grants, Runtime-owned LiteBox sandbox, in-place queues and safe worktrees, loopback PKCE and device authorization, sealed `secret_env`, runtime display name and labels, Runtime detail page, pending-token revoke, hashed codes, `oma env` CLI verbs.
 - **M3:** install script, standalone binary + update check, additional sandbox backends and optional host confinement. Any fleet/pool design must preserve explicit user ownership and machine-local directory authorization.
 
 ---
@@ -204,10 +208,10 @@ oma runtime rm <id>                    # exists: revoke
 - In the canonical `/v1/sessions` path, `config.type: self_hosted` selects the existing Environment Work queue. An attachment does not connect that queue to the local bridge. The new bundle lookup removes a delivery gap; it does not implement queue consumption or change scheduling. The bundle still scopes requests to the machine's **primary workspace**, not all entries in `authorized_tenants`.
 - The overlay holds **plaintext values**, stored with the Environment and readable by workspace members through its API. There is no `secret_env`, encryption/write-only secret editor, secret masking or effective-env preview. Use vault credentials for secrets; do not paste them into this editor.
 - Overlay delivery requires a live Environment whose attached Runtime matches the Agent-bound Runtime. Missing, archived, detached or mismatched attachments contribute no overlay; the existing Environment lookup also suppresses read errors to an empty overlay. The Environment is read at bundle fetch time, not pinned to a Session policy revision; edits do not update an already-running child or restart its MCP servers. This is not Amp's full refresh behavior. Session `env` precedence applies to the legacy OMA resource contract; canonical CMA resources do not accept `env`.
-- **Ownership is not fully enforced on attachment writes.** Runtime listing and the picker are user-scoped; the Environment API currently validates shape/type/env names, but does not verify that `runtime_id` exists or belongs to the writer. Do not treat picker filtering as an authorization boundary. Bundle access checks the machine credential and Agent binding. Environment-authoritative routing must add server-side ownership checks before granting execution rights.
+- **Attachment authorization is incomplete.** Runtime listing and the picker are still user-scoped; the Environment API currently validates shape/type/env names, but does not verify that `runtime_id` exists or that the writer has a workspace grant to that Runtime. Do not treat picker filtering as an authorization boundary. Bundle access checks the machine credential and Agent binding. Environment-authoritative routing must add **server-side workspace-grant checks** (not per-user ownership alone) before granting execution rights.
 - No pending-token list/revoke, hashed bootstrap codes, device authorization or loopback PKCE yet. Browser and fallback codes use the existing plaintext `connect_runtime_codes` storage. Fallback tokens expire after 1 hour by default (allowed range 5 minutes–24 hours) and exchange once. Revoking a registered Runtime is separate from revoking an unused pairing command. Copied `--token` commands may remain in shell history.
 - Download is still `npx @openma/cli` with **Node ≥ 20** on the host. This branch's CLI additions require a build/release containing them; unversioned `npx` resolves the published package and is not evidence that draft flags are available. No standalone binary, deployment installer, update channel or upgrade/reconnect UX ships here.
-- Local directory approval/browsing, placement selection, Runtime-owned OpenSandbox, in-place queues, managed worktrees, cleanup/retention below are **design only**. Attaching a Runtime does not provide a sandbox or restrict the host user's filesystem access. No Runtime detail page or `oma env` command group ships here.
+- Local directory approval/browsing, placement selection, Runtime-owned LiteBox sandbox, in-place queues, managed worktrees, cleanup/retention below are **design only**. Attaching a Runtime does not provide a sandbox or restrict the host user's filesystem access. No Runtime detail page or `oma env` command group ships here.
 - **Host cache limits:** Windows first tries a directory symlink, then a junction, then a logged immutable copy fallback (unit-tested with mocked failures). Read-only modes prevent ordinary accidental writes; this is not a security boundary against the host account. No background refresh or cache eviction ships; TODO live-session-aware GC and abandoned-writer lock recovery. An interrupted writer may require operator inspection/removal of its lock; never delete a live linked entry. Older daemons/servers retain the legacy text-bundle protocol. Local user-installed skills keep their existing detection/filter behavior; only platform-managed Skill Versions enter this cache. Writable memory stores are unchanged and are not shared by these links.
 - **Sandbox boundary:** no Runtime-owned sandbox path ships here. Host links cannot cross a jail. The existing in-sandbox ACP supervisor retains jail-local extraction with the shared archive-path validator; cache mount/copy integration is deferred. Its ACP artifact default now follows `~/.oma/acp/registry/` (explicit operator overrides remain supported).
 - Verification in this PR uses local worker/D1 integration, contract and Console tests, plus live PR-lane skill materialization receipts under `docs/screenshots/498/receipts/skill-cache/`. The new skill-cache receipts are from Linux; botty Mac validation remains blocked by unavailable remote execution access. The skill probe does not claim ACP inference, Environment Work queue consumption, Mac execution, service survival or non-Cloudflare validation. No external model inference is needed for these tests.
@@ -230,9 +234,9 @@ The two axes are **sandbox or host** and **custom directory or default directory
 | Host, default directory | Today's per-session scratch directory `~/.oma/bridge/sessions/<12hex>/` | GitHub repository and other resource injection remain allowed |
 | Host, custom directories | The Environment selects roots/subpaths and primary start cwd; others are additional workspace roots (harness-dependent). Each Session instantiates the configured in-place entries or Git worktrees | No GitHub repository resource injection, avoiding duplicate copies and ambiguous cwd; an optional Git credential (token) alone may enable push/PR |
 
-Initial sandbox implementation reuses **self-hosted OpenSandbox with its Docker backend**. OMA already has an OpenSandbox provider; register each resulting sandbox as owned by that Runtime. Later backend candidates: Apple Containerization or Lima on macOS, Firecracker on Linux, and Microsoft LiteBox on Windows. LiteBox is MIT-licensed and has a Linux-on-Windows userland runner; it is early/unstable and toolchain support is unverified.
+**Initial Runtime-owned sandbox backend = LiteBox** (BoxLite / `@boxlite-ai/boxlite`), not OpenSandbox Docker. Owner direction (2026-11-05): LiteBox network targets the **local daemon**; the daemon talks to the OMA control plane. Register each resulting sandbox as owned by that Runtime. This is **distinct** from Cloud Environment `SANDBOX_PROVIDER=litebox` on the Node control-plane path ([docs/self-host.md](../self-host.md), live receipts under `docs/screenshots/498/receipts/litebox-local/`). T3 Code does not ship a LiteBox/OpenSandbox Runtime backend — it keeps execution on the host environment and can treat a Docker sandbox as an ordinary SSH host ([Docker + T3](https://docs.docker.com/ai/sandboxes/integrations/t3-code/)) — so OpenMA is not matching T3 here; it is following the owner LiteBox-on-Runtime decision. OpenSandbox Docker remains available as a **separate** control-plane/`SANDBOX_PROVIDER=opensandbox` path, not the Runtime-attached default. Later Runtime backend candidates if LiteBox gates fail on a platform: Apple Containerization or Lima on macOS, Firecracker/microVM alternatives on Linux, BoxRun when the host has no local KVM.
 
-Sandbox retention is Runtime-level: `sandbox_retention_days` defaults to **30**, with the same policy as worktrees and the shared `max_workspace_bytes` disk cap. OpenSandbox containers and their persisted volumes/snapshots belong to the Session. Pause or stop idle sandboxes after an idle timeout; archive starts the retention clock, and `0` means cleanup at archive. Running Sessions are never reclaimed. At expiry, the daemon exports files the agent produced through OMA's existing sync to the Session outputs/artifacts store, then removes the container, volumes/snapshots and images pulled solely for that Session. If export fails, retain the sandbox and report `cleanup_blocked`. Shared base images stay in an LRU image cache with its own size cap. Console reports reclaimed bytes. See **Archive and cleanup** for cap eviction and manual cleanup.
+Sandbox retention is Runtime-level: `sandbox_retention_days` defaults to **30**, with the same policy as worktrees and the shared `max_workspace_bytes` disk cap. LiteBox VMs and their persisted volumes/snapshots belong to the Session. Pause or stop idle sandboxes after an idle timeout; archive starts the retention clock, and `0` means cleanup at archive. Running Sessions are never reclaimed. At expiry, the daemon exports files the agent produced through OMA's existing sync to the Session outputs/artifacts store, then removes the VM, volumes/snapshots and images pulled solely for that Session. If export fails, retain the sandbox and report `cleanup_blocked`. Shared base images stay in an LRU image cache with its own size cap. Console reports reclaimed bytes. See **Archive and cleanup** for cap eviction and manual cleanup.
 
 Lightweight OS-level confinement (Seatbelt/bubblewrap, e.g. Codex `workspace-write` and Claude Code `sandbox-runtime`) is optional future **host-mode hardening**, not sandbox mode. Served directories select the start cwd and additional workspace roots; they do not confine commands. Worktrees separate checkouts and branches, not process permissions.
 
@@ -242,7 +246,7 @@ Today `acpSessionStartCwd` is set only from `agent.runtime_binding` through `res
 
 Replace that coupling with a **Runtime-local path and stable `directory_id`**. Detect Git locally through `.git` (directory or worktree file); any remote or no remote is valid. Non-Git folders are first-class, edited in place and never automatically initialized with Git. Repository metadata is optional integration/provenance, not directory identity.
 
-Only the machine owner can authorize custom roots: `oma bridge allow-dir <path>`, or a **local confirmation prompt** the first time Console references a path. Remote clients may request approval but cannot add authorized paths themselves. Runtime ownership is one `owner_user_id`; Environment visibility or remote API access does not bypass local approval.
+Custom roots still require a **machine-side** grant: `oma bridge allow-dir <path>`, or a **local confirmation prompt** the first time Console references a path. Remote clients may request approval but cannot add authorized paths themselves. Workspace membership may authorize attaching/editing a shared Environment on that Runtime (see Decisions), but it does **not** bypass local directory approval.
 
 An authorized root authorizes its **whole subtree**. The Environment owns `placement: sandbox|host`, `directories: [{ directory_id, subpath?, edit_mode }]` with `edit_mode: in_place|worktree`, and `primary`, a zero-based entry index selecting the start cwd. Each subpath is relative. Other entries become additional workspace roots, such as ACP additional directories or Claude Code `--add-dir`; support is harness-dependent. Reject unsupported multi-root placement explicitly. The Environment also owns per-repo `repositories: [{ directory_id, base_branch?, existing_checkout? }]` and a branch slug template. Retention is configured on the Runtime, not the Environment.
 
@@ -252,7 +256,7 @@ Session pinning records the Environment policy revision, Runtime and primary, pl
 
 ### In-place concurrency and optional worktrees
 
-Runs on the **same canonical in-place directory are serialized through a queue**, Multica-style. Aliases resolving to the same directory share a lease. A Session using several in-place directories acquires all leases in stable canonical-path-sorted order to avoid deadlock. Hold leases through tool/subprocess activity and reconcile them after daemon restart; separate worktrees allow parallel checkouts. Cross-session ancestor/descendant conflicts remain an open question.
+Runs on the **same canonical in-place directory are serialized through a queue**, Multica-style. Aliases resolving to the same directory share a lease. A Session using several in-place directories acquires all leases in stable canonical-path-sorted order to avoid deadlock. Hold leases through tool/subprocess activity and reconcile them after daemon restart; separate worktrees allow parallel checkouts. Cross-session ancestor/descendant paths are **not** hard-rejected for privacy. Sessions must not learn about each other; the in-place queue may still serialize the same real path (and, if needed, overlapping real paths) **silently** without cross-session awareness UI.
 
 Edit mode is configured per Environment entry. Non-Git entries stay `in_place`; report missing Git/worktree capability rather than downgrading silently. Git entries may use a per-session managed workspace:
 
@@ -323,17 +327,96 @@ Extend the Environment attachment rather than using Agent/GitHub paths as placem
 
 Console must state: **“Served directories pick the start cwd and additional workspace roots and are not a sandbox. Commands run with the Runtime user's permissions.”** A remotely requested new root remains pending until local owner approval. Archive starts automatic retention cleanup; show the expiry, shared disk cap, reclaimed bytes, Delete now action, autosave/output-export status and concrete cleanup blockers. Serving a plain folder never introduces a GitHub OAuth prerequisite.
 
-## 5. Open questions
+## 5. Decisions and recommendations
 
-1. How should existing Agent `runtime_binding` and GitHub `local_path` sessions migrate to Environment authority? Add a 409 on conflicting bindings; decide when to deprecate Agent machine placement. Define who may edit a shared Environment attached to someone else's Runtime; enforce the owner's machine grant server-side before enabling routing.
-2. Should Git worktrees be the first-use default or an explicit choice in the Environment editor?
-3. How are path moves, symlink replacement, Windows casing/drives and removable mounts reconciled for pinned entries and the managed workspace root?
-4. Within one Environment configuration, overlapping entries are rejected. Should the in-place queue also lock ancestor/descendant directories across Sessions? How are crashed leases and background processes reconciled, and does revoking a root stop existing runs?
-5. What OpenSandbox lifecycle, networking, resource limits and credential policy apply on each Runtime? What toolchain validation gates future backends, particularly LiteBox?
-6. How should submodules, nested repositories, LFS and unborn/bare repositories preserve work during autosave? How should Console present `cleanup_blocked`, disk-cap pressure and retained unmerged branch notices? Ignored output disposal and retention defaults are decided above.
-7. Seal overlay secrets or reference vaults? Add per-user/per-Runtime overlays beyond session > Environment > daemon precedence? Should overlays reach the daemon itself?
-8. What fallback pairing-token TTL limits, rotation and audit events are needed? Device code and loopback PKCE are decided flows; secure automation input remains to specify.
-9. Should attached Environments be visible to unmodified CMA workers polling `/work`, or reject dual-serving? Which standalone packaging format and update channel should ship first?
+Owner answers recorded 2026-11-05 (America/Detroit). Recommendations below for still-open items are based on T3 Code docs/source and peers (Multica, Backchat, Zed remote, Cline SSH, Amp); they are **proposals**, not owner locks, unless marked **Decided**.
+
+### 5.1 Decided (owner)
+
+1. **Workspace-centric permissions (was Q1 authorization half).** Permissions are workspace-centric, not user-centric. A shared Environment on someone’s Runtime is authorized via **workspace membership/grant**, not per-user ownership alone. Users may **clear state** from the machine or from Console. Pairing may still record `owner_user_id` for audit. Conflict on Agent `runtime_binding` vs Environment attachment remains **409**; migration/deprecation timing for Agent-level placement is still open (see §5.3).
+2. **Git worktree default (was Q2).** Worktree is the **first-use default** for eligible Git entries; the Environment editor lets the user **cancel/opt out** (in_place / Use existing).
+4. **Cross-session isolation (was Q4).** Do **not** refuse overlapping ancestor/descendant paths across Sessions for “privacy” reasons the owner did not ask for. Sessions should simply **not know about each other**: no cross-session directory awareness or coordination UI. Leases may still serialize the same (or overlapping) real path **silently** without sessions seeing each other. Crashed-lease / revoke-while-running mechanics stay implementation detail under that rule.
+5. **Runtime-attached sandbox = LiteBox (was Q5 / OpenSandbox confusion).** Initial Runtime-owned sandbox backend is **LiteBox only**. LiteBox network targets the **local daemon**; the daemon contacts the OMA control plane. Cloud Environment `SANDBOX_PROVIDER=litebox` is a **different** control-plane path and must not be conflated. OpenSandbox Docker is **not** the Runtime-attached default. T3 research does not contradict this: T3 keeps filesystem/provider authority on the execution server ([internals/overview](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)) and can SSH into a Docker sandbox as a normal host ([Docker docs](https://docs.docker.com/ai/sandboxes/integrations/t3-code/)); it does not define an OpenSandbox-on-Runtime product we must match.
+
+### 5.2 Recommendations (research; awaiting owner)
+
+#### Q3 — Path moves, symlink replacement, Windows casing/drives, removable mounts
+
+**Recommend: pin identity, revalidate on use, never silent rebind.**
+
+- Keep a stable `directory_id` plus recorded **canonical real path** (and, where available, volume/device identity). At Session launch/resume, resolve with realpath/EvalSymlinks and compare to the pin; on mismatch mark the entry **stale** and require re-authorization or an explicit rebind — do not silently follow a moved/replaced path into different files.
+- **Symlinks:** resolve before authorize, lease, and contain checks. Multica validates the real path and applies the serial lock to that real path, including when two symlink spellings meet ([project resources](https://github.com/multica-ai/multica/blob/7a12304f1473c71e0cee970c773246eaf96abc49/apps/docs/content/docs/project-resources.mdx)). Match that for OMA leases and pins.
+- **Windows:** normalize casing and `\?\` / drive-letter forms before compare; reject traversal tricks (T3 `WorkspaceFileSystem` realpath + NTFS trailing-dot/short-name hardening is a useful bar — [source](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/workspace/WorkspaceFileSystem.ts)). Prefer junctions or documented fallbacks already used by the skill cache when symlinks fail.
+- **Removable / relocated mounts:** if the volume is absent, **fail launch** with a clear “path unavailable” error and keep the pin; when the same volume identity returns, resume. Do not drop pins because a mount disappeared.
+- **Managed workspace root:** validate destinations under the OMA-managed root after realpath; T3 allows relocating the worktree folder per machine while leaving existing worktrees in place ([project-settings → Worktree location](https://github.com/pingdotgg/t3code/blob/main/docs/user/project-settings.md)). OMA can allow a configured managed-root path the same way without rewriting old Session pins.
+- Peers: Zed/Cline keep an explicit host then folder model ([Zed remote](https://zed.dev/docs/remote-development), [Cline SSH](https://github.com/cline/cline/blob/main/docs/usage/cline-desktop-ssh.mdx)); Backchat discovers repos without following child symlinks ([workspace-selection](https://github.com/openma-ai/backchat/blob/92f1bf3/docs/workspace-selection.md)).
+
+#### Q5b — LiteBox validation gates (before enabling Runtime-owned sandbox)
+
+**Recommend: capability probe on the daemon; gate the Environment editor and Session start on reported capabilities.**
+
+T3 does not define LiteBox gates. Use OMA’s existing adapter + receipts:
+
+| Gate | Requirement |
+|---|---|
+| Package | `@boxlite-ai/boxlite` loads on the daemon host |
+| Hypervisor | Native runtime present (BoxLite/Firecracker/libkrun/KVM as required on that OS); otherwise report unsupported and offer BoxRun only if configured |
+| Smoke | Create VM → `mkdir`/`exec` in `/workspace` succeeds (same class of check as local LiteBox receipts under `docs/screenshots/498/receipts/litebox-local/`) |
+| Resources | Honor `LITEBOX_MEMORY_MIB` / `LITEBOX_CPUS` / image; fail closed if over host capacity |
+| Networking | Guest egress policy matches Runtime credential/egress story; LiteBox talks to **local daemon**, daemon to control plane (owner) |
+| Heartbeat | Runtime status advertises `sandbox_modes: ["litebox"]` only after gates pass; Console disables Sandbox placement otherwise |
+
+Separate **Cloud** `SANDBOX_PROVIDER=litebox` (Node control plane) from **Runtime-attached** LiteBox in UI copy and capability bits so operators are not confused by the #498 CF Containers vs litebox-local split.
+
+#### Q6 — Submodules / nested / LFS / unborn / bare during autosave; `cleanup_blocked` UX
+
+**Recommend: preserve-or-block; never force-delete past a failed autosave.**
+
+- **Submodules:** on managed worktree create, initialize submodules **recursively by default**, with Environment/Runtime overrides for top-level-only or skip — same shape as T3 ([project-settings](https://github.com/pingdotgg/t3code/blob/main/docs/user/project-settings.md)). Autosave commits inside the OMA-owned worktree; if a submodule is dirty in a way autosave cannot commit, mark `cleanup_blocked` with code `submodule_dirty`.
+- **Nested repositories:** detect before autosave/remove; do not recurse deletes into nested roots; `cleanup_blocked` with `nested_repo`.
+- **LFS:** if `git lfs` is required to materialize or commit preserved content and is missing/fails, `cleanup_blocked` with `lfs_unavailable` rather than dropping pointers/content.
+- **Unborn / bare:** reject `worktree` edit mode at Environment validate and at launch (Multica requires a git repo with at least one commit for worktree mode). Autosave on bare/unborn → `cleanup_blocked` / `unsupported_git_state`; prefer `in_place` only when the user explicitly chose it for a non-bare checkout.
+- **`cleanup_blocked` Console UX:** show structured reason codes, human text, path, Session id, **Retry cleanup**, and **Open on machine** hints. Surface disk-cap pressure and retained unmerged branches as separate notice types (already sketched in Archive and cleanup). T3 cleanup results list removed/kept/why and never remove unused folders blindly ([project-settings Cleanup](https://github.com/pingdotgg/t3code/blob/main/docs/user/project-settings.md)); Multica keeps the worktree when commit/save cannot complete ([local_worktree leftovers](https://github.com/multica-ai/multica/blob/7a12304f1473c71e0cee970c773246eaf96abc49/apps/docs/content/docs/project-resources.mdx)). Align OMA with preserve-or-block.
+
+#### Q7 — Overlay secrets: seal vs vault; per-user/per-Runtime; daemon consumption
+
+**Recommend: sealed Environment `secret_env` + vault references; children only; no per-user overlay in M2.**
+
+- **Seal** write-only Environment `secret_env` with the existing session-secrets sealer keyed by Environment (names on GET). Prefer **vault `command_secret` references** for long-lived / shared secrets operators already rotate in vault.
+- Precedence stays **session env resources > Environment overlay > daemon process env** (Amp-style; Amp’s `--amp-env` injects Secrets & Env into the thread shell / stdio MCP, not into a system daemon — [Amp runners](https://ampcode.com/docs/cli/runners)).
+- **Do not** inject Environment overlays into the daemon process itself. Machine-local daemon knobs (PATH, proxy, feature flags) belong in a local file akin to T3 `~/.t3/service.env` ([background-service](https://github.com/pingdotgg/t3code/blob/main/docs/user/background-service.md)), chmod-restricted, surviving updates, applied on daemon restart only.
+- **Per-user overlays:** defer. Owner chose workspace-centric permissions; a personal layer would reintroduce user-centric policy. Revisit only if Amp-like personal > project > workspace is explicitly wanted later.
+- **Per-Runtime overlays:** optional later for host-specific non-secret vars; not required for M2 if `service.env`-style local config covers daemon needs.
+
+#### Q8 — Pairing token TTL / rotation / audit; secure automation input
+
+**Recommend: keep OMA’s 1h default; hash + revoke; prefer env/file over argv.**
+
+| Concern | Recommendation | T3 / peer citation |
+|---|---|---|
+| Bootstrap TTL | Keep API range **300s–24h**, default **1h** (GitHub registration-token class). Offer a Console preset for **5m** for tight interactive paste | T3 `t3 pair --ttl` default **5 minutes**, examples `5m`/`1h` ([pair.ts](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/cli/pair.ts)); OMA already documented 1h default |
+| One-time | Single-use exchange (already) | T3: fresh one-time link per device ([remote-access](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md)) |
+| List / revoke | Phase 2 pending-token list + revoke; store **sha256(code)** only; separate revoke of unused bootstrap vs established `sk_machine_*` | T3 separates unused pairing link revoke vs session revoke ([remote-access](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md), [environment-auth](https://github.com/pingdotgg/t3code/blob/main/docs/internals/environment-auth.md)); read model never returns recoverable secrets |
+| Long-lived analogues | Do not silently turn bootstrap tokens into 30-day credentials; machine token rotation is a distinct flow | T3 Connect / cross-environment links last **30 days** and renew with a new pairing code ([remote-access](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md)); guest links **24h** ([guest-links](https://github.com/pingdotgg/t3code/blob/main/docs/user/guest-links.md)) |
+| Audit | Emit mint / exchange success / exchange replay reject / expire / revoke events with actor, Runtime, workspace | Matches T3’s explicit revoke surfaces and non-recoverable metadata |
+| Secure automation | Prefer `OMA_PAIRING_TOKEN` env (exists) or `--token-file` / `file:` style; discourage raw `--token=` on shared shell history; document `HISTCONTROL`/CI secret stores | Tailscale `file:` auth-key form; T3 prints QR/URL once and does not re-show secrets from the connections list |
+
+Device authorization + loopback PKCE remain the decided interactive flows (§3d).
+
+#### Q9 — CMA `/work` dual-serve vs reject; standalone packaging / update channel
+
+**Recommend: reject dual-serve for Runtime-attached Environments; detect install channel for updates; ship install script → binary after npx.**
+
+- **Dual-serve:** Runtime-attached (`_oma.runtime`) Environments must **not** be claimable by unmodified CMA `/work` pollers. Queue consumption for those Environments belongs to the **paired Runtime bridge**. Cloud / non-attached Environments keep today’s worker poll path. Showing attached Environments to stock CMA workers invites double claim and split-brain; reject or filter at enqueue/claim time rather than “visible but hope workers ignore.”
+- **Packaging / updates (T3 lesson):** treat channels separately — temporary `npx`, installed CLI/binary, OS service, future desktop — and refuse incompatible protocol pairs rather than half-upgrading ([install](https://github.com/pingdotgg/t3code/blob/main/docs/user/install.md), [updating](https://github.com/pingdotgg/t3code/blob/main/docs/user/updating.md), [server-updates](https://github.com/pingdotgg/t3code/blob/main/docs/internals/server-updates.md)).
+- **Ship order for OpenMA:** keep `npx @openma/cli` now → Phase 3 **origin-aware `install.sh` / `install.ps1`** pinning a CLI version (T3’s first-class path) → single-file binary + brew/winget. Console upgrade actions must name the machine and detected channel; service restart stays explicit.
+
+### 5.3 Still open (need owner or later ADR)
+
+- Migration schedule: when Agent `runtime_binding` / GitHub `local_path` stop being placement authorities after Environment authority ships (409-on-conflict is already assumed).
+- Exact crashed-lease recovery timeouts and whether revoking a directory force-stops running Sessions or only blocks new starts/resumes (under the silent-lease rule).
+- Whether per-Runtime `service.env`-style files are in M2 or M3.
+- Platform matrix for LiteBox gates (macOS/Windows/Linux CI) before advertising Sandbox placement GA.
 
 ---
 
