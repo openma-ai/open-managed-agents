@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "code already used"
+  },
+  "message": "code already used",
+  "code": "invalid_request_error",
+  "request_id": "a55b06188fb8efbe"
+}
