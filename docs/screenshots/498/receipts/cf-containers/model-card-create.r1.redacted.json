@@ -1,0 +1,15 @@
+{
+  "id": "mdl-406wuuac92m2470z",
+  "model_id": "deepseek-flash",
+  "model": "deepseek-flash",
+  "provider": "deepseek",
+  "api_key_preview": "****",
+  "base_url": "https://api.deepseek.com",
+  "is_default": true,
+  "created_at": "2026-11-05T10:42:34.157Z",
+  "archived_at": null,
+  "probe": {
+    "ok": null,
+    "reason": "unsupported_provider"
+  }
+}

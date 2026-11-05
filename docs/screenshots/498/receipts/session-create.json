@@ -1,0 +1,42 @@
+{
+  "id": "session_70a788ac765c49e2939c72a6da9711df",
+  "agent": {
+    "id": "agent_7c602ac14f5c42c299355bad156c4ca9",
+    "description": null,
+    "execution_identity": {
+      "type": "service_account"
+    },
+    "mcp_servers": [],
+    "model": {
+      "id": "claude-haiku-4-5-20251001"
+    },
+    "multiagent": null,
+    "name": "pr-498-agent",
+    "_oma": {
+      "harness": "acp-proxy",
+      "runtime_binding": {
+        "runtime_id": "819a5dc1-e667-4a82-9167-151ae8ea5216",
+        "acp_agent_id": "probe"
+      }
+    },
+    "skills": [],
+    "system": "498 probe pinned",
+    "tools": [],
+    "type": "agent",
+    "version": 1
+  },
+  "archived_at": null,
+  "budget": null,
+  "created_at": "2026-11-05T10:09:26.579Z",
+  "environment_id": "env_0531e2509544441f8c146f028e43aeb4",
+  "metadata": {},
+  "outcome_evaluations": [],
+  "resources": [],
+  "stats": {},
+  "status": "running",
+  "title": null,
+  "type": "session",
+  "updated_at": "2026-11-05T10:09:26.579Z",
+  "usage": {},
+  "vault_ids": []
+}

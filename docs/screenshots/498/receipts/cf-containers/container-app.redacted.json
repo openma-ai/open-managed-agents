@@ -1,0 +1,25 @@
+{
+  "id": "a03791c4-5cc9-4f45-a5a1-5120d936a2df",
+  "name": "sandbox-default-lane-pr-498-sandbox",
+  "provider": "cloudflare-containers",
+  "runtime": "firecracker",
+  "image_repo": "registry.cloudflare.com/.../openma-runtime@sha256:dbcc0733\u2026 (same digest as staging)",
+  "image_digest_prefix": "sha256:dbcc07337568\u2026",
+  "instances": 7,
+  "max_instances": 50,
+  "health": {
+    "errors": [],
+    "instances": {
+      "active": 2,
+      "assigned": 1,
+      "healthy": 4,
+      "stopped": 0,
+      "failed": 0,
+      "scheduling": 0,
+      "starting": 0
+    }
+  },
+  "durable_objects_namespace": "sandbox-default-lane-pr-498 / Sandbox",
+  "note": "Created because lane deploy used --containers-rollout=none and box has no Docker CLI; reused staging openma-runtime image digest.",
+  "litebox": "NOT applicable on CF Workers lane. LiteBox is Node SANDBOX_PROVIDER=litebox (@boxlite-ai/boxlite). Lane cloud path = Cloudflare Containers."
+}

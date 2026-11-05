@@ -1,0 +1,10 @@
+total 12
+drwxr-xr-x 2 root root 4096 Nov  5 11:43 .
+drwxr-xr-x 3 root root 4096 Nov  5 11:43 ..
+lrwxrwxrwx 1 root root   82 Nov  5 11:43 demo-skill -> /oma/cache/skills/c413dfaf158bd2d2e3c0d2024e981a7b61c13abf3b79860d531da10ccf885b09
+/oma/cache/skills/c413dfaf158bd2d2e3c0d2024e981a7b61c13abf3b79860d531da10ccf885b09
+# Demo Skill
+RUNTIME_PLACEMENT_SKILL_OK
+12 /workspace/skills/demo-skill/asset.bin
+
+[2m2026-11-05T11:43:01.538147Z[0m [33m WARN[0m [2mlibcontainer::process::init::process[0m[2m:[0m seccomp not available, unable to set seccomp privileges!

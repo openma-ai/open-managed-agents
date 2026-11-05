@@ -1,0 +1,20 @@
+{
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "content": "# pr-498-agent\n\n## System Instructions\n\n498 probe pinned\n\n"
+    }
+  ],
+  "local_skill_blocklist": [],
+  "mcp_servers": [],
+  "env": [
+    {
+      "name": "OMA_498_PROBE",
+      "value": "from-overlay"
+    },
+    {
+      "name": "NODE_ENV",
+      "value": "development"
+    }
+  ]
+}

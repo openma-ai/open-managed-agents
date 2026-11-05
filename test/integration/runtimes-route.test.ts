@@ -1099,3 +1099,247 @@ describe("GET /v1/oma/runtimes — workspace API key", () => {
     expect(ids).not.toContain(ridB);
   });
 });
+
+describe("Runtime pairing tokens + Environment env overlay", () => {
+  beforeAll(async () => {
+    await api("/health").catch(() => {});
+  });
+
+  async function seedUserWithKey(): Promise<{ tenantId: string; userId: string; key: string }> {
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const tenantId = `tn_pair_${suffix}`;
+    const userId = `u_pair_${suffix}`;
+    const now = Math.floor(Date.now() / 1000);
+    await env.AUTH_DB
+      .prepare(`INSERT OR IGNORE INTO "tenant" (id, name, createdAt, updatedAt) VALUES (?, ?, ?, ?)`)
+      .bind(tenantId, tenantId, now * 1000, now * 1000)
+      .run();
+    await env.AUTH_DB
+      .prepare(
+        `INSERT OR REPLACE INTO "user" (id, name, email, emailVerified, tenantId, role, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(userId, "Pair User", `${userId}@test.local`, 1, tenantId, "owner", now * 1000, now * 1000)
+      .run();
+    await env.AUTH_DB
+      .prepare(`INSERT OR REPLACE INTO "membership" (user_id, tenant_id, role, created_at) VALUES (?, ?, ?, ?)`)
+      .bind(userId, tenantId, "owner", now)
+      .run();
+    const key = `oma_pair_${Math.random().toString(36).slice(2)}`;
+    await env.CONFIG_KV.put(
+      `apikey:${await sha256Hex(key)}`,
+      JSON.stringify({
+        id: `ak_${suffix}`,
+        tenant_id: tenantId,
+        user_id: userId,
+        name: "pair key",
+        created_at: new Date().toISOString(),
+        credential: { type: "workspace" },
+      }),
+    );
+    return { tenantId, userId, key };
+  }
+
+  function mint(key: string, body: unknown = {}) {
+    return api("/v1/oma/runtimes/pairing-tokens", {
+      method: "POST",
+      headers: { "x-api-key": key, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function bundleFixture(skills = []) {
+    const { key, tenantId, userId } = await seedUserWithKey();
+    const runtimeId = `rt_bundle_${tenantId}`;
+    const { tokenPlain } = await seedRuntime({
+      runtimeId, userId, ownerTenantId: tenantId,
+      memberships: [{ tenant_id: tenantId, role: "owner" }],
+    });
+    const post = async (path: string, body: unknown, status = 201) => {
+      const response = await api(path, {
+        method: "POST",
+        headers: { "x-api-key": key, "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01" },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(status);
+      return result;
+    };
+    const environment = await post("/v1/environments", {
+      name: "bundle host", config: { type: "self_hosted" },
+      _oma: { runtime: { runtime_id: runtimeId, env: { OVERLAY: "from-environment" } } },
+    });
+    const agent = await post("/v1/agents", {
+      name: "bundle agent", model: "claude-sonnet-4-6", system: "Pinned bundle instructions", skills,
+      _oma: { harness: "acp-proxy", runtime_binding: { runtime_id: runtimeId, acp_agent_id: "claude-code" } },
+    });
+    // No messages/turns: exercise persistence and delivery without model inference.
+    const session = await post("/v1/sessions", { agent: agent.id, environment_id: environment.id });
+    expect(session.environment_id).toBe(environment.id);
+    const bundle = (sid = session.id, token = tokenPlain, cache = false) => api(
+      `/agents/runtime/sessions/${sid}/bundle?agent_id=claude-code${cache ? "&skill_cache=1" : ""}`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    return { bundle, post, session, environment, agent, runtimeId, tenantId, userId };
+  }
+
+  it("delivers the overlay and pinned agent for a session created through the public managed API", async () => {
+    const { bundle, post, agent } = await bundleFixture();
+    await post(`/v1/agents/${agent.id}`, { system: "Later agent instructions" }, 200);
+    const response = await bundle();
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.env).toEqual([{ name: "OVERLAY", value: "from-environment" }]);
+    expect(result.files).toContainEqual({ path: "AGENTS.md", content: expect.stringContaining("Pinned bundle instructions") });
+    expect(JSON.stringify(result.files)).not.toContain("Later agent instructions");
+  });
+
+  it("delivers explicit sandbox placement and runtime ownership in the bundle", async () => {
+    const { bundle, post, environment, runtimeId } = await bundleFixture();
+    expect((await (await bundle()).json()).runtime).toEqual({ runtime_id: runtimeId, placement: "host" });
+    await post(`/v1/environments/${environment.id}`, { _oma: { runtime: { runtime_id: runtimeId, placement: "sandbox" } } }, 200);
+    expect((await (await bundle()).json()).runtime).toEqual({ runtime_id: runtimeId, placement: "sandbox" });
+    await post(`/v1/environments/${environment.id}`, { _oma: { runtime: { runtime_id: "rt_elsewhere", placement: "sandbox" } } }, 200);
+    expect((await bundle()).status).toBe(500);
+  });
+
+  it("serves managed skill references from the Session snapshot without text extracts", async () => {
+    const skills = [{ type: "custom", skill_id: "skill_cache_latest" },
+      { type: "custom", skill_id: "skill_cache_pinned", version: "version_1" }];
+    const { bundle, post, agent, session } = await bundleFixture(skills);
+    await post(`/v1/agents/${agent.id}`, { skills: [] }, 200);
+    const response = await bundle(session.id, undefined, true);
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.managed_skills).toEqual([
+      { ...skills[0], version: "latest" }, skills[1],
+    ]);
+    expect(result.files).toEqual([{ path: "AGENTS.md", content: expect.stringContaining("Pinned bundle instructions") }]);
+    expect(result.files[0].content).not.toContain("content unavailable");
+    expect((await (await bundle()).json()).managed_skills).toBeUndefined();
+  });
+
+  it("hides bundles from another runtime/workspace and after session archive", async () => {
+    const { bundle, post, session, tenantId, userId } = await bundleFixture();
+    for (const workspace of [tenantId, `${tenantId}_other`]) {
+      const { tokenPlain } = await seedRuntime({
+        runtimeId: `rt_other_${workspace}`, userId, ownerTenantId: workspace,
+        memberships: [{ tenant_id: workspace, role: "owner" }],
+      });
+      const denied = await bundle(session.id, tokenPlain);
+      expect(denied.status).toBe(404);
+      expect(await denied.json()).toMatchObject({ error: { type: "not_found_error", message: "session not found" } });
+    }
+    expect((await bundle("session_missing")).status).toBe(404);
+    expect((await bundle(session.id, "invalid")).status).toBe(401);
+    await post(`/v1/sessions/${session.id}/archive`, {}, 200);
+    expect((await bundle()).status).toBe(404);
+  });
+
+  it("reads current overlay edits and rejects unavailable or mismatched Environment policy", async () => {
+    const { bundle, post, environment, runtimeId } = await bundleFixture();
+    for (const [runtime, expected] of [
+      [{ runtime_id: runtimeId, env: { OVERLAY: "edited", EMPTY: "" } }, [{ name: "OVERLAY", value: "edited" }, { name: "EMPTY", value: "" }]],
+      [null, []],
+    ] as const) {
+      await post(`/v1/environments/${environment.id}`, { _oma: { runtime } }, 200);
+      const response = await bundle();
+      expect(response.status).toBe(200);
+      expect((await response.json()).env).toEqual(expected);
+    }
+    await post(`/v1/environments/${environment.id}`, {
+      _oma: { runtime: { runtime_id: runtimeId, env: { OVERLAY: "archived" } } },
+    }, 200);
+    await post(`/v1/environments/${environment.id}/archive`, {}, 200);
+    expect((await bundle()).status).toBe(500);
+  });
+
+  it("preserves legacy session env precedence and blocks archived legacy bundles", async () => {
+    const { bundle, environment, agent, tenantId } = await bundleFixture();
+    const { getCfServicesForTenant } = await import("@open-managed-agents/services");
+    const { loadRuntimeAgentSnapshot } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+    const services = await getCfServicesForTenant(env, tenantId);
+    const agentSnapshot = await loadRuntimeAgentSnapshot(services.agents, tenantId, agent.id);
+    const { session, resources } = await services.sessions.create({
+      tenantId, agentId: agent.id, environmentId: environment.id,
+      agentSnapshot,
+      resources: [{ type: "env", name: "OVERLAY" }, { type: "env", name: "SESSION_ONLY" }],
+    });
+    for (const resource of resources) {
+      await services.sessionSecrets.put({ tenantId, sessionId: session.id, resourceId: resource.id, value: "from-session" });
+    }
+    const response = await bundle(session.id);
+    expect(response.status).toBe(200);
+    expect((await response.json()).env).toEqual([
+      { name: "OVERLAY", value: "from-session" }, { name: "SESSION_ONLY", value: "from-session" },
+    ]);
+    await services.sessions.archive({ tenantId, sessionId: session.id });
+    expect((await bundle(session.id)).status).toBe(404);
+  });
+
+  it("mints a single-use token that the unchanged /exchange accepts once", async () => {
+    const { parseRuntimePairingToken } = await import("@open-managed-agents/api-types");
+    const { key, tenantId } = await seedUserWithKey();
+
+    const res = await mint(key, { ttl_seconds: 600 });
+    expect(res.status).toBe(201);
+    const minted = await res.json();
+    expect(minted.pairing_token).toMatch(/^omrp_[0-9a-f]+_[0-9a-f]+$/);
+    expect(minted.install_command).toContain(`--token=${minted.pairing_token}`);
+    expect(minted.expires_at - Math.floor(Date.now() / 1000)).toBeGreaterThan(590);
+
+    const parts = parseRuntimePairingToken(minted.pairing_token);
+    expect(parts).not.toBeNull();
+    const exchange = (machine: string) => api("/agents/runtime/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...parts, machine_id: machine, hostname: "headless", os: "linux", version: "0.0.1-test", multi_tenant: true,
+      }),
+    });
+    const first = await exchange(`m_${tenantId}`);
+    expect(first.status).toBe(200);
+    const body = await first.json();
+    expect(body.token).toMatch(/^sk_machine_/);
+    expect(body.tenants.map((t: { id: string }) => t.id)).toEqual([tenantId]);
+
+    const replay = await exchange(`m2_${tenantId}`);
+    expect(replay.status).toBe(400);
+    expect((await replay.json()).error).toMatchObject({ message: "code already used" });
+  });
+
+  it("rejects out-of-range ttl and unauthenticated callers", async () => {
+    const { key } = await seedUserWithKey();
+    for (const ttl_seconds of [10, 7 * 24 * 3600, 1.5, "3600"]) {
+      expect((await mint(key, { ttl_seconds })).status).toBe(400);
+    }
+    const anon = await api("/v1/oma/runtimes/pairing-tokens", { method: "POST" });
+    expect(anon.status).toBe(401);
+  });
+
+  it("serves an Environment overlay only to the runtime it is attached to", async () => {
+    const { runtimeEnvironmentOverlay } = await import("../../apps/main/src/routes/runtimes");
+    const workspaceId = `tn_ovl_${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
+    const put = async (id: string, document: object, archivedAt: number | null = null) => {
+      await env.MAIN_DB
+        .prepare(
+          `INSERT INTO managed_environments (workspace_id, id, document, revision, created_at, updated_at, archived_at)
+           VALUES (?, ?, ?, 1, ?, ?, ?)`,
+        )
+        .bind(workspaceId, id, JSON.stringify(document), now, now, archivedAt)
+        .run();
+    };
+    const base = { config: { type: "self_hosted" }, metadata: {}, name: "laptop", description: null };
+    await put("env_attached", { ...base, id: "env_attached", openma: { runtime: { runtimeId: "rt_a", env: { FOO: "bar" } } } });
+    await put("env_archived", { ...base, id: "env_archived", openma: { runtime: { runtimeId: "rt_a", env: { FOO: "x" } } } }, now);
+    await put("env_plain", { ...base, id: "env_plain" });
+
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_attached", "rt_a")).resolves.toEqual({ FOO: "bar" });
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_attached", "rt_b")).rejects.toThrow("does not match");
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, "tn_other", "env_attached", "rt_a")).rejects.toThrow("unavailable");
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_archived", "rt_a")).rejects.toThrow("unavailable");
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, "env_plain", "rt_a")).resolves.toEqual({});
+    await expect(runtimeEnvironmentOverlay(env.MAIN_DB, workspaceId, null, "rt_a")).resolves.toEqual({});
+  });
+});

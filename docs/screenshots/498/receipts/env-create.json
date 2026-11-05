@@ -1,0 +1,22 @@
+{
+  "id": "env_0531e2509544441f8c146f028e43aeb4",
+  "archived_at": null,
+  "config": {
+    "type": "self_hosted"
+  },
+  "created_at": "2026-11-05T10:07:48.471Z",
+  "description": null,
+  "metadata": {},
+  "name": "pr-498-overlay",
+  "type": "environment",
+  "updated_at": "2026-11-05T10:07:48.471Z",
+  "_oma": {
+    "runtime": {
+      "runtime_id": "819a5dc1-e667-4a82-9167-151ae8ea5216",
+      "env": {
+        "OMA_498_PROBE": "from-overlay",
+        "NODE_ENV": "development"
+      }
+    }
+  }
+}

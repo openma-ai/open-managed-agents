@@ -617,6 +617,7 @@ export async function createManagedNodeRuntime(
       secrets: openAIAgentsSecrets,
       isFenceActive: isManagedSessionExecutionFenceActive,
       environmentId: session => `oai_env_${session.id}`,
+      logger,
     }), (error, input) => {
       logger.error({
         err: error,
@@ -732,7 +733,12 @@ export async function createManagedNodeRuntime(
         )
         : undefined;
       const platformReminders = [
-        ...(assemblySkills ? [] : buildNodeManagedSkillReminders(input.session)),
+        ...(assemblySkills ? [] : await buildNodeManagedSkillReminders(
+          input.session,
+          managedPlatform
+            .app({ workspaceId: input.workspaceId })
+            .port(managedAgentsPortTokens.skillVersions),
+        )),
         ...buildNodeManagedAppendablePromptReminders(input.session),
       ];
       const feishuTools = await resolveFeishuAgentTools(input.session.id);

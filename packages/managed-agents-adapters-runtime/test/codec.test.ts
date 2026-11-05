@@ -13,6 +13,20 @@ import type {
 import * as runtimeCodec from "../src";
 
 describe("Managed session runtime codec", () => {
+  it("keeps the domain property list_cost_pico on session.usage", () => {
+    expect(decodeRuntimeProducedSessionEvent({
+      id: "event_usage",
+      type: "session.usage",
+      usage: { input_tokens: 1, output_tokens: 2, list_cost: { amount_minor: "100", currency: "USD" }, list_cost_pico: "1000000000000" },
+      processed_at: "2026-08-26T00:00:01.000Z",
+    })).toEqual({
+      id: "event_usage",
+      type: "session.usage",
+      usage: { inputTokens: 1, outputTokens: 2, listCost: { amountMinor: "100", currency: "USD" }, list_cost_pico: "1000000000000" },
+      processedAt: "2026-08-26T00:00:01.000Z",
+    });
+  });
+
   it("encodes accepted application events without API or SDK DTO dependencies", () => {
     expect(
       encodeRuntimeSessionEvent({

@@ -27,9 +27,9 @@ export class OpenAIAgentsProtocolError extends Error {
 }
 const errorBody = (error: OpenAIAgentsProtocolError) => ({ error: {
   message: error.message,
-  type: error.status >= 500 ? "server_error" : error.status === 429 ? "rate_limit_error" : error.status === 401 ? "authentication_error" : "invalid_request_error",
+  type: error.status >= 500 ? "server_error" : error.status === 429 ? (error.code === "credit_balance_exhausted" || error.code === "organization_usage_limit_exceeded" ? "insufficient_quota" : "rate_limit_error") : error.status === 401 ? "authentication_error" : error.status === 403 ? "permission_error" : "invalid_request_error",
   param: error.param ?? null,
-  code: error.code ?? (error.status === 404 ? "resource_not_found" : error.status === 409 ? "conflict" : error.status >= 500 ? "internal_error" : "invalid_request"),
+  code: error.code ?? (error.status === 401 ? "invalid_api_key" : error.status === 403 ? "insufficient_permissions" : error.status === 429 ? "rate_limit_exceeded" : error.status === 404 ? "resource_not_found" : error.status === 409 ? "conflict" : error.status >= 500 ? "internal_error" : "invalid_request"),
 } });
 function invalid(result: OpenAIAgentsValidation): void {
   if (!result.success) throw new OpenAIAgentsProtocolError(400, result.issue.message, result.issue.path || undefined, "invalid_request");
@@ -42,7 +42,7 @@ function validateResponse(definition: OpenAIAgentsOperationDefinition, value: un
     if (!value || typeof value !== "object" || Array.isArray(value)) return invalidResponse();
     const page = value as Record<string, unknown>;
     if (!Array.isArray(page.data) || typeof page.has_more !== "boolean") return invalidResponse();
-    if (Object.keys(page).some(key => !["data", "has_more", ...(definition.mode === "tokenPage" ? ["next"] : [])].includes(key))) return invalidResponse();
+    if (Object.keys(page).some(key => !["data", "has_more", ...(definition.operation.startsWith("sessions.") ? ["object", "first_id", "last_id"] : []), ...(definition.mode === "tokenPage" ? ["next"] : [])].includes(key))) return invalidResponse();
     if (definition.mode === "tokenPage" && !(page.next === null || (typeof page.next === "string" && page.next.length))) return invalidResponse();
     if (page.has_more && (!page.data.length || (definition.mode === "tokenPage" ? !page.next : !page.data.at(-1)?.id))) return invalidResponse();
     for (const item of page.data) if (!validateOpenAIAgentsSchema(item, definition.responseSchema).success) return invalidResponse();
@@ -65,6 +65,8 @@ export function buildOpenAIAgentsProtocolApi(source: OpenAIAgentsProtocolPortSou
   for (const operation of openAIAgentsOperations) {
     const definition: OpenAIAgentsOperationDefinition = operation;
     app.on(definition.method, definition.path, async c => {
+      const idempotencyKey = c.req.header('Idempotency-Key');
+      if (operation.operation === 'sessions.events.create' && idempotencyKey !== undefined && (idempotencyKey.length < 1 || idempotencyKey.length > 256)) throw new OpenAIAgentsProtocolError(400, 'Idempotency-Key must contain 1 to 256 characters', 'Idempotency-Key');
       let body: Record<string, unknown> = {};
       if (definition.bodySchema) {
         const raw = await c.req.text();
@@ -123,9 +125,30 @@ export function buildOpenAIAgentsProtocolApi(source: OpenAIAgentsProtocolPortSou
         if (response.binary === undefined) return invalidResponse();
         return new Response(response.binary, { status: response.status ?? 200, headers: { "content-type": "application/octet-stream", ...response.headers } });
       }
+      if (definition.mode === 'page' && operation.operation.startsWith('sessions.') && response.body && typeof response.body === 'object' && Array.isArray((response.body as { data?: unknown }).data)) {
+        const page = response.body as { data: Array<{ id: string | null }>; has_more: boolean };
+        response.body = { ...page, object: 'list', first_id: page.data[0]?.id ?? null, last_id: page.data.at(-1)?.id ?? null };
+      }
       validateResponse(definition, response.body);
-      return new Response(JSON.stringify(response.body), { status: response.status ?? 200, headers: { "content-type": "application/json", ...response.headers } });
+      return new Response(JSON.stringify(response.body), { status: response.status ?? (operation.operation === "sessions.create" ? 201 : 200), headers: { "content-type": "application/json", ...response.headers } });
     });
   }
   return app;
+}
+
+/** Preserve classified upstream errors, messages and headers across auth/rate
+ * middleware on both hosts. Only unstructured middleware failures need an envelope. */
+export async function normalizeOpenAIAgentsErrorResponse(response: Response): Promise<Response> {
+  if (![401, 403, 429].includes(response.status)) return response;
+  let message = response.status === 401 ? 'Authentication required' : response.status === 403 ? 'Permission denied' : 'Rate limit exceeded';
+  try {
+    const body = await response.clone().json() as { error?: string | { message?: string; type?: string; code?: string; param?: unknown } };
+    if (typeof body.error === 'object' && body.error !== null && typeof body.error.code === 'string' && typeof body.error.type === 'string' && typeof body.error.message === 'string') return response;
+    if (typeof body.error === 'string') message = body.error;
+    else if (typeof body.error?.message === 'string') message = body.error.message;
+  } catch { /* Non-JSON middleware errors use a stable public fallback. */ }
+  const headers = new Headers(response.headers);
+  headers.set('content-type', 'application/json');
+  headers.delete('content-length');
+  return new Response(JSON.stringify(errorBody(new OpenAIAgentsProtocolError(response.status, message))), { status: response.status, headers });
 }

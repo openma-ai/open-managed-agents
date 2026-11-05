@@ -8,6 +8,7 @@ import { Modal } from "../components/Modal";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
+import type { RuntimePairingTokenResponse } from "@open-managed-agents/api-types";
 
 interface LocalSkill {
   id: string;
@@ -265,6 +266,7 @@ export function RuntimesList() {
           <div className="bg-bg-surface border border-border rounded-lg p-3 font-mono text-xs space-y-1">
             <div className="text-fg select-all">npx @openma/cli bridge setup</div>
           </div>
+          <HeadlessPairing />
           <p className="text-fg-muted text-xs">
             Setup opens this browser for OAuth, writes credentials to{" "}
             <code className="bg-bg-surface px-1 rounded">~/.oma/bridge/</code>, and (on macOS) installs a launchd job
@@ -300,6 +302,51 @@ export function RuntimesList() {
         </div>
       </Modal>
     </DataTable>
+  );
+}
+
+/** Headless machines (SSH box, VM, container) can't complete the browser
+ *  loopback in `bridge setup`. Mint a one-time pairing token server-side and
+ *  hand the user a single command to paste on that machine instead. */
+export function HeadlessPairing() {
+  const { api } = useApi();
+  const [minted, setMinted] = useState<RuntimePairingTokenResponse | null>(null);
+  const [working, setWorking] = useState(false);
+
+  const generate = async () => {
+    setWorking(true);
+    try {
+      setMinted(await api<RuntimePairingTokenResponse>("/v1/oma/runtimes/pairing-tokens", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }));
+    } catch {
+      // useApi already toasts the error.
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="border border-border rounded-lg p-3 space-y-2">
+      <p className="text-fg-muted text-xs">
+        <strong>No browser on that machine?</strong> Generate a one-time command instead (valid 1 hour, single use).
+      </p>
+      {minted ? (
+        <>
+          <div className="bg-bg-surface border border-border rounded-lg p-3 font-mono text-xs break-all text-fg select-all" data-testid="pairing-command">
+            {minted.install_command}
+          </div>
+          <p className="text-fg-subtle text-xs">
+            Expires {new Date(minted.expires_at * 1000).toLocaleString()}. Treat it like a password until used.
+          </p>
+        </>
+      ) : (
+        <Button variant="outline" size="sm" onClick={generate} disabled={working}>
+          {working ? "Generating…" : "Generate pairing command"}
+        </Button>
+      )}
+    </div>
   );
 }
 

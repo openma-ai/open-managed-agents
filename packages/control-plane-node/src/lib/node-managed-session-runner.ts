@@ -20,6 +20,7 @@ import type {
   SpanModelUsageView,
   ToolResultContentBlock,
 } from "@open-managed-agents/managed-agents-application";
+import { consumedListCostPico } from "@open-managed-agents/managed-agents-application";
 import {
   abortedError,
   abortableDelay,
@@ -30,6 +31,7 @@ import {
   type StartNodeManagedSessionRuntime,
   type StopNodeManagedSessionRuntime,
   type ArchiveNodeManagedSessionThread,
+  type CommittedExecutionTerminal,
 } from "./node-managed-session-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
@@ -664,6 +666,10 @@ export class DefaultNodeManagedSessionRunner
         `Managed Node runner does not yet support ${event.type}`,
       );
     }
+    if (input.committedTerminal !== undefined && input.executionFence !== undefined) {
+      await this.finishCommittedExecution(input, input.executionFence, input.committedTerminal);
+      return;
+    }
     // requires_action answers (CMA): only answers to the parked idle's
     // outstanding calls have effect. A late answer to a closed call is a
     // no-effect (already stamped processed_at on accept); a partial batch
@@ -936,7 +942,9 @@ export class DefaultNodeManagedSessionRunner
             : await this.dependencies.resolveModelPricing?.(context) ?? null;
           // Domain gate; Node ListCostPicoStore persists session.usage.list_cost_pico.
           const store = {
-            load: (): string | null => input.session.usage?.list_cost_pico ?? null,
+            // Sessions persisted before list_cost_pico survived the runtime
+            // boundary resume from their rounded cents rather than from 0.
+            load: (): string => consumedListCostPico(input.session).toString(),
             save: (list_cost_pico: string): void => {
               const usage = { ...runtime.usageSnapshot(), list_cost_pico };
               if (input.session.usage) {
@@ -1233,6 +1241,44 @@ export class DefaultNodeManagedSessionRunner
       if (finalWorkspace !== undefined && !runFailed && !abortController.signal.aborted) {
         finalWorkspace.trusted = true;
       }
+    }
+  }
+
+  /** Recovery of an execution whose terminal idle committed before its
+   * process died: the turn already answered, so the harness must not run
+   * again. Only the post-terminal step remains — output publication, which
+   * is idempotent by path + content — and then the worker settles. */
+  private async finishCommittedExecution(
+    input: NodeManagedSessionRunnerAcceptInput,
+    executionFence: SessionExecutionFence,
+    terminal: CommittedExecutionTerminal,
+  ): Promise<void> {
+    if (this.dependencies.afterExecution !== undefined) {
+      if (this.sandboxes.get(input) === undefined) await this.beginSandboxStartup(input);
+      const sandbox = this.sandboxes.get(input);
+      const runtimeGeneration = this.runtimeGenerations.get(input);
+      if (sandbox === undefined || runtimeGeneration === undefined) {
+        throw new Error(`Session ${input.sessionId} sandbox was not started`);
+      }
+      const stopHeartbeat = this.dependencies.sandboxLease === undefined
+        ? async () => undefined
+        : startSandboxHeartbeat(() => this.sandboxes.get(input) ?? sandbox, this.dependencies.sandboxLease);
+      try {
+        await this.dependencies.afterExecution({
+          workspaceId: input.workspaceId,
+          session: input.session,
+          environment: input.environment,
+          sandbox: this.sandboxes.get(input) ?? sandbox,
+          runtimeGeneration,
+          executionFence,
+        });
+      } finally {
+        await stopHeartbeat();
+      }
+    }
+    // Settle with the outcome the original attempt would have reported.
+    if (terminal.stopReason.type === "retries_exhausted") {
+      throw new SessionRetriesExhaustedError(`Execution ${executionFence.executionId} already ended with retries_exhausted`);
     }
   }
 

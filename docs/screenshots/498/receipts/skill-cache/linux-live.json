@@ -1,0 +1,384 @@
+{
+  "startedAt": "2026-11-05T10:43:57.461Z",
+  "completedAt": "2026-11-05T10:44:06.255Z",
+  "host": {
+    "hostname": "grok-bot-vm-53164902",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "method": "Real lane API + daemon bundle materialization functions; no ACP child/model turn; no Environment Work queue consumption claimed",
+  "apiUrl": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev",
+  "runtimeId": "819a5dc1-e667-4a82-9167-151ae8ea5216",
+  "environmentId": "env_0c891060e5f74c2b8c8acb47646c8dd5",
+  "agentId": "agent_6f859b2a1a82407cb708c6b6d4c6d107",
+  "skillId": "skill_d8fd90d245794d3e83d1444885dadc7f",
+  "firstVersion": "1793875437803000",
+  "latestVersion": "1793875442149000",
+  "sessions": {
+    "a": {
+      "sessionId": "session_ec22f79f59a9479785d401c064ff9218",
+      "sessionDir": "/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f",
+      "binding": [
+        {
+          "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+          "type": "custom",
+          "version": "latest"
+        }
+      ],
+      "env": {
+        "OPENMA_SKILLS_DIR": "/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills"
+      },
+      "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+      "version": "1793875437803000",
+      "cachePath": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "linkPath": "/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "manifests": [
+        "runtime-cache-proof/SKILL.md"
+      ],
+      "target": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "targetStat": {
+        "dev": 65040,
+        "ino": 1231387,
+        "mode": "555"
+      },
+      "manifestSha256": "d94f00514c4201edb5e4fc8cc098638a569a604e2d30c74890c039c8e95b0ad3",
+      "manifestContent": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "claudeTarget": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000/runtime-cache-proof",
+      "claudeManifest": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "snapshot": {
+        "scope": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev\ntn_583e9b5df70a49a6",
+        "bindings": [
+          {
+            "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+            "type": "custom",
+            "version": "latest"
+          }
+        ],
+        "versions": [
+          "1793875437803000"
+        ]
+      },
+      "listing": [
+        ".oma-entry.json",
+        "runtime-cache-proof",
+        "runtime-cache-proof/SKILL.md",
+        "runtime-cache-proof/asset.bin"
+      ]
+    },
+    "b": {
+      "sessionId": "session_857f8d84a4f249c288a6991cbf751327",
+      "sessionDir": "/home/box/.oma/bridge-pr498-skill-proof/sessions/9985446e855f",
+      "binding": [
+        {
+          "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+          "type": "custom",
+          "version": "latest"
+        }
+      ],
+      "env": {
+        "OPENMA_SKILLS_DIR": "/home/box/.oma/bridge-pr498-skill-proof/sessions/9985446e855f/skills"
+      },
+      "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+      "version": "1793875437803000",
+      "cachePath": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "linkPath": "/home/box/.oma/bridge-pr498-skill-proof/sessions/9985446e855f/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "manifests": [
+        "runtime-cache-proof/SKILL.md"
+      ],
+      "target": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "targetStat": {
+        "dev": 65040,
+        "ino": 1231387,
+        "mode": "555"
+      },
+      "manifestSha256": "d94f00514c4201edb5e4fc8cc098638a569a604e2d30c74890c039c8e95b0ad3",
+      "manifestContent": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "claudeTarget": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000/runtime-cache-proof",
+      "claudeManifest": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "snapshot": {
+        "scope": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev\ntn_583e9b5df70a49a6",
+        "bindings": [
+          {
+            "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+            "type": "custom",
+            "version": "latest"
+          }
+        ],
+        "versions": [
+          "1793875437803000"
+        ]
+      },
+      "listing": [
+        ".oma-entry.json",
+        "runtime-cache-proof",
+        "runtime-cache-proof/SKILL.md",
+        "runtime-cache-proof/asset.bin"
+      ]
+    },
+    "resumedA": {
+      "sessionId": "session_ec22f79f59a9479785d401c064ff9218",
+      "sessionDir": "/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f",
+      "binding": [
+        {
+          "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+          "type": "custom",
+          "version": "latest"
+        }
+      ],
+      "env": {
+        "OPENMA_SKILLS_DIR": "/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills"
+      },
+      "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+      "version": "1793875437803000",
+      "cachePath": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "linkPath": "/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "manifests": [
+        "runtime-cache-proof/SKILL.md"
+      ],
+      "target": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "targetStat": {
+        "dev": 65040,
+        "ino": 1231387,
+        "mode": "555"
+      },
+      "manifestSha256": "d94f00514c4201edb5e4fc8cc098638a569a604e2d30c74890c039c8e95b0ad3",
+      "manifestContent": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "claudeTarget": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000/runtime-cache-proof",
+      "claudeManifest": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "snapshot": {
+        "scope": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev\ntn_583e9b5df70a49a6",
+        "bindings": [
+          {
+            "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+            "type": "custom",
+            "version": "latest"
+          }
+        ],
+        "versions": [
+          "1793875437803000"
+        ]
+      },
+      "listing": [
+        ".oma-entry.json",
+        "runtime-cache-proof",
+        "runtime-cache-proof/SKILL.md",
+        "runtime-cache-proof/asset.bin"
+      ]
+    },
+    "c": {
+      "sessionId": "session_fe3d3dd65aba4f1290077cc7fb7a2e37",
+      "sessionDir": "/home/box/.oma/bridge-pr498-skill-proof/sessions/c84d508ae981",
+      "binding": [
+        {
+          "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+          "type": "custom",
+          "version": "latest"
+        }
+      ],
+      "env": {
+        "OPENMA_SKILLS_DIR": "/home/box/.oma/bridge-pr498-skill-proof/sessions/c84d508ae981/skills"
+      },
+      "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+      "version": "1793875442149000",
+      "cachePath": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000",
+      "linkPath": "/home/box/.oma/bridge-pr498-skill-proof/sessions/c84d508ae981/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "manifests": [
+        "runtime-cache-proof/SKILL.md"
+      ],
+      "target": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000",
+      "targetStat": {
+        "dev": 65040,
+        "ino": 1231392,
+        "mode": "555"
+      },
+      "manifestSha256": "ca4e902b3d986e53134111d78bc156384b1fe7a9bc98845ae4e951f9c7ce62cf",
+      "manifestContent": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: two\n",
+      "claudeTarget": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000/runtime-cache-proof",
+      "claudeManifest": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: two\n",
+      "snapshot": {
+        "scope": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev\ntn_583e9b5df70a49a6",
+        "bindings": [
+          {
+            "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+            "type": "custom",
+            "version": "latest"
+          }
+        ],
+        "versions": [
+          "1793875442149000"
+        ]
+      },
+      "listing": [
+        ".oma-entry.json",
+        "runtime-cache-proof",
+        "runtime-cache-proof/SKILL.md",
+        "runtime-cache-proof/asset.bin"
+      ]
+    },
+    "pinned": {
+      "sessionId": "session_169c16049e0946b9a21b5b804ee7bc9f",
+      "sessionDir": "/home/box/.oma/bridge-pr498-skill-proof/sessions/f40491a14ed1",
+      "binding": [
+        {
+          "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+          "type": "custom",
+          "version": "1793875437803000"
+        }
+      ],
+      "env": {
+        "OPENMA_SKILLS_DIR": "/home/box/.oma/bridge-pr498-skill-proof/sessions/f40491a14ed1/skills"
+      },
+      "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+      "version": "1793875437803000",
+      "cachePath": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "linkPath": "/home/box/.oma/bridge-pr498-skill-proof/sessions/f40491a14ed1/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "manifests": [
+        "runtime-cache-proof/SKILL.md"
+      ],
+      "target": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000",
+      "targetStat": {
+        "dev": 65040,
+        "ino": 1231387,
+        "mode": "555"
+      },
+      "manifestSha256": "d94f00514c4201edb5e4fc8cc098638a569a604e2d30c74890c039c8e95b0ad3",
+      "manifestContent": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "claudeTarget": "/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000/runtime-cache-proof",
+      "claudeManifest": "---\nname: runtime-cache-proof\ndescription: PR 498 immutable skill cache proof\n---\n# Runtime cache proof\nMarker: one\n",
+      "snapshot": {
+        "scope": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev\ntn_583e9b5df70a49a6",
+        "bindings": [
+          {
+            "skill_id": "skill_d8fd90d245794d3e83d1444885dadc7f",
+            "type": "custom",
+            "version": "1793875437803000"
+          }
+        ],
+        "versions": [
+          "1793875437803000"
+        ]
+      },
+      "listing": [
+        ".oma-entry.json",
+        "runtime-cache-proof",
+        "runtime-cache-proof/SKILL.md",
+        "runtime-cache-proof/asset.bin"
+      ]
+    }
+  },
+  "downloadCounts": {
+    "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f/versions/1793875437803000/content": 1,
+    "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f/versions/1793875442149000/content": 1
+  },
+  "http": [
+    {
+      "method": "POST",
+      "path": "/v1/skills",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/environments",
+      "status": 201
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents",
+      "status": 201
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sessions",
+      "status": 201
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sessions",
+      "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/agents/runtime/sessions/session_ec22f79f59a9479785d401c064ff9218/bundle?agent_id=codex-acp&skill_cache=1",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f/versions/1793875437803000/content",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agents/runtime/sessions/session_857f8d84a4f249c288a6991cbf751327/bundle?agent_id=codex-acp&skill_cache=1",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f/versions",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agents/runtime/sessions/session_ec22f79f59a9479785d401c064ff9218/bundle?agent_id=codex-acp&skill_cache=1",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sessions",
+      "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/agents/runtime/sessions/session_fe3d3dd65aba4f1290077cc7fb7a2e37/bundle?agent_id=codex-acp&skill_cache=1",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/v1/skills/skill_d8fd90d245794d3e83d1444885dadc7f/versions/1793875442149000/content",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents",
+      "status": 201
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sessions",
+      "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/agents/runtime/sessions/session_169c16049e0946b9a21b5b804ee7bc9f/bundle?agent_id=codex-acp&skill_cache=1",
+      "status": 200
+    }
+  ],
+  "assertions": {
+    "sharedTargetAndInode": true,
+    "oneDownloadPerVersion": true,
+    "noHotSwapOnReapply": true,
+    "newSessionGetsLatest": true,
+    "explicitVersionStaysPinned": true,
+    "binaryPackageAssetsPresent": true,
+    "claudeDiscoversRootManifest": true
+  }
+}

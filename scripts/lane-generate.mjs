@@ -212,6 +212,11 @@ agent.services = [
   // MAIN binding so AcpProxyHarness can call /v1/oma/internal/runtime-attach-harness
   // on the lane's main worker (not prod's). Required for local-runtime sessions.
   { binding: "MAIN", service: NAMES.main },
+  // MAIN_MCP entrypoint RPC — required for cloud Environment session warmup
+  // (resolveManagedSessionInputs / model cards / credential egress). Without
+  // this, SessionDO provisions the Cloudflare Containers sandbox then fails
+  // warmup with "Managed Session input source service binding is unavailable".
+  { binding: "MAIN_MCP", service: NAMES.main, entrypoint: "McpProxyRpc" },
 ];
 writeJson(`apps/agent/wrangler.lane-${LANE}.jsonc`, agent);
 

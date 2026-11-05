@@ -6,7 +6,7 @@ author: openma
 tags: ["kimi", "hosted-agents", "harness-as-a-service", "comparison", "migration", "self-hosted", "byok"]
 ---
 
-Moonshot AI launched **Kimi Hosted Agents** (托管智能体) today and
+Moonshot AI offers **Kimi Hosted Agents** (托管智能体) and
 describes it as **Harness as a Service**: the loop that calls the model,
 runs tools, keeps history, and recovers from crashes runs on Kimi's
 platform, and you configure agents and send events to it
@@ -57,7 +57,7 @@ There is a web console. And there is plain REST plus SSE at
 SDK layer is required and any HTTP client works
 ([migration](https://platform.kimi.com/docs/hosted-agents/migration)).
 
-Billing has three parts: sandbox time at ¥0.072 per hour, model tokens
+Billing has three parts: cloud sandbox time at ¥0.072 per hour, model tokens
 at the chosen model's inference price, and per-call fees for plugins
 ([pricing](https://platform.kimi.com/docs/pricing/hosted-agents)).
 
@@ -66,11 +66,11 @@ at the chosen model's inference price, and per-call fees for plugins
 | | Kimi Hosted Agents | OpenMA |
 |---|---|---|
 | Who runs the harness | Kimi, on its platform | You (self-host) or OpenMA hosted. The harness is open source and replaceable |
-| Sessions and events | Server-side event log, SSE with cursor resume, `agent.delta` for token streaming | Event log written before broadcast, SSE or JSON polling, a crashed harness replays the log and resumes |
+| Sessions and events | Server-side event log, SSE with cursor resume, `agent.delta` for token streaming with `include_deltas=true` | Event log written before broadcast, SSE or JSON polling, a crashed harness replays the log and resumes |
 | Sandbox | Kimi cloud sandbox per session, or a self-hosted worker for enterprise-verified accounts | Pluggable providers: Docker, E2B, Daytona, Modal, Cloudflare, OpenSandbox, and others |
 | MCP and skills | Remote MCP, `SKILL.md` skills, paid official plugins | Remote MCP, skills, vault-backed credential injection at an outbound proxy |
 | Models | Kimi models | Any provider with a Model Card: Anthropic, OpenAI, DeepSeek, OpenRouter, Moonshot, custom endpoints |
-| Billing | Sandbox hours + Kimi tokens + plugin calls | Self-hosted: your infrastructure, tokens paid to your provider. Hosted: sandbox compute ([pricing](/pricing/)) |
+| Billing | Cloud sandbox hours + Kimi tokens + plugin calls; self-hosted worker tools have no platform execution fee | Self-hosted: your infrastructure, tokens paid to your provider. Hosted: sandbox compute ([pricing](/pricing/)) |
 | What "self-hosted" means | Sandbox tools run on your host. Orchestration, model calls, and session state stay on Kimi | The whole control plane, database, and sandboxes run on infrastructure you choose |
 | Client surface | `kha` CLI, console, Kimi-specific REST | Claude Managed Agents-shaped API at `/v1`, OpenAI Agents API adapter at `/openai/v1`, `oma` CLI, console |
 | Source | Proprietary service | Apache 2.0 |
@@ -83,7 +83,10 @@ docs note that tool inputs and results still pass through Kimi's
 inference service. In this mode `ipython` and `save_artifact` are not
 available, and skills and memory are not mounted on the worker host. It
 is the right shape when code has to execute next to internal systems
-and the model call is allowed to leave.
+and the model call is allowed to leave. Kimi does not charge a platform
+execution fee for file and shell tools running on the self-hosted worker;
+you supply the host. Platform-side search tools still incur their normal
+per-call charges, and model inference remains billed separately.
 
 ## When Kimi Hosted Agents fits
 
@@ -112,7 +115,15 @@ and the model call is allowed to leave.
 Kimi Hosted Agents and OpenMA share most of their nouns, so most of the
 move is a mapping exercise. OpenMA does not implement the Kimi Hosted
 Agents wire protocol, so client code changes. Plan on rewriting the HTTP
-layer and keeping your prompts, tools, and skills.
+layer and reusing compatible custom-tool JSON schemas and portable prompt and skill content.
+
+Built-in tool configurations need translation: Kimi uses
+`{"type":"agent_toolset","name":"default_toolset_20260901"}`, while OpenMA
+uses `{"type":"agent_toolset_20260401"}`. Map tool names such as `shell` →
+`bash`, `read_file` → `read`, and `web_open_url` → `web_fetch`. Check tool
+permissions, skill paths and dependencies, and recreate resource IDs and
+credential bindings rather than copying the entire Agent configuration
+([Kimi tools](https://platform.kimi.com/docs/hosted-agents/tools)).
 
 ### 1. Take inventory
 
@@ -133,9 +144,42 @@ because those have no OpenMA counterpart and need replacing (step 5).
 | Remote MCP server + vault (`static_bearer`, `mcp_oauth`) | Remote MCP server + vault with the same two credential types |
 | Skill bundle (`SKILL.md` + resources) | Skill uploaded to OpenMA and attached to the agent |
 | Memory store | Memory store, mounted at `/mnt/memory/<store>/` |
-| Coordinator + `spawn_subagent` | `callable_agents` on the parent agent |
+| Coordinator + `spawn_subagent` | `multiagent.subagents.predefined_agents` on the parent agent |
 | `save_artifact` | Files the agent writes to `/mnt/session/outputs`, listed at `GET /v1/sessions/:id/outputs` |
 | Trigger | A scheduler of your choice that creates sessions over the API |
+
+For predefined subagents, add the following to the parent Agent creation
+body alongside its `name`, `model` and `system`. Replace `agent_researcher`
+and version `1` with an existing OpenMA Agent and version. This enables
+only the listed subagent; the legacy `callable_agents` field is not consumed
+by the managed runtime.
+
+```json
+{
+  "multiagent": {
+    "type": "multiagent_20261001",
+    "advisor": {
+      "type": "disabled"
+    },
+    "subagents": {
+      "type": "enabled",
+      "inline_agents": {
+        "type": "disabled"
+      },
+      "predefined_agents": [
+        {
+          "type": "agent",
+          "id": "agent_researcher",
+          "version": 1
+        }
+      ]
+    },
+    "workflows": {
+      "type": "disabled"
+    }
+  }
+}
+```
 
 ### 3. Map sessions and events
 
@@ -149,6 +193,11 @@ puts `content` on the event itself. Kimi's session states include
 identified by `session_thread_id`. Resume logic also differs: Kimi uses
 `cursor` and `stream_cursor` values, so rewrite your reconnect code
 against OpenMA's event stream rather than translating cursors.
+
+Kimi sends `agent.delta` only when the SSE subscription includes
+`include_deltas=true`. These previews are not stored in the historical
+event list; use persisted complete events for replay
+([event stream](https://platform.kimi.com/docs/hosted-agents/event-stream)).
 
 A thin adapter in your own client (Kimi event in, OpenMA event out) is
 usually less work than rewriting every consumer, and it lets you run
@@ -188,7 +237,7 @@ Token charges then go straight to your Moonshot account.
 - **Kimi Inference Hook**, the enterprise-only pre-inference security
   check. On OpenMA, equivalent policy lives in your own gateway or
   harness.
-- **Platform sandbox pricing.** ¥0.072 per hour is Kimi's rate. On
+- **Platform sandbox pricing.** ¥0.072 per hour is Kimi's cloud sandbox rate. On
   OpenMA the cost is whatever your chosen sandbox provider or hardware
   costs.
 - **The official agent templates**, unless you copy their prompts and

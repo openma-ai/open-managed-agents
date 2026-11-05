@@ -1,0 +1,17 @@
+2026-11-05 — requested machine: botty Mac / 60cf11c5
+This API session exposes no remote-machine execution tool and has no ~/.ssh
+configuration. A clarification request for the remote command/endpoint was
+sent while implementation continued; no answer was available at capture time.
+
+Read-only connection probe:
+$ getent hosts botty botty.local
+198.18.0.1      botty
+198.18.0.1      botty.local
+$ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes botty 'uname -s'
+Connection closed by 198.18.0.1 port 22
+exit status: 255
+
+The address is a proxy/fake-DNS answer, not evidence of reaching the Mac.
+New CLI build and portable materialization probe are ready. No new code was
+synced to botty and no paired Mac daemon was replaced. Linux lane receipts
+are recorded separately and must not be used as Mac acceptance.

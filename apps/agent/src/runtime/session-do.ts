@@ -64,6 +64,8 @@ import {
   type ExecutionLeaseRecord,
   type QueuedInputRecord,
   type ScheduleWakeRecord,
+  consumeSessionInputs,
+  takeQueuedSteeringInputs,
   type SessionExecution,
   type SessionExecutionFence,
 } from "@open-managed-agents/session-runtime-contract/coordination";
@@ -1949,7 +1951,7 @@ export class SessionDO extends DurableObject<Env> {
   /** Promote a queued input in place: stamp processed_at on the SAME row
    *  and id (never insert a second event id), then emit the canonical
    *  event + promotion frame so live clients can drop the outbox bubble. */
-  private promoteQueueRow(row: QueueInputRow): SessionEvent {
+  private promoteQueueRow(row: QueueInputRow, alreadyBroadcast = false): SessionEvent {
     const nowMs = this.processedClock.nowMs();
     const nowIso = new Date(nowMs).toISOString();
     const event = JSON.parse(row.data) as SessionEvent & { processed_at?: string };
@@ -1962,8 +1964,7 @@ export class SessionDO extends DurableObject<Env> {
     const stampMs = Date.parse(stamp);
     event.processed_at = stamp;
     this.queue.stampProcessed(row.seq, Number.isFinite(stampMs) ? stampMs : nowMs);
-    // Canonical D1 stamp (null → processed_at) before live re-emit.
-    this.markAcceptedEventsProcessed([row.event_id], stamp);
+    // Canonical consumption is awaited by the caller before local promotion.
     sdoLog("queue.stamp", {
       session_id: this._state?.session_id,
       thread_id: row.session_thread_id,
@@ -1971,7 +1972,9 @@ export class SessionDO extends DurableObject<Env> {
       seq: row.seq,
       processed_at: stamp,
     });
-    this.broadcastEvent(event);
+    // Legacy admissions may have only a DO-local row even when MAIN_MCP is
+    // bound. Suppress this echo only if canonical consumption actually sent it.
+    if (!alreadyBroadcast) this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
       event_id: row.event_id,
@@ -1995,32 +1998,26 @@ export class SessionDO extends DurableObject<Env> {
    */
   private async takeSteeringInputs(threadId: string): Promise<SessionEvent[]> {
     const store = await this.getExecutionStore();
+    const fence = this._executionFences.get(threadId);
+    const stamp = this.processedClock.nowIso();
+    if (store !== null && !fence) return [];
+    const inputs = store !== null
+      ? await takeQueuedSteeringInputs(store, {
+          workspaceId: this.state.tenant_id!, sessionId: this.state.session_id!, laneId: threadId,
+          steeredAt: stamp, consumer: fence!,
+        })
+      : this.queue.listQueue(threadId).filter(row => row.type === "user.message").map(row => ({ id: row.event_id }));
     const out: SessionEvent[] = [];
-    for (const row of this.queue.listQueue(threadId)) {
-      // CMA: every mid-turn user.message steers into the current turn at the
-      // next LLM/tool-call boundary (coherent turn / after-call absorb).
-      // Ordinary mid-run accept is the only path — no explicit Steer API.
-      // Do not leave ordinary mid-sends for after-turn / next-agent-turn drain.
-      if (row.type !== "user.message") continue;
-      if (store !== null) {
-        const result = await store.steerQueued({
-          workspaceId: this.state.tenant_id!,
-          sessionId: this.state.session_id!,
-          executionId: row.event_id,
-          steeredAt: new Date().toISOString(),
-        });
-        if (result.type !== "steered") continue;
-      }
-      // Steered frame first so clients place the stamped re-emit inside the
-      // running turn instead of briefly deferring it as the next turn.
-      this.broadcastEvent({
-        type: "system.user_message_steered",
-        event_id: row.event_id,
-        session_thread_id: row.session_thread_id,
-        steered_at: Date.now(),
-      } as unknown as SessionEvent);
-      const event = this.promoteQueueRow(row);
-      out.push(event);
+    if (!inputs.length) return out;
+    for (const input of inputs) {
+      this.broadcastEvent({ type: "system.user_message_steered", event_id: input.id,
+        session_thread_id: threadId, steered_at: Date.parse(stamp) } as unknown as SessionEvent);
+    }
+    const broadcastIds = await this.consumeAcceptedInputs(inputs, fence?.executionId ?? inputs[0]!.id, stamp);
+    for (const input of inputs) {
+      const row = this.queueRowForEvent(input.id);
+      if (row) out.push(this.promoteQueueRow(row, broadcastIds.has(row.event_id)));
+      else if ('type' in input) out.push(encodeRuntimeSessionEvent(input as never) as SessionEvent);
     }
     return out;
   }
@@ -2157,6 +2154,7 @@ export class SessionDO extends DurableObject<Env> {
             }
           }
           try {
+            const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
             for (const rawEvent of execution.events) {
               if (rawEvent.type === "system.message") continue;
               if (rawEvent.type === "session.updated") {
@@ -2174,7 +2172,7 @@ export class SessionDO extends DurableObject<Env> {
               // explicit protocol projection at the host boundary.
               const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
               const localQueued = this.ensureLocalQueueInput(event);
-              if (localQueued !== null) this.promoteQueueRow(localQueued);
+              if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
               if (event.type === "user.message") {
                 const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
                 if (turn?.holdQueuedOnLane) {
@@ -2208,6 +2206,12 @@ export class SessionDO extends DurableObject<Env> {
             // be rejected as stale.  This is the commit barrier between the
             // harness side effects and execution settlement.
             await this._managedProjectionChain;
+            // Node parity (runner `afterExecution`): terminal facts are
+            // committed and this attempt still holds its fence, so completed
+            // root-turn outputs become Agents API artifacts before settle.
+            if (threadId === "sthr_primary" && !signal.aborted) {
+              await this.publishAgentsApiArtifacts(fence);
+            }
             return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
           } catch (err) {
             turnFailed = true;
@@ -2310,7 +2314,8 @@ export class SessionDO extends DurableObject<Env> {
         source: "local_queue",
         event_id: row.event_id,
       });
-      const event = this.promoteQueueRow(row);
+      const broadcastIds = await this.consumeAcceptedInputs([{ id: row.event_id }], row.event_id, this.processedClock.nowIso());
+      const event = this.promoteQueueRow(row, broadcastIds.has(row.event_id));
 
       const turnName = `turn:${row.seq}`;
       sdoLog("turn.begin", {
@@ -3916,23 +3921,12 @@ export class SessionDO extends DurableObject<Env> {
       if (!path) return new Response("path query param required", { status: 400 });
       try {
         const sandbox = await this.getOrCreateSandbox();
-        // SandboxExecutor.readFile returns string (UTF-8 decoded). For binary
-        // safety we call the underlying SDK's base64 read directly.
-        // Workaround until we widen SandboxExecutor with readFileBytes:
-        // ask sandbox to base64 the file via shell, then decode here.
-        const out = await sandbox.exec(
-          `base64 -w0 -- '${path.replace(/'/g, "'\\''")}' 2>&1`,
-          15000,
-        );
-        // exec returns "exit=N\n<stdout>"
-        const m = out.match(/^exit=(\d+)\n([\s\S]*)$/);
-        if (!m || m[1] !== "0") {
-          return new Response(`read failed: ${out.slice(0, 300)}`, { status: 404 });
+        let bytes: Uint8Array;
+        try {
+          bytes = await readSandboxFileBytes(sandbox, path, 15000);
+        } catch (err) {
+          return new Response(`read failed: ${(err as Error).message.slice(0, 300)}`, { status: 404 });
         }
-        const b64 = m[2].trim();
-        const bin = atob(b64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         return new Response(bytes, {
           headers: { "Content-Type": "application/octet-stream" },
         });
@@ -4673,6 +4667,41 @@ export class SessionDO extends DurableObject<Env> {
     }
   }
 
+  /** Agents API artifact publication for an execution whose terminal just
+   * committed. Main owns the sealed Session mapping, Files and the fence
+   * check (shared publisher, idempotent by path + content); this DO only
+   * serves its sandbox outputs. A copy failure is reported and never turns
+   * the completed execution into a failure. */
+  private async publishAgentsApiArtifacts(executionFence: SessionExecutionFence): Promise<void> {
+    const binding = this.env.MAIN_MCP;
+    const tenantId = this.state.tenant_id;
+    const sessionId = this.state.session_id;
+    if (binding?.publishManagedSessionArtifacts === undefined || !tenantId || !sessionId) return;
+    try {
+      await binding.publishManagedSessionArtifacts({
+        tenantId,
+        sessionId,
+        executionFence,
+        outputManifest: async () => sandboxStdout(
+          await this.getOrCreateSandbox(),
+          "cd /workspace && if test -d ./outputs; then find ./outputs -type f -print0 | base64 -w0; fi",
+          30_000,
+        ),
+        readOutput: async (path: string) => readSandboxFileBytes(await this.getOrCreateSandbox(), path, 60_000),
+      });
+    } catch (error) {
+      logWarn(
+        {
+          op: "session_do.openai_agents.artifact_publication_failed",
+          session_id: sessionId,
+          execution_id: executionFence.executionId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "Completed Session output could not be published as an Agents API artifact",
+      );
+    }
+  }
+
   /** Commit writable canonical Memory mounts before the public idle boundary.
    * The main worker revalidates the durable execution fence before every CAS
    * mutation, so a stale SessionDO may keep running briefly but cannot publish
@@ -4833,6 +4862,26 @@ export class SessionDO extends DurableObject<Env> {
    * starts processing them, then re-broadcast the same ids with
    * `processed_at` set (Claude Managed Agents semantics).
    */
+  private async consumeAcceptedInputs(inputs: readonly { id: string }[], consumingExecutionId: string, processedAt: string): Promise<Set<string>> {
+    const broadcastIds = new Set<string>();
+    const binding = this.env.MAIN_MCP;
+    const workspaceId = this._state?.tenant_id, sessionId = this._state?.session_id;
+    if (!binding?.managedSessionEventsMarkProcessed || !workspaceId || !sessionId) return broadcastIds;
+    await this._managedProjectionChain;
+    await consumeSessionInputs({ markProcessed: async command => {
+      const result = await binding.managedSessionEventsMarkProcessed(command);
+      if (result.type !== "marked") throw new Error("Session input consumption failed");
+      return result.events;
+    } }, { workspaceId, sessionId, inputs, consumingExecutionId, processedAt }, events => {
+      for (const event of events) {
+        const wireEvent = encodeRuntimeSessionEvent(event as never);
+        this.broadcastEvent(wireEvent as SessionEvent);
+        if ('id' in wireEvent && typeof wireEvent.id === 'string') broadcastIds.add(wireEvent.id);
+      }
+    });
+    return broadcastIds;
+  }
+
   private markAcceptedEventsProcessed(
     eventIds: string[],
     processedAt: string,
@@ -8488,4 +8537,19 @@ type SessionScheduleType = "scheduled" | "delayed" | "cron" | "interval";
  *  boundary (CMA coherent turn / after-call), not deferred to after-turn drain. */
 export function agentAdvertisesSteering(agent: { metadata?: Record<string, unknown> } | null | undefined): boolean {
   return agent?.metadata?.["oma.session.steering"] === "enabled";
+}
+
+/** Stdout of a CF sandbox command (`exit=N\n<stdout>`); throws on failure. */
+async function sandboxStdout(sandbox: SandboxExecutor, command: string, timeoutMs: number): Promise<string> {
+  const out = await sandbox.exec(command, timeoutMs);
+  const match = out.match(/^exit=(\d+)\n([\s\S]*)$/);
+  if (!match || match[1] !== "0") throw new Error(out.slice(0, 300));
+  return match[2]!;
+}
+
+/** Binary-safe file read: SandboxExecutor.readFile is UTF-8 only, so the
+ * sandbox base64-encodes and this side decodes. */
+async function readSandboxFileBytes(sandbox: SandboxExecutor, path: string, timeoutMs: number): Promise<Uint8Array> {
+  const encoded = (await sandboxStdout(sandbox, `base64 -w0 -- '${path.replace(/'/g, "'\\''")}' 2>&1`, timeoutMs)).trim();
+  return Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
 }

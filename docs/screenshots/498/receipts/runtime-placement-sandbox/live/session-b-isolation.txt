@@ -1,0 +1,5 @@
+boxlite
+ISOLATED_OK
+SKILL_ISOLATED_OK
+
+[2m2026-11-05T11:43:02.472251Z[0m [33m WARN[0m [2mlibcontainer::process::init::process[0m[2m:[0m seccomp not available, unable to set seccomp privileges!

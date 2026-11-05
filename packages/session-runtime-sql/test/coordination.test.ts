@@ -115,6 +115,9 @@ describe("SqlSessionExecutionCoordinator", () => {
   beforeEach(async () => {
     sql = await createBetterSqlite3SqlClient(":memory:");
     await ensureSessionExecutionCoordinatorSchema(sql);
+    await sql.exec(`CREATE TABLE IF NOT EXISTS managed_session_events (
+      workspace_id TEXT, session_id TEXT, id TEXT, document TEXT, processed_at BIGINT,
+      PRIMARY KEY (workspace_id, session_id, id))`);
     coordinator = new SqlSessionExecutionCoordinator(sql);
   });
 
@@ -1045,10 +1048,21 @@ describe("SqlSessionExecutionCoordinator", () => {
       .resolves.toMatchObject({ state: "running" });
   });
 
+  async function seedSteeringEvents(sessionId: string, ids: string[]) {
+    for (const id of ids) await sql.prepare(`INSERT INTO managed_session_events
+      (workspace_id, session_id, id, document, processed_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind("workspace_01", sessionId, id, JSON.stringify({ ...admitted(id, sessionId, at(1)).execution.events[0],
+        source_position: { revision: 1, index: 0, execution_id: id } }), Date.parse(at(1))).run();
+  }
+
   it("edit race: cancel after steer is rejected", async () => {
+    await coordinator.admit(admitted("consumer", "session_r", at(0)));
+    const consumer = await coordinator.claim({ ownerId: "host", attemptId: "a", claimedAt: at(1), leaseTtlMs: 30_000 });
+    if (consumer.type !== "claimed") throw new Error("expected consumer");
     await coordinator.admit(admitted("queued_steer", "session_r", at(1)));
+    await seedSteeringEvents("session_r", ["queued_steer"]);
     await expect(coordinator.steerQueued({
-      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", steeredAt: at(2),
+      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", steeredAt: at(2), consumer: consumer.fence,
     })).resolves.toMatchObject({ type: "steered" });
     await expect(coordinator.cancelQueued({
       workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", cancelledAt: at(3),
@@ -1061,9 +1075,11 @@ describe("SqlSessionExecutionCoordinator", () => {
     expect(claimed).toMatchObject({ type: "claimed", execution: { id: "turn_1" } });
     await coordinator.admit(admitted("mid_1", "session_s", at(3)));
     await coordinator.admit(admitted("mid_2", "session_s", at(4)));
+    if (claimed.type !== "claimed") throw new Error("expected consumer");
+    await seedSteeringEvents("session_s", ["mid_1", "mid_2"]);
     const steered = await takeQueuedSteeringInputs(coordinator, {
       workspaceId: "workspace_01", sessionId: "session_s", laneId: "sthr_primary",
-      steeredAt: at(5), excludeExecutionId: "turn_1",
+      steeredAt: at(5), consumer: claimed.fence,
     });
     expect(steered.map((event) => event.id)).toEqual(["mid_1", "mid_2"]);
     await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_1" }))

@@ -4,6 +4,51 @@ import OpenAI from "openai";
 import { buildOpenAIAgentsProtocolApi } from "@open-managed-agents/openai-agents-api";
 
 describe("OpenAI SDK over an actual Node HTTP connection", () => {
+  it("closes a disconnected SSE subscription without an unhandled rejection or a turn cancellation", async () => {
+    const operations: string[] = [];
+    let subscriptionSignal: AbortSignal | undefined;
+    let closed = false;
+    let release = () => {};
+    const app = buildOpenAIAgentsProtocolApi({ async execute(request) {
+      operations.push(request.operation);
+      subscriptionSignal = request.signal;
+      return { stream: (async function* () {
+        try {
+          yield { type: "agent.session.turn.output_text.delta", event_id: "event", session_id: "session", turn_id: "turn", item_id: "item", output_index: 0, content_index: 0, delta: "ready" };
+          await new Promise<void>(resolve => {
+            release = resolve;
+            if (request.signal.aborted) resolve();
+            else request.signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        } finally { closed = true; }
+      })() };
+    } });
+    const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+    if (!server.listening) await new Promise<void>(resolve => server.once("listening", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing HTTP port");
+    const disconnect = new AbortController();
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/v1/agents/sessions/session/events`, {
+        headers: { "OpenAI-Beta": "agents=v1" }, signal: disconnect.signal,
+      });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      const pending = reader.read().catch(error => ({ error: error.name }));
+      disconnect.abort();
+      expect(await pending).toEqual({ error: "AbortError" });
+      await expect.poll(() => closed).toBe(true);
+      expect(subscriptionSignal?.aborted).toBe(true);
+      expect(operations).toEqual(["sessions.events.stream"]);
+    } finally {
+      disconnect.abort();
+      release();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it("flushes the SSE subscription before the SDK submits its input", async () => {
     const session: any = {id:"session",object:"agent.session",created_at:1,last_active_at:1,agent:{id:"agent",name:null,model:"test",instructions:null,reasoning:{effort:null,summary:null},service_tier:"auto",multi_agent:{enabled:false,max_concurrent_subagents:null},text:{format:{type:"text"},verbosity:"medium"},tools:[]},environment:{type:"none"},status:"idle",error:null,metadata:{},required_actions:[],usage:null,vault_ids:[]};
     const turn = {id:"turn",object:"agent.session.turn",session_id:"session",agent_id:"agent",subagent_id:null,created_at:1,started_at:1,completed_at:2,status:"completed",error:null,usage:null};

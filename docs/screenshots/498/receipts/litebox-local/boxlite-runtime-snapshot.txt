@@ -1,0 +1,19 @@
+# boxlite processes during session_OlM-tOKEUoMmz0o9nWbIy turn
+Thu, 05 Nov 2026 05:54:36 -0500
+ 227095      53 132752 /usr/local/lib/nodejs/node /home/box/.local/bin/pnpm --filter @open-managed-agents/main-node start
+ 227122  227095  1860 sh -c tsx src/index.ts
+ 227123  227122 66144 /usr/local/lib/nodejs/node /workspace/oma-runtime/apps/main-node/node_modules/.bin/../tsx/dist/cli.mjs src/index.ts
+ 227765  227139 282492 /home/box/.local/share/boxlite/runtimes/v0.9.0/boxlite-shim
+ 228525  227139 283040 /home/box/.local/share/boxlite/runtimes/v0.9.0/boxlite-shim
+
+# pstree of newest boxlite-shim
+pid=
+
+# session sandbox workdir
+/tmp/oma-498-litebox-local/sandboxes
+/tmp/oma-498-litebox-local/sandboxes/session_OlM-tOKEUoMmz0o9nWbIy
+/tmp/oma-498-litebox-local/sandboxes/session_OlM-tOKEUoMmz0o9nWbIy/.openma
+/tmp/oma-498-litebox-local/sandboxes/session_OlM-tOKEUoMmz0o9nWbIy/.openma/litebox-scratch-1b7a3a7320d8
+/tmp/oma-498-litebox-local/sandboxes/session_IEw62vloACk3yUyDvpSRo
+/tmp/oma-498-litebox-local/sandboxes/session_IEw62vloACk3yUyDvpSRo/.openma
+/tmp/oma-498-litebox-local/sandboxes/session_IEw62vloACk3yUyDvpSRo/.openma/litebox-scratch-bd74ecbd20f8

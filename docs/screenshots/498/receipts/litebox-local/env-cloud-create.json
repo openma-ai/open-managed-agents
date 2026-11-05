@@ -1,0 +1,1 @@
+{"id":"env_DdFqMZC4y8ZRohJlf3w6z","archived_at":null,"config":{"type":"cloud","networking":{"type":"unrestricted"},"packages":{"type":"packages","apt":[],"cargo":[],"gem":[],"go":[],"npm":[],"pip":[]}},"created_at":"2026-11-05T10:53:06.700Z","description":null,"metadata":{},"name":"litebox-local-498","type":"environment","updated_at":"2026-11-05T10:53:06.700Z"}

@@ -27,18 +27,18 @@ LANDING = {
     "what-is-claude-managed-agents": "What Is Claude Managed Agents?",
     "open-source-ai-agents": "Open-Source AI Agents & Agent Platforms",
     "claude-tag-alternative": "Open-Source, Self-Hosted Claude Tag Alternative",
-    "claude-tag-open-source": "Open-Source Claude Tag Foundation",
-    "self-hosted-claude-tag": "Self-Hosted Claude Tag-Style Workflows",
+    "claude-tag-open-source": "Open-Source Claude Tag: Build Tag-Style Agents",
+    "self-hosted-claude-tag": "Self-Hosted Claude Tag: Open-Source Runtime for Tag-Style Agents",
 }
 
 def card(headline: str, eyebrow: str, path: str) -> str:
     size, width = 64, 24
-    # cairosvg has no per-glyph fallback, so CJK titles get a CJK face.
-    family = "Noto Serif CJK SC" if re.search(r"[\u3000-\u9fff]", headline) else "DM Sans"
-    lines = textwrap.wrap(headline, width)
+    lines = textwrap.wrap(headline, width, break_on_hyphens=False)
     if len(lines) > 3:
         size, width = 52, 30
-        lines = textwrap.wrap(headline, width)
+        lines = textwrap.wrap(headline, width, break_on_hyphens=False)
+    # cairosvg has no per-glyph fallback, so CJK titles get a CJK face.
+    family = "Noto Serif CJK SC" if re.search(r"[\u3000-\u9fff]", headline) else "DM Sans"
     top = 300 if len(lines) < 3 else 270
     tspans = "".join(
         f'<tspan x="80" y="{top + i * int(size * 1.18)}">{escape(l)}</tspan>'

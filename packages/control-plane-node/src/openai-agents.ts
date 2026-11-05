@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import type { ApiKeyResolution, createAuthMiddleware } from "@open-managed-agents/auth";
-import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError, type OpenAIAgentsProtocolPort } from "@open-managed-agents/openai-agents-api";
+import { buildOpenAIAgentsProtocolApi, normalizeOpenAIAgentsErrorResponse, OpenAIAgentsProtocolError, type OpenAIAgentsProtocolPort } from "@open-managed-agents/openai-agents-api";
 
 export interface NodeOpenAIAgentsEnvironment {
   Variables: {
@@ -20,17 +20,7 @@ export function buildNodeOpenAIAgentsRoutes(dependencies: NodeOpenAIAgentsRoutes
   const app = new Hono<NodeOpenAIAgentsEnvironment>();
   app.use("*", async (c, next) => {
     await next();
-    if (c.res.status !== 401 && c.res.status !== 403) return;
-    let message = c.res.status === 401 ? "Authentication required" : "Permission denied";
-    try {
-      const body = await c.res.clone().json() as { error?: string | { message?: string } };
-      if (typeof body.error === "string") message = body.error;
-      else if (typeof body.error?.message === "string") message = body.error.message;
-    } catch { /* Keep a stable public authentication error for non-JSON middleware. */ }
-    c.res = new Response(JSON.stringify({ error: {
-      message, type: c.res.status === 401 ? "authentication_error" : "permission_error",
-      param: null, code: c.res.status === 401 ? "invalid_api_key" : "insufficient_permissions",
-    } }), { status: c.res.status, headers: { "content-type": "application/json" } });
+    c.res = await normalizeOpenAIAgentsErrorResponse(c.res);
   });
   app.use("*", dependencies.authMiddleware);
   app.route("/", buildOpenAIAgentsProtocolApi(context => {

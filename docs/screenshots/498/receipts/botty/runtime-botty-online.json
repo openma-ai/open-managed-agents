@@ -1,0 +1,12 @@
+{
+  "id": "1725d28a-83d1-4434-9178-4b9a9ab93006",
+  "machine_id": "3a081f41-9885-40ea-a433-39497f3b708e",
+  "hostname": "botty",
+  "os": "darwin/arm64",
+  "agents": [],
+  "local_skills": {},
+  "version": "0.7.3",
+  "status": "online",
+  "last_heartbeat": 1793874277,
+  "created_at": 1793874083
+}
