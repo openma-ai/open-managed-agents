@@ -71,7 +71,7 @@ export class SqlSessionRuntimeHistorySource
         const { id: _id, processedAt: _at, ...event } = row.event;
         return event as SessionBootstrapEvent;
       }),
-      ...(initial.every(row => row.position) ? { orderedInitialEvents: initial as OrderedSessionEvent[] } : {}),
+      ...(initial.length > 0 && initial.every(row => row.position) ? { orderedInitialEvents: initial as OrderedSessionEvent[] } : {}),
       events: decoded.map(row => row.event),
       ...(orderedEvents === undefined ? {} : { orderedEvents }),
     };
