@@ -339,6 +339,14 @@ Owner answers recorded 2026-11-05 (America/Detroit). Recommendations below for s
 5. **Runtime-attached sandbox = LiteBox (was Q5 / OpenSandbox confusion).** Initial Runtime-owned sandbox backend is **LiteBox only**. LiteBox network targets the **local daemon**; the daemon contacts the OMA control plane. Cloud Environment `SANDBOX_PROVIDER=litebox` is a **different** control-plane path and must not be conflated. OpenSandbox Docker is **not** the Runtime-attached default. T3 research does not contradict this: T3 keeps filesystem/provider authority on the execution server ([internals/overview](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md)) and can SSH into a Docker sandbox as a normal host ([Docker docs](https://docs.docker.com/ai/sandboxes/integrations/t3-code/)); it does not define an OpenSandbox-on-Runtime product we must match.
 6. **Multica-style protected overlay keys.** Silently skip overrides at apply time (warn with key name only), matching case-insensitively: `PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `TMPDIR`, `TMP`, `TEMP`, all `OMA_*`, and daemon/task-owned `CLAUDE_CONFIG_DIR`, `OPENMA_SKILLS_DIR`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SSE_PORT`; retain the existing scrub of the last three. Precedence: host inherit → workspace/Environment overlay → session resources (session wins among overlays), **but protected keys are never overridden by overlay** (host/daemon values win for those keys).
 
+#### Inference credentials
+
+**Owner decision — 2026-11-05 (America/Detroit).** Local Runtime's model/inference path is optional: users may choose either their own harness subscription/login on the machine (native harness credentials) or the **OpenMA host LLM / inference API**. A local harness subscription/login is not required when using the OpenMA host inference path.
+
+**Sandbox placement defaults to the OpenMA host LLM / inference API.** Injecting the host machine's harness subscription or credentials into the LiteBox jail requires **explicit opt-in** and must **never happen by default**. Host placement credential inheritance does not imply consent to inject those credentials into Sandbox placement.
+
+**M1 implementation note:** Host placement already partially supports native credentials: `setupClaudeConfigDir` in `packages/cli/src/bridge/lib/claude-config-dir.ts` symlinks non-skill entries from `~/.claude` (including credential files when present) into the session's `CLAUDE_CONFIG_DIR`. This is partial host inheritance, not a completed inference-path selector or Sandbox opt-in flow. This decision records the intended behavior; it does not implement either feature.
+
 ### 5.2 Recommendations (research; awaiting owner)
 
 #### Q3 — Path moves, symlink replacement, Windows casing/drives, removable mounts
