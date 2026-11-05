@@ -1,0 +1,2889 @@
+{
+  "source": "https://platform.kimi.com/docs/hosted-agents/openapi.yaml",
+  "retrieved_at": "2026-11-05",
+  "api_version": "2026-09-01-beta",
+  "source_sha256": "2923e09889dd802c951bab7179e35d12b4ede219720ee699913ad2e96a94a9e8",
+  "components": {
+    "schemas": {
+      "AgentList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Agent"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          }
+        }
+      },
+      "Agent": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "model",
+          "version",
+          "created_at",
+          "updated_at",
+          "scope"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          },
+          "system": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            }
+          },
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServer"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRef"
+            }
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginRef"
+            }
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/StringMetadata"
+          },
+          "version": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "archived_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ResourceScope"
+          },
+          "multiagent": {
+            "$ref": "#/components/schemas/Multiagent"
+          }
+        }
+      },
+      "ModelRef": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/ModelConfig"
+          }
+        ]
+      },
+      "ModelConfig": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reasoning_effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
+      "ReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "Tool": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AgentToolset"
+          },
+          {
+            "$ref": "#/components/schemas/CustomTool"
+          },
+          {
+            "$ref": "#/components/schemas/McpToolset"
+          }
+        ]
+      },
+      "AgentToolset": {
+        "type": "object",
+        "required": [
+          "type",
+          "name"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent_toolset"
+            ]
+          },
+          "name": {
+            "$ref": "#/components/schemas/AgentToolsetName"
+          },
+          "default_config": {
+            "$ref": "#/components/schemas/ToolsetDefaultConfig"
+          },
+          "configs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolConfig"
+            }
+          }
+        }
+      },
+      "AgentToolsetName": {
+        "type": "string",
+        "enum": [
+          "default_toolset_20260901"
+        ]
+      },
+      "ToolsetDefaultConfig": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "permission_policy": {
+            "$ref": "#/components/schemas/PermissionPolicy"
+          },
+          "load_mode": {
+            "$ref": "#/components/schemas/ToolLoadMode"
+          }
+        }
+      },
+      "PermissionPolicy": {
+        "type": "string",
+        "enum": [
+          "always_allow",
+          "always_ask"
+        ]
+      },
+      "ToolLoadMode": {
+        "type": "string",
+        "enum": [
+          "eager",
+          "on_demand"
+        ]
+      },
+      "ToolConfig": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "permission_policy": {
+            "$ref": "#/components/schemas/PermissionPolicy"
+          },
+          "result_hint": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "load_mode": {
+            "$ref": "#/components/schemas/ToolLoadMode"
+          }
+        }
+      },
+      "CustomTool": {
+        "type": "object",
+        "required": [
+          "type",
+          "name",
+          "description",
+          "input_schema"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "custom"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "input_schema": {
+            "$ref": "#/components/schemas/CustomToolInputSchema"
+          }
+        }
+      },
+      "CustomToolInputSchema": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "object"
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "unevaluatedProperties": {}
+          },
+          "required": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "McpToolset": {
+        "type": "object",
+        "required": [
+          "type",
+          "mcp_server_name"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "mcp_toolset"
+            ]
+          },
+          "mcp_server_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default_config": {
+            "$ref": "#/components/schemas/ToolsetDefaultConfig"
+          },
+          "configs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolConfig"
+            }
+          }
+        }
+      },
+      "McpServer": {
+        "type": "object",
+        "required": [
+          "type",
+          "name",
+          "url"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/McpServerType"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "headers": {
+            "$ref": "#/components/schemas/McpServerHeaders"
+          }
+        }
+      },
+      "McpServerType": {
+        "type": "string",
+        "enum": [
+          "url"
+        ]
+      },
+      "McpServerHeaders": {
+        "type": "object",
+        "maxProperties": 16,
+        "propertyNames": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      },
+      "SkillRef": {
+        "type": "object",
+        "required": [
+          "skill_id"
+        ],
+        "properties": {
+          "skill_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "PluginRef": {
+        "type": "object",
+        "required": [
+          "plugin_id"
+        ],
+        "properties": {
+          "plugin_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "StringMetadata": {
+        "type": "object",
+        "maxProperties": 16,
+        "propertyNames": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 512
+        }
+      },
+      "ResourceScope": {
+        "type": "string",
+        "enum": [
+          "official",
+          "org",
+          "project",
+          "user"
+        ]
+      },
+      "Multiagent": {
+        "type": "object",
+        "required": [
+          "agents"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentReference"
+            }
+          }
+        }
+      },
+      "AgentReference": {
+        "type": "object",
+        "required": [
+          "id",
+          "version"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvironmentList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Environment"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          }
+        }
+      },
+      "Environment": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "config",
+          "created_at",
+          "updated_at",
+          "scope"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "config": {
+            "$ref": "#/components/schemas/EnvironmentConfig"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/StringMetadata"
+          },
+          "build_status": {
+            "$ref": "#/components/schemas/EnvironmentBuildStatus"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "archived_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ResourceScope"
+          }
+        }
+      },
+      "EnvironmentConfig": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CloudEnvironmentConfig"
+          },
+          {
+            "$ref": "#/components/schemas/SelfHostedEnvironmentConfig"
+          }
+        ]
+      },
+      "CloudEnvironmentConfig": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "cloud"
+            ]
+          },
+          "networking": {
+            "$ref": "#/components/schemas/EnvironmentNetworking"
+          },
+          "packages": {
+            "$ref": "#/components/schemas/EnvironmentPackages"
+          },
+          "setup_script": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        }
+      },
+      "EnvironmentNetworking": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/NetworkAccess"
+          },
+          "allowed_hosts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AllowedHost"
+            },
+            "maxItems": 128
+          },
+          "allow_package_managers": {
+            "type": "boolean"
+          },
+          "allow_mcp_servers": {
+            "type": "boolean"
+          },
+          "proxy": {
+            "$ref": "#/components/schemas/EnvironmentProxy"
+          }
+        }
+      },
+      "NetworkAccess": {
+        "type": "string",
+        "enum": [
+          "limited",
+          "unrestricted"
+        ]
+      },
+      "AllowedHost": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "EnvironmentProxy": {
+        "type": "object",
+        "required": [
+          "url",
+          "hosts"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "auth": {
+            "$ref": "#/components/schemas/EnvironmentProxyAuth"
+          },
+          "ca": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AllowedHost"
+            },
+            "maxItems": 128
+          },
+          "route_all": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EnvironmentProxyAuth": {
+        "type": "object",
+        "required": [
+          "type",
+          "vault_id",
+          "credential_id"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/ProxyAuthType"
+          },
+          "vault_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "credential_id": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      },
+      "ProxyAuthType": {
+        "type": "string",
+        "enum": [
+          "basic",
+          "client_cert"
+        ]
+      },
+      "EnvironmentPackages": {
+        "type": "object",
+        "properties": {
+          "apt": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageSpec"
+            },
+            "maxItems": 128
+          },
+          "pip": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageSpec"
+            },
+            "maxItems": 128
+          },
+          "npm": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageSpec"
+            },
+            "maxItems": 128
+          },
+          "go": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageSpec"
+            },
+            "maxItems": 128
+          },
+          "cargo": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageSpec"
+            },
+            "maxItems": 128
+          }
+        }
+      },
+      "PackageSpec": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "SelfHostedEnvironmentConfig": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "self_hosted"
+            ]
+          }
+        }
+      },
+      "EnvironmentBuildStatus": {
+        "type": "string",
+        "enum": [
+          "building",
+          "ready",
+          "failed"
+        ]
+      },
+      "SessionList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "agent_id",
+          "environment_id",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "environment_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "interrupted": {
+            "type": "boolean"
+          },
+          "control_epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "continue_pending": {
+            "type": "boolean"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/StringMetadata"
+          },
+          "agent_overrides": {
+            "$ref": "#/components/schemas/SessionAgentOverrides"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "archived_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionResource"
+            }
+          },
+          "agent": {
+            "$ref": "#/components/schemas/SessionAgent"
+          }
+        }
+      },
+      "SessionState": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "running",
+          "stopping",
+          "terminated"
+        ]
+      },
+      "ControlEpoch": {
+        "type": "string",
+        "maxLength": 19,
+        "pattern": "^(0|[1-9][0-9]{0,18})$"
+      },
+      "SessionAgentOverrides": {
+        "type": "object",
+        "properties": {
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServer"
+            },
+            "maxItems": 20
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRef"
+            },
+            "maxItems": 64
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginRef"
+            },
+            "maxItems": 64
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            },
+            "maxItems": 128
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          },
+          "system": {
+            "type": "string"
+          },
+          "roster": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentReference"
+            },
+            "maxItems": 20
+          }
+        }
+      },
+      "SessionResource": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SessionResourceFile"
+          },
+          {
+            "$ref": "#/components/schemas/SessionResourceVault"
+          },
+          {
+            "$ref": "#/components/schemas/SessionResourceMemoryStore"
+          }
+        ]
+      },
+      "SessionResourceFile": {
+        "type": "object",
+        "required": [
+          "type",
+          "file_id"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "file"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "file_id": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionResourceVault": {
+        "type": "object",
+        "required": [
+          "type",
+          "vault_id"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "vault"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "vault_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "SessionResourceMemoryStore": {
+        "type": "object",
+        "required": [
+          "type",
+          "memory_store_id",
+          "access"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "memory_store"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "memory_store_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "access": {
+            "$ref": "#/components/schemas/MemoryAccess"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "MemoryAccess": {
+        "type": "string",
+        "enum": [
+          "read_only",
+          "read_write"
+        ]
+      },
+      "SessionAgent": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          },
+          "system": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            }
+          },
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServer"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRef"
+            }
+          },
+          "multiagent": {
+            "$ref": "#/components/schemas/SessionMultiagent"
+          }
+        }
+      },
+      "SessionMultiagent": {
+        "type": "object",
+        "required": [
+          "agents"
+        ],
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionThreadAgent"
+            }
+          }
+        }
+      },
+      "SessionThreadAgent": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          },
+          "system": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            }
+          },
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServer"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillRef"
+            }
+          }
+        }
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "environment_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_version": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/StringMetadata"
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionResource"
+            }
+          },
+          "agent_overrides": {
+            "$ref": "#/components/schemas/SessionAgentOverrides"
+          },
+          "environment_id": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      },
+      "CreateEnvironmentRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "config"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "config": {
+            "$ref": "#/components/schemas/EnvironmentConfig"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/StringMetadata"
+          }
+        }
+      },
+      "SendEventsRequest": {
+        "type": "object",
+        "required": [
+          "events"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/InputEventType"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserEventInput"
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "InputEventType": {
+        "type": "string",
+        "enum": [
+          "next_turn",
+          "steer"
+        ]
+      },
+      "UserEventInput": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/UserMessageInput"
+          },
+          {
+            "$ref": "#/components/schemas/UserInterruptInput"
+          },
+          {
+            "$ref": "#/components/schemas/UserToolConfirmationInput"
+          },
+          {
+            "$ref": "#/components/schemas/UserCustomToolResultInput"
+          },
+          {
+            "$ref": "#/components/schemas/UserToolResultInput"
+          }
+        ]
+      },
+      "UserMessageInput": {
+        "type": "object",
+        "required": [
+          "type",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.message"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserMessagePayload"
+          }
+        }
+      },
+      "UserMessagePayload": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentBlock"
+            }
+          }
+        }
+      },
+      "ContentBlock": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextContentBlock"
+          },
+          {
+            "$ref": "#/components/schemas/ThinkingContentBlock"
+          },
+          {
+            "$ref": "#/components/schemas/ToolUseContentBlock"
+          },
+          {
+            "$ref": "#/components/schemas/ToolResultContentBlock"
+          },
+          {
+            "$ref": "#/components/schemas/FileToolResultContent"
+          }
+        ]
+      },
+      "TextContentBlock": {
+        "type": "object",
+        "required": [
+          "type",
+          "text"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "text"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ThinkingContentBlock": {
+        "type": "object",
+        "required": [
+          "type",
+          "thinking"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "thinking"
+            ]
+          },
+          "thinking": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolUseContentBlock": {
+        "type": "object",
+        "required": [
+          "type",
+          "id",
+          "name",
+          "input"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool_use"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "type": "object",
+            "unevaluatedProperties": {}
+          }
+        }
+      },
+      "ToolResultContentBlock": {
+        "type": "object",
+        "required": [
+          "type",
+          "tool_use_id",
+          "structured_content",
+          "content",
+          "is_error"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool_result"
+            ]
+          },
+          "tool_use_id": {
+            "type": "string"
+          },
+          "structured_content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructuredToolResultContent"
+            }
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolResultContent"
+            }
+          },
+          "is_error": {
+            "type": "boolean"
+          }
+        }
+      },
+      "StructuredToolResultContent": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextContentBlock"
+          },
+          {
+            "$ref": "#/components/schemas/FileToolResultContent"
+          },
+          {
+            "$ref": "#/components/schemas/ImageToolResultContent"
+          },
+          {
+            "$ref": "#/components/schemas/ArtifactToolResultContent"
+          }
+        ]
+      },
+      "FileToolResultContent": {
+        "type": "object",
+        "required": [
+          "type",
+          "mime_type",
+          "title",
+          "path",
+          "file_id"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "file"
+            ]
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "file_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ImageToolResultContent": {
+        "type": "object",
+        "required": [
+          "type",
+          "url",
+          "mime_type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "image"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactToolResultContent": {
+        "type": "object",
+        "required": [
+          "type",
+          "id",
+          "version",
+          "name",
+          "path",
+          "mime_type",
+          "size_bytes"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "artifact"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ToolResultContent": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextContentBlock"
+          },
+          {
+            "$ref": "#/components/schemas/ImageToolResultContent"
+          },
+          {
+            "$ref": "#/components/schemas/VideoToolResultContent"
+          }
+        ]
+      },
+      "VideoToolResultContent": {
+        "type": "object",
+        "required": [
+          "type",
+          "url",
+          "mime_type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "video"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          }
+        }
+      },
+      "UserInterruptInput": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.interrupt"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "expected_control_epoch": {
+                "$ref": "#/components/schemas/ControlEpoch"
+              }
+            }
+          }
+        }
+      },
+      "UserToolConfirmationInput": {
+        "type": "object",
+        "required": [
+          "type",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.tool_confirmation"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserToolConfirmationPayload"
+          }
+        }
+      },
+      "UserToolConfirmationPayload": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "result"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "$ref": "#/components/schemas/UserToolConfirmationResult"
+          },
+          "deny_message": {
+            "type": "string",
+            "maxLength": 10000
+          }
+        }
+      },
+      "UserToolConfirmationResult": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "deny"
+        ]
+      },
+      "UserCustomToolResultInput": {
+        "type": "object",
+        "required": [
+          "type",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.custom_tool_result"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserCustomToolResultPayload"
+          }
+        }
+      },
+      "UserCustomToolResultPayload": {
+        "type": "object",
+        "required": [
+          "event_id"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolResultContent"
+            }
+          },
+          "is_error": {
+            "type": "boolean"
+          }
+        }
+      },
+      "UserToolResultInput": {
+        "type": "object",
+        "required": [
+          "type",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.tool_result"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserToolResultPayload"
+          }
+        }
+      },
+      "UserToolResultPayload": {
+        "type": "object",
+        "required": [
+          "tool_use_id",
+          "is_error"
+        ],
+        "properties": {
+          "tool_use_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentBlock"
+            }
+          },
+          "is_error": {
+            "type": "boolean"
+          },
+          "session_thread_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SendEventsResponse": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "control_epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          }
+        }
+      },
+      "SessionEventList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionEvent"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          },
+          "stream_cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionEvent": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/UserMessageEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UserInterruptEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UserToolConfirmationEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UserCustomToolResultEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentMessageEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentThinkingEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentToolUseEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentToolResultEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentModelStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentThinkingStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentMessageStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentToolStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentCustomToolUseEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentThreadMessageReceivedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentThreadMessageSentEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentThreadContextCompactedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AgentDeltaEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionStatusEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionErrorEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionThreadCreatedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionThreadStatusEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionTitleUpdatedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionUpdatedEvent"
+          }
+        ]
+      },
+      "UserMessageEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.message"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserMessagePayload"
+          }
+        }
+      },
+      "UserInterruptEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.interrupt"
+            ]
+          }
+        }
+      },
+      "UserToolConfirmationEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.tool_confirmation"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserToolConfirmationPayload"
+          }
+        }
+      },
+      "UserCustomToolResultEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "user.custom_tool_result"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserCustomToolResultPayload"
+          }
+        }
+      },
+      "AgentMessageEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.message"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentMessagePayload"
+          }
+        }
+      },
+      "AgentMessagePayload": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentBlock"
+            }
+          }
+        }
+      },
+      "AgentThinkingEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.thinking"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentMessagePayload"
+          }
+        }
+      },
+      "AgentToolUseEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.tool_use"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentToolUsePayload"
+          }
+        }
+      },
+      "AgentToolUsePayload": {
+        "type": "object",
+        "required": [
+          "tool_use",
+          "evaluated_permission"
+        ],
+        "properties": {
+          "tool_use": {
+            "$ref": "#/components/schemas/ToolUseBlock"
+          },
+          "evaluated_permission": {
+            "$ref": "#/components/schemas/PermissionPolicy"
+          },
+          "mcp": {
+            "$ref": "#/components/schemas/MCPInfo"
+          }
+        }
+      },
+      "ToolUseBlock": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "input"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "type": "object",
+            "unevaluatedProperties": {}
+          }
+        }
+      },
+      "MCPInfo": {
+        "type": "object",
+        "required": [
+          "server_name"
+        ],
+        "properties": {
+          "server_name": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentToolResultEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.tool_result"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentToolResultPayload"
+          }
+        }
+      },
+      "AgentToolResultPayload": {
+        "type": "object",
+        "required": [
+          "tool_result"
+        ],
+        "properties": {
+          "tool_result": {
+            "$ref": "#/components/schemas/ToolResultBlock"
+          }
+        }
+      },
+      "ToolResultBlock": {
+        "type": "object",
+        "required": [
+          "tool_use_id",
+          "structured_content",
+          "content",
+          "is_error"
+        ],
+        "properties": {
+          "tool_use_id": {
+            "type": "string"
+          },
+          "structured_content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructuredToolResultContent"
+            }
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolResultContent"
+            }
+          },
+          "is_error": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AgentModelStartedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.model_started"
+            ]
+          }
+        }
+      },
+      "AgentThinkingStartedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.thinking_started"
+            ]
+          }
+        }
+      },
+      "AgentMessageStartedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.message_started"
+            ]
+          }
+        }
+      },
+      "AgentToolStartedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.tool_started"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentToolStartedPayload"
+          }
+        }
+      },
+      "AgentToolStartedPayload": {
+        "type": "object",
+        "required": [
+          "tool_use"
+        ],
+        "properties": {
+          "tool_use": {
+            "$ref": "#/components/schemas/ToolUseBlock"
+          },
+          "mcp": {
+            "$ref": "#/components/schemas/MCPInfo"
+          }
+        }
+      },
+      "AgentCustomToolUseEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.custom_tool_use"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentCustomToolUsePayload"
+          }
+        }
+      },
+      "AgentCustomToolUsePayload": {
+        "type": "object",
+        "required": [
+          "name",
+          "input"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "input": {
+            "type": "object",
+            "unevaluatedProperties": {}
+          }
+        }
+      },
+      "AgentThreadMessageReceivedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.thread_message_received"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/ThreadMessageReceivedPayload"
+          }
+        }
+      },
+      "ThreadMessageReceivedPayload": {
+        "type": "object",
+        "required": [
+          "content",
+          "from_session_thread_id"
+        ],
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentBlock"
+            }
+          },
+          "from_session_thread_id": {
+            "type": "string"
+          },
+          "from_agent_name": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentThreadMessageSentEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.thread_message_sent"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/ThreadMessageSentPayload"
+          }
+        }
+      },
+      "ThreadMessageSentPayload": {
+        "type": "object",
+        "required": [
+          "content",
+          "to_session_thread_id"
+        ],
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentBlock"
+            }
+          },
+          "to_session_thread_id": {
+            "type": "string"
+          },
+          "to_agent_name": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentThreadContextCompactedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.thread_context_compacted"
+            ]
+          }
+        }
+      },
+      "AgentDeltaEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent.delta"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeltaPayload"
+          }
+        }
+      },
+      "DeltaPayload": {
+        "type": "object",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextDeltaPayload"
+          },
+          {
+            "$ref": "#/components/schemas/ThinkingDeltaPayload"
+          },
+          {
+            "$ref": "#/components/schemas/ToolUseDeltaPayload"
+          }
+        ]
+      },
+      "TextDeltaPayload": {
+        "type": "object",
+        "required": [
+          "kind",
+          "delta"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "text"
+            ]
+          },
+          "delta": {
+            "type": "string"
+          }
+        }
+      },
+      "ThinkingDeltaPayload": {
+        "type": "object",
+        "required": [
+          "kind",
+          "delta"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "thinking"
+            ]
+          },
+          "delta": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolUseDeltaPayload": {
+        "type": "object",
+        "required": [
+          "kind",
+          "tool_use_id",
+          "input_delta"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "tool_use"
+            ]
+          },
+          "tool_use_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mcp": {
+            "$ref": "#/components/schemas/MCPInfo"
+          },
+          "input_delta": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionStatusEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "session.status"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionStatusPayload"
+          }
+        }
+      },
+      "SessionStatusPayload": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "stop_reason": {
+            "$ref": "#/components/schemas/StopReasonInfo"
+          }
+        }
+      },
+      "StopReasonInfo": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/StopReason"
+          },
+          "event_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "StopReason": {
+        "type": "string",
+        "enum": [
+          "end_turn",
+          "canceled",
+          "internal_error",
+          "requires_action"
+        ]
+      },
+      "SessionErrorEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "session.error"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionErrorPayload"
+          }
+        }
+      },
+      "SessionErrorPayload": {
+        "type": "object",
+        "required": [
+          "error_type",
+          "message"
+        ],
+        "properties": {
+          "error_type": {
+            "$ref": "#/components/schemas/SessionErrorType"
+          },
+          "message": {
+            "type": "string"
+          },
+          "mcp_server_name": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionErrorType": {
+        "type": "string",
+        "enum": [
+          "internal_error",
+          "model_error",
+          "model_unavailable",
+          "rate_limited",
+          "engine_overloaded",
+          "quota_exceeded",
+          "context_length_exceeded",
+          "invalid_request",
+          "timeout",
+          "max_steps",
+          "mcp_connection_failed",
+          "mcp_authentication_failed"
+        ]
+      },
+      "SessionThreadCreatedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "session.thread_created"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionThreadCreatedPayload"
+          }
+        }
+      },
+      "SessionThreadCreatedPayload": {
+        "type": "object",
+        "required": [
+          "agent_name"
+        ],
+        "properties": {
+          "agent_name": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionThreadStatusEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "session.thread_status"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionThreadStatusPayload"
+          }
+        }
+      },
+      "SessionThreadStatusPayload": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "stop_reason": {
+            "$ref": "#/components/schemas/StopReasonInfo"
+          }
+        }
+      },
+      "SessionTitleUpdatedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "session.title_updated"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionTitleUpdatedPayload"
+          }
+        }
+      },
+      "SessionTitleUpdatedPayload": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {}
+      },
+      "SessionUpdatedEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "processed_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_thread_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "$ref": "#/components/schemas/ControlEpoch"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "session.updated"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionUpdatedPayload"
+          }
+        }
+      },
+      "SessionUpdatedPayload": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/SessionAgent"
+          },
+          "agent_overrides": {
+            "$ref": "#/components/schemas/SessionAgentOverrides"
+          }
+        }
+      },
+      "ArtifactList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Artifact"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          }
+        }
+      },
+      "Artifact": {
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "path",
+          "name",
+          "mime_type",
+          "size_bytes",
+          "version",
+          "delivered_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "string"
+          },
+          "delivered_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ErrorObject": {
+        "type": "object",
+        "required": [
+          "type",
+          "message"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/ErrorType"
+          },
+          "message": {
+            "type": "string"
+          },
+          "param": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorType": {
+        "type": "string",
+        "enum": [
+          "invalid_parameter_error",
+          "invalid_request_error",
+          "failed_precondition_error",
+          "authentication_error",
+          "permission_denied_error",
+          "resource_not_found_error",
+          "conflict_error",
+          "rate_limit_reached_error",
+          "exceeded_current_quota_error",
+          "server_error"
+        ]
+      }
+    }
+  }
+}

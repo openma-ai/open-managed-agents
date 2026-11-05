@@ -1,0 +1,285 @@
+import { randomUUID } from "node:crypto";
+import { Hono, type Context, type Env } from "hono";
+import { streamSSE } from "hono/streaming";
+import { z } from "zod";
+
+/** P0 transport adapter. All state, authorization and execution stay in OMA. */
+type NativeFetch = (request: Request) => Response | Promise<Response>;
+const object = z.record(z.string(), z.unknown());
+type Row = z.infer<typeof object>;
+const metadata = z.record(z.string().max(64), z.string().max(512))
+  .refine((value) => Object.keys(value).length <= 16);
+const text = z.object({ type: z.literal("text"), text: z.string() }).strict();
+const environmentInput = z.object({
+  name: z.string().min(1).max(256), description: z.string().max(2048).optional(),
+  config: z.union([
+    z.object({ type: z.literal("cloud"),
+      networking: z.union([
+        z.object({ type: z.literal("unrestricted") }).strict(),
+        z.object({ type: z.literal("limited"), allowed_hosts: z.array(z.string()).optional(),
+          allow_mcp_servers: z.boolean().optional(), allow_package_managers: z.boolean().optional() }).strict(),
+      ]).optional(),
+      packages: z.object(Object.fromEntries(
+        ["apt", "cargo", "gem", "go", "npm", "pip"].map((key) => [key, z.array(z.string()).optional()]),
+      )).strict().optional(),
+    }).strict(),
+    z.object({ type: z.literal("self_hosted") }).strict(),
+  ]), metadata: metadata.optional(),
+}).strict();
+const sessionInput = z.object({
+  agent_id: z.string().min(1), environment_id: z.string().min(1).max(128),
+  agent_version: z.string().regex(/^[1-9]\d*$/).refine((v) => Number.isSafeInteger(Number(v))).optional(),
+  title: z.string().max(256).optional(), metadata: metadata.optional(),
+}).strict();
+const eventsInput = z.object({
+  type: z.literal("next_turn").optional(),
+  events: z.array(z.object({ type: z.literal("user.message"),
+    data: z.object({ content: z.array(text).optional() }).strict(),
+  }).strict()).min(1).max(1),
+}).strict();
+
+class CompatError extends Error {
+  constructor(readonly status: number, message: string, readonly param?: string) { super(message); }
+}
+function failure(error: unknown): Response {
+  const status = error instanceof CompatError ? error.status : 500;
+  const type = error instanceof CompatError && error.param ? "invalid_parameter_error" :
+    ({ 400: "invalid_request_error", 401: "authentication_error", 403: "permission_denied_error",
+      404: "resource_not_found_error", 409: "conflict_error", 429: "rate_limit_reached_error" } as Record<number, string>)[status] ?? "server_error";
+  const requestId = randomUUID();
+  return Response.json({ error: { type,
+    message: error instanceof CompatError ? error.message : "KHA compatibility adapter failed",
+    ...(error instanceof CompatError && error.param ? { param: error.param } : {}), request_id: requestId,
+  } }, { status, headers: { "Msh-Request-Id": requestId } });
+}
+async function input<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
+  let body: unknown;
+  try { body = await c.req.json(); } catch { throw new CompatError(400, "Request body must be valid JSON"); }
+  const result = schema.safeParse(body);
+  if (!result.success) throw new CompatError(400, result.error.issues[0].message, result.error.issues[0].path.join(".") || "body");
+  return result.data;
+}
+function fields(row: Row, keys: string[]): Row {
+  return Object.fromEntries(keys.filter((key) => row[key] != null).map((key) => [key, row[key]]));
+}
+function agent(row: Row): Row {
+  const model = typeof row.model === "string" ? row.model : { id: object.parse(row.model).id };
+  return { ...fields(row, ["id", "name", "description", "system", "created_at", "updated_at", "archived_at", "metadata"]),
+    model, version: String(row.version), scope: "project" };
+}
+function environment(row: Row): Row {
+  return { ...fields(row, ["id", "name", "description", "config", "created_at", "updated_at", "archived_at", "metadata"]), scope: "project" };
+}
+function session(row: Row): Row {
+  const snapshot = object.parse(row.agent);
+  return { ...fields(row, ["id", "environment_id", "title", "metadata", "created_at", "updated_at", "archived_at"]),
+    agent_id: snapshot.id, agent: fields(agent(snapshot), ["id", "name", "description", "system", "model", "version"]),
+    status: row.status === "rescheduled" ? "running" : row.status };
+}
+export function projectKhaEvent(row: Row): Row | null {
+  const base = fields(row, ["id", "processed_at", "session_thread_id"]);
+  const type = String(row.type);
+  if (["user.message", "agent.message", "agent.thinking"].includes(type)) {
+    return { ...base, type, data: { content: row.content ?? [] } };
+  }
+  if (["session.status_idle", "session.status_running", "session.status_rescheduled", "session.status_terminated"].includes(type)) {
+    const stop = row.stop_reason == null ? undefined : object.parse(row.stop_reason);
+    return { ...base, type: "session.status", data: {
+      status: type === "session.status_rescheduled" ? "running" : type.slice("session.status_".length),
+      ...(stop ? { stop_reason: { ...stop, type: stop.type === "interrupted" ? "canceled" : ["end_turn", "requires_action"].includes(String(stop.type)) ? stop.type : "internal_error" } } : {}),
+    } };
+  }
+  if (type === "session.error") {
+    const error = object.parse(row.error);
+    return { ...base, type, data: { error_type: "internal_error", message: error.message } };
+  }
+  // Tool/span/subthread events require separate semantic mappings; never claim parity.
+  return null;
+}
+const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+function decode(value: string): unknown {
+  try { return JSON.parse(Buffer.from(value, "base64url").toString()); }
+  catch { throw new CompatError(400, "Invalid opaque token", "cursor"); }
+}
+function cursor(sessionId: string, eventId?: unknown): string { return eventId ? encode([sessionId, eventId]) : "0"; }
+function offset(rows: Row[], sessionId: string, token: string): number {
+  if (token === "0") return 0;
+  const pair = z.tuple([z.string(), z.string()]).safeParse(decode(token));
+  const index = pair.success && pair.data[0] === sessionId ? rows.findIndex((row) => row.id === pair.data[1]) : -1;
+  if (index < 0) throw new CompatError(400, "Cursor is invalid or no longer retained for this session", "cursor");
+  return index + 1;
+}
+function query(c: Context, allowed: string[]): URLSearchParams {
+  const params = new URL(c.req.url).searchParams;
+  for (const key of params.keys()) if (!allowed.includes(key)) throw new CompatError(400, `Unsupported spike query: ${key}`, key);
+  return params;
+}
+function pageSize(params: URLSearchParams): number {
+  const raw = params.get("page_size") ?? "50";
+  if (!/^[1-9]\d*$/.test(raw) || Number(raw) > 100) throw new CompatError(400, "page_size must be between 1 and 100", "page_size");
+  return Number(raw);
+}
+
+export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { pollMs?: number } = {}): Hono {
+  const app = new Hono();
+  app.onError((error) => failure(error));
+  app.notFound(() => failure(new CompatError(404, "Operation is outside the KHA spike subset")));
+
+  // Dispatch to existing authenticated /v1 routes, never to a caller-supplied URL.
+  async function native(c: Context, path: string, body?: unknown): Promise<Response> {
+    const headers = new Headers(c.req.raw.headers);
+    headers.set("anthropic-beta", "managed-agents-2026-04-01");
+    headers.delete("content-length"); headers.delete("accept");
+    if (body !== undefined) headers.set("content-type", "application/json");
+    const response = await nativeFetch(new Request(`http://oma.internal/v1${path}`, {
+      method: body === undefined ? "GET" : "POST", headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: c.req.raw.signal,
+    }));
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({})) as { error?: { message?: string } | string };
+      throw new CompatError(response.status, typeof data.error === "string" ? data.error : data.error?.message ?? "OMA request failed");
+    }
+    return response;
+  }
+  async function json(c: Context, path: string, body?: unknown): Promise<Row> {
+    return object.parse(await (await native(c, path, body)).json());
+  }
+  async function list(c: Context, path: string, project: (row: Row) => Row): Promise<Response> {
+    const params = query(c, ["page_size", "page_token"]);
+    const upstream = new URLSearchParams({ limit: String(pageSize(params)) });
+    if (params.has("page_token")) upstream.set("page", params.get("page_token")!);
+    const result = await json(c, `${path}?${upstream}`);
+    return c.json({ items: z.array(object).parse(result.data).map(project),
+      ...(result.next_page ? { next_page_token: result.next_page } : {}) });
+  }
+  for (const [path, project] of [["/agents", agent], ["/environments", environment], ["/sessions", session]] as const) {
+    app.get(path, (c) => list(c, path, project));
+    app.get(`${path}/:id`, async (c) => {
+      query(c, []);
+      return c.json(project(await json(c, `${path}/${encodeURIComponent(c.req.param("id"))}`)));
+    });
+  }
+  app.post("/environments", async (c) => {
+    const body = await input(c, environmentInput);
+    const config = body.config.type === "cloud" && body.config.packages
+      ? { ...body.config, packages: { ...body.config.packages, type: "packages" } } : body.config;
+    return c.json(environment(await json(c, "/environments", { ...body, config })), 201);
+  });
+  app.post("/sessions", async (c) => {
+    const { agent_id, agent_version, ...rest } = await input(c, sessionInput);
+    return c.json(session(await json(c, "/sessions", { ...rest,
+      agent: agent_version ? { type: "agent", id: agent_id, version: Number(agent_version) } : agent_id,
+    })), 201);
+  });
+  app.post("/sessions/:id/events", async (c) => {
+    const body = await input(c, eventsInput);
+    const result = await json(c, `/sessions/${encodeURIComponent(c.req.param("id"))}/events`, {
+      events: body.events.map((event) => ({ type: event.type,
+        content: event.data.content?.length ? event.data.content : [{ type: "text", text: "Continue." }],
+      })),
+    });
+    const first = z.array(object).parse(result.data ?? [])[0];
+    return c.json(first?.id ? { event_id: first.id } : {});
+  });
+
+  // Intentionally simple P0 replay: scan retained history, then poll. No process-local
+  // cursor state or live subscription seam. Bound work; production needs a sequence API.
+  async function history(c: Context, id: string): Promise<Row[]> {
+    const rows: Row[] = [];
+    let page: string | undefined;
+    for (let n = 0; n < 100; n++) {
+      const params = new URLSearchParams({ order: "asc", limit: "100" });
+      if (page) params.set("page", page);
+      const result = await json(c, `/sessions/${encodeURIComponent(id)}/events?${params}`);
+      rows.push(...z.array(object).parse(result.data));
+      if (!result.next_page) return rows;
+      page = z.string().parse(result.next_page);
+    }
+    throw new CompatError(409, "Spike replay limit exceeded (10,000 retained events)");
+  }
+  app.get("/sessions/:id/events", async (c) => {
+    const params = query(c, ["page_size", "page_token", "order"]);
+    if (params.has("order") && params.get("order") !== "asc") throw new CompatError(400, "Only ascending history is supported", "order");
+    const limit = pageSize(params), id = c.req.param("id");
+    const rows = await history(c, id);
+    const start = offset(rows, id, params.get("page_token") ?? "0");
+    const page = rows.slice(start, start + limit);
+    const end = cursor(id, page.at(-1)?.id ?? rows[start - 1]?.id);
+    return c.json({ items: page.map(projectKhaEvent).filter((row) => row !== null), stream_cursor: end,
+      ...(start + limit < rows.length ? { next_page_token: end } : {}) });
+  });
+  app.get("/sessions/:id/events/stream", async (c) => {
+    const params = query(c, ["cursor", "include_deltas"]);
+    // kha attach requests previews. Accept the hint; this adapter only has durable full events.
+    if (params.has("include_deltas") && !["true", "false"].includes(params.get("include_deltas")!)) throw new CompatError(400, "include_deltas must be a boolean", "include_deltas");
+    const id = c.req.param("id"), token = params.get("cursor") ?? c.req.header("Last-Event-ID") ?? "0";
+    let rows = await history(c, id);
+    let position = token === "now" ? rows.length : offset(rows, id, token);
+    let last = cursor(id, rows[position - 1]?.id);
+    c.header("Cache-Control", "no-cache"); c.header("X-Accel-Buffering", "no");
+    return streamSSE(c, async (stream) => {
+      // Flush immediately, even when no events exist, so clients can send after attach.
+      if (token === "now") await stream.writeSSE({ event: "control", id: last, data: JSON.stringify({ cursor: last, reason: "tail" }) });
+      else await stream.write(": connected\n\n");
+      let wake: (() => void) | undefined;
+      stream.onAbort(() => wake?.());
+      try {
+        while (!stream.aborted) {
+          for (const row of rows.slice(position)) {
+            if (stream.aborted) return;
+            last = cursor(id, row.id);
+            const event = projectKhaEvent(row);
+            if (event) await stream.writeSSE({ id: last, event: String(event.type), data: JSON.stringify(event) });
+          }
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, options.pollMs ?? 1000);
+            wake = () => { clearTimeout(timer); resolve(); };
+          });
+          if (stream.aborted) return;
+          rows = await history(c, id);
+          position = offset(rows, id, last);
+          await stream.write(": hb\n\n");
+        }
+      } catch (error) {
+        if (!stream.aborted) await stream.writeSSE({ event: "error", data: await failure(error).text() });
+      }
+    });
+  });
+
+  async function artifacts(c: Context, id: string): Promise<Row[]> {
+    const result = await json(c, `/sessions/${encodeURIComponent(id)}/outputs`);
+    return z.array(object).parse(result.data).map((output) => ({
+      id: `art_${encode([id, output.filename])}`, session_id: id, path: `/output/${output.filename}`,
+      name: output.filename, mime_type: output.media_type, size_bytes: output.size_bytes,
+      version: "1", delivered_at: output.uploaded_at,
+    })).sort((a, b) => String(b.delivered_at).localeCompare(String(a.delivered_at)));
+  }
+  app.get("/artifacts", async (c) => {
+    const params = query(c, ["session_id", "page_size", "page_token"]);
+    const id = params.get("session_id");
+    if (!id) throw new CompatError(400, "session_id is required by the spike", "session_id");
+    const rows = await artifacts(c, id), limit = pageSize(params);
+    const start = offset(rows, id, params.get("page_token") ?? "0");
+    const items = rows.slice(start, start + limit);
+    return c.json({ items, ...(start + limit < rows.length ? { next_page_token: cursor(id, items.at(-1)?.id) } : {}) });
+  });
+  for (const suffix of ["", "/content"]) app.get(`/artifacts/:id${suffix}`, async (c) => {
+    query(c, []);
+    const raw = c.req.param("id");
+    if (!raw.startsWith("art_")) throw new CompatError(404, "Artifact not found");
+    const parsed = z.tuple([z.string().min(1), z.string().min(1)]).safeParse(decode(raw.slice(4)));
+    if (!parsed.success) throw new CompatError(404, "Artifact not found");
+    const [id, name] = parsed.data;
+    const artifact = (await artifacts(c, id)).find((item) => item.name === name);
+    if (!artifact) throw new CompatError(404, "Artifact not found");
+    if (!suffix) return c.json(artifact);
+    return native(c, `/sessions/${encodeURIComponent(id)}/outputs/${encodeURIComponent(name)}`);
+  });
+  app.all("*", () => failure(new CompatError(404, "Operation is outside the KHA spike subset")));
+  return app;
+}
+
+/** The extra base URL is opt-in; native /v1 routes retain their original shape. */
+export function mountKimiKhaCompat<E extends Env>(app: Hono<E>, enabled: boolean | undefined, nativeFetch: NativeFetch): void {
+  if (enabled) app.route("/kha/v1", buildKimiKhaCompatRoutes(nativeFetch));
+}

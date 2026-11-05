@@ -89,6 +89,8 @@ export interface NodeConfig {
   };
   paths: { sandboxWorkdir: string; sessionOutputs: string };
   http: {
+    /** Opt-in Kimi Hosted Agents P0 adapter at /kha/v1. */
+    kimiKhaCompat?: boolean;
     host: string;
     port: number;
     publicBaseUrl: string | undefined;
