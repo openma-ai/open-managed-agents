@@ -31,7 +31,12 @@ it("mounts the opt-in adapter on the assembled SQLite control plane", async () =
     const environment = await created.json() as { id: string };
     const retrieved = await request(`/kha/v1/environments/${environment.id}`);
     expect(retrieved.status).toBe(200);
-    expect(await retrieved.json()).toMatchObject({ id: environment.id, name: "Persisted KHA environment", scope: "project" });
+    expect(await retrieved.json()).toMatchObject({ id: environment.id, name: "Persisted KHA environment", scope: "project", build_status: "ready" });
+    expect(await (await request("/kha/v1/environments?include_archived=true")).json()).toMatchObject({
+      items: [{ id: environment.id, build_status: "ready" }],
+    });
+    expect(await (await request("/kha/v1/agents?order=created_at&exclude_multiagent=true")).json()).toEqual({ items: [] });
+    expect(await (await request("/kha/v1/sessions?statuses=idle,running")).json()).toEqual({ items: [] });
     expect((await request("/v1/agents")).status).toBe(400); // Native beta contract unchanged.
     const missing = await request("/kha/v1/plugins");
     expect(missing.status).toBe(404);

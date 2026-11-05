@@ -77,13 +77,17 @@ function agent(row: Row): Row {
     model, version: String(row.version), scope: "project" };
 }
 function environment(row: Row): Row {
-  return { ...fields(row, ["id", "name", "description", "config", "created_at", "updated_at", "archived_at", "metadata"]), scope: "project" };
+  // Native environments are usable configurations, not Moonshot image builds.
+  return { ...fields(row, ["id", "name", "description", "config", "created_at", "updated_at", "archived_at", "metadata"]), scope: "project", build_status: "ready" };
+}
+function status(value: unknown): unknown {
+  return value === "rescheduled" || value === "rescheduling" ? "running" : value;
 }
 function session(row: Row): Row {
   const snapshot = object.parse(row.agent);
   return { ...fields(row, ["id", "environment_id", "title", "metadata", "created_at", "updated_at", "archived_at"]),
     agent_id: snapshot.id, agent: fields(agent(snapshot), ["id", "name", "description", "system", "model", "version"]),
-    status: row.status === "rescheduled" ? "running" : row.status };
+    status: status(row.status) };
 }
 export function projectKhaEvent(row: Row): Row | null {
   const base = fields(row, ["id", "processed_at", "session_thread_id"]);
@@ -159,6 +163,25 @@ function pageSize(params: URLSearchParams): number {
   if (!/^[1-9]\d*$/.test(raw) || Number(raw) > 100) throw new CompatError(400, "page_size must be between 1 and 100", "page_size");
   return Number(raw);
 }
+function booleanQuery(params: URLSearchParams, key: string): boolean {
+  const value = params.get(key);
+  if (value !== null && value !== "true" && value !== "false") throw new CompatError(400, `${key} must be a boolean`, key);
+  return value === "true";
+}
+function enumQuery(params: URLSearchParams, key: string, values: string[], fallback: string): string {
+  const value = params.get(key) ?? fallback;
+  if (!values.includes(value)) throw new CompatError(400, `Unsupported ${key}: ${value}`, key);
+  return value;
+}
+function ordered(rows: Row[], order: string): Row[] {
+  const key = order.replace(/_desc$/, ""), direction = order.endsWith("_desc") ? -1 : 1;
+  return rows.sort((a, b) => direction * (String(a[key]).localeCompare(String(b[key])) || String(a.id).localeCompare(String(b.id))));
+}
+function pageResponse(c: Context, rows: Row[], params: URLSearchParams, scope: string): Response {
+  const limit = pageSize(params), start = offset(rows, scope, params.get("page_token") ?? "0");
+  const items = rows.slice(start, start + limit);
+  return c.json({ items, ...(start + limit < rows.length ? { next_page_token: cursor(scope, items.at(-1)?.id) } : {}) });
+}
 
 export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { pollMs?: number } = {}): Hono {
   const app = new Hono();
@@ -185,12 +208,31 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     return object.parse(await (await native(c, path, body)).json());
   }
   async function list(c: Context, path: string, project: (row: Row) => Row): Promise<Response> {
-    const params = query(c, ["page_size", "page_token"]);
-    const upstream = new URLSearchParams({ limit: String(pageSize(params)) });
-    if (params.has("page_token")) upstream.set("page", params.get("page_token")!);
-    const result = await json(c, `${path}?${upstream}`);
-    return c.json({ items: z.array(object).parse(result.data).map(project),
-      ...(result.next_page ? { next_page_token: result.next_page } : {}) });
+    const params = query(c, ["page_size", "page_token", ...(path === "/agents" ? ["order", "exclude_multiagent"]
+      : path === "/environments" ? ["include_archived"] : ["statuses", "status", "order", "include_archived"])]);
+    pageSize(params);
+    const includeArchived = booleanQuery(params, "include_archived"), excludeMultiagent = booleanQuery(params, "exclude_multiagent");
+    const order = enumQuery(params, "order", path === "/sessions"
+      ? ["created_at", "created_at_desc", "updated_at", "updated_at_desc"] : ["created_at", "created_at_desc"],
+    path === "/sessions" ? "updated_at_desc" : "created_at_desc");
+    const statuses = [...params.getAll("statuses"), ...params.getAll("status")].flatMap((v) => v.split(","));
+    if (statuses.some((v) => !["idle", "running", "stopping", "terminated"].includes(v))) throw new CompatError(400, "Invalid session status", "statuses");
+    // Sort/filter BEFORE pagination. Native agent listing cannot express KHA
+    // order/exclude_multiagent; bound the scan rather than silently dropping rows.
+    const upstream = new URLSearchParams({ limit: "100", include_archived: String(includeArchived) });
+    let rows: Row[] = [];
+    for (let n = 0; ; n++) {
+      if (n === 100) throw new CompatError(409, "Spike list limit exceeded (10,000 native rows)");
+      const result = await json(c, `${path}?${upstream}`);
+      rows.push(...z.array(object).parse(result.data));
+      if (!result.next_page) break;
+      upstream.set("page", String(result.next_page));
+    }
+    rows = rows.filter((row) => (includeArchived || row.archived_at == null)
+      && (!excludeMultiagent || row.multiagent == null)
+      && (!statuses.length || statuses.includes(String(status(row.status)))));
+    const scope = JSON.stringify([path, order, includeArchived, excludeMultiagent, [...new Set(statuses)].sort()]);
+    return pageResponse(c, ordered(rows, order).map(project), params, scope);
   }
   for (const [path, project] of [["/agents", agent], ["/environments", environment], ["/sessions", session]] as const) {
     app.get(path, (c) => list(c, path, project));
@@ -265,26 +307,86 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     }
     throw new CompatError(409, "Spike replay limit exceeded (10,000 retained events)");
   }
-  app.get("/sessions/:id/events", async (c) => {
+  function eventThread(row: Row): string { return String(row.session_thread_id ?? "sthr_primary"); }
+  function threads(current: Row, rows: Row[]): Row[] {
+    // OMA's untagged events belong to its existing primary execution lane.
+    const primary: Row = { id: "sthr_primary", session_id: current.id,
+      ...fields(current, ["created_at", "updated_at", "archived_at"]),
+      agent: session(current).agent, status: status(current.status) };
+    const children = new Map<string, Row>();
+    for (const row of rows) {
+      const id = eventThread(row);
+      if (id === "sthr_primary") continue;
+      const child = children.get(id) ?? { id, session_id: current.id, status: "idle",
+        created_at: row.processed_at ?? current.created_at, updated_at: row.processed_at ?? current.updated_at };
+      if (row.processed_at) child.updated_at = row.processed_at;
+      if (row.type === "session.thread_created") {
+        Object.assign(child, fields(row, ["parent_thread_id"]));
+        if (row.processed_at) child.created_at = row.processed_at;
+      }
+      if (/^session\.thread_status_/.test(String(row.type))) {
+        child.status = status(String(row.type).slice("session.thread_status_".length));
+      }
+      // Events do not carry a pinned child agent snapshot. Do not invent one.
+      children.set(id, child);
+    }
+    return [primary, ...ordered([...children.values()], "created_at")];
+  }
+  async function threadRows(c: Context, rows?: Row[]): Promise<Row[]> {
+    const id = c.req.param("id");
+    const current = await json(c, `/sessions/${encodeURIComponent(id)}`);
+    return threads(current, rows ?? (await history(c, id)).rows);
+  }
+  async function checkThread(c: Context, rows: Row[]): Promise<string | undefined> {
+    const threadId = c.req.param("threadId");
+    if (threadId && !(await threadRows(c, rows)).some((row) => row.id === threadId)) throw new CompatError(404, "Thread not found in this session");
+    return threadId;
+  }
+  const eventScope = (id: string, threadId?: string) => threadId ? JSON.stringify([id, threadId]) : id;
+  app.get("/sessions/:id/threads", async (c) => {
+    const params = query(c, ["page_size", "page_token"]);
+    pageSize(params);
+    return pageResponse(c, await threadRows(c), params, `threads:${c.req.param("id")}`);
+  });
+  app.get("/sessions/:id/threads/:threadId", async (c) => {
+    query(c, []);
+    const row = (await threadRows(c)).find((row) => row.id === c.req.param("threadId"));
+    if (!row) throw new CompatError(404, "Thread not found in this session");
+    return c.json(row);
+  });
+  app.get("/sessions/:id/events/pending", async (c) => {
+    query(c, []);
+    await json(c, `/sessions/${encodeURIComponent(c.req.param("id"))}`);
+    // Read-only compatibility placeholder, not a view of OMA's execution queue.
+    return c.json({ items: [] });
+  });
+  for (const path of ["/sessions/:id/events", "/sessions/:id/threads/:threadId/events"]) app.get(path, async (c) => {
     const params = query(c, ["page_size", "page_token", "order"]);
-    if (params.has("order") && params.get("order") !== "asc") throw new CompatError(400, "Only ascending history is supported", "order");
+    const order = enumQuery(params, "order", ["asc", "desc"], "asc");
     const limit = pageSize(params), id = c.req.param("id");
-    const { rows } = await history(c, id);
-    const start = offset(rows, id, params.get("page_token") ?? "0");
+    const replay = await history(c, id), threadId = await checkThread(c, replay.rows);
+    const scope = eventScope(id, threadId), pageScope = order === "desc" ? `${scope}:desc` : scope;
+    const rows = replay.rows.filter((row) => !threadId || eventThread(row) === threadId);
+    if (order === "desc") rows.reverse();
+    const start = offset(rows, pageScope, params.get("page_token") ?? "0");
     const page = rows.slice(start, start + limit);
-    const end = cursor(id, page.at(-1)?.id ?? rows[start - 1]?.id);
-    return c.json({ items: page.map(projectKhaEvent).filter((row) => row !== null), stream_cursor: end,
+    const end = cursor(pageScope, page.at(-1)?.id ?? rows[start - 1]?.id);
+    // Descending pagination goes backward; SSE must resume after the newest
+    // row on this page, never after its oldest row.
+    const streamCursor = cursor(scope, (order === "desc" ? page[0] : page.at(-1))?.id ?? rows[start - 1]?.id);
+    return c.json({ items: page.map(projectKhaEvent).filter((row) => row !== null), stream_cursor: streamCursor,
       ...(start + limit < rows.length ? { next_page_token: end } : {}) });
   });
-  app.get("/sessions/:id/events/stream", async (c) => {
+  for (const path of ["/sessions/:id/events/stream", "/sessions/:id/threads/:threadId/events/stream"]) app.get(path, async (c) => {
     const params = query(c, ["cursor", "include_deltas"]);
     // kha attach requests previews. Accept the hint; this adapter only has durable full events.
     if (params.has("include_deltas") && !["true", "false"].includes(params.get("include_deltas")!)) throw new CompatError(400, "include_deltas must be a boolean", "include_deltas");
     const id = c.req.param("id"), token = params.get("cursor") ?? c.req.header("Last-Event-ID") ?? "0";
     const replay = await history(c, id);
+    const threadId = await checkThread(c, replay.rows), scope = eventScope(id, threadId);
     const rows = replay.rows;
-    const position = token === "now" ? rows.length : offset(rows, id, token);
-    let last = cursor(id, rows[position - 1]?.id);
+    const position = token === "now" ? rows.length : offset(rows, scope, token);
+    let last = cursor(scope, rows[position - 1]?.id);
     c.header("Cache-Control", "no-cache"); c.header("X-Accel-Buffering", "no");
     return streamSSE(c, async (stream) => {
       // Flush immediately, even when no events exist, so clients can send after attach.
@@ -297,7 +399,8 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
       let page = replay.page, seen = replay.seen;
       try {
         async function write(row: Row) {
-          last = cursor(id, row.id);
+          last = cursor(scope, row.id);
+          if (threadId && eventThread(row) !== threadId) return;
           const event = projectKhaEvent(row);
           if (event) await stream.writeSSE({ id: last, event: String(event.type), data: JSON.stringify(event) });
         }
@@ -353,7 +456,8 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     return c.json({ items, ...(start + limit < rows.length ? { next_page_token: cursor(id, items.at(-1)?.id) } : {}) });
   });
   for (const suffix of ["", "/content"]) app.get(`/artifacts/:id${suffix}`, async (c) => {
-    query(c, []);
+    const params = query(c, ["version"]);
+    if (params.has("version")) throw new CompatError(400, "Native outputs have no immutable version snapshots; omit version to read the current output", "version");
     const raw = c.req.param("id");
     if (!raw.startsWith("art_")) throw new CompatError(404, "Artifact not found");
     const parsed = z.tuple([z.string().min(1), z.string().min(1)]).safeParse(decode(raw.slice(4)));

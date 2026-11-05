@@ -296,6 +296,112 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     conforms("SessionEventList", { items: [projectKhaEvent({ ...wire, type: "user.interrupt" }), projectKhaEvent({ ...wire, type: "agent.thread_context_compacted" })] });
   });
 
+  it("sorts and filters before paging across native pages", async () => {
+    const f = client();
+    const template = f.agents.get(f.agentId)!;
+    for (let i = 0; i < 105; i++) f.agents.set(`agent_${i}`, { ...structuredClone(template),
+      id: `agent_${i}`, createdAt: new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString(),
+      multiagent: i < 102 ? { type: "multiagent_20261001", advisor: { type: "disabled" },
+        subagents: { type: "disabled" }, workflows: { type: "disabled" } } : null });
+    const first = await (await f.request("/agents?order=created_at_desc&exclude_multiagent=true&page_size=2")).json();
+    expect(first.items.map((r: any) => r.id)).toEqual(["agent_104", "agent_103"]);
+    const second = await (await f.request(`/agents?order=created_at_desc&exclude_multiagent=true&page_size=2&page_token=${first.next_page_token}`)).json();
+    expect(second.items.map((r: any) => r.id)).toEqual(["agent_102", f.agentId]);
+    expect(second.next_page_token).toBeUndefined();
+    expect((await (await f.request("/agents?order=created_at&exclude_multiagent=false&page_size=1")).json()).items[0].id).toBe(f.agentId);
+    expect((await f.request(`/agents?order=created_at&page_token=${first.next_page_token}`)).status).toBe(400);
+    expect(f.calls.filter((c) => c.path === "/v1/agents" && c.query.includes("page=")).length).toBeGreaterThan(0);
+
+    const idle = await f.seed(), running = await f.seed(), rescheduling = await f.seed();
+    f.sessions.get(running)!.status = "running";
+    f.sessions.get(rescheduling)!.status = "rescheduling";
+    const filtered = await (await f.request("/sessions?statuses=running,idle")).json();
+    expect(filtered.items).toHaveLength(3);
+    expect(filtered.items.find((r: any) => r.id === rescheduling).status).toBe("running");
+    expect((await (await f.request("/sessions?status=idle")).json()).items.map((r: any) => r.id)).toEqual([idle]);
+    expect((await (await f.request("/sessions?statuses=stopping")).json()).items).toEqual([]);
+    expect((await (await f.request("/sessions?statuses=running&statuses=terminated")).json()).items).toHaveLength(2);
+    for (const path of ["/agents?order=bad", "/agents?exclude_multiagent=1", "/environments?include_archived=1", "/sessions?statuses=bad"]) {
+      expect((await f.request(path)).status).toBe(400);
+    }
+  });
+
+  it("projects stable readiness and includes archived environments only on request", async () => {
+    const f = client();
+    for (const type of ["cloud", "self_hosted"]) {
+      const created = await (await f.request("/environments", { name: type, config: { type } })).json();
+      conforms("Environment", created); expect(created.build_status).toBe("ready");
+      const get = await (await f.request(`/environments/${created.id}`)).json();
+      expect(get).toEqual(created);
+    }
+    f.environments.get("env_1")!.archivedAt = "2026-11-05T00:00:00.000Z";
+    expect((await (await f.request("/environments")).json()).items.map((r: any) => r.id)).toEqual(["env_2"]);
+    const all = await (await f.request("/environments?include_archived=true&page_size=1")).json();
+    expect(all.items).toHaveLength(1); expect(all.next_page_token).toBeDefined();
+    const next = await (await f.request(`/environments?include_archived=true&page_token=${all.next_page_token}`)).json();
+    expect(next.items).toHaveLength(1);
+    expect([...all.items, ...next.items].find((r: any) => r.id === "env_1").archived_at).toBeDefined();
+    expect(f.calls.some((c) => c.query.includes("include_archived=true"))).toBe(true);
+  });
+
+  it("paginates descending events and resumes SSE after the newest returned event", async () => {
+    const f = client(), id = await f.seed(); await f.request(`/sessions/${id}/events`, message);
+    const asc = await (await f.request(`/sessions/${id}/events`)).json();
+    const first = await (await f.request(`/sessions/${id}/events?order=desc&page_size=2`)).json();
+    const second = await (await f.request(`/sessions/${id}/events?order=desc&page_size=2&page_token=${first.next_page_token}`)).json();
+    expect([...first.items, ...second.items]).toEqual([...asc.items].reverse());
+    expect(second.next_page_token).toBeUndefined();
+    expect(first.stream_cursor).toBe(asc.stream_cursor);
+    expect((await f.request(`/sessions/${id}/events?order=asc&page_token=${first.next_page_token}`)).status).toBe(400);
+    await f.request(`/sessions/${id}/events`, message);
+    const stream = await frameReader(await f.request(`/sessions/${id}/events/stream?cursor=${first.stream_cursor}`));
+    expect((await stream.next()).data.type).toBe("user.message"); await stream.cancel();
+  });
+
+  it("projects coordinator and observed children, scopes thread REST/SSE and authorizes pending", async () => {
+    const f = client(), id = await f.seed();
+    const root = `/sessions/${id}`;
+    const initial = await (await f.request(`${root}/threads`)).json();
+    conforms("SessionThreadList", initial);
+    expect(initial.items).toHaveLength(1); expect(initial.items[0].id).toBe("sthr_primary");
+    expect(initial.items[0]).not.toHaveProperty("control_epoch");
+    expect(initial.items[0]).not.toHaveProperty("interrupted");
+    await f.request(`${root}/events`, message);
+    const base = { sessionThreadId: "sthr_child", processedAt: "2026-11-05T00:00:00.000Z", agentName: "Researcher" };
+    f.events.get(id)!.push(
+      { ...base, id: "child_created", type: "session.thread_created", parentThreadId: "sthr_primary" },
+      { ...base, id: "child_running", type: "session.thread_status_rescheduled" },
+      { ...base, id: "child_message", type: "agent.message", content: [{ type: "text", text: "child only" }] },
+    );
+    const page = await (await f.request(`${root}/threads?page_size=1`)).json();
+    const children = await (await f.request(`${root}/threads?page_token=${page.next_page_token}`)).json();
+    conforms("SessionThreadList", children);
+    expect(children.items).toHaveLength(1);
+    const child = await (await f.request(`${root}/threads/sthr_child`)).json();
+    conforms("SessionThread", child);
+    expect(child).toMatchObject({ id: "sthr_child", parent_thread_id: "sthr_primary", status: "running" });
+    expect(child.agent).toBeUndefined();
+    const childEvents = await (await f.request(`${root}/threads/sthr_child/events?order=desc&page_size=2`)).json();
+    expect(childEvents.items.map((r: any) => r.id)).toEqual(["child_message", "child_running"]);
+    const older = await (await f.request(`${root}/threads/sthr_child/events?order=desc&page_token=${childEvents.next_page_token}`)).json();
+    expect(older.items.map((r: any) => r.id)).toEqual(["child_created"]);
+    const primary = await (await f.request(`${root}/threads/sthr_primary/events`)).json();
+    expect(primary.items).toHaveLength(4);
+    const stream = await frameReader(await f.request(`${root}/threads/sthr_child/events/stream?cursor=${childEvents.stream_cursor}`));
+    f.events.get(id)!.push({ ...base, id: "child_idle", type: "session.thread_status_idle", stopReason: { type: "end_turn" } });
+    await f.request(`${root}/events`, message); // Unrelated primary events must not leak.
+    expect((await stream.next()).data.id).toBe("child_idle"); await stream.cancel();
+    expect((await (await f.request(`${root}/threads/sthr_child`)).json()).status).toBe("idle");
+    expect((await f.request(`${root}/threads/sthr_primary/events/stream?cursor=${childEvents.stream_cursor}`)).status).toBe(400);
+    conforms("PendingEventList", await (await f.request(`${root}/events/pending`)).json());
+    for (const suffix of ["/threads", "/threads/sthr_child", "/threads/sthr_child/events", "/threads/sthr_child/events/stream", "/events/pending"]) {
+      expect((await f.request(`${root}${suffix}`, undefined, { authorization: "Bearer other" })).status).toBe(404);
+      expect((await f.request(`${root}${suffix}`, undefined, { authorization: "Bearer invalid" })).status).toBe(401);
+      expect((await f.request(`/sessions/missing${suffix}`)).status).toBe(404);
+    }
+    for (const suffix of ["", "/events", "/events/stream"]) expect((await f.request(`${root}/threads/sthr_missing${suffix}`)).status).toBe(404);
+  });
+
   it("enforces tenant isolation, missing resources, malformed and unsupported inputs", async () => {
     const f = client(), id = await f.seed(); await f.request(`/sessions/${id}/events`, message);
     const artifact = (await (await f.request(`/artifacts?session_id=${id}`)).json()).items[0];

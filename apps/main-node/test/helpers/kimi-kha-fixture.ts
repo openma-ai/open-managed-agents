@@ -18,6 +18,7 @@ import { buildKimiKhaCompatRoutes } from "../../../../packages/control-plane-nod
 export function createKhaFixture(enabled = true) {
   const native = new Hono<{ Variables: { tenant_id: string } }>();
   const calls: Array<{ path: string; query: string; body?: unknown; tenant: string }> = [];
+  const agents = new Map([[agentView.id, structuredClone(agentView)]]);
   const environments = new Map<string, EnvironmentView>();
   const sessions = new Map<string, SessionView>();
   const events = new Map<string, SessionEventView[]>();
@@ -34,10 +35,19 @@ export function createKhaFixture(enabled = true) {
     await next();
   });
   const owner = (c: { var: unknown }) => (c.var as { tenant_id: string }).tenant_id === "owner";
+  function page<T extends { id: string; archivedAt: string | null }>(rows: T[], query: { cursor?: string; pageSize?: number; includeArchived?: boolean }) {
+    rows = rows.filter((row) => query.includeArchived || row.archivedAt === null);
+    const start = query.cursor ? rows.findIndex((row) => row.id === Buffer.from(query.cursor!, "base64url").toString()) + 1 : 0;
+    const items = rows.slice(start, start + (query.pageSize ?? 100));
+    return { items, nextCursor: start + items.length < rows.length ? Buffer.from(items.at(-1)!.id).toString("base64url") : null };
+  }
   native.route("/agents", buildAgentRoutes((c) => makeAgentsPort({
-    listAgents: async () => ({ type: "page", page: { agents: owner(c) ? [agentView] : [], nextCursor: null } }),
-    retrieveAgent: async ({ agentId }) => owner(c) && agentId === agentView.id
-      ? { type: "found", agent: agentView } : { type: "not_found" },
+    listAgents: async (query) => {
+      const result = page(owner(c) ? [...agents.values()] : [], query);
+      return { type: "page", page: { agents: result.items, nextCursor: result.nextCursor } };
+    },
+    retrieveAgent: async ({ agentId }) => owner(c) && agents.has(agentId)
+      ? { type: "found", agent: agents.get(agentId)! } : { type: "not_found" },
   })));
   native.route("/environments", buildEnvironmentRoutes((c) => makeEnvironmentsPort({
     createEnvironment: async (command) => {
@@ -56,7 +66,10 @@ export function createKhaFixture(enabled = true) {
     },
     retrieveEnvironment: async ({ environmentId }) => owner(c) && environments.has(environmentId)
       ? { type: "found", environment: environments.get(environmentId)! } : { type: "not_found" },
-    listEnvironments: async () => ({ type: "page", page: { environments: owner(c) ? [...environments.values()] : [], nextCursor: null } }),
+    listEnvironments: async (query) => {
+      const result = page(owner(c) ? [...environments.values()] : [], query);
+      return { type: "page", page: { environments: result.items, nextCursor: result.nextCursor } };
+    },
   })));
   const sessionPort = (c: { var: unknown }) => makeSessionsPort({
     createSession: async (command) => {
@@ -69,7 +82,10 @@ export function createKhaFixture(enabled = true) {
     },
     retrieveSession: async ({ sessionId }) => owner(c) && sessions.has(sessionId)
       ? { type: "found", session: sessions.get(sessionId)! } : { type: "not_found" },
-    listSessions: async () => ({ type: "page", page: { sessions: owner(c) ? [...sessions.values()] : [], nextCursor: null, previousCursor: null } }),
+    listSessions: async (query) => {
+      const result = page(owner(c) ? [...sessions.values()] : [], query);
+      return { type: "page", page: { sessions: result.items, nextCursor: result.nextCursor, previousCursor: null } };
+    },
   });
   native.route("/sessions", buildSessionRoutes(sessionPort));
   let sequence = 0;
@@ -120,5 +136,5 @@ export function createKhaFixture(enabled = true) {
   const app = new Hono();
   app.route("/v1", native);
   if (enabled) app.route("/kha/v1", buildKimiKhaCompatRoutes((req) => app.fetch(req), { pollMs: 10 }));
-  return { app, calls, events, outputs, sessions, environments, agentId: agentView.id };
+  return { app, calls, events, outputs, sessions, environments, agents, agentId: agentView.id };
 }

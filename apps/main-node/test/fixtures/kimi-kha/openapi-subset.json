@@ -2883,7 +2883,159 @@
           "exceeded_current_quota_error",
           "server_error"
         ]
+      },
+      "SessionThread": {
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "线程 ID。"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "此线程所属的会话。"
+          },
+          "parent_thread_id": {
+            "type": "string",
+            "description": "父线程。协调者线程不存在此字段。"
+          },
+          "agent": {
+            "$ref": "#/components/schemas/SessionThreadAgent",
+            "description": "此线程使用的固定智能体版本。"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionState",
+            "description": "当前生命周期状态。"
+          },
+          "interrupted": {
+            "type": "boolean",
+            "description": "执行是否因中断而暂停。"
+          },
+          "control_epoch": {
+            "$ref": "#/components/schemas/ControlEpoch",
+            "description": "此线程当前的控制版本，与其他线程相互独立。"
+          },
+          "archived_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "归档时间戳。活跃期间不存在。"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "创建时间戳。"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "最后更新时间戳。"
+          }
+        },
+        "description": "逻辑会话内一个可独立执行的线程。"
+      },
+      "SessionThreadList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionThread"
+            },
+            "description": "本页的线程：协调者在前，然后是按创建顺序排列的子线程。"
+          },
+          "next_page_token": {
+            "type": "string",
+            "description": "下一页的分页令牌。列表耗尽时缺省。"
+          }
+        },
+        "description": "一页线程：协调者在前，随后按创建顺序列出子线程。"
+      },
+      "PendingEventList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PendingEvent"
+            },
+            "description": "按到达顺序排列的待处理事件。"
+          }
+        },
+        "description": "会话的待处理输入事件，按到达顺序排列。"
+      },
+      "PendingEvent": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "type",
+          "events",
+          "queued_at"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "description": "排队输入的事件 ID。"
+          },
+          "type": {
+            "$ref": "#/components/schemas/InputEventType",
+            "description": "待处理输入的类型。"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueuedUserEventInput"
+            },
+            "description": "排队输入携带的用户事件。"
+          },
+          "queued_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "输入入队的时间。"
+          }
+        },
+        "description": "会话的一条排队输入事件，携带其内容与入队时间。"
+      },
+      "QueuedUserEventInput": {
+        "type": "object",
+        "oneOf": [
+          {
+            "title": "用户消息",
+            "$ref": "#/components/schemas/UserMessageInput"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "user.message": "#/components/schemas/UserMessageInput"
+          }
+        },
+        "description": "可在输入队列中等待处理的用户内容。中断命令不能入队。"
       }
     }
-  }
+  },
+  "additional_sources": [
+    {
+      "source": "https://platform.kimi.com/docs/hosted-agents/openapi.yaml",
+      "retrieved_at": "2026-11-05",
+      "source_sha256": "48e3a00b9e715021426709e131b15782c512c97afc50c418e0584fd249682c10",
+      "schemas": [
+        "SessionThread",
+        "SessionThreadList",
+        "PendingEventList"
+      ]
+    }
+  ]
 }

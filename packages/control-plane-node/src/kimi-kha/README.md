@@ -2,7 +2,7 @@
 
 Opt in on the Node server with `OMA_KIMI_KHA_COMPAT=1`, then point KHA v0.4.2 at `http://host:8787/kha`. The CLI adds `/v1`. Native `/v1` routes retain their original contracts. Use an existing OMA API key and agent; production input is forwarded to the configured OMA runner.
 
-This module reuses native authenticated HTTP routes, persistence, session execution and output storage. It accepts `kimi-api-version` without enforcement. Implemented: agents list/get; environments create/list/get; sessions create/list/get; one text user message per append; history and resumable SSE; session-scoped artifact list/get/download. JSON shapes follow the captured `2026-09-01-beta` subset in the tests.
+This module reuses native authenticated HTTP routes, persistence, session execution and output storage. It accepts `kimi-api-version` without enforcement. Implemented: agents list/get; environments create/list/get; sessions create/list/get; one text user message per append; history and resumable SSE (session and thread); thread list/get; session-scoped artifact list/get/download. JSON shapes follow the captured `2026-09-01-beta` subset in the tests.
 
 For a local demo without Docker, provider credentials or LLM calls:
 
@@ -62,16 +62,37 @@ Known CLI boundaries:
 
 | Command or flag | Observed adapter / CLI result |
 | --- | --- |
-| agents `--order`, `--exclude-multiagent`; environments `--include-archived`; sessions `--status` | HTTP 400 `invalid_parameter_error`, CLI exit 1 |
-| events `--order desc`; artifact get/download `--version 1` | HTTP 400 `invalid_parameter_error`, CLI exit 1 |
-| environments create `--wait` / wait-ready | Create succeeds; get keeps returning 200 without KHA build readiness. Bounded wait times out, CLI exit 1. No KHA build is implied by the CLI's “build started” message. |
-| sessions threads list / attach `--thread` | HTTP 404, CLI exit 1; thread event projection does not implement thread REST |
+| agents `--order`, `--exclude-multiagent` | HTTP 200, CLI exit 0; creation ordering and exclusion of native non-null `multiagent`, applied before pagination |
+| environments `--include-archived`; sessions `--status` | HTTP 200, CLI exit 0; archived inclusion and actual status filtering (including empty results) |
+| events `--order desc` (session or thread) | HTTP 200, CLI exit 0; newest first, subsequent pages move backward; `stream_cursor` resumes after the newest native row on that page |
+| environments create `--wait` / wait-ready | HTTP 201/200, CLI exit 0 within the 2s smoke bound; stable `build_status: ready` projects usable OMA configurations, not Moonshot remote image-build telemetry |
+| sessions threads list/get/events; attach `--thread` | HTTP 200 for observed threads and `sthr_primary`; attach receives the selected lane and stays open until Ctrl-C (exit 130). Unknown threads remain 404. |
+| sessions pending list | HTTP 200 `{ "items": [] }`; authorized read-only placeholder, not inspection of OMA's queued inputs |
+| artifact get/download `--version 1` | HTTP 400, CLI exit 1; native outputs have no immutable version snapshots |
 | agents `--limit 101`; attach `--since invalid` | HTTP 400, CLI exit 1 |
 | sessions send with whitespace text | CLI exit 2 before HTTP |
 | sessions continue | No such subcommand in 0.4.2; prints parent help and exits 0 without HTTP. The raw `/continue` endpoint returns 501. |
 
 These observations establish the fixture transport subset, not live Hosted
-Agents service parity. No provider call or official API credential is needed.
+Agents service parity. No provider call or official API credential is needed. The gaps smoke uses a
+2s readiness timeout, 100ms wait interval, and bounded attach cancellation.
+
+List queries accept agents `order=created_at|created_at_desc` (default newest
+first), `exclude_multiagent=true|false`; environments `include_archived`; and
+sessions `statuses=idle,running,stopping,terminated` (CSV or repeated keys),
+plus a `status` alias. Native `rescheduling`/`rescheduled` maps to `running`;
+OMA has no durable `stopping` state, so that filter currently returns no rows.
+Sessions also accept `include_archived` and `order=created_at|created_at_desc|
+updated_at|updated_at_desc` (default last-updated first). Boolean values and
+enums are validated. Other query names still return 400, as does page size
+outside 1–100. Artifact versions remain unsupported.
+
+Lists scan authenticated native pages before filtering/sorting and use scoped
+adapter cursors, with a 10,000-row bound (409 on overflow). This keeps ordering
+correct across native pages but is not an indexed large-account implementation.
+Tokens bind to resource, ordering and filters; changing those requires restarting
+pagination. Results are not snapshot-isolated under concurrent mutations. Old
+native list tokens from the earlier spike must be discarded.
 
 ### Running against the real Node control plane
 
@@ -129,4 +150,26 @@ History and SSE use the same projection and preserve event IDs, timestamps and a
 | `agent.thread_message_sent/received` | Same type, nested content, peer thread ID and available agent name. Native `from_message_id` is omitted. |
 | `agent.thread_context_compacted`, `user.interrupt` | Same type, no payload. |
 
-No tool-started or tool-success event is inferred. Unknown events, workflow events and unmatched spans remain omitted. Omitted rows still advance the internal native page boundary and REST cursor; if no mapped SSE frame follows, the client keeps its previous cursor and may revisit omitted rows on reconnect. Native queued inputs may lack Kimi's required processing timestamp until consumed; full queued-input/control-epoch conformance remains a gap. Thread REST APIs and multimodal event conversion remain outside this spike.
+No tool-started or tool-success event is inferred. Unknown events, workflow events and unmatched spans remain omitted. Omitted rows still advance the internal native page boundary and REST cursor; if no mapped SSE frame follows, the client keeps its previous cursor and may revisit omitted rows on reconnect. Native queued inputs may lack Kimi's required processing timestamp until consumed; full queued-input/control-epoch conformance remains a gap. Multimodal event conversion remains outside this spike.
+
+## Thread REST projection
+
+`GET /sessions/:id/threads`, `/threads/:thread_id`, `/threads/:thread_id/events`
+and `/threads/:thread_id/events/stream` project the same retained native log.
+The existing OMA `sthr_primary` lane is always listed first, even before input;
+untagged native events belong to that lane. Its agent snapshot and lifecycle
+come from the parent session. Children exist only when an event carries their
+`session_thread_id`; peer references alone do not manufacture threads. Children
+follow creation order, their timestamps come from observed events, and their
+status is the latest thread-status event (initially `idle` until observed).
+Parent links are included only when a native thread-created event supplies one.
+Child pinned agent snapshots and archive metadata are unavailable in this log
+projection and are omitted. No `control_epoch` or durable `interrupted` flag is
+synthesized; thread archive remains unsupported.
+
+Thread history filters before pagination; descending pages and SSE share the
+same event mapping as session history. Thread cursors bind to session and lane,
+so they cannot be used on a sibling lane. Streams filter replay and live polling,
+while still advancing over unrelated native rows. Thread discovery and initial
+history share the 10,000-row replay bound; this is not a separate multi-agent
+runtime or a persistent thread graph.
