@@ -24,9 +24,13 @@
 }
 
 /* Navigation and route chrome behave like native application controls. Keep
- * their labels out of drag selection while leaving route data copyable. */
+ * their labels out of drag selection while leaving route data copyable.
+ * CSS alone only covers selection *inside* chrome; ConsoleShell also cancels
+ * the mousedown default on [data-console-chrome] (lib/console-chrome.ts) so
+ * double/triple clicks and drags there cannot select adjacent route text. */
 .console-sidebar,
-.console-topbar {
+.console-topbar,
+[data-console-chrome] {
   -webkit-user-select: none;
   user-select: none;
 }

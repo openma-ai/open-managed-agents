@@ -113,8 +113,16 @@ describe("AppSidebar tracks", () => {
     expect(shell).toContain(".console-shell :where(");
     expect(shell).toContain("nav a");
     expect(shell).toMatch(
-      /\.console-sidebar,\s*\.console-topbar\s*\{[^}]*-webkit-user-select: none;[^}]*user-select: none;/,
+      /\.console-sidebar,\s*\.console-topbar,\s*\[data-console-chrome\]\s*\{[^}]*-webkit-user-select: none;[^}]*user-select: none;/,
     );
+    // CSS alone cannot stop a double/triple click on chrome from selecting the
+    // adjacent route title; ConsoleShell must also cancel chrome mousedowns.
+    const consoleShell = readFileSync(
+      resolve(process.cwd(), "src/components/ConsoleShell.tsx"),
+      "utf8",
+    );
+    expect(consoleShell.match(/onMouseDownCapture=\{guardConsoleChromeMouseDown\}/g)?.length)
+      .toBeGreaterThanOrEqual(4);
     expect(shell).toContain("-webkit-user-select: none;");
     expect(shell).toContain("user-select: none;");
   });

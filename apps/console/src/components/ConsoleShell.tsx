@@ -10,6 +10,7 @@ import {
 import { PanelLeftOpenIcon } from "lucide-react";
 
 import { useIsMobile } from "@/hooks/use-mobile";
+import { guardConsoleChromeMouseDown } from "@/lib/console-chrome";
 
 interface ConsoleShellProps {
   sidebar: ReactNode;
@@ -171,6 +172,8 @@ export function ConsoleShell({
         className="console-sidebar-rail"
         data-shell-slot="sidebar"
         aria-hidden={!sidebarVisible}
+        data-console-chrome
+        onMouseDownCapture={guardConsoleChromeMouseDown}
         onPointerDownCapture={(event) => {
           const target = event.target;
           if (
@@ -218,6 +221,8 @@ export function ConsoleShell({
           ref={hoverZoneRef}
           className="console-sidebar-hover-zone"
           aria-hidden="true"
+          data-console-chrome
+          onMouseDownCapture={guardConsoleChromeMouseDown}
           onMouseEnter={() => setPreviewOpen(true)}
         />
       )}
@@ -228,6 +233,8 @@ export function ConsoleShell({
           type="button"
           className="console-sidebar-scrim"
           aria-label="Close sidebar"
+          data-console-chrome
+          onMouseDownCapture={guardConsoleChromeMouseDown}
           onClick={closeSidebar}
         />
       )}
@@ -237,6 +244,8 @@ export function ConsoleShell({
           ref={topbarRef}
           className="console-topbar"
           data-top-row
+          data-console-chrome
+          onMouseDownCapture={guardConsoleChromeMouseDown}
           onPointerMove={(event) => {
             if (
               !sidebarOpen &&
