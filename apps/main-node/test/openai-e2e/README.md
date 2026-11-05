@@ -27,6 +27,7 @@ resource check scans the shared system temporary directory.
 | File | What a regression would break |
 | --- | --- |
 | `../openai-agents-node.test.ts` | SDK requests reaching the Node mount, text execution without an environment, function result continuation and idempotency, all six child controls, isolated child history and default single-level delegation |
+| `artifacts.test.ts` | Real subprocess file creation, nonempty SDK artifact list/retrieve/download, binary fidelity and restart; SIGKILL during partial publication recovers without rerunning the turn or duplicating files |
 | `resources.test.ts` | Saved-agent snapshot isolation, pagination and deletion, vault and template persistence across process restart, secret redaction, rejection of unsupported execution settings without orphan sessions |
 | `recovery.test.ts` | Pending function action and original turn survive a process restart; a later parent turn resumes the same persisted child and its history |
 | `stream.test.ts` | SDK automatic function handling, coordinator completion despite earlier child completion, subscription abort versus explicit cancellation, live resubscription and durable history reads |
@@ -37,9 +38,16 @@ does not invent a replay cursor that the official SDK contract does not expose.
 
 ## Scope
 
-These tests use `environment: { type: "none" }`. They verify production Node
-behavior with a controlled model, not real-model instruction following, physical
-sandbox provisioning, hosted OpenAI execution, or recursive child delegation.
+Most tests use `environment: { type: "none" }`. The artifact tests use
+`openai_hosted` with the trusted local-subprocess test adapter: bash writes real
+files, while the production publisher, SQLite, disk blob store and official SDK
+handle publication and downloads. A test-only read barrier pauses the second
+artifact before the parent sends SIGKILL; recovery uses the real lease expiry
+and the same persisted directories. The barrier does not simulate publication,
+copy bytes, change SQL, or substitute a completed turn.
+
+These tests do not certify OpenSandbox/Docker, MinIO, real-model instruction
+following, hosted OpenAI execution, Console display, or recursive delegation.
 Shared-sandbox behavior has separate runner tests in
 `../managed-session-subagents.test.ts`.
 
