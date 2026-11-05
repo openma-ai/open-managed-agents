@@ -258,6 +258,10 @@ export class SessionEventsApplicationService
           return { type: "accepted", events: events.map(event => byId.get(event.id)! as SentSessionEvent) };
         }
       }
+      if (command.requireRunningInterrupt && command.events.some(event => event.type === "user.interrupt")
+        && (execution.session.status !== "running" || execution.session.archivedAt != null)) {
+        return { type: "invalid_request", reason: "failed_precondition", message: "Only a running session can be interrupted" };
+      }
       // An archived Session is read-only. Reject new input here instead of
       // accepting it and failing the turn later in the runtime.
       if (execution.session.archivedAt != null) {

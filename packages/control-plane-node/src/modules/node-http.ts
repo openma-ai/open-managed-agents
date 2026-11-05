@@ -18,6 +18,7 @@
 import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
 import { Hono } from "hono";
+import { mountKimiKhaCompat } from "../kimi-kha/index.js";
 import { getHarnessCatalog } from "@open-managed-agents/agent/harness/registry";
 import { OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createArtifactsHandler, createManagedSessionMapping, createResourcesHandler, createSessionsHandler } from "@open-managed-agents/openai-agents-compat";
@@ -396,10 +397,18 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       managedSessionsComposition.portsFor(
         (context.var as { tenant_id: string }).tenant_id,
       ).sessions,
-    sessionEvents: (context) =>
-      managedSessionsComposition.portsFor(
+    sessionEvents: (context) => {
+      const port = managedSessionsComposition.portsFor(
         (context.var as { tenant_id: string }).tenant_id,
-      ).sessionEvents,
+      ).sessionEvents;
+      // In-process binding only: callers cannot set this through HTTP headers.
+      if (context.env?.khaRequireRunningInterrupt !== true) return port;
+      return {
+        sendSessionEvents: (command) => port.sendSessionEvents({ ...command, requireRunningInterrupt: true }),
+        listSessionEvents: port.listSessionEvents.bind(port),
+        streamSessionEvents: port.streamSessionEvents.bind(port),
+      };
+    },
     sessionResources: (context) =>
       managedSessionsComposition.portsFor(
         (context.var as { tenant_id: string }).tenant_id,
@@ -973,6 +982,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   });
 
   app.route("/v1", v1);
+  mountKimiKhaCompat(app, config.http.kimiKhaCompat, (request, options) =>
+    app.fetch(request, { khaRequireRunningInterrupt: options?.requireRunningInterrupt }));
   app.route("/openai", buildNodeOpenAIAgentsRoutes({
     authMiddleware: authMw,
     portFor: (workspaceId) => {

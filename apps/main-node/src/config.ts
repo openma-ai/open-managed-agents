@@ -214,6 +214,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
       sessionOutputs: env.SESSION_OUTPUTS_DIR ?? "./data/session-outputs",
     },
     http: {
+      kimiKhaCompat: flag("OMA_KIMI_KHA_COMPAT"),
       host: env.HOST ?? "0.0.0.0",
       // 0 asks the OS for an ephemeral port (tests and local tooling rely on it).
       port: integer("PORT", 8787, { min: 0, max: 65535 }),
