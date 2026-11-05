@@ -7,13 +7,14 @@ import type {
   SessionBootstrapEvent,
   SessionEventView,
   SessionRuntimeHistoryApplicationPort,
+  SessionRuntimeHistoryEventView,
 } from "@open-managed-agents/managed-agents-application";
 import type {
   AcceptedSessionEvents,
   SessionEventDispatchPort,
 } from "@open-managed-agents/session-runtime-contract/dispatch";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
-import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import { consumeSessionInputs, SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
   settleOnlyReason,
 } from "@open-managed-agents/session-runtime-contract";
@@ -33,10 +34,6 @@ import {
 } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type {
   SessionRuntimeProjectionApplicationPort,
-} from "@open-managed-agents/managed-agents-application";
-import {
-  isQueuedSessionEventType,
-  markSessionEventsProcessed,
 } from "@open-managed-agents/managed-agents-application";
 import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
 import type {
@@ -158,7 +155,26 @@ export interface NodeManagedSessionRunnerAcceptInput
   takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
   initialEvents: SessionBootstrapEvent[];
   historyEvents: SessionEventView[];
+  /** This execution already committed its terminal idle (a crash landed
+   *  between terminal persistence and settle): never re-run the turn. */
+  committedTerminal?: CommittedExecutionTerminal;
   output(frame: unknown): Promise<void>;
+}
+
+export type CommittedExecutionTerminal = Extract<SessionEventView, { type: "session.status_idle" }>;
+
+/** The terminal idle the execution committed as its last fact, if any.
+ *  Inputs it consumed after an earlier idle (an interrupt draining queued
+ *  messages) mean the execution still has a turn to run. */
+export function committedExecutionTerminal(
+  orderedEvents: readonly SessionRuntimeHistoryEventView[] | undefined,
+  executionId: string,
+): CommittedExecutionTerminal | null {
+  let last: SessionEventView | undefined;
+  for (const row of orderedEvents ?? []) {
+    if (row.executionId === executionId || row.consumedByExecutionId === executionId) last = row.event;
+  }
+  return last?.type === "session.status_idle" ? last : null;
 }
 
 export interface NodeManagedSessionRunner {
@@ -225,9 +241,13 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
       typeof input.executionFence === "object"
       ? input.executionFence as SessionExecutionFence
       : undefined;
+    const committedTerminal = executionFence === undefined
+      ? null
+      : committedExecutionTerminal(history.orderedEvents, executionFence.executionId);
     await this.dependencies.runner.accept({
       ...input,
       ...(executionFence !== undefined ? { executionFence } : {}),
+      ...(committedTerminal !== null ? { committedTerminal } : {}),
       initialEvents: history.initialEvents,
       historyEvents: history.events,
       output,
@@ -494,7 +514,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
             const steered = await rawTakeSteering();
             if (steered.length === 0) return steered;
             const stamp = { ...accepted, events: steered };
-            await this.markQueuedInputsProcessed(stamp);
+            await this.markQueuedInputsProcessed({ ...stamp, executionFence: fence });
             return steered;
           };
       await this.dependencies.engine.accept({
@@ -505,7 +525,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
       await this.outputChains.get(input);
       if (interrupting && plan.release.length > 0 && !signal.aborted) {
         const drain = { ...accepted, events: plan.release };
-        await this.markQueuedInputsProcessed(drain);
+        await this.markQueuedInputsProcessed({ ...drain, executionFence: fence });
         await this.dependencies.engine.accept({
           ...drain,
           ...(fence !== undefined && { executionFence: fence }),
@@ -596,20 +616,18 @@ export class DefaultNodeManagedSessionRuntimeDriver
   ): Promise<void> {
     const processing = this.dependencies.eventProcessing;
     if (processing === undefined) return;
-    const eventIds = input.events
-      .filter((event) => isQueuedSessionEventType(event.type))
-      .map((event) => event.id);
-    if (eventIds.length === 0) return;
-    await markSessionEventsProcessed(
+    const inputs = input.events.filter(event => event.type !== "user.interrupt");
+    if (inputs.length === 0) return;
+    await consumeSessionInputs(
       processing.storeFor(input.workspaceId),
       {
         workspaceId: input.workspaceId,
         sessionId: input.sessionId,
-        eventIds,
+        inputs,
+        consumingExecutionId: input.executionFence?.executionId ?? inputs[0]!.id,
         processedAt: this.nextEventStamp(input),
       },
-      {
-        emit: (events) => {
+      (events) => {
           for (const event of events) {
             this.realtime.publish({
               workspaceId: input.workspaceId,
@@ -617,7 +635,6 @@ export class DefaultNodeManagedSessionRuntimeDriver
               frame: { event: event as unknown as StreamSessionEvent },
             });
           }
-        },
       },
     );
   }

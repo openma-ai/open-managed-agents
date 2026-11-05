@@ -617,6 +617,7 @@ export async function createManagedNodeRuntime(
       secrets: openAIAgentsSecrets,
       isFenceActive: isManagedSessionExecutionFenceActive,
       environmentId: session => `oai_env_${session.id}`,
+      logger,
     }), (error, input) => {
       logger.error({
         err: error,

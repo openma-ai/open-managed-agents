@@ -7,6 +7,7 @@ export interface MarkSessionEventsProcessedCommand {
   sessionId: string;
   eventIds: string[];
   processedAt: string;
+  consumedByExecutionId?: string;
 }
 
 export interface SessionEventsProcessedSink {

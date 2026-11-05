@@ -252,6 +252,23 @@ export interface Env {
         }
       | { type: "not_found" }
     >;
+    /** Agents API artifact publication after a committed terminal; the
+     *  callbacks read the DO's sandbox `/workspace/outputs`. */
+    publishManagedSessionArtifacts?(opts: {
+      tenantId: string;
+      sessionId: string;
+      executionFence: {
+        executionId: string;
+        workspaceId: string;
+        sessionId: string;
+        attemptId: string;
+        ownerId: string;
+        generation: number;
+        expiresAt: string;
+      };
+      outputManifest: () => Promise<string>;
+      readOutput: (path: string) => Promise<Uint8Array>;
+    }): Promise<{ type: "published" } | { type: "not_found" }>;
     managedSessionEventProduced(opts: {
       workspaceId: string;
       sessionId: string;
@@ -269,6 +286,7 @@ export interface Env {
       sessionId: string;
       eventIds: string[];
       processedAt: string;
+    consumedByExecutionId?: string;
     }): Promise<
       | { type: "marked"; events: unknown[] }
       | { type: "not_found" }

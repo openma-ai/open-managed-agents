@@ -70,11 +70,19 @@ describe('Existing SQL event log source positions', () => {
     const history = await source.load(scope);
     expect(history?.revision).toBe(3);
     expect(history?.events.map(e => e.id)).toEqual(['a_steer', 'm_later', 'z_input']);
-    expect(history?.orderedEvents).toEqual([
-      { event: first[0], position: { revision: 2, index: 0 } },
-      { event: first[1], position: { revision: 2, index: 1 } },
-      { event: last[0], position: { revision: 3, index: 0 } },
-    ]);
+    expect(history?.orderedEvents).toEqual(
+      executionOutbox
+        ? [
+            { event: first[0], position: { revision: 2, index: 0 }, executionId: first[0].id },
+            { event: first[1], position: { revision: 2, index: 1 }, executionId: first[0].id },
+            { event: last[0], position: { revision: 3, index: 0 }, executionId: last[0].id },
+          ]
+        : [
+            { event: first[0], position: { revision: 2, index: 0 } },
+            { event: first[1], position: { revision: 2, index: 1 } },
+            { event: last[0], position: { revision: 3, index: 0 } },
+          ],
+    );
     const publicEvents = await store.list({ ...scope, limit: 20, order: 'asc' });
     expect(publicEvents).toEqual([first[1], last[0], first[0]]);
     expect(publicEvents.every(e => !('source_position' in e))).toBe(true);

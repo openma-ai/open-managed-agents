@@ -153,12 +153,13 @@ export interface SessionExecutionStorePort {
       }
   >;
   /** Absorb one queued execution into the running turn (steering). The
-   *  row settles as completed so it never runs as its own turn. */
+   *  row and its input consumption commit atomically under the consumer fence. */
   steerQueued(input: {
     workspaceId: string;
     sessionId: string;
     executionId: string;
     steeredAt: string;
+    consumer: SessionExecutionFence;
   }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }>;
   /** Queued (unclaimed) executions on one lane, admission order. Used by the
    *  running turn to find mid-run inputs to steer at the next after-call
@@ -232,6 +233,14 @@ export function sessionBootstrapExecutionEvents(input: {
   });
 }
 
+/** Lane that `sessionExecutionEventBatches` assigns an input event to. An
+ * execution's id is the id of the first event of its lane batch, so this also
+ * names the lane of the execution started by that event. */
+export function sessionExecutionLaneId(event: object): string {
+  const laneId = "sessionThreadId" in event ? event.sessionThreadId : undefined;
+  return typeof laneId === "string" ? laneId : "sthr_primary";
+}
+
 /** Split one SDK event batch into independently executable thread lanes. */
 export function sessionExecutionEventBatches(
   events: readonly SentSessionEvent[],
@@ -243,9 +252,7 @@ export function sessionExecutionEventBatches(
       continue;
     }
     if (event.type === "session.updated" && event.resume !== true) continue;
-    const laneId = "sessionThreadId" in event
-      ? event.sessionThreadId ?? "sthr_primary"
-      : "sthr_primary";
+    const laneId = sessionExecutionLaneId(event);
     const current = lanes.get(laneId);
     if (current === undefined) {
       lanes.set(laneId, {
@@ -270,8 +277,9 @@ function steerableEvent(event: SentSessionEvent): boolean {
  * SessionExecutionStorePort). Every queued execution on the running lane whose
  * events are plain mid-run `user.message`s (plus carried system messages) is
  * compare-and-set from `queued` to `completed` via `steerQueued`, so it never
- * runs as its own next turn, and its events are returned for the caller to
- * stamp (`processed_at` + seq at consume) and hand to the harness at the next
+ * runs as its own next turn. Consumption is part of that transaction, and its
+ * events are returned for the caller to
+ * re-emit and hand to the harness at the next
  * LLM/tool-call boundary (after-call). Executions another host already claimed
  * or that carry non-steerable events (tool confirmations, interrupts) are left
  * queued. Mirrors CF SessionDO.takeSteeringInputs.
@@ -284,8 +292,8 @@ export async function takeQueuedSteeringInputs(
     sessionId: string;
     laneId: string;
     steeredAt: string;
-    /** The running execution itself (never steered into itself). */
-    excludeExecutionId?: string;
+    /** The running attempt which will consume these inputs. */
+    consumer: SessionExecutionFence;
   },
 ): Promise<SentSessionEvent[]> {
   const queued = await store.listQueued({
@@ -295,7 +303,7 @@ export async function takeQueuedSteeringInputs(
   });
   const out: SentSessionEvent[] = [];
   for (const execution of queued) {
-    if (execution.id === input.excludeExecutionId) continue;
+    if (execution.id === input.consumer.executionId) continue;
     if (!execution.events.some((event) => event.type === "user.message")) continue;
     if (!execution.events.every(steerableEvent)) continue;
     const result = await store.steerQueued({
@@ -303,9 +311,10 @@ export async function takeQueuedSteeringInputs(
       sessionId: input.sessionId,
       executionId: execution.id,
       steeredAt: input.steeredAt,
+      consumer: input.consumer,
     });
     if (result.type !== "steered") continue;
-    out.push(...execution.events);
+    out.push(...result.execution.events);
   }
   return out;
 }
@@ -342,3 +351,19 @@ export function annotateHeldAfterExhaustedEvents<T extends { id: string; process
 // Shared lease/sweep policy lives beside the execution coordinator contract so
 // every adapter (Node SQL store, CF SessionDO) applies identical decisions.
 export * from "./coordination-policy";
+
+/** One consumption boundary for every host: persist ownership and processing
+ * time atomically before re-emitting or handing inputs to the harness. */
+export async function consumeSessionInputs<T>(
+  store: { markProcessed(input: { workspaceId: string; sessionId: string; eventIds: string[]; processedAt: string; consumedByExecutionId: string }): Promise<T[]> },
+  input: { workspaceId: string; sessionId: string; inputs: readonly { id: string }[]; consumingExecutionId: string; processedAt: string },
+  emit: (events: T[]) => void | Promise<void>,
+): Promise<T[]> {
+  if (!input.inputs.length) return [];
+  if (!input.consumingExecutionId || !Number.isFinite(Date.parse(input.processedAt))) throw new Error('Invalid input consumption context');
+  const events = await store.markProcessed({ workspaceId: input.workspaceId, sessionId: input.sessionId,
+    eventIds: [...new Set(input.inputs.map(event => event.id))], processedAt: input.processedAt,
+    consumedByExecutionId: input.consumingExecutionId });
+  if (events.length) await emit(events);
+  return events;
+}

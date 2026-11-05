@@ -3,7 +3,7 @@ import type { SessionsApplicationPort, SessionView, CreateSessionCommand } from 
 import type { SessionEventsApplicationPort, SendableSessionEvent } from "@open-managed-agents/managed-agents-application/ports/session-events";
 import { sessionInputIdentityPrefix, type SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
 import { OpenAIAgentsProtocolError, type OpenAIAgentsOperationRequest, type OpenAIAgentsOperationResponse, type OpenAIAgentsProtocolPort } from "@open-managed-agents/openai-agents-api";
-import { applyManagedEvents, createProjectionState, validateToolResult, type ProjectionState, type ManagedProjectionEvent } from "./projection";
+import { applyManagedEvents, applyManagedEventsInPlace, createProjectionState, validateToolResult, type ProjectionState, type ManagedProjectionEvent } from "./projection";
 import { toManagedInputContent as inputContent } from "./session-mapping";
 
 export interface SessionSemanticMapping {
@@ -67,24 +67,28 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     const found = await history(sessionId);
     let state = createProjectionState({sessionId,agentId:base.agent.id,createdAt:base.created_at});
     const initial = found.initialEvents.map((event,index) => ({...event,id:`bootstrap_${sessionId}:${index}`,processedAt:native.createdAt}));
-    state = applyManagedEvents(state,initial,{observedAt:base.created_at,session:base}).state;
-    for (const entry of found.orderedEvents ?? []) state = applyManagedEvents(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,session:base}).state;
+    if (found.orderedInitialEvents) {
+      for (const entry of found.orderedInitialEvents) state = applyManagedEventsInPlace(state, [entry.event as ManagedProjectionEvent], { observedAt: base.created_at, session: base, executionId: entry.executionId, consumedByExecutionId: entry.consumedByExecutionId }).state;
+    } else state = applyManagedEventsInPlace(state,initial,{observedAt:base.created_at,session:base}).state;
+    for (const entry of found.orderedEvents ?? []) state = applyManagedEventsInPlace(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,consumedByExecutionId:entry.consumedByExecutionId,session:base}).state;
     return {native,base,state,initial,found,session:projectedSession(base,state)};
   }
   async function* stream(sessionId: string, signal: AbortSignal, includeCreation: boolean, baseline: Awaited<ReturnType<typeof snapshot>>) {
     let state = includeCreation ? createProjectionState({sessionId,agentId:baseline.base.agent.id,createdAt:baseline.base.created_at}) : baseline.state;
     if (includeCreation) {
       yield {type:"agent.session.created",event_id:`evt_created_${sessionId}`,session:baseline.base};
-      const initial = applyManagedEvents(state,baseline.initial,{observedAt:baseline.base.created_at,session:baseline.base});
-      state = initial.state;
-      for (const event of initial.events) yield event as unknown as Record<string,unknown>;
+      if (!baseline.found.orderedInitialEvents) {
+        const initial = applyManagedEventsInPlace(state,baseline.initial,{observedAt:baseline.base.created_at,session:baseline.base});
+        state = initial.state;
+        for (const event of initial.events) yield event as unknown as Record<string,unknown>;
+      }
     }
     while (!signal.aborted) {
       const found = await history(sessionId);
       const native = await nativeSession(sessionId);
       const base = await deps.mapping.sessionView(native);
-      for (const entry of found.orderedEvents ?? []) {
-        const result = applyManagedEvents(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,session:base});
+      for (const entry of [...(found.orderedInitialEvents ?? []), ...(found.orderedEvents ?? [])]) {
+        const result = applyManagedEventsInPlace(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,consumedByExecutionId:entry.consumedByExecutionId,session:base});
         state = result.state;
         for (const event of result.events) { if (signal.aborted) return; yield event as unknown as Record<string,unknown>; }
       }
@@ -233,8 +237,8 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     if (operation === "sessions.create") {
       const command = await deps.mapping.prepareCreate(body);
       const created = await deps.sessions.createSession(command);
-      if (created.type === "rate_limited") throw new OpenAIAgentsProtocolError(429, created.message);
-      if (created.type === "payment_required") throw new OpenAIAgentsProtocolError(402, created.message);
+      if (created.type === "rate_limited") throw new OpenAIAgentsProtocolError(429, created.message, undefined, created.reason === "daily_quota" ? "organization_usage_limit_exceeded" : "rate_limit_exceeded");
+      if (created.type === "payment_required") throw new OpenAIAgentsProtocolError(429, created.message, undefined, "credit_balance_exhausted");
       if (created.type !== "created") return invalid(created.message);
       const current = await snapshot(created.session.id);
       return body.stream === true ? {stream:stream(created.session.id,request.signal,true,current)} : {body:current.session};
@@ -247,7 +251,10 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
         const result = await deps.sessions.listSessions({pageSize:100,order:"asc",cursor,...(typeof query.agent_id === "string" && {agentId:query.agent_id})});
         if (result.type !== "page") return invalid(result.message);
         for (const session of result.page.sessions) {
-          try { data.push((await snapshot(session.id)).session); }
+          try {
+            const projected = (await snapshot(session.id)).session;
+            if (Object.entries(query).every(([key, value]) => !key.startsWith('metadata[') || projected.metadata?.[key.slice(9, -1)] === value)) data.push(projected);
+          }
           catch (error) {
             // Legacy histories without source order cannot truthfully expose
             // Turns or pending actions. They remain directly inspectable with
@@ -263,7 +270,8 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     }
     const sessionId = params.session_id!;
     if (operation === "sessions.delete") {
-      await nativeSession(sessionId);
+      const current = await snapshot(sessionId);
+      if (current.native.status === 'running' || current.state.status === 'in_progress') throw new OpenAIAgentsProtocolError(409, 'Cancel the running execution before deleting this session');
       if ((await deps.sessions.deleteSession({sessionId})).type !== "deleted") return missing();
       return {body:{id:sessionId,object:"agent.session.deleted",deleted:true}};
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptInput, applyManagedEvents, createProjectionState, validateToolResult } from '../src/projection';
+import { acceptInput, applyManagedEvents, createProjectionState, executionTurnId, validateToolResult } from '../src/projection';
 
 const fresh = (sessionId = 'session_one') => createProjectionState({ sessionId, agentId: 'agent_one', createdAt: 1 });
 const context = { observedAt: 10 };
@@ -10,6 +10,30 @@ const idle = (id: string, extras = {}) => ({ id, type: 'session.status_idle', st
 const onlyTurn = (state: any) => state.turns[state.turnOrder[0]];
 
 describe('Ordered managed event projection', () => {
+  it('resolves an execution whose id is its first input event id from the event log', () => {
+    let state = acceptInput(fresh(), [message('sevt_input')], context).state;
+    state = applyManagedEvents(state, [running('start'), output('out', 'done'), idle('end')], { observedAt: 11, executionId: 'sevt_input' }).state;
+    const turn = onlyTurn(state);
+    expect(turn.status).toBe('completed');
+    expect(executionTurnId(state, 'root', 'sevt_input')).toBe(turn.id);
+    expect(state).not.toHaveProperty('executionTurns');
+    expect(executionTurnId(state, 'root', 'unknown')).toBeNull();
+  });
+
+  it('does not resolve a subagent execution in the root lane through its input assignment', () => {
+    let state = acceptInput(fresh(), [message('input')], context).state;
+    state = applyManagedEvents(state, [running('start'), { id: 'child-open', type: 'session.thread_created', sessionThreadId: 'sthr_child', agentName: 'helper' }], { observedAt: 11, executionId: 'input' }).state;
+    state = applyManagedEvents(state, [
+      { id: 'child_input', type: 'agent.thread_message_received', sessionThreadId: 'sthr_child', fromSessionThreadId: 'sthr_primary', content: [{ type: 'text', text: 'go' }] },
+      { id: 'child-running', type: 'session.thread_status_running', sessionThreadId: 'sthr_child' },
+      { id: 'child-idle', type: 'session.thread_status_idle', sessionThreadId: 'sthr_child', stopReason: { type: 'end_turn' } },
+    ], { observedAt: 12, executionId: 'child_input' }).state;
+    const child = executionTurnId(state, 'sthr_child', 'child_input');
+    expect(child && state.turns[child]).toMatchObject({ subagent_id: 'sthr_child', status: 'completed' });
+    expect(executionTurnId(state, 'root', 'child_input')).toBeNull();
+    expect(state).not.toHaveProperty('executionTurns');
+  });
+
   it('keeps steering in one durable turn, preserves observed order, and replays without duplicate output', () => {
     const original = fresh();
     const accepted = acceptInput(original, [message('z_input')], context);
@@ -56,7 +80,7 @@ describe('Ordered managed event projection', () => {
     expect(onlyTurn(ended.state).status).toBe(terminal);
     expect(ended.events.filter((e: any) => e.type === 'agent.session.turn.completed')).toEqual([]);
     expect(ended.events.filter((e: any) => e.type === `agent.session.turn.${terminal}`)).toHaveLength(1);
-    expect(ended.state.items.partial).toMatchObject({ status: 'incomplete' });
+    expect(ended.state.items.partial).toMatchObject({ turn_id: onlyTurn(state).id, status: 'incomplete', content: [{ type: 'output_text', text: 'Partial' }] });
     const noop = acceptInput(ended.state, [{ id: 'noop_cancel', type: 'user.interrupt' }], { observedAt: 20 });
     expect(onlyTurn(noop.state).status).toBe(terminal);
     expect(noop.events).toEqual([]);

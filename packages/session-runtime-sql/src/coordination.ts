@@ -1,3 +1,4 @@
+import { decodeSessionEventDocument, encodeSessionEventDocument } from "@open-managed-agents/session-runtime-contract/history";
 import type {
   AdmitSessionExecution,
   AdmitSessionExecutionResult,
@@ -588,9 +589,9 @@ export class SqlSessionExecutionStore
         FROM managed_session_executions AS held
        WHERE held.state = 'queued'
          AND held.held_after_exhausted_ms IS NOT NULL
-         AND (? IS NULL OR held.workspace_id = ?)
-         AND (? IS NULL OR held.session_id = ?)
-         AND (? IS NULL OR held.lane_id = ?)
+         AND (? = 1 OR held.workspace_id = ?)
+         AND (? = 1 OR held.session_id = ?)
+         AND (? = 1 OR held.lane_id = ?)
          AND EXISTS (
            SELECT 1 FROM managed_session_executions AS next
             WHERE next.workspace_id = held.workspace_id
@@ -600,9 +601,9 @@ export class SqlSessionExecutionStore
               AND next.held_after_exhausted_ms IS NULL
          )
     `).bind(
-      input.workspaceId ?? null, input.workspaceId ?? null,
-      input.sessionId ?? null, input.sessionId ?? null,
-      input.laneId ?? null, input.laneId ?? null,
+      input.workspaceId === undefined ? 1 : 0, input.workspaceId ?? null,
+      input.sessionId === undefined ? 1 : 0, input.sessionId ?? null,
+      input.laneId === undefined ? 1 : 0, input.laneId ?? null,
     ).all<{ workspace_id: string; session_id: string; lane_id: string }>();
     for (const lane of lanes.results ?? []) {
       await this.absorbHeldOnLane({
@@ -743,9 +744,9 @@ export class SqlSessionExecutionStore
              candidate.deadline_at_ms, candidate.lease_expires_at_ms,
              candidate.owner_id, candidate.held_after_exhausted_ms
         FROM managed_session_executions AS candidate
-       WHERE (? IS NULL OR candidate.workspace_id = ?)
-         AND (? IS NULL OR candidate.session_id = ?)
-         AND (? IS NULL OR candidate.lane_id = ?)
+       WHERE (? = 1 OR candidate.workspace_id = ?)
+         AND (? = 1 OR candidate.session_id = ?)
+         AND (? = 1 OR candidate.lane_id = ?)
          AND (candidate.state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND candidate.state = 'running'
            AND candidate.lease_expires_at_ms <= ? AND candidate.owner_id <> ?))
          AND candidate.held_after_exhausted_ms IS NULL
@@ -773,9 +774,9 @@ export class SqlSessionExecutionStore
        ORDER BY candidate.admitted_at_ms ASC, candidate.id ASC
        LIMIT 1
     `).bind(
-      input.workspaceId ?? null, input.workspaceId ?? null,
-      input.sessionId ?? null, input.sessionId ?? null,
-      input.laneId ?? null, input.laneId ?? null,
+      input.workspaceId === undefined ? 1 : 0, input.workspaceId ?? null,
+      input.sessionId === undefined ? 1 : 0, input.sessionId ?? null,
+      input.laneId === undefined ? 1 : 0, input.laneId ?? null,
       claimedAt, input.ownerId, claimedAt,
       ...(serial ? [claimedAt] : []),
     ).first<{
@@ -1173,18 +1174,73 @@ export class SqlSessionExecutionStore
     sessionId: string;
     executionId: string;
     steeredAt: string;
+    consumer: SessionExecutionFence;
   }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }> {
     const steeredAt = timestamp(input.steeredAt, "queued steering");
-    const row = await this.sql.prepare(`
-      UPDATE managed_session_executions
-         SET state = 'completed', settled_at_ms = ?,
-             failure = NULL, revision = revision + 1
-       WHERE workspace_id = ? AND session_id = ? AND id = ? AND state = 'queued'
-         AND held_after_exhausted_ms IS NULL
-      RETURNING ${columns()}
-    `).bind(steeredAt, input.workspaceId, input.sessionId, input.executionId)
-      .first<ExecutionRow>();
-    return row === null ? { type: "not_queued" } : { type: "steered", execution: toExecution(row) };
+    const fence = input.consumer;
+    if (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.sessionId || fence.executionId === input.executionId) return { type: "not_queued" };
+    const candidate = await this.find({ workspaceId: input.workspaceId, executionId: input.executionId });
+    if (!candidate || candidate.sessionId !== input.sessionId || candidate.state !== "queued" || candidate.heldAfterExhaustedAt !== null) return { type: "not_queued" };
+    const documents = [];
+    for (const id of new Set(candidate.events.map(event => event.id))) {
+      const row = await this.sql.prepare(`SELECT document FROM managed_session_events
+        WHERE workspace_id = ? AND session_id = ? AND id = ?`)
+        .bind(input.workspaceId, input.sessionId, id).first<{ document: string }>();
+      if (!row) throw new Error(`Steering input ${id} has no persisted event`);
+      const decoded = decodeSessionEventDocument(row.document);
+      if (decoded.consumedByExecutionId && decoded.consumedByExecutionId !== fence.executionId) return { type: "not_queued" };
+      const event = { ...decoded.event, processedAt: decoded.event.processedAt ?? input.steeredAt };
+      const document = decoded.position
+        ? encodeSessionEventDocument(event, decoded.position, decoded.executionId, fence.executionId)
+        : JSON.stringify(event);
+      documents.push({ id, previous: row.document, document, consumed: decoded.consumedByExecutionId !== undefined });
+    }
+    // Use the existing per-session mutex and SqlClient's atomic batch contract
+    // (D1, SQLite, PG and MySQL). Lock rows before checking the read snapshots:
+    // concurrent claims, consumption, renewals and cancellation cannot split
+    // the queued -> completed transition from B2's document + timestamp CAS.
+    const token = crypto.randomUUID();
+    await this.sql.prepare(`INSERT INTO managed_session_claim_locks
+      (workspace_id, session_id, claim_token, version) VALUES (?, ?, ?, 0)
+      ON CONFLICT (workspace_id, session_id) DO NOTHING`)
+      .bind(input.workspaceId, input.sessionId, token).run();
+    const gate = `EXISTS (SELECT 1 FROM managed_session_claim_locks
+      WHERE workspace_id = ? AND session_id = ? AND claim_token = ? AND holder_execution_id = ?)`;
+    const gateArgs = [input.workspaceId, input.sessionId, token, input.executionId];
+    const results = await this.sql.batch([
+      this.sql.prepare(`UPDATE managed_session_claim_locks
+        SET claim_token = ?, holder_execution_id = NULL, version = version + 1
+        WHERE workspace_id = ? AND session_id = ?`).bind(token, input.workspaceId, input.sessionId),
+      this.sql.prepare(`UPDATE managed_session_executions SET revision = revision
+        WHERE workspace_id = ? AND id IN (?, ?)`)
+        .bind(input.workspaceId, fence.executionId, input.executionId),
+      ...documents.map(row => this.sql.prepare(`UPDATE managed_session_events SET document = document
+        WHERE workspace_id = ? AND session_id = ? AND id = ?`)
+        .bind(input.workspaceId, input.sessionId, row.id)),
+      this.sql.prepare(`UPDATE managed_session_claim_locks SET holder_execution_id = ?
+        WHERE workspace_id = ? AND session_id = ? AND claim_token = ?
+          AND EXISTS (SELECT 1 FROM managed_session_executions WHERE workspace_id = ? AND id = ?
+            AND session_id = ? AND lane_id = ? AND state = 'running'
+            AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?)
+          AND EXISTS (SELECT 1 FROM managed_session_executions WHERE workspace_id = ? AND id = ?
+            AND state = 'queued' AND held_after_exhausted_ms IS NULL AND revision = ?)
+          ${documents.map(() => `AND EXISTS (SELECT 1 FROM managed_session_events
+            WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?)`).join("\n")}`)
+        .bind(input.executionId, input.workspaceId, input.sessionId, token,
+          input.workspaceId, fence.executionId, input.sessionId, candidate.laneId,
+          fence.attemptId, fence.ownerId, fence.generation, steeredAt,
+          input.workspaceId, input.executionId, candidate.revision,
+          ...documents.flatMap(row => [input.workspaceId, input.sessionId, row.id, row.previous])),
+      ...documents.filter(row => !row.consumed).map(row => this.sql.prepare(`UPDATE managed_session_events SET document = ?, processed_at = ?
+        WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ? AND ${gate}`)
+        .bind(row.document, steeredAt, input.workspaceId, input.sessionId, row.id, row.previous, ...gateArgs)),
+      this.sql.prepare(`UPDATE managed_session_executions
+        SET state = 'completed', settled_at_ms = ?, failure = NULL, revision = revision + 1
+        WHERE workspace_id = ? AND id = ? AND state = 'queued' AND revision = ? AND ${gate}`)
+        .bind(steeredAt, input.workspaceId, input.executionId, candidate.revision, ...gateArgs),
+    ]);
+    if (results.at(-1)?.meta.changes !== 1) return { type: "not_queued" };
+    return { type: "steered", execution: { ...candidate, state: "completed", settledAt: input.steeredAt, revision: candidate.revision + 1 } };
   }
 
   async listQueued(input: {
@@ -1244,14 +1300,14 @@ export class SqlSessionExecutionStore
              revision = revision + 1
        WHERE workspace_id = ? AND session_id = ? AND state = 'running'
          AND lease_expires_at_ms <= ?
-         AND (? IS NULL OR lane_id = ?)
+         AND (? = 1 OR lane_id = ?)
     `).bind(
       requestedAt,
       requestedAt,
       input.workspaceId,
       input.sessionId,
       requestedAt,
-      input.laneId ?? null,
+      input.laneId === undefined ? 1 : 0,
       input.laneId ?? null,
     );
     const active = this.sql.prepare(`
@@ -1260,13 +1316,13 @@ export class SqlSessionExecutionStore
              revision = revision + 1
        WHERE workspace_id = ? AND session_id = ? AND state = 'running'
          AND lease_expires_at_ms > ?
-         AND (? IS NULL OR lane_id = ?)
+         AND (? = 1 OR lane_id = ?)
     `).bind(
       requestedAt,
       input.workspaceId,
       input.sessionId,
       requestedAt,
-      input.laneId ?? null,
+      input.laneId === undefined ? 1 : 0,
       input.laneId ?? null,
     );
     const results = await this.sql.batch([expired, active]);

@@ -72,6 +72,7 @@ export interface SessionRuntimeHistoryEventView {
     index: number;
   };
   executionId?: string;
+  consumedByExecutionId?: string;
 }
 
 export type LoadSessionRuntimeHistoryResult =
@@ -80,6 +81,7 @@ export type LoadSessionRuntimeHistoryResult =
       /** Native Session revision from the same history snapshot. */
       revision?: number;
       initialEvents: SessionBootstrapEvent[];
+      orderedInitialEvents?: SessionRuntimeHistoryEventView[];
       events: SessionEventView[];
       orderedEvents?: SessionRuntimeHistoryEventView[];
     }

@@ -51,6 +51,7 @@ export class SqlSessionRuntimeHistorySource
     if (!session) return null;
     const initialRows = rows.results!.filter(row => row.history_kind === 'initial');
     const eventRows = rows.results!.filter(row => row.history_kind === 'event');
+    const initial = initialRows.map(row => decodeSessionEventDocument(row.document!));
     const decoded = eventRows.map(row => decodeSessionEventDocument(row.document!));
     const positions = new Set<string>();
     const fullyOrdered = decoded.every(row => {
@@ -66,9 +67,11 @@ export class SqlSessionRuntimeHistorySource
       : undefined;
     return {
       revision: session.revision,
-      initialEvents: initialRows.map(
-        (row) => JSON.parse(row.document!) as SessionBootstrapEvent,
-      ),
+      initialEvents: initial.map(row => {
+        const { id: _id, processedAt: _at, ...event } = row.event;
+        return event as SessionBootstrapEvent;
+      }),
+      ...(initial.length > 0 && initial.every(row => row.position) ? { orderedInitialEvents: initial as OrderedSessionEvent[] } : {}),
       events: decoded.map(row => row.event),
       ...(orderedEvents === undefined ? {} : { orderedEvents }),
     };
