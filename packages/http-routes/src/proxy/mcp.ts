@@ -26,19 +26,19 @@ export interface SendMcpUpstreamInput {
   readonly headers: Headers;
   /** Buffered, so a token refresh can replay it. */
   readonly body: BodyInit | null;
-  /** Vault bearer injected as `Authorization: Bearer …`. */
-  readonly accessToken: string;
+  /** Vault bearer, or explicit null for an authorized anonymous target. */
+  readonly accessToken: string | null;
   readonly fetcher?: typeof fetch;
 }
 
-/** One MCP upstream attempt with the Vault bearer injected. */
+/** One MCP upstream attempt; caller credentials are withheld even without a Vault bearer. */
 export function sendMcpUpstream(input: SendMcpUpstreamInput): Promise<Response> {
   return proxyUpstream({
     url: input.upstreamUrl,
     method: input.method,
     headers: input.headers,
     body: input.body,
-    set: { authorization: `Bearer ${input.accessToken}` },
+    ...(input.accessToken !== null && { set: { authorization: `Bearer ${input.accessToken}` } }),
     drop: MCP_PROXY_WITHHELD_HEADERS,
     dropPrefixes: MCP_PROXY_WITHHELD_PREFIXES,
     ...(input.fetcher ? { fetcher: input.fetcher } : {}),

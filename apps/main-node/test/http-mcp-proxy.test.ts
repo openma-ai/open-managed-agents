@@ -7,6 +7,45 @@ import {
 } from "../../../packages/control-plane-node/src/lib/http-mcp-proxy";
 
 describe("Node HTTP MCP proxy", () => {
+  it.each([200, 401, 403])("forwards an explicit anonymous binding target once and preserves status %s", async status => {
+    const upstream = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(url, init);
+      expect(request.url).toBe("https://public.test/mcp");
+      expect(request.headers.get("mcp-session-id")).toBe("upstream-session");
+      for (const name of ["authorization", "x-api-key", "cookie", "proxy-authorization", "x-oma-session", "x-oma-tenant", "x-oma-mcp-server"]) {
+        expect(request.headers.has(name), name).toBe(false);
+      }
+      return new Response("upstream", { status });
+    });
+    const binding = createNodeMcpProxyBinding({
+      resolveTarget: async () => ({ upstreamUrl: "https://public.test/mcp", accessToken: null }),
+      fetcher: upstream,
+    });
+    const response = await binding.fetch(new Request("https://public.test/mcp", {
+      method: "POST", body: "{}",
+      headers: {
+        "x-oma-tenant": "tenant", "x-oma-session": "session", "x-oma-mcp-server": "public",
+        "mcp-session-id": "upstream-session", authorization: "Bearer caller-secret",
+        "x-api-key": "caller-key", cookie: "session=private", "proxy-authorization": "Basic private",
+      },
+    }));
+    expect(response.status).toBe(status);
+    expect(await response.text()).toBe("upstream");
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("propagates binding credential resolution failures without forwarding", async () => {
+    const upstream = vi.fn();
+    const binding = createNodeMcpProxyBinding({
+      resolveTarget: async () => { throw new Error("credentials unavailable"); },
+      fetcher: upstream,
+    });
+    await expect(binding.fetch(new Request("https://public.test/mcp", { headers: {
+      "x-oma-tenant": "tenant", "x-oma-session": "session", "x-oma-mcp-server": "public",
+    } }))).rejects.toThrow("credentials unavailable");
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("provides an in-process binding for the host harness without exposing vault credentials", async () => {
     const upstream = vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
       const req = new Request(request, init);

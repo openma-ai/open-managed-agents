@@ -13,8 +13,15 @@ import {
 import type { ForwardOutcome } from "@open-managed-agents/managed-credential-resolver";
 import { sendMcpUpstream } from "@open-managed-agents/http-routes/proxy";
 
-export interface NodeMcpProxyTarget {
+export type NodeMcpProxyTarget = {
   upstreamUrl: string;
+} & ({
+  /** Explicit anonymous access, after Session and declared-target validation. */
+  accessToken: null;
+  refresh?: never;
+  onRefreshed?: never;
+  managed?: never;
+} | {
   accessToken: string;
   /** Legacy `/v1/oma` Vault credential refresh. */
   refresh?: OauthRefreshMetadata;
@@ -23,20 +30,30 @@ export interface NodeMcpProxyTarget {
   managed?: {
     forward(send: (token: string) => Promise<Response>): Promise<ForwardOutcome>;
   };
-}
+});
 
 /**
  * One proxied exchange: managed targets go through the shared resolver,
- * legacy ones through vault-forward. `send` injects the token; it may run
- * twice, so `body` must be buffered.
+ * legacy ones through vault-forward, anonymous ones are sent once without a
+ * token. Authenticated requests may run twice, so `body` must be buffered.
  */
 async function forwardTarget(
   target: NodeMcpProxyTarget,
-  send: (token: string) => Promise<Response>,
+  send: (token: string | null) => Promise<Response>,
   fetcher: typeof fetch | undefined,
   onFinal: ForwardOpts["onFinal"],
 ): Promise<Response> {
-  if (target.managed === undefined) {
+  let outcome: ForwardOutcome;
+  if (target.accessToken === null) {
+    outcome = {
+      response: await send(null),
+      refreshed: false,
+      refreshFailed: false,
+      refreshFailureCode: null,
+    };
+  } else if (target.managed !== undefined) {
+    outcome = await target.managed.forward(send);
+  } else {
     return forwardWithRefresh({
       send,
       accessToken: target.accessToken,
@@ -46,7 +63,6 @@ async function forwardTarget(
       onFinal,
     });
   }
-  const outcome = await target.managed.forward(send);
   if (onFinal === undefined) return outcome.response;
   const bodyText = await outcome.response.text();
   await onFinal({

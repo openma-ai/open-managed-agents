@@ -157,6 +157,7 @@ export async function createManagedNodeRuntime(
       sessionId: input.sessionId,
     });
     if (managedContext !== null) {
+      if (managedContext.session.archivedAt !== null) return null;
       const root = managedContext.session.agent;
       const selected = input.agentId === undefined || (input.agentId === root.id && input.agentVersion === root.version)
         ? root
@@ -168,6 +169,12 @@ export async function createManagedNodeRuntime(
         (candidate) => candidate.name === input.serverName,
       );
       if (server === undefined || server.type !== "url") return null;
+      // Session ownership and the declared target are already validated. No
+      // attached Vaults explicitly permits anonymous access; a failed lookup
+      // with Vaults attached must still fail closed (including revocation).
+      if (managedContext.session.vaultIds.length === 0) {
+        return { upstreamUrl: server.url, accessToken: null };
+      }
       const target = await managedCredentialResolver.mcpTarget({
         workspaceId: input.tenantId,
         sessionId: input.sessionId,
@@ -203,7 +210,7 @@ export async function createManagedNodeRuntime(
       };
     }
     const vaultIds = session.vault_ids ?? [];
-    if (vaultIds.length === 0) return null;
+    if (vaultIds.length === 0) return { upstreamUrl: server.url, accessToken: null };
     const groups = await credentialService.listByVaults({
       tenantId: input.tenantId,
       vaultIds,
