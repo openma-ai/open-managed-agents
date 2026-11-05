@@ -19,5 +19,5 @@ See JSON files in this directory (tokens redacted in committed copies).
 
 8. **(A) Cloud Environment** `config.type=cloud` on CF lane → Cloudflare Containers (`receipts/cf-containers/`, formerly mislabeled `litebox/`) — LiteBox N/A on Workers
 9. **(B) Local LiteBox env→VM** via Node `SANDBOX_PROVIDER=litebox` (`receipts/litebox-local/`) — guest `boxlite` / `init.krun` / `LITEBOX_LOCAL_OK`
-10. **(C) Runtime placement=sandbox** — design-only; no live receipt in this tree
+10. **(C) Runtime placement=sandbox** — LiteBox-on-Runtime live allocate/isolation/skill-copy/resume (`receipts/runtime-placement-sandbox/live/`); ACP inference deferred
 11. Pairing negatives: anonymous mint 401; bad TTL 400 (`pair-anon.json`, `pair-badttl.json`)

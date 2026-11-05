@@ -1,0 +1,5 @@
+SESSION_A_ONLY# Demo Skill
+RUNTIME_PLACEMENT_SKILL_OK
+boxlite
+
+[2m2026-11-05T11:43:02.516503Z[0m [33m WARN[0m [2mlibcontainer::process::init::process[0m[2m:[0m seccomp not available, unable to set seccomp privileges!

@@ -1,0 +1,102 @@
+{
+  "ok": true,
+  "path": "LiteBox-on-Runtime via RuntimeSandboxRegistry (daemon placement code)",
+  "boxlitePath": "/workspace/oma-runtime/node_modules/.pnpm/@boxlite-ai+boxlite@0.9.0_playwright-core@1.59.1/node_modules/@boxlite-ai/boxlite/dist/index.js",
+  "boxHome": "/tmp/oma-498-runtime-placement-live/boxlite-home",
+  "boxHomeNote": "BOXLITE_HOME isolates from /home/box/.boxlite held by Cloud litebox-local main-node; a production Runtime daemon owns the machine home exclusively.",
+  "image": "node:22-bookworm",
+  "fix": "RuntimeSandboxRegistry now reuses one createBoxLiteProvider/client per registry; per-acquire clients deadlock on BOXLITE_HOME.",
+  "steps": [
+    {
+      "step": "placement_guards",
+      "at": "2026-11-05T11:42:43.684Z",
+      "sandbox": true,
+      "hostCwdRejected": true,
+      "providerOptions": {
+        "providerId": "litebox",
+        "image": "node:22-bookworm",
+        "connection": {
+          "type": "embedded",
+          "homeDir": "/tmp/oma-498-runtime-placement-live/boxlite-home"
+        }
+      }
+    },
+    {
+      "step": "acquire_session_a",
+      "at": "2026-11-05T11:43:01.606Z",
+      "handleA": {
+        "provider": "litebox",
+        "runtimeId": "4Y0qRLFmVURH"
+      },
+      "execPreview": "Linux boxlite 6.12.76 #1 SMP PREEMPT_DYNAMIC Tue Mar 10 13:28:56 CET 2026 x86_64 GNU/Linux\nboxlite\nWORKSPACE_OK\n/usr/local/bin/node\nv22.23.4\nACP_MISSING\nreboot=k\npanic=-1\npanic_print=0\nnomodule\nconsole=hvc0\nrootfstype=virtiofs\nrw\nquiet\nno-kvmapf\ninit=/init.krun\n\nKRUN_INIT=/boxlite/bin/boxlite-guest\nKRUN_WORKDIR=/boxlite\nKRUN_BLOCK_ROOT_DEVICE=/dev/vdb\nKRUN_BLOCK_ROOT_FSTYPE=ext4\nKRUN_RLIMITS=\"6=4096:8192,7=1048576:1048576\"\n\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"\nvirtio_mmio.device=4K@0xd0000000:5\nvirtio_mmio.device=4K@0xd0001000:6\nvirtio_mmio.device=4K@0xd0002000:7\n\n\u001b[2m2026-11-05T11:43:01.401009Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mlibcontainer::process::init::process\u001b[0m\u001b[2m:\u001b[0m seccomp not available, unable to set seccomp privileges!"
+    },
+    {
+      "step": "skill_copy_writeFileBytes",
+      "at": "2026-11-05T11:43:01.709Z",
+      "skillKey": "c413dfaf158bd2d2e3c0d2024e981a7b61c13abf3b79860d531da10ccf885b09",
+      "skillProof": "total 12\ndrwxr-xr-x 2 root root 4096 Nov  5 11:43 .\ndrwxr-xr-x 3 root root 4096 Nov  5 11:43 ..\nlrwxrwxrwx 1 root root   82 Nov  5 11:43 demo-skill -> /oma/cache/skills/c413dfaf158bd2d2e3c0d2024e981a7b61c13abf3b79860d531da10ccf885b09\n/oma/cache/skills/c413dfaf158bd2d2e3c0d2024e981a7b61c13abf3b79860d531da10ccf885b09\n# Demo Skill\nRUNTIME_PLACEMENT_SKILL_OK\n12 /workspace/skills/demo-skill/asset.bin\n\n\u001b[2m2026-11-05T11:43:01.538147Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mlibcontainer::process::init::process\u001b[0m\u001b[2m:\u001b[0m seccomp not available, unable to set seccomp privileges!"
+    },
+    {
+      "step": "acquire_session_b_isolation",
+      "at": "2026-11-05T11:43:02.640Z",
+      "handleB": {
+        "provider": "litebox",
+        "runtimeId": "7KNmnctvlyzp"
+      },
+      "sameHandle": false,
+      "iso": "boxlite\nISOLATED_OK\nSKILL_ISOLATED_OK\n\n\u001b[2m2026-11-05T11:43:02.472251Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mlibcontainer::process::init::process\u001b[0m\u001b[2m:\u001b[0m seccomp not available, unable to set seccomp privileges!"
+    },
+    {
+      "step": "resume_session_a_same_registry",
+      "at": "2026-11-05T11:43:02.687Z",
+      "resumeProof": "SESSION_A_ONLY# Demo Skill\nRUNTIME_PLACEMENT_SKILL_OK\nboxlite\n\n\u001b[2m2026-11-05T11:43:02.516503Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mlibcontainer::process::init::process\u001b[0m\u001b[2m:\u001b[0m seccomp not available, unable to set seccomp privileges!",
+      "sameObject": false
+    },
+    {
+      "step": "same_session_reacquire",
+      "at": "2026-11-05T11:43:02.687Z",
+      "sameObject": true
+    },
+    {
+      "step": "acp_binary_on_default_image",
+      "at": "2026-11-05T11:43:02.703Z",
+      "acpCheck": "ACP_PROBE_DONE\n\n\u001b[2m2026-11-05T11:43:02.532214Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mlibcontainer::process::init::process\u001b[0m\u001b[2m:\u001b[0m seccomp not available, unable to set seccomp privileges!"
+    },
+    {
+      "step": "destroy",
+      "at": "2026-11-05T11:43:02.708Z",
+      "sid": "session_live_placement_b"
+    },
+    {
+      "step": "destroy",
+      "at": "2026-11-05T11:43:02.711Z",
+      "sid": "session_live_placement_a"
+    }
+  ],
+  "harnessInSandboxReuse": {
+    "reused": [
+      "createBoxLiteProvider({ providerId:'litebox', connection:embedded }) daemon-local LiteBox",
+      "SANDBOX_IMAGE default node:22-bookworm",
+      "prepareSandboxBundle skill copy pattern (writeFileBytes + /oma/cache/skills/<hash> + soft-links)",
+      "LiteBox OCI/ext4 materialization under BOXLITE home (shared mechanism with Cloud SimpleBox path)"
+    ],
+    "notReused": [
+      "online harness-in-sandbox post-allocation versioned harness install (harness-runtime-acp / OPENMA_ACP_ARTIFACT_ROOT)",
+      "main-node harness-in-sandbox live.e2e Docker duplex + *-acp-sandbox fixture Dockerfiles",
+      "OMA_HARNESS_DOCKER_IMAGE / docker build (no docker on host)",
+      "Cloud SANDBOX_PROVIDER=litebox LiteBoxSandbox control-plane lease path"
+    ],
+    "divergence": "M1 expects ACP baked into SANDBOX_IMAGE; production online harness-in-sandbox installs harness after allocate, independent of the environment image."
+  },
+  "startedAt": "2026-11-05T11:42:43.683Z",
+  "limits": {
+    "acpInference": "not run — default image lacks ACP; no docker to bake fixture images",
+    "processRestartResume": "not claimed — new registry/process needs prior BOXLITE_HOME lock released; proved same-registry ownership resume",
+    "controlPlaneSessionTurn": "not run — exercised daemon placement code path directly"
+  },
+  "finishedAt": "2026-11-05T11:43:02.704Z",
+  "scratches": {
+    "scratchA": "/tmp/oma-rt-placement-a-W40k9d",
+    "scratchB": "/tmp/oma-rt-placement-b-uQvybO"
+  }
+}

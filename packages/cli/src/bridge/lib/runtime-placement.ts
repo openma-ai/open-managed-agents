@@ -20,10 +20,15 @@ export function runtimeSandboxEnvironment(env: SandboxFactoryEnv) {
   if (env.BOXRUN_URL || (env.SANDBOX_PROVIDER && env.SANDBOX_PROVIDER !== "litebox")) {
     throw new Error("Runtime sandbox placement requires local embedded LiteBox; cloud/boxrun REST is not supported");
   }
+  const homeDir = env.BOXLITE_HOME?.trim();
   return {
     providerId: "litebox" as const,
     image: env.SANDBOX_IMAGE ?? "node:22-bookworm",
-    connection: { type: "embedded" as const },
+    // Optional BOXLITE_HOME keeps the daemon out of another process's lock
+    // (for example a co-located Cloud SANDBOX_PROVIDER=litebox main-node).
+    connection: homeDir
+      ? { type: "embedded" as const, homeDir }
+      : { type: "embedded" as const },
   };
 }
 
@@ -69,6 +74,20 @@ interface Ownership {
 export class RuntimeSandboxRegistry {
   readonly owned = new Map<string, { ownership: Ownership; sandbox: RuntimeSandbox }>();
   private readonly pending = new Map<string, Promise<RuntimeSandbox>>();
+  /** One embedded LiteBox client per registry. Creating a provider per acquire
+   * takes a second BOXLITE_HOME lock and fails once any session box is live. */
+  private provider: ReturnType<typeof createBoxLiteProvider> | undefined;
+  private providerKey: string | undefined;
+
+  private providerFor(env: SandboxFactoryEnv) {
+    const options = runtimeSandboxEnvironment(env);
+    const key = JSON.stringify(options);
+    if (this.provider === undefined || this.providerKey !== key) {
+      this.provider = createBoxLiteProvider(options);
+      this.providerKey = key;
+    }
+    return { provider: this.provider, options };
+  }
 
   async acquire(sessionId: string, runtimeId: string, scratchDir: string, env: SandboxFactoryEnv, workspaceId: string): Promise<RuntimeSandbox> {
     // Serialize same-session acquisition so concurrent starts cannot race the
@@ -86,7 +105,7 @@ export class RuntimeSandboxRegistry {
 
   private async acquireOwned(sessionId: string, runtimeId: string, scratchDir: string, env: SandboxFactoryEnv, workspaceId: string): Promise<RuntimeSandbox> {
     if (!runtimeId) throw new Error("Sandbox placement requires runtime_id");
-    const options = runtimeSandboxEnvironment(env);
+    const { provider, options } = this.providerFor(env);
     const active = this.owned.get(sessionId);
     if (active) {
       if (active.ownership.runtimeId !== runtimeId) throw new Error("Sandbox Runtime ownership mismatch");
@@ -102,7 +121,6 @@ export class RuntimeSandboxRegistry {
       throw new Error("Sandbox Runtime ownership mismatch");
     }
     const context = { sessionId, workdir: "/workspace" };
-    const provider = createBoxLiteProvider(options);
     const allocation = acquisition(sessionId, runtimeId, workspaceId, options.image);
     const sandbox = ownership
       ? await provider.resume(ownership.handle, context, {}, allocation)

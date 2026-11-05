@@ -77,5 +77,8 @@ Shared-box Node control plane with `SANDBOX_PROVIDER=litebox`
 
 ### (C) Runtime `placement=sandbox`
 
-Still **design-only** for M1 (see `docs/design/runtime-download-selection.md`).
-No live receipt claims Runtime-owned sandbox placement here.
+LiteBox-on-Runtime (daemon `RuntimeSandboxRegistry`), distinct from (B):
+
+- Receipts: [`receipts/runtime-placement-sandbox/`](receipts/runtime-placement-sandbox/) (mocked + [`live/`](receipts/runtime-placement-sandbox/live/))
+- Live: allocate / per-session isolation / skill `writeFileBytes` copy / same-registry resume on real `@boxlite-ai/boxlite`
+- ACP inference on a prepared image and full paired-daemon Session turn remain deferred (see receipt README)

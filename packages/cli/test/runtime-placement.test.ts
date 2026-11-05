@@ -181,6 +181,7 @@ describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferr
     expect(a).toBe(again);
     expect(b).not.toBe(a);
     expect(mocks.create).toHaveBeenCalledTimes(2);
+    expect(mocks.provider).toHaveBeenCalledTimes(1);
     expect(mocks.create.mock.calls.map(([context]) => context.sessionId)).toEqual(["session-1", "session-2"]);
     expect(await readFile(join(secondDir, ".oma-runtime-sandbox.json"), "utf8")).not.toContain("session-1");
     await expect(new RuntimeSandboxRegistry().acquire("session-2", "rt_1", dir, {}, "tenant-1")).rejects.toThrow("ownership mismatch");
@@ -206,5 +207,8 @@ describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferr
     expect(() => runtimeSandboxEnvironment({ BOXRUN_URL: "https://remote.example" })).toThrow("REST");
     expect(runtimeSandboxEnvironment({})).toEqual({ providerId: "litebox", image: "node:22-bookworm", connection: { type: "embedded" } });
     expect(runtimeSandboxEnvironment({ SANDBOX_IMAGE: "prepared-acp-image" }).image).toBe("prepared-acp-image");
+    expect(runtimeSandboxEnvironment({ BOXLITE_HOME: " /tmp/oma-boxlite " })).toEqual({
+      providerId: "litebox", image: "node:22-bookworm", connection: { type: "embedded", homeDir: "/tmp/oma-boxlite" },
+    });
   });
 });
