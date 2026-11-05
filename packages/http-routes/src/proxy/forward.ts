@@ -26,6 +26,10 @@ export interface ProxyUpstreamInput {
   readonly drop?: Iterable<string>;
   /** Withhold every caller header with one of these prefixes. */
   readonly dropPrefixes?: Iterable<string>;
+  /** Abort with the caller: when the inbound request dies (client hangup,
+   *  session delete), the upstream hop terminates deterministically with an
+   *  AbortError instead of leaving an orphaned undici connection (fork#17). */
+  readonly signal?: AbortSignal | null;
   readonly fetcher?: typeof fetch;
 }
 
@@ -50,6 +54,7 @@ export async function proxyUpstream(input: ProxyUpstreamInput): Promise<Response
     method,
     headers,
     body: method === "GET" || method === "HEAD" ? null : input.body ?? null,
+    signal: input.signal ?? undefined,
   });
   return proxy(input.url, {
     raw,

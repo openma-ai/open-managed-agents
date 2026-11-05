@@ -3,6 +3,7 @@ import {
   isLeaseSafeFailure,
   processFailureRecord,
 } from "@open-managed-agents/sql-client";
+import { isFetchAbortRejection } from "./fetch-abort-rejection";
 
 export interface DbUnhandledRejectionNet {
   logger: Logger;
@@ -50,6 +51,10 @@ export function handleProcessFailure(
   deps.logger.fatal({ ...record, op: record.op }, line);
   deps.metrics?.counter("oma_db_unhandled_rejections_total", 1, { tag: record.errorTag });
   if (isLeaseSafeFailure(reason)) return;
+  // Network lifecycle terminations (undici body aborts, socket resets on
+  // long-lived proxy connections) are routine — the fatal log above already
+  // recorded the evidence; exiting would kill every in-flight turn.
+  if (isFetchAbortRejection(reason)) return;
   if (process.env.NODE_ENV === "test") return;
   exit(1);
 }
