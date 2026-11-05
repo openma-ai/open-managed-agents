@@ -25,7 +25,7 @@ export function createLegacySessionMcpProxy(deps: {
       const inline = server.authorization_token;
       if (inline) return { upstreamUrl: server.url, accessToken: inline };
       const vaultIds = session.vault_ids ?? [];
-      if (vaultIds.length === 0) return null;
+      if (vaultIds.length === 0) return { upstreamUrl: server.url, accessToken: null };
       const groups = await deps.credentials.listByVaults({ tenantId, vaultIds });
       for (const group of groups) {
         for (const credential of group.credentials) {
