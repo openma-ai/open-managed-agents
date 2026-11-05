@@ -1,6 +1,6 @@
 # Runtime discovery, download, pairing and selection: design memo
 
-Status: **Draft** (2026-11-04) · Branch `draft/runtime-download-selection`
+Status: **Draft** (updated 2026-11-05) · Branch `draft/runtime-download-selection`
 Issues: [#449](https://github.com/openma-ai/open-managed-agents/issues/449) (Amp-style env+secrets overlay), [#415](https://github.com/openma-ai/open-managed-agents/issues/415) (Console product-surface gaps)
 Related: [ADR 0005](../adr/0005-self-hosted-worker-runtime-resources.md), [v1-architecture](../v1-architecture.md), [archive/external-agent-runtime](../archive/external-agent-runtime.md)
 
@@ -51,6 +51,7 @@ Related: [ADR 0005](../adr/0005-self-hosted-worker-runtime-resources.md), [v1-ar
 | **Cursor self-hosted machines** | Worker (`agent worker start`) | `curl https://cursor.com/install -fsS \| bash`. | My Machines: `agent login` (browser) or a personal API key. Team Pools: a service-account `CURSOR_API_KEY`. | **Pools** (`--pool gpu`) are named routing targets. An admin can require self-hosted machines. | `environment.json` + snapshot for cloud agents. |
 | **Devin** | Devin's Machine (per org / repo) | Hosted VM. The setup wizard installs dependencies and snapshots the result. | n/a (hosted) | Per-repo machine config. Snapshots are versioned. | Secrets dashboard. direnv for per-repo env. |
 | **Claude Managed Agents (self-hosted)** | Environment (`config.type: self_hosted`) = work queue. A worker serves it. | `brew install anthropics/tap/ant`, a release tarball, or `go install`. Then `ant beta:worker poll --workdir …`. | **Environment key**, generated in the Console only (`ANTHROPIC_ENVIRONMENT_KEY` + `ANTHROPIC_ENVIRONMENT_ID`). | Session targets `environment_id`. The worker claims work. `work/stats.workers_polling` reports health. | Worker env. Memory stores sync to `/mnt/memory`. |
+| **T3 Code** | Machine-local control plane; clients use authenticated RPC | Standalone CLI installer, desktop downloads/package managers, or `npx` trial. Separate start, service, update and uninstall commands. | T3 Connect account discovery; SSH sign-in URL + code; direct one-time pairing URL/QR creates a reusable client session. | Select a connected environment; execution, files and provider credentials remain on its machine. LAN, SSH, Tailscale and Connect are connection routes. | Persistent `service.env` for service startup; provider-instance env settings are a separate layer. |
 
 **What carries over to OpenMA:**
 
@@ -59,6 +60,14 @@ Related: [ADR 0005](../adr/0005-self-hosted-worker-runtime-resources.md), [v1-ar
 - **Selection belongs where the work is placed.** Amp uses a thread location picker, Cursor a pool, CMA an `environment_id`. In OpenMA that place is the **Environment**. "Attach to Runtime" is our equivalent of CMA's self-hosted Environment, except the queue is one known machine rather than any worker.
 - **Overlay precedence matters.** Amp's personal > project > workspace > process order maps to session `env` resources > Environment overlay > daemon process env.
 - **Health is part of selection.** CMA's `workers_polling` and Amp hiding runners that serve no directories both point the same way. The Console picker should show online/offline, and later the detected agents.
+
+**T3 Code lessons for this draft** (official docs/source inspected 2026-11-05; no product execution test):
+
+- **Discovery must lead to the execution machine.** Its [README](https://github.com/pingdotgg/t3code/blob/main/README.md) separates CLI and desktop entry points; [installation](https://github.com/pingdotgg/t3code/blob/main/docs/user/install.md) separates a temporary `npx` trial from an installed binary, version/channel selection and provider setup. OpenMA's Connect machine page should identify the target OS, prerequisites and install channel, then show whether the provider is ready on that Runtime. Downloading a client is not proof that a host can execute work.
+- **Pairing and reachability need separate states.** T3's [remote-access guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md) distinguishes account discovery, direct pairing and SSH; a pairing URL cannot make an unreachable host reachable. Its SSH sign-in uses another device's browser without forwarding a callback port. For OpenMA, show paired, service running and relay connected separately; keep device authorization as the headless target and explain the existing pasted-token fallback.
+- **Treat bootstrap links and established access separately.** T3 can revoke an unused pairing link or an existing client session, with different effects. Its [auth design](https://github.com/pingdotgg/t3code/blob/main/docs/internals/environment-auth.md) separates relay identity from environment authorization, exposes pairing metadata without recoverable secrets, and checks permissions per RPC. OpenMA needs pending-token list/revoke and hashed codes as well as machine-token revocation; an authenticated relay must not grant local directory access.
+- **Service diagnostics are part of installation.** T3's [service guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/background-service.md) explains Linux lingering, macOS login/awake requirements, absent Windows service support, log locations and repair. OpenMA already has its own three-platform service installers; document and verify their actual survival/restart behavior. Report installed versus running versions, preserve configuration across updates, and keep service removal separate from deleting user work. T3's service env file applies at restart; OpenMA's Environment overlay applies to spawned agent children, not the daemon.
+- **Remote control needs compatibility and honest update status.** T3's [architecture](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md) keeps filesystem/provider authority on the execution server even for a desktop client. Its [update guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/updating.md) distinguishes service, desktop, global npm and temporary `npx` updates, reports per-machine failure, and refuses incompatible protocols. For OpenMA, tie future upgrade actions to the detected install channel, name the machine being updated, report restart impact and verify reconnect/version before declaring success. This is a design lesson, not functionality shipped by M1.
 
 Sources:
 
@@ -69,6 +78,7 @@ Sources:
 - Cursor: [self-hosted machines](https://cursor.com/docs/cloud-agent/self-hosted)
 - Devin: [repo setup](https://docs.devin.ai/onboard-devin/repo-setup), [snapshots](https://docs.devin.ai/onboard-devin/snapshots)
 - Anthropic: [CMA self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
+- T3 Code: [site](https://t3.codes/), [official source](https://github.com/pingdotgg/t3code); specific documentation linked above. T3's “environment” is its execution server, not a one-to-one equivalent of OpenMA's Environment policy resource.
 
 ---
 
@@ -123,7 +133,7 @@ oma runtime rm <id>                    # exists: revoke
 | `POST /v1/oma/runtimes/pairing-tokens {ttl_seconds?}` → `201 {pairing_token, expires_at, install_command}` | **Implemented** | Reuses the `connect_runtime_codes` row (the server also picks `state`). TTL 300 s – 24 h, default 1 h. Single use comes from the existing `/exchange`. No migration. |
 | Token format `omrp_<code>_<state>` (both hex) | **Implemented** in `@open-managed-agents/api-types` (`formatRuntimePairingToken` / `parseRuntimePairingToken`) | Shared by server, CLI and Console. The prefix makes leaked tokens easy to find with grep. |
 | `Environment._oma.runtime { runtime_id, env }` | **Implemented** across domain, application, contract and mapper | Current schema allows attachment only on `self_hosted` and rejects cloud + runtime. This is an existing schema constraint, not the target placement rule: a Runtime can own a local sandbox. Extend the attachment with placement fields described below. Env names must match `[A-Za-z_][A-Za-z0-9_]*`. The write replaces the whole attachment, `null` detaches, and it is omitted on the wire when unset (the official SDK still parses it). Stored in the existing `document` JSON, so no migration. |
-| Bundle merges the Environment overlay | **Implemented** | `GET /agents/runtime/sessions/:sid/bundle` reads the session's Environment. The overlay is served **only if** the Environment is live and `_oma.runtime.runtime_id` equals the authenticated runtime. Session `env` resources override it by name. |
+| Bundle merges the Environment overlay | **Implemented** | `GET /agents/runtime/sessions/:sid/bundle` reads canonical managed Sessions first, with a legacy-session fallback, using the authenticated machine's primary workspace shard. It uses the pinned Agent and rejects archived Sessions or another Runtime's binding. The overlay is served **only if** the Environment is live and `_oma.runtime.runtime_id` equals the authenticated runtime. Legacy session `env` resources override it by name. |
 | `_oma.runtime.secret_env` (write-only names → sealed values) | Phase 2 | Reuse the `session-secrets-store` sealing (`CfManagedSessionSecretSealer`) keyed by environment. GET returns names only. Alternatively, reference vault credentials of type `command_secret`. |
 | Session placement from the Environment | Phase 2 | When `environment._oma.runtime` is set, a Session starts from its configured directories, primary cwd and additional roots (harness-dependent); session create derives `runtime_binding.runtime_id` from it and needs only the ACP agent from the Agent. If the Agent already has a different `runtime_binding`, reject with 409 rather than guess. |
 | `GET /v1/oma/runtimes/:id`, `PATCH {name, labels}` | Phase 2 | Display name and labels (Buildkite-style tags) for picker filtering and future pools. |
@@ -167,7 +177,7 @@ oma runtime rm <id>                    # exists: revoke
 | Phase | Channel |
 |---|---|
 | Now | `npx -y @openma/cli bridge setup` (Node ≥ 20). The service unit pins `process.execPath` + the realpath'd entry point (existing behaviour). |
-| Phase 2 | `curl -fsSL https://<host>/install.sh \| sh -s -- --token=omrp_…`, a thin script that checks for Node and runs a pinned `npx @openma/cli@<ver>`. The Console renders it with the deployment's own origin, which matters for self-hosters. |
+| Phase 3, first step | `curl -fsSL https://<host>/install.sh \| sh -s -- --token=omrp_…`, a thin script that checks for Node and runs a pinned `npx @openma/cli@<ver>`. The Console renders it with the deployment's own origin, which matters for self-hosters. |
 | Phase 3 | Single-file binaries (Node SEA or bun-compile) on GitHub Releases plus a Homebrew tap and winget. The daemon reports `version` (already in `runtimes.version`) and the Console flags outdated runtimes. `oma bridge upgrade` updates the binary. |
 
 ### 3f. Milestones
@@ -180,20 +190,23 @@ oma runtime rm <id>                    # exists: revoke
 
 ## 4. What users can actually use in this first draft
 
-**Works end to end:**
+**Implemented paths and evidence:**
 
 - Pair a headless machine. Run `oma runtime pair` or use Console → Generate pairing command, then paste the command on the machine. It shows up in `oma runtime list` and on `/runtimes`. Covered by an integration test against the real worker + D1: minted token → `/exchange` succeeds once, a replay gets 400 "code already used", and bad TTLs and anonymous callers are rejected.
 - Create or edit a `self_hosted` Environment attached to a Runtime, with an env overlay, from the Console or the API. The current API enforces the cloud/attachment schema constraint and valid env names. Local sandbox placement on a Runtime still needs the extension below.
-- The daemon receives the overlay in the session bundle and exports it into the spawned ACP agent's process env (so its shell, stdio MCP servers and plugins inherit it). This happens only when the session's Environment is attached to **that** runtime. Session `env` resources win on conflicts.
+- The bundle endpoint returns the overlay for an Environment attached to **that** runtime. A worker/D1 integration test creates an Agent, Environment and Session through `/v1`, then fetches the authenticated bundle. Before this follow-up it returned 404 because the route only read legacy Sessions; it now reads canonical Sessions first, retaining the legacy fallback. Tests cover pinned Agent instructions, isolation, archive, overlay edits/detach and legacy session `env` precedence. The existing daemon merges bundle env into spawned ACP children; this test stops at delivery and does not start a provider.
 
-**Not yet (be explicit with users):**
+### Known limits — review before using this draft
 
 - **Attaching an Environment does not route sessions to the machine yet.** Routing still comes from the Agent (`harness: acp-proxy` + `runtime_binding`). For the overlay to apply today, the session must use an Agent bound to the same runtime **and** the attached Environment. M2 makes the Environment authoritative.
-- I did not verify end to end that `session.environment_id` is populated on the session record the bundle route reads for every session-creation path. That needs a live check, and the overlay silently degrades to "none" if it is missing.
-- The overlay holds **plain values only**, and workspace members can read them through `GET /v1/environments/:id`. Secrets should keep using vaults or session `env` resources until `secret_env` lands.
-- Runtimes are still owned by one user. Another workspace member can't pick your machine, and the picker lists only *your* runtimes. An Environment pointing at a colleague's runtime shows as "revoked or not yours".
-- No pending-token list or revoke. Unused tokens expire, by default after 1 hour.
-- Node ≥ 20 is required on the target machine (npx). There is no standalone binary yet.
+- In the canonical `/v1/sessions` path, `config.type: self_hosted` selects the existing Environment Work queue. An attachment does not connect that queue to the local bridge. The new bundle lookup removes a delivery gap; it does not implement queue consumption or change scheduling. The bundle still scopes requests to the machine's **primary workspace**, not all entries in `authorized_tenants`.
+- The overlay holds **plaintext values**, stored with the Environment and readable by workspace members through its API. There is no `secret_env`, encryption/write-only secret editor, secret masking or effective-env preview. Use vault credentials for secrets; do not paste them into this editor.
+- Overlay delivery requires a live Environment whose attached Runtime matches the Agent-bound Runtime. Missing, archived, detached or mismatched attachments contribute no overlay; the existing Environment lookup also suppresses read errors to an empty overlay. The Environment is read at bundle fetch time, not pinned to a Session policy revision; edits do not update an already-running child or restart its MCP servers. This is not Amp's full refresh behavior. Session `env` precedence applies to the legacy OMA resource contract; canonical CMA resources do not accept `env`.
+- **Ownership is not fully enforced on attachment writes.** Runtime listing and the picker are user-scoped; the Environment API currently validates shape/type/env names, but does not verify that `runtime_id` exists or belongs to the writer. Do not treat picker filtering as an authorization boundary. Bundle access checks the machine credential and Agent binding. Environment-authoritative routing must add server-side ownership checks before granting execution rights.
+- No pending-token list/revoke, hashed bootstrap codes, device authorization or loopback PKCE yet. Browser and fallback codes use the existing plaintext `connect_runtime_codes` storage. Fallback tokens expire after 1 hour by default (allowed range 5 minutes–24 hours) and exchange once. Revoking a registered Runtime is separate from revoking an unused pairing command. Copied `--token` commands may remain in shell history.
+- Download is still `npx @openma/cli` with **Node ≥ 20** on the host. This branch's CLI additions require a build/release containing them; unversioned `npx` resolves the published package and is not evidence that draft flags are available. No standalone binary, deployment installer, update channel or upgrade/reconnect UX ships here.
+- Local directory approval/browsing, placement selection, Runtime-owned OpenSandbox, in-place queues, managed worktrees, cleanup/retention and unified ACP/skill-cache changes below are **design only**. Attaching a Runtime does not provide a sandbox or restrict the host user's filesystem access. No Runtime detail page or `oma env` command group ships here.
+- Verification in this PR uses local worker/D1 integration, contract and Console tests. It is not a deployed smoke test of installation, service survival, provider execution, remote reconnection, all Session entry paths or non-Cloudflare deployments. No external model inference is needed for these tests.
 
 ---
 
@@ -308,7 +321,7 @@ Console must state: **“Served directories pick the start cwd and additional wo
 
 ## 5. Open questions
 
-1. How should existing Agent `runtime_binding` and GitHub `local_path` sessions migrate to Environment authority? Keep a 409 on conflicting bindings; decide when to deprecate Agent machine placement.
+1. How should existing Agent `runtime_binding` and GitHub `local_path` sessions migrate to Environment authority? Add a 409 on conflicting bindings; decide when to deprecate Agent machine placement. Define who may edit a shared Environment attached to someone else's Runtime; enforce the owner's machine grant server-side before enabling routing.
 2. Should Git worktrees be the first-use default or an explicit choice in the Environment editor?
 3. How are path moves, symlink replacement, Windows casing/drives and removable mounts reconciled for pinned entries and the managed workspace root?
 4. Within one Environment configuration, overlapping entries are rejected. Should the in-place queue also lock ancestor/descendant directories across Sessions? How are crashed leases and background processes reconciled, and does revoking a root stop existing runs?
