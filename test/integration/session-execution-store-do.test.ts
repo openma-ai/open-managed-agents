@@ -82,3 +82,55 @@ sessionExecutionStoreConformance("Durable Object SQLite", {
     });
   },
 });
+
+import { CfD1SqlClient } from '@open-managed-agents/sql-client/adapters/cf-d1';
+import { steeringAtomicityConformance, steeringEventSchema } from '../../packages/session-runtime-sql/test/steering-atomicity';
+
+steeringAtomicityConformance('DO SQLite', async run => {
+  await runInDurableObject(freshDoStub(), async (_instance, state) => {
+    const sql = sqlClientFromDurableObjectStorage(state.storage);
+    await ensureSessionExecutionCoordinatorSchema(sql);
+    await steeringEventSchema(sql);
+    await run(sql);
+  });
+});
+steeringAtomicityConformance('D1 (SessionDO execution store)', async run => {
+  const sql = new CfD1SqlClient(env.MAIN_DB);
+  await ensureSessionExecutionCoordinatorSchema(sql);
+  await steeringEventSchema(sql);
+  await run(sql);
+});
+
+it('SessionDO crash after takeSteeringInputs commits cannot leave S completed but unconsumed', async () => {
+  await runInDurableObject(freshDoStub(), async (instance) => {
+    const sql = new CfD1SqlClient(env.MAIN_DB);
+    await ensureSessionExecutionCoordinatorSchema(sql);
+    await steeringEventSchema(sql);
+    const workspaceId = crypto.randomUUID(), sessionId = crypto.randomUUID();
+    const store = new SqlSessionExecutionStore(sql);
+    for (const [index, id] of ['Y', 'S'].entries()) {
+      const event = { id, type: 'user.message', content: [{ type: 'text', text: id }], processedAt: null };
+      await store.admit({ execution: { workspaceId, sessionId, id, admittedAt: at(index), events: [event] } });
+      await sql.prepare(`INSERT INTO managed_session_events (workspace_id, session_id, id, type, document, processed_at)
+        VALUES (?, ?, ?, 'user.message', ?, ?)`)
+        .bind(workspaceId, sessionId, id, JSON.stringify({ ...event, source_position: { revision: index + 1, index: 0, execution_id: id } }), Date.parse(at(index))).run();
+    }
+    const claimed = await store.claim({ workspaceId, sessionId, ownerId: 'dead-do', attemptId: 'a', claimedAt: at(2), leaseTtlMs: 30_000 });
+    expect(claimed.type).toBe('claimed');
+    instance._state = { tenant_id: workspaceId, session_id: sessionId };
+    instance._executionStore = store;
+    instance._executionStoreReady = Promise.resolve();
+    instance._executionFences.set('sthr_primary', claimed.fence);
+    instance.processedClock = { nowIso: () => at(3) };
+    instance.broadcastEvent = () => {};
+    instance.consumeAcceptedInputs = async () => { throw new Error('injected crash before re-emit'); };
+    await expect(instance.takeSteeringInputs('sthr_primary')).rejects.toThrow('injected crash');
+    const restarted = new SqlSessionExecutionStore(sql);
+    expect(await restarted.find({ workspaceId, executionId: 'S' })).toMatchObject({ state: 'completed' });
+    const row = await sql.prepare('SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ? AND id = ?')
+      .bind(workspaceId, sessionId, 'S').first();
+    expect(JSON.parse(row.document)).toMatchObject({ processedAt: at(3), source_position: { execution_id: 'S', consumed_by_execution_id: 'Y' } });
+    expect(await restarted.listQueued({ workspaceId, sessionId, laneId: 'sthr_primary' })).toEqual([]);
+    console.log('DO_STEER_CRASH', row.document);
+  });
+});

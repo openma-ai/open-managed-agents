@@ -1998,10 +1998,11 @@ export class SessionDO extends DurableObject<Env> {
     const store = await this.getExecutionStore();
     const fence = this._executionFences.get(threadId);
     const stamp = this.processedClock.nowIso();
+    if (store !== null && !fence) return [];
     const inputs = store !== null
       ? await takeQueuedSteeringInputs(store, {
           workspaceId: this.state.tenant_id!, sessionId: this.state.session_id!, laneId: threadId,
-          steeredAt: stamp, excludeExecutionId: fence?.executionId,
+          steeredAt: stamp, consumer: fence!,
         })
       : this.queue.listQueue(threadId).filter(row => row.type === "user.message").map(row => ({ id: row.event_id }));
     const out: SessionEvent[] = [];

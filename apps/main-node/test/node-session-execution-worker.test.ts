@@ -13,7 +13,7 @@ import {
 import { createSessionClockRegistry } from "@open-managed-agents/shared";
 import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
 import { DefaultNodeManagedSessionRuntimeDriver } from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
-import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
+import { createBetterSqlite3SqlClient, type SqlClient } from "@open-managed-agents/sql-client";
 import { ConnectionLost, Deadlock } from "@open-managed-agents/sql-client/db-errors";
 import {
   NodeSessionExecutionWorker,
@@ -94,6 +94,7 @@ function accepted(id: string, type: "user.message" | "user.interrupt" = "user.me
 describe("NodeSessionExecutionWorker", () => {
   let now: Date;
   let coordinator: SqlSessionExecutionCoordinator;
+  let sql: SqlClient;
   let context: SessionExecutionContextSourcePort;
   let runs: RunNodeSessionExecution[];
   let cancellations: string[];
@@ -101,7 +102,7 @@ describe("NodeSessionExecutionWorker", () => {
 
   beforeEach(async () => {
     now = new Date("2026-09-04T00:00:02.000Z");
-    const sql = await createBetterSqlite3SqlClient(":memory:");
+    sql = await createBetterSqlite3SqlClient(":memory:");
     await ensureSessionExecutionCoordinatorSchema(sql);
     coordinator = new SqlSessionExecutionCoordinator(sql);
     context = {
@@ -163,6 +164,16 @@ describe("NodeSessionExecutionWorker", () => {
       takeSteering = hooks?.takeSteeringInputs;
       await running;
     };
+    // Production admission persists the canonical event before waking this
+    // worker. Steering now consumes that event in its completion transaction.
+    await sql.exec(`CREATE TABLE managed_session_events (
+      workspace_id TEXT, session_id TEXT, id TEXT, document TEXT, processed_at BIGINT,
+      PRIMARY KEY (workspace_id, session_id, id))`);
+    await sql.prepare(`INSERT INTO managed_session_events VALUES (?, ?, ?, ?, ?)`)
+      .bind('workspace_01', 'session_01', 'event_mid', JSON.stringify({
+        ...accepted('event_mid').events[0], processedAt: null,
+        source_position: { revision: 2, index: 0, execution_id: 'event_mid' },
+      }), now.getTime()).run();
     const executor = worker();
     await executor.sessionEventsAccepted(accepted("event_01"));
     await new Promise((resolve) => setTimeout(resolve, 5));

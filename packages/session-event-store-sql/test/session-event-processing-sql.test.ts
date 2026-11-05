@@ -135,7 +135,7 @@ describe("SqlSessionEventStore queued input processing", () => {
     if (y.type !== 'claimed') throw new Error('expected Y');
     await consume(y.execution.events, y.execution.id, at(2));
     await append([message('S')], at(3));
-    const steering = await takeQueuedSteeringInputs(coordinator, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(4), excludeExecutionId: 'Y' });
+    const steering = await takeQueuedSteeringInputs(coordinator, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(4), consumer: y.fence });
     await consume(steering, 'Y', at(4));
     expect(await facts('S')).toMatchObject({ executionId: 'S', consumedByExecutionId: 'Y' });
     await append([message('H')], at(5));
@@ -226,33 +226,36 @@ describe("SqlSessionEventStore queued input processing", () => {
     console.log('CRASH_CLAIM', JSON.stringify({ facts: await facts('X'), attemptCount: recovered.execution.attemptCount, projected }));
   });
 
-  it.fails('known crash gap: steer before consume must recover the steered input', async () => {
+  it('crash after steer before re-emit retains atomic consumption and snapshot/stream agreement', async () => {
     const coordinator = await coordinated();
     await append([message('Y')], at(1));
-    const y = await coordinator.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'dead', attemptId: 'dead-attempt', claimedAt: at(2), leaseTtlMs: 1000 });
+    const y = await coordinator.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'dead', attemptId: 'dead-attempt', claimedAt: at(2), leaseTtlMs: 2000 });
     if (y.type !== 'claimed') throw new Error('Y not claimed');
-    await consume(y.execution.events, 'Y', at(2));
-    await append([message('S')], at(3));
-    const stolen = await takeQueuedSteeringInputs(coordinator, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(3), excludeExecutionId: 'Y' });
-    expect(stolen.map(e => e.id)).toEqual(['S']);
     const history = new SqlSessionRuntimeHistorySource(client);
     const before = await history.load({ workspaceId: 'w', sessionId: 'session_01' });
-    // Crash here: S's execution is completed, but its consume CAS never ran.
+    await consume(y.execution.events, 'Y', at(2));
+    await append([message('S')], at(3));
+    const stolen = await takeQueuedSteeringInputs(coordinator, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(3), consumer: y.fence });
+    expect(stolen.map(e => e.id)).toEqual(['S']);
+    // Crash here: no re-emit/harness delivery, but S and its B2 fact committed together.
     store = new SqlSessionEventStore(client, { executionOutbox: true });
     const restarted = new SqlSessionExecutionStore(client);
     const recovered = await restarted.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'new', attemptId: 'new-attempt', claimedAt: at(5), leaseTtlMs: 30000 });
     if (recovered.type !== 'claimed') throw new Error('Y not recovered');
     await consume(recovered.execution.events, recovered.execution.id, at(6));
-    const steered = await takeQueuedSteeringInputs(restarted, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(6), excludeExecutionId: 'Y' });
+    const steered = await takeQueuedSteeringInputs(restarted, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(6), consumer: recovered.fence });
     await consume(steered, 'Y', at(6));
     await restarted.settle({ fence: recovered.fence, settledAt: at(7), outcome: 'completed' });
     const next = await restarted.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'new', attemptId: 'next', claimedAt: at(8), leaseTtlMs: 30000 });
     const after = await history.load({ workspaceId: 'w', sessionId: 'session_01' });
     const projected = await pollPersistedHistory(before, after);
     console.log('CRASH_STEER', JSON.stringify({ S: await facts('S'), coordinatorS: await restarted.find({ workspaceId: 'w', executionId: 'S' }), recoveredInputs: recovered.execution.events.map(e => e.id), steered, next, projected }));
-    // Known defect: steerQueued commits completed before the consume CAS.
-    // Keep the desired invariant as an expected failure until recovery is atomic.
-    expect(projected.items.map((item: any) => item.id)).toContain('S');
+    expect(await facts('S')).toMatchObject({ consumedByExecutionId: 'Y', event: { processedAt: at(3) } });
+    expect(next.type).toBe('empty');
+    expect(projected.items.map((item: any) => item.id)).toEqual(['Y', 'S']);
+    expect(projected.turns).toHaveLength(1);
+    expect(projected.events.filter(e => e.type === 'agent.session.turn.item.added').map(e => e.item)).toEqual(projected.items);
+    expect(projected.items.every((item: any) => item.turn_id === projected.turns[0].id)).toBe(true);
   });
 
 });

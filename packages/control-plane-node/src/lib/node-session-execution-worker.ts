@@ -381,7 +381,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
             sessionId: active.execution.sessionId,
             laneId: active.execution.laneId,
             steeredAt: this.dependencies.clock.now().toISOString(),
-            excludeExecutionId: active.execution.id,
+            consumer: active.fence,
           });
         },
       });
