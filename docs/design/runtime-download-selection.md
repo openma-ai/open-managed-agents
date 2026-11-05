@@ -341,11 +341,21 @@ Owner answers recorded 2026-11-05 (America/Detroit). Recommendations below for s
 
 #### Inference credentials
 
-**Owner decision — 2026-11-05 (America/Detroit).** Local Runtime's model/inference path is optional: users may choose either their own harness subscription/login on the machine (native harness credentials) or the **OpenMA host LLM / inference API**. A local harness subscription/login is not required when using the OpenMA host inference path.
+**Owner lock — 2026-11-05 (America/Detroit).** Local Runtime's model/inference path remains optional: **own harness subscription** **or** the **OpenMA host LLM / inference API**. Default for `placement=sandbox` stays the **OpenMA host LLM**.
 
-**Sandbox placement defaults to the OpenMA host LLM / inference API.** Injecting the host machine's harness subscription or credentials into the LiteBox jail requires **explicit opt-in** and must **never happen by default**. Host placement credential inheritance does not imply consent to inject those credentials into Sandbox placement.
+For the optional sandbox own-subscription path, use a **per-session host LLM façade** — **not** whitelist credential-file projection into the LiteBox jail, and **not** raw `HTTPS_PROXY` as the security boundary:
 
-**M1 implementation note:** Host placement already partially supports native credentials: `setupClaudeConfigDir` in `packages/cli/src/bridge/lib/claude-config-dir.ts` symlinks non-skill entries from `~/.claude` (including credential files when present) into the session's `CLAUDE_CONFIG_DIR`. This is partial host inheritance, not a completed inference-path selector or Sandbox opt-in flow. This decision records the intended behavior; it does not implement either feature.
+- Real Anthropic/OpenAI (or other provider) tokens stay on the **Runtime host**. The guest must not receive host `~/.claude` / `~/.codex` credential files, OAuth refresh material, or live API keys by default.
+- The guest harness points its base URL at the host façade only:
+  - **Claude Code:** `ANTHROPIC_BASE_URL` (no trailing `/v1`); guest may use a dummy `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`.
+  - **Codex CLI:** `openai_base_url` in session `CODEX_HOME/config.toml` (plain `OPENAI_BASE_URL` alone is insufficient); guest may omit a real key.
+  - **pi / openma-pi-acp:** `providers.*.baseUrl` (and matching `api`) in agent `models.json` under the session agent dir / `PI_CODING_AGENT_DIR`.
+- Upstream TLS and network fingerprint ≈ the **host process** (façade egress), not a guest-held subscription login.
+- `HTTPS_PROXY` may remain an optional transport hint; it is **not** the trust boundary (see ADR 0007: proxy env is advisory; LiteBox allowlist + host-side substitution / façade-owned tokens are).
+
+Host placement may still inherit native harness config on the same filesystem (e.g. `setupClaudeConfigDir` symlinks non-skill `~/.claude` entries into `CLAUDE_CONFIG_DIR`). That host inheritance does **not** authorize projecting those credentials into Sandbox / LiteBox. Sandbox own-sub = host façade only under this lock.
+
+**M1 / implementation status:** This lock records product intent for the sandbox own-sub path. M1 does not yet ship the per-session host façade, the Environment inference-path selector, or LiteBox allowlist wiring for façade-only egress. Host placement credential inheritance remains partial as above.
 
 ### 5.2 Recommendations (research; awaiting owner)
 
