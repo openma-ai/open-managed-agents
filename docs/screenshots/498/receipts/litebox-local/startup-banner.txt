@@ -1,0 +1,9 @@
+# from test/e2e/start-local-backend.sh (SANDBOX_PROVIDER=litebox hardcoded)
+34:  SANDBOX_PROVIDER=litebox \
+
+# main-node listening line
+2:{"level":30,"time":1793875975875,"service":"main-node","pid":227139,"op":"main-node.config","config":{"processMode":"standalone","database":{"kind":"sqlite","path":"/tmp/oma-498-litebox-local/oma.db"},"auth":{"disabled":false,"databasePath":"/tmp/oma-498-litebox-local/auth.db","secret":"***","requireEmailVerify":false,"google":{},"github":{}},"platformRootSecret":"***","blobs":{"memory":{"kind":"localfs","dir":"/tmp/oma-498-litebox-local/memory-blobs"},"files":{"kind":"localfs","dir":"/tmp/oma-498-litebox-local/files-blobs"}},"memoryQueue":"auto","realtime":{"mode":"memory","pollIntervalMs":300},"dreamCurator":"model","execution":{"ownerId":"node:227139:N35Xl5pRXNfcnHhmsBTfB","concurrency":8},"workspace":{"strategy":"ephemeral","checkpointIntervalMs":60000,"sandboxLeaseTtlMs":1800000},"managedWebhooks":{},"paths":{"sandboxWorkdir":"/tmp/oma-498-litebox-local/sandboxes","sessionOutputs":"/tmp/oma-498-litebox-local/session-outputs"},"http":{"host":"127.0.0.1","port":8787,"gatewayOrigin":"http://localhost:8787","consoleOrigins":[],"apiKey":"***"},"tunnels":{"domainSuffix":"tunnels.localhost"},"skillSources":{"allowHosts":[]},"mcpOAuthPresets":{},"email":null,"feishuWsRunner":false,"cron":{"evalTick":"* * * * *","memoryRetention":"* * * * *","webhookEventsRetention":"* * * * *","linearDispatch":"* * * * *"}},"msg":"effective configuration"}
+8:{"level":30,"time":1793875975936,"service":"main-node","pid":227139,"op":"main-node.listening","address":"127.0.0.1","port":8787,"db":"sqlite /tmp/oma-498-litebox-local/oma.db","msg":"listening on http://127.0.0.1:8787"}
+
+# health
+{"data":[],"next_page":null}

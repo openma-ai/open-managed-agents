@@ -1,7 +1,7 @@
 {
   "lane": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev",
   "provider": "cloudflare-containers (NOT LiteBox)",
-  "litebox_status": "LiteBox (@boxlite-ai/boxlite / SANDBOX_PROVIDER=litebox) is Node-local only; unavailable on CF Workers lane. Exercised lane default cloud sandbox provider instead.",
+  "litebox_status": "LiteBox (@boxlite-ai/boxlite / SANDBOX_PROVIDER=litebox) is Node-local; see receipts/litebox-local/. This folder is CF Containers only.",
   "environment_id": "env_aeb1c14c10d54755b6b58202ab953585",
   "agent_id": "agent_59891d3bbcf44eb7a75a757738917c90",
   "session_id_success": "session_910dff3db58d4be187789a20f1185223",
@@ -153,5 +153,6 @@
         "type": "end_turn"
       }
     }
-  ]
+  ],
+  "folder_note": "Renamed from receipts/litebox/ to receipts/cf-containers/. Real LiteBox evidence is receipts/litebox-local/."
 }

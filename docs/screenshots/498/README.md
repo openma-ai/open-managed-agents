@@ -54,12 +54,28 @@ botty Mac sync/validation is blocked by unavailable remote execution access.**
 Windows fallback is unit-tested; Runtime-owned sandbox cache mount/copy and
 live-session-aware eviction remain deferred. Console UI is unchanged.
 
-## Cloud / LiteBox path (lane pr-498)
+## Three lanes (do not conflate)
 
-LiteBox is **not** available on the CF Workers lane (Node `SANDBOX_PROVIDER=litebox` only).
-Live Hosting Type **Cloud** evidence uses **Cloudflare Containers**:
+### (A) CF Containers — lane Hosting Type Cloud
 
-- Receipts: [`receipts/litebox/`](receipts/litebox/) (env create, container app, successful turn `CLOUD_SANDBOX_OK`)
+LiteBox is **not** available on the CF Workers lane. Live Hosting Type **Cloud** on
+`managed-agents-lane-pr-498` uses **Cloudflare Containers**:
+
+- Receipts: [`receipts/cf-containers/`](receipts/cf-containers/) (renamed from the historical `receipts/litebox/` label)
 - Environment `env_aeb1c14c…` · Session `session_910dff3d…` · provider `sandbox-default-lane-pr-498-sandbox`
+- Confirmatory r1: `session_bb142b6e…` → `CLOUD_SANDBOX_OK`
 
-Confirmatory second turn (r1): `session_bb142b6e…` → `CLOUD_SANDBOX_OK` (`receipts/litebox/events-final.r1.json`). See `receipts/litebox/SUMMARY.md`.
+### (B) Local LiteBox — Environment → microVM
+
+Shared-box Node control plane with `SANDBOX_PROVIDER=litebox`
+(`test/e2e/start-local-backend.sh`). Cloud Environment → Session runs in a
+**BoxLite / libkrun** microVM (`boxlite-shim`):
+
+- Receipts: [`receipts/litebox-local/`](receipts/litebox-local/)
+- Environment `env_DdFqMZC4…` · Session `session_OlM-tOKE…` · guest hostname `boxlite` · agent reply `LITEBOX_LOCAL_OK`
+- Guest `/proc/cmdline` includes `init=/init.krun` and `KRUN_INIT=…/boxlite-guest`
+
+### (C) Runtime `placement=sandbox`
+
+Still **design-only** for M1 (see `docs/design/runtime-download-selection.md`).
+No live receipt claims Runtime-owned sandbox placement here.

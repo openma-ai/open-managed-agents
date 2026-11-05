@@ -3,7 +3,7 @@
 Lane: https://managed-agents-lane-pr-498.hrhrngxy.workers.dev  
 Provider under test: **Cloudflare Containers** (lane default). **Not** Microsoft LiteBox — this lane has no LiteBox secrets or LiteBox provider wiring (`SANDBOX_PROVIDER=litebox` is Node-local only).
 
-Folder name `litebox/` is historical (M1 “cloud Environment” evidence slot). Do not read it as LiteBox-provider proof.
+Folder was historically named `litebox/` (now `cf-containers/`) (M1 “cloud Environment” evidence slot). Do not read it as LiteBox-provider proof.
 
 Also see `README.md` and `SUMMARY.json` in this directory.
 
@@ -26,5 +26,8 @@ Also see `README.md` and `SUMMARY.json` in this directory.
 
 - Shared box (and Botty Mac) have **no Docker**. `wrangler deploy` without `--containers-rollout=none` fails (`redeploy-containers.log`). Evidence used an **already-uploaded** registry image; this does **not** prove a from-scratch container image build/rollout from this box.
 - Microsoft **LiteBox was not configured** and was not exercised.
-- Attach-Runtime + botty path evidence lives under `docs/screenshots/498/receipts/` (non-`litebox/`) and `receipts/botty/`.
+- Attach-Runtime + botty path evidence lives under `docs/screenshots/498/receipts/` (non-`cf-containers/`) and `receipts/botty/`.
 - Residual: sdk/container `version_mismatch` warn 0.12.10 vs 0.12.9 on reused staging digest (non-fatal for these turns).
+
+
+Real Node LiteBox evidence: `docs/screenshots/498/receipts/litebox-local/`.

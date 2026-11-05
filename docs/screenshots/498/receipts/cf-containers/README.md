@@ -1,4 +1,8 @@
-# Cloud Environment → sandbox provision (PR #498 lane)
+# Cloud Environment → CF Containers (PR #498 lane)
+
+> Folder renamed from `receipts/litebox/` → `receipts/cf-containers/` so the path is not mistaken for Microsoft/BoxLite LiteBox.
+> Real LiteBox env→VM receipts: [`../litebox-local/`](../litebox-local/).
+
 
 ## LiteBox vs lane provider
 

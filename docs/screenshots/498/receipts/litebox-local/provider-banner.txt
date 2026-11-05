@@ -1,0 +1,5 @@
+SANDBOX_PROVIDER=litebox
+source=test/e2e/start-local-backend.sh
+pid=227139
+crw-rw-rw-+ 1 root pulse-access 10, 232 Nov  5 05:51 /dev/kvm
+kvm_rw True
