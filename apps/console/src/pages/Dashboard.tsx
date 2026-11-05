@@ -15,6 +15,7 @@ import { EmptyState } from "../components/EmptyState";
 import { Skeleton } from "../components/Skeleton";
 import { useI18n } from "../i18n";
 import { useBranding } from "../lib/branding";
+import { cliInstallCommand } from "../lib/cli-install-command";
 import { useApiQuery } from "../lib/useApiQuery";
 import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 
@@ -37,10 +38,11 @@ function QuickstartStep({
   title: ReactNode;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className="console-quickstart-step">
       <div>
-        <div className="console-step-index">STEP {number}</div>
+        <div className="console-step-index">{t.dashboard.step} {number}</div>
         <div className="console-step-title">{title}</div>
       </div>
       <div className="console-step-body">{children}</div>
@@ -83,10 +85,10 @@ export function Dashboard() {
     { label: t.nav.modelCards, value: stats?.model_cards, to: "/model-cards" },
   ];
 
-  const command = "npx -y -p @openma/cli oma";
-  const globalCommand = "npm i -g @openma/cli";
-  const examplePrompt =
-    "Use oma to create a research agent that monitors arXiv for new ML papers daily";
+  const { command, globalCommand, envHint } = cliInstallCommand(
+    typeof window === "undefined" ? "" : window.location.origin,
+  );
+  const examplePrompt = t.dashboard.examplePrompt;
 
   const copyIcon = (key: string) =>
     copied === key ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />;
@@ -95,7 +97,7 @@ export function Dashboard() {
     <DashboardLayout
       intro={
         <header>
-          <h1>Get started with {branding.productName}</h1>
+          <h1>{t.dashboard.getStarted.replace("{productName}", branding.productName)}</h1>
           <p>{t.dashboard.handPlatformToAgent}</p>
         </header>
       }
@@ -125,8 +127,8 @@ export function Dashboard() {
       }
     >
       <ConsolePanel
-        title="Launch an agent"
-        description="A short path from an empty workspace to a managed run."
+        title={t.dashboard.launchAgent}
+        description={t.dashboard.quickstartDesc}
       >
         <QuickstartStep number="01" title={t.dashboard.installCli}>
           <p>{t.dashboard.installCliDesc}</p>
@@ -140,7 +142,7 @@ export function Dashboard() {
             {copyIcon("command")}
           </Button>
           <p className="mt-1.5 text-xs text-fg-subtle">
-            or globally:{" "}
+            {t.dashboard.orGlobally}{" "}
             <Button
               variant="ghost"
               type="button"
@@ -150,6 +152,18 @@ export function Dashboard() {
               {globalCommand}
             </Button>
           </p>
+          {envHint && (
+            <p className="mt-1.5 text-xs text-fg-subtle">
+              <Button
+                variant="ghost"
+                type="button"
+                className="font-mono text-fg-muted hover:text-brand"
+                onClick={() => void copy(envHint, "env-hint")}
+              >
+                {envHint}
+              </Button>
+            </p>
+          )}
         </QuickstartStep>
 
         <QuickstartStep number="02" title={t.dashboard.mintApiKey}>
@@ -179,7 +193,7 @@ export function Dashboard() {
 
       <ConsolePanel
         title={t.dashboard.recentSessions}
-        description="Latest activity across the current workspace."
+        description={t.dashboard.recentSessionsDesc}
         action={
           <Button variant="ghost"
             type="button"

@@ -141,6 +141,11 @@ export interface Messages {
   // Dashboard
   dashboard: {
     getStarted: string;
+    launchAgent: string;
+    quickstartDesc: string;
+    step: string;
+    orGlobally: string;
+    examplePrompt: string;
     handPlatformToAgent: string;
     installCli: string;
     installCliDesc: string;
@@ -150,6 +155,7 @@ export interface Messages {
     handItReins: string;
     handItReinsDesc: string;
     recentSessions: string;
+    recentSessionsDesc: string;
     noSessionsYet: string;
     visitSessionsPage: string;
     title: string;

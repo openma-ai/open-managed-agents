@@ -127,22 +127,28 @@ export const en: Messages = {
   },
 
   dashboard: {
-    getStarted: "Get started with openma",
+    getStarted: "Get started with {productName}",
+    launchAgent: "Launch an agent",
+    quickstartDesc: "Install CLI, create a key, run a session.",
+    step: "STEP",
+    orGlobally: "Or install globally:",
+    examplePrompt: "Use oma to create a research agent that monitors arXiv for new ML papers daily",
     handPlatformToAgent:
-      "Hand the platform to your agent — install the CLI, mint a key, point them at it.",
+      "Set up CLI access for you or your agent.",
     installCli: "Install the CLI",
     installCliDesc:
-      "The oma CLI lets your agent (or you) drive the platform from the terminal.",
-    mintApiKey: "Mint an API key",
+      "Run oma from your terminal with npx or install it globally.",
+    mintApiKey: "Create an API key",
     mintApiKeyDesc:
-      "Your agent needs this to authenticate. Keep it somewhere it can read.",
+      "Create a key for your agent to authenticate. Store it securely.",
     generateApiKey: "Generate API key",
-    handItReins: "Hand it the reins",
+    handItReins: "Run a session",
     handItReinsDesc:
-      "Point your agent at the openma-cli or openma-api skill, then ask for what you want:",
+      "Give your agent the openma-cli or openma-api skill, then describe the task:",
     recentSessions: "Recent sessions",
-    noSessionsYet: "No sessions yet — the stable's empty.",
-    visitSessionsPage: "Sessions page",
+    recentSessionsDesc: "Newest sessions in this workspace.",
+    noSessionsYet: "No sessions yet.",
+    visitSessionsPage: "Create a session from the Sessions page.",
     title: "Title",
     agent: "Agent",
     untitled: "Untitled",
