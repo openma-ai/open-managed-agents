@@ -295,7 +295,7 @@ export class SqlSessionEventStore
                     revision = revision + 1
               WHERE workspace_id = ? AND session_id = ? AND state = 'running'
                 AND lease_expires_at_ms <= ?
-                AND (? IS NULL OR lane_id = ?)
+                AND (? = 1 OR lane_id = ?)
                 AND EXISTS (
                   SELECT 1 FROM managed_sessions
                    WHERE workspace_id = ? AND id = ? AND revision = ?
@@ -306,7 +306,7 @@ export class SqlSessionEventStore
             input.workspaceId,
             input.sessionId,
             timestamp(controlTimestamp),
-            laneId,
+            laneId === null ? 1 : 0,
             laneId,
             input.workspaceId,
             input.sessionId,
@@ -318,7 +318,7 @@ export class SqlSessionEventStore
                   revision = revision + 1
             WHERE workspace_id = ? AND session_id = ? AND state = 'running'
               AND lease_expires_at_ms > ?
-              AND (? IS NULL OR lane_id = ?)
+              AND (? = 1 OR lane_id = ?)
               AND EXISTS (
                 SELECT 1 FROM managed_sessions
                  WHERE workspace_id = ? AND id = ? AND revision = ?
@@ -328,7 +328,7 @@ export class SqlSessionEventStore
           input.workspaceId,
           input.sessionId,
           timestamp(controlTimestamp),
-          laneId,
+          laneId === null ? 1 : 0,
           laneId,
           input.workspaceId,
           input.sessionId,
