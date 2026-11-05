@@ -61,3 +61,5 @@ Live Hosting Type **Cloud** evidence uses **Cloudflare Containers**:
 
 - Receipts: [`receipts/litebox/`](receipts/litebox/) (env create, container app, successful turn `CLOUD_SANDBOX_OK`)
 - Environment `env_aeb1c14c…` · Session `session_910dff3d…` · provider `sandbox-default-lane-pr-498-sandbox`
+
+Confirmatory second turn (r1): `session_bb142b6e…` → `CLOUD_SANDBOX_OK` (`receipts/litebox/events-final.r1.json`). See `receipts/litebox/SUMMARY.md`.

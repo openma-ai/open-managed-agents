@@ -1,0 +1,35 @@
+{
+  "id": "session_bb142b6ec45e40308bba88fe76ade71a",
+  "agent": {
+    "id": "agent_f029072253a349f09fd3e98e7114fc25",
+    "description": null,
+    "execution_identity": {
+      "type": "service_account"
+    },
+    "mcp_servers": [],
+    "model": {
+      "id": "deepseek-flash"
+    },
+    "multiagent": null,
+    "name": "pr-498-cloud-agent-r1",
+    "skills": [],
+    "system": "Reply with exactly: CLOUD_SANDBOX_OK",
+    "tools": [],
+    "type": "agent",
+    "version": 1
+  },
+  "archived_at": null,
+  "budget": null,
+  "created_at": "2026-11-05T10:43:16.557Z",
+  "environment_id": "env_cc51adc13c0d4d769db01dc8622d96d9",
+  "metadata": {},
+  "outcome_evaluations": [],
+  "resources": [],
+  "stats": {},
+  "status": "idle",
+  "title": "pr-498-cloud-sandbox-provision-r1",
+  "type": "session",
+  "updated_at": "2026-11-05T10:46:21.941Z",
+  "usage": {},
+  "vault_ids": []
+}

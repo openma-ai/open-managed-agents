@@ -17,5 +17,5 @@ BETTER_AUTH_SECRET: NOT set (staging value unavailable) — Console cookie login
 
 See JSON files in this directory (tokens redacted in committed copies).
 
-8. **Cloud Environment** `config.type=cloud` → Cloudflare Containers sandbox provision + turn (`receipts/litebox/`) — LiteBox N/A on CF lane
+8. **Cloud Environment** `config.type=cloud` → Cloudflare Containers sandbox provision + turn (`receipts/litebox/`, see `litebox/SUMMARY.md`) — LiteBox N/A on CF lane
 9. Pairing negatives: anonymous mint 401; bad TTL 400 (`pair-anon.json`, `pair-badttl.json`)

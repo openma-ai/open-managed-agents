@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "error": {
+    "type": "not_found_error",
+    "message": "Session session_910dff3db58d4be187789a20f1185223 was not found"
+  },
+  "message": "Session session_910dff3db58d4be187789a20f1185223 was not found",
+  "code": "not_found_error",
+  "request_id": "a55b458a2bbc6c17"
+}
