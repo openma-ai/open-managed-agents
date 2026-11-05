@@ -59,6 +59,51 @@ describe("Node OpenAI immutable output publication", () => {
     expect(f.sandbox.readFileBytes).toHaveBeenCalledTimes(1);
   });
 
+  it("publishes exactly a.txt and steered s.txt on A, only b.txt on B, and changed bytes on C across reconstruction", async () => {
+    const f = await fixture();
+    const content = new Map([['a.txt', 'ARTIFACT_A_523'], ['s.txt', 'ARTIFACT_S_523']]);
+    f.sandbox.exec.mockImplementation(async () => Buffer.from([...content.keys()].map(path => `./outputs/${path}\0`).join('')).toString('base64'));
+    f.sandbox.readFileBytes.mockImplementation(async (...args: unknown[]) => new TextEncoder().encode(content.get(String(args[0]).split('/').at(-1)!)));
+    f.facts.splice(2, 0, { executionId: 'S', consumedByExecutionId: f.executionId,
+      event: { id: 'S', type: 'user.message', content: [{ type: 'text', text: 'write s.txt' }] } });
+    const next = (id: string) => {
+      f.facts.push({ executionId: id, consumedByExecutionId: id, event: { id, type: 'user.message', content: [{ type: 'text', text: id }] } },
+        { executionId: id, event: { id: `${id}-run`, type: 'session.status_running' } },
+        { executionId: id, event: { id: `${id}-idle`, type: 'session.status_idle', stopReason: { type: 'end_turn' } } });
+      return createNodeOpenAIArtifactPublisher(f.dependencies)(f.fence(id));
+    };
+    await f.publish(f.input);
+    expect(await f.published()).toHaveLength(2);
+    content.set('b.txt', 'ARTIFACT_B_523');
+    await next('B');
+    const three = await f.published();
+    expect(three).toHaveLength(3);
+    expect(three.find(file => file.origin?.path.endsWith('/a.txt'))?.origin?.turnId).toBe('turn_session:root:sevt_input');
+    expect(three.find(file => file.origin?.path.endsWith('/s.txt'))?.origin?.turnId).toBe('turn_session:root:sevt_input');
+    expect(three.find(file => file.origin?.path.endsWith('/b.txt'))?.origin?.turnId).toBe('turn_session:root:B');
+    await createNodeOpenAIArtifactPublisher(f.dependencies)(f.fence('B'));
+    expect(await f.published()).toEqual(three);
+    content.set('a.txt', 'CHANGED_A');
+    await next('C');
+    const four = await f.published();
+    expect(four).toHaveLength(4);
+    const changed = four.find(file => file.origin?.turnId === 'turn_session:root:C')!;
+    expect(changed.origin).toMatchObject({ path: '/workspace/outputs/a.txt', contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(await f.files.downloadFile({ fileId: changed.id })).toMatchObject({ file: { content: new TextEncoder().encode('CHANGED_A') } });
+    content.set('a.txt', 'ARTIFACT_A_523');
+    await next('D');
+    expect(await f.published()).toEqual(four); // Historical content at the same path stays deduplicated.
+  });
+
+  it("deduplicates older Files without hashes using their persisted bytes", async () => {
+    const f = await fixture();
+    await f.files.uploadFile({ filename: 'report.bin', mimeType: 'application/octet-stream', content: f.bytes,
+      origin: { type: 'session_output', sessionId: 'session', environmentId: 'old-env', turnId: 'old-turn', path: '/workspace/outputs/report.bin' } });
+    await f.publish(f.input);
+    expect(await f.published()).toHaveLength(1);
+    expect((await f.published())[0].origin?.turnId).toBe('old-turn');
+  });
+
   it("publishes outputs of the bootstrap execution, whose id is the bootstrap input event id", async () => {
     const f = await fixture("completed", "openai_hosted", "bootstrap");
     await f.publish(f.input);

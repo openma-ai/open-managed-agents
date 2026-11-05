@@ -11,6 +11,8 @@ export interface FileOrigin {
   environmentId: string;
   turnId: string;
   path: string;
+  /** SHA-256 of the immutable published bytes; absent on older Files. */
+  contentSha256?: string;
 }
 
 export interface FileMetadata {

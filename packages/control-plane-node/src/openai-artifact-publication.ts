@@ -1,7 +1,7 @@
 import type { FileOrigin, Session, SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
 import type { FilesApplicationPort } from "@open-managed-agents/managed-agents-application/ports/files";
 import type { Logger } from "@open-managed-agents/observability";
-import { applyManagedEvents, createProjectionState, executionTurnId, publishSessionArtifact, readManagedSessionMappingMetadata, type ManagedProjectionEvent, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
+import { applyManagedEvents, createProjectionState, executionTurnId, publishSessionArtifact, artifactContentHash, readManagedSessionMappingMetadata, type ManagedProjectionEvent, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
 import { sessionExecutionLaneId, type SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { DefaultNodeManagedSessionRunnerDependencies } from "./lib/node-managed-session-runner";
 
@@ -94,7 +94,12 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
     };
     await assertFence();
     const files = deps.filesForWorkspace(workspaceId);
+    // A completed turn's publication remains immutable on callback retries.
+    // Across turns, identity is session + path + content, loaded from Files
+    // on every invocation so process restarts do not reset deduplication.
     const publishedPaths = new Set<string>();
+    const publishedContent = new Set<string>();
+    const contentKey = (path: string, hash: string) => JSON.stringify([path, hash]);
     const cursors = new Set<string>();
     let afterId: string | undefined;
     for (;;) {
@@ -102,7 +107,15 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
       if (page.type !== "page") throw new Error(page.message);
       for (const file of page.page.files) {
         const origin = file.origin;
-        if (file.scope?.type === "session" && file.scope.id === session.id && origin?.type === "session_output" && origin.sessionId === session.id && origin.environmentId === environmentId && origin.turnId === turnId) publishedPaths.add(origin.path);
+        if (file.scope?.type !== "session" || file.scope.id !== session.id || origin?.type !== "session_output" || origin.sessionId !== session.id) continue;
+        if (origin.environmentId === environmentId && origin.turnId === turnId) publishedPaths.add(origin.path);
+        let hash = origin.contentSha256;
+        if (!hash) {
+          const legacy = await files.downloadFile({ fileId: file.id });
+          if (legacy.type !== "found") throw new Error("Published artifact content is missing");
+          hash = await artifactContentHash(legacy.file.content);
+        }
+        publishedContent.add(contentKey(origin.path, hash));
       }
       if (!page.page.hasMore) break;
       const next = page.page.lastId;
@@ -119,8 +132,11 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
       const content = await sandbox.readFileBytes(path);
       totalBytes += content.byteLength;
       if (totalBytes > 10 * 1024 * 1024 * 1024) throw new Error("Session output byte limit exceeded");
+      const key = contentKey(path, await artifactContentHash(content));
+      if (publishedContent.has(key)) continue;
       await publishSessionArtifact({ files, requireCompletedTurn }, { sessionId: session.id, environmentId, turnId, path, mimeType: "application/octet-stream", content });
       publishedPaths.add(path);
+      publishedContent.add(key);
     }
   }
   return input => {

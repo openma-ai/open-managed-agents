@@ -31,10 +31,16 @@ function artifactResource(file: FileMetadataView & { origin: FileOrigin }) {
   return { id: file.id, object: "agent.session.artifact" as const, created_at: Math.floor(Date.parse(file.createdAt) / 1000), session_id: file.origin.sessionId, environment_id: file.origin.environmentId, turn_id: file.origin.turnId, path: file.origin.path, size_bytes: file.sizeBytes };
 }
 
+/** Stable content identity, also used when reading legacy File metadata. */
+export async function artifactContentHash(content: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', content.slice());
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /** Internal publication hook: copies output bytes to an ordinary durable File,
  * with provenance stored atomically alongside that File's existing metadata. */
 export async function publishSessionArtifact(deps: ArtifactPublicationDependencies, input: ArtifactPublicationInput) {
-  const origin: FileOrigin = { type: "session_output", sessionId: input.sessionId, environmentId: input.environmentId, turnId: input.turnId, path: input.path };
+  const origin: FileOrigin = { type: "session_output", sessionId: input.sessionId, environmentId: input.environmentId, turnId: input.turnId, path: input.path, contentSha256: await artifactContentHash(input.content) };
   if ([origin.sessionId, origin.environmentId, origin.turnId].some(value => !value?.trim()) || !origin.path.startsWith("/")) throw new OpenAIAgentsProtocolError(400, "Artifact publication requires exact completed-turn provenance");
   await deps.requireCompletedTurn(origin);
   const result = await deps.files.uploadFile({ filename: input.path.split("/").at(-1) ?? "", mimeType: input.mimeType, content: input.content.slice(), origin });
