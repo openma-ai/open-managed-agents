@@ -227,14 +227,18 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     const reads = () => f.calls.filter((call) => call.path.endsWith("/events") && !call.body);
     const initial = reads().length;
     expect(initial).toBe(4);
+    const tailPage = new URLSearchParams(reads().at(-1)!.query).get("page");
+    expect(tailPage).toBeTruthy();
     await vi.waitFor(() => expect(reads().length).toBeGreaterThan(initial + 1));
     // Idle connections revisit only the final page, not pages 0, 100 or 200.
-    expect(reads().slice(initial).every((call) => new URLSearchParams(call.query).get("page") === "300")).toBe(true);
+    expect(reads().slice(initial).every((call) => new URLSearchParams(call.query).get("page") === tailPage)).toBe(true);
     const before = reads().length;
+    // Retention before the native keyset boundary must not shift its offset.
+    f.events.get(id)!.splice(0, 100);
     // A burst crossing several pages must be drained without loss or repeats.
     for (let i = 0; i < 240; i++) f.events.get(id)!.push({ ...template, id: `sevt_live_${i}` });
     for (let i = 0; i < 240; i++) expect((await stream.next()).data.id).toBe(`sevt_live_${i}`);
-    expect(reads().slice(before).some((call) => new URLSearchParams(call.query).get("page") === "500")).toBe(true);
+    expect(reads().slice(before).some((call) => new URLSearchParams(call.query).get("page") !== tailPage)).toBe(true);
     await stream.cancel();
     const stopped = reads().length;
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -249,7 +253,47 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
       { ...base, type: "session.status_rescheduled" },
       { ...base, type: "session.status_idle", stop_reason: { type: "exhausted" } },
     ]) conforms("SessionEventList", { items: [projectKhaEvent(event)] });
-    expect(projectKhaEvent({ ...base, type: "span.model_request_start" })).toBeNull();
+    expect(projectKhaEvent({ ...base, type: "span.model_request_end" })).toBeNull();
+  });
+
+  it("projects tool, model-start and child-thread events without inventing success", async () => {
+    const f = client(), id = await f.seed();
+    const base = { processedAt: "2026-11-05T00:00:00.000Z", sessionThreadId: "sthr_child" };
+    const content = [{ type: "text" as const, text: "tool failed" }];
+    f.events.get(id)!.push(
+      { ...base, id: "use", type: "agent.tool_use", name: "bash", input: { command: "false" }, evaluatedPermission: "ask" },
+      { ...base, id: "result", type: "agent.tool_result", toolUseId: "use", content, isError: true },
+      { ...base, id: "created", type: "session.thread_created", agentName: "Researcher" },
+      { ...base, id: "running", type: "session.thread_status_running", agentName: "Researcher" },
+      { ...base, id: "idle", type: "session.thread_status_idle", agentName: "Researcher", stopReason: { type: "requires_action", eventIds: ["use"] } },
+      { ...base, id: "model", type: "span.model_request_start" },
+      { ...base, id: "mcp", type: "agent.mcp_tool_use", mcpServerName: "search", name: "find", input: {}, evaluatedPermission: "allow" },
+      { ...base, id: "mcp_result", type: "agent.mcp_tool_result", mcpToolUseId: "mcp", content: [], isError: false },
+      { ...base, id: "custom", type: "agent.custom_tool_use", name: "approval", input: {} },
+      { ...base, id: "sent", type: "agent.thread_message_sent", content, toSessionThreadId: "sthr_primary" },
+      { ...base, id: "received", type: "agent.thread_message_received", content, fromSessionThreadId: "sthr_primary" },
+      { ...base, id: "unknown", type: "agent.tool_use", name: "bash", input: {} },
+      { ...base, id: "denied", type: "agent.tool_use", name: "bash", input: {}, evaluatedPermission: "deny" },
+      { ...base, id: "unknown_result", type: "agent.tool_result", toolUseId: "unknown", content },
+    );
+    const history = await (await f.request(`/sessions/${id}/events`)).json();
+    conforms("SessionEventList", history);
+    expect(history.items).toHaveLength(11);
+    expect(history.items[0]).toMatchObject({ type: "agent.tool_use", session_thread_id: "sthr_child", data: { tool_use: { id: "use" }, evaluated_permission: "always_ask" } });
+    expect(history.items[1].data.tool_result).toEqual({ tool_use_id: "use", content, structured_content: content, is_error: true });
+    expect(history.items[4]).toMatchObject({ type: "session.thread_status", session_thread_id: "sthr_child", data: { status: "idle", stop_reason: { type: "requires_action", event_ids: ["use"] } } });
+    expect(history.items[5].type).toBe("agent.model_started");
+    expect(history.items[6].data.mcp).toEqual({ server_name: "search" });
+    expect(history.items[7].data.tool_result.is_error).toBe(false);
+    const stream = await frameReader(await f.request(`/sessions/${id}/events/stream`));
+    for (const event of history.items) expect((await stream.next()).data).toEqual(event);
+    await stream.cancel();
+    const wire = { id: "omit", processed_at: base.processedAt };
+    for (const event of [
+      { type: "span.model_request_end" }, { type: "span.outcome_evaluation_end" }, { type: "workflow_run.status_ended" },
+      { type: "agent.tool_result", tool_use_id: "use", is_error: false, content: [{ type: "document" }] },
+    ]) expect(projectKhaEvent({ ...wire, ...event })).toBeNull();
+    conforms("SessionEventList", { items: [projectKhaEvent({ ...wire, type: "user.interrupt" }), projectKhaEvent({ ...wire, type: "agent.thread_context_compacted" })] });
   });
 
   it("enforces tenant isolation, missing resources, malformed and unsupported inputs", async () => {

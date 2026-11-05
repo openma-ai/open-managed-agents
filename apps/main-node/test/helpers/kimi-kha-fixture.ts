@@ -100,8 +100,9 @@ export function createKhaFixture(enabled = true) {
     },
     listSessionEvents: async ({ sessionId, pageSize = 100, cursor }) => {
       if (!owner(c) || !sessions.has(sessionId)) return { type: "not_found" };
-      const rows = events.get(sessionId)!, start = Number(cursor ?? 0);
-      return { type: "page", page: { events: rows.slice(start, start + pageSize), nextCursor: start + pageSize < rows.length ? String(start + pageSize) : null } };
+      const rows = events.get(sessionId)!;
+      const start = cursor ? rows.findIndex((row) => row.id === Buffer.from(cursor, "base64url").toString()) + 1 : 0;
+      return { type: "page", page: { events: rows.slice(start, start + pageSize), nextCursor: start + pageSize < rows.length ? Buffer.from(rows[start + pageSize - 1].id).toString("base64url") : null } };
     },
   })));
   native.route("/sessions", buildManagedSessionOutputRoutes(sessionPort, {

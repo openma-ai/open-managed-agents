@@ -91,18 +91,49 @@ export function projectKhaEvent(row: Row): Row | null {
   if (["user.message", "agent.message", "agent.thinking"].includes(type)) {
     return { ...base, type, data: { content: row.content ?? [] } };
   }
-  if (["session.status_idle", "session.status_running", "session.status_rescheduled", "session.status_terminated"].includes(type)) {
+  if (/^session\.(status|thread_status)_(idle|running|rescheduled|terminated)$/.test(type)) {
     const stop = row.stop_reason == null ? undefined : object.parse(row.stop_reason);
-    return { ...base, type: "session.status", data: {
-      status: type === "session.status_rescheduled" ? "running" : type.slice("session.status_".length),
-      ...(stop ? { stop_reason: { ...stop, type: stop.type === "interrupted" ? "canceled" : ["end_turn", "requires_action"].includes(String(stop.type)) ? stop.type : "internal_error" } } : {}),
+    return { ...base, type: type.startsWith("session.thread_") ? "session.thread_status" : "session.status", data: {
+      status: type.endsWith("_rescheduled") ? "running" : type.slice(type.lastIndexOf("_") + 1),
+      ...(stop ? { stop_reason: { ...fields(stop, ["event_ids"]), type: stop.type === "interrupted" ? "canceled" : ["end_turn", "requires_action"].includes(String(stop.type)) ? stop.type : "internal_error" } } : {}),
     } };
   }
   if (type === "session.error") {
     const error = object.parse(row.error);
     return { ...base, type, data: { error_type: "internal_error", message: error.message } };
   }
-  // Tool/span/subthread events require separate semantic mappings; never claim parity.
+  if (type === "user.interrupt" || type === "agent.thread_context_compacted") {
+    return { ...base, type };
+  }
+  if (type === "span.model_request_start") return { ...base, type: "agent.model_started" };
+  if (type === "session.thread_created") return { ...base, type, data: fields(row, ["agent_name"]) };
+  if (type === "agent.custom_tool_use") return { ...base, type, data: fields(row, ["name", "input"]) };
+  if (type === "agent.thread_message_received" || type === "agent.thread_message_sent") {
+    return { ...base, type, data: fields(row, ["content", "from_session_thread_id", "from_agent_name", "to_session_thread_id", "to_agent_name"]) };
+  }
+  if (type === "agent.tool_use" || type === "agent.mcp_tool_use") {
+    const permission = row.evaluated_permission === "allow" ? "always_allow"
+      : row.evaluated_permission === "ask" ? "always_ask" : undefined;
+    // Kimi requires a permission policy. Missing/denied is not permission to
+    // execute; neither synthesize allow nor pretend this is tool_started.
+    if (!permission) return null;
+    return { ...base, type: "agent.tool_use", data: {
+      tool_use: fields(row, ["id", "name", "input"]), evaluated_permission: permission,
+      ...(type === "agent.mcp_tool_use" ? { mcp: { server_name: row.mcp_server_name } } : {}),
+    } };
+  }
+  if (type === "agent.tool_result" || type === "agent.mcp_tool_result") {
+    const content = z.array(text).safeParse(row.content ?? []);
+    // Only text blocks have a verified cross-contract representation here.
+    // An absent error flag is unknown, not a successful tool invocation.
+    if (!content.success || typeof row.is_error !== "boolean") return null;
+    return { ...base, type: "agent.tool_result", data: { tool_result: {
+      tool_use_id: row.tool_use_id ?? row.mcp_tool_use_id,
+      content: content.data, structured_content: content.data, is_error: row.is_error,
+    } } };
+  }
+  // Usage/end spans, outcome/workflow events and unsupported native-only
+  // events have no faithful Kimi counterpart. Omit instead of fabricating one.
   return null;
 }
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");

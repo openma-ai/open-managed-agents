@@ -1,4 +1,4 @@
-# Kimi Hosted Agents P0 adapter
+# Kimi Hosted Agents P0/P1 adapter
 
 Opt in on the Node server with `OMA_KIMI_KHA_COMPAT=1`, then point KHA v0.4.2 at `http://host:8787/kha`. The CLI adds `/v1`. Native `/v1` routes retain their original contracts. Use an existing OMA API key and agent; production input is forwarded to the configured OMA runner.
 
@@ -36,7 +36,7 @@ pnpm --filter @open-managed-agents/main-node exec vitest run --no-cache --config
 
 SSE scans retained history once at connection setup, then follows native opaque keyset page boundaries once per second. Because native `next_page` is absent at the tail, each idle poll rereads at most the final 100 rows and suppresses that page’s already-seen IDs; bursts drain through successive pages before sleeping. It never repeatedly scans the accumulated history. Disconnect cancels the wait and signals an in-flight native read. Cursors encode session + last event ID, survive adapter recreation, and support explicit cursor precedence over `Last-Event-ID`; `now` tails future events with a control frame. Initial replay (and REST history) is bounded to 10,000 native rows; an open stream can grow beyond that. This is bounded incremental polling, not push: it still costs one authenticated page read per second per idle connection, and reconnect still scans history. Native ordering is timestamp/ID based; backdated inserts behind the boundary may be missed, and queued inputs stamped later may reappear with the same ID. Clients should deduplicate IDs. Production still needs sequence-based replay, retention semantics, connection limits and distributed replay tests. The native public SSE route has no resume query and does not currently return its pending iterator on disconnect, so this adapter does not compose it. Delta requests are accepted, but only complete events are emitted.
 
-Artifacts are current native session outputs: synthetic `/output/<filename>` paths, stable encoded IDs, version `"1"`, no immutable snapshots. Unsupported queries/inputs return 400 and unsupported operations return JSON 404. No agent writes, rich agent definitions, tool/subthread events, multimodal parity, session resources/overrides, custom tools, setup scripts, worker protocols, archive/update operations, billing, OAuth, or artifact version APIs are implemented. Broader native semantics are not Kimi behavioral parity.
+Artifacts are current native session outputs: synthetic `/output/<filename>` paths, stable encoded IDs, version `"1"`, no immutable snapshots. Unsupported queries/inputs return 400 and unsupported operations return JSON 404. No agent writes, rich agent definitions, full multimodal parity, session resources/overrides, custom tool result input, setup scripts, worker protocols, archive/update operations, billing, OAuth, or artifact version APIs are implemented. Broader native semantics are not Kimi behavioral parity.
 
 Contract sources: [OpenAPI](https://platform.kimi.com/docs/hosted-agents/openapi.yaml), [quickstart](https://platform.kimi.com/docs/hosted-agents/quickstart). The test fixture records the retrieval date and source hash. No CLI/SDK public packages changed, so no changeset is required.
 
@@ -45,3 +45,20 @@ Contract sources: [OpenAPI](https://platform.kimi.com/docs/hosted-agents/openapi
 `POST /sessions/:id/events` accepts a single `{ "type": "user.interrupt" }` (optional empty `data`) and forwards it to OMA's authenticated event API. It returns **202 `{}`**, not a queued `event_id` or invented `control_epoch`. OMA cancels active executions including child lanes; idle interrupts are normally no-ops. Acceptance does not mean cancellation has finished: inspect session state/events. Native cancellation reports `end_turn`; the adapter does not infer a `canceled` result from an earlier interrupt request. Queued work survives and can run automatically—this is **not** Kimi's durable pause-until-continue semantics.
 
 `POST /sessions/:id/continue` is recognized, authenticates/checks the session, and returns **501** with a specific reason: OMA has no message-free continuation or durable `interrupted`/`control_epoch` state. Terminated/archived sessions return 409. A new ordinary `user.message` can start another turn using native behavior. No synthetic message is inserted by `/continue`. Interrupt with `data.expected_control_epoch` likewise returns 501 before mutation because native fencing cannot enforce that token. The OpenAPI has no separate session `/stop` or `/resume`; environment work-item stop is a different worker-lease protocol and remains out of scope.
+
+## P1 event projection
+
+History and SSE use the same projection and preserve event IDs, timestamps and available `session_thread_id`:
+
+| Native event | KHA projection |
+| --- | --- |
+| `agent.tool_use`, `agent.mcp_tool_use` | `agent.tool_use` with nested `tool_use`; `allow` → `always_allow`, `ask` → `always_ask`; MCP server name → `data.mcp.server_name`. Missing/denied permission is omitted, never converted to allow or tool-started. |
+| `agent.tool_result`, `agent.mcp_tool_result` | `agent.tool_result`, preserving the tool-use reference and explicit `is_error`. Text content also supplies `structured_content`; no separate display blocks are invented. Missing error flags or non-text results are omitted. |
+| `agent.custom_tool_use` | Same type, nested name/input. Result submission remains outside this spike. |
+| `span.model_request_start` | `agent.model_started` (no payload). Model-end/usage/outcome spans are omitted. |
+| `session.thread_created` | Same type, nested `agent_name`; native parent/tool linkage is not represented by Kimi's payload. |
+| `session.thread_status_*` | `session.thread_status`; rescheduled → running, native stop reason mapped as for session status. |
+| `agent.thread_message_sent/received` | Same type, nested content, peer thread ID and available agent name. Native `from_message_id` is omitted. |
+| `agent.thread_context_compacted`, `user.interrupt` | Same type, no payload. |
+
+No tool-started or tool-success event is inferred. Unknown events, workflow events and unmatched spans remain omitted. Omitted rows still advance the internal native page boundary and REST cursor; if no mapped SSE frame follows, the client keeps its previous cursor and may revisit omitted rows on reconnect. Native queued inputs may lack Kimi's required processing timestamp until consumed; full queued-input/control-epoch conformance remains a gap. Thread REST APIs and multimodal event conversion remain outside this spike.
