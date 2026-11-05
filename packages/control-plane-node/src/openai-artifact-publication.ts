@@ -1,7 +1,7 @@
 import type { FileOrigin, Session, SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
 import type { FilesApplicationPort } from "@open-managed-agents/managed-agents-application/ports/files";
 import type { Logger } from "@open-managed-agents/observability";
-import { applyManagedEvents, createProjectionState, executionTurnId, publishSessionArtifact, artifactContentHash, readManagedSessionMappingMetadata, type ManagedProjectionEvent, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
+import { applyManagedEventsInPlace, createProjectionState, executionTurnId, publishSessionArtifact, artifactContentHash, readManagedSessionMappingMetadata, type ManagedProjectionEvent, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
 import { sessionExecutionLaneId, type SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { DefaultNodeManagedSessionRunnerDependencies } from "./lib/node-managed-session-runner";
 
@@ -72,10 +72,10 @@ export function createNodeOpenAIArtifactPublisher(deps: NodeOpenAIArtifactPublis
     const laneId = source ? sessionExecutionLaneId(source) : null;
     if (laneId !== null && laneId !== "sthr_primary") return skip("info", "execution_not_root_lane", { laneId });
     let state = createProjectionState({ sessionId: session.id, agentId: session.agent.id, createdAt });
-    if (!found.orderedInitialEvents) state = applyManagedEvents(state, bootstrapEvents, { observedAt: createdAt }).state;
+    if (!found.orderedInitialEvents) state = applyManagedEventsInPlace(state, bootstrapEvents, { observedAt: createdAt }).state;
     const completedByExecution = new Set<string>();
     for (const row of [...(found.orderedInitialEvents ?? []), ...found.orderedEvents]) {
-      const result = applyManagedEvents(state, [row.event as ManagedProjectionEvent], { observedAt: createdAt, executionId: row.executionId, consumedByExecutionId: row.consumedByExecutionId });
+      const result = applyManagedEventsInPlace(state, [row.event as ManagedProjectionEvent], { observedAt: createdAt, executionId: row.executionId, consumedByExecutionId: row.consumedByExecutionId });
       state = result.state;
       if (row.executionId === executionFence.executionId) for (const event of result.events) {
         if (event.type === "agent.session.turn.completed") completedByExecution.add(event.turn_id);

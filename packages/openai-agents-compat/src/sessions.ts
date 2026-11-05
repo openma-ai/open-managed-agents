@@ -3,7 +3,7 @@ import type { SessionsApplicationPort, SessionView, CreateSessionCommand } from 
 import type { SessionEventsApplicationPort, SendableSessionEvent } from "@open-managed-agents/managed-agents-application/ports/session-events";
 import { sessionInputIdentityPrefix, type SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
 import { OpenAIAgentsProtocolError, type OpenAIAgentsOperationRequest, type OpenAIAgentsOperationResponse, type OpenAIAgentsProtocolPort } from "@open-managed-agents/openai-agents-api";
-import { applyManagedEvents, createProjectionState, validateToolResult, type ProjectionState, type ManagedProjectionEvent } from "./projection";
+import { applyManagedEvents, applyManagedEventsInPlace, createProjectionState, validateToolResult, type ProjectionState, type ManagedProjectionEvent } from "./projection";
 import { toManagedInputContent as inputContent } from "./session-mapping";
 
 export interface SessionSemanticMapping {
@@ -68,9 +68,9 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     let state = createProjectionState({sessionId,agentId:base.agent.id,createdAt:base.created_at});
     const initial = found.initialEvents.map((event,index) => ({...event,id:`bootstrap_${sessionId}:${index}`,processedAt:native.createdAt}));
     if (found.orderedInitialEvents) {
-      for (const entry of found.orderedInitialEvents) state = applyManagedEvents(state, [entry.event as ManagedProjectionEvent], { observedAt: base.created_at, session: base, executionId: entry.executionId, consumedByExecutionId: entry.consumedByExecutionId }).state;
-    } else state = applyManagedEvents(state,initial,{observedAt:base.created_at,session:base}).state;
-    for (const entry of found.orderedEvents ?? []) state = applyManagedEvents(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,consumedByExecutionId:entry.consumedByExecutionId,session:base}).state;
+      for (const entry of found.orderedInitialEvents) state = applyManagedEventsInPlace(state, [entry.event as ManagedProjectionEvent], { observedAt: base.created_at, session: base, executionId: entry.executionId, consumedByExecutionId: entry.consumedByExecutionId }).state;
+    } else state = applyManagedEventsInPlace(state,initial,{observedAt:base.created_at,session:base}).state;
+    for (const entry of found.orderedEvents ?? []) state = applyManagedEventsInPlace(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,consumedByExecutionId:entry.consumedByExecutionId,session:base}).state;
     return {native,base,state,initial,found,session:projectedSession(base,state)};
   }
   async function* stream(sessionId: string, signal: AbortSignal, includeCreation: boolean, baseline: Awaited<ReturnType<typeof snapshot>>) {
@@ -78,7 +78,7 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     if (includeCreation) {
       yield {type:"agent.session.created",event_id:`evt_created_${sessionId}`,session:baseline.base};
       if (!baseline.found.orderedInitialEvents) {
-        const initial = applyManagedEvents(state,baseline.initial,{observedAt:baseline.base.created_at,session:baseline.base});
+        const initial = applyManagedEventsInPlace(state,baseline.initial,{observedAt:baseline.base.created_at,session:baseline.base});
         state = initial.state;
         for (const event of initial.events) yield event as unknown as Record<string,unknown>;
       }
@@ -88,7 +88,7 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
       const native = await nativeSession(sessionId);
       const base = await deps.mapping.sessionView(native);
       for (const entry of [...(found.orderedInitialEvents ?? []), ...(found.orderedEvents ?? [])]) {
-        const result = applyManagedEvents(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,consumedByExecutionId:entry.consumedByExecutionId,session:base});
+        const result = applyManagedEventsInPlace(state,[entry.event as ManagedProjectionEvent],{observedAt:observedAt(entry.event as ManagedProjectionEvent,base.last_active_at),executionId:entry.executionId,consumedByExecutionId:entry.consumedByExecutionId,session:base});
         state = result.state;
         for (const event of result.events) { if (signal.aborted) return; yield event as unknown as Record<string,unknown>; }
       }

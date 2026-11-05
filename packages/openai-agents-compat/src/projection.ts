@@ -38,9 +38,17 @@ export interface ProjectionState {
   lanes: Record<string, LaneState>;
   calls: Record<string, CallState>;
   inputTurns: Record<string, string>;
-  /** Source facts retained for attribution queries; never an execution-to-turn cache. */
+  /** Source facts retained for replay/audit; indexes below are derived only. */
   eventLog: Array<{ event: ManagedProjectionEvent; executionId?: string; consumedByExecutionId?: string }>;
   seenEventIds: Record<string, true>;
+  /** Disposable replay indexes. Native event facts remain authoritative. */
+  indexes: {
+    executionTurns: Record<string, string>;
+    itemIdsByTurn: Record<string, string[]>;
+    callIdsByTurn: Record<string, string[]>;
+    nextOutputIndex: Record<string, number>;
+    activeTurns: number;
+  };
   /** Replay-only indexes over common events; native event history remains authoritative. */
   workItems: Record<string, WorkItemSnapshot>;
   workItemLanes: Record<string, string>;
@@ -76,22 +84,27 @@ const turnId = (state: ProjectionState, lane: string, source: string): string =>
 const clone = <T>(value: T): T => structuredClone(value);
 
 export function createProjectionState(input: { sessionId: string; agentId: string; createdAt: number }): ProjectionState {
-  return { version: 1, ...input, status: 'idle', error: null, requiredActions: [], usage: null, turns: {}, turnOrder: [], items: {}, itemOrder: [], itemLanes: {}, outputIndices: {}, completedItems: {}, subagents: {}, subagentOrder: [], lanes: { root: { currentTurnId: null, ambiguous: false } }, calls: {}, inputTurns: {}, eventLog: [], seenEventIds: {}, workItems: {}, workItemLanes: {}, parentToolLanes: {}, unresolved: [] };
+  return { version: 1, ...input, status: 'idle', error: null, requiredActions: [], usage: null, turns: {}, turnOrder: [], items: {}, itemOrder: [], itemLanes: {}, outputIndices: {}, completedItems: {}, subagents: {}, subagentOrder: [], lanes: { root: { currentTurnId: null, ambiguous: false } }, calls: {}, inputTurns: {}, eventLog: [], seenEventIds: {}, indexes: { executionTurns: {}, itemIdsByTurn: {}, callIdsByTurn: {}, nextOutputIndex: {}, activeTurns: 0 }, workItems: {}, workItemLanes: {}, parentToolLanes: {}, unresolved: [] };
+}
+const assignmentKey = (lane: string, executionId: string): string => JSON.stringify([lane, executionId]);
+function indexExecutionTurn(state: ProjectionState, executionId: string | undefined, turn: Turn): void {
+  if (!executionId) return;
+  const lane = turn.subagent_id ?? 'root';
+  const key = assignmentKey(lane, executionId);
+  // The root execution keeps its first assignment; child lanes can start
+  // another turn on resume. This is the same ordering as source-fact replay.
+  if (lane !== 'root' || !own(state.indexes.executionTurns, key)) put(state.indexes.executionTurns, key, turn.id);
+}
+function indexRowAssignment(state: ProjectionState, event: ManagedProjectionEvent, executionId: string | undefined, lane: string): void {
+  if (!event.id || !executionId) return;
+  const callId = str(field(event, 'toolUseId', 'tool_use_id')) ?? str(field(event, 'customToolUseId', 'custom_tool_use_id'));
+  const assigned = own(state.inputTurns, event.id) ?? own(state.items, event.id)?.turn_id ??
+    (event.type === 'user.tool_confirmation' && callId ? own(state.calls, callId)?.turnId : undefined) ?? turnId(state, lane, event.id);
+  const turn = own(state.turns, assigned);
+  if (turn) indexExecutionTurn(state, executionId, turn);
 }
 function assignedExecutionTurn(state: ProjectionState, lane: string, executionId: string): Turn | undefined {
-  for (const row of lane === 'root' ? state.eventLog : [...state.eventLog].reverse()) {
-    const input = row.event.type.startsWith('user.') || row.event.type === 'session.updated';
-    if ((input ? row.consumedByExecutionId ?? row.executionId : row.executionId) !== executionId) continue;
-    const event = row.event;
-    const id = event.id;
-    if (!id) continue;
-    const callId = str(field(event, 'toolUseId', 'tool_use_id')) ?? str(field(event, 'customToolUseId', 'custom_tool_use_id'));
-    const assigned = own(state.inputTurns, id) ?? own(state.items, id)?.turn_id ??
-      (event.type === 'user.tool_confirmation' && callId ? own(state.calls, callId)?.turnId : undefined) ?? turnId(state, lane, id);
-    const turn = assigned ? own(state.turns, assigned) : undefined;
-    if (turn && (turn.subagent_id ?? 'root') === lane) return turn;
-  }
-  const assigned = own(state.inputTurns, executionId);
+  const assigned = own(state.indexes.executionTurns, assignmentKey(lane, executionId)) ?? own(state.inputTurns, executionId);
   const turn = assigned ? own(state.turns, assigned) : undefined;
   return turn && (turn.subagent_id ?? 'root') === lane ? turn : undefined;
 }
@@ -126,10 +139,8 @@ function texts(value: unknown): Array<{ type: 'output_text'; text: string }> {
 function updateSessionStatus(state: ProjectionState): void {
   const roots = state.lanes.root;
   const root = roots?.currentTurnId ? own(state.turns, roots.currentTurnId) : undefined;
-  const active = state.turnOrder.map(id => state.turns[id]).filter(turn => !isTerminal(turn));
-  const liveTurnIds = new Set(active.map(turn => turn.id));
-  state.requiredActions = state.requiredActions.filter(action => action.type !== 'function_call' || liveTurnIds.has(action.turn_id));
-  state.status = state.requiredActions.length > 0 ? 'requires_action' : active.length > 0 ? 'in_progress' : 'idle';
+  state.requiredActions = state.requiredActions.filter(action => action.type !== 'function_call' || !isTerminal(state.turns[action.turn_id]));
+  state.status = state.requiredActions.length > 0 ? 'requires_action' : state.indexes.activeTurns > 0 ? 'in_progress' : 'idle';
   state.error = root?.status === 'failed' ? root.error?.message ?? null : null;
 }
 
@@ -137,11 +148,21 @@ export function acceptInput(state: ProjectionState, events: readonly ManagedProj
   return applyManagedEvents(state, events, context);
 }
 
+/** Immutable API: clone only if an event is actually admitted, after dedupe. */
 export function applyManagedEvents(previous: ProjectionState, managedEvents: readonly (ManagedProjectionEvent | OpenMAEvent)[], context: ProjectionContext): ProjectionResult {
+  return reduceManagedEvents(previous, managedEvents, context, false);
+}
+
+/** For replay/poll owners with exclusive access to their accumulator. Emitted
+ * public events are still detached snapshots, safe to retain across updates. */
+export function applyManagedEventsInPlace(state: ProjectionState, managedEvents: readonly (ManagedProjectionEvent | OpenMAEvent)[], context: ProjectionContext): ProjectionResult {
+  return reduceManagedEvents(state, managedEvents, context, true);
+}
+
+function reduceManagedEvents(previous: ProjectionState, managedEvents: readonly (ManagedProjectionEvent | OpenMAEvent)[], context: ProjectionContext, inPlace: boolean): ProjectionResult {
   if (!Number.isFinite(context.observedAt) || context.observedAt < 0) throw new ProjectionError('invalid_observation_time', 'observedAt must be Unix seconds');
   if (context.session && context.session.id !== previous.sessionId) throw new ProjectionError('session_mismatch', 'Session snapshot belongs to another projection');
-  const state = clone(previous);
-  state.workItems ??= {}; state.workItemLanes ??= {}; state.parentToolLanes ??= {};
+  let state = previous;
   const emitted: AgentSessionEvent[] = [];
   const emit = (value: unknown): void => { emitted.push(clone(value) as AgentSessionEvent); };
   function emitTurn(turn: Turn, source: string, kind: string): void {
@@ -165,7 +186,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     if (current && !isTerminal(current)) return current;
     const id = turnId(state, name, source);
     const next: Turn = { id, agent_id: name === 'root' ? state.agentId : name, object: 'agent.session.turn', session_id: state.sessionId, subagent_id: name === 'root' ? null : name, created_at: at, started_at: null, completed_at: null, status: 'queued', error: null, usage: null };
-    put(state.turns, id, next); state.turnOrder.push(id); lane(name).currentTurnId = id; lane(name).ambiguous = false;
+    put(state.turns, id, next); state.turnOrder.push(id); state.indexes.activeTurns++; indexExecutionTurn(state, execution, next); lane(name).currentTurnId = id; lane(name).ambiguous = false;
     emitTurn(next, source, 'created'); return next;
   }
   function itemIndex(item: AgentSessionItem, name: string): number | null {
@@ -174,7 +195,9 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     if (item.id === null) return null;
     const existing = own(state.outputIndices, item.id);
     if (existing !== undefined) return existing;
-    const index = state.itemOrder.filter(id => own(state.itemLanes, id) === name && state.items[id].turn_id === item.turn_id && own(state.outputIndices, id) !== undefined).length;
+    const key = assignmentKey(name, item.turn_id);
+    const index = own(state.indexes.nextOutputIndex, key) ?? 0;
+    put(state.indexes.nextOutputIndex, key, index + 1);
     put(state.outputIndices, item.id, index); return index;
   }
   function saveItem(item: AgentSessionItem, name: string, source: string, final: boolean): void {
@@ -184,6 +207,8 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     const outputIndex = itemIndex(item, name);
     if (!existing) {
       state.itemOrder.push(item.id); put(state.itemLanes, item.id, name);
+      if (!own(state.indexes.itemIdsByTurn, item.turn_id)) put(state.indexes.itemIdsByTurn, item.turn_id, []);
+      state.indexes.itemIdsByTurn[item.turn_id].push(item.id);
       emit({ type: 'agent.session.turn.item.added', event_id: eventId(source, `item.${encodeURIComponent(item.id)}.added`), session_id: state.sessionId, turn_id: item.turn_id, output_index: outputIndex, item });
     }
     put(state.items, item.id, clone(item));
@@ -204,13 +229,15 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
   function finish(turn: Turn, status: 'completed' | 'failed' | 'cancelled', at: number, source: string, error: SessionTurnError | null = null): void {
     if (isTerminal(turn)) return;
     turn.status = status; turn.completed_at = at; turn.error = error;
-    for (const [id, call] of Object.entries(state.calls)) {
+    state.indexes.activeTurns--;
+    for (const id of own(state.indexes.callIdsByTurn, turn.id) ?? []) {
+      const call = state.calls[id];
       if (call.turnId !== turn.id || !call.pending) continue;
       call.pending = false;
       const item = own(state.items, call.itemId);
       if (item && 'status' in item) { item.status = status === 'completed' ? 'completed' : 'incomplete'; saveItem(item, call.laneId, `${source}:${id}`, true); }
     }
-    for (const id of state.itemOrder) {
+    for (const id of own(state.indexes.itemIdsByTurn, turn.id) ?? []) {
       const item = state.items[id];
       if (item.turn_id !== turn.id || !('status' in item) || item.status !== 'in_progress') continue;
       const updated = { ...item, status: status === 'completed' ? 'completed' : 'incomplete' } as AgentSessionItem;
@@ -276,11 +303,13 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
     execution = isInput ? consumer ?? admittedExecution : admittedExecution;
     const seenKey = `${encodeURIComponent(name)}:${encodeURIComponent(event.type)}:${encodeURIComponent(id)}`;
     if (own(state.seenEventIds, seenKey)) continue;
+    if (!inPlace && state === previous) state = clone(previous);
     put(state.seenEventIds, seenKey, true);
     state.eventLog.push({ event: clone(event), executionId: admittedExecution, consumedByExecutionId: consumer });
     const at = eventTime(event, context);
     const beforeStatus = state.status;
     const beforeActions = JSON.stringify(state.requiredActions);
+    try {
     if (canonical && event.type.startsWith('work_item.')) {
       const workId = canonical.work_item_id;
       if (!workId) { unresolved(event, id, 'Work item is missing its identity'); continue; }
@@ -331,7 +360,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
       call.pending = false;
       state.requiredActions = state.requiredActions.filter(action => action.type !== 'function_call' || action.call_id !== callId);
       put(state.inputTurns, id, turn.id);
-      if (call.kind === 'custom' && !isTerminal(turn) && !Object.values(state.calls).some(value => value.turnId === turn.id && value.kind === 'custom' && value.pending)) turn.status = 'queued';
+      if (call.kind === 'custom' && !isTerminal(turn) && !(own(state.indexes.callIdsByTurn, turn.id) ?? []).some(id => state.calls[id].kind === 'custom' && state.calls[id].pending)) turn.status = 'queued';
     } else {
       let turn = locateTurn(name);
       const output = event.type === 'agent.message' || event.type === 'agent.thinking' || event.type === 'agent.custom_tool_use' || event.type === 'agent.tool_use' || event.type === 'agent.mcp_tool_use' || event.type === 'event_start' || event.type === 'event_delta' || /^agent\.(message|thinking)(_stream_start|_chunk|_stream_end)$/.test(event.type);
@@ -389,7 +418,7 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         if (event.interrupted === true) finish(turn, 'cancelled', at, id);
         else if (reason.type === 'requires_action') turn.status = 'waiting';
         else if (reason.type === 'budget_reached' || reason.type === 'retries_exhausted') finish(turn, 'failed', at, id, { code: reason.type === 'budget_reached' ? 'session_budget_exceeded' : 'server_error', message: reason.type === 'budget_reached' ? 'Session budget reached' : 'Execution retries exhausted' });
-        else if (reason.type === 'end_turn' && !lane(name).ambiguous && !Object.values(state.calls).some(call => call.turnId === turn!.id && call.pending)) finish(turn, 'completed', at, id);
+        else if (reason.type === 'end_turn' && !lane(name).ambiguous && !(own(state.indexes.callIdsByTurn, turn.id) ?? []).some(id => state.calls[id].pending)) finish(turn, 'completed', at, id);
         else if (reason.type !== 'end_turn') lane(name).ambiguous = true;
       } else if (event.type === 'agent.message') {
         if (!turn) { unresolved(event, id, 'Message has no observed turn association'); continue; }
@@ -404,6 +433,8 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
         const projected = toolItem(event, callId, turn.id, name === 'root' ? state.agentId : name);
         if (!projected) { unresolved(event, id, 'Tool call lacks a name or MCP server identity'); continue; }
         saveItem(projected.item, name, id, false);
+        if (!own(state.indexes.callIdsByTurn, turn.id)) put(state.indexes.callIdsByTurn, turn.id, []);
+        state.indexes.callIdsByTurn[turn.id].push(callId);
         put(state.calls, callId, { turnId: turn.id, laneId: name, itemId: callId, kind: projected.kind, pending: !isTerminal(turn), name: event.name as string, arguments: clone(event.input ?? {}) });
         if (projected.kind === 'custom' && !isTerminal(turn)) {
           state.requiredActions.push({ type: 'function_call', turn_id: turn.id, call_id: callId, name: event.name as string, arguments: clone(event.input ?? {}) });
@@ -442,6 +473,9 @@ export function applyManagedEvents(previous: ProjectionState, managedEvents: rea
           if (delta !== null) emit({ type: 'agent.session.turn.output_text.delta', event_id: eventId(id, 'text.delta'), session_id: state.sessionId, turn_id: turn.id, item_id: itemId, output_index: state.outputIndices[itemId], content_index: 0, delta });
         }
       }
+    }
+    } finally {
+      indexRowAssignment(state, event, execution, name);
     }
     updateSessionStatus(state);
     if (context.session && (state.status !== beforeStatus || JSON.stringify(state.requiredActions) !== beforeActions)) emit({ type: `agent.session.${state.status}`, event_id: eventId(id, `session.${state.status}`), session: { ...context.session, status: state.status, error: state.error, required_actions: clone(state.requiredActions), usage: state.usage } });
