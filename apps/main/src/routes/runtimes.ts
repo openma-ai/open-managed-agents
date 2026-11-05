@@ -33,10 +33,12 @@ import {
   type RuntimePairingTokenResponse,
 } from "@open-managed-agents/shared";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/known-agents";
-import type { Services } from "@open-managed-agents/services";
+import { buildCfServices, buildCfTenantDbProvider, type Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
-import { SqlSessionEnvironmentSource } from "@open-managed-agents/managed-agents-adapters-sql";
+import { SqlSessionEnvironmentSource, SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
+import { encodeRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
+import { withMissingManagedSessionSchemaFallback } from "../lib/managed-session-runtime-source";
 
 /** Browser-facing routes — mounted under /v1/oma/runtimes. */
 export const runtimesRoutes = new Hono<{
@@ -699,15 +701,29 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   const acpAgentId = c.req.query("agent_id");
   if (!acpAgentId) return c.json({ error: "agent_id query required" }, 400);
 
-  const services = c.get("services");
-  const session = await services.sessions.getById({ sessionId: sid }).catch(() => null);
+  // These routes run outside user-auth middleware. Resolve the shard from
+  // the authenticated machine's workspace, not the middleware's default DB.
+  const tenantDb = await buildCfTenantDbProvider(c.env).resolve(ok.tenant_id);
+  const services = buildCfServices(c.env, tenantDb);
+  const managedSession = await withMissingManagedSessionSchemaFallback(
+    () => new SqlSessionSource(new CfD1SqlClient(tenantDb))
+      .find({ workspaceId: ok.tenant_id, sessionId: sid }),
+    async () => null,
+  );
+  // Canonical sessions win; never fall through to a legacy row when a
+  // canonical record exists but is archived or bound to a different Runtime.
+  const legacySession = managedSession === null
+    ? await services.sessions.get({ tenantId: ok.tenant_id, sessionId: sid })
+    : null;
   // Return 404 (not 403) for cross-tenant misses too — same response a
   // legitimately-missing sid would produce, so the endpoint doesn't double
   // as an existence oracle for sids in other tenants.
-  if (!session || session.tenant_id !== ok.tenant_id) {
+  if ((!managedSession && !legacySession) || managedSession?.archivedAt || legacySession?.archived_at) {
     return c.json({ error: "session not found" }, 404);
   }
-  const agent = (session as { agent_snapshot?: AgentConfig }).agent_snapshot;
+  const agent = managedSession
+    ? encodeRuntimeAgentSnapshot(managedSession.agent, managedSession)
+    : legacySession?.agent_snapshot;
   if (!agent) return c.json({ error: "session has no agent snapshot" }, 500);
 
   // Runtime ownership check: a daemon can only fetch bundles for sessions
@@ -722,7 +738,7 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
     return c.json({ error: "session not found" }, 404);
   }
 
-  const files = await renderSessionBundle(agent, acpAgentId, c.var.services, ok.tenant_id);
+  const files = await renderSessionBundle(agent, acpAgentId, services, ok.tenant_id);
   // Per-agent blocklist of LOCAL skills the user has on their machine
   // — daemon enforces by NOT symlinking these into the spawn-cwd's
   // CLAUDE_CONFIG_DIR. Always send an array (possibly empty) so the
@@ -752,15 +768,18 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   // daemon as plain { name, value } pairs; the daemon merges them into
   // the spawned ACP child's process.env. Empty-value resources are
   // skipped so the child doesn't see odd "X=" entries.
-  const services2 = c.get("services");
-  const sessionResources = await services2.sessions.listResourcesBySession({ sessionId: sid });
+  // `env` resources are a legacy OMA extension, absent from the managed
+  // resource contract. Do not read legacy resources for a canonical session.
+  const sessionResources = legacySession
+    ? await services.sessions.listResourcesBySession({ sessionId: sid })
+    : [];
   // Environment overlay first (Amp `--amp-env` style): an Environment
   // attached to THIS runtime contributes its `_oma.runtime.env` to the
   // host runner. Per-session env resources below override it by name.
   const environmentEnv = await runtimeEnvironmentOverlay(
-    c.var.tenantDb ?? c.env.MAIN_DB,
+    tenantDb,
     ok.tenant_id,
-    (session as { environment_id?: string | null }).environment_id ?? null,
+    managedSession?.environmentId ?? legacySession?.environment_id ?? null,
     ok.runtime_id,
   );
   const env: Array<{ name: string; value: string }> = Object.entries(environmentEnv)
@@ -768,7 +787,7 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   for (const row of sessionResources) {
     const r = row.resource as { type?: string; name?: string };
     if ((r.type === "env" || r.type === "env_secret") && r.name) {
-      const value = await services2.sessionSecrets.get({
+      const value = await services.sessionSecrets.get({
         tenantId: ok.tenant_id,
         sessionId: sid,
         resourceId: row.id,
@@ -834,7 +853,7 @@ export async function runtimeEnvironmentOverlay(
  * because one skill's manifest is gone.
  */
 async function renderSessionBundle(
-  agent: AgentConfig,
+  agent: Pick<AgentConfig, "name" | "system" | "skills" | "appendable_prompts"> & { description?: string | null },
   acpAgentId: string,
   services: Services,
   tenantId: string,

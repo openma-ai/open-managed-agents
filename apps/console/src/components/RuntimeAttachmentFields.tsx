@@ -69,7 +69,8 @@ export function RuntimeAttachmentFields({
           </Select>
         )}
         <p className="text-xs text-fg-subtle mt-1">
-          Sessions on this environment run on that machine instead of a provisioned sandbox.
+          To use this overlay, select an agent configured for the same Runtime.
+          Attaching this environment does not yet choose where sessions run.
         </p>
       </div>
       <div>

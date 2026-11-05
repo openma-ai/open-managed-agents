@@ -1148,6 +1148,111 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
     });
   }
 
+  async function bundleFixture() {
+    const { key, tenantId, userId } = await seedUserWithKey();
+    const runtimeId = `rt_bundle_${tenantId}`;
+    const { tokenPlain } = await seedRuntime({
+      runtimeId, userId, ownerTenantId: tenantId,
+      memberships: [{ tenant_id: tenantId, role: "owner" }],
+    });
+    const post = async (path: string, body: unknown, status = 201) => {
+      const response = await api(path, {
+        method: "POST",
+        headers: { "x-api-key": key, "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01" },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(status);
+      return result;
+    };
+    const environment = await post("/v1/environments", {
+      name: "bundle host", config: { type: "self_hosted" },
+      _oma: { runtime: { runtime_id: runtimeId, env: { OVERLAY: "from-environment" } } },
+    });
+    const agent = await post("/v1/agents", {
+      name: "bundle agent", model: "claude-sonnet-4-6", system: "Pinned bundle instructions",
+      _oma: { harness: "acp-proxy", runtime_binding: { runtime_id: runtimeId, acp_agent_id: "claude-code" } },
+    });
+    // No messages/turns: exercise persistence and delivery without model inference.
+    const session = await post("/v1/sessions", { agent: agent.id, environment_id: environment.id });
+    expect(session.environment_id).toBe(environment.id);
+    const bundle = (sid = session.id, token = tokenPlain) => api(
+      `/agents/runtime/sessions/${sid}/bundle?agent_id=claude-code`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    return { bundle, post, session, environment, agent, runtimeId, tenantId, userId };
+  }
+
+  it("delivers the overlay and pinned agent for a session created through the public managed API", async () => {
+    const { bundle, post, agent } = await bundleFixture();
+    await post(`/v1/agents/${agent.id}`, { system: "Later agent instructions" }, 200);
+    const response = await bundle();
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.env).toEqual([{ name: "OVERLAY", value: "from-environment" }]);
+    expect(result.files).toContainEqual({ path: "AGENTS.md", content: expect.stringContaining("Pinned bundle instructions") });
+    expect(JSON.stringify(result.files)).not.toContain("Later agent instructions");
+  });
+
+  it("hides bundles from another runtime/workspace and after session archive", async () => {
+    const { bundle, post, session, tenantId, userId } = await bundleFixture();
+    for (const workspace of [tenantId, `${tenantId}_other`]) {
+      const { tokenPlain } = await seedRuntime({
+        runtimeId: `rt_other_${workspace}`, userId, ownerTenantId: workspace,
+        memberships: [{ tenant_id: workspace, role: "owner" }],
+      });
+      const denied = await bundle(session.id, tokenPlain);
+      expect(denied.status).toBe(404);
+      expect(await denied.json()).toMatchObject({ error: { type: "not_found_error", message: "session not found" } });
+    }
+    expect((await bundle("session_missing")).status).toBe(404);
+    expect((await bundle(session.id, "invalid")).status).toBe(401);
+    await post(`/v1/sessions/${session.id}/archive`, {}, 200);
+    expect((await bundle()).status).toBe(404);
+  });
+
+  it("reads current overlay edits but omits detached, mismatched and archived attachments", async () => {
+    const { bundle, post, environment, runtimeId } = await bundleFixture();
+    for (const [runtime, expected] of [
+      [{ runtime_id: runtimeId, env: { OVERLAY: "edited", EMPTY: "" } }, [{ name: "OVERLAY", value: "edited" }, { name: "EMPTY", value: "" }]],
+      [{ runtime_id: "rt_elsewhere", env: { OVERLAY: "must-not-leak" } }, []],
+      [null, []],
+    ] as const) {
+      await post(`/v1/environments/${environment.id}`, { _oma: { runtime } }, 200);
+      const response = await bundle();
+      expect(response.status).toBe(200);
+      expect((await response.json()).env).toEqual(expected);
+    }
+    await post(`/v1/environments/${environment.id}`, {
+      _oma: { runtime: { runtime_id: runtimeId, env: { OVERLAY: "archived" } } },
+    }, 200);
+    await post(`/v1/environments/${environment.id}/archive`, {}, 200);
+    expect((await (await bundle()).json()).env).toEqual([]);
+  });
+
+  it("preserves legacy session env precedence and blocks archived legacy bundles", async () => {
+    const { bundle, environment, agent, tenantId } = await bundleFixture();
+    const { getCfServicesForTenant } = await import("@open-managed-agents/services");
+    const { loadRuntimeAgentSnapshot } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+    const services = await getCfServicesForTenant(env, tenantId);
+    const agentSnapshot = await loadRuntimeAgentSnapshot(services.agents, tenantId, agent.id);
+    const { session, resources } = await services.sessions.create({
+      tenantId, agentId: agent.id, environmentId: environment.id,
+      agentSnapshot,
+      resources: [{ type: "env", name: "OVERLAY" }, { type: "env", name: "SESSION_ONLY" }],
+    });
+    for (const resource of resources) {
+      await services.sessionSecrets.put({ tenantId, sessionId: session.id, resourceId: resource.id, value: "from-session" });
+    }
+    const response = await bundle(session.id);
+    expect(response.status).toBe(200);
+    expect((await response.json()).env).toEqual([
+      { name: "OVERLAY", value: "from-session" }, { name: "SESSION_ONLY", value: "from-session" },
+    ]);
+    await services.sessions.archive({ tenantId, sessionId: session.id });
+    expect((await bundle(session.id)).status).toBe(404);
+  });
+
   it("mints a single-use token that the unchanged /exchange accepts once", async () => {
     const { parseRuntimePairingToken } = await import("@open-managed-agents/api-types");
     const { key, tenantId } = await seedUserWithKey();
