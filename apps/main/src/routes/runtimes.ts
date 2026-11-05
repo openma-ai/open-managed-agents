@@ -738,7 +738,11 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
     return c.json({ error: "session not found" }, 404);
   }
 
-  const files = await renderSessionBundle(agent, acpAgentId, services, ok.tenant_id);
+  // Opt-in protocol: new daemons materialize complete versioned packages via
+  // the Skills API. Older daemons retain the legacy text bundle layout.
+  const skillCache = c.req.query("skill_cache") === "1";
+  if (skillCache) console.log("[runtime.bundle] managed skill references", { sessionId: sid, count: agent.skills?.length ?? 0 });
+  const files = await renderSessionBundle(skillCache ? { ...agent, skills: [] } : agent, acpAgentId, services, ok.tenant_id);
   // Per-agent blocklist of LOCAL skills the user has on their machine
   // — daemon enforces by NOT symlinking these into the spawn-cwd's
   // CLAUDE_CONFIG_DIR. Always send an array (possibly empty) so the
@@ -799,7 +803,11 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
     }
   }
 
-  return c.json({ files, local_skill_blocklist, mcp_servers, env });
+  return c.json({ files, local_skill_blocklist, mcp_servers, env,
+    ...(skillCache ? { managed_skills: (agent.skills ?? []).map((s) => ({
+      skill_id: s.skill_id, type: s.type, version: s.version ?? "latest",
+    })) } : {}),
+  });
 });
 
 /**

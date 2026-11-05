@@ -1,0 +1,56 @@
+Linux live filesystem observations; not botty Mac
+2026-11-05T10:44:06.255Z
+
+Session a session_ec22f79f59a9479785d401c064ff9218
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+device=65040 inode=1231387 mode=555 target=/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills/skill_d8fd90d245794d3e83d1444885dadc7f
+lrwxrwxrwx 1 box box  108 Nov  5 05:44 /home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills/skill_d8fd90d245794d3e83d1444885dadc7f -> /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+dr-xr-xr-x 3 box box 4096 Nov  5 05:44 /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+
+Session b session_857f8d84a4f249c288a6991cbf751327
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+device=65040 inode=1231387 mode=555 target=/home/box/.oma/bridge-pr498-skill-proof/sessions/9985446e855f/skills/skill_d8fd90d245794d3e83d1444885dadc7f
+lrwxrwxrwx 1 box box  108 Nov  5 05:44 /home/box/.oma/bridge-pr498-skill-proof/sessions/9985446e855f/skills/skill_d8fd90d245794d3e83d1444885dadc7f -> /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+dr-xr-xr-x 3 box box 4096 Nov  5 05:44 /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+
+Session resumedA session_ec22f79f59a9479785d401c064ff9218
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+device=65040 inode=1231387 mode=555 target=/home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills/skill_d8fd90d245794d3e83d1444885dadc7f
+lrwxrwxrwx 1 box box  108 Nov  5 05:44 /home/box/.oma/bridge-pr498-skill-proof/sessions/76b520e4e40f/skills/skill_d8fd90d245794d3e83d1444885dadc7f -> /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+dr-xr-xr-x 3 box box 4096 Nov  5 05:44 /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+
+Session c session_fe3d3dd65aba4f1290077cc7fb7a2e37
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000
+device=65040 inode=1231392 mode=555 target=/home/box/.oma/bridge-pr498-skill-proof/sessions/c84d508ae981/skills/skill_d8fd90d245794d3e83d1444885dadc7f
+lrwxrwxrwx 1 box box  108 Nov  5 05:44 /home/box/.oma/bridge-pr498-skill-proof/sessions/c84d508ae981/skills/skill_d8fd90d245794d3e83d1444885dadc7f -> /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000
+dr-xr-xr-x 3 box box 4096 Nov  5 05:44 /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000
+
+Session pinned session_169c16049e0946b9a21b5b804ee7bc9f
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+device=65040 inode=1231387 mode=555 target=/home/box/.oma/bridge-pr498-skill-proof/sessions/f40491a14ed1/skills/skill_d8fd90d245794d3e83d1444885dadc7f
+lrwxrwxrwx 1 box box  108 Nov  5 05:44 /home/box/.oma/bridge-pr498-skill-proof/sessions/f40491a14ed1/skills/skill_d8fd90d245794d3e83d1444885dadc7f -> /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+dr-xr-xr-x 3 box box 4096 Nov  5 05:44 /home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000
+
+Cache versions
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f:
+total 8
+dr-xr-xr-x 3 box box 4096 Nov  5 05:44 1793875437803000
+dr-xr-xr-x 3 box box 4096 Nov  5 05:44 1793875442149000
+
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000:
+total 4
+dr-xr-xr-x 2 box box 4096 Nov  5 05:44 runtime-cache-proof
+
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875437803000/runtime-cache-proof:
+total 8
+-r--r--r-- 1 box box 116 Nov  5 05:44 SKILL.md
+-r--r--r-- 1 box box   3 Nov  5 05:44 asset.bin
+
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000:
+total 4
+dr-xr-xr-x 2 box box 4096 Nov  5 05:44 runtime-cache-proof
+
+/home/box/.oma/cache/skills/f3348be5080dd851451ec876/skill_d8fd90d245794d3e83d1444885dadc7f/1793875442149000/runtime-cache-proof:
+total 8
+-r--r--r-- 1 box box 116 Nov  5 05:44 SKILL.md
+-r--r--r-- 1 box box   3 Nov  5 05:44 asset.bin

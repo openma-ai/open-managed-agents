@@ -1148,7 +1148,7 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
     });
   }
 
-  async function bundleFixture() {
+  async function bundleFixture(skills = []) {
     const { key, tenantId, userId } = await seedUserWithKey();
     const runtimeId = `rt_bundle_${tenantId}`;
     const { tokenPlain } = await seedRuntime({
@@ -1170,14 +1170,14 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
       _oma: { runtime: { runtime_id: runtimeId, env: { OVERLAY: "from-environment" } } },
     });
     const agent = await post("/v1/agents", {
-      name: "bundle agent", model: "claude-sonnet-4-6", system: "Pinned bundle instructions",
+      name: "bundle agent", model: "claude-sonnet-4-6", system: "Pinned bundle instructions", skills,
       _oma: { harness: "acp-proxy", runtime_binding: { runtime_id: runtimeId, acp_agent_id: "claude-code" } },
     });
     // No messages/turns: exercise persistence and delivery without model inference.
     const session = await post("/v1/sessions", { agent: agent.id, environment_id: environment.id });
     expect(session.environment_id).toBe(environment.id);
-    const bundle = (sid = session.id, token = tokenPlain) => api(
-      `/agents/runtime/sessions/${sid}/bundle?agent_id=claude-code`,
+    const bundle = (sid = session.id, token = tokenPlain, cache = false) => api(
+      `/agents/runtime/sessions/${sid}/bundle?agent_id=claude-code${cache ? "&skill_cache=1" : ""}`,
       { headers: { authorization: `Bearer ${token}` } },
     );
     return { bundle, post, session, environment, agent, runtimeId, tenantId, userId };
@@ -1192,6 +1192,22 @@ describe("Runtime pairing tokens + Environment env overlay", () => {
     expect(result.env).toEqual([{ name: "OVERLAY", value: "from-environment" }]);
     expect(result.files).toContainEqual({ path: "AGENTS.md", content: expect.stringContaining("Pinned bundle instructions") });
     expect(JSON.stringify(result.files)).not.toContain("Later agent instructions");
+  });
+
+  it("serves managed skill references from the Session snapshot without text extracts", async () => {
+    const skills = [{ type: "custom", skill_id: "skill_cache_latest" },
+      { type: "custom", skill_id: "skill_cache_pinned", version: "version_1" }];
+    const { bundle, post, agent, session } = await bundleFixture(skills);
+    await post(`/v1/agents/${agent.id}`, { skills: [] }, 200);
+    const response = await bundle(session.id, undefined, true);
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.managed_skills).toEqual([
+      { ...skills[0], version: "latest" }, skills[1],
+    ]);
+    expect(result.files).toEqual([{ path: "AGENTS.md", content: expect.stringContaining("Pinned bundle instructions") }]);
+    expect(result.files[0].content).not.toContain("content unavailable");
+    expect((await (await bundle()).json()).managed_skills).toBeUndefined();
   });
 
   it("hides bundles from another runtime/workspace and after session archive", async () => {

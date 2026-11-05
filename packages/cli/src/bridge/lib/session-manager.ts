@@ -60,6 +60,7 @@ import {
   writeBundle,
 } from "./session-cwd.js";
 import { setupClaudeConfigDir } from "./claude-config-dir.js";
+import { materializeManagedSkills, configureManagedSkills, managedSkillInstructions, type SkillBinding, type MaterializedSkill } from "./managed-skills.js";
 
 export interface SessionStartParams {
   session_id: string;
@@ -152,6 +153,7 @@ interface BundleEnvVar {
   value: string;
 }
 interface SessionBundle {
+  managed_skills?: SkillBinding[];
   files: BundleFile[];
   /** Per-agent local-skill blocklist — daemon hides any skill with id in
    *  this list from the spawn by NOT symlinking it into CLAUDE_CONFIG_DIR.
@@ -440,9 +442,10 @@ export class SessionManager {
 
     // Fetch the bundle (AGENTS.md + .claude/skills/...) from main and
     // materialize it into the scratch dir before starting the ACP child.
-    // A platform cwd does not receive those files. Bundle errors are
-    // non-fatal — we still spawn; the agent just won't see OMA's prompt/skills.
+    // A platform cwd does not receive those files. Preparation fails closed
+    // if a bundle or managed skill cannot be materialized.
     let blocklist: string[] = [];
+    let managedSkills: MaterializedSkill[] = [];
     let bundleMcpServers: BundleMcpServer[] = [];
     let bundleEnv: BundleEnvVar[] = [];
     try {
@@ -451,13 +454,20 @@ export class SessionManager {
       // inline) regardless of which alias the AgentConfig row stores.
       const bundle = await this.#fetchBundle(p.session_id, agent.id);
       if (bundle) {
-        await writeBundle(scratchDir, bundle.files);
+        managedSkills = await materializeManagedSkills({
+          sessionDir: scratchDir, skills: bundle.managed_skills ?? [],
+          apiUrl: this.#env.apiUrl, tenantId, agentApiKey: tenantKey,
+        });
+        await writeBundle(scratchDir, bundle.files.map((f) => f.path === "AGENTS.md"
+          ? { ...f, content: f.content + managedSkillInstructions(managedSkills) } : f));
         blocklist = bundle.local_skill_blocklist ?? [];
         bundleMcpServers = bundle.mcp_servers ?? [];
         bundleEnv = bundle.env ?? [];
       }
     } catch (e) {
-      process.stderr.write(`  ! bundle fetch failed (non-fatal): ${(e as Error).message}\n`);
+      this.#send({ type: "session.error", session_id: p.session_id, tenant_id: tenantId,
+        message: `Session bundle preparation failed: ${(e as Error).message}` });
+      return;
     }
 
     // For Claude Code we redirect ~/.claude → <scratch>/.claude-config so
@@ -469,7 +479,7 @@ export class SessionManager {
     const extraEnv: Record<string, string | undefined> = {};
     if (agent.id === "claude-acp") {
       try {
-        const cfgDir = await setupClaudeConfigDir(scratchDir, new Set(blocklist));
+        const cfgDir = await setupClaudeConfigDir(scratchDir, new Set([...blocklist, ...managedSkills.map((s) => s.skill_id)]));
         extraEnv.CLAUDE_CONFIG_DIR = cfgDir;
       } catch (e) {
         process.stderr.write(
@@ -483,6 +493,13 @@ export class SessionManager {
     // session resources (type=env), so it should override the ACP
     // agent's defaults but stay below CLAUDE_CONFIG_DIR (which is a
     // session-cwd routing concern, not user data).
+    try {
+      Object.assign(extraEnv, await configureManagedSkills(scratchDir, agent.id, managedSkills, extraEnv.CLAUDE_CONFIG_DIR));
+    } catch (e) {
+      this.#send({ type: "session.error", session_id: p.session_id, tenant_id: tenantId,
+        message: `Managed skills configuration failed: ${(e as Error).message}` });
+      return;
+    }
     const envFromBundle: Record<string, string> = {};
     for (const v of bundleEnv) envFromBundle[v.name] = v.value;
 
@@ -771,6 +788,7 @@ export class SessionManager {
       `${this.#env.apiUrl.replace(/\/$/, "")}/agents/runtime/sessions/${encodeURIComponent(sid)}/bundle`,
     );
     url.searchParams.set("agent_id", acpAgentId);
+    url.searchParams.set("skill_cache", "1");
     const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${this.#env.runtimeToken}` },
     });

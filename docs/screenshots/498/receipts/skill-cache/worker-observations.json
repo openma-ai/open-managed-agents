@@ -1,0 +1,53 @@
+[
+  {
+    "eventTimestamp": 1793875440277,
+    "outcome": "ok",
+    "logs": [
+      {
+        "message": [
+          "[runtime.bundle] managed skill references",
+          {
+            "sessionId": "session_ec22f79f59a9479785d401c064ff9218",
+            "count": 1
+          }
+        ],
+        "level": "log",
+        "timestamp": 1793875440608
+      }
+    ]
+  },
+  {
+    "eventTimestamp": 1793875441268,
+    "outcome": "ok",
+    "logs": [
+      {
+        "message": [
+          "[runtime.bundle] managed skill references",
+          {
+            "sessionId": "session_857f8d84a4f249c288a6991cbf751327",
+            "count": 1
+          }
+        ],
+        "level": "log",
+        "timestamp": 1793875441591
+      }
+    ]
+  },
+  {
+    "eventTimestamp": 1793875443792,
+    "outcome": "ok",
+    "logs": [
+      {
+        "message": [
+          "[runtime.bundle] managed skill references",
+          {
+            "sessionId": "session_fe3d3dd65aba4f1290077cc7fb7a2e37",
+            "count": 1
+          }
+        ],
+        "level": "log",
+        "timestamp": 1793875444114
+      }
+    ]
+  }
+]

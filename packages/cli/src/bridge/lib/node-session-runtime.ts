@@ -1,3 +1,4 @@
+import { materializeManagedSkills, configureManagedSkills, managedSkillInstructions, type SkillBinding, type MaterializedSkill } from "./managed-skills.js";
 import { spawn as childSpawn } from "node:child_process";
 
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
@@ -33,6 +34,7 @@ interface BundleEnvVar {
 }
 
 interface SessionBundle {
+  managed_skills?: SkillBinding[];
   files: BundleFile[];
   local_skill_blocklist?: string[];
   mcp_servers?: BundleMcpServer[];
@@ -72,6 +74,7 @@ async function prepareNodeSession(input: SessionManagerPreparationInput) {
   const scratchDir = await ensureSessionCwd(input.command.sessionId);
   const processCwd = acpProcessCwd(scratchDir, input.command.cwd);
   let blocklist: string[] = [];
+  let managedSkills: MaterializedSkill[] = [];
   let bundleMcpServers: BundleMcpServer[] = [];
   let bundleEnv: BundleEnvVar[] = [];
   try {
@@ -81,15 +84,18 @@ async function prepareNodeSession(input: SessionManagerPreparationInput) {
       agent.id,
     );
     if (bundle) {
-      await writeBundle(scratchDir, bundle.files);
+      managedSkills = await materializeManagedSkills({
+        sessionDir: scratchDir, skills: bundle.managed_skills ?? [],
+        apiUrl: input.environment.apiUrl, tenantId: input.scope.id, agentApiKey: input.scope.agentApiKey,
+      });
+      await writeBundle(scratchDir, bundle.files.map((f) => f.path === "AGENTS.md"
+        ? { ...f, content: f.content + managedSkillInstructions(managedSkills) } : f));
       blocklist = bundle.local_skill_blocklist ?? [];
       bundleMcpServers = bundle.mcp_servers ?? [];
       bundleEnv = bundle.env ?? [];
     }
   } catch (error) {
-    process.stderr.write(
-      `  ! bundle fetch failed (non-fatal): ${(error as Error).message}\n`,
-    );
+    throw new Error(`Session bundle preparation failed: ${(error as Error).message}`);
   }
 
   const extraEnv: Record<string, string | undefined> = {};
@@ -97,7 +103,7 @@ async function prepareNodeSession(input: SessionManagerPreparationInput) {
     try {
       extraEnv.CLAUDE_CONFIG_DIR = await setupClaudeConfigDir(
         scratchDir,
-        new Set(blocklist),
+        new Set([...blocklist, ...managedSkills.map((s) => s.skill_id)]),
       );
     } catch (error) {
       process.stderr.write(
@@ -105,6 +111,8 @@ async function prepareNodeSession(input: SessionManagerPreparationInput) {
       );
     }
   }
+
+  Object.assign(extraEnv, await configureManagedSkills(scratchDir, agent.id, managedSkills, extraEnv.CLAUDE_CONFIG_DIR));
 
   const envFromBundle: Record<string, string> = {};
   for (const variable of bundleEnv) {
@@ -164,6 +172,7 @@ async function fetchSessionBundle(
     `${environment.apiUrl.replace(/\/$/, "")}/agents/runtime/sessions/${encodeURIComponent(sessionId)}/bundle`,
   );
   url.searchParams.set("agent_id", agentId);
+  url.searchParams.set("skill_cache", "1");
   const response = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${environment.runtimeToken}` },
   });

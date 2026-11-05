@@ -1,4 +1,5 @@
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { zipSync } from "fflate";
+import { access, chmod, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,7 @@ vi.mock("@open-managed-agents/acp-runtime/placement", () => ({
 import { acpSessionFixture } from "../../managed-agents-runtime/test/acp-fixtures";
 import { createNodeSessionManagerRuntimeDependencies } from "../src/bridge/lib/node-session-runtime";
 import { paths } from "../src/bridge/lib/platform";
+import { configureManagedSkills } from "../src/bridge/lib/managed-skills";
 import { SessionManager } from "../src/bridge/lib/session-manager";
 
 const BUNDLE = {
@@ -131,6 +133,72 @@ describe("session.start cwd", () => {
         fresh: true,
       }),
     ]);
+  });
+
+  it("prepares complete managed packages for both daemon paths, pins latest on reapply, and keeps projects untouched", async () => {
+    const originalFetch = globalThis.fetch;
+    let latest = "v1";
+    let downloads = 0;
+    const skillId = `skill_cwd_${Date.now()}`;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/bundle")) {
+        expect(url).toContain("skill_cache=1");
+        return Response.json({ files: [{ path: "AGENTS.md", content: "# from oma\n" }],
+          managed_skills: [{ skill_id: skillId, type: "custom" }] });
+      }
+      expect(new Headers(init?.headers).get("x-api-key")).toBe("oma_fixture_key");
+      if (url.endsWith(`/skills/${skillId}`)) return Response.json({ latest_version_id: latest });
+      if (url.endsWith("/content")) {
+        downloads++;
+        return new Response(zipSync({ "demo/SKILL.md": Buffer.from("skill version"),
+          "demo/references/data.bin": new Uint8Array([0, 255]) }));
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    }) as typeof fetch;
+    try {
+      const project = await projectDir();
+      const a = "ca11aaaaaa11";
+      const b = "cb11bbbbbb11";
+      const c = "cc11cccccc11";
+      const first = await startPrepared(a, project);
+      const second = await startLegacy(b, project);
+      expect(first.started).toHaveLength(1);
+      expect(second.started).toHaveLength(1);
+      const link = (id: string) => join(scratchDir(id), "skills", skillId);
+      const target = await readlink(link(a));
+      expect(await readlink(link(b))).toBe(target);
+      expect(downloads).toBe(1);
+      const cfg = join(scratchDir(a), ".claude-config");
+      await configureManagedSkills(scratchDir(a), "claude-acp", [{
+        skill_id: skillId, version: "v1", cachePath: target, linkPath: link(a), manifests: ["demo/SKILL.md"],
+      }], cfg);
+      expect(await readlink(join(cfg, "skills", skillId))).toBe(join(target, "demo"));
+      expect(await readFile(join(cfg, "skills", skillId, "SKILL.md"), "utf8")).toBe("skill version");
+      latest = "v2";
+      await startPrepared(a, project); // New manager models a daemon restart.
+      expect(await readlink(link(a))).toBe(target);
+      await startPrepared(c, project);
+      expect(await readlink(link(c))).not.toBe(target);
+      expect(downloads).toBe(2);
+      expect(await readFile(join(link(a), "demo/references/data.bin"))).toEqual(Buffer.from([0, 255]));
+      expect(await readFile(join(scratchDir(a), "AGENTS.md"), "utf8")).toContain(`${skillId}@v1`);
+      expect(first.started[0].agent).toMatchObject({ env: { OPENMA_SKILLS_DIR: join(scratchDir(a), "skills") } });
+      await expectNoBundle(project);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it("does not spawn with a missing managed skill or a failed bundle fetch", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("unavailable", { status: 503 })) as typeof fetch;
+    try {
+      const prepared = await startPrepared("fa11aaaaaa11");
+      const legacy = await startLegacy("fb11bbbbbb11");
+      for (const result of [prepared, legacy]) {
+        expect(result.started).toEqual([]);
+        expect(result.messages).toContainEqual(expect.objectContaining({ type: "session.error" }));
+      }
+    } finally { globalThis.fetch = originalFetch; }
   });
 
   it("the legacy spawn uses the project path as the ACP cwd and writes the bundle to the scratch dir", async () => {

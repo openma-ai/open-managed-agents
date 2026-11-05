@@ -3,7 +3,9 @@ import {
   parseAcpReleaseSource, isPinnedAcpVersion, type AcpRelease, type AcpReleaseSource,
 } from "@openma/common/acp-artifacts";
 import type { AcpRuntime } from "@open-managed-agents/acp-runtime";
-import { posix } from "node:path";
+import { posix, join } from "node:path";
+import { homedir } from "node:os";
+import { safeSkillArchivePath } from "@open-managed-agents/acp-runtime/skill-package";
 import { unzipSync } from "fflate";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
@@ -321,7 +323,7 @@ export function createNodeManagedAcpSupervisorApp(
             await stateIo.writeFile(releasePath, `${JSON.stringify(release)}\n`);
           }
           const artifact = await prepareAcpRelease(release, {
-            root: options.artifacts?.root ?? environment.OPENMA_ACP_ARTIFACT_ROOT ?? "/tmp/openma-acp-artifacts",
+            root: options.artifacts?.root ?? environment.OPENMA_ACP_ARTIFACT_ROOT ?? join(homedir(), ".oma", "acp", "registry"),
             fetch: options.artifacts?.fetch, signal: input.signal,
           });
           identity!.digest = release.digest;
@@ -487,6 +489,10 @@ function stringRecord(value: unknown): Record<string, string> | null {
     : null;
 }
 
+// This supervisor executes INSIDE the sandbox. Its scoped Work source serves
+// concrete Session-attached versions. Host cache soft-links cannot cross that
+// boundary; Runtime-owned sandbox cache mount/copy support is deferred. Share
+// archive path validation with the host cache, retain jail-local materialization.
 async function materializeSkills(input: {
   io: NodeAcpHarnessStateIo;
   source: ManagedHarnessHttpSkillSource;
@@ -520,20 +526,6 @@ async function materializeSkills(input: {
   return manifests.length === 0
     ? ""
     : ["## OpenMA skills", "", ...manifests].join("\n");
-}
-
-function safeSkillArchivePath(value: string): string {
-  const normalized = posix.normalize(value.replaceAll("\\", "/"));
-  if (
-    value.includes("\0")
-    || normalized === "."
-    || normalized.startsWith("/")
-    || normalized === ".."
-    || normalized.startsWith("../")
-  ) {
-    throw new Error(`Unsafe Managed Skill archive path: ${value}`);
-  }
-  return normalized;
 }
 
 function skillArray(value: unknown): ManagedAcpSkillSnapshot[] {
