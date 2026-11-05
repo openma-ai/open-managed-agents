@@ -1,3 +1,4 @@
+import { resolveDeepSeekTestModel } from "../../../scripts/lib/test-model-allowlist.mjs";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +7,6 @@ import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
 import type {
   SandboxDuplexProcess,
@@ -15,6 +15,14 @@ import type {
 } from "@open-managed-agents/sandbox";
 
 const execFileAsync = promisify(execFile);
+const MODEL = resolveDeepSeekTestModel();
+if (process.argv.includes("--help") || process.argv.includes("--check")) {
+  console.log(`DeepSeek live test: PROBE_MODEL=${MODEL}; omit --check to run with credentials.`);
+  process.exit(0);
+}
+
+const { createAcpRuntime } = await import("@open-managed-agents/acp-runtime/placement");
+
 const apiKey = process.env.DEEPSEEK_API_KEY;
 if (!apiKey) throw new Error("DEEPSEEK_API_KEY is required (its value is never logged)");
 
@@ -49,7 +57,7 @@ try {
     restart: { mode: "never" },
     perTurnTimeoutMs: 60_000,
   });
-  await firstSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
+  await firstSession.setConfigOption("model", `deepseek/${MODEL}`);
   await firstSession.setConfigOption("thought_level", "off");
 
   const nonce = `PI_NATIVE_${Date.now().toString(36)}`;
@@ -98,7 +106,7 @@ try {
     restart: { mode: "never" },
     perTurnTimeoutMs: 60_000,
   });
-  await restoredSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
+  await restoredSession.setConfigOption("model", `deepseek/${MODEL}`);
   await restoredSession.setConfigOption("thought_level", "off");
   const restoredEvents = await collect(
     restoredSession.prompt("What exact token did I ask you to remember? Reply with that token only."),
@@ -110,7 +118,7 @@ try {
     mode: "harness-in-sandbox",
     agent: restoredSession.agentInfo,
     protocol_version: restoredSession.protocolVersion,
-    model: "deepseek-v4-flash",
+    model: MODEL,
     thinking: false,
     sandbox_recreated: true,
     native_restore: true,

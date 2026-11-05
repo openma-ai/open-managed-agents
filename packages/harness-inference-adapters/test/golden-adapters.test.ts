@@ -27,10 +27,10 @@ describe("golden harness inference adapters", () => {
       agent: { id: "pi-acp", command: "pi-acp" },
       nativePath: "/native/pi",
       endpoints: DEEPSEEK_ENDPOINTS,
-      wireModel: "deepseek-chat",
+      wireModel: "deepseek-flash",
       providerId: "deepseek",
     });
-    expect(plan.env).toEqual({ PI_ACP_MODEL: "deepseek/deepseek-chat" });
+    expect(plan.env).toEqual({ PI_ACP_MODEL: "deepseek/deepseek-flash" });
     expect(plan.files[0]?.content).toContain("/openai/v1");
     assertNoSecretInFiles(plan.files, PROXY.proxyToken);
   });
@@ -40,12 +40,12 @@ describe("golden harness inference adapters", () => {
       agent: { id: "dsh-acp", command: "dsh-acp" },
       nativePath: "/native/dsh",
       endpoints: DEEPSEEK_ENDPOINTS,
-      wireModel: "deepseek-chat",
+      wireModel: "deepseek-flash",
       providerId: "deepseek",
     });
     expect(plan.env.DEEPSEEK_BASE_URL).toContain("/anthropic");
     expect(plan.env.DEEPSEEK_API_KEY).toBe(PROXY.proxyToken);
-    expect(plan.env.DSH_MODEL).toBe("deepseek-chat");
+    expect(plan.env.DSH_MODEL).toBe("deepseek-flash");
     assertNoSecretInFiles(plan.files, PROXY.proxyToken);
   });
 
@@ -99,7 +99,7 @@ describe("golden harness inference adapters", () => {
       agent: { id: "opencode", command: "opencode" },
       nativePath: "/native/opencode",
       endpoints: DEEPSEEK_ENDPOINTS,
-      wireModel: "deepseek-chat",
+      wireModel: "deepseek-flash",
       providerId: "deepseek",
     });
     expect(plan.env.OPENCODE_CONFIG_CONTENT).toContain("{env:HOSTED_INFERENCE_TOKEN}");
@@ -111,7 +111,7 @@ describe("golden harness inference adapters", () => {
       agent: { id: "kimi-code", command: "kimi-code" },
       nativePath: "/native/kimi",
       endpoints: DEEPSEEK_ENDPOINTS,
-      wireModel: "deepseek-chat",
+      wireModel: "deepseek-flash",
       providerId: "deepseek",
     });
     expect(plan.env.KIMI_MODEL_API_KEY).toBe(PROXY.proxyToken);
@@ -144,7 +144,7 @@ describe("endpoint catalog", () => {
       agent: { id: "codex-acp", command: "codex-acp" },
       nativePath: "/n",
       target: {
-        wireModel: "deepseek-chat",
+        wireModel: "deepseek-flash",
         providerId: "deepseek",
         protocolEndpoints: resolveProtocolEndpointsFromModelCard({
           providerId: "deepseek",

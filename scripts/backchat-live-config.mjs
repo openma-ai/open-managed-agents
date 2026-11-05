@@ -1,3 +1,4 @@
+import { assertAllowedTestModel } from "./lib/test-model-allowlist.mjs";
 import { resolve } from 'node:path';
 
 function required(value, name) {
@@ -14,6 +15,7 @@ export function resolveLiveConfig(raw, environment = process.env) {
     throw new Error('baseUrl must be an HTTP(S) endpoint without credentials, query or fragment');
   }
   const model = required(raw.model, 'model');
+  assertAllowedTestModel(raw.provider, model);
   const id = required(raw.acp?.id, 'acp.id');
   const command = required(raw.acp?.command, 'acp.command');
   const args = raw.acp.args ?? [];

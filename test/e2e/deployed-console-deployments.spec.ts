@@ -1,5 +1,8 @@
+import { assertTestModelEnvironment } from "../../scripts/lib/test-model-allowlist.mjs";
 import { test } from "@playwright/test";
 import { apiKeyClient, authenticateConsoleWithApiKey, runDeploymentsFlow } from "./support/deployments-flow";
+
+assertTestModelEnvironment();
 
 /**
  * Deployed / release-certification Console Deployments coverage.

@@ -1,5 +1,9 @@
+import { assertAllowedTestModel, assertTestModelEnvironment } from "../../scripts/lib/test-model-allowlist.mjs";
 import assert from "node:assert/strict";
 import Anthropic from "@anthropic-ai/sdk";
+
+assertTestModelEnvironment();
+assertAllowedTestModel("ant-compatible", "openma-e2e-mock");
 
 const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
 const baseURL = requiredEnv("OMA_E2E_BASE_URL").replace(/\/$/, "");
@@ -82,6 +86,7 @@ try {
     return page;
   });
   const model = modelCard?.model_id ?? process.env.OMA_E2E_MODEL ?? models.data[0].id;
+  assertAllowedTestModel(undefined, model);
 
   environment = await step("official SDK creates and retrieves an environment", async () => {
     const created = await client.beta.environments.create({

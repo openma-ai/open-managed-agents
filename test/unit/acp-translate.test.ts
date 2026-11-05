@@ -233,7 +233,7 @@ describe("AcpTranslator tool_call dedup", () => {
 describe("AcpTranslator prompt usage", () => {
   it("projects ACP PromptResponse usage, including cache hits, into the managed span", async () => {
     const { runtime, events, reportedUsage } = makeFakeRuntime();
-    const translator = new AcpTranslator(runtime, { model: "deepseek-v4-flash" });
+    const translator = new AcpTranslator(runtime, { model: "deepseek-flash" });
 
     await translator.consume({
       type: "promptComplete",
@@ -252,12 +252,12 @@ describe("AcpTranslator prompt usage", () => {
     expect(events).toEqual([
       expect.objectContaining({
         type: "span.model_request_start",
-        model: "deepseek-v4-flash",
+        model: "deepseek-flash",
         id: expect.any(String),
       }),
       expect.objectContaining({
         type: "span.model_request_end",
-        model: "deepseek-v4-flash",
+        model: "deepseek-flash",
         model_request_start_id: expect.any(String),
         model_usage: {
           input_tokens: 300,

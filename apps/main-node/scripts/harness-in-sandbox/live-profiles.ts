@@ -1,3 +1,4 @@
+import { resolveDeepSeekTestModel } from "../../../../scripts/lib/test-model-allowlist.mjs";
 import { join } from "node:path";
 
 export const LIVE_HARNESS_IDS = ["codex-acp", "mcode"] as const;
@@ -37,6 +38,7 @@ export function buildTrustEnvironment(bundlePath: string): Record<string, string
 }
 
 export function buildMcodeDeepSeekConfig(apiKey: string): string {
+  const model = resolveDeepSeekTestModel();
   if (!apiKey.trim()) throw new Error("DeepSeek API key is required for MCode live certification");
   return [
     "logLevel: info",
@@ -47,8 +49,8 @@ export function buildMcodeDeepSeekConfig(apiKey: string): string {
     `      apiKey: ${JSON.stringify(apiKey)}`,
     "      baseURL: https://api.deepseek.com",
     "    models:",
-    "      deepseek-v4-flash:",
-    "        name: DeepSeek V4 Flash",
+    `      ${model}:`,
+    "        name: DeepSeek Flash",
     "        attachment: false",
     "        reasoning: false",
     "        temperature: true",
@@ -56,7 +58,7 @@ export function buildMcodeDeepSeekConfig(apiKey: string): string {
     "        limit:",
     "          context: 131072",
     "          output: 8192",
-    "defaultModel: deepseek/deepseek-v4-flash",
+    `defaultModel: deepseek/${model}`,
     "permissionMode: bypassPermissions",
     "",
   ].join("\n");
@@ -101,7 +103,7 @@ export function getLiveHarnessProfile(
         "v2/sqlite/runtime-state.sqlite",
       ],
       sessionConfigOptions: [],
-      defaultModelOverride: "deepseek/deepseek-v4-flash",
+      defaultModelOverride: `deepseek/${resolveDeepSeekTestModel()}`,
       skillDirectory: `${nativeRoot}/skills/openma-certification`,
       credentialLinks: [
         {

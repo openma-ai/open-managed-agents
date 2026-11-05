@@ -7,12 +7,12 @@ import {
 describe("bindStoredModelCardCredentials", () => {
   it("uses only the workspace card, so an official provider card keeps the catalog endpoint", () => {
     expect(bindStoredModelCardCredentials({
-      wireModel: "deepseek-v4-flash",
-      apiKey: "deepseek-card-key",
+      wireModel: "deepseek-flash",
+      apiKey: "fixture-card-key",
       provider: "deepseek",
     })).toEqual({
-      model: "deepseek-v4-flash",
-      apiKey: "deepseek-card-key",
+      model: "deepseek-flash",
+      apiKey: "fixture-card-key",
       baseURL: undefined,
       provider: "deepseek",
       customHeaders: undefined,

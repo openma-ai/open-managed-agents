@@ -15,18 +15,18 @@ describe("pinned hosted model routing", () => {
       const request = new Request(url, init);
       expect(request.url).toBe("https://private-model.test/inference/v1/chat/completions");
       expect(request.headers.get("authorization")).toBe("Bearer private-key");
-      expect(await request.json()).toEqual({ model: "deepseek-wire", messages: [] });
+      expect(await request.json()).toEqual({ model: "deepseek-flash", messages: [] });
       return new Response("ok");
     });
     const baseURL = "https://private-model.test/inference";
-    const response = await sendPlan({ upstream: { wireModel: "deepseek-wire", apiKey: "private-key", provider: "deepseek", baseURL, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "deepseek", baseUrl: baseURL }) }, method: "POST", subPath: "openai/v1/chat/completions", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle", messages: [] }), fetcher });
+    const response = await sendPlan({ upstream: { wireModel: "deepseek-flash", apiKey: "private-key", provider: "deepseek", baseURL, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "deepseek", baseUrl: baseURL }) }, method: "POST", subPath: "openai/v1/chat/completions", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle", messages: [] }), fetcher });
     expect(response.status).toBe(200);
     expect(fetcher).toHaveBeenCalledOnce();
   });
   it("does not guess an Anthropic endpoint for a private DeepSeek base", async () => {
     const fetcher = vi.fn(async () => new Response("unexpected"));
     const baseURL = "https://private-model.test/inference";
-    const response = await sendPlan({ upstream: { wireModel: "deepseek-wire", apiKey: "private-key", provider: "deepseek", baseURL, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "deepseek", baseUrl: baseURL }) }, method: "POST", subPath: "anthropic/v1/messages", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle" }), fetcher });
+    const response = await sendPlan({ upstream: { wireModel: "deepseek-flash", apiKey: "private-key", provider: "deepseek", baseURL, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "deepseek", baseUrl: baseURL }) }, method: "POST", subPath: "anthropic/v1/messages", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle" }), fetcher });
     expect(response.status).toBe(409);
     expect(fetcher).not.toHaveBeenCalled();
   });

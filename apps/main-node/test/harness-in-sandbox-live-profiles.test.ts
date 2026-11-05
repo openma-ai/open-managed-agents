@@ -56,7 +56,7 @@ describe("live harness-in-sandbox profiles", () => {
         "v2/sqlite/runtime-state.sqlite",
       ],
       sessionConfigOptions: [],
-      defaultModelOverride: "deepseek/deepseek-v4-flash",
+      defaultModelOverride: "deepseek/deepseek-flash",
     });
     expect(profile.credentialMounts("/home/tester")).toEqual([]);
     expect(profile.credentialLinks).toEqual([
@@ -68,11 +68,11 @@ describe("live harness-in-sandbox profiles", () => {
   });
 
   it("builds an ephemeral MCode DeepSeek provider without logging or persisting the key", () => {
-    const config = buildMcodeDeepSeekConfig("fixture-deepseek-secret");
-    expect(config).toContain("defaultModel: deepseek/deepseek-v4-flash");
+    const config = buildMcodeDeepSeekConfig("fixture-provider-secret");
+    expect(config).toContain("defaultModel: deepseek/deepseek-flash");
     expect(config).toContain("baseURL: https://api.deepseek.com");
     expect(config).toContain("npm: '@ai-sdk/openai'");
-    expect(config.match(/fixture-deepseek-secret/g)).toHaveLength(1);
+    expect(config.match(/fixture-provider-secret/g)).toHaveLength(1);
   });
 
   it("quotes MCode DeepSeek credentials as a safe YAML scalar", () => {

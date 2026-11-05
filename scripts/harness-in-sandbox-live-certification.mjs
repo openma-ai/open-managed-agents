@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 
 import { loadDeepSeekCredential } from "./deepseek-live-certification.mjs";
 
+import { resolveDeepSeekTestModel } from "./lib/test-model-allowlist.mjs";
+
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,6 +38,7 @@ export function redactCertificationOutput(value, secrets) {
 export async function runHarnessInSandboxCertification(options = {}) {
   const repoRoot = options.repoRoot ?? REPO_ROOT;
   const environment = { ...(options.env ?? process.env) };
+  environment.PROBE_MODEL = resolveDeepSeekTestModel(environment);
   environment.DEEPSEEK_API_KEY = await loadDeepSeekCredential(environment);
   const plan = buildHarnessInSandboxCertificationPlan();
   const commands = new Map([
@@ -74,6 +77,12 @@ export async function runHarnessInSandboxCertification(options = {}) {
 }
 
 async function main() {
+  if (process.argv.includes("--help")) {
+    console.log("Usage: harness-in-sandbox-live-certification.mjs [--check]\n--check validates PROBE_MODEL without credentials or network.");
+    return;
+  }
+  resolveDeepSeekTestModel();
+  if (process.argv.includes("--check")) return;
   const report = await runHarnessInSandboxCertification();
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }

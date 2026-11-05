@@ -27,7 +27,7 @@ const agent: AgentRecord = {
   name: "PostgreSQL agent",
   openma: {
     auxiliaryModel: {
-      id: "deepseek-chat",
+      id: "deepseek-flash",
       providerOptions: { pi: { reasoning: "off" } },
     },
   },

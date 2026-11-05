@@ -12,8 +12,11 @@ It does not use the legacy CLI daemon to claim Work.
 2. Build the Backchat checkout (`pnpm build`). Set `backchatDir` to its path.
 3. Copy `backchat-deepseek.example.json` and set the API URL, tenant/user,
    ACP executable and exact model ID. Relative paths resolve from the command's
-   working directory. `deepseek-flash` is the currently observed official alias;
-   this configuration does not assert a particular version behind the alias.
+   working directory. `deepseek-flash` is the only approved DeepSeek model for
+   test/live scaffolding. The shared `scripts/lib/test-model-allowlist.mjs`
+   guard rejects other DeepSeek IDs before network calls; `test:architecture`
+   also scans test fixtures and scripts for disallowed IDs. This policy does
+   not change the production model catalog or assert a version behind the alias.
 4. Supply `OPENMA_LIVE_TEST_TOKEN` and `DEEPSEEK_API_KEY` in the invoking process
    environment. No credentials are loaded implicitly from your home directory.
 5. From the OMA repository root:

@@ -1,5 +1,9 @@
+import { assertAllowedTestModel } from "../../scripts/lib/test-model-allowlist.mjs";
 import assert from "node:assert/strict";
 import Anthropic from "@anthropic-ai/sdk";
+
+const TEST_MODEL = "openma-e2e-inputs";
+assertAllowedTestModel("ant-compatible", TEST_MODEL);
 
 const baseURL = requiredEnv("OMA_E2E_BASE_URL").replace(/\/$/, "");
 const apiKey = requiredEnv("OMA_E2E_API_KEY");
@@ -29,7 +33,7 @@ try {
       method: "POST",
       body: JSON.stringify({
         model_id: modelId,
-        model: "openma-e2e-inputs",
+        model: TEST_MODEL,
         provider: "ant-compatible",
         api_key: "openma-e2e-inputs-key",
         base_url: modelBaseURL,

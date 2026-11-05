@@ -1,3 +1,5 @@
+// Model cards probe their upstream on creation. Validate before any API call.
+import { assertAllowedTestModel } from "../../../scripts/lib/test-model-allowlist.mjs";
 import { expect, type Page } from "@playwright/test";
 
 /**
@@ -27,6 +29,8 @@ export interface DeploymentsFlowOptions {
 }
 
 export async function runDeploymentsFlow({ page, api, origin, model, mockModelBaseURL }: DeploymentsFlowOptions) {
+  assertAllowedTestModel(undefined, model);
+  assertAllowedTestModel("ant-compatible", "openma-e2e-mock");
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const agentName = `console-e2e-deploy-agent-${suffix}`;
   const environmentName = `console-e2e-deploy-env-${suffix}`;

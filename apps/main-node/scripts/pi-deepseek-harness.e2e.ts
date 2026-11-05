@@ -1,13 +1,22 @@
+import { resolveDeepSeekTestModel } from "../../../scripts/lib/test-model-allowlist.mjs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createPiModelRuntime } from "@open-managed-agents/agent/harness/pi-provider";
-import { PiHarness } from "@open-managed-agents/agent/harness/pi-loop";
-import { buildTools } from "@open-managed-agents/agent/harness/tools";
 import type { HarnessRuntime } from "@open-managed-agents/agent/harness/interface";
-import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
+
 import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
+
+const MODEL = resolveDeepSeekTestModel();
+if (process.argv.includes("--help") || process.argv.includes("--check")) {
+  console.log(`DeepSeek live test: PROBE_MODEL=${MODEL}; omit --check to run with credentials.`);
+  process.exit(0);
+}
+
+const { createPiModelRuntime } = await import("@open-managed-agents/agent/harness/pi-provider");
+const { PiHarness } = await import("@open-managed-agents/agent/harness/pi-loop");
+const { buildTools } = await import("@open-managed-agents/agent/harness/tools");
+const { LocalSubprocessSandbox } = await import("@open-managed-agents/sandbox/adapters/local-subprocess");
 
 const apiKey = process.env.DEEPSEEK_API_KEY;
 if (!apiKey) throw new Error("DEEPSEEK_API_KEY is required (its value is never logged)");
@@ -23,7 +32,7 @@ try {
   const agent: AgentConfig = {
     id: "agent_pi_deepseek_live",
     name: "Pi DeepSeek live certification",
-    model: "deepseek-v4-flash",
+    model: MODEL,
     system: [
       "You are certifying a coding-agent harness.",
       "You MUST invoke the write tool exactly once with the requested absolute path and content before replying.",
@@ -49,7 +58,7 @@ try {
 
   const pi = createPiModelRuntime({
     provider: "deepseek",
-    model: "deepseek-v4-flash",
+    model: MODEL,
     apiKey,
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
   });

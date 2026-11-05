@@ -1,11 +1,17 @@
+import { resolveDeepSeekTestModel } from "../../../scripts/lib/test-model-allowlist.mjs";
 import { createHash, randomUUID } from "node:crypto";
 
-import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
-import {
-  createSpritesSandbox,
-  type SpritesRuntime,
-} from "@open-managed-agents/managed-runtime-sprites";
+import type { SpritesRuntime } from "@open-managed-agents/managed-runtime-sprites";
+
+const MODEL = resolveDeepSeekTestModel();
+if (process.argv.includes("--help") || process.argv.includes("--check")) {
+  console.log(`DeepSeek live test: PROBE_MODEL=${MODEL}; omit --check to run with credentials.`);
+  process.exit(0);
+}
+
+const { createAcpRuntime } = await import("@open-managed-agents/acp-runtime/placement");
+const { createSpritesSandbox } = await import("@open-managed-agents/managed-runtime-sprites");
 
 const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
 const spritesToken = process.env.SPRITES_TOKEN?.trim();
@@ -73,7 +79,7 @@ try {
     restart: { mode: "never" },
     perTurnTimeoutMs: 90_000,
   }));
-  await firstSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
+  await firstSession.setConfigOption("model", `deepseek/${MODEL}`);
   await firstSession.setConfigOption("thought_level", "off");
 
   const nonce = `PI_SPRITES_NATIVE_${Date.now().toString(36)}`;
@@ -109,7 +115,7 @@ try {
     restart: { mode: "never" },
     perTurnTimeoutMs: 90_000,
   }));
-  await restoredSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
+  await restoredSession.setConfigOption("model", `deepseek/${MODEL}`);
   await restoredSession.setConfigOption("thought_level", "off");
   const restoredEvents = await stage("restored DeepSeek turn", collect(
     restoredSession.prompt("What exact token did I ask you to remember? Reply with that token only."),
@@ -124,7 +130,7 @@ try {
     mode: "harness-in-sandbox",
     provider: "sprites",
     harness: "pi-acp",
-    model: "deepseek-v4-flash",
+    model: MODEL,
     thinking: false,
     process_restarted: true,
     provider_reattached: true,

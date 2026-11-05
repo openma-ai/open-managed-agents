@@ -446,6 +446,7 @@ export default defineConfig({
       // This is a node:test architecture suite and is run explicitly by
       // test:architecture, not inside workerd/Vitest.
       "scripts/provider-package-boundaries.test.mjs",
+      "scripts/test-model-allowlist.test.mjs",
       "scripts/check-dependency-sources.test.mjs",
       "scripts/migration-compatibility.test.mjs",
       "scripts/ci-impact-surfaces.test.mjs",

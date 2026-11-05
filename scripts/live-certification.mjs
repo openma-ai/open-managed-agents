@@ -6,6 +6,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv, promisify } from "node:util";
 
+import { assertTestModelEnvironment } from "./lib/test-model-allowlist.mjs";
+
 const execFileAsync = promisify(execFile);
 const MAX_DIAGNOSTIC_BYTES = 32 * 1024;
 const SECRET_NAME = /(api[_-]?key|token|secret|password|credential|nonce)/i;
@@ -224,7 +226,8 @@ export async function probeCredential(credentialProbe, { cwd, env }) {
   }
 }
 
-export function runLiveCertification(options) {
+export async function runLiveCertification(options) {
+  assertTestModelEnvironment(options.env);
   return runCertification({ ...options, kind: "openma.live_certification" });
 }
 
@@ -361,7 +364,8 @@ function parseArguments(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--") continue;
-    if (argument === "--allow-missing") options.allowMissing = true;
+    if (argument === "--check") options.check = true;
+    else if (argument === "--allow-missing") options.allowMissing = true;
     else if (argument === "--credentials-file") {
       options.envFilePath = resolve(requiredArgument(argv, ++index, argument));
       options.envFileRequired = true;
@@ -405,6 +409,10 @@ function selectProviders(lanes, providers) {
 }
 
 async function main() {
+  if (process.argv.includes("--help")) {
+    console.log("Usage: live-certification.mjs [--check] [--allow-missing] [--credentials-file PATH] [--manifest PATH] [--providers IDS] [--report PATH]\n--check validates configuration and model overrides without running any lanes.");
+    return;
+  }
   const options = parseArguments(process.argv.slice(2));
   const env = await loadCertificationEnvironment(options.envFilePath, {
     required: options.envFileRequired,
@@ -414,6 +422,8 @@ async function main() {
     : defaultLiveCertificationLanes();
   const lanes = selectProviders(configuredLanes, options.providers);
   if (lanes.length === 0) throw new Error("live certification selected no providers");
+  assertTestModelEnvironment(env);
+  if (options.check) return;
   const report = await runLiveCertification({ lanes, env });
   await writeCertificationReport(report, options.reportPath);
   process.stdout.write(renderCertificationSummary(report));

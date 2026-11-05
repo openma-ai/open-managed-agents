@@ -53,7 +53,7 @@ describe("SqlAgentStore", () => {
       name: "Agent One",
       openma: {
         auxiliaryModel: {
-          id: "deepseek-chat",
+          id: "deepseek-flash",
           providerOptions: { pi: { reasoning: "off" } },
         },
       },

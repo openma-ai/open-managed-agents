@@ -59,6 +59,7 @@
 // suspects (in order): system field changed, tool order changed, or some
 // content went through nondeterministic JSON.stringify.
 
+import { assertTestModelEnvironment } from "./lib/test-model-allowlist.mjs";
 import { tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
@@ -92,6 +93,8 @@ const MODE = RAW_MODE as ProbeMode;
 // Messages API directly (returns "Invalid JSON response" on raw ai-sdk
 // calls). To probe through that kind of endpoint, re-export the auth as
 // PROBE_AUTH_TOKEN + PROBE_BASE_URL explicitly.
+assertTestModelEnvironment();
+
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const probeToken = process.env.PROBE_AUTH_TOKEN;
 const probeBase = process.env.PROBE_BASE_URL;

@@ -62,7 +62,7 @@ const agent: AgentRecord = {
   name: "Coding Assistant",
   openma: {
     auxiliaryModel: {
-      id: "deepseek-chat",
+      id: "deepseek-flash",
       providerOptions: {
         pi: { reasoning: "off", sampling: { temperature: 0 } },
       },

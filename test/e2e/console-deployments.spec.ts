@@ -1,4 +1,7 @@
+import { assertTestModelEnvironment } from "../../scripts/lib/test-model-allowlist.mjs";
 import { test } from "@playwright/test";
+
+assertTestModelEnvironment();
 import {
   apiKeyClient,
   authenticateConsoleWithApiKey,

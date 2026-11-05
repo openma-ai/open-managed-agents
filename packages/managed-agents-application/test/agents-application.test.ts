@@ -375,7 +375,7 @@ describe("AgentsApplicationService", () => {
       },
       openma: {
         auxiliaryModel: {
-          id: "deepseek-chat",
+          id: "deepseek-flash",
           speed: "fast",
           providerOptions: { deepseek: { thinking: { type: "disabled" } } },
         },
@@ -416,7 +416,7 @@ describe("AgentsApplicationService", () => {
         version: 1,
         openma: {
           auxiliaryModel: {
-            id: "deepseek-chat",
+            id: "deepseek-flash",
             speed: "fast",
             providerOptions: { deepseek: { thinking: { type: "disabled" } } },
           },
@@ -519,7 +519,7 @@ describe("AgentsApplicationService", () => {
 
     const oversizedMaxTokens = await service.createAgent({
       name: "Large max tokens accepted",
-      model: { id: "deepseek-v4-flash", maxTokens: 1_000_000 },
+      model: { id: "deepseek-flash", maxTokens: 1_000_000 },
     });
     expect(oversizedMaxTokens).toMatchObject({
       type: "created",

@@ -12,9 +12,12 @@
 //
 // If cache_read stays 0 across turns, something's busting the prefix.
 
+import { assertTestModelEnvironment } from "./lib/test-model-allowlist.mjs";
 import { generateText } from "ai";
 import type { ModelMessage, SystemModelMessage } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+
+assertTestModelEnvironment();
 
 const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN;
 if (!apiKey) {

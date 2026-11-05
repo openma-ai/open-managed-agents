@@ -1,20 +1,29 @@
+import { resolveDeepSeekTestModel } from "../../../scripts/lib/test-model-allowlist.mjs";
 import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
 import type {
   HarnessContext,
   HarnessRuntime,
 } from "@open-managed-agents/agent/harness/interface";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
-import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
+
 import type { SandboxPort } from "@open-managed-agents/sandbox";
 import type {
   AgentConfig,
   SessionEvent,
   UserMessageEvent,
 } from "@open-managed-agents/shared";
+
+const MODEL = resolveDeepSeekTestModel();
+if (process.argv.includes("--help") || process.argv.includes("--check")) {
+  console.log(`DeepSeek live test: PROBE_MODEL=${MODEL}; omit --check to run with credentials.`);
+  process.exit(0);
+}
+
+const { registerCoreHarnesses } = await import("@open-managed-agents/agent/harness/builtins");
+const { resolveHarness } = await import("@open-managed-agents/agent/harness/registry");
+const { LocalSubprocessSandbox } = await import("@open-managed-agents/sandbox/adapters/local-subprocess");
 
 const apiKey = process.env.DEEPSEEK_API_KEY;
 if (!apiKey) {
@@ -25,8 +34,8 @@ const sessionId = `session_deepseek_cache_${Date.now().toString(36)}`;
 const firstRoot = await mkdtemp(join(tmpdir(), "oma-dsh-cache-first-"));
 const checkpointRoot = await mkdtemp(join(tmpdir(), "oma-dsh-cache-restored-"));
 const restoredRoot = join(checkpointRoot, "workspace");
-let firstSandbox: LocalSubprocessSandbox | undefined;
-let restoredSandbox: LocalSubprocessSandbox | undefined;
+let firstSandbox: InstanceType<typeof LocalSubprocessSandbox> | undefined;
+let restoredSandbox: InstanceType<typeof LocalSubprocessSandbox> | undefined;
 let firstHarness: ReturnType<typeof resolveHarness> | undefined;
 let restoredHarness: ReturnType<typeof resolveHarness> | undefined;
 
@@ -35,7 +44,7 @@ const reportedUsage: Array<{ input: number; output: number }> = [];
 const agent = {
   id: "agent_deepseek_native_cache_e2e",
   name: "DeepSeek native restore cache E2E",
-  model: "deepseek-v4-flash",
+  model: MODEL,
   system: "Answer concisely. Do not use tools for this test.",
   tools: [],
   harness: "acp-sandbox",
@@ -45,7 +54,7 @@ const agent = {
       command: process.env.DSH_ACP_BIN ?? "dsh-acp",
       args: [
         "--provider", "deepseek-official",
-        "--model", "deepseek-v4-flash",
+        "--model", MODEL,
         "--no-thinking",
         "--permission-mode", "read-only",
       ],
@@ -131,7 +140,7 @@ try {
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
-    model: "deepseek-v4-flash",
+    model: MODEL,
     thinking: false,
     native_resume: true,
     native_session_files: nativeFileCount,

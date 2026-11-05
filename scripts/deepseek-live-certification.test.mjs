@@ -26,16 +26,20 @@ test("DeepSeek certification resolves the compaction probe through the package t
   await writeFile(fakePnpm, [
     "#!/bin/sh",
     `printf '%s\\n' \"$*\" >> ${JSON.stringify(callsPath)}`,
+    'printf "%s\\n" "$PROBE_MODEL"',
   ].join("\n"));
   await chmod(fakePnpm, 0o755);
   try {
-    await runDeepSeekCertification({
+    const report = await runDeepSeekCertification({
       env: {
         ...process.env,
+        PROBE_MODEL: "deepseek/deepseek-flash",
         DEEPSEEK_API_KEY: "fixture-key",
         PATH: `${directory}:${process.env.PATH ?? ""}`,
       },
     });
+    assert.equal(report.model, "deepseek-flash");
+    assert.ok(report.steps.every((step) => step.output_tail.trim() === report.model));
     const calls = (await readFile(callsPath, "utf8")).trim().split("\n");
     assert.equal(
       calls[1],

@@ -58,13 +58,13 @@ describe("createPiModelRuntime", () => {
 
   it("uses Pi's DeepSeek catalog instead of an OpenMA provider implementation", () => {
     const runtime = createPiModelRuntime({
-      model: "deepseek-v4-pro",
+      model: "deepseek-flash",
       apiKey: "secret",
       provider: "deepseek",
     });
 
     expect(runtime.model).toMatchObject({
-      id: "deepseek-v4-pro",
+      id: "deepseek-flash",
       provider: "deepseek",
       api: "openai-completions",
       baseUrl: "https://api.deepseek.com",
@@ -96,7 +96,7 @@ describe("createPiModelRuntime", () => {
 
   it("omits Pi reasoning when agent effort is unset so provider defaults apply", () => {
     const runtime = createPiModelRuntime({
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       apiKey: "secret",
       provider: "deepseek",
     });
@@ -111,7 +111,7 @@ describe("createPiModelRuntime", () => {
 
     try {
       const runtime = createPiModelRuntime({
-        model: "deepseek-v4-flash",
+        model: "deepseek-flash",
         apiKey: "tenant-secret",
         provider: "deepseek",
       });
@@ -131,7 +131,7 @@ describe("createPiModelRuntime", () => {
 
   it("keeps the Pi thinking level on the tenant-scoped runtime", () => {
     const runtime = createPiModelRuntime({
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       apiKey: "secret",
       provider: "deepseek",
       thinkingLevel: "high",
@@ -142,7 +142,7 @@ describe("createPiModelRuntime", () => {
 
   it("applies per-agent Pi provider options to every request", () => {
     const runtime = createPiModelRuntime({
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       apiKey: "secret",
       provider: "deepseek",
       providerOptions: {
@@ -165,7 +165,7 @@ describe("createPiModelRuntime", () => {
 
   it("keeps per-agent Pi provider options when fast speed decorates an OpenAI-compatible request", () => {
     const runtime = createPiModelRuntime({
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       apiKey: "secret",
       provider: "deepseek",
       speed: "fast",

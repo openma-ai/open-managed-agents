@@ -116,7 +116,7 @@ describe("Managed Agents API — GET /v1/sessions/:session_id", () => {
             ...sessionView.agent,
             openma: {
               auxiliaryModel: {
-                id: "deepseek-chat",
+                id: "deepseek-flash",
                 providerOptions: { pi: { reasoning: "off" } },
                 speed: "fast",
               },
@@ -139,7 +139,7 @@ describe("Managed Agents API — GET /v1/sessions/:session_id", () => {
       agent: {
         _oma: {
           aux_model: {
-            id: "deepseek-chat",
+            id: "deepseek-flash",
             provider_options: { pi: { reasoning: "off" } },
             speed: "fast",
           },

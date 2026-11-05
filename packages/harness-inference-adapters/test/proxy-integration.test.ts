@@ -30,7 +30,7 @@ describe("hosted inference proxy integration", () => {
       env: {},
       agent: { id: "pi-acp", command: "pi-acp" },
       nativePath: "/native/pi",
-      model: { wireModel: "deepseek-chat", providerId: "deepseek", baseUrl: null },
+      model: { wireModel: "deepseek-flash", providerId: "deepseek", baseUrl: null },
     });
     const dsh = wireHostedInferenceForAcpLaunch({
       sessionId: "sess_1",
@@ -39,7 +39,7 @@ describe("hosted inference proxy integration", () => {
       env: {},
       agent: { id: "dsh-acp", command: "dsh-acp" },
       nativePath: "/native/dsh",
-      model: { wireModel: "deepseek-chat", providerId: "deepseek", baseUrl: null },
+      model: { wireModel: "deepseek-flash", providerId: "deepseek", baseUrl: null },
     });
     const piBase = JSON.parse(pi.files[0]!.content).providers.deepseek.baseUrl;
     expect(piBase).toContain("/openai/v1");
@@ -54,7 +54,7 @@ describe("hosted inference proxy integration", () => {
         : `${upstreamBase}/anthropic`,
     }));
     const upstream = {
-      wireModel: "deepseek-chat",
+      wireModel: "deepseek-flash",
       apiKey: "upstream-secret",
       provider: "deepseek",
       providerId: "deepseek",

@@ -28,6 +28,12 @@
 
 set -euo pipefail
 
+node "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib/test-model-allowlist.mjs" --check-env
+if [[ "${1:-}" == "--help" || "${1:-}" == "--check" ]]; then
+  echo "Model overrides validated; omit --check to run the E2E scaffolding."
+  exit 0
+fi
+
 : "${OMA_E2E_BASE_URL:?OMA_E2E_BASE_URL is required}"
 : "${OMA_E2E_API_KEY:?OMA_E2E_API_KEY is required}"
 

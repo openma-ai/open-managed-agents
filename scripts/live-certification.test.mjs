@@ -19,6 +19,22 @@ const fixtureRoots = new Set();
 const repoRoot = new URL("..", import.meta.url).pathname;
 const cliPath = new URL("./live-certification.mjs", import.meta.url).pathname;
 
+test("CLI checks model overrides offline before any certification lane", () => {
+  for (const flag of ["--help", "--check"]) {
+    const result = spawnSync(process.execPath, [cliPath, flag], {
+      cwd: repoRoot, env: { PATH: process.env.PATH }, encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const result = spawnSync(process.execPath, [cliPath, "--check"], {
+    cwd: repoRoot,
+    env: { PATH: process.env.PATH, PROBE_MODEL: ["deepseek", "rejected"].join("-") },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Disallowed DeepSeek test model/);
+});
+
 test.afterEach(async () => {
   await Promise.all(
     [...fixtureRoots].map((root) => rm(root, { recursive: true, force: true })),

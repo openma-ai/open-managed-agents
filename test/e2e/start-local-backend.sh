@@ -9,6 +9,12 @@
 # Usage: OMA_E2E_STATE_DIR=/tmp/oma-e2e test/e2e/start-local-backend.sh
 set -euo pipefail
 
+node "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib/test-model-allowlist.mjs" --check-env
+if [[ "${1:-}" == "--help" || "${1:-}" == "--check" ]]; then
+  echo "Model overrides validated; omit --check to run the E2E scaffolding."
+  exit 0
+fi
+
 STATE_DIR="${OMA_E2E_STATE_DIR:-$(mktemp -d)}"
 PORT="${OMA_E2E_BACKEND_PORT:-8787}"
 mkdir -p "$STATE_DIR"

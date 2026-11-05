@@ -44,7 +44,7 @@ const session: Session = {
     name: "Coordinator",
     openma: {
       auxiliaryModel: {
-        id: "deepseek-chat",
+        id: "deepseek-flash",
         providerOptions: { pi: { reasoning: "off" } },
         speed: "fast",
       },
@@ -148,11 +148,11 @@ describe("managed Agent to legacy Node harness codec", () => {
       return model;
     })).resolves.toEqual({
       model,
-      modelInfo: { model_id: "deepseek-chat" },
+      modelInfo: { model_id: "deepseek-flash" },
       providerOptions: { pi: { reasoning: "off" } },
     });
     expect(selectedModels).toEqual([{
-      id: "deepseek-chat",
+      id: "deepseek-flash",
       providerOptions: { pi: { reasoning: "off" } },
       speed: "fast",
     }]);
@@ -266,7 +266,7 @@ describe("managed Agent to legacy Node harness codec", () => {
         ] },
       },
       aux_model: {
-        id: "deepseek-chat",
+        id: "deepseek-flash",
         provider_options: { pi: { reasoning: "off" } },
         speed: "fast",
       },

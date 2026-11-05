@@ -102,7 +102,7 @@ function agentSnapshot(overrides: Record<string, unknown> = {}) {
   return {
     id: "agent_1",
     version: 1,
-    model: { id: "deepseek-chat" },
+    model: { id: "deepseek-flash" },
     mcp_servers: [],
     skills: [],
     system: null,
@@ -185,7 +185,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
           agent: {
             id: "agent_managed_1",
             version: 9,
-            model: { id: "deepseek-chat", speed: "fast", effort: "low" },
+            model: { id: "deepseek-flash", speed: "fast", effort: "low" },
             mcp_servers: [
               { type: "url", name: "github", url: "https://upstream.invalid" },
               {
@@ -283,7 +283,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
 
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.agent.model).toEqual({
-      id: "deepseek-chat",
+      id: "deepseek-flash",
       speed: "fast",
       effort: "low",
     });
@@ -315,7 +315,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
           session_id: scope.sessionId,
           agent_id: "agent_managed_1",
           agent_version: 9,
-          model: { id: "deepseek-chat", speed: "fast", effort: "low" },
+          model: { id: "deepseek-flash", speed: "fast", effort: "low" },
           skills: [{ type: "custom", skill_id: "skill_1", version: "4" }],
           tools: [{ type: "custom", name: "deploy", description: "Deploy", input_schema: { type: "object" } }],
         },

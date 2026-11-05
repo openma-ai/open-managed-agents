@@ -175,7 +175,7 @@ const agent: Agent = {
   name: "Coding Agent",
   openma: {
     auxiliaryModel: {
-      id: "deepseek-chat",
+      id: "deepseek-flash",
       providerOptions: { pi: { reasoning: "off" } },
       speed: "fast",
     },
@@ -403,7 +403,7 @@ describe("SessionsApplicationService", () => {
           name: "Coding Agent",
           openma: {
             auxiliaryModel: {
-              id: "deepseek-chat",
+              id: "deepseek-flash",
               providerOptions: { pi: { reasoning: "off" } },
               speed: "fast",
             },

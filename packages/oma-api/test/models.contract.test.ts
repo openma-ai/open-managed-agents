@@ -46,7 +46,7 @@ describe("OMA model discovery contract", () => {
   it("allows provider catalog discovery without an API key", async () => {
     const listProviderModels = vi.fn(async () => ({
       type: "success" as const,
-      models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
+      models: [{ id: "deepseek-flash", name: "DeepSeek Flash" }],
     }));
     const app = new Hono();
     app.route("/v1/oma/models", buildOmaModelRoutes({ listProviderModels }));
@@ -59,7 +59,7 @@ describe("OMA model discovery contract", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      data: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
+      data: [{ id: "deepseek-flash", name: "DeepSeek Flash" }],
     });
     expect(listProviderModels).toHaveBeenCalledWith({
       provider: "deepseek",

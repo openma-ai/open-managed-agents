@@ -112,7 +112,7 @@ describe("OpenMA SDK composition facade", () => {
           version: 1,
           _oma: {
             aux_model: {
-              id: "deepseek-chat",
+              id: "deepseek-flash",
               speed: "fast",
               provider_options: {
                 deepseek: { thinking: { type: "disabled" } },
@@ -132,7 +132,7 @@ describe("OpenMA SDK composition facade", () => {
       },
       _oma: {
         aux_model: {
-          id: "deepseek-chat",
+          id: "deepseek-flash",
           speed: "fast",
           provider_options: {
             deepseek: { thinking: { type: "disabled" } },
@@ -157,7 +157,7 @@ describe("OpenMA SDK composition facade", () => {
       },
       _oma: {
         aux_model: {
-          id: "deepseek-chat",
+          id: "deepseek-flash",
           speed: "fast",
           provider_options: {
             deepseek: { thinking: { type: "disabled" } },
@@ -181,7 +181,7 @@ describe("OpenMA SDK composition facade", () => {
       env: { LOG_LEVEL: "info" },
     }]);
     expectTypeOf(agent.mcp_servers).toEqualTypeOf<OpenMaMcpServer[]>();
-    expect(agent._oma?.aux_model?.id).toBe("deepseek-chat");
+    expect(agent._oma?.aux_model?.id).toBe("deepseek-flash");
     expect(agent.model.provider_options).toEqual({
       anthropic: { beta: ["context-1m"] },
     });
@@ -296,7 +296,7 @@ describe("OpenMA SDK composition facade", () => {
           tools: [],
           version: 1,
           _oma: {
-            aux_model: { id: "deepseek-chat" },
+            aux_model: { id: "deepseek-flash" },
             harness: "pi",
           },
         },
@@ -318,7 +318,7 @@ describe("OpenMA SDK composition facade", () => {
 
     const session = await client.beta.sessions.retrieve("session_extended");
 
-    expect(session.agent._oma?.aux_model?.id).toBe("deepseek-chat");
+    expect(session.agent._oma?.aux_model?.id).toBe("deepseek-flash");
     expect(session.agent._oma?.harness).toBe("pi");
   });
 
@@ -399,8 +399,8 @@ describe("OpenMA SDK composition facade", () => {
         requests.push(request);
         return jsonResponse({
           id: "mcard_1",
-          model_id: "deepseek-fast",
-          model: "deepseek-v4-flash",
+          model_id: "workspace-fast",
+          model: "deepseek-flash",
           provider: "deepseek",
           api_key_preview: "sk-...1234",
           pi_config: { reasoning: true },
@@ -414,8 +414,8 @@ describe("OpenMA SDK composition facade", () => {
 
     expect(modelCards).toBeDefined();
     await modelCards.create({
-      model_id: "deepseek-fast",
-      model: "deepseek-v4-flash",
+      model_id: "workspace-fast",
+      model: "deepseek-flash",
       provider: "deepseek",
       api_key: "sk-tenant-secret",
       pi_config: { reasoning: true },
@@ -432,7 +432,7 @@ describe("OpenMA SDK composition facade", () => {
         ["DELETE", "/v1/oma/model_cards/mcard_1"],
       ]);
     expect(JSON.stringify(await requests[0]!.clone().json())).toContain(
-      "deepseek-v4-flash",
+      "deepseek-flash",
     );
   });
 

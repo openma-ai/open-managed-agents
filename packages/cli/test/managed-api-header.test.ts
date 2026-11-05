@@ -115,7 +115,7 @@ describe("Managed Agents CLI transport", () => {
         id: "agent_123",
         type: "agent",
         name: "Contract agent",
-        model: { id: "deepseek-v4-pro" },
+        model: { id: "deepseek-flash" },
         created_at: "2026-09-01T00:00:00Z",
       }],
       has_more: false,

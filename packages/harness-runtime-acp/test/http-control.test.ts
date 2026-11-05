@@ -131,7 +131,7 @@ describe("Managed harness HTTP control channel", () => {
       agent: {
         id: "agent_1",
         version: 7,
-        model: { id: "deepseek-chat", speed: "fast" },
+        model: { id: "deepseek-flash", speed: "fast" },
         mcp_servers: [{ type: "url", name: "docs", url: "https://mcp.test" }],
         skills: [{ type: "custom", skill_id: "skill_1", version: "3" }],
         system: "Work carefully",

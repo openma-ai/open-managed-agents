@@ -1,5 +1,9 @@
+import { assertAllowedTestModel, assertTestModelEnvironment } from "../../scripts/lib/test-model-allowlist.mjs";
 import { expect, test } from "@playwright/test";
 import Anthropic from "@anthropic-ai/sdk";
+
+assertTestModelEnvironment();
+assertAllowedTestModel("ant-compatible", "openma-e2e-mock");
 
 const deployedBaseURL = process.env.OMA_E2E_BASE_URL?.replace(/\/$/, "");
 const apiKey = process.env.OMA_E2E_API_KEY;

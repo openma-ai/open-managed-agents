@@ -1,8 +1,7 @@
+import { resolveDeepSeekTestModel } from "./lib/test-model-allowlist.mjs";
 import { homedir } from "node:os";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createPiModelRuntime } from "../apps/agent/src/harness/pi-provider";
-import { PiSummaryCompactionPolicy } from "../apps/agent/src/harness/pi-compaction";
 
 type AssistantMessage = any;
 type Message = any;
@@ -10,7 +9,15 @@ type SimpleStreamOptions = any;
 type Tool = any;
 type Usage = any;
 
-const MODEL = process.env.PROBE_MODEL ?? "deepseek-v4-flash";
+const MODEL = resolveDeepSeekTestModel();
+if (process.argv.includes("--help") || process.argv.includes("--check")) {
+  console.log(`DeepSeek live test: PROBE_MODEL=${MODEL}; omit --check to run with credentials.`);
+  process.exit(0);
+}
+
+const { createPiModelRuntime } = await import("../apps/agent/src/harness/pi-provider");
+const { PiSummaryCompactionPolicy } = await import("../apps/agent/src/harness/pi-compaction");
+
 const BASE_URL = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
 const MAX_OUTPUT_TOKENS = Number(process.env.PROBE_MAX_OUTPUT_TOKENS ?? 32);
 
@@ -137,7 +144,7 @@ function print(result: ProbeResult): void {
 
 async function runCompactionPolicy(
   name: string,
-  policy: PiSummaryCompactionPolicy,
+  policy: InstanceType<typeof PiSummaryCompactionPolicy>,
   runtime: ReturnType<typeof createPiModelRuntime>,
   messages: Message[],
   systemPrompt: string,

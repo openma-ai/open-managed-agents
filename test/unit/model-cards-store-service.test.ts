@@ -373,7 +373,7 @@ describe("ModelCardService — update", () => {
     const { service } = createInMemoryModelCardService();
     const card = await service.create({
       tenantId: TENANT,
-      modelId: "deepseek-chat",
+      modelId: "deepseek-flash",
       provider: "oai-compatible",
       apiKey: "sk-ds-1111",
       baseUrl: "https://api.deepseek.com/v1",

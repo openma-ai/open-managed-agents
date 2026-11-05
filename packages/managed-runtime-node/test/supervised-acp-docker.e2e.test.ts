@@ -45,7 +45,7 @@ describe("whole-brain ACP harness in Docker", () => {
       agent: {
         id: "agent_production_acp",
         version: 3,
-        model: { id: "deepseek-chat", speed: "fast", effort: "low" },
+        model: { id: "deepseek-flash", speed: "fast", effort: "low" },
         mcp_servers: [{
           type: "url",
           name: "github",

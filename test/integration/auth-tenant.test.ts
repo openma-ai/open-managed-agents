@@ -205,7 +205,7 @@ describe("model cards", () => {
       headers: HEADERS,
       body: JSON.stringify({
         provider: "deepseek",
-        model_id: "deepseek-chat",
+        model_id: "deepseek-flash",
         api_key: "sk-test-deepseek",
         base_url: "https://api.deepseek.com/v1",
         custom_headers: { "X-Project-Id": "proj_123" },
@@ -222,7 +222,7 @@ describe("model cards", () => {
     });
     expect(filtered.status).toBe(200);
     expect((await filtered.json()).data).toEqual([
-      expect.objectContaining({ model_id: "deepseek-chat", provider: "deepseek" }),
+      expect.objectContaining({ model_id: "deepseek-flash", provider: "deepseek" }),
     ]);
   });
 
@@ -293,8 +293,8 @@ describe("provider resolution", () => {
 
   it("resolveModel creates openai model for oai-compatible", async () => {
     const { resolveModel } = await import("../../apps/agent/src/harness/provider");
-    const model = resolveModel("deepseek-chat", "sk-test", "https://api.deepseek.com/v1", "oai-compatible");
-    expect(model.modelId).toBe("deepseek-chat");
+    const model = resolveModel("deepseek-flash", "sk-test", "https://api.deepseek.com/v1", "oai-compatible");
+    expect(model.modelId).toBe("deepseek-flash");
   });
 
   it("resolveModel strips provider prefix", async () => {

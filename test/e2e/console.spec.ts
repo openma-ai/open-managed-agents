@@ -1,4 +1,8 @@
+import { assertAllowedTestModel } from "../../scripts/lib/test-model-allowlist.mjs";
 import { test, expect, type Page } from "@playwright/test";
+
+const TEST_MODEL = "deepseek-flash";
+assertAllowedTestModel("deepseek", TEST_MODEL);
 
 /**
  * Local real-backend Console E2E.
@@ -129,13 +133,13 @@ test.describe("Console E2E", () => {
     await expect(page.getByRole("heading", { name: "New Model Card" })).toBeVisible();
 
     await page.getByRole("button", { name: /DeepSeek/ }).click();
-    await page.locator("#modelcard-id").fill("e2e-deepseek-chat");
+    await page.locator("#modelcard-id").fill("e2e-deepseek-flash");
     await page.locator("#modelcard-api-key").fill("sk-test-fake-key-12345678");
-    await page.locator("#modelcard-wire-model").fill("deepseek-chat");
+    await page.locator("#modelcard-wire-model").fill(TEST_MODEL);
     await page.locator("#modelcard-base-url").fill("https://api.deepseek.com/v1");
     await page.getByRole("button", { name: "Create" }).click();
 
-    await expect(page.getByText("e2e-deepseek-chat")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("e2e-deepseek-flash")).toBeVisible({ timeout: 15_000 });
   });
 
   test("8. Skills page — Install from URL dialog", async ({ page }) => {

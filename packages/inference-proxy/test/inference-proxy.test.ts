@@ -128,7 +128,7 @@ describe("hosted inference proxy helpers", () => {
     const fetcher = vi.fn(async () => new Response("ok", { status: 200 }));
     const response = await sendPlan({
       upstream: {
-        wireModel: "deepseek-chat",
+        wireModel: "deepseek-flash",
         apiKey: "upstream-key",
         baseURL: "https://api.deepseek.com",
         provider: "deepseek",
@@ -168,7 +168,7 @@ describe("hosted inference proxy helpers", () => {
     ];
     await sendPlan({
       upstream: {
-        wireModel: "deepseek-chat",
+        wireModel: "deepseek-flash",
         apiKey: "upstream-key",
         provider: "deepseek",
         protocolEndpoints: endpoints,
@@ -181,7 +181,7 @@ describe("hosted inference proxy helpers", () => {
     });
     await sendPlan({
       upstream: {
-        wireModel: "deepseek-chat",
+        wireModel: "deepseek-flash",
         apiKey: "upstream-key",
         provider: "deepseek",
         protocolEndpoints: endpoints,

@@ -319,7 +319,7 @@ describe("Managed Agents API — POST /v1/agents", () => {
       },
       openma: {
         auxiliaryModel: {
-          id: "deepseek-chat",
+          id: "deepseek-flash",
           speed: "fast" as const,
           providerOptions: {
             deepseek: { thinking: { type: "disabled" } },
@@ -370,7 +370,7 @@ describe("Managed Agents API — POST /v1/agents", () => {
         },
         _oma: {
           aux_model: {
-            id: "deepseek-chat",
+            id: "deepseek-flash",
             speed: "fast",
             provider_options: {
               deepseek: { thinking: { type: "disabled" } },
@@ -410,7 +410,7 @@ describe("Managed Agents API — POST /v1/agents", () => {
         },
         openma: {
           auxiliaryModel: {
-            id: "deepseek-chat",
+            id: "deepseek-flash",
             speed: "fast",
             providerOptions: {
               deepseek: { thinking: { type: "disabled" } },
@@ -451,7 +451,7 @@ describe("Managed Agents API — POST /v1/agents", () => {
       },
       _oma: {
         aux_model: {
-          id: "deepseek-chat",
+          id: "deepseek-flash",
           speed: "fast",
           provider_options: {
             deepseek: { thinking: { type: "disabled" } },

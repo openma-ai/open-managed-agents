@@ -11,7 +11,7 @@ function agentFixture(): JsonObject {
     name: "Lossless editor fixture",
     description: "Before edit",
     model: {
-      id: "deepseek-main",
+      id: "workspace-main",
       effort: { type: "high" },
       inference_geo: "us",
       speed: "fast",
@@ -21,7 +21,7 @@ function agentFixture(): JsonObject {
     },
     _oma: {
       aux_model: {
-        id: "deepseek-aux",
+        id: "workspace-aux",
         speed: "fast",
         provider_options: { deepseek: { temperature: 0.2 } },
       },
@@ -197,8 +197,8 @@ async function installConsoleFixture(page: Page) {
     if (path === "/v1/oma/model_cards") {
       await fulfillJson(route, {
         data: [
-          { id: "card-main", model_id: "deepseek-main", model: "deepseek-chat", is_default: true },
-          { id: "card-aux", model_id: "deepseek-aux", model: "deepseek-chat", is_default: false },
+          { id: "card-main", model_id: "workspace-main", model: "deepseek-flash", is_default: true },
+          { id: "card-aux", model_id: "workspace-aux", model: "deepseek-flash", is_default: false },
         ],
         next_cursor: null,
       });

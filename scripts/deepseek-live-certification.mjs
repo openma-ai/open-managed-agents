@@ -7,6 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { resolveDeepSeekTestModel } from "./lib/test-model-allowlist.mjs";
+
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,8 +38,10 @@ export async function loadDeepSeekCredential(env = process.env) {
 
 export async function runDeepSeekCertification(options = {}) {
   const repoRoot = options.repoRoot ?? REPO_ROOT;
-  const credential = await loadDeepSeekCredential(options.env ?? process.env);
-  const environment = { ...(options.env ?? process.env), DEEPSEEK_API_KEY: credential };
+  const env = options.env ?? process.env;
+  const model = resolveDeepSeekTestModel(env);
+  const credential = await loadDeepSeekCredential(env);
+  const environment = { ...env, PROBE_MODEL: model, DEEPSEEK_API_KEY: credential };
   const plan = buildDeepSeekCertificationPlan();
   const commands = new Map([
     ["pi-harness-out", ["pnpm", ["--filter", "@open-managed-agents/main-node", "test:e2e:pi-deepseek"]]],
@@ -53,7 +57,7 @@ export async function runDeepSeekCertification(options = {}) {
   ]);
   const report = {
     ok: false,
-    model: process.env.PROBE_MODEL ?? "deepseek-v4-flash",
+    model,
     steps: [],
   };
   for (const step of plan) {
@@ -86,6 +90,12 @@ function redact(value, secret) {
 }
 
 async function main() {
+  if (process.argv.includes("--help")) {
+    console.log("Usage: deepseek-live-certification.mjs [--check | --check-credential]\nPROBE_MODEL defaults to deepseek-flash; --check validates without credentials or network.");
+    return;
+  }
+  resolveDeepSeekTestModel();
+  if (process.argv.includes("--check")) return;
   if (process.argv.includes("--check-credential")) {
     await loadDeepSeekCredential();
     process.stdout.write("DeepSeek credential available\n");
