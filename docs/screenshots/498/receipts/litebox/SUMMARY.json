@@ -1,0 +1,157 @@
+{
+  "lane": "https://managed-agents-lane-pr-498.hrhrngxy.workers.dev",
+  "provider": "cloudflare-containers (NOT LiteBox)",
+  "litebox_status": "LiteBox (@boxlite-ai/boxlite / SANDBOX_PROVIDER=litebox) is Node-local only; unavailable on CF Workers lane. Exercised lane default cloud sandbox provider instead.",
+  "environment_id": "env_aeb1c14c10d54755b6b58202ab953585",
+  "agent_id": "agent_59891d3bbcf44eb7a75a757738917c90",
+  "session_id_success": "session_910dff3db58d4be187789a20f1185223",
+  "container_app": "sandbox-default-lane-pr-498-sandbox",
+  "container_app_id": "a03791c4-5cc9-4f45-a5a1-5120d936a2df",
+  "image": "openma-runtime@sha256:dbcc0733\u2026 (staging digest; box has no Docker so wrangler --containers-rollout=immediate unavailable)",
+  "blockers_fixed_on_lane": [
+    "Created CF Containers application (deploy had used --containers-rollout=none)",
+    "Redeployed agent with MAIN_MCP\u2192McpProxyRpc (lane-generate previously only bound MAIN)"
+  ],
+  "honest_residuals": [
+    "sdk/container version_mismatch warn 0.12.10 vs 0.12.9 (image digest reused from staging)",
+    "Container watch loop PermissionDeniedError path must be inside /workspace on /mnt/session/outputs (non-fatal for this turn)",
+    "Browser loopback pairing still fixture-only (not required for M1 cloud path)"
+  ],
+  "pre_main_mcp_milestones": [
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[sandbox] setOutboundContext tenant=tn_583e9 sid=session_4a0e hasFn=true"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "Sandbox",
+      "msg": "{\"level\": \"info\", \"message\": \"sandbox.exec success echo 542b94fb-173 > /tmp/.oma-warm (30ms)\", \"component\": \"sandbox-do\", \"sandboxId\": \"7f7b223bf73c2b1351c1ec3bcca369b8c3d51f9ecff0107077e5783630be17aa\", \"traceId\": \"tr_daddc392efcf4f21\", \"event\": \"sandbox.exec\", \"outcome\": \"success\", \"command\": \"echo 542b94fb-173 > /tmp/.oma-warm\", \"exitCode\": 0, \"durationMs\": 30, \"sessionId\": \"sandbox-e56145f12e82"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "Sandbox",
+      "msg": "{\"level\": \"info\", \"message\": \"sandbox.exec success echo \\\"30e0b2e4\\\" > /tmp/.oma-setup-warm; mkdir -p /workspace; echo \\\"251dab48\\\" > /workspace/.oma-setup-restored (33ms)\", \"component\": \"sandbox-do\", \"sandboxId\": \"7f7b223bf73c2b1351c1ec3bcca369b8c3d51f9ecff0107077e5783630be17aa\", \"traceId\": \"tr_daddc392efcf4f21\", \"event\": \"sandbox.exec\", \"outcome\": \"success\", \"command\": \"echo \\\"30e0b2e4\\\" > /tmp/"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "{\"ts\":\"2026-11-05T10:41:05.188Z\",\"level\":\"info\",\"msg\":\"no workspace backup found for this session \u2014 starting fresh\",\"op\":\"session_do.warmup.no_backup\",\"session_id\":\"session_4a0ebd0a9a57475fb231324fcd0c876a\",\"tenant_id\":\"tn_583e9b5df70a49a6\",\"environment_id\":\"env_aeb1c14c10d54755b6b58202ab953585\"}"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[setup-on-warmup] step=running_setup"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[setup-on-warmup] done path=fresh duration_ms=89"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[warmup] failed session=session_4a0ebd0a9a57475fb231324fcd0c876a: Managed Session input source service binding is unavailable"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "Sandbox",
+      "msg": "{\"level\": \"info\", \"message\": \"sandbox.exec success echo df074646-bba > /tmp/.oma-warm (54ms)\", \"component\": \"sandbox-do\", \"sandboxId\": \"3cfddc0ce35bdb21ba88be2262c97b449ad5083387b015b8653bc0c5451c563a\", \"traceId\": \"tr_da26e7ea18734f4f\", \"event\": \"sandbox.exec\", \"outcome\": \"success\", \"command\": \"echo df074646-bba > /tmp/.oma-warm\", \"exitCode\": 0, \"durationMs\": 54, \"sessionId\": \"sandbox-27b8a8f1b474"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "Sandbox",
+      "msg": "{\"level\": \"info\", \"message\": \"sandbox.exec success echo \\\"30e0b2e4\\\" > /tmp/.oma-setup-warm; mkdir -p /workspace; echo \\\"251dab48\\\" > /workspace/.oma-setup-restored (99ms)\", \"component\": \"sandbox-do\", \"sandboxId\": \"3cfddc0ce35bdb21ba88be2262c97b449ad5083387b015b8653bc0c5451c563a\", \"traceId\": \"tr_da26e7ea18734f4f\", \"event\": \"sandbox.exec\", \"outcome\": \"success\", \"command\": \"echo \\\"30e0b2e4\\\" > /tmp/"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "Sandbox",
+      "msg": "{\"level\": \"info\", \"message\": \"bucket.mount success /mnt/session/outputs (257ms)\", \"component\": \"sandbox-do\", \"sandboxId\": \"3cfddc0ce35bdb21ba88be2262c97b449ad5083387b015b8653bc0c5451c563a\", \"traceId\": \"tr_da26e7ea18734f4f\", \"event\": \"bucket.mount\", \"outcome\": \"success\", \"durationMs\": 257, \"bucket\": \"FILES_BUCKET\", \"mountPath\": \"/mnt/session/outputs\", \"provider\": \"local-sync\", \"prefix\": \"/t/default"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[sandbox] setOutboundContext tenant=default sid=session_bb14 hasFn=true"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "{\"ts\":\"2026-11-05T10:43:25.236Z\",\"level\":\"info\",\"msg\":\"no workspace backup found for this session \u2014 starting fresh\",\"op\":\"session_do.warmup.no_backup\",\"session_id\":\"session_bb142b6ec45e40308bba88fe76ade71a\",\"tenant_id\":\"default\",\"environment_id\":\"env_cc51adc13c0d4d769db01dc8622d96d9\"}"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[setup-on-warmup] step=running_setup"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[setup-on-warmup] done path=fresh duration_ms=193"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "SessionDO",
+      "msg": "[warmup] failed session=session_bb142b6ec45e40308bba88fe76ade71a: Managed Session input source service binding is unavailable"
+    },
+    {
+      "phase": "pre-MAIN_MCP-fix",
+      "entry": "Sandbox",
+      "msg": "{\"level\": \"warn\", \"message\": \"version.check sdk=0.12.10 container=0.12.9 (version_mismatch)\", \"component\": \"sandbox-do\", \"sandboxId\": \"7f7b223bf73c2b1351c1ec3bcca369b8c3d51f9ecff0107077e5783630be17aa\", \"traceId\": \"tr_daddc392efcf4f21\", \"event\": \"version.check\", \"outcome\": \"success\", \"durationMs\": 0, \"sdkVersion\": \"0.12.10\", \"containerVersion\": \"0.12.9\", \"versionOutcome\": \"version_mismatch\", \"times"
+    }
+  ],
+  "successful_turn_events": [
+    {
+      "id": "sevt_req_17926ce3dc4e0672270069077a9fcf853b8473563f92487b367d50da0a494367_0",
+      "processed_at": "2026-11-05T10:45:43.157Z",
+      "type": "user.message",
+      "content": [
+        {
+          "type": "text",
+          "text": "Reply with exactly: CLOUD_SANDBOX_OK"
+        }
+      ]
+    },
+    {
+      "id": "sevt-4oh0zh821z910s77",
+      "type": "session.status_running",
+      "processed_at": "2026-11-05T10:45:48.869Z"
+    },
+    {
+      "id": "sevt-207xwooib341vtc4",
+      "type": "span.model_request_start",
+      "processed_at": "2026-11-05T10:45:48.870Z"
+    },
+    {
+      "id": "sevt-blv3a26aungtfrbj",
+      "type": "agent.message",
+      "content": [
+        {
+          "type": "text",
+          "text": "CLOUD_SANDBOX_OK"
+        }
+      ],
+      "processed_at": "2026-11-05T10:45:49.985Z"
+    },
+    {
+      "id": "sevt-nqx81f7b2nqq2sed",
+      "type": "span.model_request_end",
+      "is_error": false,
+      "model_request_start_id": "sevt-207xwooib341vtc4",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 3182,
+        "output_tokens": 8
+      },
+      "processed_at": "2026-11-05T10:45:49.986Z"
+    },
+    {
+      "id": "sevt-jt4kizhwn0vohofk",
+      "type": "session.status_idle",
+      "processed_at": "2026-11-05T10:45:49.987Z",
+      "stop_reason": {
+        "type": "end_turn"
+      }
+    }
+  ]
+}

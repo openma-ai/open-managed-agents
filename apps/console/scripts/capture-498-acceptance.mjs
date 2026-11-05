@@ -129,6 +129,15 @@ try {
     await expect(page.getByRole('heading', { name: 'Runtime' })).toBeVisible();
     await expect(page.getByText('Env overlay (optional)')).toBeVisible();
   });
+  await shot('06-environments-new-cloud-provision.png', '/environments', async (page) => {
+    await page.getByRole('button', { name: /New environment|Create environment/i }).first().click();
+    await page.locator('#env-create-hosting').click();
+    await page.getByRole('option', { name: /Cloud.*provision a sandbox/i }).click();
+    await expect(page.locator('#env-create-hosting')).toContainText(/Cloud/i);
+    // Name field visible; no Runtime picker on Cloud hosting
+    await page.locator('#env-create-name').fill('pr-498-cloud-sandbox');
+    await expect(page.locator('#env-create-runtime')).toHaveCount(0);
+  });
   console.log('OK all 498 fixture shots');
 } finally {
   await browser.close();

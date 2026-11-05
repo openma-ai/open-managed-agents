@@ -16,6 +16,7 @@ on the operator box.
 - [Generate pairing command](acceptance/03-generate-pairing-command.png)
 - [Environments → New → Attach to existing Runtime + env overlay](acceptance/04-environments-new-attach-runtime.png)
 - [Environment detail → Runtime card](acceptance/05-environment-detail-runtime-card.png)
+- [Environments → New → Cloud — provision a sandbox](acceptance/06-environments-new-cloud-provision.png)
 
 ## Live lane (operator)
 
@@ -42,3 +43,21 @@ Live evidence from host `botty` (darwin/arm64) against
 Receipts: `receipts/botty/` (`bridge-status.txt`, `daemon-fg.log`, `exchange-redacted.json`, `runtimes-after-pair.json`).
 
 Console fixtures `acceptance/01–05.png` were re-captured with the live `botty` hostname/runtime id so UI shots match the Mac connect path.
+
+## Unified skill cache (M1 implementation)
+
+The host bridge now caches complete Skill Versions once and links OMA-managed
+session directories to concrete immutable content. See
+[skill-cache receipts](receipts/skill-cache/README.md) for live PR-lane reuse,
+`latest`/pinned-version and no-hot-swap evidence. **These new receipts are Linux;
+botty Mac sync/validation is blocked by unavailable remote execution access.**
+Windows fallback is unit-tested; Runtime-owned sandbox cache mount/copy and
+live-session-aware eviction remain deferred. Console UI is unchanged.
+
+## Cloud / LiteBox path (lane pr-498)
+
+LiteBox is **not** available on the CF Workers lane (Node `SANDBOX_PROVIDER=litebox` only).
+Live Hosting Type **Cloud** evidence uses **Cloudflare Containers**:
+
+- Receipts: [`receipts/litebox/`](receipts/litebox/) (env create, container app, successful turn `CLOUD_SANDBOX_OK`)
+- Environment `env_aeb1c14c…` · Session `session_910dff3d…` · provider `sandbox-default-lane-pr-498-sandbox`

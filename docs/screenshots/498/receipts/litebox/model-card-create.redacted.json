@@ -1,0 +1,11 @@
+{
+  "id": "mdl-pf65i2cv5o514wot",
+  "model_id": "deepseek-flash",
+  "model": "deepseek-chat",
+  "provider": "deepseek",
+  "api_key_preview": "****",
+  "base_url": "https://api.deepseek.com",
+  "is_default": true,
+  "created_at": "2026-11-05T10:30:38.817Z",
+  "note": "api_key redacted; probe ran at create"
+}

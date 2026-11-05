@@ -16,3 +16,6 @@ BETTER_AUTH_SECRET: NOT set (staging value unavailable) — Console cookie login
 7. Botty macOS CLI malformed token fail-fast; live bridge setup attempted
 
 See JSON files in this directory (tokens redacted in committed copies).
+
+8. **Cloud Environment** `config.type=cloud` → Cloudflare Containers sandbox provision + turn (`receipts/litebox/`) — LiteBox N/A on CF lane
+9. Pairing negatives: anonymous mint 401; bad TTL 400 (`pair-anon.json`, `pair-badttl.json`)

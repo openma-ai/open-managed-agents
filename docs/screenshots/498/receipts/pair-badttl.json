@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "ttl_seconds must be an integer between 300 and 86400"
+  },
+  "message": "ttl_seconds must be an integer between 300 and 86400",
+  "code": "invalid_request_error",
+  "request_id": "a55b03b1ed5969d4"
+}
