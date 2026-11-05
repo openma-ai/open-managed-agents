@@ -168,4 +168,91 @@ describe("SqlSessionEventStore queued input processing", () => {
     expect(JSON.stringify(after!.initialEvents)).not.toContain('consumed_by_execution_id');
   });
 
+  // SQL-level crash injection: abandon all returned inputs after coordinator
+  // mutation and reconstruct the coordinator/store from the durable database.
+  // No graceful settle or consume is performed at the fault point.
+  async function pollPersistedHistory(before: any, after: any) {
+    const { createSessionsHandler } = await import('../../openai-agents-compat/src/sessions');
+    const { normalizeAgentConfig } = await import('../../openai-agents-compat/src/resources');
+    const controller = new AbortController();
+    let loads = 0;
+    let snapshot = false;
+    const base: any = { id: 'session_01', object: 'agent.session', created_at: 1, last_active_at: 1,
+      agent: { ...normalizeAgentConfig({ model: 'test' }), id: 'agent' }, environment: { type: 'none' },
+      status: 'idle', error: null, metadata: {}, required_actions: [], usage: null, vault_ids: [] };
+    const handler = createSessionsHandler({ workspaceId: 'w', pollMs: 0,
+      sessions: { retrieveSession: async () => ({ type: 'found', session: { id: 'session_01', createdAt: at(0) } }) } as any,
+      sessionEvents: {} as any, mapping: { sessionView: async () => base } as any,
+      history: { loadSessionRuntimeHistory: async () => {
+        const selected = snapshot || loads++ > 0 ? after : before;
+        if (!snapshot && loads > 4) controller.abort();
+        return { type: 'found', ...selected };
+      } },
+    });
+    const request: any = { operation: 'sessions.events.stream', params: { session_id: 'session_01' },
+      query: { order: 'asc' }, body: {}, headers: new Headers(), signal: controller.signal };
+    const response = await handler.execute(request);
+    const events: any[] = [];
+    for await (const event of response.stream!) events.push(event);
+    snapshot = true;
+    const items: any = (await handler.execute({ ...request, operation: 'sessions.items.list' })).body;
+    const turns: any = (await handler.execute({ ...request, operation: 'sessions.turns.list' })).body;
+    expect(new Set(events.map(e => e.event_id)).size).toBe(events.length);
+    return { events, items: items.data, turns: turns.data };
+  }
+
+  it('crash after claim before consume recovers the input once with snapshot/stream agreement', async () => {
+    const coordinator = await coordinated();
+    await append([message('X')], at(1));
+    const dead = await coordinator.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'dead', attemptId: 'dead-attempt', claimedAt: at(2), leaseTtlMs: 1000 });
+    expect(dead.type).toBe('claimed');
+    const history = new SqlSessionRuntimeHistorySource(client);
+    const before = await history.load({ workspaceId: 'w', sessionId: 'session_01' });
+    // Crash: discard dead.execution.events without invoking consumeSessionInputs.
+    store = new SqlSessionEventStore(client, { executionOutbox: true });
+    const restarted = new SqlSessionExecutionStore(client);
+    const recovered = await restarted.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'new', attemptId: 'new-attempt', claimedAt: at(5), leaseTtlMs: 30000 });
+    if (recovered.type !== 'claimed') throw new Error('input not recovered');
+    expect(recovered.execution.events.map(e => e.id)).toEqual(['X']);
+    await consume(recovered.execution.events, recovered.execution.id, at(6));
+    await consume(recovered.execution.events, 'must-not-rebind', at(7));
+    const after = await history.load({ workspaceId: 'w', sessionId: 'session_01' });
+    const projected = await pollPersistedHistory(before, after);
+    expect(await facts('X')).toMatchObject({ executionId: 'X', consumedByExecutionId: 'X', event: { processedAt: at(6) } });
+    expect(projected.items).toHaveLength(1);
+    expect(projected.turns).toHaveLength(1);
+    expect(projected.events.filter(e => e.type === 'agent.session.turn.item.added').map(e => e.item)).toEqual(projected.items);
+    expect(projected.events.find(e => e.type === 'agent.session.turn.created')?.turn).toEqual(projected.turns[0]);
+    console.log('CRASH_CLAIM', JSON.stringify({ facts: await facts('X'), attemptCount: recovered.execution.attemptCount, projected }));
+  });
+
+  it.fails('known crash gap: steer before consume must recover the steered input', async () => {
+    const coordinator = await coordinated();
+    await append([message('Y')], at(1));
+    const y = await coordinator.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'dead', attemptId: 'dead-attempt', claimedAt: at(2), leaseTtlMs: 1000 });
+    if (y.type !== 'claimed') throw new Error('Y not claimed');
+    await consume(y.execution.events, 'Y', at(2));
+    await append([message('S')], at(3));
+    const stolen = await takeQueuedSteeringInputs(coordinator, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(3), excludeExecutionId: 'Y' });
+    expect(stolen.map(e => e.id)).toEqual(['S']);
+    const history = new SqlSessionRuntimeHistorySource(client);
+    const before = await history.load({ workspaceId: 'w', sessionId: 'session_01' });
+    // Crash here: S's execution is completed, but its consume CAS never ran.
+    store = new SqlSessionEventStore(client, { executionOutbox: true });
+    const restarted = new SqlSessionExecutionStore(client);
+    const recovered = await restarted.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'new', attemptId: 'new-attempt', claimedAt: at(5), leaseTtlMs: 30000 });
+    if (recovered.type !== 'claimed') throw new Error('Y not recovered');
+    await consume(recovered.execution.events, recovered.execution.id, at(6));
+    const steered = await takeQueuedSteeringInputs(restarted, { workspaceId: 'w', sessionId: 'session_01', laneId: 'sthr_primary', steeredAt: at(6), excludeExecutionId: 'Y' });
+    await consume(steered, 'Y', at(6));
+    await restarted.settle({ fence: recovered.fence, settledAt: at(7), outcome: 'completed' });
+    const next = await restarted.claim({ workspaceId: 'w', sessionId: 'session_01', ownerId: 'new', attemptId: 'next', claimedAt: at(8), leaseTtlMs: 30000 });
+    const after = await history.load({ workspaceId: 'w', sessionId: 'session_01' });
+    const projected = await pollPersistedHistory(before, after);
+    console.log('CRASH_STEER', JSON.stringify({ S: await facts('S'), coordinatorS: await restarted.find({ workspaceId: 'w', executionId: 'S' }), recoveredInputs: recovered.execution.events.map(e => e.id), steered, next, projected }));
+    // Known defect: steerQueued commits completed before the consume CAS.
+    // Keep the desired invariant as an expected failure until recovery is atomic.
+    expect(projected.items.map((item: any) => item.id)).toContain('S');
+  });
+
 });
