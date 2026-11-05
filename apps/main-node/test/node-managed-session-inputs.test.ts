@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session } from "@open-managed-agents/managed-agents-application";
 
+import { ZipSkillPackageCompiler } from "../../../packages/managed-agents-adapters-runtime/src/skill-package-compiler.js";
+import { planSkillExposure } from "../../agent/src/harness/assembly/strategies/skill-exposure.js";
 import { NodeManagedSessionInputPreparer } from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
 import * as nodeManagedInputs from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
 
@@ -58,19 +60,94 @@ function managedSession(): Session {
 }
 
 describe("NodeManagedSessionInputPreparer", () => {
-  it("describes mounted custom skills for inclusion in the model system prompt", () => {
-    const buildReminders = (nodeManagedInputs as Record<string, unknown>)
-      .buildNodeManagedSkillReminders as undefined | ((session: Session) => Array<{
-        source: string;
-        text: string;
-      }>);
-    expect(buildReminders).toBeTypeOf("function");
-    if (buildReminders === undefined) return;
+  describe.each([
+    { layout: "nested", uploadedRoot: "example-skill/", name: "example-skill", directory: "example-skill" },
+    { layout: "flat", uploadedRoot: "", name: "flat-skill", directory: "flat-skill" },
+    { layout: "different directory and name", uploadedRoot: "my-pkg/", name: "other-name", directory: "my-pkg" },
+  ])("skill paths: $layout", ({ uploadedRoot, name, directory }) => {
+    it.each(["123", "latest", undefined])("matches materialized files for version %s, including recreation", async (requestedVersion) => {
+      const manifest = bytes(`---\nname: ${name}\ndescription: Verify skill paths\n---\nRead [guide](references/guide.md).\n`);
+      const guide = bytes("REFERENCE_OK");
+      const compiled = await new ZipSkillPackageCompiler().compile({
+        files: [
+          { filename: `${uploadedRoot}SKILL.md`, mimeType: "text/markdown", content: manifest },
+          { filename: `${uploadedRoot}references/guide.md`, mimeType: "text/markdown", content: guide },
+        ],
+      });
+      if (compiled.type !== "compiled") throw new Error(compiled.message);
+      expect(compiled.package.directory).toBe(directory);
+      const view = {
+        id: "skv_inputs_01",
+        createdAt: "2026-09-08T00:00:00.000Z",
+        description: compiled.package.description,
+        directory: compiled.package.directory,
+        name: compiled.package.name,
+        skillId: "skill_inputs",
+        version: "123",
+      };
+      const skillVersions = {
+        listSkillVersions: vi.fn(async () => ({
+          type: "page" as const, page: { versions: [view], nextCursor: null },
+        })),
+        retrieveSkillVersion: vi.fn(async () => ({ type: "found" as const, version: view })),
+        downloadSkillVersion: vi.fn(async () => ({
+          type: "found" as const,
+          file: { content: compiled.package.archive.content, mimeType: "application/zip" },
+        })),
+      };
+      const session = managedSession();
+      session.resources = [];
+      session.agent.skills = [
+        { type: "custom", skillId: "skill_inputs", ...(requestedVersion ? { version: requestedVersion } : {}) },
+        { type: "anthropic", skillId: "pdf" },
+      ];
+      const preparer = new NodeManagedSessionInputPreparer({
+        files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
+        skillVersions,
+        repositoryCredentials: { findGithubToken: async () => null },
+        memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
+      });
+      const mountRoot = `/workspace/.openma/skills/skill_inputs/${requestedVersion ?? "latest"}/${directory}/`;
+      for (const incarnation of ["initial", "recreated"]) {
+        const written = new Map<string, Uint8Array>();
+        const sandbox = {
+          sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
+          mountSessionOutputs: async () => undefined,
+          writeFileBytes: async (path: string, content: Uint8Array) => { written.set(path, content); return "written"; },
+        } as unknown as SandboxExecutor;
+        await preparer.prepare({ workspaceId: "workspace_inputs", session, sandbox });
+        expect(written.get(`${mountRoot}SKILL.md`), incarnation).toEqual(manifest);
+        expect(written.get(`${mountRoot}references/guide.md`), incarnation).toEqual(guide);
 
-    expect(buildReminders(managedSession())).toEqual([{
-      source: "skill:skill_inputs",
-      text: "Custom skill skill_inputs is mounted at /workspace/.openma/skills/skill_inputs/latest/. Locate and read its SKILL.md before applying it.",
-    }]);
+        const mounts = await nodeManagedInputs.resolveNodeManagedSkillMounts(session, skillVersions);
+        expect(mounts).toHaveLength(1);
+        expect.soft(mounts[0]).toMatchObject({ mountRoot, name });
+        const plan = planSkillExposure({
+          mounts,
+          loadedSkillIds: new Set(),
+          config: { mode: "progressive", listBudgetFraction: 0.02, maxDescriptionChars: 1024 },
+          model: { contextWindow: 10_000 } as Parameters<typeof planSkillExposure>[0]["model"],
+        });
+        const advertisedPath = /Read: `([^`]+)`/u.exec(plan.systemSection)?.[1];
+        expect.soft(advertisedPath).toBe(`${mountRoot}SKILL.md`);
+        expect.soft(written.get(advertisedPath!)).toEqual(manifest);
+        expect.soft(written.get(`${mounts[0]!.mountRoot}references/guide.md`)).toEqual(guide);
+        expect.soft(await nodeManagedInputs.buildNodeManagedSkillMounts(session, skillVersions)).toEqual(mounts);
+        expect.soft(await nodeManagedInputs.buildNodeManagedSkillReminders(session, skillVersions)).toEqual([{
+          source: "skill:skill_inputs",
+          text: `Custom skill skill_inputs is mounted at ${mountRoot}. Locate and read its SKILL.md before applying it.`,
+        }]);
+      }
+      if (requestedVersion === "123") {
+        expect(skillVersions.retrieveSkillVersion).toHaveBeenCalledWith({ skillId: "skill_inputs", version: "123" });
+        expect(skillVersions.listSkillVersions).not.toHaveBeenCalled();
+      } else {
+        expect(skillVersions.listSkillVersions).toHaveBeenCalledWith({ skillId: "skill_inputs", pageSize: 1 });
+        expect(skillVersions.retrieveSkillVersion).not.toHaveBeenCalled();
+      }
+      expect(skillVersions.downloadSkillVersion).toHaveBeenCalledTimes(2);
+      expect(skillVersions.downloadSkillVersion).toHaveBeenCalledWith({ skillId: "skill_inputs", version: "123" });
+    });
   });
 
   it("resolves version-pinned appendable prompts into system prompt reminders", () => {
