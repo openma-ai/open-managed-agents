@@ -1,0 +1,35 @@
+{
+  "id": "session_910dff3db58d4be187789a20f1185223",
+  "agent": {
+    "id": "agent_59891d3bbcf44eb7a75a757738917c90",
+    "description": null,
+    "execution_identity": {
+      "type": "service_account"
+    },
+    "mcp_servers": [],
+    "model": {
+      "id": "deepseek-flash"
+    },
+    "multiagent": null,
+    "name": "pr-498-cloud-agent",
+    "skills": [],
+    "system": "Reply with exactly: CLOUD_SANDBOX_OK",
+    "tools": [],
+    "type": "agent",
+    "version": 1
+  },
+  "archived_at": null,
+  "budget": null,
+  "created_at": "2026-11-05T10:45:34.013Z",
+  "environment_id": "env_aeb1c14c10d54755b6b58202ab953585",
+  "metadata": {},
+  "outcome_evaluations": [],
+  "resources": [],
+  "stats": {},
+  "status": "running",
+  "title": "pr-498-cloud-after-main-mcp",
+  "type": "session",
+  "updated_at": "2026-11-05T10:45:34.013Z",
+  "usage": {},
+  "vault_ids": []
+}

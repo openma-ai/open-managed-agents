@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "_oma.runtime.env has an invalid variable name: 9BAD"
+  },
+  "message": "_oma.runtime.env has an invalid variable name: 9BAD",
+  "code": "invalid_request_error",
+  "request_id": "a55b0dbeede761c8"
+}

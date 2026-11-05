@@ -1,0 +1,12 @@
+[proxy-preload] undici ProxyAgent -> http://127.0.0.1:7890
+
+   ┏━           ━┓   
+   ┃       ◢      ┃   
+   ┃      ●       ┃   
+   ┃              ┃   
+   ┗━           ━┛   
+
+oma bridge  v0.7.3
+daemon — runtime 1725d28a… → https://managed-agents-lane-pr-498.hrhrngxy.workers.dev
+
+✓ runtime attached

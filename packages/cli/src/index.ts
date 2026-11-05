@@ -5,7 +5,12 @@ import { homedir, hostname } from "node:os";
 import { join, dirname } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, chmodSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import type { AgentConfig, ModelCard, SessionMeta } from "@open-managed-agents/api-types";
+import type {
+  AgentConfig,
+  ModelCard,
+  RuntimePairingTokenResponse,
+  SessionMeta,
+} from "@open-managed-agents/api-types";
 import {
   normalizeSessionEvent,
   type WireSessionEvent,
@@ -908,7 +913,8 @@ const commands: Cmd[] = [
       }> }>(config, "/v1/oma/runtimes");
       if (config.json) { console.log(JSON.stringify(runtimes, null, 2)); return; }
       if (!runtimes.length) {
-        console.log("No runtimes. Register one with `oma bridge setup` on the target machine.");
+        console.log("No runtimes. Register one with `oma bridge setup` on the target machine");
+        console.log("(headless machine: `oma runtime pair` prints a one-time setup command).");
         return;
       }
       table([
@@ -923,6 +929,23 @@ const commands: Cmd[] = [
           r.last_heartbeat ? new Date(r.last_heartbeat * 1000).toISOString().slice(11, 19) : "—",
         ]),
       ]);
+    },
+  },
+  {
+    group: "Runtimes", match: ["runtime", "pair"],
+    usage: "oma runtime pair [--ttl <seconds>]", desc: "Mint a one-time pairing command for a headless machine",
+    http: "POST   /v1/oma/runtimes/pairing-tokens {ttl_seconds?}",
+    async run(config, args) {
+      const ttl = flag(args, "--ttl");
+      const minted = await apiFetch<RuntimePairingTokenResponse>(config, "/v1/oma/runtimes/pairing-tokens", {
+        method: "POST",
+        body: JSON.stringify(ttl === undefined ? {} : { ttl_seconds: Number(ttl) }),
+      });
+      if (config.json) { console.log(JSON.stringify(minted, null, 2)); return; }
+      console.log("Run this on the machine to connect (single use, expires " +
+        `${new Date(minted.expires_at * 1000).toISOString()}):\n`);
+      console.log(`  ${minted.install_command}\n`);
+      console.log("It will appear in `oma runtime list` once the daemon attaches.");
     },
   },
   {
@@ -2290,6 +2313,7 @@ function usage() {
   console.log(`
   Bridge (local runtime):
     oma bridge setup [--force] [--no-service]    Pair this machine with OMA + start daemon
+    oma bridge setup --token <omrp_…>            Headless pairing (token from \`oma runtime pair\`)
     oma bridge status                            Show creds + probe server reachability
     oma bridge refresh                           Reconcile authorized tenants + reload daemon
     oma bridge agents refresh                    Re-detect agents + offer wrapper installs
@@ -2366,12 +2390,14 @@ async function main() {
         // another) — keep --browser-origin as an explicit override.
         const serverUrl = flag(args, "--server-url") ?? DEFAULT_BRIDGE_SERVER_URL;
         const { runSetup } = await import("./bridge/commands/setup.js");
+        const { pairingTokenFrom } = await import("./bridge/lib/pairing.js");
         await runSetup({
           serverUrl,
           browserOrigin: flag(args, "--browser-origin") ?? serverUrl,
           noService: args.includes("--no-service"),
           force: args.includes("--force"),
           yes: args.includes("--yes") || args.includes("-y"),
+          pairingToken: pairingTokenFrom(flag(args, "--token")),
         });
         return;
       }
@@ -2413,8 +2439,9 @@ async function main() {
       default:
         console.error(
           "oma bridge — pair a local ACP agent with OMA\n\n" +
-          "  oma bridge setup [--server-url=…] [--no-service] [--force] [--yes]\n" +
+          "  oma bridge setup [--server-url=…] [--no-service] [--force] [--yes] [--token=omrp_…]\n" +
           "                                       Pair + install service + start daemon\n" +
+          "                                       (--token / OMA_PAIRING_TOKEN: headless, no browser)\n" +
           "  oma bridge status                    Creds + service kind + probe server\n" +
           "  oma bridge refresh                   Reconcile authorized tenants + reload daemon\n" +
           "  oma bridge profiles list             List all installed daemon profiles on this machine\n" +

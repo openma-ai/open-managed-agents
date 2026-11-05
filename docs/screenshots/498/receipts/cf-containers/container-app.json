@@ -1,0 +1,58 @@
+{
+  "id": "a03791c4-5cc9-4f45-a5a1-5120d936a2df",
+  "created_at": "2026-11-05T10:36:05.299000064Z",
+  "updated_at": "2026-11-05T10:36:06.289999872Z",
+  "account_id": "44af79e51582ca20c9003eb926540242",
+  "name": "sandbox-default-lane-pr-498-sandbox",
+  "version": 1,
+  "scheduling_policy": "default",
+  "instances": 7,
+  "max_instances": 50,
+  "configuration": {
+    "image": "registry.cloudflare.com/44af79e51582ca20c9003eb926540242/openma-runtime@sha256:dbcc073375685bc66096deba41002e9a4979018a7867695f9bb3ed4d056f53a0",
+    "vcpu": 0.5,
+    "memory": "4GiB",
+    "memory_mib": 4096,
+    "disk": {
+      "size_mb": 8000,
+      "size": "8GB"
+    },
+    "network": {
+      "assign_ipv4": "none",
+      "assign_ipv6": "none",
+      "mode": "private"
+    },
+    "command": [],
+    "entrypoint": [],
+    "runtime": "firecracker",
+    "observability": {
+      "logs": {
+        "enabled": true
+      }
+    }
+  },
+  "constraints": {
+    "tiers": [
+      1,
+      2
+    ]
+  },
+  "durable_objects": {
+    "namespace_id": "b6e303da0b7440c69eff9ed3383738c8"
+  },
+  "health": {
+    "errors": [],
+    "instances": {
+      "active": 1,
+      "assigned": 0,
+      "healthy": 6,
+      "stopped": 0,
+      "failed": 0,
+      "scheduling": 0,
+      "starting": 0
+    }
+  },
+  "network": {
+    "bandwidth_limit_mbps": 500
+  }
+}

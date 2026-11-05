@@ -1,0 +1,14 @@
+$ vitest run --config vitest.config.ts test/runtime-placement.test.ts
+
+ RUN  v5.0.5 /workspace/oma-runtime/packages/cli
+
+  → SessionManager.start claude-agent-acp cwd=/host/project scratch=/tmp/oma-placement-Kp4yLB cfg=/host/claude-config env=1
+  → SessionManager.start claude-agent-acp cwd=/host/project scratch=/tmp/oma-placement-ECIgh5 cfg=/host/claude-config env=1
+  → tenant-key selected sid=session- tenant=tenant-1
+  → tenant-key selected sid=session- tenant=tenant-1
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+   Start at  06:42:36
+   Duration  309ms (transform 46%, tests 28%, import 25%, worker 2%)
+

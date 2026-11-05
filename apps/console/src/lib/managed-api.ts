@@ -226,9 +226,11 @@ export type OpenMaFileListParams = WithoutBetas<FileListParams> & {
  * `null` on update returns the Environment to the deployment default. */
 export interface OpenMaEnvironmentExtension {
   sandbox_image?: string | null;
+  /** Attach a `self_hosted` Environment to a paired Runtime; `null` detaches. */
+  runtime?: { runtime_id: string; placement?: "host" | "sandbox"; env?: Record<string, string> } | null;
 }
 export type OpenMaEnvironment = BetaEnvironment & {
-  _oma?: { sandbox_image?: string };
+  _oma?: { sandbox_image?: string; runtime?: { runtime_id: string; placement?: "host" | "sandbox"; env: Record<string, string> } };
 };
 type EnvironmentWriteExtension = { _oma?: OpenMaEnvironmentExtension };
 

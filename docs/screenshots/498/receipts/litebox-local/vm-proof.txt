@@ -1,0 +1,24 @@
+Linux boxlite 6.12.76 #1 SMP PREEMPT_DYNAMIC Tue Mar 10 13:28:56 CET 2026 x86_64 GNU/Linux
+boxlite
+node
+reboot=k
+panic=-1
+panic_print=0
+nomodule
+console=hvc0
+rootfstype=virtiofs
+rw
+quiet
+no-kvmapf
+init=/init.krun
+KRUN_INIT=/boxlite/bin/boxlite-guest
+KRUN_WORKDIR=/boxlite
+KRUN_BLOCK_ROOT_DEVICE=/dev/vdb
+KRUN_BLOCK_ROOT_FSTYPE=ext4
+KRUN_RLIMITS="6=4096:8192,7=1048576:1048576"
+"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+virtio_mmio.device=4K@0xd0000000:5
+virtio_mmio.device=4K@0xd0001000:6
+virtio_mmio.device=4K@0xd0002000:7
+LITEBOX_LOCAL_OK
+2026-11-05T10:54:21.991487Z  WARN libcontainer::process::init::process: seccomp not available, unable to set seccomp privileges!

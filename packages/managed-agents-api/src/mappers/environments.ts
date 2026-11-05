@@ -90,6 +90,11 @@ function toOpenMaInput(
     ...(extension.sandbox_image !== undefined && {
       sandboxImage: extension.sandbox_image,
     }),
+    ...(extension.runtime !== undefined && {
+      runtime: extension.runtime === null
+        ? null
+        : { runtimeId: extension.runtime.runtime_id, placement: extension.runtime.placement ?? "host", env: extension.runtime.env ?? {} },
+    }),
   };
 }
 
@@ -137,6 +142,15 @@ export function toListEnvironmentsQuery(
   };
 }
 
+function fromOpenMa(openma: NonNullable<EnvironmentView["openma"]>): object {
+  return {
+    ...(openma.sandboxImage !== undefined && { sandbox_image: openma.sandboxImage }),
+    ...(openma.runtime !== undefined && {
+      runtime: { runtime_id: openma.runtime.runtimeId, placement: openma.runtime.placement ?? "host", env: openma.runtime.env },
+    }),
+  };
+}
+
 function fromPackages(packages: EnvironmentPackagesView): object {
   return {
     type: "packages",
@@ -179,8 +193,7 @@ export function toEnvironmentResponse(environment: EnvironmentView): object {
     updated_at: environment.updatedAt,
     ...(environment.scope !== undefined && { scope: environment.scope }),
     // OpenMA extension: emitted only when set, so CMA clients see no change.
-    ...(environment.openma?.sandboxImage !== undefined && {
-      _oma: { sandbox_image: environment.openma.sandboxImage },
-    }),
+    ...(environment.openma !== undefined &&
+      Object.keys(environment.openma).length > 0 && { _oma: fromOpenMa(environment.openma) }),
   };
 }

@@ -79,7 +79,8 @@ test.describe("Console E2E", () => {
 
   test("2. signup creates account and redirects to dashboard", async ({ page }) => {
     const email = await signup(page);
-    await expect(page.getByText(TEST_NAME)).toBeVisible();
+    // Account menu owns the display name; workspace switcher also contains TEST_NAME ("…'s workspace").
+    await expect(page.getByRole("button", { name: "Account menu" })).toContainText(TEST_NAME);
     await expect(page.getByText(email)).toBeVisible();
   });
 

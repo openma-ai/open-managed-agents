@@ -1,0 +1,47 @@
+{
+  "cache_unit": {
+    "tests_passed": 17,
+    "command": "pnpm --filter @open-managed-agents/acp-runtime test src/skill-cache.test.ts"
+  },
+  "acp_runtime_suite": {
+    "tests_passed_before_final_integrity_regression": 98,
+    "command": "pnpm --filter @open-managed-agents/acp-runtime test"
+  },
+  "cli_suite": {
+    "tests_passed": 64,
+    "tests_skipped_preexisting": 1,
+    "command": "pnpm --filter @openma/cli test"
+  },
+  "supervisor_suite": {
+    "tests_passed": 144,
+    "command": "pnpm --filter @open-managed-agents/harness-runtime-acp test"
+  },
+  "worker_bundle_integration": {
+    "tests_passed": 34,
+    "command": "pnpm exec vitest run test/integration/runtimes-route.test.ts"
+  },
+  "typechecks": {
+    "root": "passed",
+    "cli": "passed",
+    "acp_runtime": "passed",
+    "harness_runtime_acp": "passed"
+  },
+  "architecture": "pnpm run test:architecture passed",
+  "lane_deployment_version": "2e025814-c8f5-44d2-8580-afccdea7b860",
+  "artifacts": {
+    "packages/cli/dist/index.js": {
+      "bytes": 1349244,
+      "sha256": "422d9a260e6b283c3a5dff6ba133f4faf4e23f2ab466f295033b60739af7c7c6"
+    },
+    "/tmp/oma-498-skill-cache-probe.mjs": {
+      "bytes": 36030,
+      "sha256": "509f466ffd06c2646f3e64316f06c5d207fb9a4a4a771b1b1531a10fb2a9dd4c"
+    },
+    "/tmp/openma-cli-0.7.3.tgz": {
+      "bytes": 241307,
+      "sha256": "a666c365a96f7c36749542eb9787ba6bcbd87d6d3b88f5ca90a59ea0daacce68"
+    }
+  },
+  "mac_validation": "blocked: no remote execution access; see botty-blocker.txt",
+  "windows_validation": "mocked failure paths only; not live Windows"
+}
