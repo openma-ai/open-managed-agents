@@ -5,7 +5,7 @@
 // The drivers live in the per-dialect adapter packages; this module only
 // loads the one the config selects.
 
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/sql";
 import type { NodeDatabase } from "@open-managed-agents/node-database";
 
