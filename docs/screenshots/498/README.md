@@ -23,6 +23,22 @@ on the operator box.
 - Pairing mint / single-use replay, Environment overlay create, and
   authenticated bundle delivery (match / detach / mismatch) exercised
   against the lane with a workspace API key.
-- Botty macOS CLI (`packages/cli` @ `b21bb3d6`) validates malformed
-  `--token` fail-fast; headless `bridge setup --token` against the lane
-  is covered in the PR comment / receipts.
+- Botty macOS live pair completed: runtime `1725d28a…` hostname `botty` **online**;
+  receipts under `receipts/botty/` (status probe + daemon `_attach` via mihomo proxy).
+
+
+## Botty Mac live pair (lane pr-498)
+
+Live evidence from host `botty` (darwin/arm64) against
+`https://managed-agents-lane-pr-498.hrhrngxy.workers.dev`:
+
+| Item | Value |
+|------|-------|
+| runtime_id | `1725d28a-83d1-4434-9178-4b9a9ab93006` |
+| machine_id | `3a081f41-9885-40ea-a433-39497f3b708e` |
+| status | **online** (WS `_attach` + heartbeat) |
+| egress | mihomo HTTP proxy `127.0.0.1:7890` (DNS poison workaround + undici/`HttpsProxyAgent`) |
+
+Receipts: `receipts/botty/` (`bridge-status.txt`, `daemon-fg.log`, `exchange-redacted.json`, `runtimes-after-pair.json`).
+
+Console fixtures `acceptance/01–05.png` were re-captured with the live `botty` hostname/runtime id so UI shots match the Mac connect path.

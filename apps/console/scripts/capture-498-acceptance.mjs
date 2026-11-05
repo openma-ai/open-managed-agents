@@ -13,9 +13,9 @@ if (!['localhost', '127.0.0.1'].includes(new URL(base).hostname)) throw new Erro
 await mkdir(out, { recursive: true });
 
 const runtimeOnline = {
-  id: 'rt_498_demo',
-  machine_id: 'botty-mac-498',
-  hostname: 'botty.local',
+  id: '1725d28a-83d1-4434-9178-4b9a9ab93006',
+  machine_id: '3a081f41-9885-40ea-a433-39497f3b708e',
+  hostname: 'botty',
   os: 'darwin',
   agents: [{ id: 'probe', binary: '/usr/local/bin/probe' }],
   local_skills: {},
@@ -97,17 +97,17 @@ async function shot(name, routePath, interact) {
 
 try {
   await shot('01-runtimes-list.png', '/runtimes', async (page) => {
-    await expect(page.getByText('botty.local')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('botty')).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole('button', { name: '+ Connect machine' })).toBeVisible();
   });
   await shot('02-connect-machine-modal.png', '/runtimes', async (page) => {
-    await expect(page.getByText('botty.local')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('botty')).toBeVisible({ timeout: 15000 });
     await page.getByRole('button', { name: '+ Connect machine' }).click();
     await expect(page.getByText('No browser on that machine?')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Generate pairing command' })).toBeVisible();
   });
   await shot('03-generate-pairing-command.png', '/runtimes', async (page) => {
-    await expect(page.getByText('botty.local')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('botty')).toBeVisible({ timeout: 15000 });
     await page.getByRole('button', { name: '+ Connect machine' }).click();
     await page.getByRole('button', { name: 'Generate pairing command' }).click();
     await expect(page.getByTestId('pairing-command')).toContainText('bridge setup');
@@ -121,7 +121,7 @@ try {
     // Runtime select
     const runtimeSelect = page.locator('#env-create-runtime');
     await runtimeSelect.click();
-    await page.getByRole('option', { name: /botty\.local/ }).click();
+    await page.getByRole('option', { name: /botty/ }).click();
     await page.locator('#env-create-env').fill('OMA_498_PROBE=from-overlay\nNODE_ENV=development');
   });
   await shot('05-environment-detail-runtime-card.png', `/environments/${environment.id}`, async (page) => {
