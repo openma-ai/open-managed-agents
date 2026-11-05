@@ -107,7 +107,9 @@ With the SDK, sessions live wherever your application stores them.
 | Pricing shape | Model tokens, tool usage, and hosted-container rates | Tokens + $0.08 per running session-hour |
 
 Both run their vendor's models and keep the control plane with the
-vendor. See
+vendor. Moonshot's Kimi Hosted Agents follows the same pattern for Kimi
+models, compared in
+[Kimi Hosted Agents vs OpenMA](/blog/kimi-hosted-agents-vs-openma/). See
 [what is Claude Managed Agents](/what-is-claude-managed-agents/) and
 [Claude Managed Agents pricing](/blog/claude-managed-agents-pricing/) for
 the Anthropic side.

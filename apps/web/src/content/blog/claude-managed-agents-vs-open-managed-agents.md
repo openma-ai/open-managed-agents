@@ -17,6 +17,8 @@ use, and how the bill is shaped.
 
 Other options are compared in
 [Claude Managed Agents alternative](/claude-managed-agents-alternative/).
+Moonshot's hosted equivalent for Kimi models is covered in
+[Kimi Hosted Agents vs OpenMA](/blog/kimi-hosted-agents-vs-openma/).
 For a primer on the hosted product, read
 [what is Claude Managed Agents](/what-is-claude-managed-agents/).
 
