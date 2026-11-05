@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
@@ -16,6 +16,35 @@ const at = (seconds: number) =>
 
 let fixtureSerial = 0;
 const fixtureRunId = Date.now().toString(36);
+
+it('broadcasts each consumed input once when canonical and local-only rows share a batch', async () => {
+  await exports.default.fetch(new Request('http://localhost/health'));
+  await runInDurableObject(freshDoStub(), async (instance) => {
+    instance.ensureSchema();
+    const sessionId = crypto.randomUUID();
+    instance._state = { tenant_id: 'default', session_id: sessionId };
+    const sql = new CfD1SqlClient(env.MAIN_DB);
+    const inputs = ['canonical', 'local-only'].map(id => ({
+      id, type: 'user.message', content: [{ type: 'text', text: id }],
+    }));
+    for (const input of inputs) instance.queue.enqueueQueueInput(input);
+    await sql.prepare(`INSERT INTO managed_session_events (workspace_id, session_id, id, type, document, processed_at)
+      VALUES (?, ?, ?, 'user.message', ?, ?)`)
+      .bind('default', sessionId, inputs[0].id, JSON.stringify({ ...inputs[0], processedAt: null,
+        source_position: { revision: 1, index: 0, execution_id: inputs[0].id } }), Date.parse(at(0))).run();
+    const emitted: any[] = [];
+    instance.broadcastEvent = event => emitted.push(event);
+    const broadcastIds = await instance.consumeAcceptedInputs(inputs, inputs[0].id, at(1));
+    for (const input of inputs) {
+      const row = instance.queueRowForEvent(input.id);
+      expect(row).not.toBeNull();
+      instance.promoteQueueRow(row, broadcastIds.has(input.id));
+    }
+    const messages = emitted.filter(event => event.type === 'user.message');
+    expect(messages.map(event => event.id)).toEqual(['canonical', 'local-only']);
+    expect(messages.every(event => typeof event.processed_at === 'string')).toBe(true);
+  });
+});
 
 function freshDoStub(fixtureId = `case_${++fixtureSerial}`) {
   const id = `execution_store_${fixtureRunId}_${fixtureId}`;

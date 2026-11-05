@@ -3,10 +3,12 @@ import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
 import { SPEC_EVENT_TYPES } from "../../packages/api-types/src/types";
+import { ensureModelCards } from "./_model-cards";
 
 const SPEC_TYPES_FOR_TEST = SPEC_EVENT_TYPES;
 
 registerTestHarnesses();
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
 const HEADERS = {
   "x-api-key": "test-key",
@@ -766,18 +768,20 @@ describe("SSE endpoint matrix", () => {
     expect(streamRes.status).toBe(200);
 
     await postMessage(session.id, "default-mode");
-    // Read for a fixed window — agent.message arrival is best-effort under
-    // the in-process workerd test runtime (DO eviction can race), but the
-    // spec-vs-extension filter we're asserting fires synchronously on
-    // EVERY broadcast, so seeing user.message + lifecycle is enough.
+    // Read for a fixed window. Input consumption must broadcast user.message
+    // even for legacy OMA admissions with only a DO-local event row.
     const events = await readSse(streamRes, { timeoutMs: 1500 });
     const types = events.map((e) => e.type);
     expect(types.length).toBeGreaterThan(0);
-    // The synchronous user.message + status_running pair always lands.
-    expect(types).toContain("user.message");
-    // OMA extensions filtered out — system.user_message_pending fires on
-    // the SAME enqueue path as user.message, so its absence proves the
-    // spec filter is doing real work.
+    // A configured test turn must deliver the accepted user message.
+    const messages = events.filter((event) => event.type === "user.message");
+    expect(messages, JSON.stringify(events)).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      content: [{ type: "text", text: "default-mode" }],
+      processed_at: expect.any(String),
+    });
+    // Enqueue emits system.user_message_pending on the same subscription;
+    // its absence proves that the spec filter is doing real work.
     expect(types).not.toContain("system.user_message_pending");
     // Every type that did land MUST be in the spec set.
     for (const t of types) {

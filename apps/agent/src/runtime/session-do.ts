@@ -1951,7 +1951,7 @@ export class SessionDO extends DurableObject<Env> {
   /** Promote a queued input in place: stamp processed_at on the SAME row
    *  and id (never insert a second event id), then emit the canonical
    *  event + promotion frame so live clients can drop the outbox bubble. */
-  private promoteQueueRow(row: QueueInputRow): SessionEvent {
+  private promoteQueueRow(row: QueueInputRow, alreadyBroadcast = false): SessionEvent {
     const nowMs = this.processedClock.nowMs();
     const nowIso = new Date(nowMs).toISOString();
     const event = JSON.parse(row.data) as SessionEvent & { processed_at?: string };
@@ -1972,7 +1972,9 @@ export class SessionDO extends DurableObject<Env> {
       seq: row.seq,
       processed_at: stamp,
     });
-    if (!this.env.MAIN_MCP?.managedSessionEventsMarkProcessed) this.broadcastEvent(event);
+    // Legacy admissions may have only a DO-local row even when MAIN_MCP is
+    // bound. Suppress this echo only if canonical consumption actually sent it.
+    if (!alreadyBroadcast) this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
       event_id: row.event_id,
@@ -2011,10 +2013,10 @@ export class SessionDO extends DurableObject<Env> {
       this.broadcastEvent({ type: "system.user_message_steered", event_id: input.id,
         session_thread_id: threadId, steered_at: Date.parse(stamp) } as unknown as SessionEvent);
     }
-    await this.consumeAcceptedInputs(inputs, fence?.executionId ?? inputs[0]!.id, stamp);
+    const broadcastIds = await this.consumeAcceptedInputs(inputs, fence?.executionId ?? inputs[0]!.id, stamp);
     for (const input of inputs) {
       const row = this.queueRowForEvent(input.id);
-      if (row) out.push(this.promoteQueueRow(row));
+      if (row) out.push(this.promoteQueueRow(row, broadcastIds.has(row.event_id)));
       else if ('type' in input) out.push(encodeRuntimeSessionEvent(input as never) as SessionEvent);
     }
     return out;
@@ -2152,7 +2154,7 @@ export class SessionDO extends DurableObject<Env> {
             }
           }
           try {
-            await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
+            const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
             for (const rawEvent of execution.events) {
               if (rawEvent.type === "system.message") continue;
               if (rawEvent.type === "session.updated") {
@@ -2170,7 +2172,7 @@ export class SessionDO extends DurableObject<Env> {
               // explicit protocol projection at the host boundary.
               const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
               const localQueued = this.ensureLocalQueueInput(event);
-              if (localQueued !== null) this.promoteQueueRow(localQueued);
+              if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
               if (event.type === "user.message") {
                 const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
                 if (turn?.holdQueuedOnLane) {
@@ -2312,8 +2314,8 @@ export class SessionDO extends DurableObject<Env> {
         source: "local_queue",
         event_id: row.event_id,
       });
-      await this.consumeAcceptedInputs([{ id: row.event_id }], row.event_id, this.processedClock.nowIso());
-      const event = this.promoteQueueRow(row);
+      const broadcastIds = await this.consumeAcceptedInputs([{ id: row.event_id }], row.event_id, this.processedClock.nowIso());
+      const event = this.promoteQueueRow(row, broadcastIds.has(row.event_id));
 
       const turnName = `turn:${row.seq}`;
       sdoLog("turn.begin", {
@@ -4860,18 +4862,24 @@ export class SessionDO extends DurableObject<Env> {
    * starts processing them, then re-broadcast the same ids with
    * `processed_at` set (Claude Managed Agents semantics).
    */
-  private async consumeAcceptedInputs(inputs: readonly { id: string }[], consumingExecutionId: string, processedAt: string): Promise<void> {
+  private async consumeAcceptedInputs(inputs: readonly { id: string }[], consumingExecutionId: string, processedAt: string): Promise<Set<string>> {
+    const broadcastIds = new Set<string>();
     const binding = this.env.MAIN_MCP;
     const workspaceId = this._state?.tenant_id, sessionId = this._state?.session_id;
-    if (!binding?.managedSessionEventsMarkProcessed || !workspaceId || !sessionId) return;
+    if (!binding?.managedSessionEventsMarkProcessed || !workspaceId || !sessionId) return broadcastIds;
     await this._managedProjectionChain;
     await consumeSessionInputs({ markProcessed: async command => {
       const result = await binding.managedSessionEventsMarkProcessed(command);
       if (result.type !== "marked") throw new Error("Session input consumption failed");
       return result.events;
     } }, { workspaceId, sessionId, inputs, consumingExecutionId, processedAt }, events => {
-      for (const event of events) this.broadcastEvent(encodeRuntimeSessionEvent(event as never) as SessionEvent);
+      for (const event of events) {
+        const wireEvent = encodeRuntimeSessionEvent(event as never);
+        this.broadcastEvent(wireEvent as SessionEvent);
+        if ('id' in wireEvent && typeof wireEvent.id === 'string') broadcastIds.add(wireEvent.id);
+      }
     });
+    return broadcastIds;
   }
 
   private markAcceptedEventsProcessed(
