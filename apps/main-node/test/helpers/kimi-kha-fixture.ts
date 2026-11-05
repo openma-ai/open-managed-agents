@@ -17,7 +17,7 @@ import { buildKimiKhaCompatRoutes } from "../../../../packages/control-plane-nod
 
 export function createKhaFixture(enabled = true) {
   const native = new Hono<{ Variables: { tenant_id: string } }>();
-  const calls: Array<{ path: string; body?: unknown; tenant: string }> = [];
+  const calls: Array<{ path: string; query: string; body?: unknown; tenant: string }> = [];
   const environments = new Map<string, EnvironmentView>();
   const sessions = new Map<string, SessionView>();
   const events = new Map<string, SessionEventView[]>();
@@ -29,7 +29,7 @@ export function createKhaFixture(enabled = true) {
     ensureTenantForUser: async () => { throw new Error("No cookie auth in fixture"); },
   }));
   native.use("*", async (c, next) => {
-    calls.push({ path: c.req.path, tenant: c.var.tenant_id,
+    calls.push({ path: c.req.path, query: new URL(c.req.url).search, tenant: c.var.tenant_id,
       ...(c.req.method === "POST" ? { body: await c.req.raw.clone().json() } : {}) });
     await next();
   });

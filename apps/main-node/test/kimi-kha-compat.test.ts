@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { z } from "zod";
@@ -183,6 +183,30 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     expect(error.data.error.type).toBe("resource_not_found_error");
     await expect(stream.next()).rejects.toThrow("SSE ended early");
     await stream.cancel();
+  });
+
+  it("tails native keyset pages with bounded overlap and no repeated history scan", async () => {
+    const f = client(), id = await f.seed();
+    await f.request(`/sessions/${id}/events`, message);
+    const template = f.events.get(id)![0];
+    for (let i = 0; i < 350; i++) f.events.get(id)!.push({ ...template, id: `sevt_history_${i}` });
+    const stream = await frameReader(await f.request(`/sessions/${id}/events/stream?cursor=now`));
+    await stream.next();
+    const reads = () => f.calls.filter((call) => call.path.endsWith("/events") && !call.body);
+    const initial = reads().length;
+    expect(initial).toBe(4);
+    await vi.waitFor(() => expect(reads().length).toBeGreaterThan(initial + 1));
+    // Idle connections revisit only the final page, not pages 0, 100 or 200.
+    expect(reads().slice(initial).every((call) => new URLSearchParams(call.query).get("page") === "300")).toBe(true);
+    const before = reads().length;
+    // A burst crossing several pages must be drained without loss or repeats.
+    for (let i = 0; i < 240; i++) f.events.get(id)!.push({ ...template, id: `sevt_live_${i}` });
+    for (let i = 0; i < 240; i++) expect((await stream.next()).data.id).toBe(`sevt_live_${i}`);
+    expect(reads().slice(before).some((call) => new URLSearchParams(call.query).get("page") === "500")).toBe(true);
+    await stream.cancel();
+    const stopped = reads().length;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(reads()).toHaveLength(stopped);
   });
 
   it("projects coarse thinking/error/stop states without inventing unsupported wire variants", () => {

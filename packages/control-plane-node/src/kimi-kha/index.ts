@@ -3,7 +3,7 @@ import { Hono, type Context, type Env } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 
-/** P0 transport adapter. All state, authorization and execution stay in OMA. */
+/** Opt-in transport adapter. All state, authorization and execution stay in OMA. */
 type NativeFetch = (request: Request) => Response | Promise<Response>;
 const object = z.record(z.string(), z.unknown());
 type Row = z.infer<typeof object>;
@@ -126,14 +126,14 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
   app.notFound(() => failure(new CompatError(404, "Operation is outside the KHA spike subset")));
 
   // Dispatch to existing authenticated /v1 routes, never to a caller-supplied URL.
-  async function native(c: Context, path: string, body?: unknown): Promise<Response> {
+  async function native(c: Context, path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
     const headers = new Headers(c.req.raw.headers);
     headers.set("anthropic-beta", "managed-agents-2026-04-01");
     headers.delete("content-length"); headers.delete("accept");
     if (body !== undefined) headers.set("content-type", "application/json");
     const response = await nativeFetch(new Request(`http://oma.internal/v1${path}`, {
       method: body === undefined ? "GET" : "POST", headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: c.req.raw.signal,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: signal ? AbortSignal.any([signal, c.req.raw.signal]) : c.req.raw.signal,
     }));
     if (!response.ok) {
       const data = await response.json().catch(() => ({})) as { error?: { message?: string } | string };
@@ -182,18 +182,25 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     return c.json(first?.id ? { event_id: first.id } : {});
   });
 
-  // Intentionally simple P0 replay: scan retained history, then poll. No process-local
-  // cursor state or live subscription seam. Bound work; production needs a sequence API.
-  async function history(c: Context, id: string): Promise<Row[]> {
+  // Native next_page is an opaque keyset boundary. At the tail it is absent,
+  // so retain the last page's START and a bounded set of already-read IDs.
+  // Idle polls reread at most 100 rows, never the accumulated history. Do not
+  // synthesize native cursors or use processed_at as a unique sequence.
+  async function eventPage(c: Context, id: string, page?: string, signal?: AbortSignal) {
+    const params = new URLSearchParams({ order: "asc", limit: "100" });
+    if (page) params.set("page", page);
+    const result = object.parse(await (await native(c, `/sessions/${encodeURIComponent(id)}/events?${params}`, undefined, signal)).json());
+    return { rows: z.array(object).parse(result.data),
+      next: result.next_page == null ? undefined : z.string().parse(result.next_page) };
+  }
+  async function history(c: Context, id: string) {
     const rows: Row[] = [];
     let page: string | undefined;
     for (let n = 0; n < 100; n++) {
-      const params = new URLSearchParams({ order: "asc", limit: "100" });
-      if (page) params.set("page", page);
-      const result = await json(c, `/sessions/${encodeURIComponent(id)}/events?${params}`);
-      rows.push(...z.array(object).parse(result.data));
-      if (!result.next_page) return rows;
-      page = z.string().parse(result.next_page);
+      const result = await eventPage(c, id, page);
+      rows.push(...result.rows);
+      if (!result.next) return { rows, page, seen: new Set(result.rows.map((row) => row.id)) };
+      page = result.next;
     }
     throw new CompatError(409, "Spike replay limit exceeded (10,000 retained events)");
   }
@@ -201,7 +208,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     const params = query(c, ["page_size", "page_token", "order"]);
     if (params.has("order") && params.get("order") !== "asc") throw new CompatError(400, "Only ascending history is supported", "order");
     const limit = pageSize(params), id = c.req.param("id");
-    const rows = await history(c, id);
+    const { rows } = await history(c, id);
     const start = offset(rows, id, params.get("page_token") ?? "0");
     const page = rows.slice(start, start + limit);
     const end = cursor(id, page.at(-1)?.id ?? rows[start - 1]?.id);
@@ -213,8 +220,9 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     // kha attach requests previews. Accept the hint; this adapter only has durable full events.
     if (params.has("include_deltas") && !["true", "false"].includes(params.get("include_deltas")!)) throw new CompatError(400, "include_deltas must be a boolean", "include_deltas");
     const id = c.req.param("id"), token = params.get("cursor") ?? c.req.header("Last-Event-ID") ?? "0";
-    let rows = await history(c, id);
-    let position = token === "now" ? rows.length : offset(rows, id, token);
+    const replay = await history(c, id);
+    const rows = replay.rows;
+    const position = token === "now" ? rows.length : offset(rows, id, token);
     let last = cursor(id, rows[position - 1]?.id);
     c.header("Cache-Control", "no-cache"); c.header("X-Accel-Buffering", "no");
     return streamSSE(c, async (stream) => {
@@ -222,22 +230,42 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
       if (token === "now") await stream.writeSSE({ event: "control", id: last, data: JSON.stringify({ cursor: last, reason: "tail" }) });
       else await stream.write(": connected\n\n");
       let wake: (() => void) | undefined;
-      stream.onAbort(() => wake?.());
+      // Propagate downstream cancellation to an in-flight native page request.
+      const controller = new AbortController();
+      stream.onAbort(() => { controller.abort(); wake?.(); });
+      let page = replay.page, seen = replay.seen;
       try {
+        async function write(row: Row) {
+          last = cursor(id, row.id);
+          const event = projectKhaEvent(row);
+          if (event) await stream.writeSSE({ id: last, event: String(event.type), data: JSON.stringify(event) });
+        }
+        for (const row of rows.slice(position)) {
+          if (stream.aborted) return;
+          await write(row);
+        }
         while (!stream.aborted) {
-          for (const row of rows.slice(position)) {
-            if (stream.aborted) return;
-            last = cursor(id, row.id);
-            const event = projectKhaEvent(row);
-            if (event) await stream.writeSSE({ id: last, event: String(event.type), data: JSON.stringify(event) });
-          }
           await new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, options.pollMs ?? 1000);
             wake = () => { clearTimeout(timer); resolve(); };
           });
           if (stream.aborted) return;
-          rows = await history(c, id);
-          position = offset(rows, id, last);
+          // Drain all new pages before sleeping. The overlap is only the tail
+          // page from the preceding read; memory stays bounded as the log grows.
+          for (;;) {
+            const result = await eventPage(c, id, page, controller.signal);
+            for (const row of result.rows) {
+              if (stream.aborted) return;
+              if (!seen.has(row.id)) await write(row);
+            }
+            if (!result.next) {
+              seen = new Set(result.rows.map((row) => row.id));
+              break;
+            }
+            page = result.next;
+            seen = new Set();
+            if (stream.aborted) return;
+          }
           await stream.write(": hb\n\n");
         }
       } catch (error) {
