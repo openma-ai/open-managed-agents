@@ -43,6 +43,7 @@ import { PKG_VERSION } from "../lib/version.js";
 import { probeRuntimeToken } from "../lib/probe.js";
 import { auditAndOfferWrappers } from "../lib/wrapper-audit.js";
 import { join } from "node:path";
+import { approvalPage } from "../../approval-page.js";
 
 /** Snapshot of the current process's node + cli entry. Frozen here (not at
  *  daemon start) because system service managers don't source the user's
@@ -373,18 +374,19 @@ function waitForCallback(state: string, browserOrigin: string): Promise<string> 
       const gotState = url.searchParams.get("state") ?? "";
       const code = url.searchParams.get("code") ?? "";
       if (gotState !== state) {
-        res.writeHead(400, { "content-type": "text/plain" }).end("state mismatch");
+        res.writeHead(400, { "content-type": "text/html; charset=utf-8" }).end(
+          approvalPage("State mismatch", "Return to the terminal and try bridge setup again."),
+        );
         return;
       }
       if (!code) {
-        res.writeHead(400, { "content-type": "text/plain" }).end("no code");
+        res.writeHead(400, { "content-type": "text/html; charset=utf-8" }).end(
+          approvalPage("Incomplete callback", "Return to the terminal and try bridge setup again."),
+        );
         return;
       }
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(
-        `<!doctype html><meta charset=utf-8><title>Connected</title>
-<style>body{font-family:system-ui;text-align:center;padding:80px;color:#333}</style>
-<h1>✓ Machine connected</h1>
-<p>You can close this tab and return to your terminal.</p>`,
+        approvalPage("Machine connected", "You can close this tab and return to the terminal."),
       );
       clearTimeout(timer);
       // Defer close so the response actually flushes.

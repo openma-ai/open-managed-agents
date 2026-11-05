@@ -18,6 +18,7 @@ import { DEFAULT_API_BASE_URL, DEFAULT_BRIDGE_SERVER_URL } from "./bridge/lib/de
 import { currentProfile } from "./bridge/lib/platform.js";
 import { withNetworkCause } from "./network-error.js";
 import { parseAgentWrite } from "./agent-write.js";
+import { approvalPage } from "./approval-page.js";
 
 // ─── Config ───
 
@@ -560,7 +561,7 @@ async function authLogin(baseUrl: string, requestedTenant?: string): Promise<voi
         }
         const got = u.searchParams;
         const finish = (statusCode: number, page: ReturnType<typeof approvalPage>, action: () => void) => {
-          res.writeHead(statusCode, { "Content-Type": "text/html" }).end(page);
+          res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" }).end(page);
           clearTimeout(timeout);
           server.close();
           if (typeof (server as { closeAllConnections?: () => void }).closeAllConnections === "function") {
@@ -575,7 +576,7 @@ async function authLogin(baseUrl: string, requestedTenant?: string): Promise<voi
           );
         }
         if (got.get("state") !== state) {
-          return finish(400, approvalPage("State mismatch", "The login response didn't match what this CLI session expected. Please try again."), () =>
+          return finish(400, approvalPage("State mismatch", "Return to the terminal and try signing in again."), () =>
             reject(new Error("State mismatch — refusing the callback")),
           );
         }
@@ -611,7 +612,7 @@ async function authLogin(baseUrl: string, requestedTenant?: string): Promise<voi
             reject(new Error("Callback missing required fields")),
           );
         }
-        return finish(200, approvalPage("Signed in", "You can close this tab and return to your terminal."), () =>
+        return finish(200, approvalPage("Signed in", "You can close this tab and return to the terminal."), () =>
           resolve({ tokens, user: userId }),
         );
       } catch (err) {
@@ -711,14 +712,6 @@ function openBrowser(url: string): void {
   } catch {
     // The URL is already printed above; user can copy-paste manually.
   }
-}
-
-function approvalPage(title: string, body: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>oma — ${title}</title><style>
-body{font-family:-apple-system,system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 24px;color:#222}
-h1{font-size:20px;margin-bottom:12px} p{color:#555;line-height:1.5}
-.card{border:1px solid #e5e5e5;border-radius:12px;padding:32px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.04)}
-</style></head><body><div class="card"><h1>${title}</h1><p>${body}</p></div></body></html>`;
 }
 
 // ─── Command Registry ───
