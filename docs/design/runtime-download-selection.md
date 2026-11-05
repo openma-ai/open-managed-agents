@@ -341,21 +341,14 @@ Owner answers recorded 2026-11-05 (America/Detroit). Recommendations below for s
 
 #### Inference credentials
 
-**Owner lock — 2026-11-05 (America/Detroit).** Local Runtime's model/inference path remains optional: **own harness subscription** **or** the **OpenMA host LLM / inference API**. Default for `placement=sandbox` stays the **OpenMA host LLM**.
+**Owner lock — 2026-11-05 ~07:33 (America/Detroit).** Supersedes the earlier same-day text that locked sandbox own-subscription to a per-session **host LLM façade**.
 
-For the optional sandbox own-subscription path, use a **per-session host LLM façade** — **not** whitelist credential-file projection into the LiteBox jail, and **not** raw `HTTPS_PROXY` as the security boundary:
+- **`placement=sandbox` (LiteBox):** sessions use the **OpenMA host / cloud LLM API only**. Do **not** implement guest→host LLM façade, host-NIC IP injection for a façade, or projection of host harness credentials (`~/.claude`, `~/.codex`, pi/dsh material, live provider keys) into the sandbox.
+- **Own harness subscription** (local Claude · Codex · pi · dsh credentials and native harness config inheritance) stays on **`placement=host` only**. Host may still inherit native config on the same filesystem (e.g. `setupClaudeConfigDir` symlinks non-skill `~/.claude` entries into `CLAUDE_CONFIG_DIR`); that path does **not** extend to Sandbox / LiteBox.
+- **Rejected — guest→host LLM façade / host-NIC approach.** LiteBox guest→host NIC façade smoke: PASS reaching a host NIC IP (e.g. `172.30.0.2`), FAIL on `192.168.127.1` (DNS/NAT gateway only — no reliable TCP forward to a host façade). Multi-NIC / VPN layouts make automatic host-IP selection fragile. Owner decided this path is not robust enough; do not ship it.
+- Also rejected for sandbox: whitelist credential-file projection into the LiteBox jail, and treating raw `HTTPS_PROXY` as the security boundary (ADR 0007: proxy env remains advisory).
 
-- Real Anthropic/OpenAI (or other provider) tokens stay on the **Runtime host**. The guest must not receive host `~/.claude` / `~/.codex` credential files, OAuth refresh material, or live API keys by default.
-- The guest harness points its base URL at the host façade only:
-  - **Claude Code:** `ANTHROPIC_BASE_URL` (no trailing `/v1`); guest may use a dummy `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`.
-  - **Codex CLI:** `openai_base_url` in session `CODEX_HOME/config.toml` (plain `OPENAI_BASE_URL` alone is insufficient); guest may omit a real key.
-  - **pi / openma-pi-acp:** `providers.*.baseUrl` (and matching `api`) in agent `models.json` under the session agent dir / `PI_CODING_AGENT_DIR`.
-- Upstream TLS and network fingerprint ≈ the **host process** (façade egress), not a guest-held subscription login.
-- `HTTPS_PROXY` may remain an optional transport hint; it is **not** the trust boundary (see ADR 0007: proxy env is advisory; LiteBox allowlist + host-side substitution / façade-owned tokens are).
-
-Host placement may still inherit native harness config on the same filesystem (e.g. `setupClaudeConfigDir` symlinks non-skill `~/.claude` entries into `CLAUDE_CONFIG_DIR`). That host inheritance does **not** authorize projecting those credentials into Sandbox / LiteBox. Sandbox own-sub = host façade only under this lock.
-
-**M1 / implementation status:** This lock records product intent for the sandbox own-sub path. M1 does not yet ship the per-session host façade, the Environment inference-path selector, or LiteBox allowlist wiring for façade-only egress. Host placement credential inheritance remains partial as above.
+**M1 / implementation status:** Sandbox inference is OpenMA host/cloud API only under this lock. No host façade, NIC-IP injection, Environment own-sub selector for sandbox, or harness-credential projection into LiteBox. Host placement credential inheritance remains partial as above.
 
 ### 5.2 Recommendations (research; awaiting owner)
 
