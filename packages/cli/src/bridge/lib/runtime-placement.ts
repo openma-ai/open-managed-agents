@@ -9,7 +9,8 @@ import type { SandboxFactoryEnv, SandboxPort, SandboxRuntimePort, SandboxDuplexP
 export interface RuntimeAttachment {
   runtime_id: string;
   placement?: "host" | "sandbox";
-  directories?: unknown;
+  /** Rejected at runtime until host custom directories ship. */
+  directories?: ReadonlyArray<{ hostPath: string; mountPath: string }>;
 }
 export type RuntimeSandbox = SandboxPort & SandboxRuntimePort & SandboxDuplexProcessPort;
 
