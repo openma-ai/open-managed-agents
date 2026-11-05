@@ -46,7 +46,7 @@ async function resolveConcreteSkillVersion(
   skillVersions: SkillVersionSource,
   skillId: string,
   requestedVersion: string,
-): Promise<{ version: string; name: string; description: string } | undefined> {
+): Promise<{ version: string; name: string; description: string; directory: string } | undefined> {
   if (requestedVersion === "latest") {
     const listed = await skillVersions.listSkillVersions({ skillId, pageSize: 1 });
     if (listed.type !== "page" || listed.page.versions.length === 0) return undefined;
@@ -55,6 +55,7 @@ async function resolveConcreteSkillVersion(
       version: view.version,
       name: view.name,
       description: view.description,
+      directory: view.directory,
     };
   }
   const retrieved = await skillVersions.retrieveSkillVersion({
@@ -66,6 +67,7 @@ async function resolveConcreteSkillVersion(
     version: retrieved.version.version,
     name: retrieved.version.name,
     description: retrieved.version.description,
+    directory: retrieved.version.directory,
   };
 }
 
@@ -122,36 +124,23 @@ export function nodeManagedMemoryStoreModeName(
   return factory.capabilities?.nativeMemoryStoreMount === true ? "native" : "file_sync";
 }
 
-export function buildNodeManagedSkillReminders(
+export async function buildNodeManagedSkillReminders(
   session: Session,
-): Array<{ source: string; text: string }> {
-  return session.agent.skills.flatMap((skill) => {
-    if (skill.type !== "custom") return [];
-    const requestedVersion = skill.version ?? "latest";
-    const mountRoot = `/workspace/.openma/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/`;
-    return [{
-      source: `skill:${skill.skillId}`,
-      text: `Custom skill ${skill.skillId} is mounted at ${mountRoot}. Locate and read its SKILL.md before applying it.`,
-    }];
-  });
+  skillVersions: SkillVersionSource,
+): Promise<Array<{ source: string; text: string }>> {
+  const mounts = await resolveNodeManagedSkillMounts(session, skillVersions);
+  return mounts.map((mount) => ({
+    source: `skill:${mount.skillId}`,
+    text: `Custom skill ${mount.skillId} is mounted at ${mount.mountRoot}. Locate and read its SKILL.md before applying it.`,
+  }));
 }
 
 /** @deprecated Prefer {@link resolveNodeManagedSkillMounts} for assembly harnesses. */
 export function buildNodeManagedSkillMounts(
   session: Session,
-): SkillMountDescriptor[] {
-  return session.agent.skills.flatMap((skill) => {
-    if (skill.type !== "custom") return [];
-    const requestedVersion = skill.version ?? "latest";
-    const mountRoot = `/workspace/.openma/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/`;
-    return [{
-      skillId: skill.skillId,
-      name: skill.skillId,
-      description: `Custom skill mounted at ${mountRoot}`,
-      mountRoot,
-      source: "custom",
-    }];
-  });
+  skillVersions: SkillVersionSource,
+): Promise<SkillMountDescriptor[]> {
+  return resolveNodeManagedSkillMounts(session, skillVersions);
 }
 
 export async function resolveNodeManagedSkillMounts(
@@ -166,13 +155,13 @@ export async function resolveNodeManagedSkillMounts(
   for (const skill of session.agent.skills) {
     if (skill.type !== "custom") continue;
     const requestedVersion = skill.version ?? "latest";
-    const mountRoot = `/workspace/.openma/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/`;
     const resolved = await resolveConcreteSkillVersion(
       skillVersions,
       skill.skillId,
       requestedVersion,
     );
     if (!resolved) continue;
+    const mountRoot = `/workspace/.openma/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/${resolved.directory}/`;
 
     let body: string | undefined;
     if (fetchBodies) {
