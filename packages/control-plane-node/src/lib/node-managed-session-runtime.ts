@@ -7,6 +7,7 @@ import type {
   SessionBootstrapEvent,
   SessionEventView,
   SessionRuntimeHistoryApplicationPort,
+  SessionRuntimeHistoryEventView,
 } from "@open-managed-agents/managed-agents-application";
 import type {
   AcceptedSessionEvents,
@@ -154,7 +155,26 @@ export interface NodeManagedSessionRunnerAcceptInput
   takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
   initialEvents: SessionBootstrapEvent[];
   historyEvents: SessionEventView[];
+  /** This execution already committed its terminal idle (a crash landed
+   *  between terminal persistence and settle): never re-run the turn. */
+  committedTerminal?: CommittedExecutionTerminal;
   output(frame: unknown): Promise<void>;
+}
+
+export type CommittedExecutionTerminal = Extract<SessionEventView, { type: "session.status_idle" }>;
+
+/** The terminal idle the execution committed as its last fact, if any.
+ *  Inputs it consumed after an earlier idle (an interrupt draining queued
+ *  messages) mean the execution still has a turn to run. */
+export function committedExecutionTerminal(
+  orderedEvents: readonly SessionRuntimeHistoryEventView[] | undefined,
+  executionId: string,
+): CommittedExecutionTerminal | null {
+  let last: SessionEventView | undefined;
+  for (const row of orderedEvents ?? []) {
+    if (row.executionId === executionId || row.consumedByExecutionId === executionId) last = row.event;
+  }
+  return last?.type === "session.status_idle" ? last : null;
 }
 
 export interface NodeManagedSessionRunner {
@@ -221,9 +241,13 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
       typeof input.executionFence === "object"
       ? input.executionFence as SessionExecutionFence
       : undefined;
+    const committedTerminal = executionFence === undefined
+      ? null
+      : committedExecutionTerminal(history.orderedEvents, executionFence.executionId);
     await this.dependencies.runner.accept({
       ...input,
       ...(executionFence !== undefined ? { executionFence } : {}),
+      ...(committedTerminal !== null ? { committedTerminal } : {}),
       initialEvents: history.initialEvents,
       historyEvents: history.events,
       output,
