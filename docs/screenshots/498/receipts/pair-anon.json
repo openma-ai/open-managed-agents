@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "error": {
+    "type": "authentication_error",
+    "message": "Unauthorized"
+  },
+  "message": "Unauthorized",
+  "code": "authentication_error",
+  "request_id": "a55b03b15d4a6e10"
+}

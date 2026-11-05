@@ -4,7 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 
 /** Opt-in transport adapter. All state, authorization and execution stay in OMA. */
-type NativeFetch = (request: Request) => Response | Promise<Response>;
+type NativeFetch = (request: Request, options?: { requireRunningInterrupt?: boolean }) => Response | Promise<Response>;
 const object = z.record(z.string(), z.unknown());
 type Row = z.infer<typeof object>;
 const metadata = z.record(z.string().max(64), z.string().max(512))
@@ -48,11 +48,11 @@ const interruptInput = z.object({
 const eventsInput = z.union([messageInput, interruptInput]);
 
 class CompatError extends Error {
-  constructor(readonly status: number, message: string, readonly param?: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly param?: string, readonly errorType?: "failed_precondition_error") { super(message); }
 }
 function failure(error: unknown): Response {
   const status = error instanceof CompatError ? error.status : 500;
-  const type = error instanceof CompatError && error.param ? "invalid_parameter_error" :
+  const type = error instanceof CompatError && error.errorType ? error.errorType : error instanceof CompatError && error.param ? "invalid_parameter_error" :
     ({ 400: "invalid_request_error", 401: "authentication_error", 403: "permission_denied_error",
       404: "resource_not_found_error", 409: "conflict_error", 429: "rate_limit_reached_error" } as Record<number, string>)[status] ?? "server_error";
   const requestId = randomUUID();
@@ -189,7 +189,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
   app.notFound(() => failure(new CompatError(404, "Operation is outside the KHA spike subset")));
 
   // Dispatch to existing authenticated /v1 routes, never to a caller-supplied URL.
-  async function native(c: Context, path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
+  async function native(c: Context, path: string, body?: unknown, signal?: AbortSignal, options?: { requireRunningInterrupt?: boolean }): Promise<Response> {
     const headers = new Headers(c.req.raw.headers);
     headers.set("anthropic-beta", "managed-agents-2026-04-01");
     headers.delete("content-length"); headers.delete("accept");
@@ -197,10 +197,11 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     const response = await nativeFetch(new Request(`http://oma.internal/v1${path}`, {
       method: body === undefined ? "GET" : "POST", headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: signal ? AbortSignal.any([signal, c.req.raw.signal]) : c.req.raw.signal,
-    }));
+    }), options);
     if (!response.ok) {
-      const data = await response.json().catch(() => ({})) as { error?: { message?: string } | string };
-      throw new CompatError(response.status, typeof data.error === "string" ? data.error : data.error?.message ?? "OMA request failed");
+      const data = await response.json().catch(() => ({})) as { error?: { message?: string; type?: string } | string };
+      throw new CompatError(response.status, typeof data.error === "string" ? data.error : data.error?.message ?? "OMA request failed", undefined,
+        typeof data.error === "object" && data.error?.type === "failed_precondition_error" ? "failed_precondition_error" : undefined);
     }
     return response;
   }
@@ -238,7 +239,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     app.get(path, (c) => list(c, path, project));
     app.get(`${path}/:id`, async (c) => {
       query(c, []);
-      return c.json(project(await json(c, `${path}/${encodeURIComponent(c.req.param("id"))}`)));
+      return c.json(project(await json(c, `${path}/${encodeURIComponent(c.req.param("id")!)}`)));
     });
   }
   app.post("/environments", async (c) => {
@@ -255,14 +256,14 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
   });
   app.post("/sessions/:id/events", async (c) => {
     const body = await input(c, eventsInput);
-    const path = `/sessions/${encodeURIComponent(c.req.param("id"))}`;
+    const path = `/sessions/${encodeURIComponent(c.req.param("id")!)}`;
     const firstInput = body.events[0];
     if (firstInput.type === "user.interrupt") {
       if (firstInput.data?.expected_control_epoch !== undefined) {
         await json(c, path); // Authorize and check existence before reporting the gap.
         throw new CompatError(501, "OMA has no control_epoch fencing; expected_control_epoch cannot be enforced");
       }
-      await json(c, `${path}/events`, { events: [{ type: "user.interrupt" }] });
+      await native(c, `${path}/events`, { events: [{ type: "user.interrupt" }] }, undefined, { requireRunningInterrupt: true });
       // Native acceptance is asynchronous. No Kimi control epoch or completed
       // cancellation is implied, and interrupt is not a queued Kimi input ID.
       return c.json({}, 202);
@@ -273,12 +274,12 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
       })),
     });
     const first = z.array(object).parse(result.data ?? [])[0];
-    return c.json(first?.id ? { event_id: first.id } : {});
+    return c.json(first?.id ? { event_id: first.id } : {}, 202);
   });
 
   app.post("/sessions/:id/continue", async (c) => {
     query(c, []);
-    const current = await json(c, `/sessions/${encodeURIComponent(c.req.param("id"))}`);
+    const current = await json(c, `/sessions/${encodeURIComponent(c.req.param("id")!)}`);
     if (current.status === "terminated" || current.archived_at != null) {
       throw new CompatError(409, "A terminated or archived session cannot continue");
     }
@@ -333,7 +334,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     return [primary, ...ordered([...children.values()], "created_at")];
   }
   async function threadRows(c: Context, rows?: Row[]): Promise<Row[]> {
-    const id = c.req.param("id");
+    const id = c.req.param("id")!;
     const current = await json(c, `/sessions/${encodeURIComponent(id)}`);
     return threads(current, rows ?? (await history(c, id)).rows);
   }
@@ -346,7 +347,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
   app.get("/sessions/:id/threads", async (c) => {
     const params = query(c, ["page_size", "page_token"]);
     pageSize(params);
-    return pageResponse(c, await threadRows(c), params, `threads:${c.req.param("id")}`);
+    return pageResponse(c, await threadRows(c), params, `threads:${c.req.param("id")!}`);
   });
   app.get("/sessions/:id/threads/:threadId", async (c) => {
     query(c, []);
@@ -356,17 +357,16 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
   });
   app.get("/sessions/:id/events/pending", async (c) => {
     query(c, []);
-    await json(c, `/sessions/${encodeURIComponent(c.req.param("id"))}`);
-    // Read-only compatibility placeholder, not a view of OMA's execution queue.
-    return c.json({ items: [] });
+    await json(c, `/sessions/${encodeURIComponent(c.req.param("id")!)}`);
+    throw new CompatError(501, "Pending input inspection is not implemented by this adapter");
   });
   for (const path of ["/sessions/:id/events", "/sessions/:id/threads/:threadId/events"]) app.get(path, async (c) => {
     const params = query(c, ["page_size", "page_token", "order"]);
     const order = enumQuery(params, "order", ["asc", "desc"], "asc");
-    const limit = pageSize(params), id = c.req.param("id");
+    const limit = pageSize(params), id = c.req.param("id")!;
     const replay = await history(c, id), threadId = await checkThread(c, replay.rows);
     const scope = eventScope(id, threadId), pageScope = order === "desc" ? `${scope}:desc` : scope;
-    const rows = replay.rows.filter((row) => !threadId || eventThread(row) === threadId);
+    const rows = replay.rows.filter((row) => eventThread(row) === (threadId ?? "sthr_primary"));
     if (order === "desc") rows.reverse();
     const start = offset(rows, pageScope, params.get("page_token") ?? "0");
     const page = rows.slice(start, start + limit);
@@ -381,7 +381,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
     const params = query(c, ["cursor", "include_deltas"]);
     // kha attach requests previews. Accept the hint; this adapter only has durable full events.
     if (params.has("include_deltas") && !["true", "false"].includes(params.get("include_deltas")!)) throw new CompatError(400, "include_deltas must be a boolean", "include_deltas");
-    const id = c.req.param("id"), token = params.get("cursor") ?? c.req.header("Last-Event-ID") ?? "0";
+    const id = c.req.param("id")!, token = params.get("cursor") ?? c.req.header("Last-Event-ID") ?? "0";
     const replay = await history(c, id);
     const threadId = await checkThread(c, replay.rows), scope = eventScope(id, threadId);
     const rows = replay.rows;
@@ -400,7 +400,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
       try {
         async function write(row: Row) {
           last = cursor(scope, row.id);
-          if (threadId && eventThread(row) !== threadId) return;
+          if (eventThread(row) !== (threadId ?? "sthr_primary")) return;
           const event = projectKhaEvent(row);
           if (event) await stream.writeSSE({ id: last, event: String(event.type), data: JSON.stringify(event) });
         }
@@ -458,7 +458,7 @@ export function buildKimiKhaCompatRoutes(nativeFetch: NativeFetch, options: { po
   for (const suffix of ["", "/content"]) app.get(`/artifacts/:id${suffix}`, async (c) => {
     const params = query(c, ["version"]);
     if (params.has("version")) throw new CompatError(400, "Native outputs have no immutable version snapshots; omit version to read the current output", "version");
-    const raw = c.req.param("id");
+    const raw = c.req.param("id")!;
     if (!raw.startsWith("art_")) throw new CompatError(404, "Artifact not found");
     const parsed = z.tuple([z.string().min(1), z.string().min(1)]).safeParse(decode(raw.slice(4)));
     if (!parsed.success) throw new CompatError(404, "Artifact not found");

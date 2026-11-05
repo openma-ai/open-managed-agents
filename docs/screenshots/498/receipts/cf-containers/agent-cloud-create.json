@@ -1,0 +1,22 @@
+{
+  "id": "agent_59891d3bbcf44eb7a75a757738917c90",
+  "archived_at": null,
+  "created_at": "2026-11-05T10:30:54.975Z",
+  "description": null,
+  "execution_identity": {
+    "type": "service_account"
+  },
+  "mcp_servers": [],
+  "metadata": {},
+  "model": {
+    "id": "deepseek-flash"
+  },
+  "multiagent": null,
+  "name": "pr-498-cloud-agent",
+  "skills": [],
+  "system": "Reply with exactly: CLOUD_SANDBOX_OK",
+  "tools": [],
+  "type": "agent",
+  "updated_at": "2026-11-05T10:30:54.975Z",
+  "version": 1
+}

@@ -1218,9 +1218,15 @@ importers:
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../api-types
+      '@open-managed-agents/managed-runtime-boxlite':
+        specifier: workspace:*
+        version: link:../managed-runtime-boxlite
       '@open-managed-agents/runtime':
         specifier: workspace:*
         version: link:../managed-agents-runtime
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@openma/common':
         specifier: ^0.9.1
         version: 0.9.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1233,6 +1239,9 @@ importers:
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.3
       tsx:
         specifier: ^4.19.0
         version: 4.21.0

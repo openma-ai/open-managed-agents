@@ -1,0 +1,14 @@
+{
+  "lane": "local-node-litebox",
+  "sandbox_provider": "litebox",
+  "script": "test/e2e/start-local-backend.sh",
+  "environment_id": "env_DdFqMZC4y8ZRohJlf3w6z",
+  "session_id": "session_OlM-tOKEUoMmz0o9nWbIy",
+  "agent_id": "agent_Teo69XO6hAsxb3YjQLLWT",
+  "agent_reply": "LITEBOX_LOCAL_OK",
+  "guest_hostname": "boxlite",
+  "guest_init": "init.krun / boxlite-guest",
+  "runtime_process": "boxlite-shim (libkrun VM)",
+  "model": "local openai-compatible fixture (deterministic tool_use); sandbox not mocked",
+  "kvm": "/dev/kvm RW on shared box"
+}

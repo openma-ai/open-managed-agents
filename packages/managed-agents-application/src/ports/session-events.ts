@@ -15,6 +15,8 @@ export interface SendSessionEventsCommand {
   idempotencyKey?: string;
   /** Bind state-dependent validation to the existing native Session CAS. */
   expectedRevision?: number;
+  /** Opt-in compatibility precondition, checked again on every CAS retry. */
+  requireRunningInterrupt?: boolean;
 }
 
 export interface ListSessionEventsQuery {
@@ -43,7 +45,7 @@ export type SendSessionEventsResult =
   | { type: "accepted"; events?: SentSessionEvent[] }
   | { type: "idempotency_conflict"; message: string }
   | { type: "version_conflict"; message: string }
-  | { type: "invalid_request"; message: string }
+  | { type: "invalid_request"; message: string; reason?: "failed_precondition" }
   | { type: "admission_denied"; status: number; body: object }
   | { type: "not_found" };
 

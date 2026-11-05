@@ -55,8 +55,9 @@ self-hosted configuration); sessions create/list/get/send with `--wait`,
 events with `--limit`/`--all`/`--watch`, attach (history and `--since now`),
 interrupt, and artifacts list/get/download. Attach/watch stay open after an
 idle event; Ctrl-C detaches with exit 130. A new message after interrupt works.
-The fixture responds synchronously, so CLI interrupt here exercises idle
-acceptance; running cancellation is covered by the adapter tests, not a live runner.
+The fixture responds synchronously, so interrupt after a completed send returns
+400 `failed_precondition_error`. Running acceptance is covered by adapter and
+authenticated SQLite tests, not a live runner.
 
 Known CLI boundaries:
 
@@ -67,7 +68,7 @@ Known CLI boundaries:
 | events `--order desc` (session or thread) | HTTP 200, CLI exit 0; newest first, subsequent pages move backward; `stream_cursor` resumes after the newest native row on that page |
 | environments create `--wait` / wait-ready | HTTP 201/200, CLI exit 0 within the 2s smoke bound; stable `build_status: ready` projects usable OMA configurations, not Moonshot remote image-build telemetry |
 | sessions threads list/get/events; attach `--thread` | HTTP 200 for observed threads and `sthr_primary`; attach receives the selected lane and stays open until Ctrl-C (exit 130). Unknown threads remain 404. |
-| sessions pending list | HTTP 200 `{ "items": [] }`; authorized read-only placeholder, not inspection of OMA's queued inputs |
+| sessions pending list | HTTP 501 after authorization; native queued inputs are not exposed by this subset |
 | artifact get/download `--version 1` | HTTP 400, CLI exit 1; native outputs have no immutable version snapshots |
 | agents `--limit 101`; attach `--since invalid` | HTTP 400, CLI exit 1 |
 | sessions send with whitespace text | CLI exit 2 before HTTP |
@@ -106,8 +107,10 @@ and provider credentials. The adapter does not implement agent creation.
 The standalone entry point starts the existing session execution worker and
 scheduler; there is no separate KHA runner. Persistent database migrations,
 output storage, a working sandbox and model access are needed for an actual
-turn and downloadable output. The assembled SQLite mount test checks routing
-and persistence without starting a model turn. Its
+turn and downloadable output. The assembled SQLite tests check routing, persistence, real API-key ownership,
+artifact storage and interrupt state preconditions without a provider turn. The
+authenticated test uses a self-hosted environment with no connected worker and
+seeds lifecycle states in SQLite. The
 `NODE_ENV=test OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess` selector is
 test-only, not a production sandbox configuration.
 
@@ -131,7 +134,7 @@ Contract sources: [OpenAPI](https://platform.kimi.com/docs/hosted-agents/openapi
 
 ## P1 session controls
 
-`POST /sessions/:id/events` accepts a single `{ "type": "user.interrupt" }` (optional empty `data`) and forwards it to OMA's authenticated event API. It returns **202 `{}`**, not a queued `event_id` or invented `control_epoch`. OMA cancels active executions including child lanes; idle interrupts are normally no-ops. Acceptance does not mean cancellation has finished: inspect session state/events. Native cancellation reports `end_turn`; the adapter does not infer a `canceled` result from an earlier interrupt request. Queued work survives and can run automatically—this is **not** Kimi's durable pause-until-continue semantics.
+`POST /sessions/:id/events` accepts a single `{ "type": "user.interrupt" }` (optional empty `data`) and forwards it to OMA's authenticated event API. It returns **202 `{}`**, not a queued `event_id` or invented `control_epoch`. The KHA path requires a running, non-archived session: idle and terminated sessions return 400 `failed_precondition_error` without appending an interrupt. The check runs inside the native application CAS retry loop, so a concurrent state change is revalidated before acceptance. An in-process binding carries this opt-in constraint after native authentication; no HTTP header enables it. Native `/v1` interrupt behavior remains unchanged. OMA cancels active executions including child lanes. Acceptance does not mean cancellation has finished: inspect session state/events. Native cancellation reports `end_turn`; the adapter does not infer a `canceled` result from an earlier interrupt request. Queued work follows native OMA scheduling. This subset does not expose control epochs or message-free continuation. Current official [session operations](https://platform.kimi.com/docs/hosted-agents/session-operations) describe cancellation of a running turn and subsequent new input; earlier captured schema fields alone do not establish durable pause semantics.
 
 `POST /sessions/:id/continue` is recognized, authenticates/checks the session, and returns **501** with a specific reason: OMA has no message-free continuation or durable `interrupted`/`control_epoch` state. Terminated/archived sessions return 409. A new ordinary `user.message` can start another turn using native behavior. No synthetic message is inserted by `/continue`. Interrupt with `data.expected_control_epoch` likewise returns 501 before mutation because native fencing cannot enforce that token. The OpenAPI has no separate session `/stop` or `/resume`; environment work-item stop is a different worker-lease protocol and remains out of scope.
 
@@ -167,9 +170,28 @@ Child pinned agent snapshots and archive metadata are unavailable in this log
 projection and are omitted. No `control_epoch` or durable `interrupted` flag is
 synthesized; thread archive remains unsupported.
 
+Session-level history and SSE expose only the coordinator (`sthr_primary`, including
+untagged native rows). Child output is available through the selected thread
+endpoint, so child idle events cannot end a coordinator client wait.
+
 Thread history filters before pagination; descending pages and SSE share the
 same event mapping as session history. Thread cursors bind to session and lane,
 so they cannot be used on a sibling lane. Streams filter replay and live polling,
 while still advancing over unrelated native rows. Thread discovery and initial
 history share the 10,000-row replay bound; this is not a separate multi-agent
 runtime or a persistent thread graph.
+
+## Compatibility regression checks
+
+Text message submission returns HTTP 202 with the accepted native event ID.
+Pending input inspection returns 501 rather than claiming a live queue is empty.
+The native event-admission CAS remains the single state authority (ADR 0006);
+compatibility checks do not introduce a second runner or cancellation queue.
+
+The tests distinguish in-memory route fixtures from authenticated SQLite
+composition. The latter verifies foreign credentials cannot read sessions,
+threads, events or artifacts, submit interrupts, or reuse another workspace's
+agent/environment. The application regression forces a revision conflict that
+changes running to idle and verifies that no interrupt is committed/dispatched.
+Full hosted-service parity, provider inference and completed runner cancellation
+are not established by these tests.

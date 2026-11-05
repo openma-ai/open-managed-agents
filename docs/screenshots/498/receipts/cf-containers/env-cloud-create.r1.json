@@ -1,0 +1,25 @@
+{
+  "id": "env_cc51adc13c0d4d769db01dc8622d96d9",
+  "archived_at": null,
+  "config": {
+    "type": "cloud",
+    "networking": {
+      "type": "unrestricted"
+    },
+    "packages": {
+      "type": "packages",
+      "apt": [],
+      "cargo": [],
+      "gem": [],
+      "go": [],
+      "npm": [],
+      "pip": []
+    }
+  },
+  "created_at": "2026-11-05T10:42:45.351Z",
+  "description": "M1 Cloud hosting: provision sandbox via lane default provider (CF Containers, not LiteBox)",
+  "metadata": {},
+  "name": "pr-498-cloud-sandbox-r1",
+  "type": "environment",
+  "updated_at": "2026-11-05T10:42:45.351Z"
+}

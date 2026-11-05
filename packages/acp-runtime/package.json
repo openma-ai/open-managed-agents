@@ -13,7 +13,9 @@
     "./native-state": "./src/native-state.ts",
     "./sandbox-agent": "./src/sandbox-agent.ts",
     "./registry-pins": "./src/acp-registry-pins.ts",
-    "./inference-config": "./src/inference/index.ts"
+    "./inference-config": "./src/inference/index.ts",
+    "./skill-cache": "./src/skill-cache.ts",
+    "./skill-package": "./src/skill-package.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",

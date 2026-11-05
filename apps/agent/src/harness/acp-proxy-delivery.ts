@@ -33,7 +33,7 @@ export function buildAcpPlatformPromptPrefix(input: {
   if (input.bundleDir) {
     const bundleDir = input.bundleDir;
     lines.push(
-      `Read \`${bundleDir}/AGENTS.md\` and any skill files under \`${bundleDir}/.claude/skills/\`, \`${bundleDir}/.opencode/agents/\`, or paths referenced inside AGENTS.md before relying on project-local discovery.`,
+      `Read \`${bundleDir}/AGENTS.md\` and any skill files under \`${bundleDir}/skills/\`, \`${bundleDir}/.claude/skills/\`, \`${bundleDir}/.opencode/agents/\`, or paths referenced inside AGENTS.md before relying on project-local discovery.`,
     );
   }
   lines.push("", input.systemPrompt, "</openma-acp-platform>", "");

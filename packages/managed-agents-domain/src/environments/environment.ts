@@ -29,6 +29,18 @@ export interface EnvironmentOpenMaExtensions {
   /** Alias into the operator's SANDBOX_IMAGES catalog. Absent selects the
    * deployment default image. Never a raw provider image reference. */
   sandboxImage?: string;
+  /** Attach this `self_hosted` Environment to an existing OpenMA Runtime
+   * (a paired machine, `/v1/oma/runtimes`) and select host or Runtime-owned sandbox execution. The Runtime stays a peer resource; this is only a reference. */
+  runtime?: EnvironmentRuntimeAttachment;
+}
+
+export interface EnvironmentRuntimeAttachment {
+  runtimeId: string;
+  /** Omitted in older stored Environments; defaults to host. */
+  placement?: "sandbox" | "host";
+  /** Plain (non-secret) env overlay injected into the host runner's
+   * shell/MCP/plugin processes for sessions on this Environment. */
+  env: Record<string, string>;
 }
 
 export interface Environment {

@@ -29,10 +29,12 @@
  * the OMA platform per-tenant rather than baked into the npm-published CLI.
  */
 
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { paths } from "./platform.js";
+import { RuntimeSkillCache } from "@open-managed-agents/acp-runtime/skill-cache";
+import { safeSkillArchivePath } from "@open-managed-agents/acp-runtime/skill-package";
 
 const DIR_NAME_LEN = 12;
 
@@ -107,17 +109,28 @@ export function acpSessionReadyOut(params: {
  * Drop bundle files from main into a session cwd. Each entry's `path` is
  * relative to cwd, can include subdirectories (mkdir -p applied). Existing
  * files at the same path are overwritten — bundle is the source of truth
- * for AGENTS.md / `.claude/skills/...` content, and we want each session
- * spawn to reflect the latest agent config.
+ * for AGENTS.md / legacy skill content. Managed skill packages are immutable
+ * and cannot be overwritten through this path; Agent bindings come from the
+ * Session snapshot, not the latest Agent configuration.
  */
 export async function writeBundle(
   cwd: string,
   files: Array<{ path: string; content: string }>,
 ): Promise<void> {
+  const guard = new RuntimeSkillCache({ sessionsRoot: paths().sessionsDir });
+  // Only the immediate session child is writable, never a caller-selected project.
+  if (dirname(cwd) !== paths().sessionsDir) throw new Error("Bundle requires an OMA-managed session directory");
+  await guard.directory(cwd);
   for (const f of files) {
-    if (f.path.startsWith("/") || f.path.includes("..")) continue; // refuse traversal
-    const dst = join(cwd, f.path);
-    await mkdir(dirname(dst), { recursive: true });
+    const path = safeSkillArchivePath(f.path);
+    if (path.startsWith("skills/") || path.startsWith(".oma-")) throw new Error("Bundle cannot overwrite managed skill state");
+    const dst = join(cwd, path);
+    await guard.directory(dirname(dst));
+    const existing = await lstat(dst).catch((e: NodeJS.ErrnoException) => {
+      if (e.code !== "ENOENT") throw e;
+      return null;
+    });
+    if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw new Error(`Unsafe bundle destination: ${dst}`);
     await writeFile(dst, f.content);
   }
 }

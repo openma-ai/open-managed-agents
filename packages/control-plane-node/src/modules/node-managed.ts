@@ -733,7 +733,12 @@ export async function createManagedNodeRuntime(
         )
         : undefined;
       const platformReminders = [
-        ...(assemblySkills ? [] : buildNodeManagedSkillReminders(input.session)),
+        ...(assemblySkills ? [] : await buildNodeManagedSkillReminders(
+          input.session,
+          managedPlatform
+            .app({ workspaceId: input.workspaceId })
+            .port(managedAgentsPortTokens.skillVersions),
+        )),
         ...buildNodeManagedAppendablePromptReminders(input.session),
       ];
       const feishuTools = await resolveFeishuAgentTools(input.session.id);

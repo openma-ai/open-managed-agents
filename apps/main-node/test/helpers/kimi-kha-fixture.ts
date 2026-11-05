@@ -16,7 +16,7 @@ import type { SessionEventView } from "../../../../packages/managed-agents-api/s
 import { buildKimiKhaCompatRoutes } from "../../../../packages/control-plane-node/src/kimi-kha/index.js";
 
 export function createKhaFixture(enabled = true) {
-  const native = new Hono<{ Variables: { tenant_id: string } }>();
+  const native = new Hono<{ Bindings: { requireRunningInterrupt?: boolean }; Variables: { tenant_id: string } }>();
   const calls: Array<{ path: string; query: string; body?: unknown; tenant: string }> = [];
   const agents = new Map([[agentView.id, structuredClone(agentView)]]);
   const environments = new Map<string, EnvironmentView>();
@@ -99,6 +99,9 @@ export function createKhaFixture(enabled = true) {
       if (!owner(c) || !sessions.has(command.sessionId)) return { type: "not_found" };
       const input = command.events[0];
       if (input.type === "user.interrupt") {
+        if (c.env?.requireRunningInterrupt && sessions.get(command.sessionId)!.status !== "running") {
+          return { type: "invalid_request", reason: "failed_precondition", message: "Only a running session can be interrupted" };
+        }
         const interrupted = append(command.sessionId, input);
         if (sessions.get(command.sessionId)!.status === "running") {
           sessions.get(command.sessionId)!.status = "idle";
@@ -133,8 +136,8 @@ export function createKhaFixture(enabled = true) {
       },
     },
   }));
-  const app = new Hono();
+  const app = new Hono<{ Bindings: { requireRunningInterrupt?: boolean } }>();
   app.route("/v1", native);
-  if (enabled) app.route("/kha/v1", buildKimiKhaCompatRoutes((req) => app.fetch(req), { pollMs: 10 }));
+  if (enabled) app.route("/kha/v1", buildKimiKhaCompatRoutes((req, options) => app.fetch(req, options), { pollMs: 10 }));
   return { app, calls, events, outputs, sessions, environments, agents, agentId: agentView.id };
 }

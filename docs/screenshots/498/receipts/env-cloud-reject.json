@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "_oma.runtime is only supported for self_hosted environments"
+  },
+  "message": "_oma.runtime is only supported for self_hosted environments",
+  "code": "invalid_request_error",
+  "request_id": "a55b0db9c92023a3"
+}

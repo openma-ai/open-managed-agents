@@ -155,7 +155,7 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
       const stream = await frameReader(response);
       expect(await stream.next()).toMatchObject({ event: "control", id: "0", data: { cursor: "0", reason: "tail" } });
       const send = await fetch(`${base}/sessions/${id}/events`, { method: "POST", headers, body: JSON.stringify(message) });
-      expect(send.status).toBe(200);
+      expect(send.status).toBe(202);
       const frames = [];
       for (let i = 0; i < 4; i++) frames.push(await stream.next());
       frames.forEach((frame) => conforms("SessionEventList", { items: [frame.data] }));
@@ -195,7 +195,9 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     expect(await stopped.json()).toEqual({}); // No fabricated epoch or queued event ID.
     expect(f.calls.at(-1)?.body).toEqual({ events: [{ type: "user.interrupt" }] });
     expect((await (await f.request(`/sessions/${id}`)).json()).status).toBe("idle");
-    expect((await f.request(`/sessions/${id}/events`, { events: [{ type: "user.interrupt" }] })).status).toBe(202);
+    const idleInterrupt = await f.request(`/sessions/${id}/events`, { events: [{ type: "user.interrupt" }] });
+    expect(idleInterrupt.status).toBe(400);
+    expect((await idleInterrupt.json()).error.type).toBe("failed_precondition_error");
     const before = f.events.get(id)!.length;
     const continued = await f.app.request(`/kha/v1/sessions/${id}/continue`, { method: "POST", headers });
     expect(continued.status).toBe(501);
@@ -206,7 +208,7 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     expect(fenced.status).toBe(501);
     expect(f.events.get(id)).toHaveLength(before);
     expect((await f.request(`/sessions/${id}/events`, { events: [...interrupt.events, ...message.events] })).status).toBe(400);
-    expect((await f.request(`/sessions/${id}/events`, message)).status).toBe(200);
+    expect((await f.request(`/sessions/${id}/events`, message)).status).toBe(202);
     expect(f.events.get(id)!.at(-1)).toMatchObject({ type: "session.status_idle", stopReason: { type: "end_turn" } });
     for (const [authorization, status] of [["Bearer invalid", 401], ["Bearer other", 404]] as const) {
       expect((await f.request(`/sessions/${id}/events`, interrupt, { authorization })).status).toBe(status);
@@ -276,7 +278,7 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
       { ...base, id: "denied", type: "agent.tool_use", name: "bash", input: {}, evaluatedPermission: "deny" },
       { ...base, id: "unknown_result", type: "agent.tool_result", toolUseId: "unknown", content },
     );
-    const history = await (await f.request(`/sessions/${id}/events`)).json();
+    const history = await (await f.request(`/sessions/${id}/threads/sthr_child/events`)).json();
     conforms("SessionEventList", history);
     expect(history.items).toHaveLength(11);
     expect(history.items[0]).toMatchObject({ type: "agent.tool_use", session_thread_id: "sthr_child", data: { tool_use: { id: "use" }, evaluated_permission: "always_ask" } });
@@ -285,7 +287,7 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     expect(history.items[5].type).toBe("agent.model_started");
     expect(history.items[6].data.mcp).toEqual({ server_name: "search" });
     expect(history.items[7].data.tool_result.is_error).toBe(false);
-    const stream = await frameReader(await f.request(`/sessions/${id}/events/stream`));
+    const stream = await frameReader(await f.request(`/sessions/${id}/threads/sthr_child/events/stream`));
     for (const event of history.items) expect((await stream.next()).data).toEqual(event);
     await stream.cancel();
     const wire = { id: "omit", processed_at: base.processedAt };
@@ -387,13 +389,24 @@ describe("Kimi KHA P0 compatibility through native OMA routes", () => {
     expect(older.items.map((r: any) => r.id)).toEqual(["child_created"]);
     const primary = await (await f.request(`${root}/threads/sthr_primary/events`)).json();
     expect(primary.items).toHaveLength(4);
+    const coordinator = await (await f.request(`${root}/events`)).json();
+    expect(coordinator.items).toEqual(primary.items);
+    const coordinatorStream = await frameReader(await f.request(`${root}/events/stream`));
+    for (const event of primary.items) expect((await coordinatorStream.next()).data).toEqual(event);
+    f.events.get(id)!.push({ ...base, id: "child_extra", type: "agent.message", content: [{ type: "text", text: "must not appear" }] });
+    await f.request(`${root}/events`, message);
+    expect((await coordinatorStream.next()).data.type).toBe("user.message");
+    await coordinatorStream.cancel();
     const stream = await frameReader(await f.request(`${root}/threads/sthr_child/events/stream?cursor=${childEvents.stream_cursor}`));
     f.events.get(id)!.push({ ...base, id: "child_idle", type: "session.thread_status_idle", stopReason: { type: "end_turn" } });
     await f.request(`${root}/events`, message); // Unrelated primary events must not leak.
+    expect((await stream.next()).data.id).toBe("child_extra");
     expect((await stream.next()).data.id).toBe("child_idle"); await stream.cancel();
     expect((await (await f.request(`${root}/threads/sthr_child`)).json()).status).toBe("idle");
     expect((await f.request(`${root}/threads/sthr_primary/events/stream?cursor=${childEvents.stream_cursor}`)).status).toBe(400);
-    conforms("PendingEventList", await (await f.request(`${root}/events/pending`)).json());
+    const pending = await f.request(`${root}/events/pending`);
+    expect(pending.status).toBe(501);
+    expect((await pending.json()).error.message).toContain("not implemented");
     for (const suffix of ["/threads", "/threads/sthr_child", "/threads/sthr_child/events", "/threads/sthr_child/events/stream", "/events/pending"]) {
       expect((await f.request(`${root}${suffix}`, undefined, { authorization: "Bearer other" })).status).toBe(404);
       expect((await f.request(`${root}${suffix}`, undefined, { authorization: "Bearer invalid" })).status).toBe(401);

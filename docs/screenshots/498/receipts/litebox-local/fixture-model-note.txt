@@ -1,0 +1,4 @@
+Model wire: local OpenAI-compatible fixture on 127.0.0.1 (deterministic tool_use → bash).
+Not a live DeepSeek network call. Sandbox path under test is real:
+  SANDBOX_PROVIDER=litebox → @boxlite-ai/boxlite → boxlite-shim / libkrun microVM.
+Guest uname hostname=boxlite; /proc/cmdline contains init=/init.krun and KRUN_INIT=.../boxlite-guest.

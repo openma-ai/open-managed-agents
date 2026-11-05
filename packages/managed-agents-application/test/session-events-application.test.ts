@@ -484,3 +484,36 @@ describe("SessionEventsApplicationService", () => {
   });
 
 });
+
+// The compatibility guard must survive a status change between read and append.
+it("rechecks the opt-in interrupt precondition after a CAS conflict without dispatching", async () => {
+  let current = structuredClone(activeSession), revision = 7, appends = 0, dispatched = 0;
+  const service = new SessionEventsApplicationService({
+    workspaceId: "workspace_01",
+    store: {
+      list: async () => [],
+      append: async () => {
+        appends++;
+        current.status = "idle";
+        revision++;
+        return { type: "revision_conflict", actualRevision: revision };
+      },
+    },
+    sessions: { find: async () => structuredClone(current) },
+    execution: { find: async () => ({ session: structuredClone(current), environment: executionEnvironment, revision }) },
+    stream: emptySessionEventStream,
+    dispatch: { sessionEventsAccepted: async () => { dispatched++; } },
+    clock: { now: () => new Date("2026-11-05T00:00:00Z") },
+    ids: { nextEventId: () => "interrupt_1", nextOutcomeId: () => "outcome_1" },
+  });
+  const result = await service.sendSessionEvents({ sessionId: current.id,
+    events: [{ type: "user.interrupt" }], requireRunningInterrupt: true });
+  expect(result).toMatchObject({ type: "invalid_request", reason: "failed_precondition" });
+  expect(appends).toBe(1);
+  expect(dispatched).toBe(0);
+  current.status = "terminated";
+  expect(await service.sendSessionEvents({ sessionId: current.id,
+    events: [{ type: "user.interrupt" }], requireRunningInterrupt: true }))
+    .toMatchObject({ type: "invalid_request", reason: "failed_precondition" });
+  expect(appends).toBe(1);
+});

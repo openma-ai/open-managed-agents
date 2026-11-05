@@ -1,0 +1,58 @@
+{
+  "data": [
+    {
+      "id": "sevt_2cbd5165cd044d278ba2b6409be652f5",
+      "processed_at": "2026-11-05T10:46:18.067Z",
+      "type": "user.message",
+      "content": [
+        {
+          "type": "text",
+          "text": "Reply with exactly: CLOUD_SANDBOX_OK"
+        }
+      ]
+    },
+    {
+      "id": "sevt-72htcuxarj5fs4ss",
+      "type": "session.status_running",
+      "processed_at": "2026-11-05T10:46:20.834Z"
+    },
+    {
+      "id": "sevt-r5rfcycv7n2zcf7a",
+      "type": "span.model_request_start",
+      "processed_at": "2026-11-05T10:46:20.835Z"
+    },
+    {
+      "id": "sevt-sqwo3r4laqopywg4",
+      "type": "agent.message",
+      "content": [
+        {
+          "type": "text",
+          "text": "CLOUD_SANDBOX_OK"
+        }
+      ],
+      "processed_at": "2026-11-05T10:46:21.939Z"
+    },
+    {
+      "id": "sevt-ukz332bkofktaxmc",
+      "type": "span.model_request_end",
+      "is_error": false,
+      "model_request_start_id": "sevt-r5rfcycv7n2zcf7a",
+      "model_usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 3072,
+        "input_tokens": 136,
+        "output_tokens": 8
+      },
+      "processed_at": "2026-11-05T10:46:21.940Z"
+    },
+    {
+      "id": "sevt-zhvjbmq1jmxfjprp",
+      "type": "session.status_idle",
+      "processed_at": "2026-11-05T10:46:21.941Z",
+      "stop_reason": {
+        "type": "end_turn"
+      }
+    }
+  ],
+  "next_page": null
+}

@@ -16,6 +16,9 @@
  *      foreground instead so the user never has to type a second command.
  *   7. Exit (or never returns when exec'd into daemon).
  *
+ * Headless variant: `--token omrp_…` (or $OMA_PAIRING_TOKEN) carries a
+ * server-minted (code, state) pair, so steps 1–4 are skipped entirely.
+ *
  * The `state` is verified server-side (so a leaked code can't be used by a
  * different setup attempt) AND client-side (so the localhost callback
  * can't be poisoned by an arbitrary cross-site request to 127.0.0.1).
@@ -42,6 +45,7 @@ import { printBanner, log, c } from "../lib/style.js";
 import { PKG_VERSION } from "../lib/version.js";
 import { probeRuntimeToken } from "../lib/probe.js";
 import { auditAndOfferWrappers } from "../lib/wrapper-audit.js";
+import { decodePairingToken } from "../lib/pairing.js";
 import { join } from "node:path";
 
 /** Snapshot of the current process's node + cli entry. Frozen here (not at
@@ -75,6 +79,9 @@ interface SetupOpts {
   /** Skip y/N prompts in the wrapper-install audit; install all
    *  offerable wrappers automatically. Useful for CI / scripted setup. */
   yes?: boolean;
+  /** Headless pairing: an `omrp_…` token minted by `oma runtime pair` or
+   *  the Console replaces the browser loopback dance. Implies --force. */
+  pairingToken?: string;
 }
 
 
@@ -121,6 +128,9 @@ async function runSetupInner(opts: SetupOpts): Promise<void> {
   const profileTag = profile ? `  [profile=${profile}]` : "";
   printBanner(`setup — register this machine with ${opts.serverUrl}${profileTag}`, PKG_VERSION);
 
+  // Decode before any network/service work so a typo fails fast.
+  const paired = opts.pairingToken ? decodePairingToken(opts.pairingToken) : null;
+
   // Warm the merged ACP registry (official + OMA overlay) so subsequent
   // detect/warn/missing-list calls have the full 35+ agents available.
   // Cache lives under the profile-aware configDir; non-fatal on failure.
@@ -139,7 +149,7 @@ async function runSetupInner(opts: SetupOpts): Promise<void> {
   //                   overwritten by writeCreds() below.
   //   - unreachable → can't tell; refresh service anyway (offline tolerance)
   //                   and warn the user that we couldn't verify.
-  if (!opts.force) {
+  if (!opts.force && !paired) {
     const existing = await readCreds();
     if (existing) {
       log.ok(`existing credentials found  ${c.dim(paths().credsFile)}`);
@@ -174,10 +184,17 @@ async function runSetupInner(opts: SetupOpts): Promise<void> {
     }
   }
 
-  log.step("waiting for browser to authorize");
-  const state = randomBytes(16).toString("hex");
-  const code = await waitForCallback(state, opts.browserOrigin);
-  log.ok("received code from browser");
+  let code: string;
+  let state: string;
+  if (paired) {
+    ({ code, state } = paired);
+    log.ok("using pairing token (no browser needed)");
+  } else {
+    log.step("waiting for browser to authorize");
+    state = randomBytes(16).toString("hex");
+    code = await waitForCallback(state, opts.browserOrigin);
+    log.ok("received code from browser");
+  }
 
   const machineId = await getOrCreateMachineId();
   const exchange = await postExchange(opts.serverUrl, {

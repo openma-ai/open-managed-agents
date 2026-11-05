@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "error": {
+    "type": "not_found_error",
+    "message": "session not found"
+  },
+  "message": "session not found",
+  "code": "not_found_error",
+  "request_id": "a55b10238d0a8b10"
+}
