@@ -20,6 +20,7 @@ import type {
   SpanModelUsageView,
   ToolResultContentBlock,
 } from "@open-managed-agents/managed-agents-application";
+import { consumedListCostPico } from "@open-managed-agents/managed-agents-application";
 import {
   abortedError,
   abortableDelay,
@@ -941,7 +942,9 @@ export class DefaultNodeManagedSessionRunner
             : await this.dependencies.resolveModelPricing?.(context) ?? null;
           // Domain gate; Node ListCostPicoStore persists session.usage.list_cost_pico.
           const store = {
-            load: (): string | null => input.session.usage?.list_cost_pico ?? null,
+            // Sessions persisted before list_cost_pico survived the runtime
+            // boundary resume from their rounded cents rather than from 0.
+            load: (): string => consumedListCostPico(input.session).toString(),
             save: (list_cost_pico: string): void => {
               const usage = { ...runtime.usageSnapshot(), list_cost_pico };
               if (input.session.usage) {

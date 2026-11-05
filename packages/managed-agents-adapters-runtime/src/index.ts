@@ -287,6 +287,13 @@ export function decodeRuntimeEvent(
   if (raw.type === "span.outcome_evaluation_end") {
     decoded.usage = normalizeModelUsage(raw.usage);
   }
+  if (raw.type === "session.usage" && decoded.usage !== null && typeof decoded.usage === "object") {
+    // `list_cost_pico` is a domain property with one name (SessionUsage):
+    // the budget gate reloads it after a restart, so it must not be
+    // camel-cased into an alias nothing reads.
+    const { listCostPico, ...usage } = decoded.usage as Record<string, unknown>;
+    decoded.usage = listCostPico === undefined ? usage : { ...usage, list_cost_pico: listCostPico };
+  }
   if (
     (raw.type === "agent.tool_result" || raw.type === "agent.mcp_tool_result")
     && typeof raw.content === "string"
