@@ -33,6 +33,7 @@
  */
 
 import { spawn as childSpawn } from "node:child_process";
+import { applyOverlayEnv } from "./protected-overlay-env.js";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
@@ -491,11 +492,8 @@ export class SessionManager {
       }
     }
 
-    // Bundle-supplied env vars merged on top of agent.spec.env and
-    // CLAUDE_CONFIG_DIR. Order matters: bundleEnv comes from the user's
-    // session resources (type=env), so it should override the ACP
-    // agent's defaults but stay below CLAUDE_CONFIG_DIR (which is a
-    // session-cwd routing concern, not user data).
+    // Bundle order is Environment then session resources (session wins).
+    // Protected keys retain host/daemon values; other keys override agent defaults.
     try {
       Object.assign(extraEnv, await configureManagedSkills(scratchDir, agent.id, managedSkills, extraEnv.CLAUDE_CONFIG_DIR));
     } catch (e) {
@@ -503,8 +501,9 @@ export class SessionManager {
         message: `Managed skills configuration failed: ${(e as Error).message}` });
       return;
     }
-    const envFromBundle: Record<string, string> = {};
-    for (const v of bundleEnv) envFromBundle[v.name] = v.value;
+    const envFromBundle = applyOverlayEnv({}, Object.fromEntries(
+      bundleEnv.map(({ name, value }) => [name, value]),
+    ));
 
     // ACP McpServer schema requires a name + url + headers array. We add
     // the Authorization header here, on the daemon side, so the agent
@@ -529,9 +528,8 @@ export class SessionManager {
         (blocklist.length ? ` blocklist=${blocklist.length}` : "") +
         (mcpServersForAcp.length ? ` mcp=${mcpServersForAcp.length}` : "") +
         (bundleEnv.length ? ` env=${bundleEnv.length}` : "") +
-        // Intentionally NOT logging env names or values — these come from
-        // user-supplied session resources and may be sensitive even if not
-        // formally encrypted. Only the count is observable.
+        // Log only the count here; skipped protected keys are warned above.
+        // Never log overlay values.
         "\n",
     );
 

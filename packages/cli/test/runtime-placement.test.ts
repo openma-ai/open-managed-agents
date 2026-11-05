@@ -54,13 +54,13 @@ beforeEach(async () => {
   vi.stubEnv("BOXRUN_URL", "");
   vi.stubEnv("SANDBOX_IMAGE", "node:22-bookworm");
 });
-afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await rm(dir, { recursive: true, force: true }); });
 
-function bundle(placement?: "host" | "sandbox") {
+function bundle(placement?: "host" | "sandbox", env = [{ name: "OVERLAY", value: "yes" }]) {
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({
     runtime: { runtime_id: "rt_1", ...(placement ? { placement } : {}) },
     files: [{ path: "AGENTS.md", content: "Use skills" }], managed_skills: [],
-    env: [{ name: "OVERLAY", value: "yes" }],
+    env,
   })));
 }
 function input(cwd?: string) {
@@ -72,6 +72,26 @@ function input(cwd?: string) {
 }
 
 describe("Runtime sandbox placement (mocked LiteBox; live daemon evidence deferred)", () => {
+  it.each(["host", "sandbox"] as const)("filters protected bundle env for %s placement and retains daemon routing and scrub", async (placement) => {
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const blocked = ["PATH", "hOmE", "oMa_PROFILE", "CLAUDE_CONFIG_DIR", "claude_config_dir", "OPENMA_SKILLS_DIR",
+      "CLAUDECODE", "claudecode", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"];
+    bundle(placement, [
+      ...blocked.map((name) => ({ name, value: "overlay-secret" })),
+      { name: "OVERLAY", value: "environment" }, { name: "OVERLAY", value: "session" },
+    ]);
+    const deps = createNodeSessionManagerRuntimeDependencies();
+    const options = await deps.prepareSession(input());
+    expect(options.agent.env).toEqual({
+      OVERLAY: "session",
+      CLAUDE_CONFIG_DIR: placement === "host" ? "/host/claude-config" : "/workspace/.claude-config",
+      CLAUDECODE: undefined, CLAUDE_CODE_ENTRYPOINT: undefined, CLAUDE_CODE_SSE_PORT: undefined,
+    });
+    const warnings = stderr.mock.calls.filter(([line]) => String(line).includes("custom_env: blocked key skipped"));
+    expect(warnings).toEqual(blocked.map((name) => [`  ! custom_env: blocked key skipped key="${name}"\n`]));
+    expect(JSON.stringify(stderr.mock.calls)).not.toContain("overlay-secret");
+  });
+
   it.each([undefined, "host"] as const)("uses the local ACP runtime for placement %s", async (placement) => {
     bundle(placement);
     const deps = createNodeSessionManagerRuntimeDependencies();

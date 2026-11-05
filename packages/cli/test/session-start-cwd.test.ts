@@ -77,6 +77,33 @@ afterAll(async () => {
 });
 
 describe("session.start cwd", () => {
+  it("filters protected overlays in both host paths, including when task-owned keys are unset", async () => {
+    const originalFetch = globalThis.fetch;
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const blocked = ["PATH", "Home", "oMa_PROFILE", "CLAUDE_CONFIG_DIR", "OPENMA_SKILLS_DIR",
+      "claudecode", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"];
+    globalThis.fetch = (async () => Response.json({ ...BUNDLE, env: [
+      ...blocked.map((name) => ({ name, value: "overlay-secret" })),
+      { name: "NORMAL", value: "environment" }, { name: "NORMAL", value: "session" },
+    ] })) as typeof fetch;
+    try {
+      for (const [start, sessionId] of [[startPrepared, "ea11aaaaaa11"], [startLegacy, "eb11bbbbbb11"]] as const) {
+        stderr.mockClear();
+        const { started } = await start(sessionId);
+        expect(started).toHaveLength(1);
+        expect(started[0].agent).toMatchObject({ env: {
+          NORMAL: "session", CLAUDECODE: undefined, CLAUDE_CODE_ENTRYPOINT: undefined, CLAUDE_CODE_SSE_PORT: undefined,
+        } });
+        for (const key of blocked.filter((key) => !["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"].includes(key))) {
+          expect(started[0].agent).not.toHaveProperty(`env.${key}`);
+        }
+        const warnings = stderr.mock.calls.filter(([line]) => String(line).includes("custom_env: blocked key skipped"));
+        expect(warnings).toEqual(blocked.map((name) => [`  ! custom_env: blocked key skipped key="${name}"\n`]));
+        expect(JSON.stringify(stderr.mock.calls)).not.toContain("overlay-secret");
+      }
+    } finally { globalThis.fetch = originalFetch; stderr.mockRestore(); }
+  });
+
   it("prepareNodeSession keeps the ACP cwd in the scratch dir when cwd is absent", async () => {
     const sessionId = "a11aaaaaaa11";
     const { started, messages } = await startPrepared(sessionId);

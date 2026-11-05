@@ -7,6 +7,7 @@ import { prepareSandboxBundle } from "./sandbox-session-bundle.js";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
 
 import { setupClaudeConfigDir } from "./claude-config-dir.js";
+import { applyOverlayEnv } from "./protected-overlay-env.js";
 import {
   acpProcessCwd,
   ensureSessionCwd,
@@ -140,10 +141,9 @@ async function prepareNodeSession(input: SessionManagerPreparationInput, bundle:
 
   Object.assign(extraEnv, await configureManagedSkills(scratchDir, agent.id, managedSkills, extraEnv.CLAUDE_CONFIG_DIR));
 
-  const envFromBundle: Record<string, string> = {};
-  for (const variable of bundleEnv) {
-    envFromBundle[variable.name] = variable.value;
-  }
+  const envFromBundle = applyOverlayEnv({}, Object.fromEntries(
+    bundleEnv.map(({ name, value }) => [name, value]),
+  ));
   const mcpServers = bundleMcpServers.map((server) => ({
     type: server.type,
     name: server.name,

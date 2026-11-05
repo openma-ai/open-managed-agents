@@ -9,6 +9,7 @@ import { materializeManagedSkills, managedSkillInstructions } from "./managed-sk
 import type { RuntimeSandbox } from "./runtime-placement.js";
 import type { SessionBundle } from "./node-session-runtime.js";
 import type { SessionManagerPreparationInput } from "./session-manager.js";
+import { applyOverlayEnv } from "./protected-overlay-env.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -52,7 +53,9 @@ export async function prepareSandboxBundle(
   // Never probe the host PATH or import host ~/.claude into the jail. Operators
   // supply a prepared SANDBOX_IMAGE containing the selected ACP binary + Node.
   await run(`command -v ${quote(agent.spec.command)} >/dev/null`);
-  const env = Object.fromEntries((bundle.env ?? []).map(({ name, value }) => [name, value]));
+  const env = applyOverlayEnv({}, Object.fromEntries(
+    (bundle.env ?? []).map(({ name, value }) => [name, value]),
+  ));
   return {
     agent: {
       ...agent.spec,

@@ -110,6 +110,7 @@ export function RuntimeAttachmentFields({
           <p className="text-xs text-fg-subtle mt-1">
             KEY=value per line, injected into the runner's shell, MCP servers and plugins.
             Values are visible to workspace members — keep secrets in a vault.
+            System, OMA_* and Runtime-owned keys cannot be overridden.
           </p>
         )}
       </div>
