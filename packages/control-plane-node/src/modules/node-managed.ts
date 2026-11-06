@@ -33,7 +33,7 @@ import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@o
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
 import { buildOpenAISubagentTools, nodeOpenAISubagentPolicy, openAISubagentSession } from "../openai-subagents.js";
 
-import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../openai-artifact-publication.js";
+import { createNodeReadOnlyArtifactPublisher, withReportedArtifactPublication } from "../openai-artifact-publication.js";
 
 import { buildTools, disposeTools } from "@open-managed-agents/agent/harness/tools";
 
@@ -701,7 +701,7 @@ export async function createManagedNodeRuntime(
         runtimeGeneration,
       });
     },
-    afterExecution: withReportedArtifactPublication(createNodeOpenAIArtifactPublisher({
+    publishArtifacts: withReportedArtifactPublication(createNodeReadOnlyArtifactPublisher({
       historyForWorkspace: workspaceId => new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),
       filesForWorkspace: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
       secrets: openAIAgentsSecrets,

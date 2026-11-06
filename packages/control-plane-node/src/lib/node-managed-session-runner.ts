@@ -10,6 +10,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { APICallError } from "ai";
 import { hasProcessInvariantFailure, terminateForInvariant } from "./process-invariant";
+import { readOnlyArtifactOutputs, type ReadOnlyArtifactPublicationInput } from "../openai-artifact-publication";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   HarnessContext,
@@ -182,7 +183,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   executionDispatches?: {
     begin(fence: SessionExecutionFence): Promise<boolean>;
     drained(fence: SessionExecutionFence): Promise<void>;
-    recoverTerminal(fence: SessionExecutionFence): Promise<boolean>;
+    recoverTerminal(fence: SessionExecutionFence, readOnlyPublication?: boolean): Promise<boolean>;
+    publicationWrite(fence: SessionExecutionFence, confirmed: boolean): Promise<boolean>;
     finish(fence: SessionExecutionFence, unknown: boolean): Promise<void>;
   };
   /** Liveness probe used before reusing a warm sandbox and after a failed
@@ -225,6 +227,9 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     runtimeGeneration: string;
     executionFence: SessionExecutionFence;
   }): Promise<void>;
+  /** Trusted immutable artifact publisher. Receives only reads; every Files
+   * write must use the durable write boundary. Never a general extension hook. */
+  publishArtifacts?(input: ReadOnlyArtifactPublicationInput): Promise<void>;
   buildModel(input: ManagedRunnerContext): Promise<HarnessContext["model"]>;
   /** List prices of the session's model card; null = unpriced. Session
    * budgets are enforced only when this AND `session.budget` are set. */
@@ -1498,11 +1503,13 @@ export class DefaultNodeManagedSessionRunner
         }
           await runtime.drain();
           if (!operationsUnknown && sandboxReady && !sandboxLost &&
-            input.executionFence !== undefined && this.dependencies.afterExecution !== undefined) {
-            if (dispatchBegan && !await this.dependencies.executionDispatches?.recoverTerminal(input.executionFence)) {
+            input.executionFence !== undefined && (this.dependencies.afterExecution !== undefined || this.dependencies.publishArtifacts !== undefined)) {
+            if (dispatchBegan && !await this.dependencies.executionDispatches?.recoverTerminal(input.executionFence, this.dependencies.publishArtifacts !== undefined)) {
               throw new Error("Post-terminal publication lost its execution authority");
             }
-            await this.dependencies.afterExecution({
+            if (this.dependencies.publishArtifacts !== undefined) {
+              await this.publishReadOnlyArtifacts(input, currentSandbox(), input.executionFence, abortController.signal);
+            } else await this.dependencies.afterExecution!({
               workspaceId: input.workspaceId,
               session: input.session,
               environment: input.environment,
@@ -1571,7 +1578,8 @@ export class DefaultNodeManagedSessionRunner
     terminal: CommittedExecutionTerminal,
   ): Promise<void> {
     const dispatches = this.dependencies.executionDispatches;
-    if (dispatches !== undefined && !await dispatches.recoverTerminal(executionFence)) {
+    const readOnlyPublication = this.dependencies.publishArtifacts !== undefined;
+    if (dispatches !== undefined && !await dispatches.recoverTerminal(executionFence, readOnlyPublication)) {
       throw new Error("Terminal execution has no durable evidence that its operations drained; reconciliation is required");
     }
     let completed = false;
@@ -1581,7 +1589,7 @@ export class DefaultNodeManagedSessionRunner
     let uncertain = false;
     let primary: Error | undefined;
     try {
-      if (this.dependencies.afterExecution !== undefined) {
+      if (this.dependencies.afterExecution !== undefined || readOnlyPublication) {
         if (this.sandboxes.get(input) === undefined) await this.beginSandboxStartup(input);
         const sandbox = this.sandboxes.get(input);
         const runtimeGeneration = this.runtimeGenerations.get(input);
@@ -1589,7 +1597,7 @@ export class DefaultNodeManagedSessionRunner
           throw new Error(`Session ${input.sessionId} sandbox was not started`);
         }
         const id = this.durableAllocations.get(input);
-        if (lifecycle !== undefined && id !== undefined) {
+        if (!readOnlyPublication && lifecycle !== undefined && id !== undefined) {
           await lifecycle.borrow({ executionFence, allocationId: id });
           allocationId = id;
         }
@@ -1610,7 +1618,8 @@ export class DefaultNodeManagedSessionRunner
         const signal = new AbortController().signal;
         const access = withSandboxExecutionGuard(guarded, { signal,
           isValid: () => Date.parse(executionFence.expiresAt) > this.dependencies.clock.now().getTime() });
-        await this.dependencies.afterExecution({ workspaceId: input.workspaceId, session: input.session,
+        if (readOnlyPublication) await this.publishReadOnlyArtifacts(input, sandbox, executionFence, signal);
+        else await this.dependencies.afterExecution!({ workspaceId: input.workspaceId, session: input.session,
           environment: input.environment, sandbox: access, runtimeGeneration, executionFence });
       }
       completed = true;
@@ -1638,6 +1647,41 @@ export class DefaultNodeManagedSessionRunner
     if (terminal.stopReason.type === "retries_exhausted") {
       throw new SessionRetriesExhaustedError(`Execution ${executionFence.executionId} already ended with retries_exhausted`);
     }
+  }
+
+  private async publishReadOnlyArtifacts(
+    input: ManagedRunnerContext, sandbox: SandboxExecutor, fence: SessionExecutionFence, signal: AbortSignal,
+  ): Promise<void> {
+    const dispatches = this.dependencies.executionDispatches;
+    let writeUncertain = false;
+    let writeFailure: unknown;
+    let writing = false;
+    const guarded = withSandboxExecutionGuard(sandbox, { signal,
+      isValid: () => !writeUncertain && Date.parse(fence.expiresAt) > this.dependencies.clock.now().getTime() });
+    // Read-only operations hold no mutable resource use: losing their response
+    // cannot change the workspace. The exact allocation stays Session-owned.
+    await this.dependencies.publishArtifacts!({
+      workspaceId: input.workspaceId, session: input.session, executionFence: fence,
+      outputs: readOnlyArtifactOutputs(guarded),
+      write: async operation => {
+        if (writing || writeUncertain) throw new Error("Artifact write is pending or requires reconciliation");
+        writing = true;
+        try {
+          signal.throwIfAborted();
+          if (dispatches && !await dispatches.publicationWrite(fence, false)) throw new Error("Artifact write lost its execution authority");
+          const result = await operation();
+          if (dispatches && !await dispatches.publicationWrite(fence, true)) throw new Error("Artifact write confirmation lost its execution authority");
+          return result;
+        } catch (error) {
+          writeUncertain = true;
+          writeFailure = error;
+          try { await dispatches?.finish(fence, true); }
+          catch (cleanup) { throw new AggregateError([error, cleanup], "Artifact write and uncertainty persistence failed"); }
+          throw error;
+        } finally { writing = false; }
+      },
+    });
+    if (writeUncertain || writing) throw new Error("Artifact write outcome requires reconciliation", { cause: writeFailure });
   }
 
   async archiveThread(

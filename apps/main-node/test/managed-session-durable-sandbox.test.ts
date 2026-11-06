@@ -51,7 +51,7 @@ async function fixture() {
   const run = vi.fn(async (_context: HarnessContext) => undefined);
   const tools = deferred<HarnessContext["tools"]>();
   const disposed = vi.fn(async () => undefined);
-  function runner(owner = "node-a", options: { background?: boolean; lateTools?: boolean; tools?: HarnessContext["tools"]; confirmedTools?: DefaultNodeManagedSessionRunnerDependencies["confirmedTools"]; afterExecution?: DefaultNodeManagedSessionRunnerDependencies["afterExecution"] } = {}) {
+  function runner(owner = "node-a", options: { background?: boolean; lateTools?: boolean; tools?: HarnessContext["tools"]; confirmedTools?: DefaultNodeManagedSessionRunnerDependencies["confirmedTools"]; afterExecution?: DefaultNodeManagedSessionRunnerDependencies["afterExecution"]; publishArtifacts?: DefaultNodeManagedSessionRunnerDependencies["publishArtifacts"] } = {}) {
     const lifecycle = new NodeSessionSandboxLifecycle({ store, provider: "test", ownerId: owner,
       allocationIsolation: true, runtimeBindingSupported: true, now: () => now });
     return new DefaultNodeManagedSessionRunner({
@@ -65,6 +65,7 @@ async function fixture() {
       buildHarness: () => ({ run }),
       buildHarnessContext: async input => input as unknown as HarnessContext,
       afterExecution: options.afterExecution,
+      publishArtifacts: options.publishArtifacts,
       confirmedTools: options.confirmedTools ?? { execute: async () => { throw new Error("unexpected confirmation"); } },
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome"); } },
       harnessRetry: { attempts: 3, delayMs: () => 0 },
@@ -279,6 +280,26 @@ describe("Node runner with durable Session sandbox ownership", () => {
     } });
     expect(terminalObserved).toBe(true); expect(publish).toHaveBeenCalledOnce();
     expect(await f.sql.prepare("SELECT phase FROM managed_session_execution_dispatches").first()).toEqual({ phase: "finished" });
+  });
+
+  it("keeps a swallowed artifact write failure unknown and gives publication no mutable sandbox capability", async () => {
+    const f = await fixture(); const first = await f.input();
+    const failure = new Error("Files commit response lost");
+    const write = vi.fn(async () => { throw failure; });
+    const publishArtifacts = vi.fn(async (input: Parameters<NonNullable<DefaultNodeManagedSessionRunnerDependencies["publishArtifacts"]>>[0]) => {
+      expect(input).not.toHaveProperty("sandbox");
+      expect(Object.keys(input.outputs).sort()).toEqual(["listPaths", "read"]);
+      expect((await f.store.getCurrent(scope))?.resource?.use).toBeNull();
+      await input.write(write).catch(() => undefined);
+      await expect(input.write(write)).rejects.toThrow("requires reconciliation");
+    });
+    const runner = f.runner("node-a", { publishArtifacts });
+    await runner.start(first);
+    await expect(runner.accept(first)).rejects.toThrow("Artifact write outcome requires reconciliation");
+    expect(write).toHaveBeenCalledOnce();
+    expect(await f.sql.prepare("SELECT phase FROM managed_session_execution_dispatches").first()).toEqual({ phase: "unknown" });
+    expect(await f.dispatches.recoverTerminal(first.executionFence, true)).toBe(false);
+    expect(await f.dispatches.begin((await f.input("later")).executionFence)).toBe(false);
   });
 
   it("does not dispatch a second confirmed tool after the first outcome becomes unknown", async () => {

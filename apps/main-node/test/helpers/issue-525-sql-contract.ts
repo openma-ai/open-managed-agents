@@ -6,6 +6,7 @@ import { sessionSandboxBindingConformance } from "../../../../packages/session-r
 import { sessionExecutionStoreConformance } from "../../../../packages/session-runtime-contract/test/execution-store-conformance";
 import { NodeSessionSandboxLifecycle } from "../../../../packages/control-plane-node/src/lib/node-session-sandbox-lifecycle";
 import { NodeSessionSandboxLeaseWorker } from "../../../../packages/control-plane-node/src/lib/node-session-sandbox-lease-worker";
+import { NodeSessionExecutionDispatches } from "../../../../packages/control-plane-node/src/lib/node-session-execution-dispatches";
 
 type Run = (sql: SqlClient, other: SqlClient) => Promise<void>;
 
@@ -26,6 +27,41 @@ export function issue525SqlContract(dialect: "sqlite" | "postgres" | "mysql", wi
       workspaceId: "workspace", sessionId: "session", id, laneId, admittedAt: at(n),
       events: [{ id, type: "user.message" as const, processedAt: null, content: [{ type: "text" as const, text: id }] }],
     } });
+
+    it("recovers interrupted publication reads but never an indeterminate Files write or a stale owner's confirmation", () => withClients(async (sql, other) => {
+      let clock = 1_001_000; const now = () => new Date(clock);
+      const first = new SqlSessionExecutionCoordinator(sql);
+      const second = new SqlSessionExecutionCoordinator(other);
+      const dispatches = new NodeSessionExecutionDispatches(sql, now);
+      const replacement = new NodeSessionExecutionDispatches(other, now);
+      await dispatches.ensureSchema(dialect);
+      try {
+        await first.admit(input("publication", 0));
+        const claim = await first.claim({ ownerId: "a", attemptId: "a", claimedAt: at(1), leaseTtlMs: 2000 });
+        if (claim.type !== "claimed") throw new Error("Expected first claim");
+        expect(await dispatches.begin(claim.fence)).toBe(true);
+        await dispatches.drained(claim.fence);
+        expect(await dispatches.recoverTerminal(claim.fence, true)).toBe(true);
+        clock = 1_004_000;
+        const next = await second.claim({ ownerId: "b", attemptId: "b", claimedAt: at(4), leaseTtlMs: 2000 });
+        if (next.type !== "claimed") throw new Error("Expected replacement");
+        expect(await replacement.recoverTerminal(next.fence)).toBe(false);
+        expect(await replacement.recoverTerminal(next.fence, true)).toBe(true);
+        expect(await dispatches.publicationWrite(claim.fence, false)).toBe(false);
+        await dispatches.finish(claim.fence, true);
+        expect(await replacement.publicationWrite(next.fence, false)).toBe(true);
+        // Lost upload response: even a later canonical owner cannot replay it.
+        clock = 1_007_000;
+        const last = await first.claim({ ownerId: "c", attemptId: "c", claimedAt: at(7), leaseTtlMs: 2000 });
+        if (last.type !== "claimed") throw new Error("Expected last claim");
+        expect(await replacement.publicationWrite(next.fence, true)).toBe(false);
+        expect(await dispatches.recoverTerminal(last.fence, true)).toBe(false);
+        expect(await dispatches.begin(last.fence)).toBe(false);
+      } finally {
+        await sql.prepare("DELETE FROM managed_session_execution_dispatches").run();
+        await sql.prepare("DELETE FROM managed_session_dispatch_guards").run();
+      }
+    }));
 
     it("serializes cross-lane claims on independent connections and orders admission despite reversed clocks", () => withClients(async (sql, other) => {
       const first = new SqlSessionExecutionCoordinator(sql, { serializeSessionClaims: true });

@@ -54,7 +54,7 @@ export class NodeSessionExecutionDispatches {
 
   /** Claim only the idempotent post-terminal work. Lock the canonical lease
    * and transfer evidence atomically; an old owner cannot finish this claim. */
-  async recoverTerminal(fence: SessionExecutionFence): Promise<boolean> {
+  async recoverTerminal(fence: SessionExecutionFence, readOnlyPublication = false): Promise<boolean> {
     const active = `workspace_id = ? AND session_id = ? AND id = ? AND state = 'running'
       AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?`;
     const args = [fence.workspaceId, fence.sessionId, fence.executionId, fence.attemptId,
@@ -62,12 +62,32 @@ export class NodeSessionExecutionDispatches {
     const results = await this.sql.batch([
       this.sql.prepare(`UPDATE managed_session_executions SET revision = revision + 1 WHERE ${active}`).bind(...args),
       this.sql.prepare(`UPDATE managed_session_execution_dispatches
-        SET phase = 'started', attempt_id = ?, owner_id = ?, generation = ?
+        SET phase = ?, attempt_id = ?, owner_id = ?, generation = ?
         WHERE workspace_id = ? AND session_id = ? AND execution_id = ?
-          AND phase IN ('drained', 'finished') AND EXISTS
+          AND (phase IN ('drained', 'finished') OR (phase = 'publishing' AND ? = 1)) AND EXISTS
           (SELECT 1 FROM managed_session_executions WHERE ${active})`).bind(
-            fence.attemptId, fence.ownerId, fence.generation, fence.workspaceId, fence.sessionId,
-            fence.executionId, ...args),
+            readOnlyPublication ? "publishing" : "started", fence.attemptId, fence.ownerId, fence.generation, fence.workspaceId, fence.sessionId,
+            fence.executionId, readOnlyPublication ? 1 : 0, ...args),
+    ]);
+    return results[1]?.meta.changes === 1;
+  }
+
+  /** Read-only publication may be resumed. Every Files write first leaves that
+   * state; only a confirmed response restores it. A lost write response must
+   * never be mistaken for a harmless interrupted read. */
+  async publicationWrite(fence: SessionExecutionFence, confirmed: boolean): Promise<boolean> {
+    const active = `workspace_id = ? AND session_id = ? AND id = ? AND state = 'running'
+      AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?`;
+    const args = [fence.workspaceId, fence.sessionId, fence.executionId, fence.attemptId,
+      fence.ownerId, fence.generation, this.now().getTime()];
+    const results = await this.sql.batch([
+      this.sql.prepare(`UPDATE managed_session_executions SET revision = revision + 1 WHERE ${active}`).bind(...args),
+      this.sql.prepare(`UPDATE managed_session_execution_dispatches SET phase = ?
+        WHERE workspace_id = ? AND session_id = ? AND execution_id = ?
+          AND attempt_id = ? AND owner_id = ? AND generation = ? AND phase = ?
+          AND EXISTS (SELECT 1 FROM managed_session_executions WHERE ${active})`).bind(
+            confirmed ? "publishing" : "started", fence.workspaceId, fence.sessionId, fence.executionId,
+            fence.attemptId, fence.ownerId, fence.generation, confirmed ? "started" : "publishing", ...args),
     ]);
     return results[1]?.meta.changes === 1;
   }
@@ -82,7 +102,7 @@ export class NodeSessionExecutionDispatches {
     await this.sql.prepare(`UPDATE managed_session_execution_dispatches SET phase = ?
       WHERE workspace_id = ? AND session_id = ? AND execution_id = ?
         AND attempt_id = ? AND owner_id = ? AND generation = ?
-        AND phase IN ('started', 'drained')`).bind(phase, fence.workspaceId,
+        AND phase IN ('started', 'drained', 'publishing')`).bind(phase, fence.workspaceId,
       fence.sessionId, fence.executionId, fence.attemptId, fence.ownerId, fence.generation).run();
   }
 }
