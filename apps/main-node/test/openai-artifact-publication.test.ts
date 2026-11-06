@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { resourcesFixture } from "../../../packages/openai-agents-compat/test/helpers/resources";
 import { encodeResourceMetadata } from "../../../packages/openai-agents-compat/src/resource-metadata";
 import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
+import { ProcessInvariantError } from "../../../packages/control-plane-node/src/lib/process-invariant";
 
 /** `sessionExecutionEventBatches` splits each event batch per lane and uses the
  * id of the lane's first event other than `system.message` as the execution id;
@@ -36,6 +37,14 @@ async function fixture(mode = "completed", environmentType = "openai_hosted", ro
 }
 
 describe("Node OpenAI immutable output publication", () => {
+  it("does not downgrade an explicit shared invariant into a reported publication failure", async () => {
+    const f = await fixture();
+    const failure = new Error("publication read failed", { cause: new ProcessInvariantError("shared ownership corrupt") });
+    f.sandbox.readFileBytes.mockRejectedValue(failure);
+    const report = vi.fn();
+    await expect(withReportedArtifactPublication(f.publish, report)(f.input)).rejects.toBe(failure);
+    expect(report).not.toHaveBeenCalled();
+  });
   it("reports failed publication explicitly without rejecting an already committed execution", async () => {
     const f = await fixture();
     const failure = new Error("Immutable output storage unavailable");

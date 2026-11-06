@@ -1,10 +1,11 @@
 import type { Session, SessionRuntimeHistoryApplicationPort } from "@open-managed-agents/managed-agents-application";
 import type { FilesApplicationPort } from "@open-managed-agents/managed-agents-application/ports/files";
 import type { Logger } from "@open-managed-agents/observability";
-import { createOpenAIArtifactPublisher, outputPathsFromManifest, readManagedSessionMappingMetadata, withReportedArtifactPublication as reportPublication, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
+import { createOpenAIArtifactPublisher, outputPathsFromManifest, readManagedSessionMappingMetadata, type ResourceSecretSealer } from "@open-managed-agents/openai-agents-compat";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { DefaultNodeManagedSessionRunnerDependencies } from "./lib/node-managed-session-runner";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import { hasProcessInvariantFailure } from "./lib/process-invariant";
 
 export interface NodeOpenAIArtifactPublisherDependencies {
   historyForWorkspace(workspaceId: string): SessionRuntimeHistoryApplicationPort;
@@ -28,7 +29,22 @@ export interface ReadOnlyArtifactPublicationInput {
 /** Publication follows terminal persistence, so a copy failure is reported
  * independently and must not change the completed model execution. */
 export function withReportedArtifactPublication<I extends { workspaceId: string; session: { id: string }; executionFence: { executionId: string } }>(publish: (input: I) => Promise<void>, onError: (error: unknown, input: I) => void | Promise<void>): (input: I) => Promise<void> {
-  return reportPublication(publish, onError);
+  return async input => {
+    try { await publish(input); }
+    catch (error) {
+      // The attempt owner must see this explicit process-fatal evidence even
+      // though ordinary artifact-copy failures leave the completed turn alone.
+      if (hasProcessInvariantFailure(error)) throw error;
+      try { await onError(error, input); }
+      catch (reportingError) {
+        if (hasProcessInvariantFailure(reportingError)) throw reportingError;
+        console.error("Artifact publication error reporter failed", {
+          workspaceId: input.workspaceId, sessionId: input.session.id,
+          executionId: input.executionFence.executionId, error, reportingError,
+        });
+      }
+    }
+  };
 }
 
 /** Node binding of the shared Agents API artifact publisher: outputs are
