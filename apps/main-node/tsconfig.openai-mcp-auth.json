@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node", "@cloudflare/workers-types"],
+    "noEmit": true
+  },
+  "include": ["test/openai-session-mcp-auth.test.ts"],
+  "exclude": ["node_modules", "dist"]
+}
