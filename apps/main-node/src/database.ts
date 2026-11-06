@@ -5,6 +5,7 @@
 // The drivers live in the per-dialect adapter packages; this module only
 // loads the one the config selects.
 
+import { fileURLToPath, URL } from "node:url";
 import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/sql";
 import type { NodeDatabase } from "@open-managed-agents/node-database";
 
@@ -60,8 +61,8 @@ async function connect(config: DatabaseConfig): Promise<NodeDatabase> {
 export async function migrateNodeDatabase(database: NodeDatabase): Promise<void> {
   const { dialect, sql } = database;
   const migrationsFolder = dialect === "postgres"
-    ? new URL("../migrations", import.meta.url).pathname
-    : new URL("../migrations-sqlite", import.meta.url).pathname;
+    ? fileURLToPath(new URL("../migrations", import.meta.url))
+    : fileURLToPath(new URL("../migrations-sqlite", import.meta.url));
   await reconcilePiModelConfigMigration(sql, dialect);
   await moveLegacyAgents(sql, dialect);
   await database.applyMigrations(migrationsFolder);

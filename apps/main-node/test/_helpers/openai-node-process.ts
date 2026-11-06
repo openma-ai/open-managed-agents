@@ -13,7 +13,13 @@ export const FIXTURE_MODEL_HANDLES = ["claude-sonnet-4-20250514"];
 
 export type ModelReply = { text: string } | { name: string; input: Record<string, unknown> } | null;
 export type OpenAINodeModel = (input: Record<string, any>) => Promise<ModelReply> | ModelReply;
-export interface OpenAINodeOptions { startupTimeoutMs?: number }
+export interface OpenAINodeOptions {
+  startupTimeoutMs?: number;
+  /** Trusted scripted tools execute real commands inside a private workdir. */
+  localSandbox?: boolean;
+  /** Test-only barrier allows SIGKILL between two persisted artifacts. */
+  publicationCrashBarrier?: boolean;
+}
 
 export interface OpenAINodeProcess {
   /** These getters follow the new listening port after restart(). */
@@ -134,12 +140,17 @@ export async function bootOpenAINode(reply: OpenAINodeModel = defaultReply, opti
     const start = async () => {
       const currentLogs: string[] = [];
       let spawnError: Error | undefined;
-      const child = spawn(join(root, "apps/main-node/node_modules/.bin/tsx"), [join(root, "apps/main-node/src/index.ts")], {
+      const entry = options.publicationCrashBarrier
+        ? "apps/main-node/test/_helpers/artifact-publication-process.ts"
+        : "apps/main-node/src/index.ts";
+      const child = spawn(join(root, "apps/main-node/node_modules/.bin/tsx"), [join(root, entry)], {
         ...detachedProcessOptions, cwd: root, env: {
           ...inherited, PORT: "0", HOST: "127.0.0.1", DATABASE_URL: "", OPENMA_PROCESS_MODE: "standalone",
           DATABASE_PATH: join(directory, "oma.db"), AUTH_DATABASE_PATH: join(directory, "auth.db"), SANDBOX_WORKDIR: join(directory, "sandboxes"), MEMORY_BLOB_DIR: join(directory, "memories"), FILES_BLOB_DIR: join(directory, "files"), SESSION_OUTPUTS_DIR: join(directory, "outputs"),
           AUTH_DISABLED: "1", PLATFORM_ROOT_SECRET: "openai-node-test-configuration-secret", NODE_ENV: "test", DREAM_CURATOR_MODE: "dedup",
           MEMORY_S3_ENDPOINT: "", FILES_S3_ENDPOINT: "", SANDBOX_PROVIDER: "litebox",
+          ...(options.localSandbox ? { OPENMA_TEST_SANDBOX_PROVIDER: "local-subprocess" } : {}),
+          ...(options.publicationCrashBarrier ? { ARTIFACT_TEST_BARRIER_DIR: directory } : {}),
         }, stdio: ["ignore", "pipe", "pipe"],
       });
       processHandle = child;
