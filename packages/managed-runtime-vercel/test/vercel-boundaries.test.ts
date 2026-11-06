@@ -1,5 +1,6 @@
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
 import { PassThrough } from "node:stream";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -107,6 +108,35 @@ function acquisition(signal = new AbortController().signal) {
 }
 
 describe("Vercel provider boundary contracts", () => {
+  it("isolates get-or-create names and rejects an old allocation targeting the replacement", async () => {
+    const boxes = new Map<string, VercelSandboxSdkPort>();
+    const client: VercelSdkPort = {
+      getOrCreate: async request => {
+        const value = boxes.get(request.name) ?? sandbox({ name: request.name, tags: request.tags });
+        boxes.set(request.name, value);
+        return value;
+      },
+      get: async request => boxes.get(request.name)!,
+    };
+    const provider = createVercelProvider({ client });
+    expect(provider.allocationIsolation).toBe(true);
+    const context = { ...scope, workdir: "/workspace", allocationId: "allocation-a" };
+    await expect(provider.create({ ...context, workspaceId: undefined }, {}, acquisition())).rejects.toThrow("allocation identity");
+    const a = await provider.create(context, {}, acquisition());
+    const b = await provider.create({ ...context, allocationId: "allocation-b" }, {}, acquisition());
+    expect(a.runtimeHandle().runtimeId).not.toBe(b.runtimeHandle().runtimeId);
+    const lease = JSON.parse(JSON.stringify({ ...a.runtimeHandle(), allocation: { id: context.allocationId, scope, ownerId: fence.ownerId, generation: fence.generation } }));
+    const restarted = createVercelManagedRuntime({ client, leaseTtlMs: 100 });
+    await expect(restarted.sandbox.reap({ scope, lease: { ...lease, runtimeId: b.runtimeHandle().runtimeId }, reason: "completed" })).rejects.toThrow("allocation identity");
+    await restarted.sandbox.reap({ scope, lease, reason: "completed" });
+    expect(boxes.get(a.runtimeHandle().runtimeId)!.delete).toHaveBeenCalledOnce();
+    expect(boxes.get(b.runtimeHandle().runtimeId)!.delete).not.toHaveBeenCalled();
+    await expect(provider.resume(b.runtimeHandle(), context, {}, acquisition())).rejects.toThrow("allocation identity");
+    await provider.create({ ...context, allocationId: "snapshot-allocation" }, {}, {
+      ...acquisition(), environment: { type: "base", identity: "snapshot", artifact: { type: "snapshot", reference: "checkpoint" } },
+    });
+  });
+
   it("adapts official SDK credentials for create and resume", async () => {
     vercelFixtureCalls.length = 0;
     const credentials = { token: "token", teamId: "team", projectId: "project" };
@@ -271,7 +301,10 @@ describe("Vercel provider boundary contracts", () => {
       .resolves.toBeInstanceOf(VercelRuntime);
     await expect(provider.restore({} as never, {} as never, {}, acquisition())).rejects.toThrow("does not advertise portable workspace restore");
 
-    const lease = { leaseId: "lease", runtimeId: name, provider: "vercel", expiresAt: fence.expiresAt, handle: { provider: "vercel", runtimeId: name }, sandbox: {} as never };
+    const allocation = { id: "allocation", scope, ownerId: fence.ownerId, generation: fence.generation };
+    const allocationName = `oma-${createHash("sha256").update(JSON.stringify(["vercel", scope.workspaceId, scope.environmentId, scope.sessionId, allocation.id])).digest("hex").slice(0, 32)}`;
+    Object.defineProperty(value, "name", { value: allocationName, configurable: true });
+    const lease = { allocation, runtimeId: allocationName, provider: "vercel" };
     const live = createVercelManagedRuntime({ client: sdk(value), leaseTtlMs: 100 });
     await live.sandbox.reap({ scope, lease, reason: "orphan" } as never);
     expect(value.delete).toHaveBeenCalledWith({ deleteOrphanSnapshots: true });
@@ -285,7 +318,7 @@ describe("Vercel provider boundary contracts", () => {
         { scope, lease, reason: "orphan" } as never,
       )).rejects.toBe(error);
     }
-    const foreign = sandbox({ tags: {} });
+    const foreign = sandbox({ name: allocationName, tags: {} });
     await expect(createVercelManagedRuntime({ client: sdk(foreign), leaseTtlMs: 100 }).sandbox.reap(
       { scope, lease, reason: "orphan" } as never,
     )).rejects.toThrow("ownership tags");

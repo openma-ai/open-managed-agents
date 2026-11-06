@@ -107,6 +107,10 @@ export function createE2BManagedRuntime(options: E2BManagedRuntimeOptions) {
     return { ...env, SANDBOX_IMAGE: artifact.reference };
   };
   const provider: ProviderManagedRuntimeProviderPort<E2BSandboxExecutor> = {
+    // The official adapter uses Sandbox.create for both create and portable
+    // restore, receiving a fresh provider-assigned id each time. Custom
+    // compatible services must explicitly make the same guarantee.
+    allocationIsolation: options.provider === undefined || options.provider.allocationIsolation === true,
     create: (context, env, acquisition) =>
       selectedProvider.create(context, withEnvironment(env, acquisition), acquisition),
     resume: (handle, context, env, acquisition) =>
@@ -151,6 +155,23 @@ export function createE2BManagedRuntime(options: E2BManagedRuntimeOptions) {
     ...(options.credentialEgress === undefined
       ? {}
       : { credentialEgress: options.credentialEgress }),
+    reapRuntime: async ({ lease, context, environment: factoryEnvironment }) => {
+      let runtime: E2BSandboxExecutor;
+      try {
+        runtime = await selectedProvider.resume(lease, context, factoryEnvironment);
+      } catch (error) {
+        if (typeof error === "object" && error !== null
+          && (("status" in error && error.status === 404)
+            || ("statusCode" in error && error.statusCode === 404)
+            || ("name" in error && error.name === "NotFoundError"))) return;
+        throw error;
+      }
+      const handle = runtime.runtimeHandle();
+      if (handle.provider !== lease.provider || handle.runtimeId !== lease.runtimeId) {
+        throw new Error("E2B orphan reconnect returned a different runtime identity");
+      }
+      await runtime.destroy();
+    },
     drivers: ["ama_worker"],
   });
 }

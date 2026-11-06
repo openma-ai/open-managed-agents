@@ -47,6 +47,25 @@ describe("E2B SDK v2 adapter", () => {
     sdk.connect.mockClear();
   });
 
+  it("rebinds a serialized physical handle through the factory without allocating on failure", async () => {
+    const context = { sessionId: "logical-session", allocationId: "allocation-a", workdir: "/unused" };
+    const environment = { E2B_API_KEY: "test-secret" };
+    const binding = sandboxFactory.runtimeBinding!;
+    const created = await sandboxFactory(context, environment);
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(created)));
+    expect(handle).toEqual({ provider: "e2b", runtimeId: "created:base" });
+    expect(binding.scope).toBe("provider");
+    expect(JSON.stringify(handle)).not.toContain("test-secret");
+    sdk.connect.mockImplementationOnce(async id => makeSdkSandbox(id));
+    const resumed = await binding.resume(handle, context, environment);
+    expect(binding.getHandle(resumed)).toEqual(handle);
+    expect(sdk.connect).toHaveBeenLastCalledWith(handle.runtimeId, expect.objectContaining({ apiKey: "test-secret" }));
+    sdk.connect.mockRejectedValueOnce(new Error("resource no longer exists"));
+    await expect(binding.resume(handle, context, environment)).rejects.toThrow("resource no longer exists");
+    expect(sdk.create).toHaveBeenCalledTimes(1);
+    await expect(binding.resume({ ...handle, provider: "other" }, context, environment)).rejects.toThrow("incompatible");
+  });
+
   it("passes the template and self-hosted endpoints using the official v2 shape", async () => {
     await sandboxFactory(
       { sessionId: "session_e2b", workdir: "/tmp/unused" },

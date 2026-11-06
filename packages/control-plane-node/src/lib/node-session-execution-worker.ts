@@ -24,7 +24,8 @@ import {
 import { markSessionEventsProcessed } from "@open-managed-agents/managed-agents-application";
 import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
-import { Effect, Fiber } from "effect";
+import { ConsumerRuntime } from "@open-managed-agents/queue/consumer-runtime";
+import { Effect } from "effect";
 import { interruptFiber, runSupervised } from "./supervised-fiber.js";
 
 export interface RunNodeSessionExecution extends AcceptedSessionEvents {
@@ -53,6 +54,8 @@ export interface NodeSessionExecutionRunHooks {
 export interface NodeSessionExecutionRuntime {
   run(input: RunNodeSessionExecution, hooks?: NodeSessionExecutionRunHooks): Promise<void>;
   cancel(input: CancelNodeSessionExecution): Promise<void>;
+  /** Reclaims attempt-local bookkeeping even when cancellation prevented accept. */
+  finished?(input: Omit<CancelNodeSessionExecution, "reason">): void | Promise<void>;
 }
 
 export interface NodeSessionExecutionWorkerDependencies {
@@ -80,7 +83,7 @@ interface ActiveExecution {
   context: SessionExecutionContext | null;
   cancelled: boolean;
   leaseLost: boolean;
-  promise: Promise<void>;
+  stopHeartbeat?: () => Promise<void>;
 }
 
 function errorMessage(error: unknown): string {
@@ -95,50 +98,85 @@ function errorMessage(error: unknown): string {
 export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
   readonly #leaseTtlMs: number;
   readonly #heartbeatIntervalMs: number;
-  readonly #pollIntervalMs: number;
-  readonly #maxConcurrent: number;
   readonly #active = new Map<string, ActiveExecution>();
-  #polling: Promise<void> | null = null;
-  #pollFiber: Fiber.RuntimeFiber<void, never> | null = null;
+  readonly #consumer: ConsumerRuntime<ActiveExecution>;
+  #shutdown: Promise<void> | null = null;
+  #abandonForShutdown = false;
 
   constructor(
     private readonly dependencies: NodeSessionExecutionWorkerDependencies,
   ) {
     this.#leaseTtlMs = dependencies.leaseTtlMs ?? 30_000;
     this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? 10_000;
-    this.#pollIntervalMs = dependencies.pollIntervalMs ?? 1_000;
-    this.#maxConcurrent = dependencies.maxConcurrent ?? 8;
     if (this.#heartbeatIntervalMs >= this.#leaseTtlMs) {
       throw new Error("Session Execution heartbeat must be shorter than its lease");
     }
-    if (this.#maxConcurrent < 1 || !Number.isInteger(this.#maxConcurrent)) {
-      throw new Error("Session Execution maxConcurrent must be a positive integer");
-    }
+    this.#consumer = new ConsumerRuntime({
+      claim: () => this.#claim(),
+      run: (active) => this.#runClaimed(active),
+      maxConcurrent: dependencies.maxConcurrent,
+      pollIntervalMs: dependencies.pollIntervalMs,
+      onError: (error) => this.#reportError(error),
+    });
   }
 
   start(): void {
-    if (this.#pollFiber !== null) return;
-    this.#pollFiber = runSupervised(
-      Effect.gen(this, function* () {
-        while (true) {
-          yield* Effect.tryPromise({
-            try: () => this.poll(),
-            catch: (error: unknown) => error,
-          }).pipe(Effect.catchAll((error) => Effect.sync(() => {
-            this.#reportError(error);
-          })));
-          yield* Effect.sleep(this.#pollIntervalMs);
-        }
-      }),
-      (error) => this.#reportError(error),
-    );
+    if (this.#shutdown !== null) throw new Error("Session execution worker has been shut down");
+    this.#consumer.start();
   }
 
+  /** Stop new claims; active runs and an already-issued claim still finish
+   * through the usual renewal/settlement path. Call waitForIdle() to drain. */
   stop(): void {
-    const fiber = this.#pollFiber;
-    if (fiber === null) return;
-    this.#pollFiber = null;
-    void interruptFiber(fiber);
+    this.#consumer.stop();
+  }
+
+  /** Final process shutdown. Give active work a bounded chance to settle,
+   * then revoke local execution use and stop renewal. Unfinished rows keep
+   * their current lease and recover through the coordinator's expiry policy;
+   * this never cancels a Session or destroys its sandbox. */
+  shutdown(options: { drainTimeoutMs?: number; cancelTimeoutMs?: number } = {}): Promise<void> {
+    if (this.#shutdown !== null) return this.#shutdown;
+    const drainTimeoutMs = options.drainTimeoutMs ?? 10_000;
+    const cancelTimeoutMs = options.cancelTimeoutMs ?? 5_000;
+    for (const value of [drainTimeoutMs, cancelTimeoutMs]) {
+      if (!Number.isSafeInteger(value) || value < 0 || value > 2_147_483_647) {
+        throw new Error("Session execution shutdown deadlines must be bounded non-negative integers");
+      }
+    }
+    this.stop();
+    this.#shutdown = this.#finishShutdown(drainTimeoutMs, cancelTimeoutMs);
+    return this.#shutdown;
+  }
+
+  async #finishShutdown(drainTimeoutMs: number, cancelTimeoutMs: number): Promise<void> {
+    if (await this.#waitBounded(this.waitForIdle(), drainTimeoutMs)) return;
+    this.#abandonForShutdown = true;
+    const cancellations = [...this.#active.values()].map(async (active) => {
+      active.leaseLost = true;
+      await Promise.all([
+        active.stopHeartbeat?.(),
+        this.#cancel(active, "lease_lost"),
+      ]);
+    });
+    const stopping = Promise.all(cancellations.map((pending) => pending.catch((error: unknown) => {
+      this.#reportError(error);
+    }))).then(() => undefined);
+    if (!await this.#waitBounded(stopping, cancelTimeoutMs)) {
+      this.#reportError(new Error("Session execution cancellation exceeded the shutdown deadline"));
+    }
+  }
+
+  async #waitBounded(pending: Promise<void>, timeoutMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        pending.then(() => true, (error: unknown) => { this.#reportError(error); return false; }),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   /** Per-session monotonic clock shared with the managed runtime (#398):
@@ -261,72 +299,52 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
   }
 
   poll(): Promise<void> {
-    if (this.#polling !== null) return this.#polling;
-    const polling = this.#fillCapacity();
-    this.#polling = polling;
-    const clear = () => {
-      this.#polling = null;
+    return this.#consumer.poll();
+  }
+
+  waitForIdle(): Promise<void> {
+    return this.#consumer.waitForIdle();
+  }
+
+  async #claim(): Promise<ActiveExecution | null> {
+    const claimed = await this.dependencies.coordinator.claim({
+      ownerId: this.dependencies.ownerId,
+      attemptId: this.dependencies.ids.nextAttemptId(),
+      claimedAt: this.dependencies.clock.now().toISOString(),
+      leaseTtlMs: this.#leaseTtlMs,
+    });
+    if (claimed.type === "empty") return null;
+    const active: ActiveExecution = {
+      execution: claimed.execution,
+      fence: claimed.fence,
+      context: null,
+      cancelled: false,
+      leaseLost: false,
     };
-    // `finally()` would create a second rejected Promise when polling fails.
-    // Observe both branches explicitly so the background caller owns the only
-    // rejection and can report it through onError.
-    void polling.then(clear, clear);
-    return polling;
+    this.#active.set(this.#executionKey(active), active);
+    return active;
   }
 
-  async waitForIdle(): Promise<void> {
-    while (true) {
-      await this.poll();
-      const active = [...this.#active.values()].map((entry) => entry.promise);
-      if (active.length === 0) return;
-      await Promise.allSettled(active);
-    }
+  #executionKey(active: ActiveExecution): string {
+    return JSON.stringify([active.execution.workspaceId, active.execution.id]);
   }
 
-  async #fillCapacity(): Promise<void> {
-    while (this.#active.size < this.#maxConcurrent) {
-      const claimedAt = this.dependencies.clock.now().toISOString();
-      const claimed = await this.dependencies.coordinator.claim({
-        ownerId: this.dependencies.ownerId,
-        attemptId: this.dependencies.ids.nextAttemptId(),
-        claimedAt,
-        leaseTtlMs: this.#leaseTtlMs,
-      });
-      if (claimed.type === "empty") return;
-      const key = JSON.stringify([
-        claimed.execution.workspaceId,
-        claimed.execution.id,
-      ]);
-      const active: ActiveExecution = {
-        execution: claimed.execution,
-        fence: claimed.fence,
-        context: null,
-        cancelled: false,
-        leaseLost: false,
-        promise: Promise.resolve(),
-      };
-      this.#active.set(key, active);
-      const fiber = runSupervised(
-        Effect.tryPromise({
-          try: () => this.#run(active),
-          catch: (error: unknown) => error,
-        }).pipe(
-          Effect.ensuring(Effect.sync(() => {
-            if (this.#active.get(key) === active) this.#active.delete(key);
-            this.#pollInBackground();
-          })),
-          Effect.catchAll((error) => Effect.sync(() => {
-            this.#reportError(error);
-          })),
-        ),
-        (error) => this.#reportError(error),
-      );
-      active.promise = Effect.runPromise(Fiber.join(fiber)).then(
-        () => undefined,
-        (error: unknown) => {
-          this.#reportError(error);
-        },
-      );
+  async #runClaimed(active: ActiveExecution): Promise<void> {
+    try {
+      // A claim issued before stop() may arrive after the shutdown deadline.
+      // Track it, but do not start work or renew a lease against disposed stores.
+      if (this.#abandonForShutdown) {
+        active.leaseLost = true;
+        return;
+      }
+      await this.#run(active);
+    } finally {
+      try {
+        await this.dependencies.runtime.finished?.({ workspaceId: active.execution.workspaceId,
+          sessionId: active.execution.sessionId, executionId: active.execution.id, fence: active.fence });
+      } catch (error) { this.#reportError(error); }
+      const key = this.#executionKey(active);
+      if (this.#active.get(key) === active) this.#active.delete(key);
     }
   }
 
@@ -349,6 +367,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       }),
       (error) => this.#reportError(error),
     );
+    active.stopHeartbeat = () => interruptFiber(heartbeat);
     let outcome: "completed" | "failed" | "cancelled" = "completed";
     let failure: string | undefined;
     let holdQueuedOnLane = false;
@@ -435,6 +454,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       }
       return;
     }
+    if (active.leaseLost) return;
     if (renewed.type === "lost") {
       active.leaseLost = true;
       this.#logLeaseLost(active);
@@ -476,19 +496,6 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
     } catch (cancelError) {
       this.#reportError(cancelError);
     }
-  }
-
-  #pollInBackground(): void {
-    const polling = this.poll();
-    runSupervised(
-      Effect.tryPromise({
-        try: () => polling,
-        catch: (error: unknown) => error,
-      }).pipe(Effect.catchAll((error) => Effect.sync(() => {
-        this.#reportError(error);
-      }))),
-      (error) => this.#reportError(error),
-    );
   }
 
   #reportError(error: unknown): void {

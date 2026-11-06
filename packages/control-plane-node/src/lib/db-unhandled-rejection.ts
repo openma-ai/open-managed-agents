@@ -1,8 +1,5 @@
 import type { Logger, MetricsRecorder } from "@open-managed-agents/observability";
-import {
-  isLeaseSafeFailure,
-  processFailureRecord,
-} from "@open-managed-agents/sql-client";
+import { processFailureRecord } from "@open-managed-agents/sql-client";
 
 export interface DbUnhandledRejectionNet {
   logger: Logger;
@@ -15,8 +12,9 @@ let installed = false;
 
 /**
  * Last line of defence. Background loops must already catch DB errors.
- * A stray rejection still logs one structured line. Driver blips and
- * application deadlines do not exit; every other rejection does, outside tests.
+ * Every unowned rejection/exception is fatal. Recoverable DB failures belong
+ * inside their owning operation, never at this process-wide last resort.
+ * https://nodejs.org/docs/latest-v24.x/api/process.html#warning-using-uncaughtexception-correctly
  */
 export function installDbUnhandledRejectionNet(
   deps: DbUnhandledRejectionNet,
@@ -45,11 +43,21 @@ export function handleProcessFailure(
   deps: DbUnhandledRejectionNet,
   exit: (code: number) => void = (code) => process.exit(code),
 ): void {
-  const record = processFailureRecord(kind, reason);
-  const line = JSON.stringify({ msg: "process.failure", ...record });
-  deps.logger.fatal({ ...record, op: record.op }, line);
-  deps.metrics?.counter("oma_db_unhandled_rejections_total", 1, { tag: record.errorTag });
-  if (isLeaseSafeFailure(reason)) return;
-  if (process.env.NODE_ENV === "test") return;
-  exit(1);
+  try {
+    const record = processFailureRecord(kind, reason);
+    try {
+      deps.logger.fatal({ ...record, op: record.op }, JSON.stringify({ msg: "process.failure", ...record }));
+    } catch {
+      // Logging is best effort at the process-fatal boundary.
+    }
+    try {
+      deps.metrics?.counter("oma_db_unhandled_rejections_total", 1, { tag: record.errorTag });
+    } catch {
+      // A broken recorder cannot turn a fatal error into continued execution.
+    }
+  } catch {
+    // Even malformed failure objects must not prevent termination.
+  } finally {
+    exit(1);
+  }
 }

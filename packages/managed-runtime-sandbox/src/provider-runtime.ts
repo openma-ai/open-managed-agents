@@ -9,6 +9,7 @@ import type {
   HarnessSupervisorEvent,
   HarnessSupervisorTransportPort,
   ManagedSandboxLease,
+  ManagedSandboxAllocation,
   ManagedSandboxPort,
   ManagedRuntimePlan,
   RuntimeResourceScope,
@@ -131,6 +132,10 @@ export type ProviderRuntimeEnvironmentResolver<Runtime extends ProviderRuntime> 
  */
 export interface ProviderManagedRuntimeProviderPort<Runtime extends ProviderRuntime>
   extends SandboxProviderPort<Runtime> {
+  /** create/portable restore must allocate a physical resource that is never
+   * shared across distinct context.allocationId values, including after delete.
+   * Merely accepting an allocationId argument does not satisfy this contract. */
+  readonly allocationIsolation?: boolean;
   create(
     ctx: SandboxFactoryContext,
     env: SandboxFactoryEnv,
@@ -237,7 +242,10 @@ export interface ProviderManagedRuntimeOptions<Runtime extends ProviderRuntime> 
       reason: CredentialEgressRevokeReason;
     }): Promise<void>;
   };
-  /** Provider-specific reconnect-and-destroy path for persisted orphans. */
+  /** Provider-specific reconnect-and-destroy path for persisted orphans.
+   * Must target the exact immutable allocation in context.allocationId and
+   * lease.runtimeId; a Session-name lookup or ownership check followed by a
+   * delete of a reusable resource is not an isolation guarantee. */
   reapRuntime?: (input: {
     scope: RuntimeResourceScope;
     lease: ManagedSandboxLease;
@@ -720,13 +728,98 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
   const bindingRuntime = new Map<string, string>();
   const outputRuntime = new Map<string, string>();
   const suspended = new Map<string, SandboxCheckpointHandle>();
+  // A provider id must never identify a second physical incarnation. Keep
+  // tombstones even after detaching SDK objects so local ABA reuse fails closed.
+  const knownRuntimeIds = new Set<string>();
+  const retiring = new Set<string>();
   const terminated = new Set<string>();
+  const allocations = new Map<string, {
+    allocation: ManagedSandboxAllocation;
+    fenceIdentity: string;
+  }>();
   const egressBindings = new Map<string, {
     scope: RuntimeResourceScope;
     generation: number;
     requirement: Exclude<CredentialEgressRequirement, "disabled">;
     runtimeId?: string;
   }>();
+
+  function assertAllocationIsolation(): void {
+    if (options.provider.allocationIsolation !== true) {
+      throw new Error(`${options.providerName} does not declare independent allocation isolation`);
+    }
+  }
+
+  function sameScope(left: RuntimeResourceScope, right: RuntimeResourceScope): boolean {
+    return left.workspaceId === right.workspaceId
+      && left.environmentId === right.environmentId
+      && left.sessionId === right.sessionId
+      && left.workId === right.workId;
+  }
+
+  function fenceIdentity(fence: RuntimeResourceFence): string {
+    // This proof stays in the local acquisition record, never in a lease,
+    // checkpoint, provider context or orphan row.
+    return JSON.stringify([
+      fence.workspaceId, fence.environmentId, fence.sessionId, fence.workId,
+      fence.ownerId, fence.generation, fence.token,
+    ]);
+  }
+
+  function newAllocation(scope: RuntimeResourceScope, fence: RuntimeResourceFence): ManagedSandboxAllocation {
+    if (!sameScope(scope, fence)) throw new Error("Sandbox allocation fence scope mismatch");
+    return Object.freeze({
+      id: crypto.randomUUID(),
+      scope: Object.freeze({ ...scope }),
+      ownerId: fence.ownerId,
+      generation: fence.generation,
+    });
+  }
+
+  function allocationContext(allocation: ManagedSandboxAllocation): SandboxFactoryContext {
+    return {
+      ...options.context(allocation.scope),
+      workspaceId: allocation.scope.workspaceId,
+      environmentId: allocation.scope.environmentId,
+      allocationId: allocation.id,
+    };
+  }
+
+  function requireAllocation(lease: ManagedSandboxLease, scope?: RuntimeResourceScope): ManagedSandboxAllocation {
+    if (lease.provider !== options.providerName) {
+      throw new Error(`Incompatible sandbox lease provider: ${lease.provider}`);
+    }
+    assertAllocationIsolation();
+    const allocation = lease.allocation;
+    if (allocation === undefined || typeof allocation.id !== "string" || allocation.id.length === 0
+      || allocation.scope === undefined || typeof allocation.ownerId !== "string"
+      || !Number.isSafeInteger(allocation.generation)) {
+      throw new Error("Sandbox lease has no isolated allocation identity; legacy retained resources require explicit migration");
+    }
+    if (scope !== undefined && !sameScope(allocation.scope, scope)) {
+      throw new Error("Sandbox allocation scope mismatch");
+    }
+    return allocation;
+  }
+
+  function requireOwner(input: {
+    scope: RuntimeResourceScope;
+    fence: RuntimeResourceFence;
+    lease: ManagedSandboxLease;
+  }): ManagedSandboxAllocation {
+    const allocation = requireAllocation(input.lease, input.scope);
+    if (!sameScope(allocation.scope, input.fence)
+      || allocation.ownerId !== input.fence.ownerId
+      || allocation.generation !== input.fence.generation) {
+      throw new Error("Sandbox allocation owner mismatch");
+    }
+    const attached = allocations.get(input.lease.runtimeId);
+    if (attached !== undefined && (attached.allocation.id !== allocation.id
+      || attached.fenceIdentity !== fenceIdentity(input.fence))) {
+      throw new Error("Sandbox allocation owner mismatch");
+    }
+    return allocation;
+  }
 
   function validateProviderRuntime(runtime: Runtime): ManagedSandboxLease {
     const handle = runtime.runtimeHandle();
@@ -767,6 +860,10 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
     if (runtime === undefined) {
       throw new Error(`Sandbox runtime is not attached: ${lease.runtimeId}`);
     }
+    if (lease.allocation !== undefined
+      && allocations.get(lease.runtimeId)?.allocation.id !== lease.allocation.id) {
+      throw new Error("Sandbox allocation identity does not match the attached runtime");
+    }
     return runtime;
   }
 
@@ -777,7 +874,26 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
 
     async acquire(input) {
       input.signal.throwIfAborted();
-      const context = options.context(input.scope);
+      assertAllocationIsolation();
+      const checkpoint = bindingRestore.get(input.workspace.bindingId);
+      let allocation: ManagedSandboxAllocation;
+      if (checkpoint?.scope === "runtime") {
+        const prior = allocations.get(checkpoint.sourceRuntimeId);
+        const localCheckpoint = suspended.get(checkpoint.sourceRuntimeId);
+        // A local continuation of the very same acquisition is not an owner
+        // transfer. A different fence or a restarted composition has no proof
+        // that old cleanup/operations have been fenced, so must not reactivate it.
+        if (prior === undefined || !runtimes.has(checkpoint.sourceRuntimeId)
+          || prior.fenceIdentity !== fenceIdentity(input.fence)
+          || retiring.has(prior.allocation.id) || localCheckpoint === undefined
+          || stableCheckpointJson(localCheckpoint) !== stableCheckpointJson(checkpoint)) {
+          throw new Error("Retained runtime ownership transfer is unsupported; use an independent portable checkpoint restore");
+        }
+        allocation = prior.allocation;
+      } else {
+        allocation = newAllocation(input.scope, input.fence);
+      }
+      const context = allocationContext(allocation);
       const environment = options.environment(input.scope);
       const runtimeEnvironment = typeof options.runtimeEnvironment === "function"
         ? options.runtimeEnvironment({ scope: input.scope, environment })
@@ -790,7 +906,7 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
             input.scope,
             input.fence,
           );
-      const checkpoint = bindingRestore.get(input.workspace.bindingId);
+      let mayDestroy = true;
       const { runtime, lease } = await runPortEffect(
         tryPortPromise((effectSignal) => {
           const acquisition: ProviderManagedRuntimeAcquisitionContext = {
@@ -826,7 +942,20 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
           Effect.flatMap((runtime) =>
             Effect.gen(function*() {
               const lease = yield* Effect.try({
-                try: () => validateProviderRuntime(runtime),
+                try: () => {
+                  const handle = validateProviderRuntime(runtime);
+                  if (checkpoint?.scope !== "runtime"
+                    && (knownRuntimeIds.has(handle.runtimeId) || checkpoint?.sourceRuntimeId === handle.runtimeId)) {
+                    mayDestroy = false;
+                    throw new Error("Provider reused a physical runtime identity for a different allocation");
+                  }
+                  if (checkpoint?.scope === "runtime" && checkpoint.sourceRuntimeId !== handle.runtimeId) {
+                    mayDestroy = false;
+                    throw new Error("Provider retained resume returned a different runtime identity");
+                  }
+                  knownRuntimeIds.add(handle.runtimeId);
+                  return { ...handle, allocation };
+                },
                 catch: (error) => error,
               });
               yield* tryPortPromise((effectSignal) =>
@@ -859,10 +988,15 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
                   effectSignal,
                 )
               );
+              if (retiring.has(allocation.id)) {
+                throw new Error("Sandbox allocation was retired during acquisition");
+              }
               return { runtime, lease };
             }).pipe(
               Effect.onError(() =>
                 Effect.promise(async () => {
+                  if (!mayDestroy) return;
+                  retiring.add(allocation.id);
                   try {
                     await runtime.destroy?.();
                   } catch {
@@ -875,7 +1009,7 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
         ),
         input.signal,
       );
-      terminated.delete(lease.runtimeId);
+      allocations.set(lease.runtimeId, { allocation, fenceIdentity: fenceIdentity(input.fence) });
       runtimes.set(lease.runtimeId, runtime);
       bindingRuntime.set(input.workspace.bindingId, lease.runtimeId);
       if (input.outputs !== null) {
@@ -890,6 +1024,8 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
     async heartbeat(input) {
       let runtime: Runtime;
       try {
+        const allocation = requireOwner(input);
+        if (retiring.has(allocation.id)) return { type: "lost" };
         runtime = requireRuntime(input.lease);
         const state = await runtime.status();
         if (state === "stopped") return { type: "lost" };
@@ -904,12 +1040,15 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
 
     async suspend(input) {
       input.signal.throwIfAborted();
+      const allocation = requireOwner(input);
+      if (retiring.has(allocation.id)) throw new Error("Sandbox allocation is retiring");
       const kind = options.workspace.retainedSuspendKind;
       if (kind === undefined) {
         throw new Error("Provider composition has no retained-runtime suspend kind");
       }
       const checkpoint = await requireRuntime(input.lease).suspend({ kind });
       input.signal.throwIfAborted();
+      if (retiring.has(allocation.id)) throw new Error("Sandbox allocation is retiring");
       suspended.set(input.lease.runtimeId, checkpoint);
       return {
         ...input.lease,
@@ -918,7 +1057,11 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
     },
 
     async terminate(input) {
-      if (terminated.has(input.lease.runtimeId)) return;
+      const allocation = requireOwner(input);
+      if (terminated.has(allocation.id)) return;
+      // Irreversible local retirement precedes any provider await. This exact
+      // allocation cannot be reactivated while a delete is pending or orphaned.
+      retiring.add(allocation.id);
       const runtime = requireRuntime(input.lease);
       if (runtime.destroy !== undefined) {
         await runtime.destroy();
@@ -927,27 +1070,32 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
       }
       runtimes.delete(input.lease.runtimeId);
       suspended.delete(input.lease.runtimeId);
-      terminated.add(input.lease.runtimeId);
+      allocations.delete(input.lease.runtimeId);
+      terminated.add(allocation.id);
     },
 
     async reap(input) {
-      if (terminated.has(input.lease.runtimeId)) return;
-      if (input.lease.provider !== options.providerName) {
-        throw new Error(`Incompatible sandbox lease provider: ${input.lease.provider}`);
+      const allocation = requireAllocation(input.lease, input.scope);
+      if (terminated.has(allocation.id)) return;
+      const attached = allocations.get(input.lease.runtimeId);
+      if (attached !== undefined && (attached.allocation.id !== allocation.id || !retiring.has(allocation.id))) {
+        throw new Error("Refusing to reap an active sandbox allocation");
       }
-      const context = options.context(input.scope);
+      // A persisted orphan is a retirement request, never a request to attach
+      // this resource to a new execution. Unique allocations are never adopted
+      // by another owner, so delayed deletes cannot target its successor.
+      retiring.add(allocation.id);
+      const context = allocationContext(allocation);
       const environment = options.environment(input.scope);
       if (options.reapRuntime !== undefined) {
-        await options.reapRuntime({
-          scope: input.scope,
-          lease: input.lease,
-          context,
-          environment,
-        });
+        await options.reapRuntime({ scope: input.scope, lease: input.lease, context, environment });
       } else {
-        const attached = runtimes.get(input.lease.runtimeId);
-        const runtime = attached
+        const runtime = runtimes.get(input.lease.runtimeId)
           ?? await options.provider.resume(input.lease, context, environment);
+        const handle = validateProviderRuntime(runtime);
+        if (handle.runtimeId !== input.lease.runtimeId) {
+          throw new Error("Provider orphan reconnect returned a different runtime identity");
+        }
         if (runtime.destroy === undefined) {
           throw new Error("Provider orphan reaping requires a destroy method");
         }
@@ -955,7 +1103,8 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
       }
       runtimes.delete(input.lease.runtimeId);
       suspended.delete(input.lease.runtimeId);
-      terminated.add(input.lease.runtimeId);
+      allocations.delete(input.lease.runtimeId);
+      terminated.add(allocation.id);
     },
 
     async inspect(lease) {
@@ -1397,6 +1546,7 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
       if (runtimeId !== undefined) {
         runtimes.delete(runtimeId);
         suspended.delete(runtimeId);
+        allocations.delete(runtimeId);
       }
     },
   };
@@ -1638,22 +1788,31 @@ export function createProviderManagedRuntime<Runtime extends ProviderRuntime>(
             ) {
               throw new Error("Incompatible provider runtime checkpoint");
             }
+            assertAllocationIsolation();
+            const allocation = newAllocation(input.scope, input.fence);
             const runtime = await options.runtimeCheckpoint!.restore({
               checkpoint: input.checkpoint,
               scope: input.scope,
               fence: input.fence,
-              context: options.context(input.scope),
+              context: allocationContext(allocation),
               environment: options.environment(input.scope),
             });
             let lease: ManagedSandboxLease;
+            let mayDestroy = true;
             try {
-              lease = validateProviderRuntime(runtime);
+              const handle = validateProviderRuntime(runtime);
+              if (knownRuntimeIds.has(handle.runtimeId) || handle.runtimeId === input.checkpoint.sourceRuntimeId) {
+                mayDestroy = false;
+                throw new Error("Provider reused a physical runtime identity for a different allocation");
+              }
+              knownRuntimeIds.add(handle.runtimeId);
+              lease = { ...handle, allocation };
               await waitUntilReady(runtime, new AbortController().signal);
             } catch (error) {
-              await runtime.destroy?.().catch(() => {});
+              if (mayDestroy) await runtime.destroy?.().catch(() => {});
               throw error;
             }
-            terminated.delete(lease.runtimeId);
+            allocations.set(lease.runtimeId, { allocation, fenceIdentity: fenceIdentity(input.fence) });
             runtimes.set(lease.runtimeId, runtime);
             return lease;
           },

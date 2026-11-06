@@ -92,6 +92,42 @@ interface DriverConstructor {
 }
 
 describe("DefaultNodeManagedSessionRuntimeDriver", () => {
+  it("keeps late output bound to its original attempt after a replacement finishes", async () => {
+    const outputs: Array<(frame: unknown) => Promise<void>> = [];
+    const projected: RecordSessionRuntimeEventsCommand[] = [];
+    const firstFence = { ...executionFence };
+    const nextFence = { ...executionFence, attemptId: "attempt_02", generation: 2 };
+    let currentAttempt = firstFence.attemptId;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine: {
+        start: async (_input, output) => { outputs.push(output); },
+        accept: async () => {}, stop: async () => {}, archiveThread: async () => {},
+      },
+      realtime: new MemorySessionRealtimeHub(),
+      projectionFor: () => ({ recordSessionRuntimeEvents: async (command) => {
+        projected.push(structuredClone(command));
+        return command.executionFence?.attemptId !== currentAttempt
+          ? { type: "execution_fence_lost" as const }
+          : { type: "recorded" as const, session };
+      } }),
+    });
+    const input = { workspaceId: executionFence.workspaceId, sessionId: session.id,
+      session, environment, events: [{ id: "input", type: "user.message" as const,
+        content: [{ type: "text" as const, text: "run" }],
+        processedAt: "2026-08-26T00:30:00.000Z" }] };
+    const frame = (id: string) => ({ type: "agent.message", id,
+      content: [{ type: "text", text: id }], processed_at: "2026-08-26T00:30:00.000Z" });
+    await driver.accept({ ...input, executionFence: firstFence });
+    firstFence.expiresAt = "2026-08-26T02:01:00.000Z";
+    await outputs[0]!(frame("renewed"));
+    expect(projected.at(-1)?.executionFence).toEqual(firstFence);
+    currentAttempt = nextFence.attemptId;
+    await driver.accept({ ...input, executionFence: nextFence });
+    await expect(outputs[0]!(frame("late"))).rejects.toThrow("execution fence was lost");
+    expect(projected.at(-1)?.executionFence?.attemptId).toBe(firstFence.attemptId);
+    expect(projected.at(-1)?.executionFence?.generation).toBe(1);
+  });
+
   function startFailureDriver(
     start: (input: runtimeModule.StartNodeManagedSessionRuntime) => Promise<void>,
     accepted: string[] = [],
@@ -356,6 +392,17 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     expect(starts).toBe(0);
     expect(accepted).toEqual([]);
     expect(events()).toEqual([]);
+  });
+
+  it("forgets cancellation only for the finished attempt", async () => {
+    const { accept, driver } = startFailureDriver(async () => {}, []);
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    driver.cancel({ ...scope, reason: "lease_lost", attemptId: executionFence.attemptId });
+    driver.forgetAttempt({ ...scope, attemptId: "another-attempt" });
+    await expect(accept()).rejects.toThrow("lease_lost");
+    driver.cancel({ ...scope, reason: "lease_lost", attemptId: executionFence.attemptId });
+    driver.forgetAttempt({ ...scope, attemptId: executionFence.attemptId });
+    await expect(accept()).resolves.toBeUndefined();
   });
 
   it("does not let a cancel for another attempt abort the attempt that accepts", async () => {

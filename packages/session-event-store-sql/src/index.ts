@@ -248,7 +248,24 @@ export class SqlSessionEventStore
         input.expectedRevision,
       )
     );
-    const outbox = executionBatches.map((batch) => {
+    // This is the same Session counter used by standalone coordinator.admit.
+    // Counter allocation, event facts, outbox rows and the revision CAS commit
+    // together. A losing revision neither consumes a range nor enqueues work.
+    const admissionRange = executionBatches.length === 0 ? [] : [
+      this.client.prepare(`INSERT INTO managed_session_admission_counters
+        (workspace_id, session_id, last_sequence)
+        SELECT ?, ?, 0 WHERE EXISTS (SELECT 1 FROM managed_sessions
+          WHERE workspace_id = ? AND id = ? AND revision = ?)
+        ON CONFLICT (workspace_id, session_id) DO NOTHING`)
+        .bind(input.workspaceId, input.sessionId, input.workspaceId, input.sessionId, input.expectedRevision),
+      this.client.prepare(`UPDATE managed_session_admission_counters
+        SET last_sequence = last_sequence + ?
+        WHERE workspace_id = ? AND session_id = ? AND EXISTS (SELECT 1 FROM managed_sessions
+          WHERE workspace_id = ? AND id = ? AND revision = ?)`)
+        .bind(executionBatches.length, input.workspaceId, input.sessionId,
+          input.workspaceId, input.sessionId, input.expectedRevision),
+    ];
+    const outbox = executionBatches.map((batch, index) => {
       const admittedAt = sortTime(
         batch.events.find((event) => event.type !== "system.message")!,
         input.nextSession.updatedAt,
@@ -256,13 +273,17 @@ export class SqlSessionEventStore
       const admittedAtMs = timestamp(admittedAt);
       const deadlineAtMs = admittedAtMs + policy.timeoutMs;
       const eventsJson = stableJson(batch.events);
+      // The derived source exposes only last_sequence so the MySQL adapter's
+      // duplicate-key no-op has no ambiguous workspace_id column.
       return this.client.prepare(
           `INSERT INTO managed_session_executions (
             workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
             events_fingerprint, state, generation, attempt_count, max_attempts,
-            deadline_at_ms, revision
+            deadline_at_ms, revision, admission_sequence
           )
-          SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', 0, 0, ?, ?, 1
+          SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', 0, 0, ?, ?, 1, last_sequence - ?
+           FROM (SELECT last_sequence FROM managed_session_admission_counters
+             WHERE workspace_id = ? AND session_id = ?) AS admission_counter
            WHERE EXISTS (
              SELECT 1 FROM managed_sessions
               WHERE workspace_id = ? AND id = ? AND revision = ?
@@ -278,6 +299,9 @@ export class SqlSessionEventStore
           eventsJson,
           policy.maxAttempts,
           deadlineAtMs,
+          executionBatches.length - index - 1,
+          input.workspaceId,
+          input.sessionId,
           input.workspaceId,
           input.sessionId,
           input.expectedRevision,
@@ -337,6 +361,7 @@ export class SqlSessionEventStore
         ]);
     const results = await this.client.batch([
       revisionGuard,
+      ...admissionRange,
       ...eventStatements,
       ...interrupt,
       ...outbox,

@@ -33,6 +33,36 @@ function installFetch(handler: (url: string, init: RequestInit) => Response | Pr
 }
 
 describe("BoxRunSandbox", () => {
+  it("reattaches by returned box_id and validates ownership without creating on absence", async () => {
+    let name = "";
+    let exists = true;
+    let deleteStatus = 500;
+    const fetch = installFetch((url, init) => {
+      if (url.endsWith("/boxes") && init.method === "POST") { name = JSON.parse(String(init.body)).name; return json({ box_id: "physical-box" }); }
+      if (url.endsWith("/boxes/physical-box") && !init.method) return exists ? json({ box_id: "physical-box", name, status: "stopped" }) : json({}, 404);
+      if (init.method === "DELETE") return new Response(null, { status: deleteStatus });
+      throw new Error("unexpected request");
+    });
+    const context = { workspaceId: "tenant", environmentId: "env", sessionId: "session", allocationId: "physical-a", workdir: "/workspace" };
+    const env = { BOXRUN_URL: "https://provider.test/v1/tenant" };
+    const first = await sandboxFactory(context, env);
+    const binding = sandboxFactory.runtimeBinding!;
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(first)));
+    expect(handle).toEqual({ provider: "boxrun", runtimeId: "physical-box" });
+    const resumed = await binding.resume(handle, context, env);
+    expect(binding.getHandle(resumed)).toEqual(handle);
+    await expect(binding.resume(handle, { ...context, allocationId: "physical-b" }, env)).rejects.toThrow("allocation");
+    exists = false;
+    await expect(binding.resume(handle, context, env)).rejects.toThrow("HTTP 404");
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    await expect(resumed.destroy!()).rejects.toThrow("not confirmed");
+    deleteStatus = 202;
+    await expect(resumed.destroy!()).rejects.toThrow("not confirmed");
+    deleteStatus = 204;
+    await resumed.destroy!();
+    expect(fetch.mock.calls.at(-1)?.[0]).toContain("?force=true");
+  });
+
   it("isolates factory allocation names and targets delayed deletion by captured box ID", async () => {
     const boxes = new Map<string, string>(); const names: string[] = []; const deleted: string[] = [];
     let finishDelete!: () => void; let markDeleting!: () => void;
@@ -69,6 +99,7 @@ describe("BoxRunSandbox", () => {
     expect(names[0]).toMatch(/^oma-[a-f0-9]{30,32}$/);
     expect(names[2]).toBe("oma-same-logical-session");
     expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+    expect(sandboxFactory.runtimeBinding?.provider).toBe("boxrun");
     const deleting = a.destroy!(); await deletingStarted;
     expect(await b.exec("while old delete is pending")).toContain("ok");
     finishDelete(); await deleting;
@@ -77,6 +108,7 @@ describe("BoxRunSandbox", () => {
     expect(await b.exec("after old delete")).toContain("ok");
   });
   it("validates configuration and the factory maps provider settings", async () => {
+    installFetch(() => json({ box_id: "allocated" }));
     expect(() => new BoxRunSandbox({ baseUrl: "" })).toThrow("baseUrl required");
     await expect(sandboxFactory({ sessionId: "session-abcdefghijklmnopqrstuvwxyz12345" } as never, {})).rejects.toThrow("BOXRUN_URL");
 
@@ -95,6 +127,7 @@ describe("BoxRunSandbox", () => {
   });
 
   it("factory prefers an Environment-selected catalog image over SANDBOX_IMAGE", async () => {
+    installFetch(() => json({ box_id: "allocated" }));
     const env = { BOXRUN_URL: "http://boxrun", SANDBOX_IMAGE: "custom:1" };
     const selected = await sandboxFactory(
       { sessionId: "session", workdir: "/w", image: { alias: "analytics", reference: "registry.example/analytics:1" } },
@@ -157,7 +190,7 @@ describe("BoxRunSandbox", () => {
     expect(JSON.parse(String(execs[1]?.[1]?.body))).toMatchObject({ timeout_seconds: 4 });
   });
 
-  it("handles malformed/empty SSE events and unknown exit codes", async () => {
+  it("rejects malformed exit events instead of claiming command completion", async () => {
     installFetch((url) => {
       if (url.endsWith("/boxes")) return json({ box_id: "box-1" });
       if (url.endsWith("/exec")) return json({ execution_id: "exec-1" });
@@ -169,7 +202,45 @@ describe("BoxRunSandbox", () => {
         "event: stdout\ndata: {\"data\":\"eA==\"}\n\n",
       );
     });
-    await expect(new BoxRunSandbox({ baseUrl: "http://boxrun" }).exec("x")).resolves.toBe("exit=?\nx");
+    await expect(new BoxRunSandbox({ baseUrl: "http://boxrun" }).exec("x")).rejects.toThrow("invalid exit event");
+  });
+
+  it.each(["eof", "read-error", "start-error"])("does not replay or acknowledge an effect when its response is lost (%s)", async mode => {
+    const cause = new Error("socket closed");
+    const failure = new Error("remote response lost", { cause });
+    let effects = 0;
+    const calls = installFetch((url) => {
+      if (url.endsWith("/boxes")) return json({ box_id: "box-1" });
+      if (url.endsWith("/exec")) {
+        effects++;
+        if (mode === "start-error") throw failure;
+        return json({ execution_id: "exec-1" });
+      }
+      if (mode === "eof") return sse('event: stdout\ndata: {"data":"Y2hhcmdlZA=="}\n\n');
+      let sent = false;
+      return new Response(new ReadableStream({ pull(controller) {
+        if (!sent) { sent = true; controller.enqueue(new TextEncoder().encode('event: stdout\ndata: {"data":"Y2hhcmdlZA=="}\n\n')); }
+        else controller.error(failure);
+      } }));
+    });
+    const result = new BoxRunSandbox({ baseUrl: "http://boxrun" }).exec("charge-account");
+    if (mode === "eof") await expect(result).rejects.toThrow("stream ended before exit");
+    else await expect(result).rejects.toBe(failure);
+    expect(failure.cause).toBe(cause);
+    expect(effects).toBe(1);
+    expect(calls.mock.calls.filter(([url]) => String(url).endsWith("/exec"))).toHaveLength(1);
+  });
+
+  it("preserves an upload response loss after one remote file mutation", async () => {
+    const failure = new Error("upload response lost");
+    let writes = 0;
+    installFetch((url, init) => {
+      if (url.endsWith("/boxes")) return json({ box_id: "box-1" });
+      if (init.method === "PUT") { writes++; throw failure; }
+      throw new Error("unexpected request");
+    });
+    await expect(new BoxRunSandbox({ baseUrl: "http://boxrun" }).writeFile("/file", "data")).rejects.toBe(failure);
+    expect(writes).toBe(1);
   });
 
   it("reports create, exec-start, and stream failures", async () => {
@@ -233,7 +304,7 @@ describe("BoxRunSandbox", () => {
     await expect(sandbox.mountSessionOutputs({ tenantId: "t", sessionId: "s" })).rejects.toThrow("no host-bind primitive");
   });
 
-  it("destroys idempotently and tolerates already-gone, create, HTTP, and transport failures", async () => {
+  it("destroys idempotently but preserves uncertain create, HTTP, and transport failures", async () => {
     const warn = vi.fn();
     const logger = { log: vi.fn(), warn };
     const never = new BoxRunSandbox({ baseUrl: "http://boxrun", logger });
@@ -252,7 +323,7 @@ describe("BoxRunSandbox", () => {
     expect(warn).not.toHaveBeenCalled();
     deleteStatus = 500;
     await sandbox.writeFile("/a", "x");
-    await sandbox.destroy();
+    await expect(sandbox.destroy()).rejects.toThrow("not confirmed");
     expect(warn).toHaveBeenCalledWith("boxrun destroy non-OK: 500 bad");
 
     installFetch((url, init) => {
@@ -261,7 +332,7 @@ describe("BoxRunSandbox", () => {
       throw new Error("offline");
     });
     await sandbox.writeFile("/a", "x");
-    await sandbox.destroy();
+    await expect(sandbox.destroy()).rejects.toThrow("offline");
     expect(warn).toHaveBeenCalledWith("boxrun destroy error: offline");
 
     installFetch((url, init) => {
@@ -272,11 +343,34 @@ describe("BoxRunSandbox", () => {
     });
     const defaultLogger = new BoxRunSandbox({ baseUrl: "http://boxrun" });
     await defaultLogger.writeFile("/a", "x");
-    await defaultLogger.destroy();
+    await expect(defaultLogger.destroy()).rejects.toThrow("not confirmed");
 
     installFetch(() => new Response("bad", { status: 500 }));
     const failedCreate = new BoxRunSandbox({ baseUrl: "http://boxrun", logger });
     await expect(failedCreate.exec("x")).rejects.toThrow();
-    await expect(failedCreate.destroy()).resolves.toBeUndefined();
+    await expect(failedCreate.destroy()).rejects.toThrow("allocation outcome is unknown");
+  });
+
+  it("retains the same physical box when deletion succeeded remotely but its response was lost", async () => {
+    const failure = new Error("delete acknowledgement lost");
+    let creates = 0;
+    let deleted = false;
+    const targets: string[] = [];
+    installFetch((url, init) => {
+      if (url.endsWith("/boxes")) { creates++; return json({ box_id: "captured-box" }); }
+      if (init.method === "PUT") return new Response(null, { status: 204 });
+      if (init.method === "DELETE") {
+        targets.push(new URL(url).pathname);
+        if (!deleted) { deleted = true; throw failure; }
+        return new Response(null, { status: 404 });
+      }
+      throw new Error("unexpected request");
+    });
+    const sandbox = new BoxRunSandbox({ baseUrl: "http://boxrun" });
+    await sandbox.writeFile("/file", "data");
+    await expect(sandbox.destroy()).rejects.toBe(failure);
+    await sandbox.destroy();
+    expect(creates).toBe(1);
+    expect(targets).toEqual(["/boxes/captured-box", "/boxes/captured-box"]);
   });
 });

@@ -21,7 +21,8 @@
 // SECURITY: Daytona runs each sandbox in an isolated VM so this is the
 // safer choice for production / untrusted agents vs LocalSubprocessSandbox.
 
-import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
+import type { ProcessHandle, SandboxExecutor, SandboxFactory, SandboxFactoryContext, SandboxFactoryEnv, SandboxRuntimeHandle } from "@open-managed-agents/sandbox";
+import { createHash } from "node:crypto";
 import { readS3MemoryBucket, rejectPreparedBase } from "@open-managed-agents/sandbox";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
@@ -32,6 +33,9 @@ export interface DaytonaSandboxOptions {
   /** Per-session identifier — used as the Sandbox label so existing
    *  sandboxes can be looked up after a process restart. */
   sessionId: string;
+  allocationKey?: string;
+  /** Exact existing provider ID. This branch never creates a missing sandbox. */
+  runtimeId?: string;
   /** Daytona API key. Falls back to DAYTONA_API_KEY env var. */
   apiKey?: string;
   /** Daytona API URL (when self-hosting). Falls back to DAYTONA_API_URL. */
@@ -79,6 +83,8 @@ interface DaytonaFileSystem {
 }
 interface DaytonaSandboxInstance {
   id: string;
+  labels?: Record<string, string>;
+  state?: string;
   process: DaytonaProcess;
   fs: DaytonaFileSystem;
 }
@@ -89,6 +95,8 @@ interface DaytonaClient {
     envVars?: Record<string, string>;
   }): Promise<DaytonaSandboxInstance>;
   delete(sandbox: DaytonaSandboxInstance, timeout?: number): Promise<void>;
+  get(id: string): Promise<DaytonaSandboxInstance>;
+  start(sandbox: DaytonaSandboxInstance, timeout?: number): Promise<void>;
 }
 
 export class DaytonaSandbox implements SandboxExecutor {
@@ -97,6 +105,9 @@ export class DaytonaSandbox implements SandboxExecutor {
   private sandboxPromise: Promise<DaytonaSandboxInstance> | null = null;
   private daytona: DaytonaClient | null = null;
   private logger: NonNullable<DaytonaSandboxOptions["logger"]>;
+  private runtimeId: string | null = null;
+  private durable = false;
+  private destroyed = false;
 
   constructor(private opts: DaytonaSandboxOptions) {
     this.logger = opts.logger ?? {
@@ -105,31 +116,31 @@ export class DaytonaSandbox implements SandboxExecutor {
     };
   }
 
+  /** Factory allocation finishes before its handle is durably registered. */
+  async initializeBinding(): Promise<void> { this.durable = true; await this.ensureSandbox(); }
+  runtimeHandle(): SandboxRuntimeHandle {
+    if (!this.runtimeId) throw new Error("Daytona sandbox has not been allocated");
+    return { provider: "daytona", runtimeId: this.runtimeId };
+  }
+
   async exec(command: string, timeout?: number): Promise<string> {
     const sb = await this.ensureSandbox();
     const env = this.buildEnv(command);
     const timeoutMs = timeout ?? this.opts.defaultTimeoutMs ?? 120_000;
-    try {
-      // Daytona's executeCommand timeout is in seconds; round up to the
-      // nearest second so a 100ms timeout doesn't degenerate to 0.
-      const r = await sb.process.executeCommand(
-        command,
-        undefined,
-        env,
-        Math.max(1, Math.ceil(timeoutMs / 1000)),
-      );
-      const stdout = r.artifacts?.stdout ?? "";
-      const stderr = r.artifacts?.stderr ?? "";
-      // Match @cloudflare/sandbox + LocalSubprocess: combined output, exit
-      // suffix on non-zero. The harness's bash tool parser keys off this.
-      const separator = stdout.length > 0 && !stdout.endsWith("\n") ? "\n" : "";
-      const combined =
-        (stdout + (stderr ? `${separator}${stderr}` : "")).replace(/\s+$/, "") +
-        (r.exitCode !== 0 ? `\n[exit ${r.exitCode}]` : "");
-      return combined;
-    } catch (err) {
-      return `[error: ${(err as Error).message}]`;
-    }
+    // A rejected SDK call may have executed remotely. Preserve that rejection
+    // so the execution owner can quarantine it instead of recording completion.
+    const r = await sb.process.executeCommand(
+      command,
+      undefined,
+      env,
+      Math.max(1, Math.ceil(timeoutMs / 1000)),
+    );
+    if (!Number.isSafeInteger(r.exitCode)) throw new Error("Daytona command completion was not confirmed", { cause: r });
+    const stdout = r.artifacts?.stdout ?? r.result;
+    const stderr = r.artifacts?.stderr ?? "";
+    const separator = stdout.length > 0 && !stdout.endsWith("\n") ? "\n" : "";
+    return (stdout + (stderr ? `${separator}${stderr}` : "")).replace(/\s+$/, "") +
+      (r.exitCode !== 0 ? `\n[exit ${r.exitCode}]` : "");
   }
 
   async startProcess(command: string): Promise<ProcessHandle | null> {
@@ -179,14 +190,27 @@ export class DaytonaSandbox implements SandboxExecutor {
   }
 
   async destroy(): Promise<void> {
+    if (this.durable && this.destroyed) return;
     if (!this.sandboxPromise) return;
     try {
       const sb = await this.sandboxPromise;
       await this.daytona?.delete(sb);
+      if (this.durable) {
+        // SDK delete() acknowledges the request; it does not poll for absence.
+        // Only a documented HTTP 404 from get(id) confirms physical removal.
+        let absent = false;
+        try { await this.daytona!.get(sb.id); }
+        catch (failure) {
+          if (failure instanceof Error && (failure as Error & { statusCode?: number }).statusCode === 404) absent = true;
+          else throw failure;
+        }
+        if (!absent) throw new Error("Daytona deletion was not confirmed; sandbox still exists");
+      }
+      this.destroyed = true;
+      if (!this.durable) this.sandboxPromise = null;
     } catch (err) {
       this.logger.warn(`destroy failed: ${(err as Error).message}`);
-    } finally {
-      this.sandboxPromise = null;
+      throw err;
     }
   }
 
@@ -219,7 +243,7 @@ export class DaytonaSandbox implements SandboxExecutor {
     const setup = opts.readOnly
       ? `mkdir -p /mnt/memory && rm -rf ${shellEscape(link)} && ln -s ${shellEscape(target)} ${shellEscape(link)} && chmod -R a-w ${shellEscape(target)} 2>/dev/null || true`
       : `mkdir -p /mnt/memory && rm -rf ${shellEscape(link)} && ln -s ${shellEscape(target)} ${shellEscape(link)}`;
-    await sb.process.executeCommand(setup, undefined, undefined, 30);
+    await this.executeSetup(sb, setup, "memory store link");
     this.logger.log(`mounted memory store ${opts.storeName} → ${target} ${opts.readOnly ? "(ro)" : ""}`);
   }
 
@@ -253,11 +277,9 @@ export class DaytonaSandbox implements SandboxExecutor {
     }
     const link = `/mnt/session/outputs`;
     const target = `/mnt/_oma_storage/session-outputs/${opts.tenantId}/${opts.sessionId}`;
-    await sb.process.executeCommand(
+    await this.executeSetup(sb,
       `mkdir -p /mnt/session && rm -rf ${shellEscape(link)} && ln -s ${shellEscape(target)} ${shellEscape(link)}`,
-      undefined,
-      undefined,
-      30,
+      "session outputs link",
     );
     this.logger.log(`mounted session outputs → ${target}`);
   }
@@ -267,6 +289,7 @@ export class DaytonaSandbox implements SandboxExecutor {
   private memoryBucketMounted = false;
 
   private async ensureSandbox(): Promise<DaytonaSandboxInstance> {
+    if (this.durable && this.destroyed) throw new Error("Daytona sandbox has been deleted");
     if (this.sandboxPromise) return this.sandboxPromise;
     this.sandboxPromise = (async () => {
       const apiKey = this.opts.apiKey ?? process.env.DAYTONA_API_KEY;
@@ -290,11 +313,29 @@ export class DaytonaSandbox implements SandboxExecutor {
         apiKey,
         apiUrl: this.opts.apiUrl ?? process.env.DAYTONA_API_URL,
       });
+      // Verified against @daytonaio/sdk 0.171.0: get() only calls getSandbox;
+      // start() resumes that same Sandbox and waits for readiness.
+      if (this.opts.runtimeId !== undefined) {
+        const existing = await this.daytona.get(this.opts.runtimeId);
+        if (existing.id !== this.opts.runtimeId || existing.labels?.["oma-session-id"] !== this.opts.sessionId
+          || (this.opts.allocationKey !== undefined && existing.labels?.["oma-allocation-id"] !== this.opts.allocationKey)) {
+          throw new Error("Daytona runtime handle does not match its Session allocation");
+        }
+        if (existing.state !== "started") {
+          if (existing.state !== "stopped" && existing.state !== "archived") throw new Error(`Daytona runtime cannot resume from state ${existing.state ?? "unknown"}`);
+          await this.daytona.start(existing, 60);
+        }
+        this.runtimeId = existing.id;
+        return existing;
+      }
       this.logger.log(`creating sandbox for session ${this.opts.sessionId}`);
       const sb = await this.daytona.create({
         image: this.opts.image ?? "node:22-slim",
-        labels: { "oma-session-id": this.opts.sessionId },
+        labels: { "oma-session-id": this.opts.sessionId,
+          ...(this.opts.allocationKey === undefined ? {} : { "oma-allocation-id": this.opts.allocationKey }) },
       });
+      if (!sb.id) throw new Error("Daytona create did not return a physical sandbox ID");
+      this.runtimeId = sb.id;
       this.logger.log(`sandbox ${sb.id} ready`);
 
       return sb;
@@ -348,11 +389,13 @@ export class DaytonaSandbox implements SandboxExecutor {
     const slash = filePath.lastIndexOf("/");
     if (slash <= 0) return;
     const dir = filePath.slice(0, slash);
-    try {
-      await sb.fs.createFolder(dir, "0755");
-    } catch {
-      // Already exists or permission denied; let the upload's own error
-      // surface if the dir really isn't writable.
+    await this.executeSetup(sb, `mkdir -p ${shellEscape(dir)}`, "parent directory");
+  }
+
+  private async executeSetup(sb: DaytonaSandboxInstance, command: string, operation: string): Promise<void> {
+    const result = await sb.process.executeCommand(command, undefined, undefined, 30);
+    if (result.exitCode !== 0) {
+      throw new Error(`Daytona ${operation} failed (exit=${result.exitCode}): ${result.artifacts?.stderr ?? result.result}`, { cause: result });
     }
   }
 
@@ -372,16 +415,35 @@ function shellEscape(s: string): string {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
+function factoryOptions(ctx: SandboxFactoryContext, env: SandboxFactoryEnv): DaytonaSandboxOptions {
   // This adapter targets the legacy client surface, which has no supported
   // sandbox-to-snapshot capture; a requested base must not be ignored.
   rejectPreparedBase("daytona", ctx.preparedBase);
-  return new DaytonaSandbox({
+  return {
     sessionId: ctx.sessionId,
+    ...(ctx.allocationId === undefined ? {} : { allocationKey: createHash("sha256").update(JSON.stringify([ctx.workspaceId, ctx.environmentId, ctx.sessionId, ctx.allocationId])).digest("hex") }),
     apiKey: env.DAYTONA_API_KEY,
     apiUrl: env.DAYTONA_API_URL,
     // An Environment-selected catalog image overrides the process default.
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
     memoryBucket: readS3MemoryBucket(env),
-  });
-}, { capabilities: { allocationIsolation: true } });
+  };
+}
+
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => {
+  const sandbox = new DaytonaSandbox(factoryOptions(ctx, env));
+  await sandbox.initializeBinding();
+  return sandbox;
+}, {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "daytona", scope: "provider" as const,
+    getHandle: (sandbox: SandboxExecutor) => (sandbox as DaytonaSandbox).runtimeHandle(),
+    async resume(handle: SandboxRuntimeHandle, ctx: SandboxFactoryContext, env: SandboxFactoryEnv) {
+      if (handle.provider !== "daytona" || !handle.runtimeId) throw new Error("Incompatible Daytona runtime handle");
+      const sandbox = new DaytonaSandbox({ ...factoryOptions(ctx, env), runtimeId: handle.runtimeId });
+      await sandbox.initializeBinding();
+      return sandbox;
+    },
+  },
+});

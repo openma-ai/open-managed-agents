@@ -329,13 +329,17 @@ export class DefaultNodeManagedSessionRuntimeDriver
 
   async start(input: StartNodeManagedSessionRuntime): Promise<void> {
     const previous = this.starts.get(input);
+    // An output callback belongs to this execution for its entire lifetime.
+    // Lease renewal may update this fence's expiry, but a later Session turn
+    // must never lend its identity to an earlier callback (or make it unfenced).
+    const executionFence = input.executionFence;
     const start = (previous ?? Promise.resolve()).then(() =>
       this.dependencies.engine.start(input, (frame) =>
         this.enqueueOutput(
           input.workspaceId,
           input.sessionId,
           frame,
-          this.executionFences.get(input),
+          executionFence,
         )),
     );
     this.starts.set(input, start);
@@ -388,6 +392,12 @@ export class DefaultNodeManagedSessionRuntimeDriver
     pending.delete(attemptId);
     if (pending.size === 0) this.pendingCancels.delete(input);
     return reason;
+  }
+
+  forgetAttempt(input: { workspaceId: string; sessionId: string; attemptId: string }): void {
+    const pending = this.pendingCancels.get(input);
+    pending?.delete(input.attemptId);
+    if (pending?.size === 0) this.pendingCancels.delete(input);
   }
 
   async stop(input: StopNodeManagedSessionRuntime): Promise<void> {
@@ -943,7 +953,8 @@ export function untilAborted<T>(
  * harness's ConfigError: an Environment selecting a sandbox image the
  * operator removed from SANDBOX_IMAGES stays broken until it is edited. */
 function isNonRetryableStartError(error: unknown): boolean {
-  return error instanceof Error && error.name === "SandboxImageUnavailableError";
+  return error instanceof Error && ["SandboxImageUnavailableError", "ConfigError", "AuthError",
+    "PaymentRequiredError", "NodeSessionSandboxLifecycleError"].includes(error.name);
 }
 
 type PlanWireEvent = { type?: string; id?: string; [key: string]: unknown };

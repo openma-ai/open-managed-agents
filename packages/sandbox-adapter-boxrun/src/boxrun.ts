@@ -38,7 +38,7 @@
 // configured-but-not-started state from BoxRun's POST /boxes is fine —
 // POST /exec auto-starts the VM if needed. Cached `boxId` per-instance.
 
-import type { SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
+import type { SandboxExecutor, SandboxFactory, SandboxFactoryContext, SandboxFactoryEnv, SandboxRuntimeHandle } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
 import { rejectPreparedBase } from "@open-managed-agents/sandbox";
 import { createHash } from "node:crypto";
@@ -68,6 +68,8 @@ export interface BoxRunSandboxOptions {
   sessionId?: string;
   /** Exact physical allocation name, separate from the logical Session id. */
   name?: string;
+  /** Existing server-assigned ID; get never substitutes a newly created box. */
+  runtimeId?: string;
   /** Logger. */
   logger?: { warn: (msg: string, ctx?: unknown) => void; log: (msg: string) => void };
 }
@@ -76,6 +78,9 @@ export class BoxRunSandbox implements SandboxExecutor {
   private boxIdPromise: Promise<string> | null = null;
   private envVars: Record<string, string> = {};
   private logger: NonNullable<BoxRunSandboxOptions["logger"]>;
+  private runtimeId: string | null = null;
+  private durable = false;
+  private destroyed = false;
 
   constructor(private opts: BoxRunSandboxOptions) {
     if (!opts.baseUrl) throw new Error("BoxRunSandbox: baseUrl required");
@@ -83,6 +88,12 @@ export class BoxRunSandbox implements SandboxExecutor {
       warn: (msg) => moduleLogger.warn({}, msg),
       log: (msg) => moduleLogger.info(msg),
     };
+  }
+
+  async initializeBinding(): Promise<void> { this.durable = true; await this.ensureBox(); }
+  runtimeHandle(): SandboxRuntimeHandle {
+    if (!this.runtimeId) throw new Error("BoxRun box has not been allocated");
+    return { provider: "boxrun", runtimeId: this.runtimeId };
   }
 
   // ── core API ─────────────────────────────────────────────────────────
@@ -105,6 +116,7 @@ export class BoxRunSandbox implements SandboxExecutor {
       throw new Error(`boxrun exec start failed: ${startRes.status} ${await startRes.text()}`);
     }
     const { execution_id: execId } = (await startRes.json()) as { execution_id: string };
+    if (!execId) throw new Error("BoxRun command start was not confirmed: missing execution ID");
 
     // Stream stdout+stderr via SSE; collect into one combined string.
     // Output endpoint is SSE: each event has data:{"data":"<base64>"}.
@@ -122,30 +134,39 @@ export class BoxRunSandbox implements SandboxExecutor {
     const reader = outRes.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      // Parse SSE: events separated by \n\n; fields are `event: foo\ndata: {...}`.
-      let idx;
-      while ((idx = buf.indexOf("\n\n")) !== -1) {
-        const block = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        const ev = parseSseBlock(block);
-        if (!ev) continue;
-        if (ev.type === "stdout" || ev.type === "stderr") {
-          const data = base64Decode(String(ev.payload.data ?? ""));
-          if (ev.type === "stdout") stdout += data;
-          else stderr += data;
-        } else if (ev.type === "exit") {
-          exitCode = (ev.payload.exit_code as number | undefined) ?? null;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        // Parse SSE: events separated by \n\n; fields are `event: foo\ndata: {...}`.
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const ev = parseSseBlock(block);
+          if (!ev) continue;
+          if (ev.type === "stdout" || ev.type === "stderr") {
+            const data = base64Decode(String(ev.payload.data ?? ""));
+            if (ev.type === "stdout") stdout += data;
+            else stderr += data;
+          } else if (ev.type === "exit") {
+            const code = ev.payload.exit_code;
+            if (typeof code !== "number" || !Number.isSafeInteger(code)) {
+              throw new Error("BoxRun command completion was not confirmed: invalid exit event", { cause: ev.payload });
+            }
+            exitCode = code;
+          }
         }
       }
+    } finally {
+      reader.releaseLock();
     }
+    if (exitCode === null) throw new Error("BoxRun command completion was not confirmed: stream ended before exit");
 
     // Match LocalSubprocess shape: "exit=N\n<stdout>\n[stderr:...]".
     // Same surface the harness already parses.
-    let result = `exit=${exitCode ?? "?"}\n${stdout}`;
+    let result = `exit=${exitCode}\n${stdout}`;
     if (stderr.trim().length > 0) result += `[stderr:${stderr}]`;
     return result;
   }
@@ -239,33 +260,51 @@ export class BoxRunSandbox implements SandboxExecutor {
   }
 
   async destroy(): Promise<void> {
-    // Idempotent — DELETE on a never-created box returns 404 which we
-    // treat as already-gone. Best-effort: log warnings, don't throw.
+    // The official DELETE contract confirms removal (204), or absence (404).
+    if (this.durable && this.destroyed) return;
     if (!this.boxIdPromise) return;
     let boxId: string;
     try {
       boxId = await this.boxIdPromise;
-    } catch {
-      this.boxIdPromise = null;
-      return;
+    } catch (cause) {
+      throw new Error("BoxRun allocation outcome is unknown; deletion is not confirmed", { cause });
     }
     try {
-      const res = await this.fetch(`/boxes/${boxId}`, { method: "DELETE" });
+      const res = await this.fetch(`/boxes/${encodeURIComponent(boxId)}${this.durable ? "?force=true" : ""}`, { method: "DELETE" });
       if (!res.ok && res.status !== 404) {
         this.logger.warn(`boxrun destroy non-OK: ${res.status} ${await res.text()}`);
+        throw new Error(`BoxRun deletion was not confirmed (HTTP ${res.status})`);
       }
+      if (this.durable && res.status !== 204 && res.status !== 404) {
+        throw new Error(`BoxRun deletion was not confirmed (HTTP ${res.status})`);
+      }
+      this.destroyed = true;
+      if (!this.durable) this.boxIdPromise = null;
     } catch (err) {
       this.logger.warn(`boxrun destroy error: ${(err as Error).message}`);
-    } finally {
-      this.boxIdPromise = null;
+      throw err;
     }
   }
 
   // ── helpers ──────────────────────────────────────────────────────────
 
   private ensureBox(): Promise<string> {
-    if (!this.boxIdPromise) this.boxIdPromise = this.createBox();
+    if (this.durable && this.destroyed) return Promise.reject(new Error("BoxRun box has been deleted"));
+    if (!this.boxIdPromise) this.boxIdPromise = this.opts.runtimeId === undefined ? this.createBox() : this.attachBox(this.opts.runtimeId);
     return this.boxIdPromise;
+  }
+
+  private async attachBox(id: string): Promise<string> {
+    // Official BoxLite OpenAPI getBox returns Box metadata and 404 on absence.
+    // GET accepts names too, so compare the returned server ID and allocation name.
+    const response = await this.fetch(`/boxes/${encodeURIComponent(id)}`);
+    if (!response.ok) throw new Error(`BoxRun attach failed (HTTP ${response.status})`);
+    const box = await response.json() as { box_id: string; name?: string | null; status: string };
+    const expectedName = this.opts.name ?? (this.opts.sessionId ? `oma-${this.opts.sessionId.slice(0, 30)}` : undefined);
+    if (box.box_id !== id || (expectedName !== undefined && box.name !== expectedName)) throw new Error("BoxRun handle does not match its Session allocation");
+    if (!["configured", "running", "stopped"].includes(box.status)) throw new Error(`BoxRun cannot attach from state ${box.status}`);
+    this.runtimeId = id;
+    return id;
   }
 
   private async createBox(): Promise<string> {
@@ -285,6 +324,8 @@ export class BoxRunSandbox implements SandboxExecutor {
       throw new Error(`boxrun create failed: ${res.status} ${await res.text()}`);
     }
     const box = (await res.json()) as { box_id: string };
+    if (!box.box_id) throw new Error("BoxRun create did not return a physical box ID");
+    this.runtimeId = box.box_id;
     this.logger.log(`box created ${box.box_id} (${body.image})`);
     return box.box_id;
   }
@@ -406,7 +447,7 @@ function extractFirstRegularFile(tar: Uint8Array): Uint8Array {
 // map and never reads BOXRUN_* env vars itself. Each env var the BoxRun
 // adapter cares about is read here, in the adapter's own file.
 
-export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
+function factoryOptions(ctx: SandboxFactoryContext, env: SandboxFactoryEnv): BoxRunSandboxOptions {
   rejectPreparedBase("boxrun", ctx.preparedBase);
   const baseUrl = env.BOXRUN_URL;
   if (!baseUrl) {
@@ -415,7 +456,7 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Paramete
         "(e.g. http://boxrun:8100/v1/default)",
     );
   }
-  return new BoxRunSandbox({
+  return {
     baseUrl,
     // An Environment-selected catalog image overrides the process default.
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
@@ -426,5 +467,23 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Paramete
     ...(ctx.allocationId === undefined ? {} : {
       name: `oma-${createHash("sha256").update(JSON.stringify([ctx.workspaceId, ctx.environmentId, ctx.sessionId, ctx.allocationId])).digest("hex").slice(0, 30)}`,
     }),
-  });
-}, { capabilities: { allocationIsolation: true } });
+  };
+}
+
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => {
+  const sandbox = new BoxRunSandbox(factoryOptions(ctx, env));
+  await sandbox.initializeBinding();
+  return sandbox;
+}, {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "boxrun", scope: "provider" as const,
+    getHandle: (sandbox: SandboxExecutor) => (sandbox as BoxRunSandbox).runtimeHandle(),
+    async resume(handle: SandboxRuntimeHandle, ctx: SandboxFactoryContext, env: SandboxFactoryEnv) {
+      if (handle.provider !== "boxrun" || !handle.runtimeId) throw new Error("Incompatible BoxRun runtime handle");
+      const sandbox = new BoxRunSandbox({ ...factoryOptions(ctx, env), runtimeId: handle.runtimeId });
+      await sandbox.initializeBinding();
+      return sandbox;
+    },
+  },
+});

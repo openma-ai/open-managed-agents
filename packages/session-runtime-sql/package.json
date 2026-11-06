@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./coordination": "./src/coordination.ts",
     "./context": "./src/context.ts",
+    "./sandbox-binding": "./src/sandbox-binding.ts",
     "./history": "./src/history.ts"
   },
   "scripts": {

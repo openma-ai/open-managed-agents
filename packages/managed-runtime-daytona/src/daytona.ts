@@ -1,5 +1,6 @@
 import type { BlobStore } from "@open-managed-agents/blob-store/ports";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import type {
   ManagedRuntimeProviderDriverPort,
   RuntimeResourceScope,
@@ -7,6 +8,7 @@ import type {
 } from "@open-managed-agents/runtime-resource-contract";
 import type {
   SandboxCheckpointHandle,
+  SandboxFactoryContext,
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
   SandboxDuplexProcessSpec,
@@ -178,12 +180,20 @@ function safeName(value: string): string {
   return normalized;
 }
 
-function sandboxName(sessionId: string): string {
-  return safeName(`openma-${sessionId}`);
+function sandboxName(context: SandboxFactoryContext): string {
+  if (context.allocationId === undefined) return safeName(`openma-${context.sessionId}`);
+  if (!context.allocationId || !context.workspaceId || !context.environmentId) {
+    throw new Error("Daytona allocation identity requires workspace and environment scope");
+  }
+  return `openma-${createHash("sha256").update(JSON.stringify([
+    providerName, context.workspaceId, context.environmentId, context.sessionId, context.allocationId,
+  ])).digest("hex").slice(0, 40)}`;
 }
 
-function checkpointSandboxName(sessionId: string, checkpointId: string): string {
-  return safeName(`openma-${sessionId}-${checkpointId}`);
+function checkpointSandboxName(context: SandboxFactoryContext, checkpointId: string): string {
+  return context.allocationId === undefined
+    ? safeName(`openma-${context.sessionId}-${checkpointId}`)
+    : sandboxName(context);
 }
 
 function expectedLabels(environmentId: string, sessionId: string) {
@@ -198,6 +208,7 @@ async function validateManagedSandbox(
   sandbox: DaytonaSandboxSdkPort,
   environmentId: string,
   sessionId: string,
+  allocationName?: string,
 ): Promise<void> {
   await sandbox.refreshData();
   const labels = sandbox.labels ?? {};
@@ -205,6 +216,7 @@ async function validateManagedSandbox(
     labels[environmentLabel] !== environmentId
     || labels[sessionLabel] !== sessionId
     || labels[modeLabel] !== managedMode
+    || (allocationName !== undefined && sandbox.name !== allocationName)
   ) {
     throw new Error(
       `Refusing to attach Daytona sandbox ${sandbox.id}: ownership labels do not match the requested environment and Session`,
@@ -297,16 +309,19 @@ export class DaytonaRuntime
   readonly #sandbox: DaytonaSandboxSdkPort;
   readonly #environmentId: string;
   readonly #sessionId: string;
+  readonly #allocationName: string | undefined;
   #destroyed = false;
 
   constructor(input: {
     sandbox: DaytonaSandboxSdkPort;
     environmentId: string;
     sessionId: string;
+    allocationName?: string;
   }) {
     this.#sandbox = input.sandbox;
     this.#environmentId = input.environmentId;
     this.#sessionId = input.sessionId;
+    this.#allocationName = input.allocationName;
   }
 
   runtimeHandle() {
@@ -510,7 +525,7 @@ export class DaytonaRuntime
   }
 
   async validateOwnership(): Promise<void> {
-    await validateManagedSandbox(this.#sandbox, this.#environmentId, this.#sessionId);
+    await validateManagedSandbox(this.#sandbox, this.#environmentId, this.#sessionId, this.#allocationName);
   }
 }
 
@@ -518,14 +533,16 @@ async function managedSandbox(
   client: DaytonaClientPort,
   options: DaytonaManagedRuntimeOptions,
   environmentId: string,
-  sessionId: string,
+  context: SandboxFactoryContext,
   acquisition?: ProviderManagedRuntimeAcquisitionContext,
 ): Promise<DaytonaRuntime> {
-  const name = sandboxName(sessionId);
+  const sessionId = context.sessionId;
+  const name = sandboxName(context);
+  const allocationName = context.allocationId === undefined ? undefined : name;
   let sandbox: DaytonaSandboxSdkPort;
   try {
     sandbox = await client.get(name);
-    await validateManagedSandbox(sandbox, environmentId, sessionId);
+    await validateManagedSandbox(sandbox, environmentId, sessionId, allocationName);
   } catch (error) {
     if (!isNotFound(error)) throw error;
     try {
@@ -542,11 +559,12 @@ async function managedSandbox(
     } catch (createError) {
       if (!isConflict(createError)) throw createError;
       sandbox = await client.get(name);
-      await validateManagedSandbox(sandbox, environmentId, sessionId);
+      await validateManagedSandbox(sandbox, environmentId, sessionId, allocationName);
     }
   }
+  await validateManagedSandbox(sandbox, environmentId, sessionId, allocationName);
   await ensureStarted(sandbox);
-  return new DaytonaRuntime({ sandbox, environmentId, sessionId });
+  return new DaytonaRuntime({ sandbox, environmentId, sessionId, allocationName });
 }
 
 export function createDaytonaProvider(
@@ -555,12 +573,13 @@ export function createDaytonaProvider(
   environmentId: string,
 ): ProviderManagedRuntimeProviderPort<DaytonaRuntime> {
   return {
+    allocationIsolation: true,
     create: async (context, _environment, acquisition) =>
       managedSandbox(
         client,
         options,
         environmentId,
-        context.sessionId,
+        context,
         acquisition,
       ),
     resume: async (handle, context) => {
@@ -568,12 +587,14 @@ export function createDaytonaProvider(
         throw new Error("Daytona provider received an incompatible runtime handle");
       }
       const sandbox = await client.get(handle.runtimeId);
-      await validateManagedSandbox(sandbox, environmentId, context.sessionId);
+      const allocationName = context.allocationId === undefined ? undefined : sandboxName(context);
+      await validateManagedSandbox(sandbox, environmentId, context.sessionId, allocationName);
       await ensureStarted(sandbox);
       return new DaytonaRuntime({
         sandbox,
         environmentId,
         sessionId: context.sessionId,
+        allocationName,
       });
     },
     restore: async (checkpoint, context) => {
@@ -582,7 +603,8 @@ export function createDaytonaProvider(
         || checkpoint.kind !== "filesystem"
         || checkpoint.scope !== "portable"
       ) throw new Error("Daytona provider received an incompatible workspace checkpoint");
-      const name = checkpointSandboxName(context.sessionId, checkpoint.checkpointId);
+      const name = checkpointSandboxName(context, checkpoint.checkpointId);
+      const allocationName = context.allocationId === undefined ? undefined : name;
       const labels = expectedLabels(environmentId, context.sessionId);
       let sandbox: DaytonaSandboxSdkPort;
       try {
@@ -593,13 +615,15 @@ export function createDaytonaProvider(
       } catch (error) {
         if (!isConflict(error)) throw error;
         sandbox = await client.get(name);
-        await validateManagedSandbox(sandbox, environmentId, context.sessionId);
+        await validateManagedSandbox(sandbox, environmentId, context.sessionId, allocationName);
       }
+      await validateManagedSandbox(sandbox, environmentId, context.sessionId, allocationName);
       await ensureStarted(sandbox);
       return new DaytonaRuntime({
         sandbox,
         environmentId,
         sessionId: context.sessionId,
+        allocationName,
       });
     },
   };
@@ -660,8 +684,9 @@ export async function createDaytonaManagedRuntime(
       ? {}
       : { credentialEgress: options.credentialEgress }),
     reapRuntime: async ({ lease, context }) => {
+      // The generic host requires allocation proof before invoking cleanup.
       const sandbox = await client.get(lease.runtimeId);
-      await validateManagedSandbox(sandbox, options.environmentId, context.sessionId);
+      await validateManagedSandbox(sandbox, options.environmentId, context.sessionId, sandboxName(context));
       await sandbox.delete(300, true);
     },
     drivers: ["ama_worker"],

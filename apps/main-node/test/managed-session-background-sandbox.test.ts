@@ -66,7 +66,6 @@ function fixture() {
   const runner = new DefaultNodeManagedSessionRunner({
     backgroundPiSandbox: true,
     buildSandbox, prepareSandbox, synchronizeSandbox, afterExecution,
-    sandboxLease: { ttlMs: 9_000, intervalMs: 3_000 },
     buildModel: async () => { order.push("model"); return {} as HarnessContext["model"]; },
     buildTools: async () => ({}),
     buildHarness: () => ({ run }),

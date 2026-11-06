@@ -97,10 +97,14 @@ async function buildNodeControlPlane(
   });
   disposables.add("scheduler", () => scheduler.stop());
   // Registered last so it stops first: it drives the Session compositions above.
-  disposables.add("managed_session_execution_worker", () => managedSessionExecutionWorker.stop());
+  disposables.add("managed_session_execution_worker", () => managedSessionExecutionWorker.shutdown());
 
   const shutdownNodeApp = async (signal = "dispose") => {
-    logger.info({ op: "main-node.shutdown", signal }, `received ${signal}, shutting down`);
+    try {
+      logger.info({ op: "main-node.shutdown", signal }, `received ${signal}, shutting down`);
+    } catch {
+      // Resource teardown cannot depend on a functioning logger.
+    }
     await disposables.dispose();
   };
 
@@ -128,9 +132,12 @@ async function buildNodeControlPlane(
     },
     components,
     stop: async (signal) => {
-      removeRejectionNet?.();
-      removeRejectionNet = null;
-      await shutdownNodeApp(signal);
+      try {
+        await shutdownNodeApp(signal);
+      } finally {
+        removeRejectionNet?.();
+        removeRejectionNet = null;
+      }
     },
   };
 }

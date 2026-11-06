@@ -157,7 +157,7 @@ describe("SqlSessionExecutionCoordinator", () => {
       },
     };
     const retrying = new SqlSessionExecutionCoordinator(retryingSql, { serializeSessionClaims: true });
-    await retrying.admit(admitted("deadlock", "session_01", at(1)));
+    await coordinator.admit(admitted("deadlock", "session_01", at(1)));
     await expect(retrying.claim({
       ownerId: "recovered",
       attemptId: "recovered_attempt",
@@ -406,6 +406,9 @@ describe("SqlSessionExecutionCoordinator", () => {
     expect(executed.some((ddl) => ddl.includes("managed_session_executions_claim_idx"))).toBe(false);
     expect(executed).toEqual(expect.arrayContaining([
       expect.stringContaining("CREATE INDEX managed_session_executions_session_idx"),
+      expect.stringContaining("CREATE INDEX managed_session_executions_admission_idx"),
+      expect.stringContaining("ALTER TABLE managed_session_executions ADD COLUMN admission_sequence BIGINT NOT NULL DEFAULT 0"),
+      expect.stringMatching(/CREATE TABLE IF NOT EXISTS managed_session_admission_counters[\s\S]*ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci/),
       expect.stringContaining(
         "ALTER TABLE managed_session_executions ADD COLUMN held_after_exhausted_ms BIGINT",
       ),
@@ -416,6 +419,28 @@ describe("SqlSessionExecutionCoordinator", () => {
         params: ["managed_session_executions", "managed_session_executions_claim_idx"],
       }),
     ]));
+  });
+
+  it("upgrades PostgreSQL admission columns using the current schema catalog", async () => {
+    const executed: string[] = [];
+    const queried: string[] = [];
+    const postgresSql = {
+      ...fakeSql(),
+      prepare: (query: string) => {
+        queried.push(query);
+        return fakeSql({ allResults: ["workspace_id", "session_id", "lane_id", "id", "admitted_at_ms",
+          "events_fingerprint", "generation", "attempt_count", "max_attempts", "deadline_at_ms",
+          "claimed_at_ms", "lease_expires_at_ms", "interrupt_requested_at_ms", "settled_at_ms",
+          "failure", "held_after_exhausted_ms", "revision", "version", "holder_execution_id"].map(name => ({ name })) }).prepare(query);
+      },
+      exec: async (query: string) => { executed.push(query); },
+    } as SqlClient;
+    await ensureSessionExecutionCoordinatorSchema(postgresSql, "postgres");
+    expect(queried).toContainEqual(expect.stringContaining("table_schema = current_schema()"));
+    expect(queried.some(query => query.includes("PRAGMA"))).toBe(false);
+    expect(executed.filter(query => query.startsWith("ALTER TABLE"))).toEqual([
+      "ALTER TABLE managed_session_executions ADD COLUMN admission_sequence BIGINT NOT NULL DEFAULT 0",
+    ]);
   });
 
   it("fails admission if the inserted execution cannot be read back", async () => {

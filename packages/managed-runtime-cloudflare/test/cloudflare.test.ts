@@ -12,7 +12,8 @@ import {
 } from "../src/index";
 
 class FakeSandbox implements CloudflareManagedRuntimeSandbox {
-  readonly runtimeHandle = () => ({ provider: "cloudflare", runtimeId: "session_1" });
+  constructor(public runtimeId = "session_1") {}
+  readonly runtimeHandle = () => ({ provider: "cloudflare", runtimeId: this.runtimeId });
   readonly runtimeCapabilities = () => ({
     lease: true,
     suspend: ["filesystem" as const],
@@ -23,7 +24,7 @@ class FakeSandbox implements CloudflareManagedRuntimeSandbox {
   readonly checkpoint = vi.fn(async () => ({
     provider: "cloudflare",
     checkpointId: "checkpoint_1",
-    sourceRuntimeId: "session_1",
+    sourceRuntimeId: this.runtimeId,
     kind: "filesystem" as const,
     scope: "portable" as const,
   }));
@@ -113,7 +114,7 @@ describe("isolated Cloudflare managed runtime package", () => {
     const sandbox = new FakeSandbox();
     const options = {
       env,
-      createSandbox: () => sandbox,
+      createSandbox: (_env: Env, runtimeId: string) => Object.assign(sandbox, { runtimeId }),
     };
     expect(createManagedRuntimeProviderDriver(options).descriptor()).toEqual(
       createCloudflareManagedRuntimeDriver(env, options).descriptor(),
@@ -144,7 +145,7 @@ describe("isolated Cloudflare managed runtime package", () => {
 
   it("wires credential egress, durable output mounts, acquisition, revocation, and reaping", async () => {
     const sandbox = new FakeSandbox();
-    const createSandbox = vi.fn(() => sandbox);
+    const createSandbox = vi.fn((_env, runtimeId: string) => Object.assign(sandbox, { runtimeId }));
     const runtime = createCloudflareManagedRuntime({
       ...env,
       FILES_BUCKET: {},
@@ -180,13 +181,13 @@ describe("isolated Cloudflare managed runtime package", () => {
     expect(sandbox.mountSessionOutputs).toHaveBeenCalledWith({ tenantId: "tenant", sessionId: "session" });
     expect(sandbox.revokeOutboundContext).toHaveBeenCalledWith({ workId: "work", generation: 3, reason: "completed" });
     await runtime.sandbox.terminate({ scope, fence, lease, reason: "completed" });
-    await runtime.sandbox.reap({ scope, lease: { provider: "cloudflare", runtimeId: "orphan" }, reason: "lease_lost" });
+    await runtime.sandbox.reap({ scope, lease: { provider: "cloudflare", runtimeId: "orphan", allocation: { id: "orphan", scope, ownerId: fence.ownerId, generation: fence.generation } }, reason: "lease_lost" });
     expect(createSandbox).toHaveBeenLastCalledWith(expect.anything(), "orphan");
   });
 
   it("omits optional egress URL and rejects a runtime without the durable output mount Port", async () => {
     const sandbox = new FakeSandbox();
-    const runtime = createCloudflareManagedRuntime({ ...env, FILES_BUCKET: {}, R2_ENDPOINT: "r2", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s" } as never, { createSandbox: () => sandbox });
+    const runtime = createCloudflareManagedRuntime({ ...env, FILES_BUCKET: {}, R2_ENDPOINT: "r2", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s" } as never, { createSandbox: (_env: Env, runtimeId: string) => Object.assign(sandbox, { runtimeId }) });
     const scope = { workspaceId: "tenant", environmentId: "environment", sessionId: "session", workId: "work" };
     const fence = { ...scope, ownerId: "owner", generation: 1, token: "fence", expiresAt: "2026-09-07T12:00:00.000Z" };
     const signal = new AbortController().signal;
@@ -199,7 +200,7 @@ describe("isolated Cloudflare managed runtime package", () => {
 
     const withoutMount = new FakeSandbox();
     Object.defineProperty(withoutMount, "mountSessionOutputs", { value: undefined });
-    const noMountRuntime = createCloudflareManagedRuntime({ ...env, FILES_BUCKET: {}, R2_ENDPOINT: "r2", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s" } as never, { createSandbox: () => withoutMount });
+    const noMountRuntime = createCloudflareManagedRuntime({ ...env, FILES_BUCKET: {}, R2_ENDPOINT: "r2", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s" } as never, { createSandbox: (_env, runtimeId) => Object.assign(withoutMount, { runtimeId }) });
     const ws = await noMountRuntime.workspace.materialize({ scope, fence, strategy: "checkpoint_restore", activeCheckpoint: null, idempotencyKey: "ws2", signal });
     const out = await noMountRuntime.outputs.prepare({ scope, fence, strategy: "durable_mount", idempotencyKey: "out2", signal });
     const noMountLease = await noMountRuntime.sandbox.acquire({ scope, fence, plan: { workspaceStrategy: "checkpoint_restore", outputStrategy: "durable_mount", runtimeCheckpoint: null, driver: { type: "ama_worker", process: { command: "worker" } } }, workspace: ws, outputs: out, signal });
@@ -242,7 +243,7 @@ describe("isolated Cloudflare managed runtime package", () => {
       R2_ACCESS_KEY_ID: "access", R2_SECRET_ACCESS_KEY: "secret",
     } as never;
     const runtime = createCloudflareManagedRuntime(configured, {
-      createSandbox: () => sandbox, workspaceDurableMount: true,
+      createSandbox: (_env: Env, runtimeId: string) => Object.assign(sandbox, { runtimeId }), workspaceDurableMount: true,
     });
     const scope = { workspaceId: "tenant", environmentId: "environment", sessionId: "session", workId: "work" };
     const fence = { ...scope, ownerId: "owner", generation: 1, token: "fence", expiresAt: "2026-09-07T12:00:00.000Z" };
@@ -306,4 +307,59 @@ describe("isolated Cloudflare managed runtime package", () => {
     }
     expect(createCloudflareManagedEnvironmentWorker(env, { runtime: { ownerId: "owner-c", createSandbox }, worker } as never).environmentWorker).toBeDefined();
   });
+
+  it("isolates physical allocation keys across owners while preserving logical Session mount and egress scope", async () => {
+    const resources = new Map<string, FakeSandbox>();
+    const createSandbox = vi.fn((_env: Env, runtimeId: string) => {
+      const existing = resources.get(runtimeId);
+      if (existing) return existing;
+      const sandbox = new FakeSandbox(runtimeId);
+      sandbox.destroy.mockImplementation(async () => { resources.delete(runtimeId); });
+      sandbox.status.mockImplementation(async () => resources.has(runtimeId) ? "running" : "stopped" as never);
+      resources.set(runtimeId, sandbox);
+      return sandbox;
+    });
+    const configured = {
+      ...env, WORKSPACE_BUCKET: {}, WORKSPACE_BUCKET_NAME: "workspace-bucket",
+      R2_ENDPOINT: "https://example.r2.cloudflarestorage.com", R2_ACCESS_KEY_ID: "access", R2_SECRET_ACCESS_KEY: "secret",
+    } as never;
+    const options = { createSandbox, workspaceDurableMount: true };
+    const first = createCloudflareManagedRuntime(configured, options);
+    const second = createCloudflareManagedRuntime(configured, options);
+    const scope = { workspaceId: "tenant", environmentId: "environment", sessionId: "logical-session", workId: "work" };
+    const oldFence = { ...scope, ownerId: "old", generation: 1, token: "old-token", expiresAt: "2020-01-01T00:00:00Z" };
+    const nextFence = { ...oldFence, ownerId: "new", generation: 2, token: "new-token", expiresAt: "2099-01-01T00:00:00Z" };
+    const signal = new AbortController().signal;
+    const allocate = async (composed: typeof first, fence: typeof oldFence) => {
+      const workspace = await composed.workspace.materialize({ scope, fence, strategy: "durable_mount", activeCheckpoint: null, idempotencyKey: "workspace", signal });
+      const egress = await composed.credentialEgress!.prepare({ scope, fence, requirement: "required", idempotencyKey: "egress", signal });
+      const lease = await composed.sandbox.acquire({ scope, fence, workspace, outputs: null, credentialEgress: egress, signal,
+        plan: { workspaceStrategy: "durable_mount", outputStrategy: null, runtimeCheckpoint: null, driver: { type: "ama_worker", process: { command: "worker" } } } });
+      await composed.workspace.attach({ scope, fence, strategy: "durable_mount", binding: workspace, sandbox: lease, signal });
+      await composed.credentialEgress!.attach({ scope, fence, binding: egress!, sandbox: lease, signal });
+      return lease;
+    };
+    const a = await allocate(first, oldFence);
+    const b = await allocate(second, nextFence);
+    expect(a.runtimeId).toBe(a.allocation?.id);
+    expect(b.runtimeId).toBe(b.allocation?.id);
+    expect(a.runtimeId).not.toBe(b.runtimeId);
+    const current = resources.get(b.runtimeId)!;
+    expect(current.mountDurableWorkspace).toHaveBeenCalledWith({ workspaceId: scope.workspaceId, sessionId: scope.sessionId });
+    expect(current.setOutboundContext).toHaveBeenCalledWith(expect.objectContaining({ sessionId: scope.sessionId, ownerId: "new" }));
+    await first.sandbox.terminate({ scope, fence: oldFence, lease: a, reason: "lease_lost" });
+    expect(resources.has(a.runtimeId)).toBe(false);
+    expect(resources.has(b.runtimeId)).toBe(true);
+    expect(current.destroy).not.toHaveBeenCalled();
+    await expect(second.sandbox.inspect(b)).resolves.toEqual({ state: "running" });
+  });
+
+  it("rejects an injected Cloudflare factory that ignores the allocation key", async () => {
+    const shared = new FakeSandbox("logical-session");
+    const provider = createCloudflareSandboxProvider(env, () => shared);
+    await expect(provider.create({ sessionId: "logical-session", workdir: "/workspace", allocationId: "independent" }, {}))
+      .rejects.toThrow(/did not honor the isolated allocation identity/i);
+    expect(shared.destroy).not.toHaveBeenCalled();
+  });
+
 });

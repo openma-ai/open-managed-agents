@@ -58,9 +58,8 @@ describe("db boundary retry", () => {
 
 describe("process failure log", () => {
   it("prints one structured line and exits on an unhandled rejection", async () => {
-    const tsx = resolve(import.meta.dirname, "../node_modules/.bin/tsx");
     const fixture = resolve(import.meta.dirname, "helpers/process-failure-fixture.ts");
-    const child = spawn(tsx, [fixture], {
+    const child = spawn(process.execPath, ["--import", "tsx", fixture], {
       env: { ...process.env, NODE_ENV: "production" },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -79,7 +78,6 @@ describe("process failure log", () => {
     });
     expect(code).toBe(1);
     const line = output.split("\n").map((entry) => entry.trim()).find((entry) => entry.includes("process.failure"));
-    console.log(line);
     expect(line).toBeDefined();
     expect(JSON.parse(line ?? "{}")).toMatchObject({
       msg: "process.failure",
@@ -88,4 +86,37 @@ describe("process failure log", () => {
       sessionId: "session_fatal",
     });
   });
+
+  it.each([
+    ["timeout", "production", "Timeout"],
+    ["connection", "production", "ConnectionLost"],
+    ["exception", "production", "Timeout"],
+    ["logger", "production", null],
+    ["metrics", "production", "Timeout"],
+    ["timeout", "test", "Timeout"],
+  ])("exits for unowned %s even with NODE_ENV=%s", async (mode, nodeEnv, tag) => {
+    const fixture = resolve(import.meta.dirname, "helpers/process-failure-fixture.ts");
+    const child = spawn(process.execPath, ["--import", "tsx", fixture, mode], {
+      env: { ...process.env, NODE_ENV: nodeEnv }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += String(chunk); });
+    child.stderr.on("data", (chunk) => { output += String(chunk); });
+    const code = await new Promise<number>((resolvePromise, reject) => {
+      const deadline = setTimeout(() => { child.kill(); reject(new Error(`failure fixture hung: ${output}`)); }, 10_000);
+      child.once("error", (error) => { clearTimeout(deadline); reject(error); });
+      child.once("close", (status) => { clearTimeout(deadline); resolvePromise(status ?? -1); });
+    });
+    expect(output).toContain("fixture-ready");
+    expect(output).not.toContain("survived");
+    expect(code).toBe(1);
+    if (tag !== null) {
+      const line = output.split("\n").find((entry) => entry.startsWith('{"msg":"process.failure"'));
+      expect(JSON.parse(line ?? "{}")).toMatchObject({
+        errorTag: tag,
+        op: mode === "exception" ? "process.uncaught_exception" : "process.unhandled_rejection",
+      });
+    }
+  });
+
 });

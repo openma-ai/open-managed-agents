@@ -166,7 +166,8 @@ describe("BoxLite managed runtime provider", () => {
       idempotencyKey: "checkpoint-1",
       signal,
     });
-    const nextFence = { ...fence, generation: 2, token: "next" };
+    // Retained compute can resume only under the exact original owner fence.
+    const nextFence = fence;
     const nextWorkspace = await runtime.workspace.materialize({
       scope,
       fence: nextFence,
@@ -192,6 +193,8 @@ describe("BoxLite managed runtime provider", () => {
     expect(box.stop).toHaveBeenCalledOnce();
     expect(box.start).toHaveBeenCalledTimes(2);
 
+    await expect(runtime.sandbox.reap({ scope, lease, reason: "completed" })).rejects.toThrow("active sandbox allocation");
+    await runtime.sandbox.terminate({ scope, fence, lease, reason: "completed" });
     await runtime.sandbox.reap({ scope, lease, reason: "completed" });
     expect(sdk.remove).toHaveBeenCalledWith("box_1", true);
   });

@@ -23,7 +23,7 @@ import {
   isCasConflict,
   withDbBoundary,
 } from "@open-managed-agents/sql-client/db-errors";
-import type { SqlClient } from "@open-managed-agents/sql-client";
+import type { SqlClient, SqlStatement } from "@open-managed-agents/sql-client";
 import { Cause, Effect, Exit, Option } from "effect";
 
 /** Row is a turn continuation (client answer to a paused tool call). */
@@ -48,6 +48,7 @@ const schemaStatements = [
     lane_id TEXT NOT NULL,
     id TEXT NOT NULL,
     admitted_at_ms BIGINT NOT NULL,
+    admission_sequence BIGINT NOT NULL DEFAULT 0,
     events_json TEXT NOT NULL,
     events_fingerprint TEXT NOT NULL,
     state TEXT NOT NULL,
@@ -79,7 +80,27 @@ const schemaStatements = [
     holder_execution_id VARCHAR(191),
     PRIMARY KEY (workspace_id, session_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS managed_session_admission_counters (
+    workspace_id VARCHAR(191) NOT NULL,
+    session_id VARCHAR(191) NOT NULL,
+    last_sequence BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, session_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS managed_session_executions_admission_idx
+    ON managed_session_executions (workspace_id, session_id, lane_id, admission_sequence)`,
 ] as const;
+
+/** New admissions have a unique positive sequence within their Session.
+ * Historical/creation-bootstrap rows keep sequence 0 and precede new work;
+ * their existing time/id order is retained, not claimed to reconstruct FIFO. */
+const admissionOrder = "admission_sequence ASC, admitted_at_ms ASC, id ASC";
+
+function precedes(candidate: string, earlier: string): string {
+  return `${earlier}.admission_sequence < ${candidate}.admission_sequence
+    OR (${earlier}.admission_sequence = ${candidate}.admission_sequence
+      AND (${earlier}.admitted_at_ms < ${candidate}.admitted_at_ms
+        OR (${earlier}.admitted_at_ms = ${candidate}.admitted_at_ms AND ${earlier}.id < ${candidate}.id)))`;
+}
 
 export const sessionExecutionCoordinatorSqlSchema =
   `${schemaStatements.join(";\n")};`;
@@ -178,12 +199,16 @@ export async function ensureSessionExecutionCoordinatorSchema(
   // earlier preview of this contract.  `CREATE TABLE IF NOT EXISTS` quite
   // correctly leaves those tables untouched, but a subsequent INSERT would
   // then fail on the newly required lease columns.  SQLite/D1 expose
-  // `PRAGMA table_info`; MySQL uses information_schema; PostgreSQL does not
-  // need the probe here, so it is intentionally best-effort and the real PG
-  // migrations remain the source of truth there.
+  // `PRAGMA table_info`; MySQL and PostgreSQL use information_schema. The
+  // probe is best-effort; installed production schemas also have migrations.
   let existing: Set<string> | null = null;
   try {
-    const result = dialect === "mysql"
+    const result = dialect === "postgres"
+      ? await sql.prepare(
+        `SELECT column_name AS name FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'managed_session_executions'`,
+      ).all<{ name?: string }>()
+      : dialect === "mysql"
       ? await sql.prepare(
         `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE()
@@ -198,6 +223,7 @@ export async function ensureSessionExecutionCoordinatorSchema(
   }
   if (existing !== null && existing.size > 0) {
     const additions: Array<[string, string]> = [
+      ["admission_sequence", "BIGINT NOT NULL DEFAULT 0"],
       ["lane_id", "TEXT NOT NULL DEFAULT 'sthr_primary'"],
       ["events_fingerprint", "TEXT NOT NULL DEFAULT ''"],
       ["generation", "BIGINT NOT NULL DEFAULT 0"],
@@ -221,7 +247,8 @@ export async function ensureSessionExecutionCoordinatorSchema(
     }
   }
   for (const statement of schemaStatements.slice(1)) {
-    await ensureIndex(sql, statement, dialect);
+    await ensureIndex(sql, statement + (dialect === "mysql" && statement.startsWith("CREATE TABLE")
+      ? " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" : ""), dialect);
   }
   await upgradeSessionClaimLockColumns(sql, dialect);
 }
@@ -478,12 +505,21 @@ export class SqlSessionExecutionStore
       throw new Error("Session Execution deadline exceeds safe timestamp range");
     }
     const eventsJson = stableJson(input.execution.events);
-    const inserted = await this.sql.prepare(`
+    // One counter row serializes standalone admission with the transactional
+    // event outbox. Allocate and insert in the same short transaction; neither
+    // wall-clock rollback nor a lexicographically smaller event ID can jump a
+    // previously committed admission. Replays may leave harmless sequence gaps.
+    // Project only last_sequence: MySQL's translated duplicate-key no-op must
+    // not see a second workspace_id column from the SELECT source.
+    const admission = this.sql.prepare(`
       INSERT INTO managed_session_executions (
         workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
         events_fingerprint, state, generation, attempt_count, max_attempts,
-        deadline_at_ms, revision
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, 0, ?, ?, 1)
+        deadline_at_ms, revision, admission_sequence
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', 0, 0, ?, ?, 1, last_sequence
+        FROM (SELECT last_sequence FROM managed_session_admission_counters
+          WHERE workspace_id = ? AND session_id = ?) AS admission_counter
+        WHERE 1 = 1
       ON CONFLICT (workspace_id, id) DO NOTHING
     `).bind(
       input.execution.workspaceId,
@@ -495,7 +531,20 @@ export class SqlSessionExecutionStore
       eventsJson,
       maxAttempts,
       deadlineAt,
-    ).run();
+      input.execution.workspaceId,
+      input.execution.sessionId,
+    );
+    const results = await this.sql.batch([
+      this.sql.prepare(`INSERT INTO managed_session_admission_counters
+        (workspace_id, session_id, last_sequence) VALUES (?, ?, 0)
+        ON CONFLICT (workspace_id, session_id) DO NOTHING`)
+        .bind(input.execution.workspaceId, input.execution.sessionId),
+      this.sql.prepare(`UPDATE managed_session_admission_counters SET last_sequence = last_sequence + 1
+        WHERE workspace_id = ? AND session_id = ?`)
+        .bind(input.execution.workspaceId, input.execution.sessionId),
+      admission,
+    ]);
+    const inserted = results[2];
     const execution = await this.find({
       workspaceId: input.execution.workspaceId,
       executionId: input.execution.id,
@@ -503,7 +552,7 @@ export class SqlSessionExecutionStore
     if (execution === null) {
       throw new Error("Session Execution vanished after admission");
     }
-    if (inserted.meta.changes === 1) return { type: "admitted", execution };
+    if (inserted?.meta.changes === 1) return { type: "admitted", execution };
     const sameIdentity = execution.sessionId === input.execution.sessionId &&
       execution.laneId === (input.execution.laneId ?? "sthr_primary") &&
       execution.admittedAt === input.execution.admittedAt &&
@@ -625,7 +674,7 @@ export class SqlSessionExecutionStore
       SELECT ${columns()} FROM managed_session_executions
        WHERE workspace_id = ? AND session_id = ? AND lane_id = ?
          AND state = 'queued' AND held_after_exhausted_ms IS NOT NULL
-       ORDER BY admitted_at_ms ASC, id ASC
+       ORDER BY ${admissionOrder}
     `).bind(input.workspaceId, input.sessionId, input.laneId)
       .all<ExecutionRow>();
     const heldRows = held.results ?? [];
@@ -634,7 +683,7 @@ export class SqlSessionExecutionStore
       SELECT ${columns()} FROM managed_session_executions
        WHERE workspace_id = ? AND session_id = ? AND lane_id = ?
          AND state = 'queued' AND held_after_exhausted_ms IS NULL
-       ORDER BY admitted_at_ms ASC, id ASC
+       ORDER BY ${admissionOrder}
        LIMIT 1
     `).bind(input.workspaceId, input.sessionId, input.laneId)
       .first<ExecutionRow>();
@@ -645,28 +694,65 @@ export class SqlSessionExecutionStore
     const nextEvents = JSON.parse(next.events_json) as SessionExecution["events"];
     const merged = [...heldEvents, ...nextEvents];
     const mergedJson = stableJson(merged);
-    await this.sql.prepare(`
-      UPDATE managed_session_executions
-         SET events_json = ?, events_fingerprint = ?, revision = revision + 1
-       WHERE workspace_id = ? AND id = ? AND state = 'queued'
-         AND held_after_exhausted_ms IS NULL AND revision = ?
-    `).bind(
-      mergedJson, mergedJson,
-      input.workspaceId, next.id, next.revision,
-    ).run();
-    for (const row of heldRows) {
-      await this.sql.prepare(`
+    const token = crypto.randomUUID();
+    const gate = `EXISTS (SELECT 1 FROM managed_session_claim_locks
+      WHERE workspace_id = ? AND session_id = ? AND claim_token = ? AND holder_execution_id = ?)`;
+    const gateArgs = [input.workspaceId, input.sessionId, token, next.id];
+    const clearHeldEvents = await this.clearHeldEventStatements(
+      input.workspaceId, input.sessionId, heldEvents.map(event => event.id), gate, gateArgs,
+    );
+    await this.sql.prepare(`INSERT INTO managed_session_claim_locks
+      (workspace_id, session_id, claim_token, version) VALUES (?, ?, ?, 0)
+      ON CONFLICT (workspace_id, session_id) DO NOTHING`)
+      .bind(input.workspaceId, input.sessionId, token).run();
+    const snapshots = [next, ...heldRows];
+    // Lock captured execution keys before validating the read snapshots. A
+    // competing claim/absorption may already have changed either side. The
+    // gate lives on the mutex table to avoid a MySQL target-table subquery.
+    const results = await this.sql.batch([
+      this.sql.prepare(`UPDATE managed_session_claim_locks
+        SET claim_token = ?, holder_execution_id = NULL, version = version + 1
+        WHERE workspace_id = ? AND session_id = ?`).bind(token, input.workspaceId, input.sessionId),
+      ...snapshots.map(row => row.id).sort().map(id => this.sql.prepare(`UPDATE managed_session_executions
+        SET revision = revision WHERE workspace_id = ? AND id = ?`).bind(input.workspaceId, id)),
+      this.sql.prepare(`UPDATE managed_session_claim_locks SET holder_execution_id = ?
+        WHERE workspace_id = ? AND session_id = ? AND claim_token = ?
+          AND EXISTS (SELECT 1 FROM managed_session_executions
+            WHERE workspace_id = ? AND session_id = ? AND lane_id = ? AND id = ?
+              AND state = 'queued' AND revision = ? AND held_after_exhausted_ms IS NULL)`)
+        .bind(next.id, input.workspaceId, input.sessionId, token,
+          input.workspaceId, input.sessionId, input.laneId, next.id, next.revision),
+      // Validate each source separately to keep every statement below D1's
+      // parameter limit even when many held inputs accumulated. Any mismatch
+      // clears the gate; later checks cannot turn it back on.
+      ...heldRows.map(row => this.sql.prepare(`UPDATE managed_session_claim_locks
+        SET holder_execution_id = NULL
+        WHERE workspace_id = ? AND session_id = ? AND claim_token = ? AND holder_execution_id = ?
+          AND NOT EXISTS (SELECT 1 FROM managed_session_executions
+            WHERE workspace_id = ? AND session_id = ? AND lane_id = ? AND id = ?
+              AND state = 'queued' AND revision = ? AND held_after_exhausted_ms IS NOT NULL)`)
+        .bind(...gateArgs, input.workspaceId, input.sessionId, input.laneId, row.id, row.revision)),
+      this.sql.prepare(`UPDATE managed_session_executions
+        SET events_json = ?, events_fingerprint = ?, revision = revision + 1
+        WHERE workspace_id = ? AND id = ? AND state = 'queued'
+          AND held_after_exhausted_ms IS NULL AND revision = ? AND ${gate}`)
+        .bind(mergedJson, mergedJson, input.workspaceId, next.id, next.revision, ...gateArgs),
+      ...heldRows.map(row => this.sql.prepare(`
         UPDATE managed_session_executions
            SET state = 'completed', settled_at_ms = ?,
                held_after_exhausted_ms = NULL, failure = NULL,
                revision = revision + 1
          WHERE workspace_id = ? AND id = ? AND state = 'queued'
-           AND held_after_exhausted_ms IS NOT NULL
-      `).bind(input.absorbedAt, input.workspaceId, row.id).run();
-      await this.clearHeldAfterExhaustedOnEvents(
-        input.workspaceId, input.sessionId,
-        (JSON.parse(row.events_json) as SessionExecution["events"]).map((e) => e.id),
-      );
+           AND held_after_exhausted_ms IS NOT NULL AND revision = ? AND ${gate}
+      `).bind(input.absorbedAt, input.workspaceId, row.id, row.revision, ...gateArgs)),
+      ...clearHeldEvents,
+    ]);
+    const mergeIndex = 2 + snapshots.length + heldRows.length;
+    if (results[mergeIndex]?.meta.changes !== 1) {
+      // Neither merge nor completion ran. claimWithCasRetries will reload
+      // both sides; uncaptured/new held rows remain held for a later transfer.
+      throw new CasConflict({ op: "session_execution.claim", sessionId: input.sessionId,
+        cause: "held input absorption snapshot changed" });
     }
   }
 
@@ -699,12 +785,15 @@ export class SqlSessionExecutionStore
     }
   }
 
-  private async clearHeldAfterExhaustedOnEvents(
+  private async clearHeldEventStatements(
     workspaceId: string,
     sessionId: string,
     eventIds: readonly string[],
-  ): Promise<void> {
-    for (const eventId of eventIds) {
+    gate: string,
+    gateArgs: string[],
+  ): Promise<SqlStatement[]> {
+    const statements: SqlStatement[] = [];
+    for (const eventId of new Set(eventIds)) {
       try {
         const row = await this.sql.prepare(`
           SELECT document FROM managed_session_events
@@ -715,14 +804,15 @@ export class SqlSessionExecutionStore
         const doc = JSON.parse(row.document) as Record<string, unknown>;
         if (doc.heldAfterExhausted !== true) continue;
         const { heldAfterExhausted: _drop, ...rest } = doc;
-        await this.sql.prepare(`
+        statements.push(this.sql.prepare(`
           UPDATE managed_session_events SET document = ?
-           WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?
-        `).bind(JSON.stringify(rest), workspaceId, sessionId, eventId, row.document).run();
+           WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ? AND ${gate}
+        `).bind(JSON.stringify(rest), workspaceId, sessionId, eventId, row.document, ...gateArgs));
       } catch {
         // Same as mark: fixtures without the events table are fine.
       }
     }
+    return statements;
   }
 
   private async selectCandidate(
@@ -761,8 +851,7 @@ export class SqlSessionExecutionStore
               AND earlier.state IN ('queued', 'running')
               AND earlier.held_after_exhausted_ms IS NULL
               ${continuations ? `AND NOT (earlier.state = 'queued' AND NOT (${CONTINUATION_SQL("earlier")}))` : ""}
-              AND (earlier.admitted_at_ms < candidate.admitted_at_ms
-                OR (earlier.admitted_at_ms = candidate.admitted_at_ms AND earlier.id < candidate.id))
+              AND (${precedes("candidate", "earlier")})
          )
          ${serial ? `AND NOT EXISTS (
            SELECT 1 FROM managed_session_executions AS active
@@ -817,7 +906,9 @@ export class SqlSessionExecutionStore
 
   /**
    * Lock order inside the short transaction: session claim-lock row, then
-   * the execution primary key. No claim_idx range scan.
+   * recheck live Session peers, then the execution primary key. Candidate
+   * selection may predate another lane's committed claim, even if we read
+   * the newest mutex version afterward.
    */
   private async claimSerial(
     input: ClaimSessionExecution,
@@ -844,24 +935,39 @@ export class SqlSessionExecutionStore
     const results = await this.sql.batch<ExecutionRow>([
       this.sql.prepare(`
         UPDATE managed_session_claim_locks
-           SET version = version + 1, holder_execution_id = ?, claim_token = ?
+           SET version = version + 1, holder_execution_id = NULL, claim_token = ?
          WHERE workspace_id = ? AND session_id = ? AND version = ?
       `).bind(
-        candidate.id,
         claimToken,
         candidate.workspace_id,
         candidate.session_id,
         version,
       ),
+      // Check after acquiring the mutex in a separate statement: waiting
+      // replicas must observe the prior winner's commit. Gate the lock row
+      // rather than querying executions from its own UPDATE (MySQL 1093).
+      this.sql.prepare(`
+        UPDATE managed_session_claim_locks
+           SET holder_execution_id = ?
+         WHERE workspace_id = ? AND session_id = ? AND version = ? AND claim_token = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM managed_session_executions AS active
+              WHERE active.workspace_id = ? AND active.session_id = ?
+                AND active.id <> ? AND active.state = 'running'
+                AND active.lease_expires_at_ms > ?
+           )
+      `).bind(candidate.id, candidate.workspace_id, candidate.session_id, nextVersion, claimToken,
+        candidate.workspace_id, candidate.session_id, candidate.id, claimedAt),
       this.executionClaimStatement(input, claimedAt, candidate, revision, {
         workspaceId: candidate.workspace_id,
         sessionId: candidate.session_id,
         version: nextVersion,
         holderId: candidate.id,
+        claimToken,
       }),
     ]);
-    if ((results[0]?.meta.changes ?? 0) !== 1) return null;
-    const row = results[1]?.results?.[0] ?? null;
+    if ((results[0]?.meta.changes ?? 0) !== 1 || (results[1]?.meta.changes ?? 0) !== 1) return null;
+    const row = results[2]?.results?.[0] ?? null;
     return row === null ? null : this.claimedResult(row);
   }
 
@@ -887,6 +993,7 @@ export class SqlSessionExecutionStore
       sessionId: string;
       version: number;
       holderId: string;
+      claimToken: string;
     },
   ) {
     const leaseEnd = claimedAt + input.leaseTtlMs;
@@ -909,6 +1016,7 @@ export class SqlSessionExecutionStore
               AND session_lock.session_id = ?
               AND session_lock.version = ?
               AND session_lock.holder_execution_id = ?
+              AND session_lock.claim_token = ?
          )` : ""}
       RETURNING ${columns()}
     `).bind(
@@ -923,7 +1031,7 @@ export class SqlSessionExecutionStore
       claimedAt,
       input.ownerId,
       claimedAt,
-      ...(lock ? [lock.workspaceId, lock.sessionId, lock.version, lock.holderId] : []),
+      ...(lock ? [lock.workspaceId, lock.sessionId, lock.version, lock.holderId, lock.claimToken] : []),
     );
   }
 
@@ -1252,7 +1360,7 @@ export class SqlSessionExecutionStore
       SELECT ${columns()} FROM managed_session_executions
        WHERE workspace_id = ? AND session_id = ? AND lane_id = ? AND state = 'queued'
          AND held_after_exhausted_ms IS NULL
-       ORDER BY admitted_at_ms ASC, id ASC
+       ORDER BY ${admissionOrder}
     `).bind(input.workspaceId, input.sessionId, input.laneId)
       .all<ExecutionRow>();
     return (rows.results ?? []).map(toExecution);
@@ -1398,7 +1506,7 @@ export class SqlSessionExecutionStore
         FROM managed_session_executions
        WHERE workspace_id = ? AND session_id = ?
          AND state IN ('queued', 'running')
-       ORDER BY admitted_at_ms ASC, id ASC
+       ORDER BY ${admissionOrder}
     `).bind(input.workspaceId, input.sessionId).all<ExecutionRow>();
     return (rows.results ?? []).map(toExecution);
   }

@@ -34,7 +34,7 @@ export function buildNodeHttpInferenceProxyRoutes(
     const body = ["GET", "HEAD"].includes(method.toUpperCase())
       ? null
       : await context.req.raw.arrayBuffer();
-    const budget = nodeSessionModelEgress(sessionId);
+    const budget = nodeSessionModelEgress({ workspaceId: tenantId, sessionId });
     return withHostedInferenceBudget(budget, () =>
       sendHostedInference({
         upstream,

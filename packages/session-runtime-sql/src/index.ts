@@ -18,6 +18,11 @@ export {
 } from "./coordination";
 export { SqlSessionExecutionContextSource } from "./context";
 export { SqlSessionRuntimeHistorySource } from "./history";
+export {
+  ensureSessionSandboxBindingSchema,
+  sessionSandboxBindingSqlSchema,
+  SqlSessionSandboxBindingStore,
+} from "./sandbox-binding";
 
 export interface SqlSessionRuntimeReaders {
   executionContext: SessionExecutionContextSourcePort;

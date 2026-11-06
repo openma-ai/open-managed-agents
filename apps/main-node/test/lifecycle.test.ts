@@ -72,4 +72,14 @@ describe("Disposables", () => {
     expect(stopped).toEqual([]);
     expect(d.disposed).toBe(false);
   });
+
+  it("continues disposal when the error observer also throws", async () => {
+    const databaseStop = vi.fn();
+    const d = new Disposables({ onError: () => { throw new Error("logger failed"); } });
+    d.add("database", databaseStop);
+    d.add("failed-worker", () => { throw new Error("worker failed"); });
+    await expect(d.dispose()).resolves.toBeUndefined();
+    expect(databaseStop).toHaveBeenCalledOnce();
+  });
+
 });

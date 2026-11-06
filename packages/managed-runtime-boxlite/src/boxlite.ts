@@ -150,9 +150,14 @@ interface BoxLiteConstructorPort {
   }): BoxLiteClientPort;
 }
 
-function stableName(providerId: BoxLiteManagedProviderId, sessionId: string): string {
+function stableName(providerId: BoxLiteManagedProviderId, context: SandboxFactoryContext): string {
+  if (context.allocationId !== undefined && (!context.allocationId || !context.workspaceId || !context.environmentId)) {
+    throw new Error("BoxLite allocation identity requires workspace and environment scope");
+  }
   return `oma-${createHash("sha256")
-    .update(`${providerId}:${sessionId}`)
+    .update(context.allocationId === undefined ? `${providerId}:${context.sessionId}` : JSON.stringify([
+      providerId, context.workspaceId, context.environmentId, context.sessionId, context.allocationId,
+    ]))
     .digest("hex")
     .slice(0, 32)}`;
 }
@@ -483,13 +488,14 @@ function createBoxLiteProviderWithClient(
   });
 
   return {
+    allocationIsolation: true,
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("BoxLite managed allocation requires acquisition context");
       }
       acquisition.signal.throwIfAborted();
       const sdk = await client();
-      const name = stableName(options.providerId, context.sessionId);
+      const name = stableName(options.providerId, context);
       const extra = await options.allocationOptions?.({ ...acquisition, name }) ?? {};
       acquisition.signal.throwIfAborted();
       const result = await sdk.getOrCreate({
@@ -525,7 +531,7 @@ function createBoxLiteProviderWithClient(
       const sdk = await client();
       const box = await sdk.get(handle.runtimeId);
       if (box === null) throw new Error(`BoxLite runtime not found: ${handle.runtimeId}`);
-      const name = stableName(options.providerId, context.sessionId);
+      const name = stableName(options.providerId, context);
       validateBox(box, name);
       await ensureRunning(box);
       await ensureWorkspace(box);
@@ -587,10 +593,11 @@ export function createBoxLiteManagedRuntime(options: BoxLiteManagedRuntimeOption
       ? {}
       : { credentialEgress: options.credentialEgress }),
     reapRuntime: async ({ lease, context }) => {
+      // The generic host requires allocation proof before invoking cleanup.
       const sdk = await client();
       const box = await sdk.get(lease.runtimeId);
       if (box === null) return;
-      validateBox(box, stableName(options.providerId, context.sessionId));
+      validateBox(box, stableName(options.providerId, context));
       await sdk.remove(lease.runtimeId, true);
     },
     drivers: ["ama_worker"],

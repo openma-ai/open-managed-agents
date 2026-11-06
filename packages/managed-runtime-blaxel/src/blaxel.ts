@@ -212,13 +212,22 @@ function createSdkResolver(options: BlaxelProviderOptions): BlaxelSdkResolver {
   return () => promise ??= loadBlaxelSdk(options);
 }
 
-function stableName(sessionId: string): string {
-  return `oma-${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}`;
+function allocationIdentity(context: SandboxFactoryContext): string {
+  if (context.allocationId === undefined) return context.sessionId;
+  if (!context.allocationId || !context.workspaceId || !context.environmentId) {
+    throw new Error("Blaxel allocation identity requires workspace and environment scope");
+  }
+  return JSON.stringify([providerName, context.workspaceId, context.environmentId,
+    context.sessionId, context.allocationId]);
 }
 
-function stableExternalId(environmentId: string, sessionId: string): string {
+function stableName(context: SandboxFactoryContext): string {
+  return `oma-${createHash("sha256").update(allocationIdentity(context)).digest("hex").slice(0, 32)}`;
+}
+
+function stableExternalId(environmentId: string, context: SandboxFactoryContext): string {
   return `openma:${createHash("sha256")
-    .update(`${environmentId}:${sessionId}`)
+    .update(`${environmentId}:${allocationIdentity(context)}`)
     .digest("hex")}`;
 }
 
@@ -490,13 +499,14 @@ function createBlaxelProviderWithSdk(
   ) => new BlaxelRuntime({ sdk, sandbox, name });
 
   return {
+    allocationIsolation: true,
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("Blaxel managed allocation requires acquisition context");
       }
       acquisition.signal.throwIfAborted();
       const sdk = await resolveSdk();
-      const name = stableName(context.sessionId);
+      const name = stableName(context);
       const labels = expectedLabels(
         acquisition.scope.environmentId,
         acquisition.scope.sessionId,
@@ -518,7 +528,7 @@ function createBlaxelProviderWithSdk(
         labels,
         externalId: stableExternalId(
           acquisition.scope.environmentId,
-          acquisition.scope.sessionId,
+          context,
         ),
       });
       validateSandbox(
@@ -542,7 +552,7 @@ function createBlaxelProviderWithSdk(
       acquisition.signal.throwIfAborted();
       const sdk = await resolveSdk();
       const sandbox = await sdk.get(handle.runtimeId);
-      const name = stableName(context.sessionId);
+      const name = stableName(context);
       validateSandbox(
         sandbox,
         name,
@@ -611,7 +621,10 @@ export function createBlaxelManagedRuntime(options: BlaxelManagedRuntimeOptions)
     ...(options.credentialEgress === undefined
       ? {}
       : { credentialEgress: options.credentialEgress }),
-    reapRuntime: async ({ lease, scope }) => {
+    reapRuntime: async ({ lease, scope, context }) => {
+      if (!context.allocationId || lease.runtimeId !== stableName(context)) {
+        throw new Error("Blaxel cleanup requires matching allocation identity");
+      }
       const sdk = await resolveSdk();
       let sandbox: BlaxelSandboxSdkPort;
       try {
@@ -622,7 +635,7 @@ export function createBlaxelManagedRuntime(options: BlaxelManagedRuntimeOptions)
       }
       validateSandbox(
         sandbox,
-        stableName(scope.sessionId),
+        stableName(context),
         scope.environmentId,
         scope.sessionId,
       );

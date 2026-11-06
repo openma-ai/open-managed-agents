@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { transform } from "esbuild";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,7 +39,7 @@ async function initializeFrom(relativePath: string, ids?: string[]) {
   const { registerCoreHarnesses } = await import("@open-managed-agents/agent/harness/builtins");
   let registerTestHarnesses: (() => void) | undefined;
   if (statements.some((statement) => statement.startsWith("registerTestHarnesses("))) {
-    const modulePath = new URL("../../../test/harnesses.ts", import.meta.url).pathname;
+    const modulePath = fileURLToPath(new URL("../../../test/harnesses.ts", import.meta.url));
     ({ registerTestHarnesses } = await import(/* @vite-ignore */ modulePath));
   }
   new Function("registerHarness", "registerCoreHarnesses", "registerTestHarnesses", statements.join("\n"))(

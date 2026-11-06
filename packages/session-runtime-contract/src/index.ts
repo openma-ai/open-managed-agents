@@ -5,6 +5,7 @@ export * from "./coordination-policy";
 export type * from "./dispatch";
 export type * from "./history";
 export type * from "./lifecycle";
+export type * from "./sandbox-binding";
 export type * from "./stream";
 export {
   SETTLE_SESSION_EVENT_TYPES,

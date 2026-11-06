@@ -635,6 +635,7 @@ export class E2BSandboxExecutor
       await this.sandbox.kill();
     } catch (err) {
       this.logger.warn(`destroy failed: ${(err as Error).message}`);
+      throw err;
     }
   }
 
@@ -906,4 +907,12 @@ export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
 export const sandboxFactory: SandboxFactory = Object.assign((
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,
-) => sandboxProvider.create(ctx, env), { capabilities: { allocationIsolation: true } });
+) => sandboxProvider.create(ctx, env), {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "e2b",
+    scope: "provider" as const,
+    getHandle: (sandbox: SandboxPort) => (sandbox as E2BSandboxExecutor).runtimeHandle(),
+    resume: sandboxProvider.resume,
+  },
+});

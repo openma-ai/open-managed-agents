@@ -37,8 +37,10 @@ describe("OpenSandbox official SDK adapter", () => {
     allocations.push(a, b);
     expect(a.runtimeHandle().runtimeId).toBe("sb-1");
     expect(b.runtimeHandle().runtimeId).toBe("sb-2");
-    const resumedA = await sandboxProvider.resume(a.runtimeHandle(), first, env);
-    const resumedB = await sandboxProvider.resume(b.runtimeHandle(), second, env);
+    const binding = sandboxFactory.runtimeBinding!;
+    expect(binding.scope).toBe("provider");
+    const resumedA = await binding.resume(JSON.parse(JSON.stringify(binding.getHandle(a))), first, env) as OpenSandbox;
+    const resumedB = await binding.resume(JSON.parse(JSON.stringify(binding.getHandle(b))), second, env) as OpenSandbox;
     allocations.push(resumedA, resumedB);
     expect(resumedA.runtimeHandle()).toEqual(a.runtimeHandle());
     expect(resumedB.runtimeHandle()).toEqual(b.runtimeHandle());

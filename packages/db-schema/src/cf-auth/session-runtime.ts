@@ -14,6 +14,7 @@ export const managed_session_executions = sqliteTable(
     lane_id: text("lane_id").notNull(),
     id: text("id").notNull(),
     admitted_at_ms: integer("admitted_at_ms").notNull(),
+    admission_sequence: integer("admission_sequence").notNull().default(0),
     events_json: text("events_json").notNull(),
     events_fingerprint: text("events_fingerprint").notNull(),
     state: text("state").notNull(),
@@ -46,5 +47,19 @@ export const managed_session_executions = sqliteTable(
       table.admitted_at_ms,
       table.id,
     ),
+    index("managed_session_executions_admission_idx").on(
+      table.workspace_id, table.session_id, table.lane_id, table.admission_sequence,
+    ),
   ],
+);
+
+/** Serializes admission in each Session; the counter is not execution authority. */
+export const managed_session_admission_counters = sqliteTable(
+  "managed_session_admission_counters",
+  {
+    workspace_id: text("workspace_id").notNull(),
+    session_id: text("session_id").notNull(),
+    last_sequence: integer("last_sequence").notNull().default(0),
+  },
+  (table) => [primaryKey({ columns: [table.workspace_id, table.session_id] })],
 );

@@ -22,6 +22,7 @@ import type {
   SandboxFactoryEnv,
   SandboxFactory,
   SandboxPort,
+  SandboxRuntimeHandle,
   SandboxRuntimePort,
   SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
@@ -582,6 +583,7 @@ function createProviderWithClient(
   resolveClient: ClientResolver,
 ): ProviderManagedRuntimeProviderPort<SpritesRuntime> {
   return {
+    allocationIsolation: true,
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("Sprites managed allocation requires acquisition context");
@@ -703,13 +705,35 @@ export async function createSpritesSandbox(
   environment: SandboxFactoryEnv,
   options: SpritesProviderOptions = {},
 ): Promise<SpritesRuntime> {
+  return connectSpritesSandbox(context, environment, options);
+}
+
+/** Reconnect the exact Sprite named by a persisted handle. This runs provider
+ * readiness/network operations and requires the caller's lifecycle claim. */
+export async function resumeSpritesSandbox(
+  handle: SandboxRuntimeHandle,
+  context: SandboxFactoryContext,
+  environment: SandboxFactoryEnv,
+  options: SpritesProviderOptions = {},
+): Promise<SpritesRuntime> {
+  rejectSandboxImageSelection("sprites", context.image);
+  rejectPreparedBase("sprites", context.preparedBase);
+  return connectSpritesSandbox(context, environment, options, handle);
+}
+
+async function connectSpritesSandbox(
+  context: SandboxFactoryContext,
+  environment: SandboxFactoryEnv,
+  options: SpritesProviderOptions,
+  handle?: SandboxRuntimeHandle,
+): Promise<SpritesRuntime> {
   const provider = createSpritesProvider({
     ...options,
     token: options.token ?? environment.SPRITES_TOKEN,
     baseURL: options.baseURL ?? environment.SPRITES_API_URL,
   });
-  const workspaceId = environment.OPENMA_WORKSPACE_ID ?? "node-standalone";
-  const environmentId = environment.OPENMA_ENVIRONMENT_ID ?? "node-standalone";
+  const workspaceId = context.workspaceId ?? environment.OPENMA_WORKSPACE_ID ?? "node-standalone";
+  const environmentId = context.environmentId ?? environment.OPENMA_ENVIRONMENT_ID ?? "node-standalone";
   const workId = `work-${labelHash(context.sessionId)}`;
   const scope = {
     workspaceId,
@@ -719,7 +743,7 @@ export async function createSpritesSandbox(
   };
   const controller = new AbortController();
 
-  return provider.create(context, environment, {
+  const acquisition: ProviderManagedRuntimeAcquisitionContext = {
     scope,
     fence: {
       ...scope,
@@ -746,15 +770,29 @@ export async function createSpritesSandbox(
       artifact: { type: "preinstalled" },
     },
     signal: controller.signal,
-  });
+  };
+  return handle === undefined
+    ? provider.create(context, environment, acquisition)
+    : provider.resume(handle, context, environment, acquisition);
 }
 
+/** Independent allocation requires the host to supply allocationId. The
+ * legacy no-allocationId entry deliberately retains a Session-named Sprite;
+ * this declaration does not grant isolation to that legacy managed path. */
 export const sandboxFactory: SandboxFactory = Object.assign(async (context: SandboxFactoryContext, environment: SandboxFactoryEnv) => {
   // Sprites boot a fixed preinstalled runtime; there is no per-session image.
   rejectSandboxImageSelection("sprites", context.image);
   rejectPreparedBase("sprites", context.preparedBase);
   return createSpritesSandbox(context, environment);
-}, { capabilities: { allocationIsolation: true } });
+}, {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "sprites",
+    scope: "provider" as const,
+    getHandle: (sandbox: SandboxPort) => (sandbox as SpritesRuntime).runtimeHandle(),
+    resume: resumeSpritesSandbox,
+  },
+});
 
 export function createSpritesManagedRuntime(options: SpritesManagedRuntimeOptions) {
   const resolveClient = createClientResolver(options);
@@ -795,7 +833,7 @@ export function createSpritesManagedRuntime(options: SpritesManagedRuntimeOption
     ...(options.credentialEgress === undefined
       ? {}
       : { credentialEgress: options.credentialEgress }),
-    reapRuntime: async ({ scope, lease }) => {
+    reapRuntime: async ({ scope, lease, context }) => {
       const client = await resolveClient();
       let sprite: SpriteSdkPort;
       try {
@@ -806,7 +844,7 @@ export function createSpritesManagedRuntime(options: SpritesManagedRuntimeOption
       }
       validateSprite(
         sprite,
-        stableName(scope.sessionId),
+        allocationName(context),
         scope.environmentId,
         scope.sessionId,
       );

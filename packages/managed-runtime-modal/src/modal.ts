@@ -231,19 +231,25 @@ function hash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-function stableName(sessionId: string): string {
-  return `oma-${hash(sessionId, 32)}`;
+function stableName(context: SandboxFactoryContext): string {
+  if (context.allocationId === undefined) return `oma-${hash(context.sessionId, 32)}`;
+  if (!context.allocationId || !context.workspaceId || !context.environmentId) {
+    throw new Error("Modal allocation identity requires workspace and environment scope");
+  }
+  return `oma-${hash(JSON.stringify([providerName, context.workspaceId, context.environmentId,
+    context.sessionId, context.allocationId]), 32)}`;
 }
 
 function workspaceSubPath(environmentId: string, sessionId: string): string {
   return `sessions/${hash(`${environmentId}:${sessionId}`, 48)}`;
 }
 
-function ownershipTags(environmentId: string, sessionId: string): Record<string, string> {
+function ownershipTags(environmentId: string, sessionId: string, allocationId?: string): Record<string, string> {
   return {
     openma: "managed",
     oma_env: hash(environmentId, 24),
     oma_session: hash(sessionId, 24),
+    ...(allocationId === undefined ? {} : { oma_allocation: hash(allocationId, 32) }),
   };
 }
 
@@ -251,9 +257,10 @@ async function validateSandbox(
   sandbox: ModalSandboxSdkPort,
   environmentId: string,
   sessionId: string,
+  allocationId?: string,
 ): Promise<void> {
   const tags = await sandbox.getTags();
-  const required = ownershipTags(environmentId, sessionId);
+  const required = ownershipTags(environmentId, sessionId, allocationId);
   if (Object.entries(required).some(([key, value]) => tags[key] !== value)) {
     throw new Error(
       `Refusing to attach Modal sandbox ${sandbox.sandboxId}: ownership tags do not match the requested environment and Session`,
@@ -486,8 +493,8 @@ async function acquireSandbox(
 ): Promise<ModalSandboxSdkPort> {
   acquisition.signal.throwIfAborted();
   const sdk = await resolveSdk();
-  const name = stableName(context.sessionId);
-  const tags = ownershipTags(acquisition.scope.environmentId, acquisition.scope.sessionId);
+  const name = stableName(context);
+  const tags = ownershipTags(acquisition.scope.environmentId, acquisition.scope.sessionId, context.allocationId);
   let sandbox = await sdk.findByName({ appName: options.appName, name });
   if (sandbox === null) {
     const extra = await options.createOptions?.({
@@ -536,6 +543,7 @@ async function acquireSandbox(
     sandbox,
     acquisition.scope.environmentId,
     acquisition.scope.sessionId,
+    context.allocationId,
   );
   // A named sandbox may belong to a previous generation. Close egress before
   // any readiness command or harness process can run; the fenced credential
@@ -550,6 +558,7 @@ function createProviderWithSdk(
   resolveSdk: SdkResolver,
 ): ProviderManagedRuntimeProviderPort<ModalRuntime> {
   return {
+    allocationIsolation: true,
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("Modal managed allocation requires acquisition context");
@@ -572,6 +581,7 @@ function createProviderWithSdk(
           sandbox,
           acquisition.scope.environmentId,
           acquisition.scope.sessionId,
+          context.allocationId,
         );
         await fenceNetworkBeforeReadiness(sandbox, acquisition.signal);
         await ensureReady(sandbox, acquisition.signal);
@@ -637,7 +647,8 @@ export function createModalManagedRuntime(options: ModalManagedRuntimeOptions) {
     ...(options.credentialEgress === undefined
       ? {}
       : { credentialEgress: options.credentialEgress }),
-    reapRuntime: async ({ scope, lease }) => {
+    reapRuntime: async ({ scope, lease, context }) => {
+      // The generic host requires allocation proof before invoking cleanup.
       const sdk = await resolveSdk();
       let sandbox: ModalSandboxSdkPort;
       try {
@@ -646,7 +657,7 @@ export function createModalManagedRuntime(options: ModalManagedRuntimeOptions) {
         if (isNotFound(error)) return;
         throw error;
       }
-      await validateSandbox(sandbox, scope.environmentId, scope.sessionId);
+      await validateSandbox(sandbox, scope.environmentId, scope.sessionId, context.allocationId);
       await sandbox.terminate();
     },
     drivers: ["ama_worker"],

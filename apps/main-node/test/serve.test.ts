@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NoopLogger } from "@open-managed-agents/observability";
 
 import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
@@ -67,18 +68,53 @@ describe("serveNodeControlPlane", () => {
     expect(process.listenerCount("SIGTERM")).toBe(before);
   });
 
-  it("on a signal, stops the control plane before exiting the process", async () => {
+  it("on a signal, stops accepting HTTP before draining the control plane and exits once", async () => {
     const cp = await controlPlane();
     const order: string[] = [];
     const originalStop = cp.stop.bind(cp);
-    (cp as { stop: NodeControlPlane["stop"] }).stop = async (signal) => { order.push(`stop:${signal}`); await originalStop(signal); };
+    let url = "";
+    (cp as { stop: NodeControlPlane["stop"] }).stop = async (signal) => {
+      order.push(`stop:${signal}`);
+      await expect(fetch(url)).rejects.toThrow();
+      await originalStop(signal);
+    };
     const exit = vi.fn((code: number) => { order.push(`exit:${code}`); });
 
     const server = await serveNodeControlPlane(cp, { host: "127.0.0.1", port: 0, signals: { exit } });
     servers.push(server);
+    url = `http://${server.address.host}:${server.address.port}/health`;
     process.emit("SIGTERM");
+    process.emit("SIGINT");
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
-
+    expect(exit).toHaveBeenCalledOnce();
     expect(order).toEqual(["stop:SIGTERM", "exit:0"]);
+    // afterEach also disposes this control plane; keep its ordinary hook.
+    (cp as { stop: NodeControlPlane["stop"] }).stop = originalStop;
   });
+
+  it("exits nonzero if control-plane disposal rejects even when its logger throws", async () => {
+    const logger = new NoopLogger();
+    logger.error = () => { throw new Error("logger unavailable"); };
+    const stop = vi.fn(async () => { throw new Error("shutdown failed"); });
+    const cp = { logger, stop, backendDescription: "test", fetch: () => new Response("ok") } as unknown as NodeControlPlane;
+    const exit = vi.fn();
+    const server = await serveNodeControlPlane(cp, { host: "127.0.0.1", port: 0, signals: { exit } });
+    servers.push(server);
+    process.emit("SIGTERM");
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(1));
+    expect(stop).toHaveBeenCalledOnce();
+    await expect(server.close()).resolves.toBeUndefined();
+  });
+
+  it("bounds a hanging shutdown and exits nonzero at its deadline", async () => {
+    const cp = { logger: new NoopLogger(), stop: () => new Promise<void>(() => {}),
+      backendDescription: "test", fetch: () => new Response("ok") } as unknown as NodeControlPlane;
+    const exit = vi.fn();
+    const server = await serveNodeControlPlane(cp, { host: "127.0.0.1", port: 0, signals: { exit, timeoutMs: 5 } });
+    servers.push(server);
+    process.emit("SIGTERM");
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(1));
+    await expect(server.close()).resolves.toBeUndefined();
+  });
+
 });

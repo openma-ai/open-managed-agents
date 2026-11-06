@@ -23,10 +23,10 @@
 // the first exec/readFile/writeFile call. We track this via `created` —
 // once true, mutating ops that affect ctor opts throw.
 
-import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
+import type { ProcessHandle, SandboxExecutor, SandboxFactory, SandboxFactoryContext, SandboxFactoryEnv, SandboxRuntimeHandle } from "@open-managed-agents/sandbox";
 import { promises as fs, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
@@ -56,6 +56,10 @@ export interface LiteBoxSandboxOptions {
   /** Host-owned lifecycle root for copy staging. The factory binds this to
    *  the session workdir so crash leftovers are reaped with the session. */
   scratchRoot?: string;
+  /** Explicit durable runtime home. Only the factory uses the native retained
+   * resource path; direct construction keeps pre-create native mount staging. */
+  runtimeHome?: string;
+  existingHandle?: SandboxRuntimeHandle;
 }
 
 interface LiteBoxExecResult {
@@ -75,6 +79,58 @@ interface LiteBoxInstance {
   stop(): Promise<void>;
 }
 
+interface NativeLiteBox {
+  readonly id: string;
+  readonly name: string | null;
+  exec(command: string, args: string[], env: Array<[string, string]>, tty: boolean,
+    user?: string, timeoutSecs?: number, cwd?: string): Promise<{
+      stdout(): Promise<{ next(): Promise<string | null> }>;
+      stderr(): Promise<{ next(): Promise<string | null> }>;
+      wait(): Promise<{ exitCode: number; errorMessage?: string }>;
+    }>;
+  copyIn(hostPath: string, guestPath: string, options?: unknown): Promise<void>;
+  copyOut(guestPath: string, hostPath: string, options?: unknown): Promise<void>;
+}
+interface NativeLiteBoxRuntime {
+  create(options: Record<string, unknown>, name?: string): Promise<NativeLiteBox>;
+  get(id: string): Promise<NativeLiteBox | null>;
+  remove(id: string, force: boolean): Promise<void>;
+}
+type NativeRuntimeConstructor = new (options: { homeDir: string }) => NativeLiteBoxRuntime;
+// Client cache only. Resume always calls the runtime's authoritative get(id).
+const nativeRuntimes = new WeakMap<NativeRuntimeConstructor, Map<string, NativeLiteBoxRuntime>>();
+function nativeRuntime(ctor: NativeRuntimeConstructor, home: string): NativeLiteBoxRuntime {
+  let homes = nativeRuntimes.get(ctor);
+  if (!homes) { homes = new Map(); nativeRuntimes.set(ctor, homes); }
+  let runtime = homes.get(home);
+  if (!runtime) { runtime = new ctor({ homeDir: home }); homes.set(home, runtime); }
+  return runtime;
+}
+
+/** Adapt the SDK's public native contracts, without replacing SimpleBox's
+ * protected fields or using getOrCreate as a reconnect operation. */
+class BoundLiteBox implements LiteBoxInstance {
+  constructor(private readonly box: NativeLiteBox, private readonly runtime: NativeLiteBoxRuntime) {}
+  async exec(command: string, args: string[], env: Record<string, string> = {}, options: { cwd?: string; user?: string; timeoutSecs?: number } = {}): Promise<LiteBoxExecResult> {
+    const execution = await this.box.exec(command, args, Object.entries(env), false, options.user, options.timeoutSecs, options.cwd);
+    const collect = async (stream: { next(): Promise<string | null> }) => {
+      let output = "";
+      for (;;) { const chunk = await stream.next(); if (chunk === null) return output; output += chunk; }
+    };
+    const [stdout, stderr, result] = await Promise.all([
+      execution.stdout().then(collect), execution.stderr().then(collect), execution.wait(),
+    ]);
+    if (result.errorMessage) throw new Error(result.errorMessage);
+    return { stdout, stderr, exitCode: result.exitCode };
+  }
+  copyIn(hostPath: string, guestPath: string, options?: unknown) { return this.box.copyIn(hostPath, guestPath, options); }
+  copyOut(guestPath: string, hostPath: string, options?: unknown) { return this.box.copyOut(guestPath, hostPath, options); }
+  async stop(): Promise<void> {
+    await this.runtime.remove(this.box.id, true);
+    if (await this.runtime.get(this.box.id) !== null) throw new Error("LiteBox removal was not confirmed");
+  }
+}
+
 export class LiteBoxSandbox implements SandboxExecutor {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
@@ -82,6 +138,8 @@ export class LiteBoxSandbox implements SandboxExecutor {
   private boxPromise: Promise<LiteBoxInstance> | null = null;
   private logger: NonNullable<LiteBoxSandboxOptions["logger"]>;
   private tmpRoot: string;
+  private handle: SandboxRuntimeHandle | null = null;
+  private destroyed = false;
 
   constructor(private opts: LiteBoxSandboxOptions = {}) {
     this.logger = opts.logger ?? {
@@ -96,23 +154,28 @@ export class LiteBoxSandbox implements SandboxExecutor {
     mkdirSync(this.tmpRoot, { recursive: true });
   }
 
+  async initializeBinding(): Promise<void> {
+    try { await this.ensureBox(); }
+    catch (failure) { await removeBestEffort(this.tmpRoot, true); throw failure; }
+  }
+  runtimeHandle(): SandboxRuntimeHandle {
+    if (!this.handle) throw new Error("LiteBox has not been allocated by its durable factory");
+    return { ...this.handle, metadata: { ...this.handle.metadata } };
+  }
+
   async exec(command: string, timeout?: number): Promise<string> {
     const box = await this.ensureBox();
     const env = this.buildEnv(command);
     const timeoutMs = timeout ?? this.opts.defaultTimeoutMs ?? 120_000;
-    try {
-      const r = await box.exec("sh", ["-c", command], env, {
-        cwd: "/workspace",
-        timeoutSecs: Math.max(1, Math.ceil(timeoutMs / 1000)),
-      });
-      const separator = r.stdout.length > 0 && !r.stdout.endsWith("\n") ? "\n" : "";
-      const combined =
-        (r.stdout + (r.stderr ? `${separator}${r.stderr}` : "")).replace(/\s+$/, "") +
-        (r.exitCode !== 0 ? `\n[exit ${r.exitCode}]` : "");
-      return combined;
-    } catch (err) {
-      return `[error: ${(err as Error).message}]`;
-    }
+    // Transport failures do not establish whether the remote command ran.
+    const r = await box.exec("sh", ["-c", command], env, {
+      cwd: "/workspace",
+      timeoutSecs: Math.max(1, Math.ceil(timeoutMs / 1000)),
+    });
+    if (!Number.isSafeInteger(r.exitCode)) throw new Error("LiteBox command completion was not confirmed", { cause: r });
+    const separator = r.stdout.length > 0 && !r.stdout.endsWith("\n") ? "\n" : "";
+    return (r.stdout + (r.stderr ? `${separator}${r.stderr}` : "")).replace(/\s+$/, "") +
+      (r.exitCode !== 0 ? `\n[exit ${r.exitCode}]` : "");
   }
 
   async startProcess(_command: string): Promise<ProcessHandle | null> {
@@ -255,14 +318,16 @@ export class LiteBoxSandbox implements SandboxExecutor {
   }
 
   async destroy(): Promise<void> {
+    if (this.destroyed) return;
     if (this.boxPromise) {
       try {
         const box = await this.boxPromise;
         await box.stop();
+        if (this.opts.runtimeHome !== undefined) this.destroyed = true;
+        else this.boxPromise = null;
       } catch (err) {
         this.logger.warn(`destroy stop failed: ${(err as Error).message}`);
-      } finally {
-        this.boxPromise = null;
+        throw err;
       }
     }
     await removeBestEffort(this.tmpRoot, true);
@@ -271,9 +336,11 @@ export class LiteBoxSandbox implements SandboxExecutor {
   // ── helpers ──────────────────────────────────────────────────────────────
 
   private async ensureBox(): Promise<LiteBoxInstance> {
+    if (this.destroyed) throw new Error("LiteBox has been deleted");
     if (this.boxPromise) return this.boxPromise;
     this.boxPromise = (async () => {
       type LiteBoxModule = {
+        JsBoxlite: NativeRuntimeConstructor;
         SimpleBox: new (options: {
           image?: string;
           memoryMib?: number;
@@ -291,6 +358,26 @@ export class LiteBoxSandbox implements SandboxExecutor {
           `pnpm add @boxlite-ai/boxlite (cause: ${String(err)})`,
         );
       })) as LiteBoxModule;
+      if (this.opts.runtimeHome !== undefined) {
+        const runtime = nativeRuntime(mod.JsBoxlite, this.opts.runtimeHome);
+        const existing = this.opts.existingHandle;
+        const box = existing
+          ? await runtime.get(existing.runtimeId)
+          : await runtime.create({ image: this.opts.image ?? "node:22-bookworm", memoryMib: this.opts.memoryMib,
+            cpus: this.opts.cpus, autoRemove: false, detach: true, volumes: this.volumes, network: { mode: "enabled" } }, this.opts.name);
+        if (!box) throw new Error("LiteBox resource no longer exists");
+        if (!box.id || box.name !== this.opts.name || (existing && box.id !== existing.runtimeId)) {
+          throw new Error("LiteBox handle does not match its physical Session allocation");
+        }
+        this.handle = { provider: "litebox", runtimeId: box.id,
+          metadata: { host: hostname(), runtimeHome: this.opts.runtimeHome, allocationName: this.opts.name ?? null } };
+        const bound = new BoundLiteBox(box, runtime);
+        if (!existing) {
+          const workspace = await bound.exec("mkdir", ["-p", "/workspace"]);
+          if (workspace.exitCode !== 0) throw new Error("LiteBox could not initialize /workspace");
+        }
+        return bound;
+      }
       this.logger.log(`creating box (image=${this.opts.image ?? "node:22-bookworm"})`);
       const box = new mod.SimpleBox({
         image: this.opts.image ?? "node:22-bookworm",
@@ -355,9 +442,9 @@ async function removeBestEffort(path: string, recursive = false): Promise<void> 
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
+function factoryOptions(ctx: SandboxFactoryContext, env: SandboxFactoryEnv): LiteBoxSandboxOptions {
   rejectPreparedBase("litebox", ctx.preparedBase);
-  return new LiteBoxSandbox({
+  return {
     // An Environment-selected catalog image overrides the process default.
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
     memoryMib: env.LITEBOX_MEMORY_MIB ? Number(env.LITEBOX_MEMORY_MIB) : undefined,
@@ -367,5 +454,30 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Paramete
     memoryRoot: ctx.memoryRoot,
     outputsRoot: ctx.outputsRoot,
     scratchRoot: ctx.workdir,
-  });
-}, { capabilities: { allocationIsolation: true } });
+    runtimeHome: resolve(env.LITEBOX_HOME ?? join(homedir(), ".boxlite")),
+  };
+}
+
+/** Durable factory uses retained native boxes and file-synced memory. Native
+ * volumes still require pre-create staging through direct LiteBoxSandbox use. */
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => {
+  const sandbox = new LiteBoxSandbox(factoryOptions(ctx, env));
+  await sandbox.initializeBinding();
+  return sandbox;
+}, {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "litebox", scope: "host" as const,
+    getHandle: (sandbox: SandboxExecutor) => (sandbox as LiteBoxSandbox).runtimeHandle(),
+    async resume(handle: SandboxRuntimeHandle, ctx: SandboxFactoryContext, env: SandboxFactoryEnv) {
+      const options = factoryOptions(ctx, env);
+      if (handle.provider !== "litebox" || !handle.runtimeId || handle.metadata?.host !== hostname()
+        || handle.metadata?.runtimeHome !== options.runtimeHome || handle.metadata?.allocationName !== options.name) {
+        throw new Error("LiteBox handle does not match this host, runtime home or Session allocation");
+      }
+      const sandbox = new LiteBoxSandbox({ ...options, existingHandle: handle });
+      await sandbox.initializeBinding();
+      return sandbox;
+    },
+  },
+});

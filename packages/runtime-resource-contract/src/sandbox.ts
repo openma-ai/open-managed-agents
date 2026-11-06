@@ -6,10 +6,22 @@ import type { ManagedRuntimePlan } from "./profile";
 import type { RuntimeResourceScope } from "./scope";
 import type { WorkspaceBinding } from "./workspace";
 
+/** Single-use physical allocation. This is resource identity, not permission
+ * to execute work or transfer a retained resource to another owner. */
+export interface ManagedSandboxAllocation {
+  readonly id: string;
+  readonly scope: Readonly<RuntimeResourceScope>;
+  readonly ownerId: string;
+  readonly generation: number;
+}
+
 /** Serializable identity of provider-owned compute. */
 export interface ManagedSandboxLease {
   provider: string;
   runtimeId: string;
+  /** Present for independently allocated managed compute. Historical leases
+   * without this proof cannot be safely reaped by the generic provider host. */
+  allocation?: ManagedSandboxAllocation;
   metadata?: Readonly<Record<string, string | number | boolean | null>>;
 }
 

@@ -22,6 +22,7 @@ export interface NodeManagedConfirmedToolExecutorDependencies {
   buildExecutableTools(
     input: Omit<ExecuteManagedNodeConfirmedTool, "confirmation" | "toolUse" | "abortSignal">,
   ): Promise<Record<string, ExecutableTool>>;
+  disposeTools?(tools: Record<string, ExecutableTool>): Promise<void>;
 }
 
 function textResult(
@@ -51,20 +52,19 @@ export class NodeManagedConfirmedToolExecutor
   async execute(
     input: ExecuteManagedNodeConfirmedTool,
   ): Promise<ManagedNodeConfirmedToolExecutionResult> {
+    input.abortSignal.throwIfAborted();
+    input.assertCanDispatch?.();
     const tools = await this.dependencies.buildExecutableTools({
       workspaceId: input.workspaceId,
       session: input.session,
       environment: input.environment,
       sandbox: input.sandbox,
     });
-    const tool = tools[input.toolUse.name];
-    if (tool?.execute === undefined) {
-      return textResult(
-        `Confirmed tool ${input.toolUse.name} is not executable`,
-        true,
-      );
-    }
     try {
+      input.abortSignal.throwIfAborted();
+      input.assertCanDispatch?.();
+      const tool = tools[input.toolUse.name];
+      if (tool?.execute === undefined) return textResult(`Confirmed tool ${input.toolUse.name} is not executable`, true);
       const value = await tool.execute(input.toolUse.input, {
         abortSignal: input.abortSignal,
         messages: [],
@@ -72,10 +72,14 @@ export class NodeManagedConfirmedToolExecutor
       });
       return successfulResult(value);
     } catch (error) {
+      if (!(error instanceof Error && error.name === "ToolFailureError" &&
+        "outcomeUnknown" in error && error.outcomeUnknown === false)) await input.onOutcomeUnknown?.(error);
       return textResult(
         error instanceof Error ? error.message : String(error),
         true,
       );
+    } finally {
+      await this.dependencies.disposeTools?.(tools);
     }
   }
 }

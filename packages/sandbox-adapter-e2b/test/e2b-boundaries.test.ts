@@ -383,11 +383,11 @@ describe("E2BSandboxExecutor boundaries", () => {
     await expect(new E2BSandboxExecutor(broken as never, { memoryBucket: config }).mountMemoryStore({ storeName: "m", storeId: "i", readOnly: false })).rejects.toThrow("setup command failed");
   });
 
-  it("destroys best-effort and keeps the default logger callable", async () => {
+  it("propagates unconfirmed destruction while keeping the default logger callable", async () => {
     const sb = remote();
     sb.kill.mockRejectedValueOnce(new Error("kill failed"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await new E2BSandboxExecutor(sb as never, {}).destroy();
+    await expect(new E2BSandboxExecutor(sb as never, {}).destroy()).rejects.toThrow("kill failed");
     expect(warn).toHaveBeenCalledWith("[e2b-sandbox] destroy failed: kill failed");
     sb.kill.mockResolvedValueOnce(undefined);
     await new E2BSandboxExecutor(sb as never, {}).destroy();

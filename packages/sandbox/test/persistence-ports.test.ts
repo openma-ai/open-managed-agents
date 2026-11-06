@@ -77,6 +77,25 @@ describe("sandbox persistence capability ports", () => {
 });
 
 describe("sandbox factory capabilities", () => {
+  it("preserves the explicit binding port through prepared-base capability wrappers", async () => {
+    const binding = {
+      provider: "x",
+      scope: "provider" as const,
+      getHandle: () => ({ provider: "x", runtimeId: "physical-resource" }),
+      resume: async () => ({ exec: async () => "" }) as never,
+    };
+    const factory = Object.assign(async () => ({}) as never, { runtimeBinding: binding });
+    const wrapped = sandboxExports.withSandboxFactoryCapabilities(factory, { preparedBase: true });
+    expect(wrapped.runtimeBinding).toBe(binding);
+    expect(sandboxExports.withSandboxFactoryCapabilities(
+      Object.assign(async () => ({}) as never, { runtimeBinding: null }),
+      { preparedBase: false },
+    ).runtimeBinding).toBeNull();
+    expect(sandboxExports.withSandboxFactoryCapabilities(
+      async () => ({}) as never, { preparedBase: false },
+    ).runtimeBinding).toBeUndefined();
+  });
+
   it("attaches declared capabilities without changing what the factory creates", async () => {
     const created = { exec: async () => "" };
     const calls: unknown[] = [];

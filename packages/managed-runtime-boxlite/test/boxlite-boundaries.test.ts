@@ -125,6 +125,33 @@ function direct(input: Parameters<typeof box>[0] = {}, sdk?: BoxLiteClientPort) 
 }
 
 describe("BoxLite provider boundary contracts", () => {
+  it("allocates different physical names and cannot reap a different incarnation", async () => {
+    const boxes = new Map<string, BoxLiteBoxSdkPort>();
+    const sdk: BoxLiteClientPort = {
+      getOrCreate: async (_options, name) => {
+        const value = boxes.get(name!) ?? box({ id: name!, name: name! });
+        boxes.set(name!, value);
+        return { created: true, box: value };
+      },
+      get: async id => boxes.get(id) ?? null,
+      remove: vi.fn(async id => { boxes.delete(id); }),
+    };
+    const options = { providerId: "litebox" as const, client: sdk, image: "image", leaseTtlMs: 100 };
+    const provider = createBoxLiteProvider(options);
+    expect(provider.allocationIsolation).toBe(true);
+    const context = { ...scope, workdir: "/workspace", allocationId: "allocation-a" };
+    await expect(provider.create({ ...context, workspaceId: undefined }, {}, acquisition())).rejects.toThrow("allocation identity");
+    const a = await provider.create(context, {}, acquisition());
+    const b = await provider.create({ ...context, allocationId: "allocation-b" }, {}, acquisition());
+    expect(a.runtimeHandle().runtimeId).not.toBe(b.runtimeHandle().runtimeId);
+    const lease = JSON.parse(JSON.stringify({ ...a.runtimeHandle(), allocation: { id: context.allocationId, scope, ownerId: fence.ownerId, generation: fence.generation } }));
+    const restarted = createBoxLiteManagedRuntime(options);
+    await expect(restarted.sandbox.reap({ scope, lease: { ...lease, runtimeId: b.runtimeHandle().runtimeId }, reason: "completed" })).rejects.toThrow("ownership");
+    await restarted.sandbox.reap({ scope, lease, reason: "completed" });
+    expect(boxes.has(a.runtimeHandle().runtimeId)).toBe(false);
+    expect(boxes.has(b.runtimeHandle().runtimeId)).toBe(true);
+  });
+
   it("loads each official SDK connection mode lazily", async () => {
     fixtureCalls.length = 0;
     for (const connection of [
@@ -368,12 +395,15 @@ describe("BoxLite provider boundary contracts", () => {
   });
 
   it("reaps present runtimes and treats absent runtimes as already complete", async () => {
+    const allocation = { id: "allocation", scope, ownerId: fence.ownerId, generation: fence.generation };
+    const name = `oma-${createHash("sha256").update(JSON.stringify(["litebox", scope.workspaceId, scope.environmentId, scope.sessionId, allocation.id])).digest("hex").slice(0, 32)}`;
     const lease = {
+      allocation,
       leaseId: "lease", runtimeId: "box", provider: "litebox", expiresAt: "2026-09-01T00:00:00.000Z",
       handle: { provider: "litebox", runtimeId: "box" }, sandbox: {} as never,
     };
     for (const present of [true, false]) {
-      const value = box();
+      const value = box({ name });
       const sdk = client(value);
       sdk.get = vi.fn(async () => present ? value : null);
       const runtime = createBoxLiteManagedRuntime({ providerId: "litebox", client: sdk, image: "image", leaseTtlMs: 100 });

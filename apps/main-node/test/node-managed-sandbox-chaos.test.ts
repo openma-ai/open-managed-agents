@@ -194,6 +194,7 @@ async function runChaos(seed: number, turns: number, rates: ChaosRates) {
   const renewRandom = prng(seed ^ 0x5bd1e995);
   const { checkpoints, fence } = await fencedCheckpoints();
   const sandboxes: ChaosSandbox[] = [];
+  const resourceTimers: ReturnType<typeof setInterval>[] = [];
   /** Files the last published checkpoint contains (the oracle). */
   let committed: string[] = [];
   const restoreViolations: string[] = [];
@@ -227,7 +228,6 @@ async function runChaos(seed: number, turns: number, rates: ChaosRates) {
         return "lost";
       }
     },
-    sandboxLease: { ttlMs: 60, intervalMs: 3 },
     buildSandbox: async () => {
       acquisitions += 1;
       if (maybe(rates.acquireFails)) throw new Error("provider: capacity exhausted");
@@ -235,6 +235,10 @@ async function runChaos(seed: number, turns: number, rates: ChaosRates) {
       sandbox.onCall = onCall;
       sandbox.phase = () => phase;
       sandboxes.push(sandbox);
+      // Provider lease maintenance is independent of the execution runner.
+      resourceTimers.push(setInterval(() => {
+        if (!sandbox.dead) void sandbox.renewLease({ ttlMs: 60 }).catch(() => {});
+      }, 3));
       return sandbox as unknown as SandboxExecutor;
     },
     prepareSandbox: async ({ sandbox }) => {
@@ -352,12 +356,14 @@ async function runChaos(seed: number, turns: number, rates: ChaosRates) {
     };
   };
 
+  try {
   for (let index = 0; index < turns; index++) records.push(await runTurn(index));
   // After the chaos stops, the Session must make progress again.
   chaosEnabled = false;
   const final = await runTurn(turns);
   records.push(final);
   return { records, sandboxes, restoreViolations, committed, runner, final };
+  } finally { resourceTimers.forEach(clearInterval); }
 }
 
 function checkInvariants(result: Awaited<ReturnType<typeof runChaos>>, seed: number) {

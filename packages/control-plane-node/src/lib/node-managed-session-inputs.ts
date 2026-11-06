@@ -83,6 +83,9 @@ export interface PrepareNodeManagedSessionInputs {
    * Memory Store is refused. Unused by native mounts. */
   authorizeMemoryMutation?(): Promise<boolean>;
   signal?: AbortSignal;
+  /** Restore this client's mount/credential configuration without overwriting
+   * files retained by the Session's physical sandbox. */
+  reattach?: boolean;
 }
 
 /**
@@ -262,7 +265,9 @@ export class NodeManagedSessionInputPreparer {
       OMA_OUTPUTS_DIR: "/mnt/session/outputs",
     });
 
-    await this.prepareMemoryStores(input);
+    if (!input.reattach || this.dependencies.memoryStores.mode === "native") {
+      await this.prepareMemoryStores(input);
+    }
 
     if (this.dependencies.sharedOutputs) {
       const command = "mkdir -p /mnt/session/outputs";
@@ -295,6 +300,8 @@ export class NodeManagedSessionInputPreparer {
       }
       input.sandbox.registerCommandSecrets("git", gitCredentialEnv);
     }
+
+    if (input.reattach) return;
 
     const writeFileBytes = input.sandbox.writeFileBytes;
     const needsBinaryWrites = input.session.resources.some(

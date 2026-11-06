@@ -26,6 +26,7 @@ import {
 import {
   supportsSessionOutputMount,
   type SandboxCheckpointHandle,
+  type SandboxFactoryContext,
   type SandboxDuplexProcessPort,
   type SandboxPort,
   type SandboxProviderPort,
@@ -123,15 +124,23 @@ export function createCloudflareSandboxProvider(
   env: Env,
   instantiate: CloudflareManagedRuntimeOptions["createSandbox"],
 ): SandboxProviderPort<CloudflareManagedRuntimeSandbox> {
+  const allocation = (context: SandboxFactoryContext) => {
+    const runtimeId = context.allocationId ?? context.sessionId;
+    const sandbox = instantiate(env, runtimeId);
+    if (context.allocationId !== undefined && sandbox.runtimeHandle().runtimeId !== runtimeId) {
+      throw new Error("Cloudflare sandbox factory did not honor the isolated allocation identity");
+    }
+    return sandbox;
+  };
   return {
-    create: async (context) => instantiate(env, context.sessionId),
+    create: async (context) => allocation(context),
     resume: async () => {
       throw new Error(
         "Cloudflare runtime-scoped resume is unsupported; use a portable filesystem checkpoint",
       );
     },
     restore: async (checkpoint: SandboxCheckpointHandle, context) => {
-      const sandbox = instantiate(env, context.sessionId);
+      const sandbox = allocation(context);
       await sandbox.resume(checkpoint);
       return sandbox;
     },
@@ -153,7 +162,17 @@ export function createCloudflareManagedRuntime(
   const hasDurableWorkspaceMount = durableWorkspaceMountConfigured(env, options.workspaceDurableMount);
   const instantiate = options.createSandbox;
   const sandboxProvider = createCloudflareSandboxProvider(env, instantiate);
+  const allocationForReap = (runtimeId: string) => {
+    const runtime = instantiate(env, runtimeId);
+    if (runtime.runtimeHandle().runtimeId !== runtimeId) {
+      throw new Error("Cloudflare orphan reconnect returned a different runtime identity");
+    }
+    return runtime;
+  };
   const provider: ProviderManagedRuntimeProviderPort<CloudflareManagedRuntimeSandbox> = {
+    // Only the physical Durable Object key changes per allocation. Logical
+    // Session identity still comes from acquisition.scope for mounts/egress.
+    allocationIsolation: true,
     create: (context, factoryEnvironment, acquisition) => {
       if (acquisition === undefined) {
         throw new Error("Cloudflare managed allocation requires acquisition context");
@@ -220,8 +239,11 @@ export function createCloudflareManagedRuntime(
           }
         : {}),
     },
-    reapRuntime: async ({ lease }) => {
-      await instantiate(env, lease.runtimeId).destroy();
+    reapRuntime: async ({ lease, context }) => {
+      if (lease.runtimeId !== context.allocationId) {
+        throw new Error("Cloudflare orphan allocation identity mismatch");
+      }
+      await allocationForReap(lease.runtimeId).destroy();
     },
     credentialEgress: {
       capabilities: {

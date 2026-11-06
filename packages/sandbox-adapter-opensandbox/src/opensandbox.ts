@@ -438,4 +438,12 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
 // Every create owns a fresh provider ID; resume and destroy use captured IDs.
 export const sandboxFactory: SandboxFactory = Object.assign((
   ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1],
-) => sandboxProvider.create(ctx, env), { capabilities: { allocationIsolation: true } });
+) => sandboxProvider.create(ctx, env), {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "opensandbox",
+    scope: "provider" as const,
+    getHandle: (sandbox: SandboxPort) => (sandbox as OpenSandbox).runtimeHandle(),
+    resume: sandboxProvider.resume,
+  },
+});
