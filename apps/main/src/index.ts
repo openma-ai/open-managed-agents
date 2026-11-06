@@ -5,7 +5,7 @@ import { CapCliDeviceFlowApplicationService, McpOAuthCliService, McpOAuthApplica
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { WorkerEntrypoint, env as workerEnv } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
 import {
   bindAccessLossHooks,
@@ -156,6 +156,10 @@ import { cfApiKeyStorage } from "./lib/cf-api-key-storage";
 import { CfSessionRouter } from "./lib/cf-session-router";
 import { CfManagedRuntimeFetcher } from "./lib/cf-managed-runtime-fetcher";
 import { CfManagedSessionRuntimeAdapter } from "./lib/cf-managed-session-runtime";
+import { buildCfManagedSandboxExecRoutes, execCfManagedSandbox } from "./lib/cf-managed-sandbox-exec";
+import { registerCfEvalDeps } from "./eval-runner";
+import { createManagedEvalRuntime, EvalBenchmarkStore } from "@open-managed-agents/evals-runner";
+import { cfSandboxImageCatalog } from "./lib/cf-sandbox-images";
 import { CfManagedSessionSecretSealer } from "./lib/cf-managed-session-secret-sealer";
 import { synchronizeManagedSessionMemoryWorkspaces } from "./lib/managed-memory-workspace-sync";
 import {
@@ -435,10 +439,17 @@ const managedAgentsRoutes = buildManagedAgentRoutes((context) => {
     .port(managedAgentsPortTokens.agents);
 });
 
+/** Operator SANDBOX_IMAGES catalog (apps/main/src/lib/cf-sandbox-images.ts).
+ * Worker bindings are per-isolate constants, so the module-level `env`
+ * import is the same value every request sees. */
+function workerSandboxImages() {
+  return cfSandboxImageCatalog(workerEnv as unknown as { SANDBOX_IMAGES?: string });
+}
+
 const managedEnvironmentsRoutes = buildManagedEnvironmentRoutes((context) => {
   return managedCoreApplicationFor(context)
     .port(managedAgentsPortTokens.environments);
-});
+}, { sandboxImages: { has: (alias) => workerSandboxImages().has(alias) } });
 
 function managedFilesApplicationFor(input: {
   workspaceId: string;
@@ -899,6 +910,7 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
   const environments = managedSessionEnvironmentSource(client);
   const runtime = new CfManagedSessionRuntimeAdapter(
     new CfManagedRuntimeFetcher(ctx.env),
+    () => cfSandboxImageCatalog(ctx.env as unknown as { SANDBOX_IMAGES?: string }),
   );
   const workspaceId = ctx.var.tenant_id;
   const selfHostedWork = managedEnvironmentWorkApplicationFor(ctx)
@@ -949,6 +961,50 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
     },
   });
 }
+
+// OMA evals on managed Sessions. A scheduled tick has no request, so the same
+// factories run against a minimal context: env + tenant id/db/services.
+registerCfEvalDeps(async (env, tenantId, request) => {
+  const [tenantDb, services] = await Promise.all([
+    buildCfTenantDbProvider(env).resolve(tenantId),
+    getCfServicesForTenant(env, tenantId),
+  ]);
+  // The factories below read the request origin (self-hosted environment
+  // credentials) and executionCtx. A cron tick has neither: it gets an origin
+  // nothing can call back, and self-hosted environments are rejected below.
+  const ctx = {
+    env,
+    var: { tenant_id: tenantId, tenantDb, services },
+    req: { url: request?.origin ?? "https://evals.invalid" },
+    executionCtx: { waitUntil: request?.waitUntil ?? ((task: Promise<unknown>) => { void task.catch(() => undefined); }) },
+  } as unknown as AppCtx;
+  const core = managedCoreApplicationFor(ctx);
+  const ports = managedSessionsCompositionFor(ctx).portsFor(tenantId);
+  const fetcher = new CfManagedRuntimeFetcher(env);
+  const runtime = createManagedEvalRuntime({
+    agents: core.port(managedAgentsPortTokens.agents),
+    environments: core.port(managedAgentsPortTokens.environments),
+    sessions: ports.sessions,
+    sessionEvents: ports.sessionEvents,
+    images: cfSandboxImageCatalog(env as unknown as { SANDBOX_IMAGES?: string }).entries,
+    exec: (sessionId, command, timeoutMs) => execCfManagedSandbox(fetcher, tenantId, sessionId, command, timeoutMs),
+    // SessionDO /exec creates the container on first use; it then sleeps
+    // after 5 idle minutes on its own (sleepAfter), so nothing to release.
+    ensureSandbox: async () => true,
+    selfHostedUnsupported: "Evals on Cloudflare run in cloud environments only; this environment is self_hosted",
+  });
+  return {
+    runtime,
+    benchmarks: new EvalBenchmarkStore(services.kv, tenantId),
+    async readUpload(fileId) {
+      if (!services.filesBlob) return null;
+      const found = await managedFilesApplicationFor({ workspaceId: tenantId, tenantDb, blobs: services.filesBlob })
+        .downloadFile({ fileId });
+      if (found.type !== "found") return null;
+      return { bytes: found.file.content, ...(found.file.filename ? { filename: found.file.filename } : {}) };
+    },
+  };
+});
 
 async function managedMcpSources(env: Env, workspaceId: string) {
   const tenantDb = await buildCfTenantDbProvider(env).resolve(workspaceId);
@@ -1483,6 +1539,25 @@ app.all("/openai/*", c => c.json({ error: {
 } }, 404));
 
 app.route("/v1/sessions", managedSessionsRoutes);
+// Managed Session sandbox exec (same contract as Node): evaluation grades in
+// the Session's own sandbox after the agent's turn. Mounted ahead of the
+// legacy /v1/oma/sessions routes, whose `/:id/exec` stays separate.
+app.route("/v1/oma/sessions", buildCfManagedSandboxExecRoutes({
+  workspaceId: (c) => (c as unknown as AppCtx).var.tenant_id,
+  retrieveSession: async (c, sessionId) => {
+    const ctx = c as unknown as AppCtx;
+    const found = await managedSessionsCompositionFor(ctx)
+      .portsFor(ctx.var.tenant_id).sessions.retrieveSession({ sessionId });
+    return found.type === "found" ? found.session : null;
+  },
+  environmentType: async (c, environmentId) => {
+    const ctx = c as unknown as AppCtx;
+    const environment = await managedSessionEnvironmentSource(new CfD1SqlClient(ctx.var.tenantDb))
+      .find({ workspaceId: ctx.var.tenant_id, environmentId });
+    return environment === null ? null : environment.config.type;
+  },
+  fetcher: (c) => new CfManagedRuntimeFetcher((c as unknown as AppCtx).env),
+}));
 app.route("/v1/oma/sessions", managedRuntimeIngressRoutes);
 app.route("/v1/oma/sessions", managedSessionQueueRoutes);
 app.route("/v1/oma/sessions", legacySessionsRoutes);
@@ -1539,9 +1614,10 @@ app.route("/v1/oma/runtimes", runtimesRoutes);
 app.route("/v1/oma/oauth/cli", managedMcpOAuthCliRoutes);
 app.route("/v1/oma/oauth", managedMcpOAuthRoutes);
 app.route("/v1/oma/model_cards", modelCardsRoutes);
-// Cloudflare sandboxes run one container image; there is no operator image
-// catalog, so the list is empty and `_oma.sandbox_image` is rejected.
-app.route("/v1/oma/sandbox_images", buildSandboxImageRoutes({ list: () => [] }));
+// Operator SANDBOX_IMAGES catalog: each alias is a container class the
+// operator declared in apps/agent/wrangler.jsonc (docs/cloudflare-sandbox-images.md).
+// Empty when unset, in which case `_oma.sandbox_image` is rejected.
+app.route("/v1/oma/sandbox_images", buildSandboxImageRoutes({ list: () => workerSandboxImages().list() }));
 // /v1/oma/mcp-proxy is intentionally NOT aliased: auth.ts path-prefix skip is
 // scoped to that exact prefix, and the proxy does its own session-ownership
 // check downstream. Re-mounting under /v1/oma/mcp-proxy would route through

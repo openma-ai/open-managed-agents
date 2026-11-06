@@ -19,6 +19,8 @@ registerHarness("acp-proxy", () => new AcpProxyHarness());
 // --- Export DO classes (required by wrangler) ---
 export { SessionDO } from "./runtime/session-do";
 export { OmaSandbox as Sandbox } from "./oma-sandbox";
+// Operator catalog images (SANDBOX_IMAGES): one container class per image.
+export * from "./operator-sandboxes";
 
 // --- Required by @cloudflare/sandbox 0.8.x outbound interception ---
 export { ContainerProxy } from "@cloudflare/containers";

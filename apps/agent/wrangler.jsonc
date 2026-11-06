@@ -19,6 +19,18 @@
       "instance_type": "standard-1",
       "max_instances": 50
     }
+    // Operator catalog images (SANDBOX_IMAGES, e.g. Harbor task images) add
+    // one container class each. Pattern (docs/cloudflare-sandbox-images.md):
+    //   1. src/operator-sandboxes.ts: export class SandboxFixGit extends OmaSandbox {}
+    //   2. here:  { "class_name": "SandboxFixGit", "image": "./harbor/fix-git.Dockerfile",
+    //               "instance_type": "standard-1", "max_instances": 10 }
+    //      (Dockerfile = FROM <task image> + the CF sandbox server layer,
+    //      see Dockerfile.harbor-task.example)
+    //   3. durable_objects.bindings: { "name": "SANDBOX_FIX_GIT", "class_name": "SandboxFixGit" }
+    //   4. migrations: a new tag with "new_sqlite_classes": ["SandboxFixGit"]
+    //   5. apps/main SANDBOX_IMAGES var: {"fix-git": {"reference": "alexgshaw/fix-git:20251031",
+    //        "binding": "SANDBOX_FIX_GIT", "workdir": "/app"}}
+    // Repeat in env.production / env.staging when deploying those overlays.
   ],
 
   "durable_objects": {

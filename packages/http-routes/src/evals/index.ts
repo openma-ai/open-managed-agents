@@ -1,203 +1,516 @@
-// Eval routes — POST/GET/DELETE for /v1/oma/evals/runs.
-//
-// Sourced from apps/main/src/routes/evals.ts pre-extract: same wire shape,
-// same status codes, same opaque `results` JSON column. The cron tick
-// (packages/evals-runner/tickEvalRuns) advances rows independently — these
-// routes only manage create + read + cancel.
-//
-// Storage: caller injects `evals` (EvalRunService from
-// @open-managed-agents/evals-store) + `agents`/`environments` for the
-// existence checks. CF passes its services bundle; Node passes its own
-// (Node returns null from `environments` lookups today — we accept the
-// run create against a synthesized localhost env).
+// Eval routes — /v1/oma/evals (benchmarks, their cases, runs). Wire contract:
+// packages/api-types/src/evals.ts. Runs are advanced by the scheduler tick
+// (@open-managed-agents/evals-runner tickEvalRuns); these routes create,
+// read, cancel and delete. Both runtimes mount the same routes and inject a
+// managed-Session runtime, the benchmark store and an upload reader.
 
 import { Hono } from "hono";
+import type { EvalRunService, EvalRunRow, EvalRunStatus } from "@open-managed-agents/evals-store";
 import type {
-  EvalRunService,
-  EvalRunRow,
-  EvalRunStatus,
-} from "@open-managed-agents/evals-store";
-import type { AgentStore } from "@open-managed-agents/agent-store";
-import type { EnvironmentService } from "@open-managed-agents/environments-store";
-import type { RewardSpec } from "@open-managed-agents/shared";
+  AddEvalCasesRequest,
+  CreateEvalBenchmarkRequest,
+  CreateEvalRunRequest,
+  HarborCaseSource,
+  ReplaceEvalCaseRequest,
+  UpdateEvalBenchmarkRequest,
+} from "@open-managed-agents/api-types";
+import {
+  benchmarkToApi,
+  caseDetail,
+  collectHarborBundles,
+  EvalBenchmarkError,
+  listBuiltinBenchmarks,
+  messagesCaseSpec,
+  parseMessagesCase,
+  recordToApi,
+  rowToRecord,
+  extractResults,
+  isTerminal,
+  runnableCase,
+  stopRunTrials,
+  DEFAULT_EVAL_CONCURRENCY,
+  REWARD_TYPES,
+  type EvalBenchmarkStore,
+  type EvalRunRecord,
+  type EvalSessionRuntime,
+  type EvalTaskSpec,
+  type StoredEvalBenchmark,
+  type StoredHarborCase,
+  type StoredMessagesCase,
+} from "@open-managed-agents/evals-runner";
 
 interface Vars {
   Variables: { tenant_id: string };
 }
 
-export interface EvalTaskSpec {
-  id: string;
-  setup_files?: { path: string; content: string }[];
-  setup_script?: string;
-  messages: string[];
-  timeout_ms?: number;
-  trials?: number;
-  reward?: RewardSpec;
-}
+export type { EvalTaskSpec };
 
 export interface EvalRoutesDeps {
   evals: EvalRunService;
-  agents: AgentStore;
-  /** Optional. When omitted we don't 404 on missing environments — Node
-   *  doesn't have a per-tenant environments store yet (P5 work). */
-  environments?: EnvironmentService;
+  runtimeFor(tenantId: string): EvalSessionRuntime | Promise<EvalSessionRuntime>;
+  benchmarksFor(tenantId: string): EvalBenchmarkStore | Promise<EvalBenchmarkStore>;
+  /** Files API read for upload-sourced harbor cases. */
+  readUpload(tenantId: string, fileId: string): Promise<{ bytes: Uint8Array; filename?: string } | null>;
+  /** Outbound fetch for registry / GitHub imports; defaults to global fetch. */
+  fetch?: typeof fetch;
+}
+
+const RUN_STATUSES: readonly EvalRunStatus[] = ["pending", "running", "completed", "failed", "cancelled"];
+const MAX_TRIALS = 20;
+const MAX_CONCURRENCY = 32;
+
+function bad(message: string) { return { error: message }; }
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function intInRange(value: unknown, field: string, min: number, max: number, fallback: number): number | string {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    return `${field} must be an integer between ${min} and ${max}`;
+  }
+  return value;
+}
+
+function benchmarkName(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 export function buildEvalRoutes(deps: EvalRoutesDeps) {
   const app = new Hono<Vars>();
+  const fetchImpl = deps.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+  const importDeps = (t: string) => ({ fetch: fetchImpl, readUpload: (fileId: string) => deps.readUpload(t, fileId) });
 
-  // POST /v1/oma/evals/runs — create
-  app.post("/runs", async (c) => {
-    const t = c.var.tenant_id;
-    const body = await c.req.json<{
-      agent_id: string;
-      environment_id: string;
-      tasks: EvalTaskSpec[];
-    }>();
-
-    if (!body.agent_id) return c.json({ error: "agent_id is required" }, 400);
-    if (!body.environment_id) return c.json({ error: "environment_id is required" }, 400);
-    if (!Array.isArray(body.tasks) || body.tasks.length === 0) {
-      return c.json({ error: "tasks array is required and must be non-empty" }, 400);
+  // EvalBenchmarkError -> its status; anything else propagates.
+  const guard = async (c: { json: (body: unknown, status: 400 | 404 | 409 | 502) => Response }, work: () => Promise<Response>) => {
+    try { return await work(); }
+    catch (error) {
+      if (error instanceof EvalBenchmarkError) return c.json(bad(error.message), error.status);
+      throw error;
     }
-    for (const task of body.tasks) {
-      if (!task.id) return c.json({ error: `task missing id: ${JSON.stringify(task).slice(0, 100)}` }, 400);
-      if (!Array.isArray(task.messages) || task.messages.length === 0) {
-        return c.json({ error: `task ${task.id} requires non-empty messages array` }, 400);
+  };
+
+  async function context(t: string) {
+    const [store, runtime] = await Promise.all([deps.benchmarksFor(t), deps.runtimeFor(t)]);
+    return { store, runtime, alias: (image: string) => runtime.imageAlias(image) };
+  }
+
+  /** A pending/running run of the benchmark, or null. */
+  async function activeRunOf(t: string, benchmarkId: string): Promise<string | null> {
+    const rows = (await Promise.all((["pending", "running"] as const).map((status) => deps.evals.list({ tenantId: t, status, limit: 1000 })))).flat();
+    return rows.map(rowToRecord).find((run) => run.benchmark_id === benchmarkId)?.id ?? null;
+  }
+
+  async function requireIdle(t: string, benchmarkId: string) {
+    const active = await activeRunOf(t, benchmarkId);
+    if (active !== null) throw new EvalBenchmarkError(`Benchmark is used by active run ${active}; wait for it or cancel it first`, 409);
+  }
+
+  async function requireBenchmark(store: EvalBenchmarkStore, id: string): Promise<StoredEvalBenchmark> {
+    const benchmark = await store.get(id);
+    if (benchmark === null) throw new EvalBenchmarkError("Benchmark not found", 404);
+    return benchmark;
+  }
+
+  // ── Benchmarks ──────────────────────────────────────────────────────────
+
+  app.get("/benchmarks", async (c) => {
+    const { store, alias } = await context(c.var.tenant_id);
+    return c.json({ data: (await store.list()).map((benchmark) => benchmarkToApi(benchmark, alias, false)) });
+  });
+
+  app.get("/benchmarks/builtin", (c) => c.json({ data: listBuiltinBenchmarks() }));
+
+  app.post("/benchmarks", async (c) => {
+    const t = c.var.tenant_id;
+    const body = await c.req.json<CreateEvalBenchmarkRequest>().catch(() => null);
+    if (!isObject(body)) return c.json(bad("Request body must be a JSON object"), 400);
+    return guard(c, async () => {
+      const { store, alias } = await context(t);
+      const raw = body as Record<string, unknown>;
+      if (raw.kind !== undefined && raw.kind !== "harbor" && raw.kind !== "messages") {
+        throw new EvalBenchmarkError("kind must be harbor or messages");
+      }
+      if (raw.source !== undefined) {
+        if (raw.kind === "messages") throw new EvalBenchmarkError("source is only used by harbor benchmarks");
+        if (raw.cases !== undefined) throw new EvalBenchmarkError("cases is only used by messages benchmarks");
+        const { defaultName, bundles } = await collectHarborBundles(raw.source as HarborCaseSource, raw.case_names, importDeps(t));
+        const name = raw.name === undefined ? defaultName : benchmarkName(raw.name);
+        if (name === null) throw new EvalBenchmarkError("name must be a non-empty string");
+        const benchmark = await store.create({ name, kind: "harbor", source: raw.source as HarborCaseSource, bundles });
+        return c.json(benchmarkToApi(benchmark, alias, true), 201);
+      }
+      if (raw.kind === undefined) throw new EvalBenchmarkError("kind is required when no source is given (harbor or messages)");
+      if (raw.case_names !== undefined) throw new EvalBenchmarkError("case_names needs a source");
+      const name = benchmarkName(raw.name);
+      if (name === null) throw new EvalBenchmarkError("name is required");
+      if (raw.kind === "harbor") {
+        if (raw.cases !== undefined) throw new EvalBenchmarkError("cases is only used by messages benchmarks; add harbor cases with a source");
+        return c.json(benchmarkToApi(await store.create({ name, kind: "harbor" }), alias, true), 201);
+      }
+      if (raw.cases !== undefined && !Array.isArray(raw.cases)) throw new EvalBenchmarkError("cases must be an array");
+      const cases = ((raw.cases as unknown[] | undefined) ?? []).map((entry) => parseMessagesCase(entry));
+      const seen = new Set<string>();
+      for (const entry of cases) {
+        if (seen.has(entry.name)) throw new EvalBenchmarkError(`Duplicate case name ${entry.name}`);
+        seen.add(entry.name);
+      }
+      const benchmark = await store.create({ name, kind: "messages", cases: cases as StoredMessagesCase[] });
+      return c.json(benchmarkToApi(benchmark, alias, true), 201);
+    });
+  });
+
+  app.get("/benchmarks/:id", async (c) => guard(c, async () => {
+    const { store, alias } = await context(c.var.tenant_id);
+    return c.json(benchmarkToApi(await requireBenchmark(store, c.req.param("id")), alias, true));
+  }));
+
+  app.patch("/benchmarks/:id", async (c) => {
+    const body = await c.req.json<UpdateEvalBenchmarkRequest>().catch(() => null);
+    if (!isObject(body)) return c.json(bad("Request body must be a JSON object"), 400);
+    const unknown = Object.keys(body).filter((key) => key !== "name");
+    if (unknown.length > 0) return c.json(bad(`Only name can be updated (got ${unknown.join(", ")})`), 400);
+    const name = benchmarkName(body.name);
+    if (name === null) return c.json(bad("name must be a non-empty string"), 400);
+    return guard(c, async () => {
+      const { store, alias } = await context(c.var.tenant_id);
+      const renamed = await store.rename(c.req.param("id"), name);
+      if (renamed === null) throw new EvalBenchmarkError("Benchmark not found", 404);
+      return c.json(benchmarkToApi(renamed, alias, true));
+    });
+  });
+
+  app.delete("/benchmarks/:id", async (c) => guard(c, async () => {
+    const t = c.var.tenant_id;
+    const id = c.req.param("id");
+    const store = await deps.benchmarksFor(t);
+    await requireBenchmark(store, id);
+    await requireIdle(t, id);
+    await store.delete(id);
+    return c.json({ type: "eval_benchmark_deleted", id });
+  }));
+
+  // ── Cases ───────────────────────────────────────────────────────────────
+
+  app.get("/benchmarks/:id/cases/:name", async (c) => guard(c, async () => {
+    const { store, alias } = await context(c.var.tenant_id);
+    const id = c.req.param("id");
+    const name = c.req.param("name");
+    const benchmark = await requireBenchmark(store, id);
+    const entry = benchmark.cases.find((candidate) => candidate.name === name);
+    if (entry === undefined) throw new EvalBenchmarkError(`Case ${name} not found`, 404);
+    return c.json(await caseDetail(store, id, entry, alias));
+  }));
+
+  app.post("/benchmarks/:id/cases", async (c) => {
+    const t = c.var.tenant_id;
+    const body = await c.req.json<AddEvalCasesRequest>().catch(() => null);
+    if (!isObject(body)) return c.json(bad("Request body must be a JSON object"), 400);
+    return guard(c, async () => {
+      const { store, alias } = await context(t);
+      const id = c.req.param("id");
+      const benchmark = await requireBenchmark(store, id);
+      await requireIdle(t, id);
+      const raw = body as Record<string, unknown>;
+      if (benchmark.kind === "messages") {
+        if (raw.source !== undefined) throw new EvalBenchmarkError("A messages benchmark takes one case ({ name, messages, ... }), not a source");
+        const updated = await store.addMessagesCase(id, parseMessagesCase(raw));
+        return c.json(benchmarkToApi(updated, alias, true), 201);
+      }
+      if (raw.source === undefined) throw new EvalBenchmarkError("A harbor benchmark takes { source, case_names? }");
+      const { bundles } = await collectHarborBundles(raw.source as HarborCaseSource, raw.case_names, importDeps(t));
+      const updated = await store.addHarborCases(id, bundles);
+      return c.json(benchmarkToApi(updated, alias, true), 201);
+    });
+  });
+
+  app.put("/benchmarks/:id/cases/:name", async (c) => {
+    const t = c.var.tenant_id;
+    const body = await c.req.json<ReplaceEvalCaseRequest>().catch(() => null);
+    if (!isObject(body)) return c.json(bad("Request body must be a JSON object"), 400);
+    return guard(c, async () => {
+      const { store, alias } = await context(t);
+      const id = c.req.param("id");
+      const name = c.req.param("name");
+      const benchmark = await requireBenchmark(store, id);
+      if (!benchmark.cases.some((entry) => entry.name === name)) throw new EvalBenchmarkError(`Case ${name} not found`, 404);
+      await requireIdle(t, id);
+      const raw = body as Record<string, unknown>;
+      if (benchmark.kind === "messages") {
+        if (raw.source !== undefined) throw new EvalBenchmarkError("A messages case is replaced by its new content, not a source");
+        const { name: _name, ...content } = parseMessagesCase(raw, name);
+        const replaced = await store.replaceMessagesCase(id, name, content);
+        return c.json(await caseDetail(store, id, replaced, alias));
+      }
+      const source = raw.source as HarborCaseSource | undefined;
+      if (!isObject(source) || source.type !== "upload") {
+        throw new EvalBenchmarkError("A harbor case is replaced by { source: { type: \"upload\", file_id } }");
+      }
+      const { bundles } = await collectHarborBundles(source, undefined, importDeps(t));
+      if (bundles.length !== 1) {
+        throw new EvalBenchmarkError(`The upload must hold exactly one task directory, found ${bundles.length} (${bundles.map((bundle) => bundle.name).join(", ")})`);
+      }
+      const replaced = await store.replaceHarborCase(id, name, bundles[0]!);
+      return c.json(await caseDetail(store, id, replaced, alias));
+    });
+  });
+
+  app.delete("/benchmarks/:id/cases/:name", async (c) => guard(c, async () => {
+    const t = c.var.tenant_id;
+    const id = c.req.param("id");
+    const name = c.req.param("name");
+    const store = await deps.benchmarksFor(t);
+    const benchmark = await requireBenchmark(store, id);
+    if (!benchmark.cases.some((entry) => entry.name === name)) throw new EvalBenchmarkError(`Case ${name} not found`, 404);
+    await requireIdle(t, id);
+    await store.deleteCase(id, name);
+    return c.json({ type: "eval_case_deleted", benchmark_id: id, name });
+  }));
+
+  // ── Runs ────────────────────────────────────────────────────────────────
+
+  type NewRun = Omit<EvalRunRecord, "id" | "tenant_id" | "status" | "created_at">;
+
+  async function createBenchmarkRun(t: string, runtime: EvalSessionRuntime, body: Record<string, unknown>): Promise<{ status: 200 | 400 | 404; body: unknown }> {
+    const fail = (status: 400 | 404, message: string) => ({ status, body: bad(message) });
+    if (typeof body.benchmark_id !== "string" || body.benchmark_id === "") return fail(400, "benchmark_id must be a non-empty string");
+    if (body.kind !== undefined) return fail(400, "kind is not used with benchmark_id (the run has the benchmark's kind)");
+    if (body.tasks !== undefined) return fail(400, "tasks is not used with benchmark_id (use case_names)");
+    const trials = intInRange(body.trials, "trials", 1, MAX_TRIALS, 1);
+    if (typeof trials === "string") return fail(400, trials);
+    const concurrency = intInRange(body.concurrency, "concurrency", 1, MAX_CONCURRENCY, DEFAULT_EVAL_CONCURRENCY);
+    if (typeof concurrency === "string") return fail(400, concurrency);
+    const mode = body.mode ?? "agent";
+    if (mode !== "agent" && mode !== "oracle") return fail(400, "mode must be agent or oracle");
+    const benchmark = await (await deps.benchmarksFor(t)).get(body.benchmark_id);
+    if (benchmark === null) return fail(404, "Benchmark not found");
+    const alias = (image: string) => runtime.imageAlias(image);
+
+    let selected = benchmark.cases;
+    if (body.case_names !== undefined) {
+      const names = body.case_names;
+      if (!Array.isArray(names) || names.length === 0 || names.some((name) => typeof name !== "string")) {
+        return fail(400, "case_names must be a non-empty array of strings");
+      }
+      const byName = new Map(benchmark.cases.map((entry) => [entry.name, entry]));
+      const missing = (names as string[]).filter((name) => !byName.has(name));
+      if (missing.length > 0) return fail(400, `Unknown case(s): ${missing.join(", ")}`);
+      selected = [...new Set(names as string[])].map((name) => byName.get(name)!);
+      const blocked = selected.filter((entry) => !runnableCase(entry, alias)) as StoredHarborCase[];
+      if (blocked.length > 0) {
+        return fail(400, `Case(s) cannot run here: ${blocked.map((entry) => entry.supported
+          ? `${entry.name} (image ${entry.image} is not in SANDBOX_IMAGES)`
+          : `${entry.name} (${entry.unsupported_reason})`).join("; ")}`);
+      }
+    } else {
+      selected = selected.filter((entry) => runnableCase(entry, alias));
+      if (selected.length === 0) {
+        return fail(400, benchmark.kind === "messages"
+          ? "Benchmark has no cases"
+          : "No case of this benchmark can run here (unsupported, or image not in SANDBOX_IMAGES)");
       }
     }
+    const pendingTrials = () => Array.from({ length: trials }, (_, index) => ({ trial_index: index, status: "pending" as const }));
 
-    const [agentRow, envRow] = await Promise.all([
-      deps.agents.findCurrent({ workspaceId: t, agentId: body.agent_id }),
-      deps.environments
-        ? deps.environments.get({ tenantId: t, environmentId: body.environment_id })
-        : Promise.resolve({} as unknown), // Node: skip env existence check
-    ]);
-    if (!agentRow || agentRow.archivedAt !== null) return c.json({ error: "Agent not found" }, 404);
-    if (deps.environments && !envRow) return c.json({ error: "Environment not found" }, 404);
+    if (benchmark.kind === "messages") {
+      if (mode !== "agent") return fail(400, "messages benchmarks run in mode agent only");
+      if (typeof body.agent_id !== "string" || body.agent_id === "") return fail(400, "agent_id is required");
+      if (typeof body.environment_id !== "string" || body.environment_id === "") return fail(400, "environment_id is required for a messages benchmark");
+      const [agentOk, envOk] = await Promise.all([runtime.agentExists(body.agent_id), runtime.environmentExists(body.environment_id)]);
+      if (!agentOk) return fail(404, "Agent not found");
+      if (!envOk) return fail(404, "Environment not found");
+      const envProblem = await runtime.environmentProblem?.(body.environment_id) ?? null;
+      if (envProblem !== null) return fail(400, envProblem);
+      const record: NewRun = {
+        kind: "messages",
+        agent_id: body.agent_id,
+        environment_id: body.environment_id,
+        benchmark_id: benchmark.id,
+        mode: "agent",
+        concurrency,
+        task_count: selected.length,
+        completed_count: 0,
+        failed_count: 0,
+        // Snapshot: later case edits do not change this run.
+        tasks: (selected as StoredMessagesCase[]).map((entry) => ({
+          id: entry.name,
+          spec: messagesCaseSpec(entry),
+          status: "pending" as const,
+          trial_total: trials,
+          trials: pendingTrials(),
+        })),
+      };
+      const run = await deps.evals.create({
+        tenantId: t,
+        agentId: body.agent_id,
+        environmentId: body.environment_id,
+        suite: benchmark.name,
+        results: extractResults({ ...record, id: "", tenant_id: t, status: "pending", created_at: "" }),
+      });
+      return { status: 200, body: { run_id: run.id, task_count: selected.length } };
+    }
 
-    const initialResults = {
+    if (body.environment_id !== undefined) return fail(400, "environment_id is not used by harbor benchmarks (each case's image picks its environment)");
+    if (mode === "agent") {
+      if (typeof body.agent_id !== "string" || body.agent_id === "") return fail(400, "agent_id is required for mode agent");
+      if (!(await runtime.agentExists(body.agent_id))) return fail(404, "Agent not found");
+    } else if (body.agent_id !== undefined) {
+      return fail(400, "agent_id is not used in mode oracle");
+    }
+    const harborCases = selected as StoredHarborCase[];
+    if (mode === "oracle") {
+      const noSolution = harborCases.filter((entry) => !entry.has_solution);
+      if (noSolution.length > 0) return fail(400, `Case(s) without solution/solve.sh: ${noSolution.map((entry) => entry.name).join(", ")}`);
+    }
+    const record: NewRun = {
+      kind: "harbor",
+      agent_id: mode === "agent" ? body.agent_id as string : null,
+      environment_id: null,
+      benchmark_id: benchmark.id,
+      mode,
+      concurrency,
+      task_count: harborCases.length,
+      completed_count: 0,
+      failed_count: 0,
+      tasks: harborCases.map((entry) => ({
+        id: entry.name,
+        status: "pending" as const,
+        trial_total: trials,
+        image_alias: alias(entry.image)!,
+        trials: pendingTrials(),
+      })),
+    };
+    const run = await deps.evals.create({
+      tenantId: t,
+      // NOT NULL columns: the agent column keeps agent-delete safety checks
+      // working; oracle runs and the environment column use "".
+      agentId: record.agent_id ?? "",
+      environmentId: "",
+      suite: benchmark.name,
+      results: extractResults({ ...record, id: "", tenant_id: t, status: "pending", created_at: "" }),
+    });
+    return { status: 200, body: { run_id: run.id, task_count: harborCases.length } };
+  }
+
+  app.post("/runs", async (c) => {
+    const t = c.var.tenant_id;
+    const body = await c.req.json<CreateEvalRunRequest>().catch(() => null);
+    if (body === null || typeof body !== "object") return c.json(bad("Request body must be a JSON object"), 400);
+    const runtime = await deps.runtimeFor(t);
+
+    if ("benchmark_id" in body) {
+      const result = await createBenchmarkRun(t, runtime, body as Record<string, unknown>);
+      return c.json(result.body, result.status);
+    }
+    if (body.kind !== undefined && body.kind !== "messages") {
+      return c.json(bad("kind must be messages; benchmark runs pass benchmark_id instead"), 400);
+    }
+    if (!body.agent_id) return c.json(bad("agent_id is required"), 400);
+    if (!body.environment_id) return c.json(bad("environment_id is required"), 400);
+    if (!Array.isArray(body.tasks) || body.tasks.length === 0) return c.json(bad("tasks array is required and must be non-empty"), 400);
+    for (const task of body.tasks) {
+      if (!task.id) return c.json(bad(`task missing id: ${JSON.stringify(task).slice(0, 100)}`), 400);
+      if (!Array.isArray(task.messages) || task.messages.length === 0) return c.json(bad(`task ${task.id} requires non-empty messages array`), 400);
+      const reward = (task as { reward?: unknown }).reward;
+      if (reward !== undefined) {
+        const type = reward !== null && typeof reward === "object" ? (reward as { type?: unknown }).type : undefined;
+        if (typeof type !== "string" || !REWARD_TYPES.has(type)) {
+          return c.json(bad(`task ${task.id} reward.type must be one of ${[...REWARD_TYPES].join(", ")}`), 400);
+        }
+      }
+      const trials = intInRange(task.trials, `task ${task.id} trials`, 1, MAX_TRIALS, 1);
+      if (typeof trials === "string") return c.json(bad(trials), 400);
+    }
+    const [agentOk, envOk] = await Promise.all([runtime.agentExists(body.agent_id), runtime.environmentExists(body.environment_id)]);
+    if (!agentOk) return c.json(bad("Agent not found"), 404);
+    if (!envOk) return c.json(bad("Environment not found"), 404);
+    const envProblem = await runtime.environmentProblem?.(body.environment_id) ?? null;
+    if (envProblem !== null) return c.json(bad(envProblem), 400);
+    const record: Omit<EvalRunRecord, "id" | "tenant_id" | "status" | "created_at"> = {
+      kind: "messages",
+      agent_id: body.agent_id,
+      environment_id: body.environment_id,
       task_count: body.tasks.length,
       completed_count: 0,
       failed_count: 0,
       tasks: body.tasks.map((spec) => {
-        const trialCount = Math.max(1, spec.trials || 1);
-        const trials = [];
-        for (let i = 0; i < trialCount; i++) {
-          trials.push({ trial_index: i, status: "pending" as EvalRunStatus });
-        }
-        return { id: spec.id, spec, status: "pending" as EvalRunStatus, trials, trial_total: trialCount };
+        const trialCount = spec.trials ?? 1;
+        return {
+          id: spec.id,
+          spec: spec as EvalTaskSpec,
+          status: "pending" as const,
+          trial_total: trialCount,
+          trials: Array.from({ length: trialCount }, (_, index) => ({ trial_index: index, status: "pending" as const })),
+        };
       }),
     };
-
     const run = await deps.evals.create({
       tenantId: t,
       agentId: body.agent_id,
       environmentId: body.environment_id,
-      results: initialResults,
+      results: extractResults({ ...record, id: "", tenant_id: t, status: "pending", created_at: "" }),
     });
-
     return c.json({ run_id: run.id, task_count: body.tasks.length });
   });
 
-  // GET /v1/oma/evals/runs — paginated list
   app.get("/runs", async (c) => {
     const t = c.var.tenant_id;
     const limitParam = c.req.query("limit");
     let limit = limitParam ? parseInt(limitParam, 10) : 100;
     if (isNaN(limit) || limit < 1) limit = 100;
     if (limit > 1000) limit = 1000;
-
-    // status: enum filter. Whitelist strictly — any unknown value is a 400,
-    // NOT a silent fallback to "all". Allowing arbitrary strings here would
-    // mask client bugs (typo'd "completed " returning every row looks like a
-    // feature). Mirrors the agents route pattern.
     const statusRaw = c.req.query("status");
-    let status: EvalRunStatus | undefined;
-    if (statusRaw !== undefined) {
-      if (
-        statusRaw === "pending" ||
-        statusRaw === "running" ||
-        statusRaw === "completed" ||
-        statusRaw === "failed"
-      ) {
-        status = statusRaw;
-      } else {
-        return c.json(
-          {
-            error: {
-              type: "invalid_request_error",
-              code: "invalid_status",
-              message: `Invalid status '${statusRaw}'; expected one of pending|running|completed|failed.`,
-            },
-          },
-          400,
-        );
-      }
+    if (statusRaw !== undefined && !RUN_STATUSES.includes(statusRaw as EvalRunStatus)) {
+      return c.json(bad(`Invalid status '${statusRaw}'; expected one of ${RUN_STATUSES.join("|")}.`), 400);
     }
-
-    const runs = await deps.evals.list({
+    const benchmarkId = c.req.query("benchmark_id") || undefined;
+    const rows = await deps.evals.list({
       tenantId: t,
-      limit,
+      limit: benchmarkId ? 1000 : limit,
       agentId: c.req.query("agent_id") || undefined,
       environmentId: c.req.query("environment_id") || undefined,
-      status,
+      ...(statusRaw !== undefined ? { status: statusRaw as EvalRunStatus } : {}),
     });
-
-    return c.json({ data: runs.map(rowToApi) });
+    let runs = rows.map(rowToRecord);
+    if (benchmarkId) runs = runs.filter((run) => run.benchmark_id === benchmarkId).slice(0, limit);
+    return c.json({ data: runs.map(recordToApi) });
   });
 
-  // GET /v1/oma/evals/runs/:id — detail
   app.get("/runs/:id", async (c) => {
-    const t = c.var.tenant_id;
-    const run = await deps.evals.get({ tenantId: t, runId: c.req.param("id") });
-    if (!run) return c.json({ error: "Run not found" }, 404);
-    return c.json(rowToApi(run));
+    const run = await deps.evals.get({ tenantId: c.var.tenant_id, runId: c.req.param("id") });
+    if (!run) return c.json(bad("Run not found"), 404);
+    return c.json(recordToApi(rowToRecord(run)));
   });
 
-  // DELETE /v1/oma/evals/runs/:id — cancel (mark failed) + delete
+  async function cancel(t: string, row: EvalRunRow): Promise<EvalRunRecord> {
+    const run = rowToRecord(row);
+    if (isTerminal(run.status)) return run;
+    // Flip the row first so a concurrent tick stops writing it.
+    await deps.evals.markCompleted({ tenantId: t, runId: run.id, status: "cancelled", error: "cancelled by user" });
+    await stopRunTrials(await deps.runtimeFor(t), run);
+    run.status = "cancelled";
+    run.error = "cancelled by user";
+    const saved = await deps.evals.markCompleted({ tenantId: t, runId: run.id, status: "cancelled", results: extractResults(run), error: run.error });
+    return rowToRecord(saved);
+  }
+
+  app.post("/runs/:id/cancel", async (c) => {
+    const t = c.var.tenant_id;
+    const row = await deps.evals.get({ tenantId: t, runId: c.req.param("id") });
+    if (!row) return c.json(bad("Run not found"), 404);
+    return c.json(recordToApi(await cancel(t, row)));
+  });
+
   app.delete("/runs/:id", async (c) => {
     const t = c.var.tenant_id;
     const id = c.req.param("id");
-    const run = await deps.evals.get({ tenantId: t, runId: id });
-    if (!run) return c.json({ error: "Run not found" }, 404);
-    // If still in-flight, flip to failed first so the cron tick stops
-    // touching it before we delete the row.
-    if (run.status === "pending" || run.status === "running") {
-      await deps.evals.markCompleted({
-        tenantId: t,
-        runId: id,
-        status: "failed",
-        error: "cancelled by user",
-      });
-    }
+    const row = await deps.evals.get({ tenantId: t, runId: id });
+    if (!row) return c.json(bad("Run not found"), 404);
+    await cancel(t, row);
     await deps.evals.delete({ tenantId: t, runId: id });
     return c.json({ type: "eval_run_deleted", id });
   });
 
   return app;
-}
-
-function rowToApi(run: EvalRunRow) {
-  const partial = (run.results ?? {}) as {
-    task_count?: number;
-    completed_count?: number;
-    failed_count?: number;
-    tasks?: unknown[];
-  };
-  return {
-    id: run.id,
-    tenant_id: run.tenant_id,
-    agent_id: run.agent_id,
-    environment_id: run.environment_id,
-    status: run.status,
-    created_at: run.started_at,
-    started_at: run.started_at,
-    ended_at: run.completed_at ?? undefined,
-    error: run.error ?? undefined,
-    task_count: partial.task_count ?? 0,
-    completed_count: partial.completed_count ?? 0,
-    failed_count: partial.failed_count ?? 0,
-    tasks: partial.tasks ?? [],
-  };
 }
