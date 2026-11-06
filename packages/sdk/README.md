@@ -88,6 +88,50 @@ These are intentionally different catalogs:
 old Anthropic/OpenAI live-discovery endpoint. New clients should not forward a
 provider credential just to browse Pi's catalog.
 
+## Evals
+
+`client.oma.evals` wraps `/v1/oma/evals`: a **benchmark** is a named set of
+**cases** (`kind: "harbor"` Harbor-format tasks, or `kind: "messages"` scripted
+conversations graded by a reward spec), and an **eval run** executes a
+benchmark (all or some cases) against an agent.
+
+```ts
+const evals = client.oma.evals;
+
+// Harbor: import a builtin / registry dataset, or upload task directories.
+const bench = await evals.benchmarks.upload({
+  file: await readFile("tasks.tar.gz"), // .tar / .tar.gz / .tgz
+  filename: "tasks.tar.gz",
+});
+// or: evals.benchmarks.create({ source: { type: "builtin", name: "terminal-bench-sample@2.0" } })
+// or: evals.benchmarks.create({ source: { type: "registry", name: "terminal-bench", version: "2.0" }, case_names: ["hello"] })
+
+// Manage cases one by one.
+await evals.benchmarks.cases.upload(bench.id, { file: moreTasks, filename: "more.tar.gz" });
+await evals.benchmarks.cases.replaceUpload(bench.id, "hello", { file: oneTask, filename: "hello.tar.gz" });
+await evals.benchmarks.cases.delete(bench.id, "broken");
+await evals.benchmarks.update(bench.id, { name: "terminal-bench (mine)" });
+
+// Messages: create empty, then add cases.
+const chat = await evals.benchmarks.create({ kind: "messages", name: "smoke" });
+await evals.benchmarks.cases.add(chat.id, {
+  name: "greets",
+  messages: ["Create hello.txt containing hi"],
+  reward: { type: "verifiable", scorer: "bashExit", opts: { expectedCode: 0 } }, // eval-core RewardSpec
+});
+
+const { run_id } = await evals.runs.create({
+  benchmark_id: bench.id, agent_id: "agent_123", trials: 2,
+  // messages benchmarks also need environment_id; harbor rejects it.
+  // mode: "oracle" (harbor only, no agent_id) runs solution/solve.sh.
+});
+const run = await evals.runs.waitForRun(run_id, {
+  intervalMs: 5000,
+  onProgress: (r) => console.log(r.status, r.completed_count, "/", r.task_count),
+});
+console.log(run.status, run.score);
+```
+
 ## Agent model controls
 
 Managed Agents model controls belong to an **Agent version**, not to a Model
