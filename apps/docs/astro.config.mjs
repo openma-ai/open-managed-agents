@@ -108,6 +108,7 @@ export default defineConfig({
             { label: 'Skills & Tools', slug: 'build/skills-and-tools' },
             { label: 'Vault & MCP', slug: 'build/vault-and-mcp' },
             { label: 'Custom Integrations', slug: 'build/integrations' },
+            { label: 'Evals', slug: 'build/evals' },
           ],
         },
         {

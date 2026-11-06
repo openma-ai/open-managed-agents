@@ -1,0 +1,182 @@
+---
+title: Evals
+description: Manage benchmarks and their cases, then run them against your agents on managed Sessions — Harbor-format tasks such as Terminal-Bench, or scripted conversations.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Evals have three layers:
+
+- **Benchmark** — a named set of cases. Each benchmark has one kind:
+  - **`harbor`** — cases are tasks in the [Harbor](https://harborframework.com)
+    task format (`task.toml`, `instruction.md`, `environment/`, `tests/`,
+    `solution/`). This is the format Terminal-Bench 2.0 uses.
+  - **`messages`** — cases are scripted conversations: user messages sent in
+    order, then an eval-core reward spec scores the Session.
+- **Case** — one task of a benchmark. You add, edit (or replace) and delete
+  cases one by one.
+- **Eval run** — one execution of a benchmark (all cases or some of them)
+  against an agent. Every attempt (a **trial**) is an ordinary managed Session,
+  so you can open it in the Console and read exactly what the agent did. A
+  background tick drives runs forward once a minute on both Node and
+  Cloudflare deployments.
+
+Cases cannot change, and a benchmark cannot be deleted, while one of its runs
+is pending or running (`409`). A run keeps a copy of each messages case it
+started with, so editing a case later does not change past results.
+
+## Harbor benchmarks
+
+### Import or create
+
+```bash
+# A benchmark shipped with OMA (pinned to a commit)
+oma evals benchmarks import --builtin terminal-bench-sample@2.0
+
+# Any dataset in Harbor's public registry (or --registry-url for your own)
+oma evals benchmarks import --registry terminal-bench@2.0 --case fix-git --case regex-log
+
+# Your own tasks: a directory or a .tar / .tar.gz containing task directories
+oma evals benchmarks upload ./my-tasks --name my-tasks
+
+# Or start empty and add cases later
+oma evals benchmarks create --name my-tasks --kind harbor
+```
+
+`oma evals benchmarks show <id>` lists each case and whether it can run on
+this deployment.
+
+### Manage cases
+
+```bash
+oma evals cases add <benchmark-id> --from ./another-task          # directory or archive
+oma evals cases add <benchmark-id> --registry terminal-bench@2.0 --case build-pmars
+oma evals cases replace <benchmark-id> fix-git --from ./fix-git-v2  # exactly one task
+oma evals cases show <benchmark-id> fix-git
+oma evals cases delete <benchmark-id> fix-git
+```
+
+### How a trial runs
+
+1. The case's container image is the Session's sandbox. The working directory
+   is the image's `WORKDIR`, exactly as Harbor runs it.
+2. **Agent mode**: `instruction.md` is sent as the first user message and the
+   agent works until it ends its turn. If it exceeds the task's agent timeout
+   it is interrupted and the trial is still graded.
+   **Oracle mode**: `solution/solve.sh` runs instead of an agent. Use it to
+   check that a case's environment and tests work here before spending model
+   tokens.
+3. `tests/` is copied into the same sandbox and `tests/test.sh` runs. It
+   writes `/logs/verifier/reward.txt` or `reward.json`; that is the trial's
+   reward.
+
+A case passes when its reward is at least 1. A case's mean reward counts
+errored trials as 0, as Harbor does; the run score is the mean over cases.
+
+### Task images
+
+Harbor tasks name a prebuilt image (`docker_image` in `task.toml`). OMA only
+runs images the operator has listed in `SANDBOX_IMAGES`; a case whose image is
+not listed is shown as not runnable and is rejected when you start a run.
+`SANDBOX_IMAGES` is described in `docs/self-host.md` in the repository; on
+Cloudflare each image is built into its own container class, see
+`docs/cloudflare-sandbox-images.md`.
+
+<Aside type="caution">
+Tasks that build their image from a Dockerfile, use docker-compose services or
+restrict networking are not supported yet and are rejected with an explicit
+error.
+</Aside>
+
+## Messages benchmarks
+
+A messages case sends its messages one at a time, waiting for the agent to
+finish each turn, then scores the Session's trajectory. Write a case as JSON:
+
+```json
+{
+  "name": "two-turns",
+  "messages": ["Write first to /tmp/a.txt", "Print /tmp/a.txt"],
+  "reward": { "type": "verifiable", "scorer": "agentMessageContains", "opts": { "target": "first" } }
+}
+```
+
+```bash
+oma evals benchmarks create --name smoke --kind messages
+oma evals cases add <benchmark-id> --file two-turns.json
+oma evals cases replace <benchmark-id> two-turns --file two-turns.json
+```
+
+`reward.type` is one of `verifiable`, `script`, `reward_model` or
+`composite`. Optional `setup_files` and `setup_script` prepare the sandbox
+before the first message; `timeout_ms` bounds the case. Messages runs use the
+environment you pass when starting the run; on Cloudflare it must be a cloud
+environment.
+
+## Run a benchmark
+
+```bash
+# Harbor: check the environments first, then the agent
+oma evals run --benchmark <benchmark-id> --mode oracle --wait
+oma evals run --benchmark <benchmark-id> --agent <agent-id> --trials 2 --concurrency 4 --wait
+
+# Messages: an agent and an environment
+oma evals run --benchmark <benchmark-id> --agent <agent-id> --environment <env-id> --wait
+
+oma evals runs list --benchmark <benchmark-id>
+oma evals runs show <run-id>
+oma evals runs cancel <run-id>
+```
+
+`--case` (repeatable) runs a subset. `--concurrency` caps how many trials run
+at once (default 4).
+
+The same operations are in the Console under **Evals** (tabs **Benchmarks** and
+**Runs**), and in the SDK:
+
+```ts
+const evals = client.oma.evals;
+
+// Harbor: import, then run
+const tb = await evals.benchmarks.create({
+  source: { type: "builtin", name: "terminal-bench-sample@2.0" },
+});
+const { run_id } = await evals.runs.create({
+  benchmark_id: tb.id, agent_id: "agent_123", trials: 2,
+});
+console.log((await evals.runs.waitForRun(run_id)).score);
+
+// Messages: create, add a case, run
+const smoke = await evals.benchmarks.create({ kind: "messages", name: "smoke" });
+await evals.benchmarks.cases.add(smoke.id, {
+  name: "two-turns",
+  messages: ["Write first to /tmp/a.txt", "Print /tmp/a.txt"],
+  reward: { type: "verifiable", scorer: "agentMessageContains", opts: { target: "first" } },
+});
+await evals.runs.create({ benchmark_id: smoke.id, agent_id: "agent_123", environment_id: "env_123" });
+```
+
+### Inline messages runs
+
+The original API still accepts tasks inline, without a benchmark:
+
+```bash
+curl -X POST $OMA/v1/oma/evals/runs \
+  -H "x-api-key: $KEY" -H "content-type: application/json" \
+  -d '{
+    "agent_id": "agent_123",
+    "environment_id": "env_123",
+    "tasks": [{
+      "id": "two-turns",
+      "messages": ["Write first to /tmp/a.txt", "Print /tmp/a.txt"],
+      "reward": { "type": "verifiable", "scorer": "agentMessageContains", "opts": { "target": "first" } }
+    }]
+  }'
+```
+
+## Limits
+
+- On Node, sandboxes live in the control-plane process: restarting it fails the
+  trials that were running.
+- On Cloudflare, an exec returns at most 100 KB of output and an idle container
+  sleeps after 5 minutes.

@@ -317,14 +317,54 @@ Delete a publication.
 
 ## Evals
 
-### `GET /v1/oma/evals`
-List eval runs.
+See [Evals](/build/evals/) for the task formats and how runs are scored.
 
-### `POST /v1/oma/evals`
-Start an eval.
+### `GET /v1/oma/evals/benchmarks`
+List benchmarks (without their cases).
 
-### `GET /v1/oma/evals/:id`
-Get an eval's results.
+### `GET /v1/oma/evals/benchmarks/builtin`
+List the Harbor benchmarks shipped with OMA.
+
+### `POST /v1/oma/evals/benchmarks`
+Create a benchmark (`201`): import a Harbor benchmark from an uploaded archive, a Harbor registry or a built-in set, or create an empty `harbor` or `messages` benchmark (optionally with initial messages cases).
+
+### `GET /v1/oma/evals/benchmarks/:id`
+Get a benchmark and its cases, including which cases are runnable here.
+
+### `PATCH /v1/oma/evals/benchmarks/:id`
+Rename a benchmark.
+
+### `DELETE /v1/oma/evals/benchmarks/:id`
+Delete a benchmark (`409` while an active run uses it).
+
+### `POST /v1/oma/evals/benchmarks/:id/cases`
+Add cases (`201`): one messages case, or every Harbor task found in a source. `409` if a name exists.
+
+### `GET /v1/oma/evals/benchmarks/:id/cases/:name`
+Get one case. Harbor cases include the full instruction and the stored file list.
+
+### `PUT /v1/oma/evals/benchmarks/:id/cases/:name`
+Replace a case: new messages content, or an uploaded archive holding exactly one Harbor task.
+
+### `DELETE /v1/oma/evals/benchmarks/:id/cases/:name`
+Delete a case.
+
+Case writes return `409` while an active run uses the benchmark.
+
+### `POST /v1/oma/evals/runs`
+Start a run of a benchmark (`benchmark_id`, optional `case_names`, `trials`, `concurrency`; Harbor: `mode: "agent"` or `"oracle"`; messages: `agent_id` and `environment_id`), or of inline messages `tasks`.
+
+### `GET /v1/oma/evals/runs`
+List runs. Filters: `status`, `agent_id`, `benchmark_id`, `limit`.
+
+### `GET /v1/oma/evals/runs/:id`
+Get a run with per-case and per-trial results.
+
+### `POST /v1/oma/evals/runs/:id/cancel`
+Cancel a run and interrupt its Sessions.
+
+### `DELETE /v1/oma/evals/runs/:id`
+Delete a run (cancels it first if it is still active).
 
 ## API Keys
 
