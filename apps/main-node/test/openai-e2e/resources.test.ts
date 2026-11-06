@@ -1,5 +1,8 @@
+import { once } from "node:events";
+import { serve } from "@hono/node-server";
 import OpenAI from "openai";
 import { afterEach, describe, expect, it } from "vitest";
+import { createScriptedMcpServer } from "../../../../test/fakes/scripted-mcp-server";
 import { bootOpenAINode } from "../_helpers/openai-node-process";
 
 const fixtures: Array<Awaited<ReturnType<typeof bootOpenAINode>>> = [];
@@ -34,6 +37,49 @@ describe("OpenAI resources through the production Node service", () => {
     await expect(f.client.beta.agents.retrieve(first.id)).rejects.toBeInstanceOf(OpenAI.NotFoundError);
     expect((await f.client.beta.agents.list()).data.map(agent => agent.id)).toEqual([second.id]);
     expect((await f.client.beta.agents.sessions.retrieve(before.id)).agent.instructions).toBe("ORIGINAL_INSTRUCTIONS");
+  }, 150_000);
+
+  it("creates, retrieves, and lists sessions for a saved agent with HTTP MCP", async () => {
+    const mcp = createScriptedMcpServer({
+      tools: [{ name: "ping", description: "Return a test value", inputSchema: { type: "object" } }],
+      callTool: () => ({ content: [{ type: "text", text: "MCP_PING_OK" }] }),
+    });
+    const server = serve({ fetch: request => mcp.fetch(request), port: 0, hostname: "127.0.0.1" });
+    try {
+      await once(server, "listening");
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP address for the MCP server");
+      const transport = { type: "http" as const, server_url: `http://127.0.0.1:${address.port}/mcp` };
+      const f = await bootOpenAINode(input => JSON.stringify(input.messages).includes("MCP_PING_OK")
+        ? { text: "RESOURCE_SESSION_DONE" }
+        : { name: "mcp__lookup__ping", input: {} }, { localSandbox: true });
+      fixtures.push(f);
+      const api = f.client.beta.agents;
+      const saved = await api.create({ model, tools: [{ type: "mcp", server_label: "lookup", transport }] });
+      expect((await api.retrieve(saved.id)).tools).toEqual([
+        expect.objectContaining({ transport: { ...transport, headers: {} } }),
+      ]);
+      const template = await api.environments.templates.create({ name: "MCP session environment" });
+      const input = "Call ping once";
+      const session = await api.sessions.create({
+        agent_id: saved.id, environment: { type: "openai_hosted", environment_template_id: template.id }, input,
+      });
+      expect(session.agent.tools).toEqual([expect.objectContaining({ type: "mcp", server_label: "lookup", transport })]);
+      expect((await api.sessions.retrieve(session.id)).agent.tools).toEqual(session.agent.tools);
+      expect((await api.sessions.list({ agent_id: saved.id })).data).toEqual([
+        expect.objectContaining({ id: session.id, agent: expect.objectContaining({ tools: session.agent.tools }) }),
+      ]);
+      await expect.poll(async () => (await api.sessions.turns.list(session.id)).data, { timeout: 30_000 }).toEqual([
+        expect.objectContaining({ status: "completed" }),
+      ]);
+      const items = (await api.sessions.items.list(session.id)).data;
+      expect(items.filter(item => item.type === "message" && item.role === "user")).toEqual([
+        expect.objectContaining({ content: [expect.objectContaining({ type: "input_text", text: input })] }),
+      ]);
+      expect(mcp.state.counts["tools/call"]).toBe(1);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   }, 150_000);
 
   // Catches loss of real SQL-backed resource configuration on restart and secret
