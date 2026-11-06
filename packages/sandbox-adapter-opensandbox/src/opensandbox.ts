@@ -397,6 +397,8 @@ async function allocate(
 }
 
 export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
+  // Both create and portable restore receive a fresh server-generated ID.
+  allocationIsolation: true,
   create: (ctx, env) => allocate(ctx, env),
   async resume(handle, _ctx, env) {
     if (handle.provider !== "opensandbox" || !handle.runtimeId) throw new Error("Incompatible OpenSandbox runtime handle");

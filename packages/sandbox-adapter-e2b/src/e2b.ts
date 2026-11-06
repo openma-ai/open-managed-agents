@@ -871,6 +871,7 @@ function optionsFromFactory(
 }
 
 export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
+  allocationIsolation: true,
   create: async (ctx, env) => createE2BSandbox(optionsFromFactory(env, ctx)),
   resume: async (handle, _ctx, env) => {
     if (handle.provider !== "e2b" || !handle.runtimeId) {

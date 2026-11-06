@@ -132,10 +132,6 @@ export type ProviderRuntimeEnvironmentResolver<Runtime extends ProviderRuntime> 
  */
 export interface ProviderManagedRuntimeProviderPort<Runtime extends ProviderRuntime>
   extends SandboxProviderPort<Runtime> {
-  /** create/portable restore must allocate a physical resource that is never
-   * shared across distinct context.allocationId values, including after delete.
-   * Merely accepting an allocationId argument does not satisfy this contract. */
-  readonly allocationIsolation?: boolean;
   create(
     ctx: SandboxFactoryContext,
     env: SandboxFactoryEnv,

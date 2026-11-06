@@ -432,6 +432,10 @@ export function withSandboxFactoryCapabilities(
 export interface SandboxProviderPort<
   Runtime extends SandboxPort & SandboxRuntimePort = SandboxPort & SandboxRuntimePort,
 > {
+  /** create/portable restore allocate a physical resource never shared across
+   * distinct allocationId values, including after delete. Merely accepting
+   * an allocationId does not satisfy this guarantee. */
+  readonly allocationIsolation?: boolean;
   create(
     ctx: SandboxFactoryContext,
     env: SandboxFactoryEnv,
