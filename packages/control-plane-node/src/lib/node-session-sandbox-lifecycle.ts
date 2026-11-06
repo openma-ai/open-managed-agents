@@ -220,8 +220,9 @@ export class NodeSessionSandboxLifecycle {
       const resource = snapshot?.resource;
       if (!resource) {
         const inventory = await this.store.list(input.scope);
-        if (inventory.some(value => value.handle === null && value.observedState !== "deleted")) {
-          throw error("unknown_create", "An earlier sandbox allocation still has an unknown creation result; reconcile it before allocating another");
+        const unresolved = inventory.find(value => value.handle === null && value.observedState !== "deleted");
+        if (unresolved) {
+          throw error("unknown_create", unresolved.failure ?? "An earlier sandbox allocation still has an unknown creation result; reconcile it before allocating another");
         }
         const intent = await this.store.createIntent({
           ...input.scope, allocationId: this.nextId(), provider: this.options.provider,
@@ -269,7 +270,7 @@ export class NodeSessionSandboxLifecycle {
       const sandbox = await this.manage(claimed.resource, claimed.fence, "rebind", async management => {
         // Expired management may still have an in-flight provider operation.
         // Merely obtaining its lease is not proof that those effects drained.
-        if (resource.handle === null) throw error("unknown_create", "Sandbox creation has an unknown result; reconcile this allocation before retrying");
+        if (resource.handle === null) throw error("unknown_create", resource.failure ?? "Sandbox creation has an unknown result; reconcile this allocation before retrying");
         if (resource.management.ownerId !== null || resource.observedState !== "ready"
           || resource.readiness !== "prepared" || resource.failure !== null) {
           throw error("unknown_management", resource.failure ?? "Sandbox preparation or prior management did not finish; this allocation requires reconciliation");

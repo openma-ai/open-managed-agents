@@ -210,6 +210,9 @@ describe("real MySQL + MinIO, independent process and sandbox storage chaos", ()
           DATABASE_URL: base.databaseUrl, PLATFORM_ROOT_SECRET: "persistence-integration-secret-32-characters",
           BETTER_AUTH_SECRET: "persistence-integration-auth-secret-32-chars", MEMORY_QUEUE: "disabled",
           SANDBOX_PROVIDER: "litebox", SANDBOX_WORKDIR: join(scratch, owner, "sandboxes"),
+          // Model separate hosts: native runtime state belongs to each owner;
+          // only MySQL/MinIO are shared in this cold-restore scenario.
+          LITEBOX_HOME: join(scratch, owner, "litebox"),
           SESSION_OUTPUTS_DIR: join(scratch, owner, "outputs"), MEMORY_BLOB_DIR: join(scratch, owner, "memory"),
           OMA_SESSION_EXECUTION_OWNER_ID: owner, OMA_REALTIME_FANOUT: "sql-poll",
           OMA_WORKSPACE_STRATEGY: "checkpoint_restore", OMA_WORKSPACE_CHECKPOINT_INTERVAL_SEC: "1",
@@ -252,7 +255,12 @@ describe("real MySQL + MinIO, independent process and sandbox storage chaos", ()
         if (await predicate()) return;
         const failed = await sql.prepare("SELECT failure FROM managed_session_executions WHERE state = 'failed' ORDER BY admitted_at_ms DESC LIMIT 1")
           .first<{ failure: string | null }>();
-        if (failed) throw new Error(`${label} failed: ${failed.failure}; modelRequests=${JSON.stringify(modelRequests.slice(-2))}; logs=${logs.join("").slice(-3000)}`);
+        if (failed) {
+          const errors = await sql.prepare("SELECT document FROM managed_session_events WHERE type = 'session.error' ORDER BY processed_at DESC LIMIT 8")
+            .all<{ document: string }>();
+          const causes = (errors.results ?? []).map(row => JSON.parse(row.document).error);
+          throw new Error(`${label} failed: ${failed.failure}; sessionErrors=${JSON.stringify(causes)}; modelRequests=${JSON.stringify(modelRequests.slice(-2))}; logs=${logs.join("").slice(-3000)}`);
+        }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       const rows = await sql.prepare("SELECT session_id, state, failure, attempt_count FROM managed_session_executions ORDER BY admitted_at_ms DESC LIMIT 3").all();
@@ -295,7 +303,7 @@ describe("real MySQL + MinIO, independent process and sandbox storage chaos", ()
             resume: (handle, allocationId) => liteboxFactory.runtimeBinding!.resume(handle, {
               ...scope, environmentId: env.id, allocationId, workdir: join(scratch, owner, "reaper"),
               outputsRoot: join(scratch, owner, "outputs"),
-            }, {}),
+            }, { LITEBOX_HOME: join(scratch, owner, "litebox") }),
             handle: liteboxFactory.runtimeBinding!.getHandle,
           });
           expect(deleted.observedState).toBe("deleted");

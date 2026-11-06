@@ -152,7 +152,7 @@ describe("Node Session sandbox lifecycle", () => {
     const f = await fixture();
     const create = vi.fn(async () => { throw new Error("provider response lost"); });
     await expect(f.service().open({ ...f.input, create })).rejects.toThrow("provider response lost");
-    await expect(f.service("restarted").open({ ...f.input, create })).rejects.toMatchObject({ code: "unknown_create" });
+    await expect(f.service("restarted").open({ ...f.input, create })).rejects.toMatchObject({ code: "unknown_create", message: expect.stringContaining("provider response lost") });
     expect(create).toHaveBeenCalledTimes(1);
     expect((await f.store.getCurrent(f.scope))!.resource).toMatchObject({ observedState: "intent", handle: null });
     const resource = (await f.store.getCurrent(f.scope))!.resource!;
@@ -162,7 +162,7 @@ describe("Node Session sandbox lifecycle", () => {
       ownerId: "external-reconciler", now: "2026-11-05T00:00:00Z", leaseTtlMs: 30_000 });
     if (claim.type !== "claimed") throw new Error("claim");
     await f.store.retire({ fence: claim.fence, expectedRevision: claim.resource.revision, now: "2026-11-05T00:00:00Z" });
-    await expect(f.service("after-detach").open({ ...f.input, create })).rejects.toMatchObject({ code: "unknown_create" });
+    await expect(f.service("after-detach").open({ ...f.input, create })).rejects.toMatchObject({ code: "unknown_create", message: expect.stringContaining("provider response lost") });
     expect(create).toHaveBeenCalledTimes(1);
   });
 
