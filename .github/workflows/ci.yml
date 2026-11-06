@@ -309,8 +309,33 @@ jobs:
       - name: MySQL integration tests
         run: pnpm test:integration:mysql
 
-      - name: PostgreSQL MCP access-loss integration
+      - name: PostgreSQL integration tests (including sandbox and execution contracts)
         run: pnpm --filter @open-managed-agents/main-node test:integration:postgres
+
+  # Run ownership contracts independently so a preceding browser/provider
+  # failure cannot prevent the real database checks from producing evidence.
+  database-contracts:
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [postgres, mysql]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Check dependency sources before install
+        run: node scripts/check-dependency-sources.mjs
+      - run: pnpm install --frozen-lockfile
+      - name: Session execution and sandbox ownership contracts on real SQL
+        run: pnpm --filter @open-managed-agents/main-node test:integration:${{ matrix.database }} test/issue-525.${{ matrix.database }}.integration.ts
 
   # Separate from graded surfaces so it does not wait on the heavy suites and
   # does not use the Litebox /dev/kvm action. Checkout plus a Node script only.
@@ -344,7 +369,7 @@ jobs:
   # Required check name stays `verify` (branch protection). Skipped surfaces
   # count as success so docs-only / CF-only / Node-only PRs still pass.
   verify:
-    needs: [changes, docs, web, cf, node, release-check]
+    needs: [changes, docs, web, cf, node, database-contracts, release-check]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -358,6 +383,7 @@ jobs:
           echo "web=${{ needs.web.result }}"
           echo "cf=${{ needs.cf.result }}"
           echo "node=${{ needs.node.result }}"
+          echo "database-contracts=${{ needs.database-contracts.result }}"
           echo "release-check=${{ needs.release-check.result }}"
           echo "meta_only=${{ needs.changes.outputs.meta_only }}"
 
@@ -378,6 +404,7 @@ jobs:
           check web "${{ needs.web.result }}"
           check cf "${{ needs.cf.result }}"
           check node "${{ needs.node.result }}"
+          check database-contracts "${{ needs.database-contracts.result }}"
           check release-check "${{ needs.release-check.result }}"
 
           if [[ "$fail" -ne 0 ]]; then

@@ -486,11 +486,14 @@ export class DefaultNodeManagedSessionRuntimeDriver
             await this.finishCancelledStart(input, signal);
             throw signal.aborted ? abortedError(signal) : error;
           }
+          if (hasProcessInvariantFailure(error)) throw error;
           if (attempt >= Math.max(1, retry.attempts) || isNonRetryableStartError(error)) {
             await this.projectStartFailure(input, error, "exhausted");
-            throw new SessionRetriesExhaustedError(
+            const failure = new SessionRetriesExhaustedError(
               error instanceof Error ? error.message : String(error),
             );
+            failure.cause = error;
+            throw failure;
           }
           await this.projectStartFailure(input, error, "retrying");
           if (signal.aborted) {
@@ -1007,3 +1010,4 @@ export function planRequiresActionQueue(
     (event.processedAt === null || event.processedAt === undefined));
   return { defer: [], release: release as unknown as AcceptNodeManagedSessionEvents["events"] };
 }
+import { hasProcessInvariantFailure } from "./process-invariant";

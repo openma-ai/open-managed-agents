@@ -8,6 +8,8 @@ import {
   type SandboxRuntimeHandle,
 } from "@open-managed-agents/sandbox";
 import { randomUUID } from "node:crypto";
+import { APICallError } from "ai";
+import { hasProcessInvariantFailure, terminateForInvariant } from "./process-invariant";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   HarnessContext,
@@ -1034,6 +1036,20 @@ export class DefaultNodeManagedSessionRunner
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
     let primaryFailure: SessionRetriesExhaustedError | undefined;
+    let escapingFailure: Error | undefined;
+    const retainFailure = (error: unknown): Error => {
+      // Shared-state corruption cannot wait for potentially hung cleanup.
+      if (hasProcessInvariantFailure(error)) terminateForInvariant(error);
+      const next = error instanceof Error ? error : new Error(String(error));
+      if (escapingFailure === undefined) escapingFailure = next;
+      else if (escapingFailure !== next) {
+        escapingFailure.cause = new AggregateError(
+          [...(escapingFailure.cause === undefined ? [] : [escapingFailure.cause]), next],
+          "Execution and cleanup failed",
+        );
+      }
+      return escapingFailure;
+    };
     let toolsAcquisition: Promise<HarnessContext["tools"]> | undefined;
     try {
       if (this.dependencies.executionDispatches !== undefined && input.executionFence !== undefined) {
@@ -1221,7 +1237,8 @@ export class DefaultNodeManagedSessionRunner
               !sideEffectFree
               || attempt >= retry.attempts
               || abortController.signal.aborted
-              || isNonRetryableHarnessError(error)
+              || hasProcessInvariantFailure(error)
+              || !APICallError.isInstance(error) || !error.isRetryable
             ) {
               throw error;
             }
@@ -1320,10 +1337,16 @@ export class DefaultNodeManagedSessionRunner
         throw new Error(`The environment restarted after the agent's last step. ${unreported.split(" Background processes")[0].replace(/^This tool call was interrupted because the environment restarted\. /, "")} The changes made in this turn were lost.`);
       }
     } catch (error) {
-      await recovery.close();
       runFailed = true;
-      if (abortController.signal.reason === "lease_lost") throw error;
-      runtime.broadcastProducedEvent({
+      if (abortController.signal.reason === "lease_lost") retainFailure(error);
+      else {
+        primaryFailure = new SessionRetriesExhaustedError(error instanceof Error ? error.message : String(error));
+        primaryFailure.cause = error;
+        retainFailure(primaryFailure);
+      }
+      try { await recovery.close(); } catch (cleanup) { retainFailure(cleanup); }
+      if (abortController.signal.reason === "lease_lost") throw escapingFailure;
+      try { runtime.broadcastProducedEvent({
         type: "session.error",
         error: {
           type: "unknown_error",
@@ -1332,19 +1355,22 @@ export class DefaultNodeManagedSessionRunner
           // retried automatically: CMA semantics for a dead turn are `exhausted`.
           retryStatus: "exhausted",
         },
-      });
-      primaryFailure = new SessionRetriesExhaustedError(error instanceof Error ? error.message : String(error));
-      primaryFailure.cause = error;
-      throw primaryFailure;
+      }); } catch (publication) { retainFailure(publication); }
+      throw escapingFailure;
     } finally {
       try {
         let finalizationError: Error | undefined;
+        const recordFinalizationError = (error: unknown) => {
+          const next = error instanceof Error ? error : new Error(String(error));
+          finalizationError = finalizationError === undefined ? next
+            : new AggregateError([finalizationError, next], "Multiple finalization failures");
+        };
         const subagents = this.subagentExecutions.get(input);
         try {
           if (runFailed) abortController.abort();
           await subagents?.drain();
         } catch (error) {
-          finalizationError = error instanceof Error ? error : new Error(String(error));
+          recordFinalizationError(error);
         } finally {
           if (this.subagentExecutions.get(input) === subagents) this.subagentExecutions.delete(input);
         }
@@ -1356,7 +1382,7 @@ export class DefaultNodeManagedSessionRunner
             await this.dependencies.disposeTools?.(turnTools);
           }
         } catch (error) {
-          finalizationError = error instanceof Error ? error : new Error(String(error));
+          recordFinalizationError(error);
         }
         try {
           if (
@@ -1407,7 +1433,7 @@ export class DefaultNodeManagedSessionRunner
               workspace.activeId = candidate.id;
             }
           } catch (error) {
-            finalizationError = error instanceof Error ? error : new Error(String(error));
+            recordFinalizationError(error);
           }
         }
         const leaseLost = abortController.signal.reason === "lease_lost";
@@ -1485,7 +1511,7 @@ export class DefaultNodeManagedSessionRunner
               executionFence: input.executionFence,
             });
           }
-        if (finalizationError !== undefined && !runFailed) {
+        if (finalizationError !== undefined) {
           throw finalizationError;
         }
         const finalWorkspace = this.workspaces.get(input);
@@ -1493,31 +1519,34 @@ export class DefaultNodeManagedSessionRunner
           finalWorkspace.trusted = true;
         }
       } catch (error) {
+        retainFailure(error);
         // The post-terminal extension may perform work beyond sandbox calls.
         // A failed callback is not evidence that all its effects are absent.
         if (dispatchBegan && input.executionFence !== undefined) {
-          await this.dependencies.executionDispatches?.finish(input.executionFence, true);
+          try { await this.dependencies.executionDispatches?.finish(input.executionFence, true); }
+          catch (cleanup) { retainFailure(cleanup); }
         }
-        if (primaryFailure !== undefined) {
-          primaryFailure.cause = new AggregateError([primaryFailure.cause, error], "Execution and finalization failed");
-          throw primaryFailure;
-        }
-        throw error;
+        throw escapingFailure;
       } finally {
-        releaseBudgetGate();
+        let cleanupFailed = false;
+        try { releaseBudgetGate(); } catch (error) { cleanupFailed = true; retainFailure(error); }
         // Release this attempt's access only; resource workers own leases.
         try {
           {
             if (lifecycle !== undefined && borrowedAllocation !== undefined && input.executionFence !== undefined) {
-              await lifecycle.release({ executionFence: input.executionFence, allocationId: borrowedAllocation,
-                unknown: providerOutcomeUnknown || providerOperations.size > 0 || liveProcesses.size > 0 });
+              try {
+                await lifecycle.release({ executionFence: input.executionFence, allocationId: borrowedAllocation,
+                  unknown: providerOutcomeUnknown || providerOperations.size > 0 || liveProcesses.size > 0 });
+              } catch (error) { cleanupFailed = true; retainFailure(error); }
             }
             if (dispatchBegan && input.executionFence !== undefined) {
               const opaque = input.session.agent.openma?.harness !== undefined &&
                 !["default", "pi"].includes(input.session.agent.openma.harness);
-              await this.dependencies.executionDispatches?.finish(input.executionFence,
-                providerOutcomeUnknown || providerOperations.size > 0 || toolOperations.size > 0 ||
-                liveProcesses.size > 0 || (runFailed && opaque));
+              try {
+                await this.dependencies.executionDispatches?.finish(input.executionFence,
+                  cleanupFailed || providerOutcomeUnknown || providerOperations.size > 0 || toolOperations.size > 0 ||
+                  liveProcesses.size > 0 || (runFailed && opaque));
+              } catch (error) { cleanupFailed = true; retainFailure(error); }
             }
           }
         } finally {
@@ -1526,6 +1555,7 @@ export class DefaultNodeManagedSessionRunner
             this.attemptIds.delete(input);
           }
         }
+        if (cleanupFailed) throw escapingFailure;
       }
 
     }
@@ -1549,6 +1579,7 @@ export class DefaultNodeManagedSessionRunner
     let allocationId: string | undefined;
     let pending = 0;
     let uncertain = false;
+    let primary: Error | undefined;
     try {
       if (this.dependencies.afterExecution !== undefined) {
         if (this.sandboxes.get(input) === undefined) await this.beginSandboxStartup(input);
@@ -1583,15 +1614,24 @@ export class DefaultNodeManagedSessionRunner
           environment: input.environment, sandbox: access, runtimeGeneration, executionFence });
       }
       completed = true;
+    } catch (error) {
+      primary = error instanceof Error ? error : new Error(String(error));
+      throw primary;
     } finally {
-      {
-        try {
-          if (lifecycle !== undefined && allocationId !== undefined) {
-            await lifecycle.release({ executionFence, allocationId, unknown: uncertain || pending > 0 });
-          }
-        } finally {
-          await dispatches?.finish(executionFence, !completed || uncertain || pending > 0);
+      const cleanup: unknown[] = [];
+      try {
+        if (lifecycle !== undefined && allocationId !== undefined) {
+          await lifecycle.release({ executionFence, allocationId, unknown: uncertain || pending > 0 });
         }
+      } catch (error) { cleanup.push(error); }
+      try { await dispatches?.finish(executionFence, !completed || uncertain || pending > 0 || cleanup.length > 0); }
+      catch (error) { cleanup.push(error); }
+      if (cleanup.length > 0) {
+        if (primary !== undefined) {
+          primary.cause = new AggregateError([...(primary.cause === undefined ? [] : [primary.cause]), ...cleanup], "Publication cleanup failed");
+          throw primary;
+        }
+        throw new AggregateError(cleanup, "Publication cleanup failed");
       }
     }
     // Settle with the outcome the original attempt would have reported.
@@ -1605,9 +1645,4 @@ export class DefaultNodeManagedSessionRunner
   ): Promise<void> {
     await this.subagentExecutions.get(input)?.archiveThread(input.threadId);
   }
-}
-
-/** Non-retryable harness failures use ConfigError (detected by error.name). */
-function isNonRetryableHarnessError(error: Error): boolean {
-  return ["ConfigError", "AuthError", "PaymentRequiredError"].includes(error.name);
 }

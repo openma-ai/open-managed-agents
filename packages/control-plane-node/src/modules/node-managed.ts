@@ -189,7 +189,7 @@ export async function createManagedNodeRuntime(
         upstreamUrl: target.upstreamUrl,
         accessToken: target.upstreamToken,
         managed: {
-          forward: (send) => managedCredentialResolver.forward(input.tenantId, target, send),
+          forward: (send, signal) => managedCredentialResolver.forward(input.tenantId, target, send, signal),
         },
       };
     }

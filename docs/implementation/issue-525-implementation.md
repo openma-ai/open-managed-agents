@@ -6,6 +6,8 @@
 
 用户确定的架构边界是：**attempt 只获得 sandbox 可用性和执行访问；Session 持有持久 handle；sandbox 生命周期和 lease 轮转由独立资源服务管理。** Node 给 harness 的访问对象不暴露 destroy、renewLease、suspend、resume、checkpoint 或 runtime capability；ACP 因而不会再自行续 sandbox lease。
 
+后续合并的 catch-vs-crash 判定、#524 请求/响应流生命周期及 native SQL 合同见 [错误策略与验证映射](./issue-525-error-policy.md)。进程仍缓存 SDK 对象；持久身份和所有权以 SQL 为准，缓存丢失不授权重建或销毁。
+
 ## 实现
 
 - `queue/consumer-runtime` 负责 poll、容量、正在处理的工作和 stop/drain，不导入 Session/domain。Node execution adapter 负责 canonical claim/renew/settle、interrupt 和 steering。

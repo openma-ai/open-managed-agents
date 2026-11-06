@@ -21,6 +21,7 @@ import {
   type RunNodeSessionExecution,
 } from "../../../packages/control-plane-node/src/lib/node-session-execution-worker";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import { ProcessInvariantError } from "../../../packages/control-plane-node/src/lib/process-invariant";
 
 const session: Session = {
   id: "session_01",
@@ -1048,7 +1049,7 @@ describe("NodeSessionExecutionWorker", () => {
     await executor.waitForIdle();
   });
 
-  it("keeps the newer active handle if a faulty coordinator duplicates a claim", async () => {
+  it("stops admission and exits when a coordinator duplicates active ownership", async () => {
     await coordinator.admit({
       execution: {
         id: "duplicate_claim",
@@ -1059,7 +1060,7 @@ describe("NodeSessionExecutionWorker", () => {
       },
     });
     const claimed = await coordinator.claim({
-      ownerId: "seed",
+      ownerId: "duplicate_worker",
       attemptId: "seed_attempt",
       claimedAt: "2026-09-04T00:00:02.000Z",
       leaseTtlMs: 30_000,
@@ -1069,8 +1070,10 @@ describe("NodeSessionExecutionWorker", () => {
 
     let claimCount = 0;
     const releases: Array<() => void> = [];
+    const processExit = vi.fn();
     runtime.run = async () => await new Promise<void>((resolve) => releases.push(resolve));
     const executor = worker("duplicate_worker", {
+      processExit,
       maxConcurrent: 2,
       coordinator: {
         ...coordinator,
@@ -1084,12 +1087,24 @@ describe("NodeSessionExecutionWorker", () => {
       },
     });
 
-    await executor.poll();
-    expect(releases).toHaveLength(2);
+    await expect(executor.poll()).rejects.toBeInstanceOf(ProcessInvariantError);
+    expect(processExit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(releases).toHaveLength(1);
     releases[0]?.();
     await Promise.resolve();
-    releases[1]?.();
     await executor.waitForIdle();
+  });
+
+  it("escalates an explicitly shared invariant even when it has an attempt owner", async () => {
+    const processExit = vi.fn(); const settle = vi.fn(coordinator.settle.bind(coordinator));
+    runtime.run = async () => { throw new ProcessInvariantError("shared coordination state corrupted"); };
+    const executor = worker("fatal-owner", { processExit,
+      coordinator: Object.assign(Object.create(coordinator), { settle }),
+      onError: () => { throw new Error("broken observer"); },
+    });
+    await executor.sessionEventsAccepted(accepted("fatal-owned")); await executor.waitForIdle();
+    expect(processExit).toHaveBeenCalledExactlyOnceWith(1); expect(settle).not.toHaveBeenCalled();
+    expect(await coordinator.find({ workspaceId: "workspace_01", executionId: "fatal-owned" })).toMatchObject({ state: "running" });
   });
 
   it("contains background polling errors when no observer is configured", async () => {
@@ -1259,6 +1274,24 @@ describe("NodeSessionExecutionWorker", () => {
     expect(observedFence?.expiresAt).toBe("2026-09-04T00:01:00.000Z");
     release?.();
     await executor.waitForIdle();
+  });
+
+  it.each([false, true])("does not invent an ACK or replay settle after response loss (committed=%s)", async committed => {
+    const settle = vi.fn(async (input: Parameters<typeof coordinator.settle>[0]) => {
+      if (committed) await coordinator.settle(input);
+      throw new ConnectionLost({ op: "settle", cause: "response lost" });
+    });
+    const observer = vi.fn(() => { throw new Error("observer failed"); });
+    runtime.run = async input => { runs.push(input); throw new Error("owned failure"); };
+    const executor = worker("settler", {
+      coordinator: Object.assign(Object.create(coordinator), { settle }), onError: observer,
+    });
+    await executor.sessionEventsAccepted(accepted("settle-unknown")); await executor.waitForIdle();
+    expect(settle).toHaveBeenCalledOnce(); expect(observer).toHaveBeenCalledOnce();
+    expect(await coordinator.find({ workspaceId: "workspace_01", executionId: "settle-unknown" }))
+      .toMatchObject({ state: committed ? "failed" : "running" });
+    await executor.poll(); await executor.waitForIdle(); expect(runs).toHaveLength(1);
+    executor.stop();
   });
 
   it("cancels a completed local attempt when settlement loses its fence", async () => {

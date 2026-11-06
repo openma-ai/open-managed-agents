@@ -62,6 +62,48 @@ describe("ManagedCredentialResolver Vault authority", () => {
 });
 
 describe("ManagedCredentialResolver.forward", () => {
+  it.each(["headers", "body"])("cancels refresh during %s without replaying business input", async stage => {
+    const records = [structuredClone(oauth)]; const controller = new AbortController();
+    let entered!: () => void; const ready = new Promise<void>(resolve => { entered = resolve; });
+    let seen: AbortSignal | null | undefined;
+    const resolver = new ManagedCredentialResolver({
+      credentials: store(records), vaults: { find: async () => ({ vault: { archivedAt: null } }) },
+      fetch: async (_input, init) => {
+        seen = init?.signal; entered();
+        if (stage === "headers") return new Promise<Response>((_resolve, reject) => {
+          seen!.addEventListener("abort", () => reject(seen!.reason), { once: true });
+        });
+        return new Response(new ReadableStream({ start(c) {
+          seen!.addEventListener("abort", () => c.error(seen!.reason), { once: true });
+        } }));
+      }, clock: { now: () => new Date() }, log: { warn: () => {} },
+    }, createSpecRegistry(builtinSpecs));
+    const target = await resolver.mcpTarget({ workspaceId: "ws", sessionId: "s", vaultIds: ["vlt_1"] }, "https://mcp.example/mcp");
+    const sent: string[] = [];
+    const outcome = resolver.forward("ws", target!, async token => {
+      sent.push(token); return new Response("expired", { status: 401 });
+    }, controller.signal).catch(error => error);
+    await ready; controller.abort(); expect(await outcome).toBeInstanceOf(Error);
+    expect(seen?.aborted).toBe(true); expect(sent).toEqual(["stale"]); expect(records[0]!.revision).toBe(1);
+  });
+
+  it("persists an issued token rotation after cancellation but does not dispatch again", async () => {
+    const records = [structuredClone(oauth)]; const controller = new AbortController();
+    const credentials = store(records); const replace = credentials.replace.bind(credentials);
+    credentials.replace = async input => { controller.abort(); return replace(input); };
+    const resolver = new ManagedCredentialResolver({ credentials,
+      vaults: { find: async () => ({ vault: { archivedAt: null } }) },
+      fetch: async () => Response.json({ access_token: "fresh", refresh_token: "rotated" }),
+      clock: { now: () => new Date() }, log: { warn: () => {} },
+    }, createSpecRegistry(builtinSpecs));
+    const target = await resolver.mcpTarget({ workspaceId: "ws", sessionId: "s", vaultIds: ["vlt_1"] }, "https://mcp.example/mcp");
+    const sent: string[] = [];
+    await expect(resolver.forward("ws", target!, async token => {
+      sent.push(token); return new Response("expired", { status: 401 });
+    }, controller.signal)).rejects.toBeDefined();
+    expect(sent).toEqual(["stale"]); expect(records[0]!.credential.auth).toMatchObject({ accessToken: "fresh", refresh: { refreshToken: "rotated" } });
+  });
+
   it("refreshes once on 401, persists the rotation and retries with the new token", async () => {
     const records = [structuredClone(oauth)];
     const resolver = new ManagedCredentialResolver({

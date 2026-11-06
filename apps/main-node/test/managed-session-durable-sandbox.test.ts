@@ -88,6 +88,28 @@ async function fixture() {
 }
 
 describe("Node runner with durable Session sandbox ownership", () => {
+  it("retains the execution error when resource release also fails and leaves unknown evidence", async () => {
+    const f = await fixture(); const runner = f.runner(); const first = await f.input();
+    const original = new Error("harness invariant failed"); const cleanup = new Error("release response lost");
+    f.run.mockImplementation(async ctx => { await ctx.runtime.sandbox.exec("one-effect"); throw original; });
+    await runner.start(first);
+    const release = vi.spyOn(NodeSessionSandboxLifecycle.prototype, "release").mockRejectedValue(cleanup);
+    try {
+      const error = await runner.accept(first).catch(error => error);
+      expect(error.message).toBe(original.message);
+      const causes: unknown[] = [];
+      const visit = (value: unknown) => {
+        causes.push(value);
+        if (value instanceof AggregateError) value.errors.forEach(visit);
+        if (value instanceof Error && value.cause !== undefined) visit(value.cause);
+      };
+      visit(error); expect(causes).toContain(original); expect(causes).toContain(cleanup);
+      expect(f.exec).toHaveBeenCalledOnce();
+      expect(await f.sql.prepare("SELECT phase FROM managed_session_execution_dispatches").first()).toEqual({ phase: "unknown" });
+      expect((await f.store.getCurrent(scope))?.resource?.use).not.toBeNull();
+    } finally { release.mockRestore(); }
+  });
+
   it("rebinds the same files in a fresh runner and stopping an attempt never destroys the Session resource", async () => {
     const f = await fixture();
     const a = f.runner(); const first = await f.input();

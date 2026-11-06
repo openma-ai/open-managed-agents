@@ -27,6 +27,7 @@ import { processSessionClocks, type SessionClockRegistry } from "@open-managed-a
 import { ConsumerRuntime } from "@open-managed-agents/queue/consumer-runtime";
 import { Effect } from "effect";
 import { interruptFiber, runSupervised } from "./supervised-fiber.js";
+import { hasProcessInvariantFailure, ProcessInvariantError, terminateForInvariant } from "./process-invariant.js";
 
 export interface RunNodeSessionExecution extends AcceptedSessionEvents {
   executionId: string;
@@ -72,6 +73,8 @@ export interface NodeSessionExecutionWorkerDependencies {
   pollIntervalMs?: number;
   maxConcurrent?: number;
   onError?(error: Error): void;
+  /** Process termination seam for tests; production defaults to exit(1). */
+  processExit?(code: number): void;
   eventProcessing?: {
     storeFor(workspaceId: string): SessionEventProcessingStore;
   };
@@ -314,6 +317,13 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       leaseTtlMs: this.#leaseTtlMs,
     });
     if (claimed.type === "empty") return null;
+    if (claimed.fence.executionId !== claimed.execution.id ||
+        claimed.fence.workspaceId !== claimed.execution.workspaceId ||
+        claimed.fence.sessionId !== claimed.execution.sessionId ||
+        claimed.fence.ownerId !== this.dependencies.ownerId) {
+      const error = new ProcessInvariantError("Execution claim returned inconsistent canonical ownership");
+      this.#crash(error); throw error;
+    }
     const active: ActiveExecution = {
       execution: claimed.execution,
       fence: claimed.fence,
@@ -321,7 +331,12 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       cancelled: false,
       leaseLost: false,
     };
-    this.#active.set(this.#executionKey(active), active);
+    const key = this.#executionKey(active);
+    if (this.#active.has(key)) {
+      const error = new ProcessInvariantError("Execution consumer acquired an already-active identity");
+      this.#crash(error); throw error;
+    }
+    this.#active.set(key, active);
     return active;
   }
 
@@ -365,7 +380,8 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
           })))));
         }
       }),
-      (error) => this.#reportError(error),
+      (error) => this.#crash(new ProcessInvariantError("Execution heartbeat supervisor failed", { cause: error })),
+      () => { if (!active.leaseLost) this.#crash(new ProcessInvariantError("Execution heartbeat supervisor exited unexpectedly")); },
     );
     active.stopHeartbeat = () => interruptFiber(heartbeat);
     let outcome: "completed" | "failed" | "cancelled" = "completed";
@@ -406,6 +422,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       });
       if (active.cancelled) outcome = "cancelled";
     } catch (error) {
+      if (hasProcessInvariantFailure(error)) { this.#crash(error); return; }
       outcome = active.cancelled ? "cancelled" : "failed";
       failure = errorMessage(error);
       holdQueuedOnLane = errorHoldsQueuedOnLane(error);
@@ -427,8 +444,10 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
         await this.#cancel(active, "lease_lost");
       }
     } catch (error) {
-      // The settle transaction rolled back. Leave the row running so the
-      // lease can expire and another replica can recover it. Do not crash.
+      // A rejected settle may have committed before its response was lost.
+      // Do not replay it or rewrite canonical state. If still running, lease
+      // expiry allows recovery; the runner's durable dispatch evidence gates
+      // replay independently. A terminal row needs no further acknowledgement.
       this.#reportError(error);
     }
   }
@@ -499,6 +518,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
   }
 
   #reportError(error: unknown): void {
+    if (hasProcessInvariantFailure(error)) { this.#crash(error); return; }
     try {
       this.dependencies.onError?.(
         error instanceof Error ? error : new Error(String(error)),
@@ -506,6 +526,18 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
     } catch {
       // Observability hooks must never kill the durable scheduler.
     }
+  }
+
+  #crashed = false;
+  #crash(error: unknown): void {
+    if (this.#crashed) return;
+    this.#crashed = true;
+    this.#consumer.stop();
+    for (const active of this.#active.values()) {
+      active.leaseLost = true;
+      void this.#cancel(active, "lease_lost").catch(() => undefined);
+    }
+    terminateForInvariant(error, this.dependencies.processExit);
   }
 
   async #cancel(

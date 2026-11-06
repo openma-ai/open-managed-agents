@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { SessionSandboxBindingPort, SessionSandboxResource } from "@open-managed-agents/session-runtime-contract/sandbox-binding";
+import { hasProcessInvariantFailure, terminateForInvariant } from "./process-invariant";
 
 const leases = "managed_session_sandbox_lease_workers";
 const resources = "managed_session_sandbox_resources";
@@ -23,6 +24,7 @@ export class NodeSessionSandboxLeaseWorker {
     now?: () => Date;
     renew(resource: SessionSandboxResource, signal: AbortSignal, ttlMs: number): Promise<void>;
     onError(error: unknown, resource?: SessionSandboxResource): void;
+    processExit?(code: number): void;
   }) {
     if (!Number.isSafeInteger(options.ttlMs) || options.ttlMs < 3) throw new Error("Sandbox lease TTL must be at least 3ms");
   }
@@ -118,6 +120,11 @@ export class NodeSessionSandboxLeaseWorker {
   }
 
   private report(error: unknown, resource?: SessionSandboxResource): void {
+    if (hasProcessInvariantFailure(error)) {
+      this.shutdown.abort(error);
+      terminateForInvariant(error, this.options.processExit);
+      return;
+    }
     try { this.options.onError(error, resource); } catch { /* Observation cannot revoke ownership. */ }
   }
 

@@ -3,6 +3,7 @@ import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { ensureSessionSandboxBindingSchema, SqlSessionSandboxBindingStore } from "@open-managed-agents/session-runtime-sql/sandbox-binding";
 import { NodeSessionSandboxLifecycle } from "../../../packages/control-plane-node/src/lib/node-session-sandbox-lifecycle";
 import { NodeSessionSandboxLeaseWorker } from "../../../packages/control-plane-node/src/lib/node-session-sandbox-lease-worker";
+import { ProcessInvariantError } from "../../../packages/control-plane-node/src/lib/process-invariant";
 
 function deferred() {
   let resolve!: () => void;
@@ -34,6 +35,16 @@ async function fixture() {
 }
 
 describe("independent sandbox resource lease worker", () => {
+  it("escalates shared invariants without releasing durable responsibility", async () => {
+    const f = await fixture(); const processExit = vi.fn(); const onError = vi.fn();
+    const worker = new NodeSessionSandboxLeaseWorker({ sql: f.sql, store: f.store, provider: "test",
+      providerNamespace: "test", ownerId: "fatal-resource", ttlMs: 3000, now: () => new Date(1_000_000),
+      renew: async () => { throw new ProcessInvariantError("resource coordination corrupted"); }, onError, processExit });
+    await worker.poll(); expect(processExit).toHaveBeenCalledExactlyOnceWith(1); expect(onError).not.toHaveBeenCalled();
+    expect(await f.sql.prepare("SELECT owner_id FROM managed_session_sandbox_lease_workers").first()).toEqual({ owner_id: "fatal-resource" });
+    await worker.close();
+  });
+
   it("renews without any attempt, survives worker replacement, and stops for a retired resource", async () => {
     const f = await fixture(); const first = f.worker("resource-a");
     await first.poll(); expect(f.renew).toHaveBeenCalledOnce(); await first.close();

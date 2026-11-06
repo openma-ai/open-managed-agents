@@ -26,6 +26,8 @@ export interface ProxyUpstreamInput {
   readonly drop?: Iterable<string>;
   /** Withhold every caller header with one of these prefixes. */
   readonly dropPrefixes?: Iterable<string>;
+  /** Lifetime of the inbound exchange, including the response body. */
+  readonly signal?: AbortSignal | null;
   readonly fetcher?: typeof fetch;
 }
 
@@ -35,6 +37,7 @@ export interface ProxyUpstreamInput {
 const PER_HOP = ["host", "content-length", "expect"];
 
 export async function proxyUpstream(input: ProxyUpstreamInput): Promise<Response> {
+  input.signal?.throwIfAborted();
   const headers = new Headers(input.headers);
   for (const name of [...PER_HOP, ...(input.drop ?? [])]) headers.delete(name);
   const prefixes = [...(input.dropPrefixes ?? [])].map((prefix) => prefix.toLowerCase());
@@ -50,8 +53,9 @@ export async function proxyUpstream(input: ProxyUpstreamInput): Promise<Response
     method,
     headers,
     body: method === "GET" || method === "HEAD" ? null : input.body ?? null,
+    signal: input.signal ?? undefined,
   });
-  return proxy(input.url, {
+  const response = await proxy(input.url, {
     raw,
     // Never replay injected credentials to a redirect target; the caller
     // decides whether a redirect is part of its protocol.
@@ -59,4 +63,52 @@ export async function proxyUpstream(input: ProxyUpstreamInput): Promise<Response
     strictConnectionProcessing: true,
     ...(input.fetcher ? { customFetch: input.fetcher } : {}),
   });
+  return observeProxyBody(response, input.signal);
+}
+
+/** A resolved fetch only owns the headers. Keep body errors observed even
+ * before the caller starts reading; preserve them for that caller rather
+ * than replacing an interrupted response with a successful truncated body.
+ * Reading remains pull-driven, with at most one queued chunk. */
+export function observeProxyBody(response: Response, signal?: AbortSignal | null): Response {
+  if (response.body === null) return response;
+  const reader = response.body.getReader();
+  let stopped = false;
+  let controller: ReadableStreamDefaultController<Uint8Array>;
+  const detach = () => signal?.removeEventListener("abort", aborted);
+  const fail = (error: unknown) => {
+    if (stopped) return;
+    stopped = true; detach(); controller.error(error);
+  };
+  const cancelReader = async (reason: unknown) => {
+    try { await reader.cancel(reason); } finally { reader.releaseLock(); }
+  };
+  const aborted = () => {
+    fail(signal!.reason);
+    // The response is already errored with the cancellation reason. Observe
+    // remote cleanup failure too, without inventing an unhandled promise.
+    void cancelReader(signal!.reason).catch(() => undefined);
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(value) {
+      controller = value;
+      void reader.closed.catch(fail);
+      signal?.addEventListener("abort", aborted, { once: true });
+      if (signal?.aborted) aborted();
+    },
+    async pull(value) {
+      if (stopped) return;
+      try {
+        const next = await reader.read();
+        if (stopped) return;
+        if (next.done) { stopped = true; detach(); value.close(); reader.releaseLock(); }
+        else value.enqueue(next.value);
+      } catch (error) { fail(error); }
+    },
+    async cancel(reason) {
+      if (stopped) return;
+      stopped = true; detach(); await cancelReader(reason);
+    },
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }

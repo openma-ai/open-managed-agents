@@ -847,7 +847,7 @@ export class SqlSessionExecutionStore
            SELECT 1 FROM managed_session_executions AS earlier
             WHERE earlier.workspace_id = candidate.workspace_id
               AND earlier.session_id = candidate.session_id
-              AND earlier.lane_id = candidate.lane_id
+              ${serial ? "" : "AND earlier.lane_id = candidate.lane_id"}
               AND earlier.state IN ('queued', 'running')
               AND earlier.held_after_exhausted_ms IS NULL
               ${continuations ? `AND NOT (earlier.state = 'queued' AND NOT (${CONTINUATION_SQL("earlier")}))` : ""}

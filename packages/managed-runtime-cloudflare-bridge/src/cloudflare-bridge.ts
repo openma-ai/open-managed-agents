@@ -646,6 +646,9 @@ export function createCloudflareBridgeManagedRuntime(
 ) {
   const bridgeProvider = createCloudflareBridgeProvider(options);
   const provider: ProviderManagedRuntimeProviderPort<CloudflareBridgeRuntime> = {
+    // POST /v1/sandbox allocates a new provider-generated ID; it never looks
+    // up the Session name. Resume addresses that exact returned ID.
+    allocationIsolation: true,
     create: (context, environment, acquisition) => {
       if (acquisition === undefined) {
         throw new Error("Cloudflare Bridge managed allocation requires acquisition context");

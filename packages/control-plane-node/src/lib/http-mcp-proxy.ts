@@ -28,7 +28,7 @@ export type NodeMcpProxyTarget = {
   onRefreshed?: (tokens: RefreshedTokens) => Promise<void>;
   /** Managed v1 credential: the shared resolver owns refresh and retry. */
   managed?: {
-    forward(send: (token: string) => Promise<Response>): Promise<ForwardOutcome>;
+    forward(send: (token: string) => Promise<Response>, signal?: AbortSignal): Promise<ForwardOutcome>;
   };
 });
 
@@ -42,7 +42,9 @@ async function forwardTarget(
   send: (token: string | null) => Promise<Response>,
   fetcher: typeof fetch | undefined,
   onFinal: ForwardOpts["onFinal"],
+  signal: AbortSignal,
 ): Promise<Response> {
+  signal.throwIfAborted();
   let outcome: ForwardOutcome;
   if (target.accessToken === null) {
     outcome = {
@@ -52,7 +54,7 @@ async function forwardTarget(
       refreshFailureCode: null,
     };
   } else if (target.managed !== undefined) {
-    outcome = await target.managed.forward(send);
+    outcome = await target.managed.forward(send, signal);
   } else {
     return forwardWithRefresh({
       send,
@@ -61,6 +63,7 @@ async function forwardTarget(
       onRefreshed: target.onRefreshed,
       fetcher,
       onFinal,
+      signal,
     });
   }
   if (onFinal === undefined) return outcome.response;
@@ -107,6 +110,7 @@ export function createNodeMcpProxyBinding(
 ): NodeMcpProxyBinding {
   return {
     async fetch(request) {
+      request.signal.throwIfAborted();
       const tenantId = request.headers.get("x-oma-tenant");
       const sessionId = request.headers.get("x-oma-session");
       const serverName = request.headers.get("x-oma-mcp-server");
@@ -148,10 +152,12 @@ export function createNodeMcpProxyBinding(
             headers,
             body,
             accessToken,
+            signal: request.signal,
             fetcher: dependencies.fetcher,
           }),
         dependencies.fetcher,
         hooks?.onFinal,
+        request.signal,
       );
     },
   };
@@ -165,6 +171,7 @@ export function buildNodeHttpMcpProxyRoutes(
 ) {
   const routes = new Hono<{ Variables: { tenant_id: string } }>();
   routes.all("/:sessionId/:serverName", async (context) => {
+    context.req.raw.signal.throwIfAborted();
     const tenantId = context.get("tenant_id");
     const sessionId = context.req.param("sessionId");
     const serverName = context.req.param("serverName");
@@ -198,10 +205,12 @@ export function buildNodeHttpMcpProxyRoutes(
           headers: inboundHeaders,
           body,
           accessToken,
+          signal: context.req.raw.signal,
           fetcher: dependencies.fetcher,
         }),
       dependencies.fetcher,
       hooks?.onFinal,
+      context.req.raw.signal,
     );
   });
   return routes;
