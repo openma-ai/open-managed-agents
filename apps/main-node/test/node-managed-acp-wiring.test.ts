@@ -152,7 +152,11 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
         }
         expect(queuedEvents.filter(event => event.type === "session.error")).toEqual([]);
         const prompts = (await readFile(join(root, "workspace", "prompts.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).map((block: { text: string }) => block.text).join(""));
-        expect(prompts).toEqual(["execution-A\nA-followup", "execution-B"]);
+        // ADR 0016: platform context rides on the first prompt of a fresh ACP
+        // session instead of being written into the working directory.
+        expect(prompts).toHaveLength(2);
+        expect(prompts[0]).toMatch(/^<openma-platform>\nPinned instructions\n[\s\S]*<\/openma-platform>\n\nexecution-A\nA-followup$/);
+        expect(prompts[1]).toBe("execution-B");
         return;
       }
       await cp.start();

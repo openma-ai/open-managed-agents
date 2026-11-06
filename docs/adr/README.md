@@ -82,3 +82,4 @@ Numbers 0001–0003 and 0012 are not used in this repository.
 | [0011](0011-matter-bond-and-loop.md) | Matter, Bond and Loop in OMA, starting with GitLab and Feishu | Proposed |
 | [0013](0013-retire-legacy-oma-resource-stack.md) | Retire the legacy OMA resource stack | Proposed |
 | [0014](0014-session-sandbox-provisioning-and-tool-wall.md) | Provision the Session sandbox at create time; wall tools, not the model | Proposed |
+| [0016](0016-workspace-root-from-image.md) | The workspace root comes from the image; platform files live outside it | Proposed |

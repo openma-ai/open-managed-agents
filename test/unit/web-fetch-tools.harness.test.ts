@@ -235,7 +235,7 @@ describe("web_fetch egress (rescoped #281)", () => {
     );
     const parsed = JSON.parse(String(result));
     expect(parsed.content).toBe("short summary");
-    expect(parsed._meta.raw_at).toMatch(/^\/workspace\/\.web\//);
+    expect(parsed._meta.raw_at).toMatch(/^\/oma\/web\//);
     expect(events.some((e: any) => e.type === "aux.model_call" && e.status === "ok")).toBe(true);
   });
 
