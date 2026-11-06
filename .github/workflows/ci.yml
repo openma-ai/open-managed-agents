@@ -213,9 +213,6 @@ jobs:
       - name: Node typecheck
         run: pnpm typecheck:ci:node
 
-      - name: Node tests
-        run: pnpm test:ci:node
-
       # `--with-deps` runs apt-get against azure.archive.ubuntu.com. On
       # 2026-10-26 that mirror served ~39 kB/s and this step took 11 min while
       # the Playwright CDN download took ~6 s. Bound apt with per-request
@@ -311,6 +308,11 @@ jobs:
 
       - name: PostgreSQL integration tests (including sandbox and execution contracts)
         run: pnpm --filter @open-managed-agents/main-node test:integration:postgres
+
+      # Surface real provider/browser startup failures before the long package
+      # suite. The same full Node command remains required by this job.
+      - name: Node tests
+        run: pnpm test:ci:node
 
   # Run ownership contracts independently so a preceding browser/provider
   # failure cannot prevent the real database checks from producing evidence.
