@@ -38,3 +38,5 @@
 `issue-525.postgres.integration.ts` 和 `issue-525.mysql.integration.ts` 各注册 29 项合同，实际创建 `postgres:16-alpine` / `mysql:8.4` 容器并使用独立 SQL 连接。没有 Docker 时失败，不 skip。覆盖持久 handle、两套 fence、unknown use、cleanup 责任、跨 lane FIFO/claim 竞争、held transfer、独立资源 lease 轮转，以及 publication 读取恢复/未知写入阻塞/旧 owner 确认拒绝。
 
 CI 新增并行 `database-contracts` matrix，结果接入必需的 `verify`，因此前置 browser/provider 用例失败也不会阻止实库合同执行。Node job 原有完整数据库集成仍保留。最终通过情况以 PR 当前 head 的检查为准。
+
+Console 真实 VM 认证另外暴露了 LiteBox 工厂提前创建实例与后续输出挂载的时序冲突，Session 事件中的原始错误为 `mountSessionOutputs: box already created`。工厂现在根据 Session/workspace 先配置持久输出 host volume，再分配实例；之后相同配置可重复声明，重连通过 handle 核对原输出路径，不能偷偷改挂载目录。回归测试先复现该错误，修复后 LiteBox 21 项通过；Linux 真实 VM 的最终验证以当前 CI 为准。

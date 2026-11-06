@@ -91,6 +91,31 @@ afterEach(() => {
 });
 
 describe("LiteBoxSandbox", () => {
+  it("stages durable Session outputs before allocation and preserves the mount on rebind", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "litebox-bound-outputs-"));
+    const context = { workspaceId: "tenant", sessionId: "session", allocationId: "allocation", workdir: root, outputsRoot: join(root, "outputs") };
+    const sandbox = await sandboxFactory(context, {});
+    const binding = sandboxFactory.runtimeBinding!;
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(sandbox)));
+    try {
+      expect(sdk.options[0]!.volumes).toEqual([
+        { hostPath: join(root, "outputs", "tenant", "session"), guestPath: "/mnt/session/outputs", readOnly: false },
+      ]);
+      expect(sandbox.sessionOutputMountCapabilities!()).toEqual({ durability: "durable" });
+      // The factory returns a durable handle before the orchestrator configures outputs.
+      await sandbox.mountSessionOutputs!({ tenantId: "tenant", sessionId: "session" });
+      const resumed = await binding.resume(handle, context, {});
+      await resumed.mountSessionOutputs!({ tenantId: "tenant", sessionId: "session" });
+      expect(binding.getHandle(resumed)).toEqual(handle);
+      expect(sdk.options).toHaveLength(1);
+      await expect(resumed.mountSessionOutputs!({ tenantId: "other", sessionId: "session" })).rejects.toThrow("box already created");
+      await expect(binding.resume(handle, { ...context, outputsRoot: join(root, "other") }, {})).rejects.toThrow("output mount");
+    } finally {
+      await sandbox.destroy!();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rebinds a retained native box on the same host/home with no get-or-create fallback", async () => {
     const context = { workspaceId: "tenant", environmentId: "env", sessionId: "session", allocationId: "physical-a", workdir: undefined } as never;
     const first = await sandboxFactory(context, {});

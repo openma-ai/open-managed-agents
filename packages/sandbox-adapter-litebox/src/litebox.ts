@@ -230,6 +230,10 @@ export class LiteBoxSandbox implements SandboxExecutor {
   }
 
   sessionOutputMountCapabilities(): { durability: "durable" } | null {
+    if (this.opts.runtimeHome !== undefined) {
+      return this.volumes.some(volume => volume.guestPath === "/mnt/session/outputs")
+        ? { durability: "durable" } : null;
+    }
     return this.opts.outputsRoot || process.env.FILES_BLOB_DIR
       ? { durability: "durable" }
       : null;
@@ -239,12 +243,6 @@ export class LiteBoxSandbox implements SandboxExecutor {
     tenantId: string;
     sessionId: string;
   }): Promise<void> {
-    if (this.boxPromise) {
-      throw new Error(
-        "LiteBoxSandbox.mountSessionOutputs: box already created — mounts must " +
-        "be configured before the first exec/readFile/writeFile call",
-      );
-    }
     const outputsRoot = this.opts.outputsRoot
       ? resolve(this.opts.outputsRoot)
       : process.env.FILES_BLOB_DIR
@@ -257,13 +255,25 @@ export class LiteBoxSandbox implements SandboxExecutor {
         "a host directory to bind",
       );
     }
+    const hostPath = join(outputsRoot, opts.tenantId, opts.sessionId);
+    const mounted = this.volumes.find(volume => volume.guestPath === "/mnt/session/outputs");
+    // The durable factory stages this mount before creating/getting the box.
+    // The orchestrator can repeat the same declaration after binding; it may
+    // never retarget a retained VM's immutable host volume.
+    if (mounted?.hostPath === hostPath) return;
+    if (this.boxPromise) {
+      throw new Error(
+        "LiteBoxSandbox.mountSessionOutputs: box already created — mounts must " +
+        "be configured before the first exec/readFile/writeFile call",
+      );
+    }
+    if (mounted) throw new Error("LiteBox Session output mount is already configured for another directory");
     if (!this.opts.outputsRoot && process.env.FILES_BLOB_DIR) {
       this.logger.warn(
         "LiteBoxSandbox.mountSessionOutputs falling back to FILES_BLOB_DIR env var; " +
         "wire ctx.outputsRoot through SandboxFactoryContext to remove the warning",
       );
     }
-    const hostPath = join(outputsRoot, opts.tenantId, opts.sessionId);
     mkdirSync(hostPath, { recursive: true });
     this.volumes.push({ hostPath, guestPath: "/mnt/session/outputs", readOnly: false });
   }
@@ -361,6 +371,10 @@ export class LiteBoxSandbox implements SandboxExecutor {
       if (this.opts.runtimeHome !== undefined) {
         const runtime = nativeRuntime(mod.JsBoxlite, this.opts.runtimeHome);
         const existing = this.opts.existingHandle;
+        const outputsHostPath = this.volumes.find(volume => volume.guestPath === "/mnt/session/outputs")?.hostPath ?? null;
+        if (existing && (existing.metadata?.outputsHostPath ?? null) !== outputsHostPath) {
+          throw new Error("LiteBox handle does not match the configured Session output mount");
+        }
         const box = existing
           ? await runtime.get(existing.runtimeId)
           : await runtime.create({ image: this.opts.image ?? "node:22-bookworm", memoryMib: this.opts.memoryMib,
@@ -370,7 +384,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
           throw new Error("LiteBox handle does not match its physical Session allocation");
         }
         this.handle = { provider: "litebox", runtimeId: box.id,
-          metadata: { host: hostname(), runtimeHome: this.opts.runtimeHome, allocationName: this.opts.name ?? null } };
+          metadata: { host: hostname(), runtimeHome: this.opts.runtimeHome, allocationName: this.opts.name ?? null, outputsHostPath } };
         const bound = new BoundLiteBox(box, runtime);
         if (!existing) {
           const workspace = await bound.exec("mkdir", ["-p", "/workspace"]);
@@ -458,12 +472,19 @@ function factoryOptions(ctx: SandboxFactoryContext, env: SandboxFactoryEnv): Lit
   };
 }
 
-/** Durable factory uses retained native boxes and file-synced memory. Native
- * volumes still require pre-create staging through direct LiteBoxSandbox use. */
-export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => {
-  const sandbox = new LiteBoxSandbox(factoryOptions(ctx, env));
+async function bindSandbox(ctx: SandboxFactoryContext, options: LiteBoxSandboxOptions): Promise<LiteBoxSandbox> {
+  const sandbox = new LiteBoxSandbox(options);
+  if (ctx.workspaceId !== undefined && (options.outputsRoot || process.env.FILES_BLOB_DIR)) {
+    await sandbox.mountSessionOutputs({ tenantId: ctx.workspaceId, sessionId: ctx.sessionId });
+  }
   await sandbox.initializeBinding();
   return sandbox;
+}
+
+/** Durable factory uses retained native boxes and file-synced memory. The
+ * Session output host volume is staged before allocation and verified on resume. */
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => {
+  return bindSandbox(ctx, factoryOptions(ctx, env));
 }, {
   capabilities: { allocationIsolation: true },
   runtimeBinding: {
@@ -475,9 +496,7 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: SandboxF
         || handle.metadata?.runtimeHome !== options.runtimeHome || handle.metadata?.allocationName !== options.name) {
         throw new Error("LiteBox handle does not match this host, runtime home or Session allocation");
       }
-      const sandbox = new LiteBoxSandbox({ ...options, existingHandle: handle });
-      await sandbox.initializeBinding();
-      return sandbox;
+      return bindSandbox(ctx, { ...options, existingHandle: handle });
     },
   },
 });
