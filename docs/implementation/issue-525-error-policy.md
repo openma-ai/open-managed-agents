@@ -19,11 +19,15 @@
 
 清理失败与执行失败分别保留：清理仍尝试执行，原始业务错误保持顶层语义，额外错误进入 `cause`/`AggregateError`。consumer runtime 只管理本机 poll/capacity/drain，从不 ACK 或重试业务；`onError` 失败只能影响观测。
 
+终态之后的 artifact publication 有受限的独立路径：callback 只获得 outputs 的 list/read，不获得 sandbox、命令或生命周期能力。业务已 drained 后持久 `publishing` 表示仅剩读取/对账，可以在新 canonical owner 下恢复；每次 Files upload 前先原子改为不可重放的 `started`，只有提交响应已确认才恢复 `publishing`。提交响应丢失保留 unknown，即使日志 wrapper 吞掉错误也不能继续上传或放行后续业务。旧 owner 的写入和确认均检查 canonical fence。这修复了真实 SIGKILL 发生在两个 artifact 之间时无法继续发布的问题，没有重新运行已完成的 harness。普通 `afterExecution` 扩展不获得这项恢复豁免。
+
 ## #524 请求生命周期
 
 采用其 signal 透传方向，未采用 global 网络异常豁免。两个 Node 入口均验证实际 fetch 收到的 Request 在取消后变为 aborted。测试保留 Request/signal 引用，使用明确的 dispatch handshake，不用固定 sleep 推测请求已发出。
 
 `observeProxyBody` 从 headers 返回起观察 reader.closed，按 pull 读取，传播真实 body 错误并在取消时释放上游 reader；不会把 `TypeError: terminated` 改为成功的截断内容。真实 Node HTTP 测试覆盖上游 socket 中断和下游 client 断开。OAuth 在取消后不再派发业务请求，已经拿到的 token rotation 仍先持久保存。legacy refresh 拒绝时返回原 401，移除旧的同 token 再发一次行为。
+
+完整 CF CI 另外暴露了 workerd 的五次 `Stream was cancelled` 未处理错误：默认 stream 高水位会在调用方读取前预读，而 OAuth 随后丢弃 401 body。改为 `highWaterMark: 0`，仍立即观察 `reader.closed`，但按实际消费需求发起 read。原三组复现及新增“已有 pending read 再取消”测试在实际 workerd 中通过，未绕过未处理错误检查。
 
 负向对照：临时移除 `proxyUpstream` 中给 Request 的 signal 后，两个入口的 dispatch-handshake 取消测试均超时失败；恢复 signal 后通过。首次受限环境执行卡住后被终止，不计作这个负向证据；有效对照为之后完整执行的测试失败。
 
@@ -31,6 +35,6 @@
 
 ## 实库 CI
 
-`issue-525.postgres.integration.ts` 和 `issue-525.mysql.integration.ts` 各注册 28 项合同，实际创建 `postgres:16-alpine` / `mysql:8.4` 容器并使用独立 SQL 连接。没有 Docker 时失败，不 skip。覆盖持久 handle、两套 fence、unknown use、cleanup 责任、跨 lane FIFO/claim 竞争、held transfer 与独立资源 lease 轮转。
+`issue-525.postgres.integration.ts` 和 `issue-525.mysql.integration.ts` 各注册 29 项合同，实际创建 `postgres:16-alpine` / `mysql:8.4` 容器并使用独立 SQL 连接。没有 Docker 时失败，不 skip。覆盖持久 handle、两套 fence、unknown use、cleanup 责任、跨 lane FIFO/claim 竞争、held transfer、独立资源 lease 轮转，以及 publication 读取恢复/未知写入阻塞/旧 owner 确认拒绝。
 
 CI 新增并行 `database-contracts` matrix，结果接入必需的 `verify`，因此前置 browser/provider 用例失败也不会阻止实库合同执行。Node job 原有完整数据库集成仍保留。最终通过情况以 PR 当前 head 的检查为准。

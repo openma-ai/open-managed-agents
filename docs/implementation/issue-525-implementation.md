@@ -37,13 +37,15 @@ local-subprocess 与 embedded LiteBox 有主机亲和性；控制平面内存不
 
 ## 验证证据
 
+以下早期分组结果用于追溯；最终 source/数据库/CF 结果以 [PR #539](https://github.com/openma-ai/open-managed-agents/pull/539) 当前 head 的检查和说明为准。本地完整 Node 后续达到 990 通过、0 失败、1 个 installed-gh 环境 skip；与随后合入 main 的真实 artifact SIGKILL 测试整合时发现并修复了 post-terminal 恢复缺口，详见错误策略。完整 CF CI 暴露的五次取消 rejection 也已通过实际 workerd 复现并修复。
+
 - 完整 Node suite：937 通过，1 个旧 DI fixture 失败，1 个环境相关 skip；失败 fixture 随后更新为真实 local factory capability。后续 54 项 control-plane、ACP、durable resource 与独立 lease 测试全部通过。
 - 独立资源 lease、durable runner、background startup 与旧 checkpoint chaos：54 项通过；包含无 attempt 续租、新 worker 接管、旧完成 fenced、unknown use 保留和关闭挂起请求。
 - runtime-sql：90 项通过，覆盖 claim 交错、held transfer 竞争与事务回滚、binding CAS、FIFO、scoped recovery。
 - Daytona/LiteBox/BoxRun adapter：16 / 20 / 17 项通过，包含有远端效果后响应丢失、SSE 无终态、删除失败保留资源引用。
 - 实际 workerd/D1：事件与 Session persistence 合同 2 项通过。SQL adapter 的 commit-response-loss 测试使用假网络边界，不能冒称真实数据库断线实验。
 - 其他 provider/consumer/worker、migration、类型检查在各修改阶段通过；最终 CI 结果以 PR 检查为准。
-- PostgreSQL/MySQL 实库集成在本机缺少 container runtime，未完成。云 provider 未使用真实账号做本轮故障注入；待 CI/部署版本认证。
+- PostgreSQL/MySQL 实库在 CI 的 `db19946` 提交各 28/28 通过（非 skip）；后续新增 publication 合同至各 29 项，以最新 CI 为准。本机未安装 container runtime。云 provider 未使用真实账号做本轮故障注入，不能宣称完成云端认证。
 
 两位空上下文 reviewer 独立发现并复现了 serial claim、held transfer、terminal recovery、reaper starvation 和 provider 吞错等缺口。其后续运行遇到模型额度限制；剩余整合由主 worker 完成，不能把后续改动标成已获独立 approval。
 

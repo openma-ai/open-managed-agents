@@ -69,7 +69,8 @@ export async function proxyUpstream(input: ProxyUpstreamInput): Promise<Response
 /** A resolved fetch only owns the headers. Keep body errors observed even
  * before the caller starts reading; preserve them for that caller rather
  * than replacing an interrupted response with a successful truncated body.
- * Reading remains pull-driven, with at most one queued chunk. */
+ * Reading starts only when the caller asks for a chunk. In particular a 401
+ * discarded for OAuth refresh must not create a speculative pending read. */
 export function observeProxyBody(response: Response, signal?: AbortSignal | null): Response {
   if (response.body === null) return response;
   const reader = response.body.getReader();
@@ -109,6 +110,6 @@ export function observeProxyBody(response: Response, signal?: AbortSignal | null
       if (stopped) return;
       stopped = true; detach(); await cancelReader(reason);
     },
-  });
+  }, { highWaterMark: 0 });
   return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
