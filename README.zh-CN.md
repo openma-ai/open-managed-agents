@@ -187,9 +187,14 @@ pnpm setup:cloudflare
 | --- | --- | --- |
 | **Claude Managed Agents**，`/v1/*` | 通过官方 Anthropic SDK 操作 Agent、环境、会话、事件和 Worker 合同 | [合同测试](packages/managed-agents-api/) · [SDK E2E](test/e2e/managed-agents-sdk.mjs) |
 | **OpenAI Agents API**，`/openai/v1/*` | 将 OpenAI SDK 调用映射到 OpenMA 原生 Agent、会话和执行 | [适配器](packages/openai-agents-compat/README.md) · [兼容性报告](docs/openai-agents-compatibility-status.md) |
+| **Kimi Hosted Agents（实验性）**，`/kha/v1/*` | 需手动开启的 Node KHA CLI 兼容子集；默认关闭，托管 Cloudflare 不提供此入口 | [配置与边界](https://docs.openma.ai/zh-cn/build/kimi-hosted-agents/) · [产品对比](https://openma.ai/zh/blog/kimi-hosted-agents-vs-openma/) |
 | **OpenMA 扩展**，`/v1/oma/*` | Model Card 等产品功能 | [OpenMA SDK](packages/sdk/README.md) |
 
 OpenMA 是独立实现，迁移前请核对 API 和运行时覆盖。
+
+### Node 上的 Kimi Hosted Agents 接口
+
+使用包含实验性适配层的源码构建，在 Node 服务端设置 `OMA_KIMI_KHA_COMPAT=1`。KHA CLI 0.4.2 的地址指向 `http://localhost:8787/kha`，将 **OpenMA** API key 作为 `KIMI_API_KEY`。CLI 会追加 `/v1`，不要重复添加；Agent 需先通过原生接口创建。这是经过协议测试的兼容子集，不代表完整 Hosted Agents 等价能力或托管服务已提供该入口。参见[快速开始、兼容矩阵与验证边界](https://docs.openma.ai/zh-cn/build/kimi-hosted-agents/)。
 
 ### Claude Managed Agents API
 

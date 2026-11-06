@@ -7,6 +7,10 @@ import { Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
 
 The REST surface lives under `/v1/*`. Everything the Console does, you can do programmatically — the Console itself is just an API consumer.
 
+## Kimi Hosted Agents compatibility
+
+Self-hosted Node can opt into the experimental `/kha/v1/*` subset with `OMA_KIMI_KHA_COMPAT=1`. It reuses native authentication and execution; hosted Cloudflare does not expose it. Use the [KHA setup, migration guide and compatibility matrix](/build/kimi-hosted-agents/) ([中文](/zh-cn/build/kimi-hosted-agents/)) before changing a client endpoint. Native `/v1/*` remains unchanged.
+
 ## Base URL
 
 | Environment | Base URL |

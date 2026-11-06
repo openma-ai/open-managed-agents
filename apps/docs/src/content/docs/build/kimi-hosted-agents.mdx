@@ -1,0 +1,92 @@
+---
+title: Kimi Hosted Agents compatibility
+description: Connect the KHA CLI to OpenMA's opt-in Node adapter. Setup, migration steps, supported operations, and known limitations.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+OpenMA has an **experimental, opt-in Kimi Hosted Agents (KHA) compatibility subset on self-hosted Node**. It reuses OpenMA authentication, agents, session execution and output storage. It is not a second runtime or a complete implementation of Moonshot's service.
+
+<Aside type="caution" title="Deployment scope">
+  This guide applies to a Node build containing the KHA adapter (#534 and its CLI follow-up), started with `OMA_KIMI_KHA_COMPAT=1`. The adapter is disabled by default. Hosted OpenMA on Cloudflare does not expose this Node-only route. The presence of these docs or the comparison blog does not enable it on `app.openma.ai`.
+</Aside>
+
+For the product comparison, read [Kimi Hosted Agents vs OpenMA](https://openma.ai/blog/kimi-hosted-agents-vs-openma/) ([中文](https://openma.ai/zh/blog/kimi-hosted-agents-vs-openma/)). To call Moonshot's own service, follow its [official quickstart](https://platform.kimi.com/docs/hosted-agents/quickstart), not the OpenMA endpoint below.
+
+## Connect to your Node deployment
+
+1. Set up [self-hosted Node](/self-host/node-docker/) with persistence, the normal server secrets, an isolated sandbox provider and its credentials. Use a source build containing the adapter; do not assume an older image includes it.
+2. In your OpenMA Console, create an **OpenMA API key**, configure a Model Card with working model credentials, and create an agent and an environment appropriate for your runtime. Agent creation is not implemented by this adapter. Existing resources and credentials from Moonshot are not imported.
+3. Enable the flag in the **server process environment**, then restart that Node service. With an already configured source checkout:
+
+```bash
+OMA_KIMI_KHA_COMPAT=1 pnpm --filter @open-managed-agents/main-node start
+```
+
+For Docker, pass the variable to the server container's `environment` configuration; setting it only in your terminal does not change a running container. Native `/v1/*` routes keep their existing contracts.
+
+Install the official [KHA CLI](https://platform.kimi.com/docs/hosted-agents/kha). The repository's CLI checks used **kha 0.4.2**. In another terminal:
+
+```bash
+kha version
+export KHA_BASE_URL="http://localhost:8787/kha"
+export KIMI_API_KEY="oma_REPLACE_WITH_YOUR_OPENMA_API_KEY"
+
+kha whoami
+kha agents list
+kha environments list
+```
+
+Replace localhost with your own Node origin when needed. Use a base ending in **`/kha`, not `/kha/v1`**: the CLI adds `/v1`. An explicit `--base-url` overrides the environment value; an explicit `--profile` ignores the environment endpoint/key, so omit it here. `whoami` checks access by listing an agent; it does not return an OpenMA user identity. Never send an OpenMA key to Moonshot or use a Moonshot key as an OpenMA credential.
+
+With the IDs of the existing agent and environment, and `jq` installed:
+
+```bash
+export AGENT_ID="agent_REPLACE_WITH_EXISTING_ID"
+export ENVIRONMENT_ID="env_REPLACE_WITH_EXISTING_ID"
+
+session_id=$(kha sessions create \
+  --agent "$AGENT_ID" --environment "$ENVIRONMENT_ID" -o json | jq -r '.id')
+kha sessions send "$session_id" "Summarize the task and report your result." --wait
+kha sessions events "$session_id"
+kha artifacts list --session "$session_id"
+```
+
+An actual turn requires a working model and execution environment. Artifact listing can be empty: sending a message does not guarantee a file output. Use the returned artifact ID with `kha artifacts download "$ARTIFACT_ID" --out result.txt`; the adapter exposes current session outputs, not immutable artifact versions.
+
+## Compatibility matrix
+
+| Area | Implemented subset | Boundary |
+| --- | --- | --- |
+| Agents | List/get existing native agents | No create/update, rich definition import or agent writes |
+| Environments | Create/list/get | OpenMA runtime configuration; readiness is not Moonshot image-build telemetry |
+| Sessions | Create/list/get; one text message per append | No full multimodal parity, resource overrides or custom tool-result input |
+| Interrupt | A running session accepts `user.interrupt` with HTTP 202 | Acceptance is not completed cancellation; no control-epoch fencing or durable pause/resume |
+| History and SSE | Session/thread history and resumable cursors | Incremental polling of retained native events; bounded initial replay, not full upstream streaming semantics |
+| Threads | Primary lane and observed child lanes | Projection of native history, not a separately persisted Kimi thread graph |
+| Artifacts | List/get/download current native outputs | No immutable version snapshots; version queries return 400 |
+| Unsupported operations | Explicit errors | Pending-input inspection and message-free `/continue` return 501; no worker protocol, billing, OAuth or setup-script parity |
+
+SSE accepts delta requests but emits **complete events only**. It polls native history once per second per idle connection and scans up to 10,000 rows for initial replay; it does not promise token deltas or snapshot-isolated pagination. Cursors are scoped to the resource and filters. Clients should deduplicate event IDs and discard old cursors when changing filters.
+
+A running-session interrupt can be followed by new ordinary input after cancellation completes. `/continue` does not synthesize a message. These boundaries also apply when the CLI accepts a command or flag.
+
+## Migration checklist
+
+- **Choose the interface.** Use `/kha/v1/*` only for the subset above; use native OpenMA APIs for agent configuration and unsupported KHA operations.
+- **Recreate resources.** Configure model credentials, agents, environments, skills and MCP connections in OpenMA. Replace IDs and review filesystem paths and authentication; changing the base URL alone is not a migration.
+- **Map native tools explicitly.** Kimi's `agent_toolset` named `default_toolset_20260901` is not OpenMA's `agent_toolset_20260401`. For native agents, review `shell → bash`, `read_file → read`, and `web_open_url → web_fetch`. Custom JSON schemas may be reusable, but their execution/result protocol still needs review. See [Kimi's tools](https://platform.kimi.com/docs/hosted-agents/tools) and [OpenMA tools](/build/skills-and-tools/).
+- **Configure delegation natively.** Use `multiagent.subagents.predefined_agents` on an OpenMA agent, not deprecated `callable_agents`. The [comparison article](https://openma.ai/blog/kimi-hosted-agents-vs-openma/) includes a complete configuration example. The adapter's thread endpoints do not import a Kimi multi-agent setup.
+- **Check events and outputs.** Validate your application's required event types, interrupt behavior and artifact downloads against the matrix before switching traffic. For Moonshot's own API, `include_deltas=true` opts into live deltas; this adapter still emits complete events.
+
+## What has been verified?
+
+The repository records official CLI 0.4.2 checks against a local fixture, route/mapper tests, and authenticated SQLite composition tests for ownership, persistence, artifacts and interrupt preconditions. The fixture uses in-memory application ports and does **not** call a model or run a provider. Those results do not establish live Moonshot service parity or a completed real-provider turn through the adapter.
+
+A credential-free transport demo is available from the repository root:
+
+```bash
+pnpm --filter @open-managed-agents/main-node exec tsx scripts/kimi-kha-smoke-server.ts
+```
+
+That fixture listens on port 8799 and uses the fixture key `dummy`. It is separate from the production setup above. See the [adapter verification notes and command matrix](https://github.com/openma-ai/open-managed-agents/blob/main/packages/control-plane-node/src/kimi-kha/README.md) for fixture commands, observed errors and current implementation limits.
