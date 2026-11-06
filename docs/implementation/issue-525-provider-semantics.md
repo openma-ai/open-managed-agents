@@ -49,3 +49,5 @@ attempt 只获得执行访问和可用性；不获得 create / destroy / renewLe
 新 owner 拿到 handle **并不会自动使旧 SDK client 失效**。本地能力撤销及 DB fencing 只能挡住后续派发/结果提交，不能收回已发送的 HTTP 请求。旧清理只能删除不可重新采用的独立 allocation；未知远端操作必须保留证据，不能按 attempt lease 到期清空。
 
 接入认证仍需对各部署版本实际 probe：原 ID 重连与实例死亡、pause 后 PID/内存/文件/网络分别保留情况、延迟命令在 owner 更换后的完成、重复 delete 的 202/404、丢失 create 响应后的按 allocation 查找，以及 provider 自身隐式重试/自动唤醒。未跑这些 probe 的能力保留为待验证，不写成“不支持”，也不承诺 exactly-once。
+
+LiteBox 文件传输还存在挂载命名空间边界：[官方指南](https://github.com/boxlite-ai/boxlite/blob/main/docs/guides/ai-agent-integration.md) 说明 copy_in/copy_out 在 rootfs 层操作，挂载路径与 workload 所见不同。当前锁定 0.9.0 的实际 Linux 集成出现挂载输出 `source path does not exist`，适配器改为对已声明的 mount 在 VM 内读写，避免宿主直接解引用不可信 guest symlink；普通 rootfs 文件仍走 SDK copy。该文件传输边界不改变两套 fencing 或 provider 恢复承诺。

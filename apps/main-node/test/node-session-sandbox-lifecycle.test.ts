@@ -210,7 +210,8 @@ describe("Node Session sandbox lifecycle", () => {
     await expect(f.service("replacement-manager").open(f.input)).rejects.toMatchObject({ code: "unknown_management" });
     expect(f.input.create).not.toHaveBeenCalled();
     expect(f.input.resume).not.toHaveBeenCalled();
-    expect((await f.store.getCurrent(f.scope))!.resource!.failure).toContain("reconciliation");
+    expect((await f.store.getCurrent(f.scope))!.resource!.failure).toEqual(
+      observed === "ready" ? "rebind_in_progress" : expect.stringContaining("reconciliation"));
   });
 
   it("blocks takeover and retirement after execution expiry or an uncertain operation, and rejects a late release", async () => {
@@ -371,7 +372,8 @@ describe("Node Session sandbox lifecycle", () => {
     } })).rejects.toThrow("package setup failed");
     const failed = (await f.store.getCurrent(f.scope))!.resource!;
     expect(failed).toMatchObject({ observedState: "lost", readiness: "none", handle: { provider: "test" } });
-    await expect(f.service("restart").open(f.input)).rejects.toMatchObject({ code: "unknown_management" });
+    await expect(f.service("restart").open(f.input)).rejects.toMatchObject({ code: "unknown_management", message: expect.stringContaining("package setup failed") });
+    expect((await f.store.getCurrent(f.scope))!.resource!.failure).toBe(failed.failure);
     expect(f.input.create).toHaveBeenCalledTimes(1);
     await manager.retire({ ...f.scope, allocationId: failed.allocationId });
     const replacement = await manager.open(f.input);

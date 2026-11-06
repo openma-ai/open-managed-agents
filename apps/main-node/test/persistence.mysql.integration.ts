@@ -16,6 +16,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { NodeManagedWorkspaceCheckpoints } from "../../../packages/control-plane-node/src/lib/node-managed-workspace-checkpoints.js";
 import { NodeSharedSessionOutputs } from "../../../packages/control-plane-node/src/lib/node-shared-session-outputs.js";
+import { NodeSessionSandboxLifecycle } from "../../../packages/control-plane-node/src/lib/node-session-sandbox-lifecycle.js";
+import { SqlSessionSandboxBindingStore } from "@open-managed-agents/session-runtime-sql/sandbox-binding";
+import { sandboxFactory as liteboxFactory } from "@open-managed-agents/sandbox-adapter-litebox";
 import { openNodeDatabase } from "../src/database.js";
 import { S3BlobStore } from "@open-managed-agents/blob-store";
 import { detachedProcessOptions, killProcessTree } from "./helpers/process-tree";
@@ -145,7 +148,7 @@ describe("real MySQL + MinIO, independent process and sandbox storage chaos", ()
     await outputs.done();
   }, 90_000);
 
-  it("runs official /v1/sessions on two real Node owners with shared MySQL+MinIO and cold-restores after owner A exits", async () => {
+  it("runs official /v1/sessions on two real Node owners with shared MySQL+MinIO and cold-restores after independently fenced resource retirement", async () => {
     const marker = `MARKER_${randomUUID().replaceAll("-", "")}`;
     let replyId = 0;
     const modelRequests: string[] = [];
@@ -272,6 +275,32 @@ describe("real MySQL + MinIO, independent process and sandbox storage chaos", ()
       const agent = await client.beta.agents.create({ name: `checkpoint-${suffix}`, model: "claude-sonnet-4-20250514", system: "Use bash for the requested action",
         tools: [{ type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: true, permission_policy: { type: "always_allow" } }], default_config: { enabled: false } }] });
       const session = await client.beta.sessions.create({ agent: { type: "agent", id: agent.id, version: agent.version }, environment_id: env.id, title: `checkpoint-${suffix}` });
+      const sandboxStore = new SqlSessionSandboxBindingStore(sql);
+      const retirePhysicalResource = async (owner: string) => {
+        const scope = { workspaceId: "default", sessionId: session.id };
+        const current = (await sandboxStore.getCurrent(scope))?.resource;
+        expect(current?.use).toBeNull();
+        expect(current?.handle).not.toBeNull();
+        if (!current?.handle) throw new Error("Fixture resource has no durable physical handle");
+        // Process exit does not retire a Session resource. Model the separate
+        // resource controller explicitly, and confirm physical deletion before
+        // asking the next owner to cold-restore. Never erase SQL ownership rows.
+        const controller = new NodeSessionSandboxLifecycle({
+          store: sandboxStore, provider: current.provider, providerNamespace: current.providerNamespace,
+          ownerId: `fixture-reaper-${owner}`, allocationIsolation: true, runtimeBindingSupported: true,
+        });
+        try {
+          await controller.retire({ ...scope, allocationId: current.allocationId });
+          const deleted = await controller.reap({ ...scope, allocationId: current.allocationId,
+            resume: (handle, allocationId) => liteboxFactory.runtimeBinding!.resume(handle, {
+              ...scope, environmentId: env.id, allocationId, workdir: join(scratch, owner, "reaper"),
+              outputsRoot: join(scratch, owner, "outputs"),
+            }, {}),
+            handle: liteboxFactory.runtimeBinding!.getHandle,
+          });
+          expect(deleted.observedState).toBe("deleted");
+        } finally { await controller.close(); }
+      };
       await client.beta.sessions.events.send(session.id, { events: [{ type: "user.message", content: [{ type: "text", text: "WRITE_MARKER" }] }] });
       const pointer = async () => sql.prepare("SELECT candidate_id FROM managed_session_workspace_checkpoints WHERE workspace_id = ? AND session_id = ?")
         .bind("default", session.id).first<{ candidate_id: string }>();
@@ -287,8 +316,14 @@ describe("real MySQL + MinIO, independent process and sandbox storage chaos", ()
       const memory = await client.beta.memoryStores.memories.create(store.id, {
         path: "/notes/cross-owner.txt", content: "MEMORY_FROM_A", view: "full",
       });
+      await wait(async () => {
+        const row = await sql.prepare("SELECT state FROM managed_session_executions WHERE workspace_id = ? AND session_id = ? ORDER BY admission_sequence DESC LIMIT 1")
+          .bind("default", session.id).first<{ state: string }>();
+        return row?.state === "completed";
+      }, "first turn fully drained");
+      await killProcessTree(a.child); // kills the owner, not the Session resource or SQL/OSS.
+      await retirePhysicalResource("owner_a");
       const b = await launch("owner_b");
-      await killProcessTree(a.child); // kills the first owner, not the shared SQL/OSS.
       const otherClient = new Anthropic({ apiKey: "test", baseURL: b.url, maxRetries: 0 });
       const acrossOwners = await otherClient.beta.memoryStores.memories.retrieve(memory.id, { memory_store_id: store.id, view: "full" });
       expect(acrossOwners.content).toBe("MEMORY_FROM_A");
@@ -341,6 +376,7 @@ describe("real MySQL + MinIO, independent process and sandbox storage chaos", ()
       const archiveKey = (JSON.parse(canonical!.candidate_json) as { metadata: Record<string, string> }).metadata["openma.workspace.blob-key.v1"]!;
       await files.delete(archiveKey);
       await killProcessTree(b.child);
+      await retirePhysicalResource("owner_b");
       const c = await launch("owner_c");
       const beforeRestore = modelRequests.length;
       const third = new Anthropic({ apiKey: "test", baseURL: c.url, maxRetries: 0 });

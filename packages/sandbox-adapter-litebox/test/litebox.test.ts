@@ -91,6 +91,27 @@ afterEach(() => {
 });
 
 describe("LiteBoxSandbox", () => {
+  it("reads and writes mounted output bytes through the VM namespace", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "litebox-volume-bytes-"));
+    const box = queueBox();
+    const bytes = Buffer.from([0, 255, 13, 10, 128]);
+    box.copyOut.mockRejectedValue(new Error("source path does not exist outside the mount namespace"));
+    const sandbox = await sandboxFactory({ workspaceId: "tenant", sessionId: "session", allocationId: "allocation", workdir: root, outputsRoot: join(root, "outputs") }, {});
+    try {
+      box.exec.mockResolvedValueOnce({ exitCode: 0, stdout: bytes.toString("base64") + "\n", stderr: "" });
+      expect(await sandbox.readFileBytes!("/mnt/session/outputs/result.bin")).toEqual(bytes);
+      expect(box.copyOut).not.toHaveBeenCalled();
+      expect(box.exec).toHaveBeenLastCalledWith("base64", ["--", "/mnt/session/outputs/result.bin"], {}, expect.anything());
+      await sandbox.writeFileBytes!("/mnt/session/outputs/restored.bin", bytes);
+      expect(box.copyIn.mock.calls[0]?.[1]).toMatch(/^\/var\/tmp\/openma-litebox-copy-[a-f0-9]+$/);
+      expect(box.exec.mock.calls).toContainEqual(["cp", ["--", box.copyIn.mock.calls[0]![1], "/mnt/session/outputs/restored.bin"], {}, expect.anything()]);
+      const unknown = new Error("mounted copy response lost");
+      box.exec.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+        .mockRejectedValueOnce(unknown).mockRejectedValueOnce(new Error("staging cleanup failed"));
+      await expect(sandbox.writeFileBytes!("/mnt/session/outputs/uncertain.bin", bytes)).rejects.toBe(unknown);
+    } finally { await sandbox.destroy!(); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it("stages durable Session outputs before allocation and preserves the mount on rebind", async () => {
     const root = await fs.mkdtemp(join(tmpdir(), "litebox-bound-outputs-"));
     const context = { workspaceId: "tenant", sessionId: "session", allocationId: "allocation", workdir: root, outputsRoot: join(root, "outputs") };

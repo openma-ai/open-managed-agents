@@ -40,3 +40,5 @@
 CI 新增并行 `database-contracts` matrix，结果接入必需的 `verify`，因此前置 browser/provider 用例失败也不会阻止实库合同执行。Node job 原有完整数据库集成仍保留。最终通过情况以 PR 当前 head 的检查为准。
 
 Console 真实 VM 认证另外暴露了 LiteBox 工厂提前创建实例与后续输出挂载的时序冲突，Session 事件中的原始错误为 `mountSessionOutputs: box already created`。工厂现在根据 Session/workspace 先配置持久输出 host volume，再分配实例；之后相同配置可重复声明，重连通过 handle 核对原输出路径，不能偷偷改挂载目录。回归测试先复现该错误，修复后 LiteBox 21 项通过；Linux 真实 VM 的最终验证以当前 CI 为准。
+
+完整 MySQL 集成另暴露两项边界：阻塞 heartbeat 的旧夹具把 `owner_seed` 的 claim 交给 `worker_fiber`，现在使用一致身份，保留运行时 fatal 不变量检查；LiteBox SDK 文件复制在 VM 挂载命名空间外操作，不能读取挂载的 Session outputs。适配器对已声明挂载使用 VM 内二进制读取/写入，临时清理失败不覆盖未知写入主错。冷恢复实测先等执行完成，再由独立资源 controller 持 fence 退役并确认物理删除，之后新 owner 才创建新实例恢复 checkpoint；Node 退出本身不再隐含销毁资源。准备失败原因持久保留，后续拒绝重连不会将其覆盖或授权重放。

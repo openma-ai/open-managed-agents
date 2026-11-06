@@ -304,7 +304,7 @@ describe("MySQL execution claim/renew/settle concurrency", () => {
       });
       const claimed = await coordinator.claim({
         workspaceId,
-        ownerId: "owner_seed",
+        ownerId: "worker_fiber",
         attemptId: "seed_fiber",
         claimedAt: admittedAt,
         leaseTtlMs: 60_000,

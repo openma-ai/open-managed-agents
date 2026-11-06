@@ -272,7 +272,7 @@ export class NodeSessionSandboxLifecycle {
         if (resource.handle === null) throw error("unknown_create", "Sandbox creation has an unknown result; reconcile this allocation before retrying");
         if (resource.management.ownerId !== null || resource.observedState !== "ready"
           || resource.readiness !== "prepared" || resource.failure !== null) {
-          throw error("unknown_management", "Sandbox preparation or prior management did not finish; this allocation requires reconciliation");
+          throw error("unknown_management", resource.failure ?? "Sandbox preparation or prior management did not finish; this allocation requires reconciliation");
         }
         await management.write(mutation => this.store.recordFailure({
           ...mutation, failure: "Sandbox rebind_in_progress; an expired manager does not prove this operation drained",
@@ -671,7 +671,7 @@ export class NodeSessionSandboxLifecycle {
         await management.write(mutation => this.store.recordFailure({
           ...mutation,
           failure: failure instanceof NodeSessionSandboxLifecycleError ? failure.message
-            : `Sandbox ${operation} did not complete; its provider outcome requires reconciliation`,
+            : `Sandbox ${operation} did not complete; its provider outcome requires reconciliation${failure instanceof Error ? `: ${failure.message}` : ""}`,
           lost: ["provision", "rebind", "operate"].includes(operation) && resource.handle !== null,
           retryAt: operation === "reap" ? new Date(this.now().getTime() + this.ttl).toISOString() : null,
         })).catch(() => {});

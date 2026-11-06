@@ -25,7 +25,7 @@
 
 import type { ProcessHandle, SandboxExecutor, SandboxFactory, SandboxFactoryContext, SandboxFactoryEnv, SandboxRuntimeHandle } from "@open-managed-agents/sandbox";
 import { promises as fs, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, posix } from "node:path";
 import { tmpdir, hostname, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
@@ -279,23 +279,30 @@ export class LiteBoxSandbox implements SandboxExecutor {
   }
 
   async readFile(path: string): Promise<string> {
-    const box = await this.ensureBox();
-    const tmp = join(this.tmpRoot, `read-${Buffer.from(randomBytes(6)).toString("hex")}`);
-    try {
-      await box.copyOut(this.normalise(path), tmp);
-      return await fs.readFile(tmp, "utf8");
-    } finally {
-      await removeBestEffort(tmp);
-    }
+    return Buffer.from(await this.readFileBytes(path)).toString("utf8");
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
     const box = await this.ensureBox();
+    const target = this.normalise(path);
+    // SDK copyOut reads the rootfs outside the container mount namespace.
+    // Mounted files must be read by a command inside the VM, never by following
+    // untrusted guest symlinks directly from the host process.
+    if (this.isMountedPath(target)) {
+      const result = await box.exec("base64", ["--", target]);
+      if (result.exitCode !== 0) throw new Error(`LiteBox mounted read failed: ${result.stderr}`);
+      const encoded = result.stdout.replace(/\s/g, "");
+      const bytes = Buffer.from(encoded, "base64");
+      if (bytes.toString("base64") !== encoded) throw new Error("LiteBox mounted read returned invalid base64");
+      return bytes;
+    }
     const tmp = join(this.tmpRoot, `read-${Buffer.from(randomBytes(6)).toString("hex")}`);
     try {
-      await box.copyOut(this.normalise(path), tmp);
+      await box.copyOut(target, tmp);
       const buf = await fs.readFile(tmp);
       return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    } catch (cause) {
+      throw new Error(`LiteBox read failed for ${target}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
     } finally {
       await removeBestEffort(tmp);
     }
@@ -423,6 +430,11 @@ export class LiteBoxSandbox implements SandboxExecutor {
     return `/workspace/${p}`;
   }
 
+  private isMountedPath(path: string): boolean {
+    const normalized = posix.normalize(path);
+    return this.volumes.some(({ guestPath }) => normalized === guestPath || normalized.startsWith(`${guestPath}/`));
+  }
+
   private buildEnv(command: string): Record<string, string> {
     const out: Record<string, string> = { ...this.envVars };
     for (const { prefix, secrets } of this.commandSecrets) {
@@ -442,7 +454,21 @@ export class LiteBoxSandbox implements SandboxExecutor {
         `LiteBoxSandbox could not create ${dirname(target)}: ${prepared.stderr || prepared.stdout}`,
       );
     }
-    await box.copyIn(hostPath, target);
+    if (!this.isMountedPath(target)) {
+      await box.copyIn(hostPath, target);
+      return;
+    }
+    // copyIn also bypasses mounts. Stage outside them, then copy inside the
+    // guest namespace. Use argv, not a shell string, for user-controlled paths.
+    const staging = `/var/tmp/openma-litebox-copy-${Buffer.from(randomBytes(12)).toString("hex")}`;
+    try {
+      await box.copyIn(hostPath, staging);
+      const copied = await box.exec("cp", ["--", staging, target]);
+      if (copied.exitCode !== 0) throw new Error(`LiteBox mounted write failed: ${copied.stderr}`);
+    } finally {
+      // A cleanup error must not replace an uncertain copy's primary failure.
+      await box.exec("rm", ["-f", "--", staging]).catch(() => undefined);
+    }
   }
 }
 
