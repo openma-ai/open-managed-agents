@@ -185,9 +185,14 @@ The script provisions Cloudflare resources, updates the local Wrangler configura
 | --- | --- | --- |
 | **Claude Managed Agents**, `/v1/*` | Agents, environments, sessions, events, and worker contracts through the official Anthropic SDK | [Contract tests](packages/managed-agents-api/) · [SDK E2E](test/e2e/managed-agents-sdk.mjs) |
 | **OpenAI Agents API**, `/openai/v1/*` | OpenAI SDK calls mapped to native OpenMA agents, sessions, and execution | [Adapter](packages/openai-agents-compat/README.md) · [Compatibility report](docs/openai-agents-compatibility-status.md) |
+| **Kimi Hosted Agents (experimental)**, `/kha/v1/*` | Opt-in Node subset for the KHA CLI; disabled by default, not available on hosted Cloudflare | [Setup and limits](https://docs.openma.ai/build/kimi-hosted-agents/) · [Product comparison](https://openma.ai/blog/kimi-hosted-agents-vs-openma/) |
 | **OpenMA extensions**, `/v1/oma/*` | Model Cards and product-specific features | [OpenMA SDK](packages/sdk/README.md) |
 
 OpenMA is an independent implementation. Check the API and runtime coverage before migrating.
+
+### Kimi Hosted Agents on Node
+
+Use a source build containing the experimental adapter and set `OMA_KIMI_KHA_COMPAT=1` on the Node server. Point KHA CLI 0.4.2 at `http://localhost:8787/kha` and use an **OpenMA** API key as `KIMI_API_KEY`. The CLI adds `/v1`; do not append it yourself. Create the agent natively first. This is a tested protocol subset, not full Hosted Agents parity or a claim of hosted availability. See the [quickstart, compatibility matrix and verification limits](https://docs.openma.ai/build/kimi-hosted-agents/).
 
 ### Claude Managed Agents API
 
