@@ -60,7 +60,14 @@ describe('Managed Session semantic mapping', () => {
     const native = await f.agents.retrieveAgent({ agentId: command.agent.agentId });
     expect(JSON.stringify(native)).not.toContain('secret-token');
     const session = await f.snapshot(command);
-    expect(await f.mapping.sessionView(session)).toMatchObject({ vault_ids: ['vault'], environment: { type: 'self_hosted', workspace_directory: '/actual', remote_url: 'wss://actual-executor.test/remote' }, agent: { tools: [{ transport: { headers: { Authorization: 'secret-token' } } }] } });
+    const wire = await f.mapping.sessionView(session);
+    expect(wire).toMatchObject({ vault_ids: ['vault'], environment: { type: 'self_hosted', workspace_directory: '/actual', remote_url: 'wss://actual-executor.test/remote' } });
+    expect(wire.agent.tools).toEqual([expect.objectContaining({
+      type: 'mcp', server_label: 'private', transport: { type: 'http', server_url: 'https://private.test' },
+    })]);
+    expect(validateOpenAIAgentsSchema(wire, 'agents.AgentSession')).toEqual({ success: true });
+    const saved = await readSessionMappingMetadata(session.metadata, f.secrets);
+    expect(saved?.agent.tool_extras['mcp:private'].headers).toEqual({ Authorization: 'secret-token' });
     expect(await f.run('agents.list')).toMatchObject({ data: [] });
   });
 

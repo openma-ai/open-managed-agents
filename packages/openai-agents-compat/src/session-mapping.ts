@@ -209,8 +209,13 @@ export function createManagedSessionMapping(deps: ManagedSessionMappingDependenc
         },
       });
       const { id, instructions, model, multi_agent, name, reasoning, service_tier, text, tools } = projected;
+      // Only standalone Agent responses include headers in HTTP MCP transports.
+      const sessionTools = tools.map((tool: ResourceObject) => {
+        if (tool.type !== 'mcp' || tool.transport.type !== 'http') return tool;
+        return { ...tool, transport: { type: 'http', server_url: tool.transport.server_url } };
+      });
       return {
-        id: session.id, object: 'agent.session', agent: { id, instructions, model, multi_agent, name, reasoning, service_tier, text, tools },
+        id: session.id, object: 'agent.session', agent: { id, instructions, model, multi_agent, name, reasoning, service_tier, text, tools: sessionTools },
         created_at: seconds(session.createdAt), last_active_at: seconds(session.updatedAt), environment,
         metadata: decodeResourceMetadata(session.metadata, 'session').metadata,
         status: session.status === 'running' || session.status === 'rescheduling' ? 'in_progress' : 'idle',
