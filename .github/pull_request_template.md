@@ -27,7 +27,7 @@ Closes #
 
 <!-- 做了什么、刻意没做什么。点名关键文件。 -->
 
-- [ ] 用户可见的改动已在本 PR 同步更新 `apps/docs`、相关 README（SDK / CLI / 根目录）和 CLI 帮助，或已写明不适用（见 CONTRIBUTING.md「User-facing documentation」）
+- [ ] 用户可见的改动已在本 PR 同步更新 `apps/docs` 和 CLI 帮助，或已写明不适用（见 CONTRIBUTING.md「User-facing documentation」）
 
 ## 验证证据
 

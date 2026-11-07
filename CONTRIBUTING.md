@@ -40,18 +40,17 @@ When lockfiles conflict, related dependency updates may be combined into one PR 
 
 ## User-facing documentation
 
-A PR that adds or changes user-visible behavior updates the documentation in the same PR, so a merged feature is never undocumented:
+A PR that adds or changes user-visible behavior updates the user documentation in `apps/docs` in the same PR, so a merged feature is never undocumented:
 
 | Change | Update |
 |---|---|
 | A `/v1` endpoint, request or response field, or error status | The guide in `apps/docs` and `apps/docs/src/content/docs/reference/api.mdx` |
-| A `@openma/sdk` method or option | `packages/sdk/README.md` (published to npm) and the `apps/docs` guide |
-| An `oma` command or flag | `packages/cli/README.md` (published to npm), the command's `--help` / `oma api` text and the `apps/docs` guide |
+| A `@openma/sdk` method or option | The `apps/docs` guide |
+| An `oma` command or flag | The `apps/docs` guide, and the command's `--help` / `oma api` text |
 | A Console feature | The `apps/docs` guide, plus screenshots in the evidence report |
-| Configuration, environment variables or deployment steps | The self-hosting pages in `apps/docs` and, when it changes setup, the root `README.md` |
-| A new top-level capability | The root `README.md` |
+| Configuration, environment variables or deployment steps | The self-hosting pages in `apps/docs` |
 
-Examples in READMEs and docs must be commands and code that were run against a real deployment (see [Sandbox provider adapters](#sandbox-provider-adapters): do not claim support before live verification). Write "not applicable" with a reason in the evidence report when nothing user-visible changed.
+Examples in the docs must be commands and code that were run against a real deployment (see [Sandbox provider adapters](#sandbox-provider-adapters): do not claim support before live verification). Write "not applicable" with a reason in the evidence report when nothing user-visible changed.
 
 ## Design decisions (ADR)
 
