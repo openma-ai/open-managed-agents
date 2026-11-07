@@ -1,0 +1,105 @@
+[
+  {
+    "name": "confirmation-dark-1280-16-dismissed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.00004340277777777778,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "confirmation-dark-390-16-dismissed.jpg",
+    "maxChannelDifference": 3,
+    "meanChannelDifference": 0.00018830128205128205,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "confirmation-dark-390-20-dismissed.jpg",
+    "maxChannelDifference": 6,
+    "meanChannelDifference": 0.0007251602564102564,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "confirmation-light-390-20-closed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.000328525641025641,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "confirmation-light-390-20-dismissed.jpg",
+    "maxChannelDifference": 6,
+    "meanChannelDifference": 0.0008373397435897436,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "memory-detail-dark-1280-16-dismissed.jpg",
+    "maxChannelDifference": 1,
+    "meanChannelDifference": 0.00010590277777777777,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "memory-detail-light-1280-16-dismissed.jpg",
+    "maxChannelDifference": 1,
+    "meanChannelDifference": 0.00003472222222222222,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "sessions-dark-390-20-closed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.00012419871794871795,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "sessions-dark-390-20-dismissed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.00012419871794871795,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "sessions-light-390-16-closed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.00040064102564102563,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "sessions-light-390-16-dismissed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.00040064102564102563,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "sessions-light-390-20-open.jpg",
+    "maxChannelDifference": 10,
+    "meanChannelDifference": 0.001454326923076923,
+    "pixelsAbove8": 3,
+    "bbox": [
+      34,
+      225,
+      37,
+      228
+    ]
+  },
+  {
+    "name": "vault-credential-dark-1280-16-dismissed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.00006336805555555555,
+    "pixelsAbove8": 0,
+    "bbox": null
+  },
+  {
+    "name": "vault-credential-light-1280-16-dismissed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.000054108796296296294,
+    "pixelsAbove8": 0,
+    "bbox": null
+  }
+]

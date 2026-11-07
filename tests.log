@@ -1,0 +1,14 @@
+$ vitest run
+
+ RUN  v5.0.5 /Users/botty/Library/Application Support/CindyGlobal/owners/1132c29a5c302215fdc8/bots/bot_1793886687820_ihydga/workspace/local-projects/open-managed-agents/pr-528-repo/.cindy-worktrees/pensive-curie/apps/console
+
+
+ Test Files  87 passed (87)
+      Tests  444 passed (444)
+   Start at  03:59:30
+   Duration  11.06s (environment 40%, tests 21%, import 18%, setup 17%, transform 4%)
+
+Environment  jsdom was created 87 times · 43.77s total, 40% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+

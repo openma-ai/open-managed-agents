@@ -1,0 +1,27 @@
+{
+  "base": "0d26903185e3fd8bb89c6499ae21f021e3a3b23e",
+  "head": "e458cda28efa4a1ff7faafe803ba2df8a2160e01",
+  "casesPerBuild": 50,
+  "openModalCasesPerBuild": 48,
+  "closedOnlyCasesPerBuild": 2,
+  "screenshotsPerBuild": 146,
+  "identicalScreenshotPairs": 132,
+  "nonidenticalScreenshotPairs": [
+    "memory-detail-light-1280-16-dismissed.jpg",
+    "vault-credential-light-1280-16-dismissed.jpg",
+    "sessions-light-390-16-closed.jpg",
+    "sessions-light-390-16-dismissed.jpg",
+    "sessions-light-390-20-open.jpg",
+    "confirmation-light-390-20-closed.jpg",
+    "confirmation-light-390-20-dismissed.jpg",
+    "memory-detail-dark-1280-16-dismissed.jpg",
+    "vault-credential-dark-1280-16-dismissed.jpg",
+    "confirmation-dark-1280-16-dismissed.jpg",
+    "confirmation-dark-390-16-dismissed.jpg",
+    "sessions-dark-390-20-closed.jpg",
+    "sessions-dark-390-20-dismissed.jpg",
+    "confirmation-dark-390-20-dismissed.jpg"
+  ],
+  "geometry": "identical across all 48 open cases",
+  "fixtureBackend": true
+}
