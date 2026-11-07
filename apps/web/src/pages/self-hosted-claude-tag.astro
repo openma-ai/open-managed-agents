@@ -109,6 +109,15 @@ const schemas = [
   -> durable session and event log
   -> harness + model card + MCP/tools + sandbox
   -> thread reply, memory update, audit trail</code></pre>
+    <h3 class="font-semibold text-lg mt-10 mb-2">One Slack app per agent</h3>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
+      The Slack app is not global. Each published agent gets its own Slack app with its own
+      client ID, signing secret, scopes, and bot identity, so one workspace can run an
+      engineering agent in <code class="font-mono text-sm">#eng-build</code>, a support agent in
+      <code class="font-mono text-sm">#support-triage</code>, and a narrower incident agent, each with
+      different tool access. Self-hosted deployments need a public HTTPS URL for the integrations
+      gateway; see the <a href="https://docs.openma.ai/self-host/oauth-apps/#slack">Slack app setup</a>.
+    </p>
   </section>
 
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
@@ -157,6 +166,37 @@ const schemas = [
           vendor loop.
         </p>
       </article>
+    </div>
+  </section>
+
+  <section class="border-t border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">Before you roll out</h2>
+      <div class="grid md:grid-cols-2 gap-x-10 gap-y-8">
+        <article>
+          <h3 class="font-semibold text-lg mb-2">Decide what the agent remembers</h3>
+          <ul class="space-y-2 text-[var(--color-fg-muted)] leading-relaxed list-disc pl-5">
+            <li>Keep the per-channel session event log for follow-up context.</li>
+            <li>Write durable team facts to a memory store only when the agent has a reason to remember them.</li>
+            <li>Keep incident, finance, legal, and customer channels in separate publications.</li>
+            <li>Keep credentials in vaults, never in prompts or channel text.</li>
+          </ul>
+        </article>
+        <article>
+          <h3 class="font-semibold text-lg mb-2">Add operational guardrails</h3>
+          <ul class="space-y-2 text-[var(--color-fg-muted)] leading-relaxed list-disc pl-5">
+            <li>Grant each publication only the tools it needs, starting with Slack and one or two real tools.</li>
+            <li>Set sandbox timeouts and resource limits before giving the agent write access.</li>
+            <li>Watch tool calls in the session event log during the first weeks.</li>
+            <li>Pilot in one channel before installing workspace-wide.</li>
+          </ul>
+        </article>
+      </div>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mt-8 max-w-3xl">
+        Next: the <a href="https://docs.openma.ai/self-host/overview/">self-host overview</a>, the
+        <a href="https://docs.openma.ai/build/integrations/">custom integrations guide</a>, and
+        <a href="/blog/self-host-agent-platform-cloudflare-workers/">self-hosting on Cloudflare Workers</a>.
+      </p>
     </div>
   </section>
 

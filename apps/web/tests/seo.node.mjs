@@ -35,6 +35,10 @@ test("legacy Anthropic article URLs permanently redirect to the live Claude URLs
       "/blog/anthropic-managed-agents-vs-open-managed-agents/",
       "/blog/claude-managed-agents-vs-open-managed-agents/",
     ],
+    ["/blog/claude-tag-open-source-alternative/", "/claude-tag-alternative/"],
+    ["/blog/claude-tag-alternative-open-source-slack-ai-teammate/", "/claude-tag-alternative/"],
+    ["/blog/self-hosted-claude-tag-open-source/", "/self-hosted-claude-tag/"],
+    ["/blog/self-host-claude-tag-style-slack-ai-agent/", "/self-hosted-claude-tag/"],
     ["/blog/why-agent-as-a-service/", "/blog/"],
     ["/sitemap.xml", "/sitemap-index.xml"],
   ]);
@@ -183,6 +187,20 @@ test("Claude Tag landing pages keep distinct, untruncated search titles", async 
   }
 
   assert.equal(titles.size, pages.length, "each landing page has its own title");
+});
+
+test("absorbed Claude Tag blog posts are no longer built, listed or in the sitemap", async () => {
+  const { existsSync } = await import("node:fs");
+  const sitemap = await readFile(new URL("../dist/sitemap-0.xml", import.meta.url), "utf8");
+  const blogIndex = await readFile(new URL("../dist/blog/index.html", import.meta.url), "utf8");
+
+  for (const slug of ["claude-tag-open-source-alternative", "self-hosted-claude-tag-open-source"]) {
+    assert.equal(existsSync(new URL(`../dist/blog/${slug}/index.html`, import.meta.url)), false, slug);
+    assert.doesNotMatch(sitemap, new RegExp(`/blog/${slug}/`), slug);
+    assert.doesNotMatch(blogIndex, new RegExp(`/blog/${slug}/`), slug);
+  }
+  assert.match(sitemap, /<loc>https:\/\/openma\.ai\/claude-tag-alternative\/<\/loc>/);
+  assert.match(sitemap, /<loc>https:\/\/openma\.ai\/self-hosted-claude-tag\/<\/loc>/);
 });
 
 test("generated pages do not expose internal SEO language to visitors", async () => {

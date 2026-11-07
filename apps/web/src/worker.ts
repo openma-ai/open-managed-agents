@@ -52,10 +52,15 @@ const CONSOLE_PATH_PREFIXES = [
 
 const LEGACY_MARKETING_REDIRECTS: Record<string, string> = {
   "/slack-ai-agent/": "/self-hosted-claude-tag/",
+  // The two Claude Tag blog posts competed with the landing pages for the
+  // same queries; they were absorbed into them. Older slugs point straight
+  // at the landing page (no redirect chain).
+  "/blog/claude-tag-open-source-alternative/": "/claude-tag-alternative/",
   "/blog/claude-tag-alternative-open-source-slack-ai-teammate/":
-    "/blog/claude-tag-open-source-alternative/",
+    "/claude-tag-alternative/",
+  "/blog/self-hosted-claude-tag-open-source/": "/self-hosted-claude-tag/",
   "/blog/self-host-claude-tag-style-slack-ai-agent/":
-    "/blog/self-hosted-claude-tag-open-source/",
+    "/self-hosted-claude-tag/",
   // The 2026 OSS-alternatives post was absorbed into the CMA alternative
   // pillar; both historical slugs point straight at it (no redirect chain).
   "/blog/open-source-alternatives-to-anthropic-managed-agents-2026/":
