@@ -77,6 +77,8 @@ export {
   type EvalCaseDeleted,
   type EvalCaseDetail,
   type EvalCaseRetrieveParams,
+  type EvalGitRef,
+  type EvalGitRefList,
   type EvalRun,
   type EvalRunDeleted,
   type EvalRunListParams,

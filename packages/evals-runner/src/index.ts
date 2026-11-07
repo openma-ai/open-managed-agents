@@ -9,7 +9,7 @@ export {
   type EvalSessionSettlement,
   type ManagedEvalRuntimeDependencies,
 } from "./runtime";
-export { parseGitUrl, resolveGitRef, parseRefAdvertisement, gitEntries, type GitRepo } from "./git-source";
+export { parseGitUrl, resolveGitRef, listGitRefs, parseRefAdvertisement, gitEntries, type GitRepo, type GitRefList } from "./git-source";
 export {
   EvalBenchmarkStore,
   EvalBenchmarkError,

@@ -352,6 +352,17 @@ describe("evals commands", () => {
     expect(text).toContain("Benchmark deleted: evb_1");
   });
 
+  it("benchmarks refs lists branches and tags of a git url", async () => {
+    const { io, out, calls } = mockIO(() => ({ url: "https://github.com/o/r", default_branch: "main", branches: [{ name: "main", commit: "a".repeat(40) }, { name: "dev", commit: "b".repeat(40) }], tags: [{ name: "v1", commit: "c".repeat(40) }], truncated: false }));
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "refs", "https://github.com/o/r"])).toBe(0);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /v1/oma/evals/git-refs?url=https%3A%2F%2Fgithub.com%2Fo%2Fr"]);
+    const text = out.join("\n");
+    expect(text).toMatch(/KIND\s+NAME\s+COMMIT/);
+    expect(text).toMatch(/branch\s+main \(default\)\s+aaaaaaaaaaaa/);
+    expect(text).toMatch(/tag\s+v1\s+cccccccccccc/);
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "refs"]).catch(() => 2)).not.toBe(0);
+  });
+
   it("cases show, add, replace and delete send messages case bodies", async () => {
     const dir = tmp();
     const caseFile = join(dir, "case.json");

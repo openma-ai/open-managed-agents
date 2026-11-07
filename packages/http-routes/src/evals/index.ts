@@ -21,6 +21,8 @@ import {
   collectHarborBundles,
   EvalBenchmarkError,
   listBuiltinBenchmarks,
+  listGitRefs,
+  parseGitUrl,
   messagesCaseSpec,
   parseMessagesCase,
   recordToApi,
@@ -129,6 +131,13 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
   });
 
   app.get("/benchmarks/builtin", (c) => c.json({ data: listBuiltinBenchmarks() }));
+
+  // Branches and tags of a git repository, to pick the ref of a git source.
+  app.get("/git-refs", async (c) => guard(c, async () => {
+    const url = c.req.query("url");
+    if (url === undefined || url.trim() === "") throw new EvalBenchmarkError("url is required");
+    return c.json(await listGitRefs(fetchImpl, parseGitUrl(url.trim())));
+  }));
 
   app.post("/benchmarks", async (c) => {
     const t = c.var.tenant_id;

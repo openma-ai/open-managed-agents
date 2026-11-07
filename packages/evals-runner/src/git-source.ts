@@ -46,7 +46,14 @@ export function parseGitUrl(raw: string): GitRepo {
 
 /** name -> sha from a git smart-HTTP ref advertisement (pkt-lines). */
 export function parseRefAdvertisement(bytes: Uint8Array): Map<string, string> {
+  return readRefAdvertisement(bytes).refs;
+}
+
+/** Refs plus the symbolic refs (symref=HEAD:refs/heads/main) the server
+ *  announces in the capabilities after the first ref. */
+function readRefAdvertisement(bytes: Uint8Array): { refs: Map<string, string>; symrefs: Map<string, string> } {
   const refs = new Map<string, string>();
+  const symrefs = new Map<string, string>();
   const decoder = new TextDecoder();
   let offset = 0;
   while (offset + 4 <= bytes.length) {
@@ -57,20 +64,69 @@ export function parseRefAdvertisement(bytes: Uint8Array): Map<string, string> {
     const line = decoder.decode(bytes.subarray(offset + 4, offset + length)).replace(/\n$/u, "");
     offset += length;
     if (line.startsWith("#")) continue;
-    const [sha, name] = line.split("\0")[0]!.split(" ");
+    const [head, capabilities] = line.split("\0");
+    const [sha, name] = head!.split(" ");
     if (sha !== undefined && name !== undefined && SHA.test(sha) && !/^0{40}$/u.test(sha)) refs.set(name, sha);
+    for (const capability of capabilities?.split(" ") ?? []) {
+      const match = /^symref=([^:]+):(.+)$/u.exec(capability);
+      if (match) symrefs.set(match[1]!, match[2]!);
+    }
   }
-  return refs;
+  return { refs, symrefs };
+}
+
+async function fetchAdvertisement(fetchImpl: typeof fetch, repo: GitRepo) {
+  const response = await fetchImpl(`${repo.url}.git/info/refs?service=git-upload-pack`, { headers: { "user-agent": USER_AGENT } });
+  if (!response.ok) {
+    // GitHub answers 401 for both missing and private repositories.
+    const missing = response.status === 401 || response.status === 404;
+    throw new EvalBenchmarkError(`Reading refs of ${repo.url} failed: HTTP ${response.status}${missing ? " (missing or private)" : ""}`, missing ? 404 : 502);
+  }
+  return readRefAdvertisement(new Uint8Array(await response.arrayBuffer()));
+}
+
+/** Refs listed per kind before the list is cut (truncated: true). */
+const MAX_LISTED_REFS = 1000;
+
+export interface GitRefList {
+  url: string;
+  /** The branch HEAD points to; null when the server does not say. */
+  default_branch: string | null;
+  /** Default branch first, then by name. */
+  branches: Array<{ name: string; commit: string }>;
+  /** Newest-looking first (natural order, descending); commit is the peeled tag target. */
+  tags: Array<{ name: string; commit: string }>;
+  /** More than MAX_LISTED_REFS branches or tags; pass the ref by name. */
+  truncated: boolean;
+}
+
+/** Branches and tags of a repository, for picking a ref. */
+export async function listGitRefs(fetchImpl: typeof fetch, repo: GitRepo): Promise<GitRefList> {
+  const { refs, symrefs } = await fetchAdvertisement(fetchImpl, repo);
+  const head = symrefs.get("HEAD");
+  const defaultBranch = head?.startsWith("refs/heads/") ? head.slice("refs/heads/".length) : null;
+  const branches: GitRefList["branches"] = [];
+  const tags: GitRefList["tags"] = [];
+  for (const [name, sha] of refs) {
+    if (name.startsWith("refs/heads/")) branches.push({ name: name.slice("refs/heads/".length), commit: sha });
+    else if (name.startsWith("refs/tags/") && !name.endsWith("^{}")) tags.push({ name: name.slice("refs/tags/".length), commit: refs.get(`${name}^{}`) ?? sha });
+  }
+  const natural = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
+  branches.sort((a, b) => (a.name === defaultBranch ? -1 : b.name === defaultBranch ? 1 : natural(a.name, b.name)));
+  tags.sort((a, b) => natural(b.name, a.name));
+  return {
+    url: repo.url,
+    default_branch: defaultBranch,
+    branches: branches.slice(0, MAX_LISTED_REFS),
+    tags: tags.slice(0, MAX_LISTED_REFS),
+    truncated: branches.length > MAX_LISTED_REFS || tags.length > MAX_LISTED_REFS,
+  };
 }
 
 /** A full commit sha for `ref` (branch, tag, refs/..., HEAD when omitted, or a sha). */
 export async function resolveGitRef(fetchImpl: typeof fetch, repo: GitRepo, ref?: string): Promise<string> {
   if (ref !== undefined && SHA.test(ref)) return ref;
-  const response = await fetchImpl(`${repo.url}.git/info/refs?service=git-upload-pack`, { headers: { "user-agent": USER_AGENT } });
-  if (!response.ok) {
-    throw new EvalBenchmarkError(`Reading refs of ${repo.url} failed: HTTP ${response.status}${response.status === 401 || response.status === 404 ? " (missing or private)" : ""}`, response.status === 404 ? 404 : 502);
-  }
-  const refs = parseRefAdvertisement(new Uint8Array(await response.arrayBuffer()));
+  const { refs } = await fetchAdvertisement(fetchImpl, repo);
   const wanted = ref ?? "HEAD";
   const candidates = wanted === "HEAD" ? ["HEAD"] : wanted.startsWith("refs/") ? [wanted] : [`refs/heads/${wanted}`, `refs/tags/${wanted}`];
   for (const candidate of candidates) {

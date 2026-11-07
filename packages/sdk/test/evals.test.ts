@@ -74,6 +74,15 @@ describe("evals benchmarks", () => {
     }
   });
 
+  it("lists a git repository's refs with the url as a query parameter", async () => {
+    const { client, calls } = mockClient(() => ({ url: "https://github.com/o/r", default_branch: "main", branches: [{ name: "main", commit: "a".repeat(40) }, { name: "dev", commit: "b".repeat(40) }], tags: [{ name: "v1", commit: "c".repeat(40) }], truncated: false }));
+    const refs = await client.oma.evals.gitRefs({ url: "https://github.com/o/r" });
+    expect(refs.default_branch).toBe("main");
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /v1/oma/evals/git-refs"]);
+    expect(calls[0].search).toContain("url=https%3A%2F%2Fgithub.com%2Fo%2Fr");
+    expect(calls[0].headers.get("anthropic-beta")).toContain("managed-agents-2026-04-01");
+  });
+
   it("uploads an archive through the Files API and imports it by file id", async () => {
     const { client, calls } = mockClient((c) => {
       if (c.path === "/v1/files") return filesResponse;

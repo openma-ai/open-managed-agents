@@ -10,6 +10,7 @@ import { useI18n } from "../../i18n";
 import { useApi } from "../../lib/api";
 import { useApiQuery, useQueryClient } from "../../lib/useApiQuery";
 import { useManagedApi } from "../../lib/useManagedApi";
+import { GitRefPicker } from "./GitRefPicker";
 import {
   BENCHMARKS_BASE,
   benchmarkPath,
@@ -164,7 +165,7 @@ export function HarborSourceDialog({ open, onClose }: HarborSourceDialogProps) {
               />
             </Field>
             <Field label={m.gitRef} hint={m.gitRefHint}>
-              <Input id="eval-harbor-git-ref" value={gitRef} onChange={(e) => setGitRef(e.target.value)} placeholder="HEAD" autoComplete="off" />
+              <GitRefPicker id="eval-harbor-git-ref" url={gitUrl} value={gitRef} onChange={setGitRef} />
             </Field>
             <Field label={m.gitPath} hint={m.gitPathHint}>
               <Input id="eval-harbor-git-path" value={gitPath} onChange={(e) => setGitPath(e.target.value)} placeholder="tasks/" autoComplete="off" />

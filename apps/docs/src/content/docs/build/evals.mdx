@@ -33,7 +33,9 @@ be deleted while one of its runs is pending or running (`409`).
 
 ```bash
 # A git repository: github.com or a Hugging Face dataset. --ref is a branch,
-# tag or commit (default HEAD); --path imports one folder of tasks (or one task).
+# tag or commit (default: the default branch); --path imports one folder of
+# tasks (or one task). `oma evals benchmarks refs <url>` lists the branches and tags.
+oma evals benchmarks refs https://github.com/laude-institute/terminal-bench-2
 oma evals benchmarks import --git https://github.com/laude-institute/terminal-bench-2 --ref main
 oma evals benchmarks import --git https://huggingface.co/datasets/harborframework/harbor-datasets \
   --path datasets/bird-bench --case california_schools__13
@@ -47,6 +49,9 @@ oma evals benchmarks import --builtin terminal-bench-sample@2.0
 # Your own tasks: a directory or a .tar / .tar.gz containing task directories
 oma evals benchmarks upload ./my-tasks --name my-tasks
 ```
+
+In the console, the import and sync dialogs list the repository's branches and
+tags (default branch preselected) and also accept any typed ref or commit sha.
 
 An import resolves the ref to a commit, reads the task directories at that
 commit and stores them as **revision 1**. `oma evals benchmarks show <id>`

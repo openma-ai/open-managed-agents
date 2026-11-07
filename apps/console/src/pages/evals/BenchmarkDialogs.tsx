@@ -9,6 +9,7 @@ import { useI18n } from "../../i18n";
 import { useApi } from "../../lib/api";
 import { useQueryClient } from "../../lib/useApiQuery";
 import { useManagedApi } from "../../lib/useManagedApi";
+import { GitRefPicker } from "./GitRefPicker";
 import {
   BENCHMARKS_BASE,
   benchmarkApiPath,
@@ -239,14 +240,8 @@ export function SyncBenchmarkDialog({
           </Field>
         )}
         {isGit && source?.type === "git" && (
-          <Field label={m.gitRef} hint={m.syncRefHint.replace("{ref}", source.ref ?? "HEAD")}>
-            <Input
-              id="eval-sync-ref"
-              value={ref}
-              onChange={(e) => setRef(e.target.value)}
-              placeholder={source.ref ?? "HEAD"}
-              autoComplete="off"
-            />
+          <Field label={m.gitRef} hint={m.syncRefHint.replace("{ref}", source.ref ?? m.gitRefDefault)}>
+            <GitRefPicker id="eval-sync-ref" url={source.url} value={ref} onChange={setRef} fallbackRef={source.ref} />
           </Field>
         )}
         <ErrorBox error={error} />

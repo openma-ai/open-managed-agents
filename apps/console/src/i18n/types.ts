@@ -480,6 +480,17 @@ export interface Messages {
     gitUrlHint: string;
     gitRef: string;
     gitRefHint: string;
+    gitRefDefault: string;
+    gitRefDefaultBranch: string;
+    gitRefDefaultBadge: string;
+    gitRefSearch: string;
+    gitRefUse: string;
+    gitRefBranches: string;
+    gitRefTags: string;
+    gitRefNeedUrl: string;
+    gitRefLoading: string;
+    gitRefNone: string;
+    gitRefTruncated: string;
     gitPath: string;
     gitPathHint: string;
     ref: string;

@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import type {
   BuiltinEvalBenchmark,
+  EvalGitRefList,
   CreateEvalBenchmarkRequest,
   CreateEvalRunRequest,
   CreateEvalRunResponse,
@@ -51,6 +52,9 @@ export const EVALS_COMMANDS: EvalsCommandSpec[] = [
     http: "GET    /v1/oma/evals/benchmarks                    List benchmarks (no cases)" },
   { match: ["evals", "benchmarks", "builtin"], usage: "oma evals benchmarks builtin", desc: "List Harbor datasets shipped with OMA",
     http: "GET    /v1/oma/evals/benchmarks/builtin            List builtin benchmarks" },
+  { match: ["evals", "benchmarks", "refs"], needsArg: true, usage: "oma evals benchmarks refs <git-url>",
+    desc: "List the branches and tags of a github.com / huggingface.co repository (values for --ref)",
+    http: "GET    /v1/oma/evals/git-refs?url=                 List branches and tags of a git repository" },
   { match: ["evals", "benchmarks", "show"], needsArg: true, usage: "oma evals benchmarks show <id> [--revision N]",
     desc: "Show a benchmark, its source, revisions and cases (of the latest revision, or --revision N)",
     http: "GET    /v1/oma/evals/benchmarks/:id?revision=N     Get benchmark (with cases and revisions)" },
@@ -662,6 +666,18 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
       if (io.json) { printJson(io, res); return 0; }
       if (!res.data.length) { io.print("No builtin eval benchmarks on this server."); return 0; }
       io.print(table([["NAME", "CASES", "DESCRIPTION"], ...res.data.map((b) => [b.name, String(b.case_count), b.description])]));
+      return 0;
+    }
+    case "benchmarks refs": {
+      const f = parseFlags(tail, {}, 1);
+      const [url] = requirePositionals(f, ["git-url"], "oma evals benchmarks refs <git-url>");
+      const res = await io.request<EvalGitRefList>(`/v1/oma/evals/git-refs?url=${encodeURIComponent(url)}`);
+      if (io.json) { printJson(io, res); return 0; }
+      const short = (sha: string) => sha.slice(0, 12);
+      io.print(table([["KIND", "NAME", "COMMIT"],
+        ...res.branches.map((b) => ["branch", b.name === res.default_branch ? `${b.name} (default)` : b.name, short(b.commit)]),
+        ...res.tags.map((tag) => ["tag", tag.name, short(tag.commit)])]));
+      if (res.truncated) io.print("More than 1000 branches or tags; the list is cut. Pass any ref with --ref.");
       return 0;
     }
     case "benchmarks show": {

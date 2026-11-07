@@ -172,6 +172,14 @@ describe("benchmarks and cases", () => {
     expect(body.data.map((d: any) => d.name)).toContain("terminal-bench-sample@2.0");
   });
 
+  it("mounts git-refs and rejects a missing or unsupported url", async () => {
+    const missing = await api("/v1/oma/evals/git-refs", { headers: HEADERS });
+    expect(missing.status).toBe(400);
+    const gitlab = await api(`/v1/oma/evals/git-refs?url=${encodeURIComponent("https://gitlab.com/o/r")}`, { headers: HEADERS });
+    expect(gitlab.status).toBe(400);
+    expect(JSON.stringify(await gitlab.json())).toMatch(/github\.com/);
+  });
+
   it("manages a messages benchmark and its cases", async () => {
     const created = await post("/v1/oma/evals/benchmarks", { kind: "messages", name: "cf-smoke", cases: [CASE] });
     expect(created.status).toBe(201);

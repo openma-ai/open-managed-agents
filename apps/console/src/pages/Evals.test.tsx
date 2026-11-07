@@ -315,8 +315,19 @@ describe("EvalBenchmarksList", () => {
 
   it("imports a harbor benchmark from a git repository", async () => {
     let body: unknown;
+    const asked: string[] = [];
     server.use(
       http.get("*/v1/oma/evals/benchmarks/builtin", () => HttpResponse.json({ data: [] })),
+      http.get("*/v1/oma/evals/git-refs", ({ request }) => {
+        asked.push(new URL(request.url).searchParams.get("url") ?? "");
+        return HttpResponse.json({
+          url: "https://huggingface.co/datasets/acme/tb",
+          default_branch: "main",
+          branches: [{ name: "main", commit: "a".repeat(40) }, { name: "dev", commit: "b".repeat(40) }],
+          tags: [{ name: "v1.0", commit: "c".repeat(40) }],
+          truncated: false,
+        });
+      }),
       http.post("*/v1/oma/evals/benchmarks", async ({ request }) => {
         body = await request.json();
         return HttpResponse.json({ ...harborBench, id: "evb_git" }, { status: 201 });
@@ -335,8 +346,15 @@ describe("EvalBenchmarksList", () => {
     await user.click(await screen.findByRole("combobox", { name: "Source" }));
     await user.click(await screen.findByRole("option", { name: "Git repository" }));
     await user.type(await screen.findByLabelText("Repository URL"), "https://huggingface.co/datasets/acme/tb");
-    expect(screen.getByLabelText("Ref (optional)")).toHaveAttribute("placeholder", "HEAD");
-    await user.type(screen.getByLabelText("Ref (optional)"), "v1.0");
+    const ref = screen.getByRole("combobox", { name: "Ref (optional)" });
+    expect(await within(ref).findByText("main (default branch)")).toBeInTheDocument();
+    expect(asked).toEqual(["https://huggingface.co/datasets/acme/tb"]);
+    await user.click(ref);
+    expect(await screen.findByText("Branches")).toBeInTheDocument();
+    expect(screen.getByText("Tags")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /main/ })).toHaveAttribute("data-checked", "true");
+    await user.click(screen.getByRole("option", { name: /v1\.0/ }));
+    expect(ref).toHaveTextContent("v1.0");
     await user.type(screen.getByLabelText("Path (optional)"), "tasks/easy");
     await user.click(screen.getByRole("button", { name: "Import" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/evals/benchmarks/evb_git"));
@@ -408,22 +426,36 @@ describe("EvalBenchmarkDetail (harbor)", () => {
     [true, 3, "Created revision 3"],
   ])("syncs from the source (changed=%s)", async (changed, revision, notice) => {
     let body: unknown;
+    const sha = "d".repeat(40);
     server.use(
       http.post("*/v1/oma/evals/benchmarks/evb_1/sync", async ({ request }) => {
         body = await request.json();
         return HttpResponse.json({ changed, benchmark: { ...harborBench, revision } });
       }),
+      http.get("*/v1/oma/evals/git-refs", () => HttpResponse.json({
+        url: "https://github.com/acme/tasks",
+        default_branch: "main",
+        branches: [{ name: "main", commit: "a".repeat(40) }],
+        tags: [],
+        truncated: false,
+      })),
     );
     const user = userEvent.setup();
     renderHarbor();
 
     await user.click(await screen.findByRole("button", { name: "Sync from source" }));
-    const ref = await screen.findByLabelText("Ref (optional)");
-    expect(ref).toHaveAttribute("placeholder", "main");
-    if (changed) await user.type(ref, "v2");
+    const ref = await screen.findByRole("combobox", { name: "Ref (optional)" });
+    expect(ref).toHaveTextContent("main");
+    if (changed) {
+      // Any ref or commit sha can be typed, not only the listed ones.
+      await user.click(ref);
+      await user.type(await screen.findByPlaceholderText("Search, or paste a commit sha"), sha);
+      await user.click(await screen.findByRole("option", { name: `Use "${sha}"` }));
+      expect(ref).toHaveTextContent(sha);
+    }
     await user.click(screen.getByRole("button", { name: "Sync" }));
     expect(await screen.findByTestId("eval-sync-result")).toHaveTextContent(notice);
-    expect(body).toEqual(changed ? { ref: "v2" } : {});
+    expect(body).toEqual(changed ? { ref: sha } : {});
   });
 
   it("syncs an upload benchmark with a new archive", async () => {

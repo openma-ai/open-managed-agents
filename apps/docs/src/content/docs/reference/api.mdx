@@ -325,6 +325,9 @@ List benchmarks (without their cases).
 ### `GET /v1/oma/evals/benchmarks/builtin`
 List the Harbor benchmarks shipped with OMA.
 
+### `GET /v1/oma/evals/git-refs?url=`
+List the branches and tags of a github.com or huggingface.co repository, to pick a git source's `ref`: `{ url, default_branch, branches, tags, truncated }`, each ref `{ name, commit }` (tags peeled to their commit), default branch first and tags newest first, at most 1000 of each. `400` for a missing or unsupported URL, `404` when the repository does not exist or is private, `502` when the host fails.
+
 ### `POST /v1/oma/evals/benchmarks`
 Create a benchmark (`201`): import a Harbor benchmark (revision 1) from a git repository (`{ type: "git", url, ref?, path? }`, github.com or huggingface.co), a Harbor registry, a built-in set or an uploaded archive; or create a `messages` benchmark (optionally with initial cases).
 

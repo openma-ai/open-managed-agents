@@ -232,3 +232,35 @@ describe("harbor benchmarks and cases", () => {
     expect((await call("POST", `/benchmarks/${messages.id}/sync`, {})).status).toBe(400);
   });
 });
+
+describe("git refs", () => {
+  it("lists a repository's branches and tags, and maps errors to statuses", async () => {
+    const pkt = (line: string) => (line.length + 4).toString(16).padStart(4, "0") + line;
+    const A = "a".repeat(40);
+    const urls: string[] = [];
+    const routes = buildEvalRoutes({
+      evals: createInMemoryEvalRunService().service,
+      runtimeFor: () => runtime,
+      benchmarksFor: (t) => new EvalBenchmarkStore(new InMemoryKvStore(), t),
+      readUpload: async () => null,
+      fetch: (async (url: string) => {
+        urls.push(url);
+        if (url.includes("/missing")) return new Response("", { status: 404 });
+        return new Response(pkt("# service=git-upload-pack\n") + "0000" + pkt(A + " HEAD\0symref=HEAD:refs/heads/main\n") + pkt(A + " refs/heads/main\n") + pkt(A + " refs/tags/v1\n") + "0000");
+      }) as never,
+    });
+    const refsApp = new Hono();
+    refsApp.use("*", async (c, next) => { c.set("tenant_id" as never, "t" as never); await next(); });
+    refsApp.route("/", routes as never);
+    const get = async (path: string) => { const res = await refsApp.request(path); return { status: res.status, body: await res.json() as any }; };
+
+    expect(await get(`/git-refs?url=${encodeURIComponent("https://github.com/o/r.git")}`)).toEqual({
+      status: 200,
+      body: { url: "https://github.com/o/r", default_branch: "main", branches: [{ name: "main", commit: A }], tags: [{ name: "v1", commit: A }], truncated: false },
+    });
+    expect(urls).toEqual(["https://github.com/o/r.git/info/refs?service=git-upload-pack"]);
+    expect((await get("/git-refs")).status).toBe(400);
+    expect((await get(`/git-refs?url=${encodeURIComponent("https://gitlab.com/o/r")}`)).status).toBe(400);
+    expect((await get(`/git-refs?url=${encodeURIComponent("https://github.com/o/missing")}`)).status).toBe(404);
+  });
+});

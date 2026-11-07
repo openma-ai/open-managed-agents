@@ -32,6 +32,7 @@
 // Endpoints (all JSON, header anthropic-beta: managed-agents-2026-04-01):
 //   GET    /v1/oma/evals/benchmarks                  -> { data: EvalBenchmark[] }   (no cases, no revisions)
 //   GET    /v1/oma/evals/benchmarks/builtin          -> { data: BuiltinEvalBenchmark[] }
+//   GET    /v1/oma/evals/git-refs?url=               -> EvalGitRefList   (branches and tags of a github.com / huggingface.co repository)
 //   POST   /v1/oma/evals/benchmarks                  CreateEvalBenchmarkRequest -> 201 EvalBenchmark (with cases)
 //   GET    /v1/oma/evals/benchmarks/:id?revision=N   -> EvalBenchmark (with cases of revision N, default latest, and revisions)
 //   PATCH  /v1/oma/evals/benchmarks/:id              UpdateEvalBenchmarkRequest -> EvalBenchmark (with cases)
@@ -214,6 +215,26 @@ export interface BuiltinEvalBenchmark {
   name: string;
   description: string;
   case_count: number;
+}
+
+/** A branch or tag and the commit it points to (tags: the peeled target). */
+export interface EvalGitRef {
+  name: string;
+  commit: string;
+}
+
+/** GET /v1/oma/evals/git-refs?url= : refs to pick a git source's ref from. */
+export interface EvalGitRefList {
+  /** The normalized repository URL. */
+  url: string;
+  /** The branch HEAD points to (what an import without ref reads); null when unknown. */
+  default_branch: string | null;
+  /** Default branch first, then by name. */
+  branches: EvalGitRef[];
+  /** Newest-looking first (natural order, descending). */
+  tags: EvalGitRef[];
+  /** More than 1000 branches or tags: the lists are cut; a ref can still be passed by name. */
+  truncated: boolean;
 }
 
 // ── Runs ──────────────────────────────────────────────────────────────────
