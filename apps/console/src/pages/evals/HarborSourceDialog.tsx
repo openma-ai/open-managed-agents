@@ -12,7 +12,6 @@ import { useApiQuery, useQueryClient } from "../../lib/useApiQuery";
 import { useManagedApi } from "../../lib/useManagedApi";
 import {
   BENCHMARKS_BASE,
-  benchmarkApiPath,
   benchmarkPath,
   describeError,
   invalidateBenchmarks,
@@ -21,7 +20,7 @@ import {
   type HarborCaseSource,
 } from "./shared";
 
-type SourceType = "builtin" | "registry" | "upload";
+type SourceType = "git" | "builtin" | "registry" | "upload";
 
 function splitNames(text: string): string[] {
   return text.split(",").map((s) => s.trim()).filter(Boolean);
@@ -30,24 +29,23 @@ function splitNames(text: string): string[] {
 interface HarborSourceDialogProps {
   open: boolean;
   onClose: () => void;
-  /** Set to add cases to this harbor benchmark; omitted to import a new
-   *  benchmark (POST /benchmarks). */
-  benchmarkId?: string;
 }
 
-/** Pick a Harbor source (builtin / registry / uploaded archive) and either
- *  import it as a new benchmark or add its tasks as cases. */
-export function HarborSourceDialog({ open, onClose, benchmarkId }: HarborSourceDialogProps) {
+/** Pick a Harbor source (git / builtin / registry / uploaded archive) and
+ *  import it as a new read-only benchmark (POST /benchmarks, revision 1). */
+export function HarborSourceDialog({ open, onClose }: HarborSourceDialogProps) {
   const { t } = useI18n();
   const m = t.evals;
   const { api } = useApi();
   const managedApi = useManagedApi();
   const nav = useNavigate();
   const queryClient = useQueryClient();
-  const adding = benchmarkId !== undefined;
 
-  const [sourceType, setSourceType] = useState<SourceType>(adding ? "upload" : "builtin");
+  const [sourceType, setSourceType] = useState<SourceType>("builtin");
   const [name, setName] = useState("");
+  const [gitUrl, setGitUrl] = useState("");
+  const [gitRef, setGitRef] = useState("");
+  const [gitPath, setGitPath] = useState("");
   const [builtin, setBuiltin] = useState("");
   const [registryName, setRegistryName] = useState("");
   const [version, setVersion] = useState("");
@@ -69,7 +67,9 @@ export function HarborSourceDialog({ open, onClose, benchmarkId }: HarborSourceD
   const busy = phase !== "idle";
   const canSubmit =
     !busy &&
-    (sourceType === "builtin"
+    (sourceType === "git"
+      ? gitUrl.trim() !== ""
+      : sourceType === "builtin"
       ? !!builtin
       : sourceType === "registry"
         ? registryName.trim() !== ""
@@ -84,6 +84,13 @@ export function HarborSourceDialog({ open, onClose, benchmarkId }: HarborSourceD
         setPhase("uploading");
         const uploaded = await managedApi.files.upload({ file: file! });
         source = { type: "upload", file_id: uploaded.id };
+      } else if (sourceType === "git") {
+        source = {
+          type: "git",
+          url: gitUrl.trim(),
+          ...(gitRef.trim() ? { ref: gitRef.trim() } : {}),
+          ...(gitPath.trim() ? { path: gitPath.trim() } : {}),
+        };
       } else if (sourceType === "registry") {
         source = {
           type: "registry",
@@ -96,19 +103,19 @@ export function HarborSourceDialog({ open, onClose, benchmarkId }: HarborSourceD
       }
       const names = sourceType === "upload" ? [] : splitNames(caseNames);
       const body = {
-        ...(!adding ? { kind: "harbor" as const } : {}),
-        ...(!adding && name.trim() ? { name: name.trim() } : {}),
+        kind: "harbor" as const,
+        ...(name.trim() ? { name: name.trim() } : {}),
         source,
         ...(names.length > 0 ? { case_names: names } : {}),
       };
       setPhase("importing");
-      const res = await api<EvalBenchmark>(adding ? `${benchmarkApiPath(benchmarkId)}/cases` : BENCHMARKS_BASE, {
+      const res = await api<EvalBenchmark>(BENCHMARKS_BASE, {
         method: "POST",
         body: JSON.stringify(body),
       });
       invalidateBenchmarks(queryClient);
       onClose();
-      if (!adding) nav(benchmarkPath(res.id));
+      nav(benchmarkPath(res.id));
     } catch (e) {
       setError(describeError(t, e));
     } finally {
@@ -120,17 +127,13 @@ export function HarborSourceDialog({ open, onClose, benchmarkId }: HarborSourceD
     <Modal
       open={open}
       onClose={onClose}
-      title={adding ? m.addCase : m.importBenchmark}
-      subtitle={adding ? m.addHarborCasesSubtitle : m.importBenchmarkSubtitle}
+      title={m.importBenchmark}
+      subtitle={m.importBenchmarkSubtitle}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
           <Button onClick={submit} disabled={!canSubmit}>
-            {phase === "uploading"
-              ? m.uploading
-              : phase === "importing"
-                ? adding ? m.adding : m.importing
-                : adding ? m.add : m.import}
+            {phase === "uploading" ? m.uploading : phase === "importing" ? m.importing : m.import}
           </Button>
         </>
       }
@@ -142,11 +145,32 @@ export function HarborSourceDialog({ open, onClose, benchmarkId }: HarborSourceD
             value={sourceType}
             onValueChange={(v) => setSourceType(v as SourceType)}
           >
-            <SelectOption value="upload">{m.sourceUpload}</SelectOption>
             <SelectOption value="builtin">{m.sourceBuiltin}</SelectOption>
+            <SelectOption value="git">{m.sourceGit}</SelectOption>
             <SelectOption value="registry">{m.sourceRegistry}</SelectOption>
+            <SelectOption value="upload">{m.sourceUpload}</SelectOption>
           </Select>
         </Field>
+
+        {sourceType === "git" && (
+          <>
+            <Field label={m.gitUrl} hint={m.gitUrlHint}>
+              <Input
+                id="eval-harbor-git-url"
+                value={gitUrl}
+                onChange={(e) => setGitUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo"
+                autoComplete="off"
+              />
+            </Field>
+            <Field label={m.gitRef} hint={m.gitRefHint}>
+              <Input id="eval-harbor-git-ref" value={gitRef} onChange={(e) => setGitRef(e.target.value)} placeholder="HEAD" autoComplete="off" />
+            </Field>
+            <Field label={m.gitPath} hint={m.gitPathHint}>
+              <Input id="eval-harbor-git-path" value={gitPath} onChange={(e) => setGitPath(e.target.value)} placeholder="tasks/" autoComplete="off" />
+            </Field>
+          </>
+        )}
 
         {sourceType === "builtin" && (
           <Field
@@ -212,11 +236,9 @@ export function HarborSourceDialog({ open, onClose, benchmarkId }: HarborSourceD
           </Field>
         )}
 
-        {!adding && (
-          <Field label={m.benchmarkNameOptional} hint={m.benchmarkNameHint}>
-            <Input id="eval-harbor-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
-          </Field>
-        )}
+        <Field label={m.benchmarkNameOptional} hint={m.benchmarkNameHint}>
+          <Input id="eval-harbor-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
+        </Field>
 
         {error && (
           <div role="alert" className="rounded-md bg-danger-subtle/40 p-3 text-sm text-danger whitespace-pre-wrap">

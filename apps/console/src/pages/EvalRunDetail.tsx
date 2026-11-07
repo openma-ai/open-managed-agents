@@ -167,6 +167,15 @@ export function EvalRunDetail() {
                   >
                     {benchmark?.name ?? shortenId(run.benchmark_id)}
                   </Link>
+                  {run.benchmark_revision != null && (
+                    <Link
+                      to={`/evals/benchmarks/${run.benchmark_id}?revision=${run.benchmark_revision}`}
+                      className="text-fg-muted hover:text-brand"
+                      data-testid="eval-run-benchmark-revision"
+                    >
+                      {m.revisionN.replace("{n}", String(run.benchmark_revision))}
+                    </Link>
+                  )}
                 </span>
               </>
             )}

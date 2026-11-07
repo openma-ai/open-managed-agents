@@ -391,7 +391,6 @@ export interface Messages {
     importBenchmarkSubtitle: string;
     noBenchmarksYet: string;
     noBenchmarksHint: string;
-    kindHarborHint: string;
     kindMessagesHint: string;
     create: string;
     creating: string;
@@ -419,7 +418,6 @@ export interface Messages {
     caseNamesHint: string;
     archive: string;
     archiveHint: string;
-    replaceArchiveHint: string;
     uploading: string;
     importing: string;
     import: string;
@@ -435,14 +433,10 @@ export interface Messages {
     invalidCaseName: string;
     noCasesYet: string;
     addCase: string;
-    addHarborCasesSubtitle: string;
     add: string;
     adding: string;
     editCase: string;
     viewCase: string;
-    replaceCase: string;
-    replaceCaseTitle: string;
-    replace: string;
     confirmDeleteCase: string;
     caseNotFound: string;
     messages: string;
@@ -481,6 +475,36 @@ export interface Messages {
     files: string;
     size: string;
     executable: string;
+    sourceGit: string;
+    gitUrl: string;
+    gitUrlHint: string;
+    gitRef: string;
+    gitRefHint: string;
+    gitPath: string;
+    gitPathHint: string;
+    ref: string;
+    path: string;
+    pinnedCommits: string;
+    revision: string;
+    revisionN: string;
+    revisions: string;
+    latestRevision: string;
+    viewingRevision: string;
+    digest: string;
+    created: string;
+    syncFromSource: string;
+    syncTitle: string;
+    syncHint: string;
+    syncUploadHint: string;
+    syncRefHint: string;
+    sync: string;
+    syncing: string;
+    syncNoChanges: string;
+    syncCreated: string;
+    viewingOldRevision: string;
+    viewLatest: string;
+    harborReadOnly: string;
+    noCasesInRevision: string;
   };
 
   // Memory stores

@@ -1,23 +1,25 @@
 import { useState } from "react";
-import { useNavigate, useParams } from "react-router";
-import { RefreshCwIcon, TrashIcon } from "lucide-react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
+import { TrashIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Page } from "../components/Page";
 import { useI18n } from "../i18n";
 import { useApi } from "../lib/api";
 import { useApiQuery, useQueryClient } from "../lib/useApiQuery";
-import { ReplaceHarborCaseDialog } from "./evals/BenchmarkDialogs";
 import { MessagesCaseForm } from "./evals/MessagesCaseForm";
 import { AliasCell, SupportedCell, secs } from "./EvalBenchmarkDetail";
 import {
   benchmarkApiPath,
   benchmarkPath,
+  benchmarkRevisionPath,
   caseApiPath,
   describeError,
   formatDateTime,
   invalidateBenchmarks,
   kindLabel,
+  parseRevision,
+  shortDigest,
   type EvalBenchmark,
   type EvalCaseDetail,
   type MessagesCaseInput,
@@ -29,8 +31,8 @@ function formatSize(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** One case of a benchmark: harbor shows its instruction and stored files;
- *  messages shows the editable form. */
+/** One case of a benchmark: harbor shows its instruction and stored files
+ *  (read-only, of ?revision=N or the latest); messages shows the editable form. */
 export function EvalCaseDetail() {
   const { benchmarkId = "", caseName = "" } = useParams<{ benchmarkId: string; caseName: string }>();
   const { t } = useI18n();
@@ -38,13 +40,14 @@ export function EvalCaseDetail() {
   const { api } = useApi();
   const nav = useNavigate();
   const queryClient = useQueryClient();
-  const [replacing, setReplacing] = useState(false);
+  const [searchParams] = useSearchParams();
+  const requestedRevision = parseRevision(searchParams.get("revision"));
   const [actionError, setActionError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   const { data: benchmark } = useApiQuery<EvalBenchmark>(benchmarkId ? benchmarkApiPath(benchmarkId) : null);
   const { data: c, isLoading, error } = useApiQuery<EvalCaseDetail>(
-    benchmarkId && caseName ? caseApiPath(benchmarkId, caseName) : null,
+    benchmarkId && caseName ? caseApiPath(benchmarkId, caseName, requestedRevision) : null,
   );
 
   const remove = async () => {
@@ -82,20 +85,37 @@ export function EvalCaseDetail() {
             <h1 className="font-mono text-base font-semibold truncate">{c.name}</h1>
             <span className="text-xs text-fg-muted">{kindLabel(t, c.kind)}</span>
             <div className="flex-1" />
-            {c.kind === "harbor" && (
-              <Button size="sm" variant="outline" onClick={() => setReplacing(true)}>
-                <RefreshCwIcon className="size-4" />
-                {m.replaceCase}
+            {c.kind === "messages" && (
+              <Button size="sm" variant="outline" onClick={remove}>
+                <TrashIcon className="size-4" />
+                {t.common.delete}
               </Button>
             )}
-            <Button size="sm" variant="outline" onClick={remove}>
-              <TrashIcon className="size-4" />
-              {t.common.delete}
-            </Button>
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-fg-muted">
-            <span>{m.benchmark} <span className="text-fg">{benchmark?.name ?? benchmarkId}</span></span>
+            <span>
+              {m.benchmark}{" "}
+              <Link
+                to={benchmarkRevisionPath(benchmarkId, requestedRevision)}
+                className="text-fg hover:text-brand"
+              >
+                {benchmark?.name ?? benchmarkId}
+              </Link>
+            </span>
             {sep}
+            {c.kind === "harbor" && (
+              <>
+                <span data-testid="eval-case-revision">
+                  {m.revision} <span className="text-fg tabular-nums">{c.revision}</span>
+                  {benchmark?.revision != null && c.revision !== benchmark.revision && (
+                    <span className="text-fg-subtle"> / {benchmark.revision}</span>
+                  )}
+                </span>
+                {sep}
+                <span>{m.digest} <span className="font-mono text-xs text-fg" title={c.digest}>{shortDigest(c.digest)}</span></span>
+                {sep}
+              </>
+            )}
             <span>{m.updated} <span className="text-fg">{formatDateTime(c.updated_at)}</span></span>
             {c.kind === "harbor" && (
               <>
@@ -122,6 +142,7 @@ export function EvalCaseDetail() {
 
         {c.kind === "harbor" ? (
           <div className="space-y-6">
+            <p className="text-xs text-fg-subtle">{m.harborReadOnly}</p>
             <section>
               <h2 className="text-sm font-medium text-fg mb-2">{m.instruction}</h2>
               <pre data-testid="eval-case-instruction" className="rounded-md bg-bg-surface p-3 text-xs whitespace-pre-wrap break-words max-h-[28rem] overflow-y-auto">
@@ -156,14 +177,6 @@ export function EvalCaseDetail() {
         )}
       </div>
 
-      {c.kind === "harbor" && (
-        <ReplaceHarborCaseDialog
-          open={replacing}
-          onClose={() => setReplacing(false)}
-          benchmarkId={benchmarkId}
-          caseName={c.name}
-        />
-      )}
     </Page>
   );
 }

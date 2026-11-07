@@ -110,7 +110,7 @@ export function EvalRunsList() {
         cell: ({ row }) => {
           const id = row.original.benchmark_id;
           if (!id) return <span className="text-fg-subtle">—</span>;
-          return (
+          const link = (
             <Link
               to={`/evals/benchmarks/${id}`}
               onClick={(e) => e.stopPropagation()}
@@ -120,6 +120,13 @@ export function EvalRunsList() {
               {benchmarkNames.get(id) ?? id}
             </Link>
           );
+          const rev = row.original.benchmark_revision;
+          return rev != null ? (
+            <span className="inline-flex items-center gap-1.5">
+              {link}
+              <span className="text-xs text-fg-muted">{m.revisionN.replace("{n}", String(rev))}</span>
+            </span>
+          ) : link;
         },
       },
       {

@@ -19,15 +19,36 @@ const harborBench: EvalBenchmark = {
   id: "evb_1",
   name: "hello-bench",
   kind: "harbor",
-  source: { type: "builtin", name: "hello-bench" },
+  source: { type: "git", url: "https://github.com/acme/tasks", ref: "main" },
+  revision: 2,
+  cases_revision: 2,
   case_count: 2,
   runnable_count: 1,
   created_at: "2026-11-01T10:00:00.000Z",
   updated_at: "2026-11-01T10:00:00.000Z",
+  revisions: [
+    {
+      revision: 2,
+      digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      source: { type: "git", url: "https://github.com/acme/tasks", ref: "main" },
+      pins: [{ url: "https://github.com/acme/tasks", ref: "main", commit: "2222222abcdef0123456789abcdef0123456789a" }],
+      case_count: 2,
+      created_at: "2026-11-02T10:00:00.000Z",
+    },
+    {
+      revision: 1,
+      digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      source: { type: "git", url: "https://github.com/acme/tasks", ref: "main" },
+      pins: [{ url: "https://github.com/acme/tasks", ref: "main", commit: "1111111abcdef0123456789abcdef0123456789a" }],
+      case_count: 1,
+      created_at: "2026-11-01T10:00:00.000Z",
+    },
+  ],
   cases: [
     {
       kind: "harbor",
       name: "hello-world",
+      digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       image: "ghcr.io/harbor/hello:1",
       image_alias: "harbor-hello",
       supported: true,
@@ -42,6 +63,7 @@ const harborBench: EvalBenchmark = {
     {
       kind: "harbor",
       name: "needs-gpu",
+      digest: "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
       image: "ghcr.io/harbor/gpu:1",
       image_alias: null,
       supported: false,
@@ -70,6 +92,7 @@ const messagesBench: EvalBenchmark = {
   name: "smoke",
   kind: "messages",
   source: null,
+  revision: null,
   case_count: 1,
   runnable_count: 1,
   created_at: "2026-11-01T10:00:00.000Z",
@@ -83,6 +106,7 @@ const harborRun: EvalRun = {
   agent_id: "agent_1",
   environment_id: null,
   benchmark_id: "evb_1",
+  benchmark_revision: 2,
   mode: "agent",
   status: "running",
   created_at: "2026-11-01T10:00:00.000Z",
@@ -195,6 +219,7 @@ describe("EvalRunsList", () => {
     expect(within(row).getByText("0.76")).toBeInTheDocument();
     expect(row).toHaveTextContent("3/4");
     expect(within(row).getByText("Coder")).toBeInTheDocument();
+    expect(within(row).getByText("revision 2")).toBeInTheDocument();
 
     const legacyRow = screen.getByText("evr_old").closest("tr")!;
     expect(within(legacyRow).getByText("messages")).toBeInTheDocument();
@@ -225,6 +250,7 @@ describe("EvalRunDetail (harbor)", () => {
 
     expect(await screen.findByText("0.76")).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "hello-bench" })).toHaveAttribute("href", "/evals/benchmarks/evb_1");
+    expect(screen.getByRole("link", { name: "revision 2" })).toHaveAttribute("href", "/evals/benchmarks/evb_1?revision=2");
     expect(screen.getByRole("button", { name: /Cancel run/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId("eval-task-hello-world"));
@@ -286,34 +312,142 @@ describe("EvalBenchmarksList", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/evals/benchmarks/evb_new"));
     expect(body).toEqual({ kind: "messages", name: "fresh" });
   });
-});
 
-describe("EvalBenchmarkDetail (harbor)", () => {
-  it("lists cases, flags missing aliases, and replaces a case from an upload", async () => {
-    let putBody: unknown;
+  it("imports a harbor benchmark from a git repository", async () => {
+    let body: unknown;
     server.use(
-      http.post("*/v1/files", () => HttpResponse.json({ id: "file_1", filename: "t.tar.gz" })),
-      http.put("*/v1/oma/evals/benchmarks/evb_1/cases/hello-world", async ({ request }) => {
-        putBody = await request.json();
-        return HttpResponse.json(harborBench.cases![0]);
+      http.get("*/v1/oma/evals/benchmarks/builtin", () => HttpResponse.json({ data: [] })),
+      http.post("*/v1/oma/evals/benchmarks", async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ ...harborBench, id: "evb_git" }, { status: 201 });
       }),
     );
     const user = userEvent.setup();
-    renderRoutes([{ path: "/evals/benchmarks/:benchmarkId", element: <EvalBenchmarkDetail /> }], "/evals/benchmarks/evb_1");
+    const router = renderRoutes(
+      [
+        { path: "/evals/benchmarks", element: <EvalBenchmarksList /> },
+        { path: "/evals/benchmarks/:benchmarkId", element: <p>Benchmark page</p> },
+      ],
+      "/evals/benchmarks",
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Import Harbor benchmark" }));
+    await user.click(await screen.findByRole("combobox", { name: "Source" }));
+    await user.click(await screen.findByRole("option", { name: "Git repository" }));
+    await user.type(await screen.findByLabelText("Repository URL"), "https://huggingface.co/datasets/acme/tb");
+    expect(screen.getByLabelText("Ref (optional)")).toHaveAttribute("placeholder", "HEAD");
+    await user.type(screen.getByLabelText("Ref (optional)"), "v1.0");
+    await user.type(screen.getByLabelText("Path (optional)"), "tasks/easy");
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/evals/benchmarks/evb_git"));
+    expect(body).toEqual({
+      kind: "harbor",
+      source: { type: "git", url: "https://huggingface.co/datasets/acme/tb", ref: "v1.0", path: "tasks/easy" },
+    });
+  });
+});
+
+describe("EvalBenchmarkDetail (harbor)", () => {
+  function renderHarbor(path = "/evals/benchmarks/evb_1") {
+    return renderRoutes([{ path: "/evals/benchmarks/:benchmarkId", element: <EvalBenchmarkDetail /> }], path);
+  }
+
+  it("lists cases read-only with digests, source, pinned commit and revisions", async () => {
+    renderHarbor();
 
     const gpu = await screen.findByTestId("eval-case-needs-gpu");
     expect(within(gpu).getByText("no SANDBOX_IMAGES alias")).toBeInTheDocument();
     expect(within(gpu).getByText("gpus are not supported")).toBeInTheDocument();
     const hello = screen.getByTestId("eval-case-hello-world");
     expect(within(hello).getByText("harbor-hello")).toBeInTheDocument();
+    expect(within(hello).getByText("0123456789ab")).toBeInTheDocument();
     expect(hello).toHaveTextContent("600s / 120s");
     expect(screen.getByRole("link", { name: "View runs" })).toHaveAttribute("href", "/evals?benchmark=evb_1");
 
-    await user.click(within(hello).getByRole("button", { name: "Replace hello-world" }));
+    // No case writes on harbor benchmarks.
+    expect(screen.queryByRole("button", { name: "Add case" })).not.toBeInTheDocument();
+    expect(within(hello).queryByRole("button", { name: /Delete/ })).not.toBeInTheDocument();
+    expect(within(hello).queryByRole("button", { name: /Replace/ })).not.toBeInTheDocument();
+
+    expect(screen.getByText("Git repository · https://github.com/acme/tasks")).toBeInTheDocument();
+    expect(screen.getByText("main")).toBeInTheDocument();
+    const pins = screen.getByTestId("eval-benchmark-pins");
+    expect(within(pins).getByRole("link", { name: "2222222" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/tasks/tree/2222222abcdef0123456789abcdef0123456789a",
+    );
+
+    const old = screen.getByTestId("eval-revision-1");
+    expect(old).toHaveTextContent("aaaaaaaaaaaa");
+    expect(within(old).getByRole("link", { name: "revision 1" })).toHaveAttribute("href", "/evals/benchmarks/evb_1?revision=1");
+    expect(screen.queryByTestId("eval-old-revision")).not.toBeInTheDocument();
+  });
+
+  it("shows an old revision read-only and keeps the revision in case links", async () => {
+    const asked: (string | null)[] = [];
+    server.use(
+      http.get("*/v1/oma/evals/benchmarks/evb_1", ({ request }) => {
+        asked.push(new URL(request.url).searchParams.get("revision"));
+        return HttpResponse.json({ ...harborBench, cases_revision: 1, case_count: 1, cases: [harborBench.cases![0]] });
+      }),
+    );
+    renderHarbor("/evals/benchmarks/evb_1?revision=1");
+
+    expect(await screen.findByTestId("eval-old-revision")).toHaveTextContent("Viewing revision 1 (read-only). Latest is revision 2.");
+    expect(asked).toContain("1");
+    expect(screen.queryByRole("button", { name: "Sync from source" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "hello-world" })).toHaveAttribute(
+      "href",
+      "/evals/benchmarks/evb_1/cases/hello-world?revision=1",
+    );
+  });
+
+  it.each([
+    [false, 2, "No changes (revision 2)"],
+    [true, 3, "Created revision 3"],
+  ])("syncs from the source (changed=%s)", async (changed, revision, notice) => {
+    let body: unknown;
+    server.use(
+      http.post("*/v1/oma/evals/benchmarks/evb_1/sync", async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ changed, benchmark: { ...harborBench, revision } });
+      }),
+    );
+    const user = userEvent.setup();
+    renderHarbor();
+
+    await user.click(await screen.findByRole("button", { name: "Sync from source" }));
+    const ref = await screen.findByLabelText("Ref (optional)");
+    expect(ref).toHaveAttribute("placeholder", "main");
+    if (changed) await user.type(ref, "v2");
+    await user.click(screen.getByRole("button", { name: "Sync" }));
+    expect(await screen.findByTestId("eval-sync-result")).toHaveTextContent(notice);
+    expect(body).toEqual(changed ? { ref: "v2" } : {});
+  });
+
+  it("syncs an upload benchmark with a new archive", async () => {
+    let body: unknown;
+    server.use(
+      http.get("*/v1/oma/evals/benchmarks/evb_1", () =>
+        HttpResponse.json({ ...harborBench, source: { type: "upload", file_id: "file_0" } })),
+      http.post("*/v1/files", () => HttpResponse.json({ id: "file_1", filename: "t.tar.gz" })),
+      http.post("*/v1/oma/evals/benchmarks/evb_1/sync", async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ changed: true, benchmark: { ...harborBench, revision: 3 } });
+      }),
+    );
+    const user = userEvent.setup();
+    renderHarbor();
+
+    await user.click(await screen.findByRole("button", { name: "Sync from source" }));
+    const sync = screen.getByRole("button", { name: "Sync" });
+    expect(sync).toBeDisabled();
     const file = new File([new Uint8Array([1, 2, 3])], "t.tar.gz", { type: "application/gzip" });
     await user.upload(await screen.findByLabelText("Archive (.tar / .tar.gz)"), file);
-    await user.click(screen.getByRole("button", { name: "Replace" }));
-    await waitFor(() => expect(putBody).toEqual({ source: { type: "upload", file_id: "file_1" } }));
+    await user.click(sync);
+    expect(await screen.findByTestId("eval-sync-result")).toHaveTextContent("Created revision 3");
+    expect(body).toEqual({ file_id: "file_1" });
   });
 });
 
@@ -389,23 +523,32 @@ describe("EvalBenchmarkDetail (messages)", () => {
 });
 
 describe("EvalCaseDetail", () => {
-  it("shows a harbor case's instruction and files", async () => {
+  it("shows a harbor case's instruction and files, read-only, at the URL's revision", async () => {
+    let asked: string | null = null;
     server.use(
-      http.get("*/v1/oma/evals/benchmarks/evb_1/cases/hello-world", () =>
-        HttpResponse.json({
+      http.get("*/v1/oma/evals/benchmarks/evb_1/cases/hello-world", ({ request }) => {
+        asked = new URL(request.url).searchParams.get("revision");
+        return HttpResponse.json({
           ...harborBench.cases![0],
+          revision: 1,
           instruction: "Write hello.txt containing hi.",
           files: [
             { path: "task.toml", size: 120, executable: false },
             { path: "tests/test.sh", size: 2048, executable: true },
           ],
-        })),
+        });
+      }),
     );
     renderRoutes(
       [{ path: "/evals/benchmarks/:benchmarkId/cases/:caseName", element: <EvalCaseDetail /> }],
-      "/evals/benchmarks/evb_1/cases/hello-world",
+      "/evals/benchmarks/evb_1/cases/hello-world?revision=1",
     );
     expect(await screen.findByTestId("eval-case-instruction")).toHaveTextContent("Write hello.txt containing hi.");
+    expect(asked).toBe("1");
+    expect(screen.getByTestId("eval-case-revision")).toHaveTextContent("Revision 1 / 2");
+    expect(screen.getByText("0123456789ab")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "hello-bench" })).toHaveAttribute("href", "/evals/benchmarks/evb_1?revision=1");
     const files = screen.getByTestId("eval-case-files");
     expect(files).toHaveTextContent("tests/test.sh");
     expect(files).toHaveTextContent("2.0 KB");

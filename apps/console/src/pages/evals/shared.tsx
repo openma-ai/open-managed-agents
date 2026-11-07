@@ -16,6 +16,10 @@ export type {
   CreateEvalRunResponse,
   EvalBenchmark,
   EvalBenchmarkKind,
+  EvalBenchmarkRevision,
+  EvalSourcePin,
+  SyncEvalBenchmarkRequest,
+  SyncEvalBenchmarkResponse,
   EvalCase,
   EvalCaseDetail,
   EvalRun,
@@ -37,16 +41,51 @@ export function benchmarkPath(id: string): string {
   return `/evals/benchmarks/${encodeURIComponent(id)}`;
 }
 
-export function casePath(benchmarkId: string, name: string): string {
-  return `${benchmarkPath(benchmarkId)}/cases/${encodeURIComponent(name)}`;
+/** "?revision=N" for a harbor revision, "" for the latest. */
+function revisionQuery(revision?: number | null): string {
+  return typeof revision === "number" ? `?revision=${revision}` : "";
 }
 
-export function benchmarkApiPath(id: string): string {
-  return `${BENCHMARKS_BASE}/${id}`;
+export function benchmarkRevisionPath(id: string, revision?: number | null): string {
+  return `${benchmarkPath(id)}${revisionQuery(revision)}`;
 }
 
-export function caseApiPath(benchmarkId: string, name: string): string {
-  return `${benchmarkApiPath(benchmarkId)}/cases/${encodeURIComponent(name)}`;
+export function casePath(benchmarkId: string, name: string, revision?: number | null): string {
+  return `${benchmarkPath(benchmarkId)}/cases/${encodeURIComponent(name)}${revisionQuery(revision)}`;
+}
+
+export function benchmarkApiPath(id: string, revision?: number | null): string {
+  return `${BENCHMARKS_BASE}/${id}${revisionQuery(revision)}`;
+}
+
+export function caseApiPath(benchmarkId: string, name: string, revision?: number | null): string {
+  return `${BENCHMARKS_BASE}/${benchmarkId}/cases/${encodeURIComponent(name)}${revisionQuery(revision)}`;
+}
+
+/** Positive integer from a ?revision= search param, else undefined. */
+export function parseRevision(v: string | null): number | undefined {
+  if (!v || !/^\d+$/.test(v)) return undefined;
+  const n = Number(v);
+  return n > 0 ? n : undefined;
+}
+
+/** "sha256:abcd…" -> first 12 hex chars. */
+export function shortDigest(d: string | undefined | null): string {
+  if (!d) return "—";
+  return d.replace(/^sha256:/, "").slice(0, 12);
+}
+
+export function shortCommit(sha: string): string {
+  return sha.slice(0, 7);
+}
+
+/** Browse URL of a pinned commit (github.com and huggingface.co), else null. */
+export function commitUrl(url: string, commit: string): string | null {
+  const base = url.replace(/\.git$/, "").replace(/\/+$/, "");
+  const gh = /^https:\/\/github\.com\/([^/]+)\/([^/]+)/.exec(base);
+  if (gh) return `https://github.com/${gh[1]}/${gh[2]}/tree/${commit}`;
+  if (/^https:\/\/huggingface\.co\//.test(base)) return `${base}/tree/${commit}`;
+  return null;
 }
 
 /** Refetch every benchmark list/detail/case query after a write. */
@@ -173,5 +212,7 @@ export function sourceLabel(t: Messages, source: HarborCaseSource | null | undef
     case "registry":
       return `${t.evals.sourceRegistry} · ${source.name}${source.version ? `@${source.version}` : ""}`;
     case "upload": return t.evals.sourceUpload;
+    case "git": return `${t.evals.sourceGit} · ${source.url}${source.path ? ` · ${source.path}` : ""}`;
   }
+  return t.evals.sourceNone;
 }

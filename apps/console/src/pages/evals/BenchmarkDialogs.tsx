@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "../../components/Field";
 import { Modal } from "../../components/Modal";
-import { Select, SelectOption } from "../../components/Select";
 import { useI18n } from "../../i18n";
 import { useApi } from "../../lib/api";
 import { useQueryClient } from "../../lib/useApiQuery";
@@ -14,11 +13,11 @@ import {
   BENCHMARKS_BASE,
   benchmarkApiPath,
   benchmarkPath,
-  caseApiPath,
   describeError,
   invalidateBenchmarks,
   type EvalBenchmark,
-  type EvalBenchmarkKind,
+  type SyncEvalBenchmarkRequest,
+  type SyncEvalBenchmarkResponse,
 } from "./shared";
 
 function ErrorBox({ error }: { error: string | null }) {
@@ -30,7 +29,7 @@ function ErrorBox({ error }: { error: string | null }) {
   );
 }
 
-/** New benchmark: a messages benchmark or an empty harbor benchmark. */
+/** New messages benchmark. Harbor benchmarks are imported (HarborSourceDialog). */
 export function CreateBenchmarkDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useI18n();
   const m = t.evals;
@@ -38,14 +37,12 @@ export function CreateBenchmarkDialog({ open, onClose }: { open: boolean; onClos
   const nav = useNavigate();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<EvalBenchmarkKind>("messages");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setName("");
-    setKind("messages");
     setError(null);
   }, [open]);
 
@@ -57,7 +54,7 @@ export function CreateBenchmarkDialog({ open, onClose }: { open: boolean; onClos
     try {
       const created = await api<EvalBenchmark>(BENCHMARKS_BASE, {
         method: "POST",
-        body: JSON.stringify({ kind, name: name.trim() }),
+        body: JSON.stringify({ kind: "messages", name: name.trim() }),
       });
       invalidateBenchmarks(queryClient);
       onClose();
@@ -85,12 +82,6 @@ export function CreateBenchmarkDialog({ open, onClose }: { open: boolean; onClos
       <div className="space-y-4">
         <Field label={m.benchmarkName}>
           <Input id="eval-benchmark-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
-        </Field>
-        <Field label={m.kind} hint={kind === "harbor" ? m.kindHarborHint : m.kindMessagesHint}>
-          <Select id="eval-benchmark-kind" value={kind} onValueChange={(v) => setKind(v as EvalBenchmarkKind)}>
-            <SelectOption value="messages">{m.kindMessages}</SelectOption>
-            <SelectOption value="harbor">{m.kindHarbor}</SelectOption>
-          </Select>
         </Field>
         <ErrorBox error={error} />
       </div>
@@ -160,46 +151,59 @@ export function RenameBenchmarkDialog({
   );
 }
 
-/** Replace a harbor case's files with an uploaded one-task archive (PUT). */
-export function ReplaceHarborCaseDialog({
+/** Re-read a harbor benchmark's source (POST /sync). Upload sources need a
+ *  new archive; git sources may pass another ref. */
+export function SyncBenchmarkDialog({
   open,
   onClose,
-  benchmarkId,
-  caseName,
+  benchmark,
+  onSynced,
 }: {
   open: boolean;
   onClose: () => void;
-  benchmarkId: string;
-  caseName: string;
+  benchmark: EvalBenchmark;
+  onSynced: (res: SyncEvalBenchmarkResponse) => void;
 }) {
   const { t } = useI18n();
   const m = t.evals;
   const { api } = useApi();
   const managedApi = useManagedApi();
   const queryClient = useQueryClient();
+  const source = benchmark.source;
   const [file, setFile] = useState<File | null>(null);
-  const [phase, setPhase] = useState<"idle" | "uploading" | "saving">("idle");
+  const [ref, setRef] = useState("");
+  const [phase, setPhase] = useState<"idle" | "uploading" | "syncing">("idle");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setFile(null);
+    setRef("");
     setError(null);
   }, [open]);
 
-  const canSubmit = !!file && phase === "idle";
+  const isUpload = source?.type === "upload";
+  const isGit = source?.type === "git";
+  const canSubmit = phase === "idle" && (!isUpload || !!file);
   const submit = async () => {
     if (!canSubmit) return;
     setError(null);
     try {
-      setPhase("uploading");
-      const uploaded = await managedApi.files.upload({ file: file! });
-      setPhase("saving");
-      await api(caseApiPath(benchmarkId, caseName), {
-        method: "PUT",
-        body: JSON.stringify({ source: { type: "upload", file_id: uploaded.id } }),
+      const body: SyncEvalBenchmarkRequest = {};
+      if (isUpload) {
+        setPhase("uploading");
+        const uploaded = await managedApi.files.upload({ file: file! });
+        body.file_id = uploaded.id;
+      } else if (isGit && ref.trim()) {
+        body.ref = ref.trim();
+      }
+      setPhase("syncing");
+      const res = await api<SyncEvalBenchmarkResponse>(`${benchmarkApiPath(benchmark.id)}/sync`, {
+        method: "POST",
+        body: JSON.stringify(body),
       });
       invalidateBenchmarks(queryClient);
+      onSynced(res);
       onClose();
     } catch (e) {
       setError(describeError(t, e));
@@ -212,25 +216,39 @@ export function ReplaceHarborCaseDialog({
     <Modal
       open={open}
       onClose={onClose}
-      title={`${m.replaceCaseTitle} · ${caseName}`}
+      title={m.syncTitle}
+      subtitle={m.syncHint}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
           <Button onClick={submit} disabled={!canSubmit}>
-            {phase === "uploading" ? m.uploading : phase === "saving" ? m.saving : m.replace}
+            {phase === "uploading" ? m.uploading : phase === "syncing" ? m.syncing : m.sync}
           </Button>
         </>
       }
     >
       <div className="space-y-4">
-        <Field label={m.archive} hint={m.replaceArchiveHint}>
-          <Input
-            id="eval-case-replace-archive"
-            type="file"
-            accept=".tar,.tar.gz,.tgz,application/x-tar,application/gzip"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          />
-        </Field>
+        {isUpload && (
+          <Field label={m.archive} hint={m.syncUploadHint}>
+            <Input
+              id="eval-sync-archive"
+              type="file"
+              accept=".tar,.tar.gz,.tgz,application/x-tar,application/gzip"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+          </Field>
+        )}
+        {isGit && source?.type === "git" && (
+          <Field label={m.gitRef} hint={m.syncRefHint.replace("{ref}", source.ref ?? "HEAD")}>
+            <Input
+              id="eval-sync-ref"
+              value={ref}
+              onChange={(e) => setRef(e.target.value)}
+              placeholder={source.ref ?? "HEAD"}
+              autoComplete="off"
+            />
+          </Field>
+        )}
         <ErrorBox error={error} />
       </div>
     </Modal>
