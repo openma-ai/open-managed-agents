@@ -407,3 +407,33 @@ describe("web_search timeouts and wiring", () => {
     expect(result).toBe("Error: plain fail");
   });
 });
+
+describe("glob / grep default directory (ADR 0016)", () => {
+  function recordingSandbox(root?: string) {
+    const commands: string[] = [];
+    const sandbox: any = {
+      exec: async (cmd: string) => {
+        commands.push(cmd);
+        return "";
+      },
+      readFile: async () => "",
+      writeFile: async () => "",
+    };
+    if (root) sandbox.resolveWorkspaceRoot = async () => root;
+    return { sandbox, commands };
+  }
+
+  it("glob searches the sandbox working directory when no path is given", async () => {
+    const { sandbox, commands } = recordingSandbox("/app");
+    const tools = await buildTools(makeAgentConfig(), sandbox);
+    await tools.glob.execute({ pattern: "*.ts" }, TOOL_EXEC_OPTS).catch(() => "");
+    expect(commands.some((c) => c.includes("cd '/app'"))).toBe(true);
+  });
+
+  it("grep falls back to the default workspace root when the sandbox resolves none", async () => {
+    const { sandbox, commands } = recordingSandbox();
+    const tools = await buildTools(makeAgentConfig(), sandbox);
+    await tools.grep.execute({ pattern: "needle" }, TOOL_EXEC_OPTS).catch(() => "");
+    expect(commands.some((c) => c.includes("/workspace"))).toBe(true);
+  });
+});
