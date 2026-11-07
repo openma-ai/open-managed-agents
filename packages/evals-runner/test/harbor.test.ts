@@ -197,23 +197,24 @@ describe("harbor benchmarks", () => {
     const archive = join(root, "set.tar.gz");
     execFileSync("tar", ["-czf", archive, "-C", root, "set"]);
     const bytes = new Uint8Array(await readFile(archive));
-    const { defaultName: name, bundles } = await collectHarborBundles(
+    const collected = await collectHarborBundles(
       { type: "upload", file_id: "file_1" },
       undefined,
       { fetch: (() => { throw new Error("no network"); }) as never, readUpload: async () => ({ bytes, filename: "set.tar.gz" }) },
     );
-    expect(name).toBe("set");
-    expect(bundles.map((bundle) => bundle.name)).toEqual(["alpha", "beta"]);
+    expect(collected).toMatchObject({ defaultName: "set", source: { type: "upload", file_id: "file_1" }, pins: [] });
+    expect(collected.bundles.map((bundle) => bundle.name)).toEqual(["alpha", "beta"]);
     // The environment/ build context is not kept.
-    expect(bundles[0]!.files.map((file) => file.path).sort()).toEqual(["instruction.md", "task.toml", "tests/test.sh"]);
+    expect(collected.bundles[0]!.files.map((file) => file.path).sort()).toEqual(["instruction.md", "task.toml", "tests/test.sh"]);
 
     const store = new EvalBenchmarkStore(new InMemoryKvStore(), "t");
-    const stored = await store.create({ name, kind: "harbor", source: { type: "upload", file_id: "file_1" }, bundles });
+    const stored = await store.createHarbor(collected.defaultName, collected);
     const api = benchmarkToApi(stored, (image) => (image === "img/alpha:1" ? "alpha" : null), true);
     expect(api).toMatchObject({ kind: "harbor", case_count: 2, runnable_count: 1 });
     expect(api.cases![1]).toMatchObject({ kind: "harbor", name: "beta", supported: false, image_alias: null, unsupported_reason: expect.stringContaining("GPU") });
     expect((await store.list()).map((benchmark) => benchmark.id)).toEqual([stored.id]);
-    const task = await store.loadTask(stored.id, "alpha");
+    const alpha = stored.cases.find((entry) => entry.name === "alpha")!;
+    const task = await store.loadTask(stored.id, "alpha", alpha.kind === "harbor" ? alpha.digest : undefined);
     expect(task.tests.find((file) => file.path === "test.sh")!.executable).toBe(true);
     expect(await store.delete(stored.id)).toBe(true);
     expect(await store.list()).toEqual([]);
@@ -225,5 +226,49 @@ describe("harbor benchmarks", () => {
     ]))) as never, readUpload: async () => null };
     await expect(collectHarborBundles({ type: "builtin", name: "nope" }, undefined, deps)).rejects.toThrow(/Unknown builtin benchmark nope/);
     await expect(collectHarborBundles({ type: "registry", name: "x" }, undefined, deps)).rejects.toThrow(/has versions 1.0, 2.0; pass version/);
+    await expect(collectHarborBundles({ type: "git", url: "https://gitlab.com/o/r" }, undefined, deps)).rejects.toThrow(/github.com/);
+    await expect(collectHarborBundles({ type: "git", url: "https://github.com/o/r", path: "a/../b" }, undefined, deps)).rejects.toThrow(/\.\./);
+  });
+
+  it("reads a registry dataset whose tasks live on GitHub and on the Hub, pinned per repository", async () => {
+    const gh = "1".repeat(40);
+    const hf = "2".repeat(40);
+    const root = await mkdtemp(join(tmpdir(), "evals-registry-"));
+    const dir = join(root, "repo-sha", "tasks", "gh-task");
+    await mkdir(join(dir, "tests"), { recursive: true });
+    await writeFile(join(dir, "task.toml"), `[environment]\ndocker_image = "img/a:1"\n`);
+    await writeFile(join(dir, "instruction.md"), "from github");
+    await writeFile(join(dir, "tests", "test.sh"), "#!/bin/bash\n");
+    const tarball = join(root, "gh.tar.gz");
+    execFileSync("tar", ["-czf", tarball, "-C", root, "repo-sha"]);
+    const tarBytes = new Uint8Array(await readFile(tarball));
+    const registry = [{ name: "mix", version: "1.0", tasks: [
+      { name: "gh-task", git_url: "https://github.com/o/r.git", git_commit_id: gh, path: "tasks/gh-task" },
+      { name: "hf-task", git_url: "https://huggingface.co/datasets/org/set", git_commit_id: hf, path: "datasets/mix/hf-task" },
+    ] }];
+    const hubFiles: Record<string, string> = {
+      "datasets/mix/hf-task/task.toml": `[environment]\ndocker_image = "img/b:1"\n`,
+      "datasets/mix/hf-task/instruction.md": "from the hub",
+      "datasets/mix/hf-task/tests/test.sh": "#!/bin/bash\n",
+    };
+    const fetchImpl = (async (url: string) => {
+      if (url === "https://reg.example/registry.json") return new Response(JSON.stringify(registry));
+      if (url === `https://codeload.github.com/o/r/tar.gz/${gh}`) return new Response(tarBytes);
+      if (url.startsWith(`https://huggingface.co/api/datasets/org/set/tree/${hf}/`)) {
+        return new Response(JSON.stringify([...Object.keys(hubFiles), "datasets/mix/hf-task/environment/big.bin"].map((path) => ({ type: "file", path }))));
+      }
+      const hub = `https://huggingface.co/datasets/org/set/resolve/${hf}/`;
+      if (url.startsWith(hub)) return new Response(hubFiles[url.slice(hub.length)] ?? "", { status: hubFiles[url.slice(hub.length)] ? 200 : 404 });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    const collected = await collectHarborBundles({ type: "registry", name: "mix", version: "1.0", registry_url: "https://reg.example/registry.json" }, undefined, { fetch: fetchImpl, readUpload: async () => null });
+    expect(collected.defaultName).toBe("mix@1.0");
+    expect(collected.pins).toEqual([{ url: "https://github.com/o/r", commit: gh }, { url: "https://huggingface.co/datasets/org/set", commit: hf }]);
+    expect(collected.bundles.map((bundle) => [bundle.name, bundle.files.map((file) => file.path).sort()])).toEqual([
+      ["gh-task", ["instruction.md", "task.toml", "tests/test.sh"]],
+      ["hf-task", ["instruction.md", "task.toml", "tests/test.sh"]],
+    ]);
+    const hfInstruction = collected.bundles[1]!.files.find((file) => file.path === "instruction.md")!;
+    expect(new TextDecoder().decode(hfInstruction.bytes)).toBe("from the hub");
   });
 });

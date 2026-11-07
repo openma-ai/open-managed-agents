@@ -77,9 +77,10 @@ function failTrial(trial: EvalTrialResult, error: string, now: number, tail?: st
 export async function advanceHarborRun(run: EvalRunRecord, deps: HarborAdvanceDeps): Promise<boolean> {
   if (!run.benchmark_id) throw new Error("harbor run has no benchmark_id");
   const tasks = new Map<string, Promise<HarborTask>>();
-  const load = (name: string) => {
-    let pending = tasks.get(name);
-    if (pending === undefined) { pending = deps.benchmarks.loadTask(run.benchmark_id!, name); tasks.set(name, pending); }
+  // By content digest: the run reads the revision it was created with.
+  const load = (task: EvalTaskResult) => {
+    let pending = tasks.get(task.id);
+    if (pending === undefined) { pending = deps.benchmarks.loadTask(run.benchmark_id!, task.id, task.digest); tasks.set(task.id, pending); }
     return pending;
   };
   let progressed = false;
@@ -88,7 +89,7 @@ export async function advanceHarborRun(run: EvalRunRecord, deps: HarborAdvanceDe
     for (const trial of task.trials) {
       if (trial.status !== "running") continue;
       try {
-        if (await advanceTrial(run, task, trial, await load(task.id), deps)) progressed = true;
+        if (await advanceTrial(run, task, trial, await load(task), deps)) progressed = true;
       } catch (error) {
         progressed = true;
         noteFailure(trial, error, deps.now());
@@ -106,7 +107,7 @@ export async function advanceHarborRun(run: EvalRunRecord, deps: HarborAdvanceDe
       const trial = task.trials[index];
       if (trial === undefined || trial.status !== "pending") continue;
       let harborTask: HarborTask;
-      try { harborTask = await load(task.id); }
+      try { harborTask = await load(task); }
       catch (error) { failTrial(trial, message(error), deps.now()); progressed = true; continue; }
       const outcome = await startTrial(run, task, trial, harborTask, deps);
       if (outcome !== "unchanged") progressed = true;

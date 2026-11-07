@@ -1,13 +1,18 @@
 // Eval benchmarks and their cases, stored per tenant in the KvStore both
 // runtimes already have (CF: CONFIG_KV, Node: SqlKvStore), so no new table or
-// migration is needed. Keys keep the original "evaldataset" prefix so
-// benchmarks imported before the rename stay readable:
+// migration is needed:
 //
-//   t:{tenant}:evaldataset:{id}             -> StoredEvalBenchmark (metadata + cases)
-//   t:{tenant}:evaldataset:{id}:task:{name} -> StoredTaskFiles (harbor case files)
+//   t:{tenant}:evaldataset:{id}              -> StoredBenchmarkMeta (metadata, revision summaries,
+//                                               messages cases)
+//   t:{tenant}:evaldataset:{id}:rev:{n}      -> StoredRevisionManifest (harbor cases of revision n)
+//   t:{tenant}:evaldataset:{id}:blob:{hex}   -> StoredTaskFiles (one harbor case's files, by digest)
 //
-// A record without `kind` (written before messages benchmarks existed) is a
-// harbor benchmark whose cases are under `tasks`.
+// Harbor benchmarks are read-only imports (ADR 0017): an import or a sync
+// resolves the source to commits, reads the task directories, and writes a new
+// revision only when the content digest changed (Harbor publish semantics).
+// Revisions are never rewritten, and case files are addressed by content
+// digest, so a run bound to a revision keeps reading exactly what it was
+// created with.
 //
 // Only the files OMA uses are kept per harbor case: task.toml, instruction.md,
 // tests/, solution/ and environment/docker-compose.* (kept so the task can be
@@ -17,10 +22,10 @@
 import {
   bundlesFromEntries,
   fromBase64,
-  maybeGunzipStream,
   parseHarborTask,
   readTarArchive,
-  readTarStream,
+  sha256Hex,
+  harborContentDigest,
   toBase64,
   UnsupportedHarborTaskError,
   type HarborTask,
@@ -33,20 +38,27 @@ import type {
   BuiltinEvalBenchmark,
   EvalBenchmark,
   EvalBenchmarkKind,
+  EvalBenchmarkRevision,
   EvalCase,
   EvalCaseDetail,
+  EvalSourcePin,
   HarborCaseSource,
   HarborEvalCase,
   MessagesEvalCase,
 } from "@open-managed-agents/api-types";
 import type { RewardSpec } from "@open-managed-agents/shared";
+import { EvalBenchmarkError } from "./errors";
+import { gitEntries, parseGitUrl, resolveGitRef, isCommitSha } from "./git-source";
 import { kvKey, type EvalTaskSpec } from "./types";
+
+export { EvalBenchmarkError };
 
 export const CASE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 export interface StoredHarborCase {
   kind: "harbor";
   name: string;
+  digest: string;
   image: string;
   supported: boolean;
   unsupported_reason?: string;
@@ -72,6 +84,12 @@ export interface StoredMessagesCase {
 
 export type StoredEvalCase = StoredHarborCase | StoredMessagesCase;
 
+export interface StoredRevision extends EvalBenchmarkRevision {
+  /** image of every supported case, for runnable counts without the manifest. */
+  supported_images: string[];
+}
+
+/** A benchmark with the cases of one revision (harbor) or its cases (messages). */
 export interface StoredEvalBenchmark {
   id: string;
   name: string;
@@ -79,46 +97,45 @@ export interface StoredEvalBenchmark {
   source: HarborCaseSource | null;
   created_at: string;
   updated_at: string;
+  /** harbor: latest revision number; messages: null. */
+  revision: number | null;
+  /** harbor: oldest first. */
+  revisions: StoredRevision[];
+  /** Revision `cases` belong to (harbor). */
+  cases_revision: number | null;
   cases: StoredEvalCase[];
 }
 
+type StoredBenchmarkMeta = Omit<StoredEvalBenchmark, "cases" | "cases_revision"> & { cases?: StoredMessagesCase[] };
+
+interface StoredRevisionManifest { cases: StoredHarborCase[] }
+
 interface StoredTaskFiles {
   files: Array<{ path: string; b64: string; executable: boolean }>;
+}
+
+/** What an import or sync read from a source, before it is stored. */
+export interface CollectedHarborSource {
+  defaultName: string;
+  source: HarborCaseSource;
+  pins: EvalSourcePin[];
+  case_names?: string[];
+  bundles: HarborTaskBundle[];
 }
 
 /** Maps a task's docker_image to the operator SANDBOX_IMAGES alias whose
  *  reference is exactly that image, or null. */
 export type ImageAliasResolver = (image: string) => string | null;
 
-export class EvalBenchmarkError extends Error {
-  constructor(message: string, readonly status: 400 | 404 | 409 | 502 = 400) {
-    super(message);
-    this.name = "EvalBenchmarkError";
-  }
-}
-
-/** Old records: no kind (harbor), cases under `tasks`, no updated_at. */
-function normalise(raw: Record<string, unknown>): StoredEvalBenchmark {
-  const createdAt = String(raw.created_at ?? "");
-  const updatedAt = typeof raw.updated_at === "string" ? raw.updated_at : createdAt;
-  const kind: EvalBenchmarkKind = raw.kind === "messages" ? "messages" : "harbor";
-  const cases = (Array.isArray(raw.cases) ? raw.cases : Array.isArray(raw.tasks) ? raw.tasks : []) as Array<Record<string, unknown>>;
-  return {
-    id: String(raw.id),
-    name: String(raw.name ?? raw.id),
-    kind,
-    source: (raw.source ?? null) as HarborCaseSource | null,
-    created_at: createdAt,
-    updated_at: updatedAt,
-    cases: cases.map((entry) => ({
-      ...entry,
-      kind,
-      updated_at: typeof entry.updated_at === "string" ? entry.updated_at : updatedAt,
-    }) as StoredEvalCase),
-  };
-}
-
 function stamp(): string { return new Date().toISOString(); }
+
+function digestHex(digest: string): string { return digest.replace(/^sha256:/u, ""); }
+
+/** "sha256:<hex>" over the sorted "<name>\0<case digest>\n" lines. */
+async function revisionDigest(cases: ReadonlyArray<{ name: string; digest: string }>): Promise<string> {
+  const lines = [...cases].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).map((entry) => `${entry.name}\0${entry.digest}\n`);
+  return `sha256:${await sha256Hex(new TextEncoder().encode(lines.join("")))}`;
+}
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
@@ -126,58 +143,135 @@ export class EvalBenchmarkStore {
   constructor(private readonly kv: KvStore, private readonly tenantId: string) {}
 
   private metaKey(id: string) { return kvKey(this.tenantId, "evaldataset", id); }
-  private taskKey(id: string, name: string) { return kvKey(this.tenantId, "evaldataset", id, "task", name); }
+  private revisionKey(id: string, revision: number) { return kvKey(this.tenantId, "evaldataset", id, "rev", String(revision)); }
+  private blobKey(id: string, digest: string) { return kvKey(this.tenantId, "evaldataset", id, "blob", digestHex(digest)); }
 
-  private async putFiles(id: string, bundle: HarborTaskBundle, name = bundle.name) {
-    const stored: StoredTaskFiles = {
-      files: bundle.files.map((file) => ({ path: file.path, b64: toBase64(file.bytes), executable: file.executable })),
-    };
-    await this.kv.put(this.taskKey(id, name), JSON.stringify(stored));
+  private async readMeta(id: string): Promise<StoredBenchmarkMeta | null> {
+    const raw = await this.kv.get(this.metaKey(id));
+    if (raw === null) return null;
+    const meta = JSON.parse(raw) as StoredBenchmarkMeta;
+    meta.revisions ??= [];
+    meta.revision ??= null;
+    return meta;
   }
 
-  private async save(benchmark: StoredEvalBenchmark) {
-    await this.kv.put(this.metaKey(benchmark.id), JSON.stringify(benchmark));
+  private async saveMeta(meta: StoredBenchmarkMeta) {
+    await this.kv.put(this.metaKey(meta.id), JSON.stringify(meta));
   }
 
-  async create(input: {
-    name: string;
-    kind: EvalBenchmarkKind;
-    source?: HarborCaseSource | null;
-    bundles?: HarborTaskBundle[];
-    cases?: StoredMessagesCase[];
-  }): Promise<StoredEvalBenchmark> {
-    const id = `evbm_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
+  private async manifest(id: string, revision: number): Promise<StoredHarborCase[]> {
+    const raw = await this.kv.get(this.revisionKey(id, revision));
+    if (raw === null) throw new EvalBenchmarkError(`Revision ${revision} of benchmark ${id} not found`, 404);
+    return (JSON.parse(raw) as StoredRevisionManifest).cases;
+  }
+
+  private withCases(meta: StoredBenchmarkMeta, cases: StoredEvalCase[], casesRevision: number | null): StoredEvalBenchmark {
+    const { cases: _messages, ...rest } = meta;
+    return { ...rest, cases, cases_revision: casesRevision };
+  }
+
+  /** Write a new revision of `meta` from collected bundles; returns null
+   *  when its digest equals the latest revision's (nothing written). */
+  private async writeRevision(meta: StoredBenchmarkMeta, collected: CollectedHarborSource): Promise<StoredHarborCase[] | null> {
     const now = stamp();
-    const bundles = input.kind === "harbor" ? input.bundles ?? [] : [];
-    const benchmark: StoredEvalBenchmark = {
-      id,
-      name: input.name,
-      kind: input.kind,
-      source: input.source ?? null,
+    const latest = meta.revisions.at(-1);
+    const previous = latest === undefined ? new Map<string, StoredHarborCase>() : new Map((await this.manifest(meta.id, latest.revision)).map((entry) => [entry.digest, entry]));
+    const digested = await Promise.all(collected.bundles.map(async (bundle) => ({ bundle, digest: await harborContentDigest(bundle.files) })));
+    const digest = await revisionDigest(digested.map(({ bundle, digest: caseDigest }) => ({ name: bundle.name, digest: caseDigest })));
+    if (latest !== undefined && latest.digest === digest) return null;
+    const cases: StoredHarborCase[] = [];
+    for (const { bundle, digest: caseDigest } of digested) {
+      const known = previous.get(caseDigest);
+      // Same content and name as before: keep its first-seen time.
+      if (known !== undefined && known.name === bundle.name) { cases.push(known); continue; }
+      const stored: StoredTaskFiles = { files: bundle.files.map((file) => ({ path: file.path, b64: toBase64(file.bytes), executable: file.executable })) };
+      await this.kv.put(this.blobKey(meta.id, caseDigest), JSON.stringify(stored));
+      cases.push(summariseBundle(bundle, caseDigest, now));
+    }
+    const revision = (latest?.revision ?? 0) + 1;
+    await this.kv.put(this.revisionKey(meta.id, revision), JSON.stringify({ cases } satisfies StoredRevisionManifest));
+    meta.revisions.push({
+      revision,
+      digest,
+      source: collected.source,
+      pins: collected.pins,
+      ...(collected.case_names !== undefined ? { case_names: collected.case_names } : {}),
+      case_count: cases.length,
+      created_at: now,
+      supported_images: cases.filter((entry) => entry.supported).map((entry) => entry.image),
+    });
+    meta.revision = revision;
+    meta.source = collected.source;
+    meta.updated_at = now;
+    // Blobs and manifest first, metadata last: a revision is visible only once complete.
+    await this.saveMeta(meta);
+    return cases;
+  }
+
+  async createHarbor(name: string, collected: CollectedHarborSource): Promise<StoredEvalBenchmark> {
+    const now = stamp();
+    const meta: StoredBenchmarkMeta = {
+      id: `evbm_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`,
+      name,
+      kind: "harbor",
+      source: collected.source,
       created_at: now,
       updated_at: now,
-      cases: input.kind === "harbor"
-        ? bundles.map((bundle) => summariseBundle(bundle, now))
-        : (input.cases ?? []).map((entry) => ({ ...entry, updated_at: now })),
+      revision: null,
+      revisions: [],
     };
-    // Case files first, metadata last: a benchmark is visible only once complete.
-    for (const bundle of bundles) await this.putFiles(id, bundle);
-    await this.save(benchmark);
-    return benchmark;
+    const cases = (await this.writeRevision(meta, collected))!;
+    return this.withCases(meta, cases, meta.revision);
   }
 
-  async get(id: string): Promise<StoredEvalBenchmark | null> {
-    const raw = await this.kv.get(this.metaKey(id));
-    return raw === null ? null : normalise(JSON.parse(raw) as Record<string, unknown>);
+  async createMessages(name: string, cases: Omit<StoredMessagesCase, "updated_at">[]): Promise<StoredEvalBenchmark> {
+    const now = stamp();
+    const meta: StoredBenchmarkMeta = {
+      id: `evbm_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`,
+      name,
+      kind: "messages",
+      source: null,
+      created_at: now,
+      updated_at: now,
+      revision: null,
+      revisions: [],
+      cases: cases.map((entry) => ({ ...entry, updated_at: now })),
+    };
+    await this.saveMeta(meta);
+    return this.withCases(meta, meta.cases!, null);
   }
 
+  /** Re-read a harbor benchmark's source into a new revision when it changed. */
+  async sync(id: string, collected: CollectedHarborSource): Promise<{ changed: boolean; benchmark: StoredEvalBenchmark }> {
+    const meta = await this.readMeta(id);
+    if (meta === null) throw new EvalBenchmarkError("Benchmark not found", 404);
+    if (meta.kind !== "harbor") throw new EvalBenchmarkError(`Benchmark ${id} is a ${meta.kind} benchmark`);
+    const cases = await this.writeRevision(meta, collected);
+    if (cases === null) return { changed: false, benchmark: (await this.get(id))! };
+    return { changed: true, benchmark: this.withCases(meta, cases, meta.revision) };
+  }
+
+  /** With the cases of `revision` (harbor; default latest). */
+  async get(id: string, revision?: number): Promise<StoredEvalBenchmark | null> {
+    const meta = await this.readMeta(id);
+    if (meta === null) return null;
+    if (meta.kind === "messages") return this.withCases(meta, meta.cases ?? [], null);
+    const wanted = revision ?? meta.revision;
+    if (wanted === null) return this.withCases(meta, [], null);
+    if (!meta.revisions.some((entry) => entry.revision === wanted)) throw new EvalBenchmarkError(`Benchmark ${id} has no revision ${wanted}`, 404);
+    return this.withCases(meta, await this.manifest(id, wanted), wanted);
+  }
+
+  /** Metadata only (cases empty). */
   async list(): Promise<StoredEvalBenchmark[]> {
     const prefix = kvKey(this.tenantId, "evaldataset", "");
     const keys = await listAll(this.kv, prefix);
     const metaKeys = keys.map((key) => key.name).filter((name) => !name.slice(prefix.length).includes(":"));
     const rows = await Promise.all(metaKeys.map(async (key) => {
       const raw = await this.kv.get(key);
-      return raw === null ? null : normalise(JSON.parse(raw) as Record<string, unknown>);
+      if (raw === null) return null;
+      const meta = JSON.parse(raw) as StoredBenchmarkMeta;
+      return meta.kind === "messages" ? this.withCases(meta, meta.cases ?? [], null) : this.withCases(meta, [], null);
     }));
     return rows
       .filter((row): row is StoredEvalBenchmark => row !== null)
@@ -185,109 +279,78 @@ export class EvalBenchmarkStore {
   }
 
   async rename(id: string, name: string): Promise<StoredEvalBenchmark | null> {
-    const benchmark = await this.get(id);
-    if (benchmark === null) return null;
-    benchmark.name = name;
-    benchmark.updated_at = stamp();
-    await this.save(benchmark);
-    return benchmark;
+    const meta = await this.readMeta(id);
+    if (meta === null) return null;
+    meta.name = name;
+    meta.updated_at = stamp();
+    await this.saveMeta(meta);
+    return this.get(id);
   }
 
   async delete(id: string): Promise<boolean> {
-    const benchmark = await this.get(id);
-    if (benchmark === null) return false;
+    const meta = await this.readMeta(id);
+    if (meta === null) return false;
     await this.kv.delete(this.metaKey(id));
-    if (benchmark.kind === "harbor") {
-      for (const entry of benchmark.cases) await this.kv.delete(this.taskKey(id, entry.name));
-    }
+    for (const key of await listAll(this.kv, kvKey(this.tenantId, "evaldataset", id, ""))) await this.kv.delete(key.name);
     return true;
   }
 
-  private async require(id: string, kind?: EvalBenchmarkKind): Promise<StoredEvalBenchmark> {
-    const benchmark = await this.get(id);
-    if (benchmark === null) throw new EvalBenchmarkError("Benchmark not found", 404);
-    if (kind !== undefined && benchmark.kind !== kind) throw new EvalBenchmarkError(`Benchmark ${id} is a ${benchmark.kind} benchmark`);
-    return benchmark;
-  }
-
-  private static conflict(benchmark: StoredEvalBenchmark, names: readonly string[]) {
-    const existing = new Set(benchmark.cases.map((entry) => entry.name));
-    const taken = names.filter((name) => existing.has(name));
-    if (taken.length > 0) throw new EvalBenchmarkError(`Case(s) already in the benchmark: ${taken.join(", ")}`, 409);
-  }
-
-  /** Add harbor cases; 409 when a name is taken (nothing is written then). */
-  async addHarborCases(id: string, bundles: HarborTaskBundle[]): Promise<StoredEvalBenchmark> {
-    const benchmark = await this.require(id, "harbor");
-    EvalBenchmarkStore.conflict(benchmark, bundles.map((bundle) => bundle.name));
-    const now = stamp();
-    for (const bundle of bundles) await this.putFiles(id, bundle);
-    benchmark.cases.push(...bundles.map((bundle) => summariseBundle(bundle, now)));
-    benchmark.updated_at = now;
-    await this.save(benchmark);
-    return benchmark;
+  private async requireMessages(id: string): Promise<StoredBenchmarkMeta & { cases: StoredMessagesCase[] }> {
+    const meta = await this.readMeta(id);
+    if (meta === null) throw new EvalBenchmarkError("Benchmark not found", 404);
+    if (meta.kind !== "messages") {
+      throw new EvalBenchmarkError(`Benchmark ${id} is a harbor benchmark: its cases are read-only, edit them at the source and sync`);
+    }
+    meta.cases ??= [];
+    return meta as StoredBenchmarkMeta & { cases: StoredMessagesCase[] };
   }
 
   async addMessagesCase(id: string, entry: Omit<StoredMessagesCase, "updated_at">): Promise<StoredEvalBenchmark> {
-    const benchmark = await this.require(id, "messages");
-    EvalBenchmarkStore.conflict(benchmark, [entry.name]);
+    const meta = await this.requireMessages(id);
+    if (meta.cases.some((existing) => existing.name === entry.name)) throw new EvalBenchmarkError(`Case(s) already in the benchmark: ${entry.name}`, 409);
     const now = stamp();
-    benchmark.cases.push({ ...entry, updated_at: now });
-    benchmark.updated_at = now;
-    await this.save(benchmark);
-    return benchmark;
+    meta.cases.push({ ...entry, updated_at: now });
+    meta.updated_at = now;
+    await this.saveMeta(meta);
+    return this.withCases(meta, meta.cases, null);
   }
 
-  private indexOf(benchmark: StoredEvalBenchmark, name: string): number {
-    const index = benchmark.cases.findIndex((entry) => entry.name === name);
+  private static indexOf(cases: readonly StoredEvalCase[], name: string): number {
+    const index = cases.findIndex((entry) => entry.name === name);
     if (index < 0) throw new EvalBenchmarkError(`Case ${name} not found`, 404);
     return index;
   }
 
   async replaceMessagesCase(id: string, name: string, entry: Omit<StoredMessagesCase, "updated_at" | "name">): Promise<StoredMessagesCase> {
-    const benchmark = await this.require(id, "messages");
-    const index = this.indexOf(benchmark, name);
+    const meta = await this.requireMessages(id);
+    const index = EvalBenchmarkStore.indexOf(meta.cases, name);
     const now = stamp();
     const replaced: StoredMessagesCase = { ...entry, kind: "messages", name, updated_at: now };
-    benchmark.cases[index] = replaced;
-    benchmark.updated_at = now;
-    await this.save(benchmark);
+    meta.cases[index] = replaced;
+    meta.updated_at = now;
+    await this.saveMeta(meta);
     return replaced;
   }
 
-  /** Replace a harbor case's files with one task directory; the case keeps `name`. */
-  async replaceHarborCase(id: string, name: string, bundle: HarborTaskBundle): Promise<StoredHarborCase> {
-    const benchmark = await this.require(id, "harbor");
-    const index = this.indexOf(benchmark, name);
-    const now = stamp();
-    const renamed = { ...bundle, name };
-    await this.putFiles(id, renamed, name);
-    const replaced = summariseBundle(renamed, now);
-    benchmark.cases[index] = replaced;
-    benchmark.updated_at = now;
-    await this.save(benchmark);
-    return replaced;
+  async deleteMessagesCase(id: string, name: string): Promise<void> {
+    const meta = await this.requireMessages(id);
+    meta.cases.splice(EvalBenchmarkStore.indexOf(meta.cases, name), 1);
+    meta.updated_at = stamp();
+    await this.saveMeta(meta);
   }
 
-  async deleteCase(id: string, name: string): Promise<void> {
-    const benchmark = await this.require(id);
-    const index = this.indexOf(benchmark, name);
-    benchmark.cases.splice(index, 1);
-    benchmark.updated_at = stamp();
-    await this.save(benchmark);
-    if (benchmark.kind === "harbor") await this.kv.delete(this.taskKey(id, name));
-  }
-
-  async taskFiles(id: string, name: string): Promise<HarborTaskFile[] | null> {
-    const raw = await this.kv.get(this.taskKey(id, name));
+  async taskFiles(id: string, digest: string): Promise<HarborTaskFile[] | null> {
+    const raw = await this.kv.get(this.blobKey(id, digest));
     if (raw === null) return null;
     const stored = JSON.parse(raw) as StoredTaskFiles;
     return stored.files.map((file) => ({ path: file.path, bytes: fromBase64(file.b64), executable: file.executable }));
   }
 
-  async loadTask(id: string, name: string): Promise<HarborTask> {
-    const files = await this.taskFiles(id, name);
-    if (files === null) throw new EvalBenchmarkError(`Case ${name} of benchmark ${id} not found`, 404);
+  /** A harbor case by content digest (runs read the revision they were bound to). */
+  async loadTask(id: string, name: string, digest: string | undefined): Promise<HarborTask> {
+    if (digest === undefined) throw new EvalBenchmarkError(`Case ${name} of benchmark ${id}: the run has no case digest`, 404);
+    const files = await this.taskFiles(id, digest);
+    if (files === null) throw new EvalBenchmarkError(`Case ${name} (${digest}) of benchmark ${id} not found`, 404);
     return parseHarborTask(name, files);
   }
 }
@@ -364,33 +427,51 @@ export function caseToApi(entry: StoredEvalCase, aliasFor: ImageAliasResolver): 
   return { ...entry, image_alias: aliasFor(entry.image) } as HarborEvalCase;
 }
 
+function revisionToApi(revision: StoredRevision): EvalBenchmarkRevision {
+  const { supported_images: _images, ...rest } = revision;
+  return rest;
+}
+
+/** withCases: cases of benchmark.cases_revision and every revision (newest first). */
 export function benchmarkToApi(benchmark: StoredEvalBenchmark, aliasFor: ImageAliasResolver, withCases: boolean): EvalBenchmark {
+  const shown = benchmark.kind === "harbor"
+    ? benchmark.revisions.find((entry) => entry.revision === (benchmark.cases_revision ?? benchmark.revision))
+    : undefined;
+  const caseCount = benchmark.kind === "messages" ? benchmark.cases.length : shown?.case_count ?? 0;
+  const runnable = benchmark.kind === "messages"
+    ? benchmark.cases.length
+    : (shown?.supported_images ?? []).filter((image) => aliasFor(image) !== null).length;
   return {
     id: benchmark.id,
     name: benchmark.name,
     kind: benchmark.kind,
     source: benchmark.source,
-    case_count: benchmark.cases.length,
-    runnable_count: benchmark.cases.filter((entry) => runnableCase(entry, aliasFor)).length,
+    revision: benchmark.revision,
+    case_count: caseCount,
+    runnable_count: runnable,
     created_at: benchmark.created_at,
     updated_at: benchmark.updated_at,
     ...(withCases ? { cases: benchmark.cases.map((entry) => caseToApi(entry, aliasFor)) } : {}),
+    ...(withCases && benchmark.kind === "harbor"
+      ? { revisions: [...benchmark.revisions].reverse().map(revisionToApi), ...(benchmark.cases_revision !== null ? { cases_revision: benchmark.cases_revision } : {}) }
+      : {}),
   };
 }
 
 /** One case with harbor detail (full instruction + stored file list). */
 export async function caseDetail(
   store: EvalBenchmarkStore,
-  benchmarkId: string,
+  benchmark: StoredEvalBenchmark,
   entry: StoredEvalCase,
   aliasFor: ImageAliasResolver,
 ): Promise<EvalCaseDetail> {
   const api = caseToApi(entry, aliasFor);
   if (api.kind === "messages") return api;
-  const files = await store.taskFiles(benchmarkId, entry.name) ?? [];
+  const files = await store.taskFiles(benchmark.id, api.digest) ?? [];
   const instruction = files.find((file) => file.path === "instruction.md");
   return {
     ...api,
+    revision: benchmark.cases_revision ?? benchmark.revision ?? 0,
     instruction: instruction ? new TextDecoder().decode(instruction.bytes) : "",
     files: files
       .map((file) => ({ path: file.path, size: file.bytes.byteLength, executable: file.executable }))
@@ -398,7 +479,7 @@ export async function caseDetail(
   };
 }
 
-function summariseBundle(bundle: HarborTaskBundle, updatedAt: string): StoredHarborCase {
+function summariseBundle(bundle: HarborTaskBundle, digest: string, updatedAt: string): StoredHarborCase {
   const instruction = bundle.files.find((file) => file.path === "instruction.md");
   const preview = instruction ? new TextDecoder().decode(instruction.bytes).slice(0, 2000) : "";
   try {
@@ -406,6 +487,7 @@ function summariseBundle(bundle: HarborTaskBundle, updatedAt: string): StoredHar
     return {
       kind: "harbor",
       name: bundle.name,
+      digest,
       image: task.image,
       supported: true,
       agent_timeout_sec: task.agentTimeoutSec,
@@ -423,6 +505,7 @@ function summariseBundle(bundle: HarborTaskBundle, updatedAt: string): StoredHar
     return {
       kind: "harbor",
       name: bundle.name,
+      digest,
       image,
       supported: false,
       unsupported_reason: error.message,
@@ -439,10 +522,10 @@ function summariseBundle(bundle: HarborTaskBundle, updatedAt: string): StoredHar
 
 // ── Import ─────────────────────────────────────────────────────────────────
 
-export const DEFAULT_HARBOR_REGISTRY_URL = "https://raw.githubusercontent.com/laude-institute/harbor/main/registry.json";
+export const DEFAULT_HARBOR_REGISTRY_URL = "https://raw.githubusercontent.com/harbor-framework/harbor/main/registry.json";
 
 interface BuiltinDefinition extends BuiltinEvalBenchmark {
-  github: { owner: string; repo: string; commit: string };
+  git: { url: string; commit: string };
 }
 
 /** Benchmarks OMA ships: pinned to a commit, so the case set never drifts. */
@@ -451,13 +534,13 @@ export const BUILTIN_EVAL_BENCHMARKS: readonly BuiltinDefinition[] = [
     name: "terminal-bench-sample@2.0",
     description: "10-task sample of Terminal-Bench 2.0 (Harbor registry terminal-bench-sample@2.0).",
     case_count: 10,
-    github: { owner: "laude-institute", repo: "terminal-bench-2-0-sample", commit: "7e917f35c281188532772312d4ad91ca9274febc" },
+    git: { url: "https://github.com/laude-institute/terminal-bench-2-0-sample", commit: "7e917f35c281188532772312d4ad91ca9274febc" },
   },
   {
     name: "terminal-bench@2.0",
     description: "Terminal-Bench 2.0, 89 terminal tasks (Harbor registry terminal-bench@2.0).",
     case_count: 89,
-    github: { owner: "laude-institute", repo: "terminal-bench-2", commit: "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c" },
+    git: { url: "https://github.com/laude-institute/terminal-bench-2", commit: "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c" },
   },
 ];
 
@@ -475,13 +558,14 @@ function keepTaskFile(relative: string): boolean {
     || relative === "environment/docker-compose.yml";
 }
 
-/** Same filter when the task root is not known yet (whole-archive scans). */
+/** Same filter when the task root is not known yet (whole-tree scans). */
 function keepAnywhere(path: string): boolean {
   const parts = path.split("/");
   const last = parts.at(-1);
   if (last === "task.toml" || last === "instruction.md") return true;
   if (parts.includes("tests") || parts.includes("solution")) return !parts.includes("environment");
-  return path.endsWith("/environment/docker-compose.yaml") || path.endsWith("/environment/docker-compose.yml");
+  return path.endsWith("/environment/docker-compose.yaml") || path.endsWith("/environment/docker-compose.yml")
+    || path === "environment/docker-compose.yaml" || path === "environment/docker-compose.yml";
 }
 
 function trimBundle(bundle: HarborTaskBundle): HarborTaskBundle {
@@ -494,41 +578,16 @@ export interface HarborImportDeps {
   readUpload(fileId: string): Promise<{ bytes: Uint8Array; filename?: string } | null>;
 }
 
-function parseGithubUrl(url: string): { owner: string; repo: string } {
-  const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/u.exec(url);
-  if (!match) throw new EvalBenchmarkError(`Only GitHub git_url is supported for registry import, got ${url}`);
-  return { owner: match[1]!, repo: match[2]! };
-}
-
-/** Stream a GitHub tarball, keeping only entries `accept` wants (paths
- *  relative to the repository root). */
-async function githubEntries(
-  deps: HarborImportDeps,
-  repo: { owner: string; repo: string },
-  ref: string,
-  accept: (path: string) => boolean,
-): Promise<TarEntry[]> {
-  const url = `https://codeload.github.com/${repo.owner}/${repo.repo}/tar.gz/${encodeURIComponent(ref)}`;
-  const response = await deps.fetch(url, { headers: { "user-agent": "open-managed-agents-evals" } });
-  if (!response.ok || response.body === null) {
-    throw new EvalBenchmarkError(`Downloading ${repo.owner}/${repo.repo}@${ref} failed: HTTP ${response.status}`, 502);
-  }
-  // GitHub tarballs wrap everything in one "<owner>-<repo>-<sha>/" directory.
-  const strip = (path: string) => path.slice(path.indexOf("/") + 1);
-  const entries = await readTarStream(maybeGunzipStream(response.body as ReadableStream<Uint8Array>, true), {
-    accept: (path) => path.includes("/") && accept(strip(path)),
-  });
-  return entries.map((entry) => ({ ...entry, path: strip(entry.path) }));
-}
-
 interface RegistryTask { name: string; git_url: string; git_commit_id?: string | null; path: string }
 interface RegistryDataset { name: string; version: string; tasks: RegistryTask[] }
+
+function cleanPath(path: string): string { return path.replace(/^\/+|\/+$/gu, ""); }
 
 async function registryBundles(
   source: Extract<HarborCaseSource, { type: "registry" }>,
   taskNames: readonly string[] | undefined,
   deps: HarborImportDeps,
-): Promise<HarborTaskBundle[]> {
+): Promise<{ bundles: HarborTaskBundle[]; pins: EvalSourcePin[]; version: string }> {
   const url = source.registry_url ?? DEFAULT_HARBOR_REGISTRY_URL;
   const response = await deps.fetch(url);
   if (!response.ok) throw new EvalBenchmarkError(`Reading registry ${url} failed: HTTP ${response.status}`, 502);
@@ -552,38 +611,52 @@ async function registryBundles(
     const wanted = new Set(taskNames);
     tasks = tasks.filter((task) => wanted.has(task.name));
   }
-  const groups = new Map<string, RegistryTask[]>();
+  // One read per repository and commit; a task without a commit is pinned to HEAD now.
+  const groups = new Map<string, { repo: ReturnType<typeof parseGitUrl>; commit: string; tasks: RegistryTask[] }>();
+  const heads = new Map<string, string>();
   for (const task of tasks) {
-    const key = `${task.git_url}@${task.git_commit_id || "HEAD"}`;
-    groups.set(key, [...(groups.get(key) ?? []), task]);
+    const repo = parseGitUrl(task.git_url);
+    let commit = task.git_commit_id || undefined;
+    if (commit === undefined || !isCommitSha(commit)) {
+      const ref = commit;
+      const key = `${repo.url}@${ref ?? "HEAD"}`;
+      commit = heads.get(key) ?? await resolveGitRef(deps.fetch, repo, ref);
+      heads.set(key, commit);
+    }
+    const key = `${repo.url}@${commit}`;
+    const group = groups.get(key) ?? { repo, commit, tasks: [] };
+    group.tasks.push(task);
+    groups.set(key, group);
   }
   const bundles: HarborTaskBundle[] = [];
-  for (const group of groups.values()) {
-    const first = group[0]!;
-    const repo = parseGithubUrl(first.git_url);
-    const roots = group.map((task) => ({ task, prefix: `${task.path.replace(/^\/+|\/+$/gu, "")}/` }));
-    const entries = await githubEntries(deps, repo, first.git_commit_id || "HEAD", (path) =>
-      roots.some(({ prefix }) => path.startsWith(prefix) && keepTaskFile(path.slice(prefix.length))));
-    for (const { task, prefix } of roots) {
+  for (const { repo, commit, tasks: groupTasks } of groups.values()) {
+    const roots = groupTasks.map((task) => ({ task, root: cleanPath(task.path) }));
+    const entries = await gitEntries(deps.fetch, repo, commit, roots.map(({ root }) => root), (path) =>
+      roots.some(({ root }) => path.startsWith(`${root}/`) && keepTaskFile(path.slice(root.length + 1))));
+    for (const { task, root } of roots) {
       const files = entries
-        .filter((entry) => entry.type === "file" && entry.path.startsWith(prefix))
-        .map((entry) => ({ path: entry.path.slice(prefix.length), bytes: entry.bytes, executable: (entry.mode & 0o111) !== 0 }));
+        .filter((entry) => entry.type === "file" && entry.path.startsWith(`${root}/`))
+        .map((entry) => ({ path: entry.path.slice(root.length + 1), bytes: entry.bytes, executable: (entry.mode & 0o111) !== 0 }));
       if (!files.some((file) => file.path === "task.toml")) {
-        throw new EvalBenchmarkError(`Task ${task.name}: no task.toml at ${task.path} in ${first.git_url}`, 502);
+        throw new EvalBenchmarkError(`Task ${task.name}: no task.toml at ${task.path} in ${repo.url}@${commit}`, 502);
       }
       bundles.push({ name: task.name, root: task.path, files });
     }
   }
-  return bundles;
+  return { bundles, pins: [...groups.values()].map(({ repo, commit }) => ({ url: repo.url, commit })), version: dataset.version };
 }
 
-async function builtinBundles(name: string, taskNames: readonly string[] | undefined, deps: HarborImportDeps): Promise<HarborTaskBundle[]> {
-  const builtin = BUILTIN_EVAL_BENCHMARKS.find((entry) => entry.name === name);
-  if (builtin === undefined) {
-    throw new EvalBenchmarkError(`Unknown builtin benchmark ${name} (available: ${BUILTIN_EVAL_BENCHMARKS.map((entry) => entry.name).join(", ")})`, 404);
-  }
-  const entries = await githubEntries(deps, builtin.github, builtin.github.commit, keepAnywhere);
-  return filterByName(bundlesFromEntries(entries).map(trimBundle), taskNames, name);
+/** Bundles of every task directory under `path` (repository-relative). */
+function bundlesUnder(entries: TarEntry[], path: string, fallbackName: string): HarborTaskBundle[] {
+  const relative = path === ""
+    ? entries
+    : entries.filter((entry) => entry.path.startsWith(`${path}/`)).map((entry) => ({ ...entry, path: entry.path.slice(path.length + 1) }));
+  return bundlesFromEntries(relative).map((bundle) => ({
+    ...trimBundle(bundle),
+    // A task at the import root is named after the path (or the repository).
+    name: bundle.root === "" ? fallbackName : bundle.name,
+    root: path === "" ? bundle.root : bundle.root === "" ? path : `${path}/${bundle.root}`,
+  }));
 }
 
 function filterByName(bundles: HarborTaskBundle[], taskNames: readonly string[] | undefined, label: string): HarborTaskBundle[] {
@@ -595,48 +668,82 @@ function filterByName(bundles: HarborTaskBundle[], taskNames: readonly string[] 
   return bundles.filter((bundle) => wanted.has(bundle.name));
 }
 
-/** Resolve a harbor source to its default benchmark name and task bundles
- *  (validated, not stored). caseNames keeps only those tasks. */
+function stringField(value: unknown, field: string, required: boolean): string | undefined {
+  if (value === undefined && !required) return undefined;
+  if (typeof value !== "string" || value.trim() === "") throw new EvalBenchmarkError(`${field} must be a non-empty string`);
+  return value.trim();
+}
+
+/** Resolve a harbor source to commits and read its task bundles (validated,
+ *  not stored). caseNames keeps only those tasks. */
 export async function collectHarborBundles(
-  source: HarborCaseSource | undefined,
+  input: HarborCaseSource | undefined,
   caseNames: unknown,
   deps: HarborImportDeps,
-): Promise<{ defaultName: string; bundles: HarborTaskBundle[] }> {
-  if (typeof source !== "object" || source === null) throw new EvalBenchmarkError("source is required");
-  if (caseNames !== undefined && (!Array.isArray(caseNames) || caseNames.some((name) => typeof name !== "string"))) {
-    throw new EvalBenchmarkError("case_names must be an array of strings");
+): Promise<CollectedHarborSource> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) throw new EvalBenchmarkError("source is required");
+  if (caseNames !== undefined && (!Array.isArray(caseNames) || caseNames.length === 0 || caseNames.some((name) => typeof name !== "string"))) {
+    throw new EvalBenchmarkError("case_names must be a non-empty array of strings");
   }
   const names = caseNames as string[] | undefined;
-  let bundles: HarborTaskBundle[];
-  let defaultName: string;
-  if (source.type === "upload") {
-    if (typeof source.file_id !== "string" || source.file_id === "") throw new EvalBenchmarkError("source.file_id is required");
-    const upload = await deps.readUpload(source.file_id);
-    if (upload === null) throw new EvalBenchmarkError(`File ${source.file_id} not found`, 404);
+  const raw = input as Record<string, unknown>;
+  let collected: Omit<CollectedHarborSource, "case_names">;
+  if (raw.type === "upload") {
+    const fileId = stringField(raw.file_id, "source.file_id", true)!;
+    const upload = await deps.readUpload(fileId);
+    if (upload === null) throw new EvalBenchmarkError(`File ${fileId} not found`, 404);
     let entries: TarEntry[];
     try { entries = await readTarArchive(upload.bytes, { accept: keepAnywhere }); }
-    catch (error) { throw new EvalBenchmarkError(`File ${source.file_id} is not a readable .tar/.tar.gz: ${error instanceof Error ? error.message : String(error)}`); }
-    bundles = filterByName(bundlesFromEntries(entries).map(trimBundle), names, "the upload");
-    defaultName = (upload.filename ?? source.file_id).replace(/\.(tar\.gz|tgz|tar)$/u, "");
-  } else if (source.type === "registry") {
-    if (typeof source.name !== "string" || source.name === "") throw new EvalBenchmarkError("source.name is required");
-    if (source.registry_url !== undefined && !/^https:\/\//u.test(source.registry_url)) {
-      throw new EvalBenchmarkError("source.registry_url must be an https URL");
+    catch (error) { throw new EvalBenchmarkError(`File ${fileId} is not a readable .tar/.tar.gz: ${error instanceof Error ? error.message : String(error)}`); }
+    const defaultName = (upload.filename ?? fileId).replace(/\.(tar\.gz|tgz|tar)$/u, "");
+    collected = { defaultName, source: { type: "upload", file_id: fileId }, pins: [], bundles: filterByName(bundlesUnder(entries, "", defaultName), names, "the upload") };
+  } else if (raw.type === "git") {
+    const url = stringField(raw.url, "source.url", true)!;
+    const ref = stringField(raw.ref, "source.ref", false);
+    const path = cleanPath(stringField(raw.path, "source.path", false) ?? "");
+    if (path.split("/").includes("..")) throw new EvalBenchmarkError("source.path must not contain ..");
+    const repo = parseGitUrl(url);
+    const commit = await resolveGitRef(deps.fetch, repo, ref);
+    const entries = await gitEntries(deps.fetch, repo, commit, path === "" ? null : [path], keepAnywhere);
+    const repoName = repo.url.split("/").at(-1)!;
+    const fallbackName = path === "" ? repoName : path.split("/").at(-1)!;
+    collected = {
+      defaultName: path === "" ? repoName : `${repoName}/${path}`,
+      source: { type: "git", url: repo.url, ...(ref !== undefined ? { ref } : {}), ...(path !== "" ? { path } : {}) },
+      pins: [{ url: repo.url, ref: ref ?? "HEAD", commit }],
+      bundles: filterByName(bundlesUnder(entries, path, fallbackName), names, `${repo.url}${path ? `/${path}` : ""}`),
+    };
+  } else if (raw.type === "registry") {
+    const name = stringField(raw.name, "source.name", true)!;
+    const version = stringField(raw.version, "source.version", false);
+    const registryUrl = stringField(raw.registry_url, "source.registry_url", false);
+    if (registryUrl !== undefined && !/^https:\/\//u.test(registryUrl)) throw new EvalBenchmarkError("source.registry_url must be an https URL");
+    const source = { type: "registry" as const, name, ...(version !== undefined ? { version } : {}), ...(registryUrl !== undefined ? { registry_url: registryUrl } : {}) };
+    const read = await registryBundles(source, names, deps);
+    collected = { defaultName: `${name}@${read.version}`, source: { ...source, version: read.version }, pins: read.pins, bundles: read.bundles };
+  } else if (raw.type === "builtin") {
+    const name = stringField(raw.name, "source.name", true)!;
+    const builtin = BUILTIN_EVAL_BENCHMARKS.find((entry) => entry.name === name);
+    if (builtin === undefined) {
+      throw new EvalBenchmarkError(`Unknown builtin benchmark ${name} (available: ${BUILTIN_EVAL_BENCHMARKS.map((entry) => entry.name).join(", ")})`, 404);
     }
-    bundles = await registryBundles(source, names, deps);
-    defaultName = source.version ? `${source.name}@${source.version}` : source.name;
-  } else if (source.type === "builtin") {
-    bundles = await builtinBundles(source.name, names, deps);
-    defaultName = source.name;
+    const repo = parseGitUrl(builtin.git.url);
+    const entries = await gitEntries(deps.fetch, repo, builtin.git.commit, null, keepAnywhere);
+    collected = {
+      defaultName: name,
+      source: { type: "builtin", name },
+      pins: [{ url: repo.url, commit: builtin.git.commit }],
+      bundles: filterByName(bundlesUnder(entries, "", name), names, name),
+    };
   } else {
-    throw new EvalBenchmarkError(`Unknown source.type ${String((source as { type?: unknown }).type)}`);
+    throw new EvalBenchmarkError(`Unknown source.type ${JSON.stringify(raw.type)} (git, registry, builtin or upload)`);
   }
-  if (bundles.length === 0) throw new EvalBenchmarkError("No Harbor task (a directory with task.toml) found");
+  if (collected.bundles.length === 0) throw new EvalBenchmarkError("No Harbor task (a directory with task.toml) found");
   const seen = new Set<string>();
-  for (const bundle of bundles) {
+  for (const bundle of collected.bundles) {
     if (seen.has(bundle.name)) throw new EvalBenchmarkError(`Duplicate task name ${bundle.name}`);
     if (!CASE_NAME.test(bundle.name)) throw new EvalBenchmarkError(`Invalid task name ${JSON.stringify(bundle.name)}`);
     seen.add(bundle.name);
   }
-  return { defaultName, bundles };
+  return { ...collected, ...(names !== undefined ? { case_names: [...names] } : {}) };
 }

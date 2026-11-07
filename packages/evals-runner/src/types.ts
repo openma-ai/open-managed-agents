@@ -63,6 +63,8 @@ export interface EvalTaskResult {
   mean_reward?: number;
   error?: string;
   image_alias?: string;
+  /** harbor kind: content digest of the case (read from the benchmark by digest). */
+  digest?: string;
   runtime?: HarborTaskRuntimeConfig;
   runtime_attempts?: number;
 }
@@ -75,6 +77,8 @@ export interface EvalRunRecord {
   environment_id: string | null;
   /** Set when the run executes a benchmark. */
   benchmark_id?: string;
+  /** harbor benchmark runs: the revision the run is bound to. */
+  benchmark_revision?: number;
   mode?: "agent" | "oracle";
   concurrency?: number;
   status: EvalRunStatus;
@@ -108,6 +112,7 @@ export function rowToRecord(row: EvalRunRow): EvalRunRecord {
     agent_id: partial.agent_id !== undefined ? partial.agent_id : (row.agent_id || null),
     environment_id: partial.environment_id !== undefined ? partial.environment_id : (row.environment_id || null),
     ...(benchmarkId !== undefined ? { benchmark_id: benchmarkId } : {}),
+    ...(partial.benchmark_revision !== undefined ? { benchmark_revision: partial.benchmark_revision } : {}),
     ...(partial.mode !== undefined ? { mode: partial.mode } : {}),
     ...(partial.concurrency !== undefined ? { concurrency: partial.concurrency } : {}),
     ...(partial.environments !== undefined ? { environments: partial.environments } : {}),
@@ -130,6 +135,7 @@ export function extractResults(run: EvalRunRecord): StoredResults {
     agent_id: run.agent_id,
     environment_id: run.environment_id,
     ...(run.benchmark_id !== undefined ? { benchmark_id: run.benchmark_id } : {}),
+    ...(run.benchmark_revision !== undefined ? { benchmark_revision: run.benchmark_revision } : {}),
     ...(run.mode !== undefined ? { mode: run.mode } : {}),
     ...(run.concurrency !== undefined ? { concurrency: run.concurrency } : {}),
     ...(run.environments !== undefined ? { environments: run.environments } : {}),
@@ -161,6 +167,7 @@ export function recordToApi(run: EvalRunRecord): EvalRun & { tenant_id: string }
     agent_id: run.agent_id,
     environment_id: run.environment_id,
     ...(run.benchmark_id !== undefined ? { benchmark_id: run.benchmark_id } : {}),
+    ...(run.benchmark_revision !== undefined ? { benchmark_revision: run.benchmark_revision } : {}),
     ...(run.mode !== undefined ? { mode: run.mode } : {}),
     status: run.status,
     created_at: run.created_at,
@@ -180,6 +187,7 @@ export function recordToApi(run: EvalRunRecord): EvalRun & { tenant_id: string }
       ...(task.mean_reward !== undefined ? { mean_reward: task.mean_reward } : {}),
       ...(task.error !== undefined ? { error: task.error } : {}),
       ...(task.image_alias !== undefined ? { image_alias: task.image_alias } : {}),
+      ...(task.digest !== undefined ? { digest: task.digest } : {}),
       ...(task.spec !== undefined ? { spec: task.spec } : {}),
     })),
     ...(run.error !== undefined ? { error: run.error } : {}),

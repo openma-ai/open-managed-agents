@@ -110,7 +110,7 @@ describe("messages benchmarks and cases", () => {
     expect((await call("GET", `/benchmarks/${id}`)).body.case_count).toBe(2);
   });
 
-  it("runs a messages benchmark: snapshot specs, concurrency, 409 on writes while active", async () => {
+  it("runs a messages benchmark: snapshot specs, concurrency; cases stay editable, delete is 409 while active", async () => {
     const { id } = await messagesBenchmark();
     const base = { benchmark_id: id, agent_id: "agent_1", environment_id: "env_1" };
     expect((await call("POST", "/runs", { ...base, mode: "oracle" })).status).toBe(400);
@@ -133,9 +133,8 @@ describe("messages benchmarks and cases", () => {
     expect(run.tasks[0]).toMatchObject({ id: "b", trial_total: 3, spec: { id: "b", messages: ["one", "two"], timeout_ms: 5000 } });
     expect(run.tasks[0].trials).toHaveLength(3);
 
-    expect((await call("POST", `/benchmarks/${id}/cases`, { name: "z", messages: ["m"] })).status).toBe(409);
-    expect((await call("PUT", `/benchmarks/${id}/cases/b`, { messages: ["edited"] })).status).toBe(409);
-    expect((await call("DELETE", `/benchmarks/${id}/cases/a`)).status).toBe(409);
+    // The run copied its cases, so editing them does not need a lock.
+    expect((await call("PUT", `/benchmarks/${id}/cases/b`, { messages: ["edited"] })).status).toBe(200);
     expect((await call("DELETE", `/benchmarks/${id}`)).status).toBe(409);
     expect((await call("PATCH", `/benchmarks/${id}`, { name: "still allowed" })).status).toBe(200);
 
@@ -143,7 +142,6 @@ describe("messages benchmarks and cases", () => {
     expect((await call("GET", "/runs?benchmark_id=evbm_other")).body.data).toEqual([]);
 
     expect((await call("POST", `/runs/${created.body.run_id}/cancel`, {})).status).toBe(200);
-    expect((await call("PUT", `/benchmarks/${id}/cases/b`, { messages: ["edited"] })).status).toBe(200);
     // The run keeps its snapshot.
     expect((await call("GET", `/runs/${created.body.run_id}`)).body.tasks[0].spec.messages).toEqual(["one", "two"]);
     expect((await call("POST", "/runs", base)).body.task_count).toBe(2);
@@ -169,47 +167,68 @@ describe("messages benchmarks and cases", () => {
 });
 
 describe("harbor benchmarks and cases", () => {
-  it("creates empty, adds from an upload, replaces one case, and runs", async () => {
-    const created = await call("POST", "/benchmarks", { kind: "harbor", name: "tb" });
-    expect(created).toMatchObject({ status: 201, body: { kind: "harbor", source: null, case_count: 0 } });
-    const id = created.body.id;
+  it("imports read-only revisions, syncs only on change, and binds runs to a revision", async () => {
+    expect((await call("POST", "/benchmarks", { kind: "harbor", name: "tb" })).status).toBe(400); // no empty harbor benchmarks
     uploads.set("file_two", await taskArchive(["alpha", "beta"]));
-    const added = await call("POST", `/benchmarks/${id}/cases`, { source: { type: "upload", file_id: "file_two" } });
-    expect(added.status).toBe(201);
-    expect(added.body.cases.map((entry: any) => [entry.name, entry.image_alias])).toEqual([["alpha", "alpha"], ["beta", "beta"]]);
-    expect((await call("POST", `/benchmarks/${id}/cases`, { source: { type: "upload", file_id: "file_two" }, case_names: ["beta"] })).status).toBe(409);
-    expect((await call("POST", `/benchmarks/${id}/cases`, { name: "m", messages: ["x"] })).status).toBe(400);
+    const created = await call("POST", "/benchmarks", { name: "tb", source: { type: "upload", file_id: "file_two" } });
+    expect(created).toMatchObject({ status: 201, body: { kind: "harbor", revision: 1, cases_revision: 1, case_count: 2, source: { type: "upload", file_id: "file_two" } } });
+    expect(created.body.revisions).toEqual([expect.objectContaining({ revision: 1, pins: [], case_count: 2, digest: expect.stringMatching(/^sha256:/) })]);
+    const id = created.body.id;
+    const v1 = created.body.cases.map((entry: any) => [entry.name, entry.image_alias, entry.digest]);
+    expect(v1.map((entry: any[]) => entry.slice(0, 2))).toEqual([["alpha", "alpha"], ["beta", "beta"]]);
+
+    // Harbor cases are edited at the source, never in OMA.
+    expect((await call("POST", `/benchmarks/${id}/cases`, { name: "m", messages: ["x"] })).body.error).toMatch(/read-only/);
+    expect((await call("PUT", `/benchmarks/${id}/cases/alpha`, { messages: ["x"] })).status).toBe(400);
+    expect((await call("DELETE", `/benchmarks/${id}/cases/alpha`)).status).toBe(400);
 
     const detail = await call("GET", `/benchmarks/${id}/cases/alpha`);
-    expect(detail.body).toMatchObject({ kind: "harbor", instruction: "Solve alpha." });
+    expect(detail.body).toMatchObject({ kind: "harbor", revision: 1, instruction: "Solve alpha.", digest: v1[0][2] });
     expect(detail.body.files.map((file: any) => file.path)).toEqual(["instruction.md", "task.toml", "tests/test.sh"]);
 
-    expect((await call("PUT", `/benchmarks/${id}/cases/alpha`, { source: { type: "upload", file_id: "file_two" } })).status).toBe(400);
-    uploads.set("file_one", await taskArchive(["gamma"], "Do"));
-    const replaced = await call("PUT", `/benchmarks/${id}/cases/alpha`, { source: { type: "upload", file_id: "file_one" } });
-    expect(replaced).toMatchObject({ status: 200, body: { name: "alpha", image: "img/gamma:1", instruction: "Do gamma." } });
-    expect((await call("PUT", `/benchmarks/${id}/cases/alpha`, { source: { type: "registry", name: "x" } })).status).toBe(400);
+    const run = await call("POST", "/runs", { benchmark_id: id, agent_id: "agent_1", concurrency: 2, trials: 2 });
+    expect(run).toMatchObject({ status: 200, body: { task_count: 2 } });
+
+    expect((await call("POST", `/benchmarks/${id}/sync`, {})).status).toBe(400); // an upload needs a new file_id
+    expect((await call("POST", `/benchmarks/${id}/sync`, { file_id: "file_two", ref: "main" })).status).toBe(400);
+    uploads.set("same_again", await taskArchive(["beta", "alpha"]));
+    expect(await call("POST", `/benchmarks/${id}/sync`, { file_id: "same_again" })).toMatchObject({ status: 200, body: { changed: false, benchmark: { revision: 1 } } });
+    uploads.set("file_new", await taskArchive(["alpha", "beta"], "Do"));
+    const synced = await call("POST", `/benchmarks/${id}/sync`, { file_id: "file_new" });
+    expect(synced).toMatchObject({ status: 200, body: { changed: true, benchmark: { revision: 2, source: { file_id: "file_new" } } } });
+    expect(synced.body.benchmark.revisions.map((entry: any) => entry.revision)).toEqual([2, 1]);
+    expect((await call("GET", `/benchmarks/${id}/cases/alpha`)).body).toMatchObject({ revision: 2, instruction: "Do alpha." });
+    expect((await call("GET", `/benchmarks/${id}/cases/alpha?revision=1`)).body).toMatchObject({ revision: 1, instruction: "Solve alpha." });
+    expect((await call("GET", `/benchmarks/${id}?revision=1`)).body).toMatchObject({ revision: 2, cases_revision: 1 });
+    expect((await call("GET", `/benchmarks/${id}?revision=0`)).status).toBe(400);
+
+    // The run created before the sync still points at revision 1's content.
+    const stored = (await call("GET", `/runs/${run.body.run_id}`)).body;
+    expect(stored).toMatchObject({ kind: "harbor", benchmark_id: id, benchmark_revision: 1, mode: "agent", concurrency: 2, environment_id: null });
+    expect(stored.tasks.map((task: any) => [task.id, task.image_alias, task.digest])).toEqual(v1);
+    const later = await call("POST", "/runs", { benchmark_id: id, agent_id: "agent_1" });
+    expect((await call("GET", `/runs/${later.body.run_id}`)).body.benchmark_revision).toBe(2);
 
     expect((await call("POST", "/runs", { benchmark_id: id, agent_id: "agent_1", environment_id: "env_1" })).status).toBe(400);
     expect((await call("POST", "/runs", { benchmark_id: id })).status).toBe(400);
-    const run = await call("POST", "/runs", { benchmark_id: id, agent_id: "agent_1", concurrency: 2, trials: 2 });
-    expect(run).toMatchObject({ status: 200, body: { task_count: 2 } });
-    const stored = (await call("GET", `/runs/${run.body.run_id}`)).body;
-    expect(stored).toMatchObject({ kind: "harbor", benchmark_id: id, mode: "agent", concurrency: 2, environment_id: null });
-    expect(stored.tasks.map((task: any) => task.image_alias)).toEqual(["gamma", "beta"]);
-    expect((await call("DELETE", `/benchmarks/${id}/cases/beta`)).status).toBe(409);
-
+    expect((await call("DELETE", `/benchmarks/${id}`)).status).toBe(409);
     await call("DELETE", `/runs/${run.body.run_id}`);
-    expect((await call("DELETE", `/benchmarks/${id}/cases/beta`)).status).toBe(200);
+    await call("DELETE", `/runs/${later.body.run_id}`);
     expect(await call("DELETE", `/benchmarks/${id}`)).toEqual({ status: 200, body: { type: "eval_benchmark_deleted", id } });
     expect((await call("GET", `/benchmarks/${id}`)).status).toBe(404);
   });
 
-  it("imports a benchmark from an upload with case_names and the upload name", async () => {
+  it("imports a benchmark from an upload with case_names and the upload name; sync keeps the filter", async () => {
     uploads.set("suite", await taskArchive(["alpha", "beta"]));
     const res = await call("POST", "/benchmarks", { source: { type: "upload", file_id: "suite" }, case_names: ["beta"] });
     expect(res).toMatchObject({ status: 201, body: { name: "suite", kind: "harbor", source: { type: "upload", file_id: "suite" }, case_count: 1 } });
+    expect(res.body.revisions[0].case_names).toEqual(["beta"]);
+    uploads.set("suite2", await taskArchive(["alpha", "beta"], "Again"));
+    const synced = await call("POST", `/benchmarks/${res.body.id}/sync`, { file_id: "suite2" });
+    expect(synced.body.benchmark.cases.map((entry: any) => entry.name)).toEqual(["beta"]);
     expect((await call("POST", "/benchmarks", { source: { type: "upload", file_id: "missing" } })).status).toBe(404);
     expect((await call("POST", "/runs", { benchmark_id: res.body.id, mode: "oracle" })).status).toBe(400); // no solution
+    const messages = await messagesBenchmark();
+    expect((await call("POST", `/benchmarks/${messages.id}/sync`, {})).status).toBe(400);
   });
 });

@@ -12,6 +12,7 @@ import type {
   CreateEvalRunRequest,
   HarborCaseSource,
   ReplaceEvalCaseRequest,
+  SyncEvalBenchmarkRequest,
   UpdateEvalBenchmarkRequest,
 } from "@open-managed-agents/api-types";
 import {
@@ -107,13 +108,20 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
     if (active !== null) throw new EvalBenchmarkError(`Benchmark is used by active run ${active}; wait for it or cancel it first`, 409);
   }
 
-  async function requireBenchmark(store: EvalBenchmarkStore, id: string): Promise<StoredEvalBenchmark> {
-    const benchmark = await store.get(id);
+  async function requireBenchmark(store: EvalBenchmarkStore, id: string, revision?: number): Promise<StoredEvalBenchmark> {
+    const benchmark = await store.get(id, revision);
     if (benchmark === null) throw new EvalBenchmarkError("Benchmark not found", 404);
     return benchmark;
   }
 
   // ── Benchmarks ──────────────────────────────────────────────────────────
+
+  function revisionParam(value: string | undefined): number | undefined {
+    if (value === undefined) return undefined;
+    const revision = Number(value);
+    if (!Number.isInteger(revision) || revision < 1) throw new EvalBenchmarkError("revision must be a positive integer");
+    return revision;
+  }
 
   app.get("/benchmarks", async (c) => {
     const { store, alias } = await context(c.var.tenant_id);
@@ -135,20 +143,17 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
       if (raw.source !== undefined) {
         if (raw.kind === "messages") throw new EvalBenchmarkError("source is only used by harbor benchmarks");
         if (raw.cases !== undefined) throw new EvalBenchmarkError("cases is only used by messages benchmarks");
-        const { defaultName, bundles } = await collectHarborBundles(raw.source as HarborCaseSource, raw.case_names, importDeps(t));
-        const name = raw.name === undefined ? defaultName : benchmarkName(raw.name);
+        const collected = await collectHarborBundles(raw.source as HarborCaseSource, raw.case_names, importDeps(t));
+        const name = raw.name === undefined ? collected.defaultName : benchmarkName(raw.name);
         if (name === null) throw new EvalBenchmarkError("name must be a non-empty string");
-        const benchmark = await store.create({ name, kind: "harbor", source: raw.source as HarborCaseSource, bundles });
-        return c.json(benchmarkToApi(benchmark, alias, true), 201);
+        return c.json(benchmarkToApi(await store.createHarbor(name, collected), alias, true), 201);
       }
-      if (raw.kind === undefined) throw new EvalBenchmarkError("kind is required when no source is given (harbor or messages)");
+      if (raw.kind !== "messages") {
+        throw new EvalBenchmarkError("A harbor benchmark is imported from a source (git, registry, builtin or upload); pass source");
+      }
       if (raw.case_names !== undefined) throw new EvalBenchmarkError("case_names needs a source");
       const name = benchmarkName(raw.name);
       if (name === null) throw new EvalBenchmarkError("name is required");
-      if (raw.kind === "harbor") {
-        if (raw.cases !== undefined) throw new EvalBenchmarkError("cases is only used by messages benchmarks; add harbor cases with a source");
-        return c.json(benchmarkToApi(await store.create({ name, kind: "harbor" }), alias, true), 201);
-      }
       if (raw.cases !== undefined && !Array.isArray(raw.cases)) throw new EvalBenchmarkError("cases must be an array");
       const cases = ((raw.cases as unknown[] | undefined) ?? []).map((entry) => parseMessagesCase(entry));
       const seen = new Set<string>();
@@ -156,14 +161,13 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
         if (seen.has(entry.name)) throw new EvalBenchmarkError(`Duplicate case name ${entry.name}`);
         seen.add(entry.name);
       }
-      const benchmark = await store.create({ name, kind: "messages", cases: cases as StoredMessagesCase[] });
-      return c.json(benchmarkToApi(benchmark, alias, true), 201);
+      return c.json(benchmarkToApi(await store.createMessages(name, cases), alias, true), 201);
     });
   });
 
   app.get("/benchmarks/:id", async (c) => guard(c, async () => {
     const { store, alias } = await context(c.var.tenant_id);
-    return c.json(benchmarkToApi(await requireBenchmark(store, c.req.param("id")), alias, true));
+    return c.json(benchmarkToApi(await requireBenchmark(store, c.req.param("id"), revisionParam(c.req.query("revision"))), alias, true));
   }));
 
   app.patch("/benchmarks/:id", async (c) => {
@@ -181,6 +185,36 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
     });
   });
 
+  app.post("/benchmarks/:id/sync", async (c) => {
+    const t = c.var.tenant_id;
+    const body = await c.req.json<SyncEvalBenchmarkRequest>().catch(() => ({}));
+    if (!isObject(body)) return c.json(bad("Request body must be a JSON object"), 400);
+    return guard(c, async () => {
+      const { store, alias } = await context(t);
+      const id = c.req.param("id");
+      const benchmark = await requireBenchmark(store, id);
+      if (benchmark.kind !== "harbor") throw new EvalBenchmarkError("Only harbor benchmarks are synced from a source");
+      const unknown = Object.keys(body).filter((key) => key !== "ref" && key !== "file_id");
+      if (unknown.length > 0) throw new EvalBenchmarkError(`Unknown field(s): ${unknown.join(", ")}`);
+      const latest = benchmark.revisions.at(-1)!;
+      let source = latest.source;
+      if (source.type === "upload") {
+        if (typeof body.file_id !== "string" || body.file_id === "") throw new EvalBenchmarkError("An upload benchmark syncs from a new archive: pass file_id");
+        source = { type: "upload", file_id: body.file_id };
+      } else if (body.file_id !== undefined) {
+        throw new EvalBenchmarkError(`file_id is only used by upload benchmarks (this one is ${source.type})`);
+      }
+      if (body.ref !== undefined) {
+        if (source.type !== "git") throw new EvalBenchmarkError(`ref is only used by git benchmarks (this one is ${source.type})`);
+        if (typeof body.ref !== "string" || body.ref.trim() === "") throw new EvalBenchmarkError("ref must be a non-empty string");
+        source = { ...source, ref: body.ref.trim() };
+      }
+      const collected = await collectHarborBundles(source, latest.case_names, importDeps(t));
+      const result = await store.sync(id, collected);
+      return c.json({ changed: result.changed, benchmark: benchmarkToApi(result.benchmark, alias, true) });
+    });
+  });
+
   app.delete("/benchmarks/:id", async (c) => guard(c, async () => {
     const t = c.var.tenant_id;
     const id = c.req.param("id");
@@ -192,79 +226,45 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
   }));
 
   // ── Cases ───────────────────────────────────────────────────────────────
+  // Harbor cases are read-only (sync the benchmark from its source); writes
+  // apply to messages benchmarks, whose runs copy their cases at creation.
 
   app.get("/benchmarks/:id/cases/:name", async (c) => guard(c, async () => {
     const { store, alias } = await context(c.var.tenant_id);
-    const id = c.req.param("id");
     const name = c.req.param("name");
-    const benchmark = await requireBenchmark(store, id);
+    const benchmark = await requireBenchmark(store, c.req.param("id"), revisionParam(c.req.query("revision")));
     const entry = benchmark.cases.find((candidate) => candidate.name === name);
     if (entry === undefined) throw new EvalBenchmarkError(`Case ${name} not found`, 404);
-    return c.json(await caseDetail(store, id, entry, alias));
+    return c.json(await caseDetail(store, benchmark, entry, alias));
   }));
 
   app.post("/benchmarks/:id/cases", async (c) => {
-    const t = c.var.tenant_id;
     const body = await c.req.json<AddEvalCasesRequest>().catch(() => null);
     if (!isObject(body)) return c.json(bad("Request body must be a JSON object"), 400);
     return guard(c, async () => {
-      const { store, alias } = await context(t);
-      const id = c.req.param("id");
-      const benchmark = await requireBenchmark(store, id);
-      await requireIdle(t, id);
-      const raw = body as Record<string, unknown>;
-      if (benchmark.kind === "messages") {
-        if (raw.source !== undefined) throw new EvalBenchmarkError("A messages benchmark takes one case ({ name, messages, ... }), not a source");
-        const updated = await store.addMessagesCase(id, parseMessagesCase(raw));
-        return c.json(benchmarkToApi(updated, alias, true), 201);
-      }
-      if (raw.source === undefined) throw new EvalBenchmarkError("A harbor benchmark takes { source, case_names? }");
-      const { bundles } = await collectHarborBundles(raw.source as HarborCaseSource, raw.case_names, importDeps(t));
-      const updated = await store.addHarborCases(id, bundles);
+      const { store, alias } = await context(c.var.tenant_id);
+      const updated = await store.addMessagesCase(c.req.param("id"), parseMessagesCase(body));
       return c.json(benchmarkToApi(updated, alias, true), 201);
     });
   });
 
   app.put("/benchmarks/:id/cases/:name", async (c) => {
-    const t = c.var.tenant_id;
     const body = await c.req.json<ReplaceEvalCaseRequest>().catch(() => null);
     if (!isObject(body)) return c.json(bad("Request body must be a JSON object"), 400);
     return guard(c, async () => {
-      const { store, alias } = await context(t);
+      const { store, alias } = await context(c.var.tenant_id);
       const id = c.req.param("id");
       const name = c.req.param("name");
-      const benchmark = await requireBenchmark(store, id);
-      if (!benchmark.cases.some((entry) => entry.name === name)) throw new EvalBenchmarkError(`Case ${name} not found`, 404);
-      await requireIdle(t, id);
-      const raw = body as Record<string, unknown>;
-      if (benchmark.kind === "messages") {
-        if (raw.source !== undefined) throw new EvalBenchmarkError("A messages case is replaced by its new content, not a source");
-        const { name: _name, ...content } = parseMessagesCase(raw, name);
-        const replaced = await store.replaceMessagesCase(id, name, content);
-        return c.json(await caseDetail(store, id, replaced, alias));
-      }
-      const source = raw.source as HarborCaseSource | undefined;
-      if (!isObject(source) || source.type !== "upload") {
-        throw new EvalBenchmarkError("A harbor case is replaced by { source: { type: \"upload\", file_id } }");
-      }
-      const { bundles } = await collectHarborBundles(source, undefined, importDeps(t));
-      if (bundles.length !== 1) {
-        throw new EvalBenchmarkError(`The upload must hold exactly one task directory, found ${bundles.length} (${bundles.map((bundle) => bundle.name).join(", ")})`);
-      }
-      const replaced = await store.replaceHarborCase(id, name, bundles[0]!);
-      return c.json(await caseDetail(store, id, replaced, alias));
+      const { name: _name, ...content } = parseMessagesCase(body, name);
+      const replaced = await store.replaceMessagesCase(id, name, content);
+      return c.json(await caseDetail(store, (await store.get(id))!, replaced, alias));
     });
   });
 
   app.delete("/benchmarks/:id/cases/:name", async (c) => guard(c, async () => {
-    const t = c.var.tenant_id;
     const id = c.req.param("id");
     const name = c.req.param("name");
-    const store = await deps.benchmarksFor(t);
-    const benchmark = await requireBenchmark(store, id);
-    if (!benchmark.cases.some((entry) => entry.name === name)) throw new EvalBenchmarkError(`Case ${name} not found`, 404);
-    await requireIdle(t, id);
-    await store.deleteCase(id, name);
+    await (await deps.benchmarksFor(c.var.tenant_id)).deleteMessagesCase(id, name);
     return c.json({ type: "eval_case_deleted", benchmark_id: id, name });
   }));
 
@@ -368,6 +368,7 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
       agent_id: mode === "agent" ? body.agent_id as string : null,
       environment_id: null,
       benchmark_id: benchmark.id,
+      benchmark_revision: benchmark.revision!,
       mode,
       concurrency,
       task_count: harborCases.length,
@@ -378,6 +379,7 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
         status: "pending" as const,
         trial_total: trials,
         image_alias: alias(entry.image)!,
+        digest: entry.digest,
         trials: pendingTrials(),
       })),
     };

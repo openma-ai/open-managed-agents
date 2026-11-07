@@ -9,6 +9,7 @@ export {
   type EvalSessionSettlement,
   type ManagedEvalRuntimeDependencies,
 } from "./runtime";
+export { parseGitUrl, resolveGitRef, parseRefAdvertisement, gitEntries, type GitRepo } from "./git-source";
 export {
   EvalBenchmarkStore,
   EvalBenchmarkError,
@@ -28,6 +29,8 @@ export {
   type StoredEvalCase,
   type StoredHarborCase,
   type StoredMessagesCase,
+  type StoredRevision,
+  type CollectedHarborSource,
   type HarborImportDeps,
   type ImageAliasResolver,
 } from "./benchmarks";
