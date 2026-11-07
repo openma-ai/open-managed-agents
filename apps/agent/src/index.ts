@@ -18,13 +18,12 @@ registerHarness("acp-proxy", () => new AcpProxyHarness());
 
 // --- Export DO classes (required by wrangler) ---
 export { SessionDO } from "./runtime/session-do";
-export { OmaSandbox as Sandbox } from "./oma-sandbox";
+export { OmaSandbox as Sandbox, OmaOutbound } from "./oma-sandbox";
 
-// --- Required by @cloudflare/sandbox 0.8.x outbound interception ---
-export { ContainerProxy } from "@cloudflare/containers";
+// Sandbox SDK 1.0 helpers — DirectoryBackup / S3Mount reach these via ctx.exports.
+export { DirectoryBackupGateway, S3Gateway } from "@cloudflare/sandbox";
 
-// --- Export outbound worker functions (legacy — see oma-sandbox.ts for the
-// real handler wiring via @cloudflare/sandbox 0.8.x setOutboundHandler API). ---
+// Legacy no-op stubs kept for older imports / tests.
 export { outbound, outboundByHost } from "./outbound";
 
 // --- HTTP app: thin router to SessionDO ---

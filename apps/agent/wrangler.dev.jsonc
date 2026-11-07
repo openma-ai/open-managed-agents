@@ -3,14 +3,18 @@
   "name": "sandbox-default",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-15",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports"],
 
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./node_modules/@cloudflare/sandbox/Dockerfile",
-      "instance_type": "lite",
-      "max_instances": 5
+      "name": "sandbox-default-do-v1-dev",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "sandbox": {
+          "dockerfile": "./Dockerfile.sandbox"
+        }
+      }
     }
   ],
 

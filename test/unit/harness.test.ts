@@ -822,14 +822,15 @@ describe("Sandbox lifecycle", () => {
     sandbox.sandboxPromise = Promise.resolve({ mountBucket, unmountBucket });
 
     await sandbox.mountDurableWorkspace({ workspaceId: "tenant-1", sessionId: "session-1" });
-    expect(unmountBucket).toHaveBeenCalledWith("/workspace");
+    // Sandbox SDK 1.0 attaches mounts only while a container starts, so an
+    // unmount first would drop a mount that is already attached.
+    expect(unmountBucket).not.toHaveBeenCalled();
     expect(mountBucket).toHaveBeenCalledWith("workspace-bucket", "/workspace", {
       endpoint: "https://example.r2.cloudflarestorage.com",
       provider: "r2",
       credentials: { accessKeyId: "access", secretAccessKey: "secret" },
       prefix: "/openma-workspaces/tenant-1/session-1/",
       readOnly: false,
-      credentialProxy: true,
     });
   });
 

@@ -402,6 +402,11 @@ export interface Env {
   MEMORY_BUCKET_NAME?: string;
   WORKSPACE_BUCKET_NAME?: string;
   /**
+   * Milliseconds without a Durable Object request before OmaSandbox
+   * snapshots a changed /workspace and stops its container. Default 300000.
+   */
+  SANDBOX_IDLE_TIMEOUT_MS?: string;
+  /**
    * BACKUP_BUCKET_NAME (also CLOUDFLARE_ACCOUNT_ID above) are required by
    * @cloudflare/sandbox createBackup() in production mode — the SDK
    * mints R2 presigned URLs to upload the squashfs and needs both to
