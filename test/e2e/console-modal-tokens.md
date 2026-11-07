@@ -45,15 +45,17 @@ MODAL_SHELL=1 MODAL_BASELINE=1 MODAL_OUTPUT=test-results/shell-before node test/
 MODAL_SHELL=1 MODAL_BASE_URL=http://127.0.0.1:4187 MODAL_OUTPUT=test-results/shell-after node test/e2e/console-modal-tokens.mjs
 ```
 
-Shell mode opens Create workspace through the actual sidebar on all **42
-router entries** (40 concrete routes and two explicit redirects), in both
+Shell mode opens Create workspace through the actual sidebar on all **43
+router entries** (40 page routes, two explicit redirects and the shell-only
+`/integrations` parent), in both
 themes. It records the final URL, including normal redirects. The bare
 `/loops/new` intentionally redirects to template selection, so an additional
 `/loops/new?template=slack-agent` case mounts the actual creation form.
 Six cases also run on mobile with both root fonts: home, environment detail,
-skills, bare and configured new-loop routes, and GitHub bind. Total: **110
-open/close cases and 330 screenshots per build**. The submitted evidence
-stores the initial 104-case sweep and six configured-loop cases separately.
+skills, bare and configured new-loop routes, and GitHub bind. Total: **112
+open/close cases and 336 screenshots per build**. The submitted evidence
+stores the initial 104-case sweep, six configured-loop cases and two shell-only parent
+cases separately.
 No product code or route behavior is changed for this matrix.
 
 Each modal is captured closed, open and after Escape. Assertions cover the

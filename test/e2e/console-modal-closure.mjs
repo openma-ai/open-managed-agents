@@ -29,13 +29,16 @@ export function modalClosure() {
       const pattern = `${parent}/${prop(node, 'path')?.value ?? ''}`.replace(/\/$/, '') || '/';
       const children = prop(node, 'children');
       if (children) flatten(children, pattern === '/' ? '' : pattern);
-      if (!prop(node, 'lazy') && !prop(node, 'element')) continue;
+      // A group without an index still matches its own URL and mounts the
+      // outer shell (e.g. /integrations with an empty Outlet).
+      const shellOnlyParent = !!children && !children.elements.some(child => prop(child, 'index')?.value === true);
+      if (!prop(node, 'lazy') && !prop(node, 'element') && !shellOnlyParent) continue;
       let module, redirect;
       walk(prop(node, 'lazy'), n => { if (n.type === 'CallExpression' && n.callee.type === 'Import') module = n.arguments[0]?.value; });
       walk(prop(node, 'element'), n => { if (n.type === 'JSXAttribute' && n.name.name === 'to') redirect = n.value.value; });
       const group = pattern.split('/')[1];
       const ids = { agents: 'agent_fixture', sessions: 'session_fixture', deployments: 'deployment_fixture', evals: 'eval_fixture', environments: 'env_fixture', vaults: 'vault_fixture', memory: 'ms_fixture', loops: 'loop_fixture', bonds: 'slack:fixture', integrations: 'installation_fixture' };
-      shellRoutes.push({ pattern, url: pattern.replace(':id', ids[group] ?? 'fixture').replace('*', 'modal-fixture-unknown'), module, redirect });
+      shellRoutes.push({ pattern, url: pattern.replace(':id', ids[group] ?? 'fixture').replace('*', 'modal-fixture-unknown'), module, redirect, ...(shellOnlyParent ? { shellOnlyParent: true } : {}) });
     }
   }
   flatten(routes);
