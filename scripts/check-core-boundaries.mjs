@@ -35,6 +35,8 @@ const PROVIDER_NEUTRAL_PACKAGES = [
 const PROVIDER_NEUTRAL_ALLOWED_DEPENDENCIES = new Map([
   ["packages/sandbox", new Set([
     "@open-managed-agents/observability",
+    // Provider-free, dependency-free vocabulary (ADR 0014 §7).
+    "@open-managed-agents/runtime-resource-contract",
     "@open-managed-agents/shared",
   ])],
   ["packages/managed-runtime-sandbox", new Set([

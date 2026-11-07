@@ -73,6 +73,37 @@ export {
 } from "./orchestrator";
 
 export { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "./no-environment";
+
+// ADR 0014 Session sandbox port: readiness, declared persistence, legacy wrapper.
+export {
+  declarePersistenceCapabilities,
+  SandboxCapabilityMissingError,
+  SandboxNotReadyError,
+  SandboxProvisionFailedError,
+  SandboxReleasedError,
+  SandboxUnavailableError,
+  UNDECLARED_PERSISTENCE,
+} from "./session-sandbox-port";
+export type {
+  DeclaredDurability,
+  SandboxPersistenceCapabilities,
+  SandboxReleaseReason,
+  SessionSandbox,
+  SessionSandboxDriver,
+  SessionSandboxState,
+  WorkspacePersistenceDeclaration,
+} from "./session-sandbox-port";
+export { openSessionSandbox, withSandboxReadinessBarrier } from "./session-sandbox";
+export type {
+  OpenSessionSandboxOptions,
+  OptionalBarrierMethod,
+  SandboxBarrierPort,
+  SandboxReadinessBarrierOptions,
+  SessionSandboxErrorEvent,
+  SessionSandboxRetryPolicy,
+} from "./session-sandbox";
+export { wrapLegacySandboxFactory } from "./legacy-session-sandbox";
+export type { LegacySandboxDriverOptions } from "./legacy-session-sandbox";
 export {
   createSandboxImageCatalog,
   EMPTY_SANDBOX_IMAGE_CATALOG,
