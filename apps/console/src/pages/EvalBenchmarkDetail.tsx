@@ -45,7 +45,7 @@ export function AliasCell({ alias, t }: { alias: string | null; t: Messages }) {
   return alias ? (
     <span className="font-mono text-fg-muted">{alias}</span>
   ) : (
-    <span className="text-xs px-2 py-0.5 rounded-full bg-warning-subtle text-warning whitespace-nowrap">
+    <span className="inline-block max-w-full text-xs px-2 py-0.5 rounded-md bg-warning-subtle text-warning [overflow-wrap:anywhere]">
       {t.evals.noAliasWarning}
     </span>
   );
@@ -171,7 +171,8 @@ export function EvalBenchmarkDetail() {
   const linkRevision = requestedRevision !== undefined ? shownRevision : undefined;
   const ref = sourceRef(shownSource);
   const sep = <span className="text-fg-subtle">·</span>;
-  const th = "text-left px-3";
+  // Harbor rows have many columns; let headers and badges wrap instead of overlapping.
+  const th = "text-left px-3 whitespace-normal leading-tight";
 
   const actions = (c: EvalCase) => (
     <div className="flex items-center gap-0.5">
@@ -336,12 +337,12 @@ export function EvalBenchmarkDetail() {
                       <TableCell className="px-3 py-2 rounded-l-lg align-top">{nameCell(c)}</TableCell>
                       <TableCell className="px-3 py-2 font-mono text-xs text-fg-muted align-top" title={c.digest}>{shortDigest(c.digest)}</TableCell>
                       <TableCell className="px-3 py-2 font-mono text-xs text-fg-muted align-top whitespace-normal break-all">{c.image}</TableCell>
-                      <TableCell className="px-3 py-2 text-xs align-top"><AliasCell alias={c.image_alias} t={t} /></TableCell>
-                      <TableCell className="px-3 py-2 text-xs align-top"><SupportedCell c={c} t={t} /></TableCell>
-                      <TableCell className="px-3 py-2 text-xs text-fg-muted tabular-nums align-top">
+                      <TableCell className="px-3 py-2 text-xs align-top whitespace-normal"><AliasCell alias={c.image_alias} t={t} /></TableCell>
+                      <TableCell className="px-3 py-2 text-xs align-top whitespace-normal"><SupportedCell c={c} t={t} /></TableCell>
+                      <TableCell className="px-3 py-2 text-xs text-fg-muted tabular-nums align-top whitespace-normal">
                         {secs(c.agent_timeout_sec)} / {secs(c.verifier_timeout_sec)}
                       </TableCell>
-                      <TableCell className="px-3 py-2 text-xs text-fg-muted tabular-nums align-top">
+                      <TableCell className="px-3 py-2 text-xs text-fg-muted tabular-nums align-top whitespace-normal">
                         {c.cpus ?? "—"} CPU · {c.memory_mb != null ? `${c.memory_mb} MB` : "—"}
                       </TableCell>
                       <TableCell className="px-3 py-2 text-xs text-fg-muted align-top">{c.has_solution ? m.yes : m.no}</TableCell>
