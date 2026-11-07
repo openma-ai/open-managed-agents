@@ -1,0 +1,295 @@
+{
+  "shots": 484,
+  "pixelIdentical": 460,
+  "different": [
+    {
+      "name": "01-dashboard-dark-mobile-16.png",
+      "identical": false,
+      "differentPixels": 8,
+      "box": {
+        "left": 12,
+        "top": 402,
+        "right": 377,
+        "bottom": 455
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "01-dashboard-light-desktop-20.png",
+      "identical": false,
+      "differentPixels": 2,
+      "box": {
+        "left": 1406,
+        "top": 293,
+        "right": 1407,
+        "bottom": 293
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "01-dashboard-light-mobile-20.png",
+      "identical": false,
+      "differentPixels": 8,
+      "box": {
+        "left": 12,
+        "top": 402,
+        "right": 377,
+        "bottom": 455
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "20-route-sessions-dark-desktop-16.png",
+      "identical": false,
+      "differentPixels": 10,
+      "box": {
+        "left": 249,
+        "top": 192,
+        "right": 256,
+        "bottom": 199
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "20-route-sessions-light-mobile-16.png",
+      "identical": false,
+      "differentPixels": 3,
+      "box": {
+        "left": 12,
+        "top": 202,
+        "right": 17,
+        "bottom": 208
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "21-route-deployments-dark-mobile-16.png",
+      "identical": false,
+      "differentPixels": 17,
+      "box": {
+        "left": 12,
+        "top": 178,
+        "right": 142,
+        "bottom": 204
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "21-route-deployments-dark-mobile-20.png",
+      "identical": false,
+      "differentPixels": 39,
+      "box": {
+        "left": 12,
+        "top": 183,
+        "right": 147,
+        "bottom": 598
+      },
+      "maxChannelDelta": 2
+    },
+    {
+      "name": "22-route-files-light-mobile-16.png",
+      "identical": false,
+      "differentPixels": 19,
+      "box": {
+        "left": 12,
+        "top": 54,
+        "right": 377,
+        "bottom": 589
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "23-route-evals-dark-mobile-16.png",
+      "identical": false,
+      "differentPixels": 5,
+      "box": {
+        "left": 12,
+        "top": 323,
+        "right": 13,
+        "bottom": 325
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "24-route-environments-dark-desktop-20.png",
+      "identical": false,
+      "differentPixels": 11,
+      "box": {
+        "left": 255,
+        "top": 193,
+        "right": 498,
+        "bottom": 194
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "25-route-vaults-dark-mobile-16.png",
+      "identical": false,
+      "differentPixels": 16,
+      "box": {
+        "left": 12,
+        "top": 344,
+        "right": 19,
+        "bottom": 592
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "26-route-skills-light-desktop-16.png",
+      "identical": false,
+      "differentPixels": 3,
+      "box": {
+        "left": 249,
+        "top": 168,
+        "right": 254,
+        "bottom": 174
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "30-route-members-light-desktop-16.png",
+      "identical": false,
+      "differentPixels": 5,
+      "box": {
+        "left": 352,
+        "top": 224,
+        "right": 394,
+        "bottom": 225
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "30-route-members-light-desktop-20.png",
+      "identical": false,
+      "differentPixels": 12,
+      "box": {
+        "left": 267,
+        "top": 218,
+        "right": 319,
+        "bottom": 251
+      },
+      "maxChannelDelta": 2
+    },
+    {
+      "name": "32-route-runtimes-light-mobile-20.png",
+      "identical": false,
+      "differentPixels": 2,
+      "box": {
+        "left": 12,
+        "top": 324,
+        "right": 13,
+        "bottom": 326
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "34-route-bonds-dark-mobile-16.png",
+      "identical": false,
+      "differentPixels": 5,
+      "box": {
+        "left": 12,
+        "top": 317,
+        "right": 13,
+        "bottom": 319
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "closure-29-dark-mobile-16.png",
+      "identical": false,
+      "differentPixels": 17,
+      "box": {
+        "left": 12,
+        "top": 63,
+        "right": 14,
+        "bottom": 125
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "closure-29-light-desktop-16.png",
+      "identical": false,
+      "differentPixels": 11,
+      "box": {
+        "left": 261,
+        "top": 101,
+        "right": 262,
+        "bottom": 144
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "closure-29-light-mobile-16.png",
+      "identical": false,
+      "differentPixels": 11,
+      "box": {
+        "left": 12,
+        "top": 81,
+        "right": 13,
+        "bottom": 124
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "closure-30-dark-mobile-16.png",
+      "identical": false,
+      "differentPixels": 7,
+      "box": {
+        "left": 12,
+        "top": 56,
+        "right": 19,
+        "bottom": 62
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "closure-39-light-mobile-16.png",
+      "identical": false,
+      "differentPixels": 1,
+      "box": {
+        "left": 12,
+        "top": 220,
+        "right": 12,
+        "bottom": 220
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "closure-40-light-mobile-20.png",
+      "identical": false,
+      "differentPixels": 16,
+      "box": {
+        "left": 12,
+        "top": 316,
+        "right": 13,
+        "bottom": 552
+      },
+      "maxChannelDelta": 1
+    },
+    {
+      "name": "closure-6-dark-desktop-20.png",
+      "identical": false,
+      "differentPixels": 5,
+      "box": {
+        "left": 601,
+        "top": 314,
+        "right": 604,
+        "bottom": 315
+      },
+      "maxChannelDelta": 2
+    },
+    {
+      "name": "closure-6-dark-mobile-20.png",
+      "identical": false,
+      "differentPixels": 4,
+      "box": {
+        "left": 368,
+        "top": 509,
+        "right": 371,
+        "bottom": 510
+      },
+      "maxChannelDelta": 1
+    }
+  ],
+  "computedStyleDifferences": []
+}

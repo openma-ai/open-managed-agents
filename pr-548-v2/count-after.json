@@ -1,0 +1,2193 @@
+{
+  "tokens": [
+    "--border-chrome",
+    "--brand-fg",
+    "--chip-h",
+    "--combobox-menu-min-w",
+    "--console-gap-2xl",
+    "--console-gap-2xs",
+    "--console-gap-3xs",
+    "--console-gap-lg",
+    "--console-gap-md",
+    "--console-gap-sm",
+    "--console-gap-xl",
+    "--console-gap-xs",
+    "--console-pad-2xl",
+    "--console-pad-lg",
+    "--console-pad-md",
+    "--console-pad-sm",
+    "--console-pad-xl",
+    "--console-pad-xs",
+    "--console-radius-card",
+    "--console-radius-md",
+    "--console-radius-pill",
+    "--console-radius-popover",
+    "--console-radius-row",
+    "--console-radius-sm",
+    "--console-type-body",
+    "--console-type-kpi",
+    "--console-type-label",
+    "--console-type-section",
+    "--console-type-title",
+    "--console-type-ui",
+    "--control-h",
+    "--dashboard-frame-inset",
+    "--dashboard-kpi-h",
+    "--data-head-body-gap",
+    "--data-row-bg",
+    "--data-row-gap",
+    "--data-row-h",
+    "--density-unit",
+    "--detail-action-strip-h",
+    "--detail-frame-inset",
+    "--detail-layout-gap",
+    "--detail-rail-w",
+    "--filter-chip-clear-w",
+    "--filter-chip-max-w",
+    "--list-content-inset",
+    "--list-frame-inset",
+    "--list-toolbar-h",
+    "--list-toolbar-pad-bottom",
+    "--list-toolbar-pad-top",
+    "--local-combobox-menu-max-h",
+    "--menu-action-row-h",
+    "--menu-picker-row-h",
+    "--modal-confirmation-dim",
+    "--modal-viewport-cap",
+    "--overlay-top",
+    "--pill-active-bg",
+    "--pill-active-border",
+    "--pill-active-shadow",
+    "--pill-bg",
+    "--pill-border",
+    "--pill-hover-bg",
+    "--pill-hover-border",
+    "--pill-shadow",
+    "--scroll-fade-size",
+    "--settings-frame-inset",
+    "--settings-nav-w",
+    "--shadow-overlay",
+    "--shadow-pill",
+    "--shadow-pill-active",
+    "--shadow-popover",
+    "--shadow-route",
+    "--shell-header-bottom",
+    "--shell-restore-icon",
+    "--shell-route-radius",
+    "--shell-sidebar-max-w",
+    "--shell-sidebar-min-w",
+    "--shell-sidebar-w",
+    "--shell-slot-size",
+    "--shell-stage-gap",
+    "--shell-top-h",
+    "--sidebar-frame-inset",
+    "--sidebar-pill-gap",
+    "--sidebar-preview-bottom",
+    "--sidebar-preview-dim",
+    "--sidebar-preview-left",
+    "--sidebar-preview-radius",
+    "--sidebar-preview-top",
+    "--sidebar-row-h",
+    "--sidebar-row-inset",
+    "--sidebar-section-gap",
+    "--sidebar-track-gap",
+    "--surface-overlay",
+    "--surface-route",
+    "--surface-row-hover",
+    "--surface-row-selected",
+    "--surface-stage",
+    "--switch-h",
+    "--switch-inset",
+    "--switch-thumb-bg",
+    "--switch-thumb-size",
+    "--switch-w",
+    "--table-head-h",
+    "--tenant-avatar-optical-x",
+    "--topbar-gap",
+    "--type-line"
+  ],
+  "totals": {
+    "css": 104,
+    "tsxArbitrary": 58,
+    "inlineStyle": 3,
+    "total": 165
+  },
+  "files": {
+    "src/components/ai-elements/code-block.tsx": {
+      "css": 0,
+      "tsxArbitrary": 0,
+      "inlineStyle": 1
+    },
+    "src/components/ai-elements/message.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/AppBreadcrumb.tsx": {
+      "css": 0,
+      "tsxArbitrary": 3,
+      "inlineStyle": 0
+    },
+    "src/components/BrandLoader.tsx": {
+      "css": 0,
+      "tsxArbitrary": 4,
+      "inlineStyle": 0
+    },
+    "src/components/DataTable.tsx": {
+      "css": 0,
+      "tsxArbitrary": 5,
+      "inlineStyle": 0
+    },
+    "src/components/ErrorBoundary.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/ListPage.tsx": {
+      "css": 0,
+      "tsxArbitrary": 7,
+      "inlineStyle": 0
+    },
+    "src/components/LocalDebugOnlyWarning.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/NavigationProgress.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/OpenmaStartupLoader.tsx": {
+      "css": 0,
+      "tsxArbitrary": 2,
+      "inlineStyle": 0
+    },
+    "src/components/timeline/TimelineView.tsx": {
+      "css": 0,
+      "tsxArbitrary": 0,
+      "inlineStyle": 1
+    },
+    "src/components/Turnstile.tsx": {
+      "css": 0,
+      "tsxArbitrary": 2,
+      "inlineStyle": 0
+    },
+    "src/components/ui/checkbox.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/ui/dialog.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/ui/dropdown-menu.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/ui/input-group.tsx": {
+      "css": 0,
+      "tsxArbitrary": 4,
+      "inlineStyle": 0
+    },
+    "src/components/ui/modern-login-signup.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/ui/sidebar.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/components/ui/tabs.tsx": {
+      "css": 0,
+      "tsxArbitrary": 3,
+      "inlineStyle": 0
+    },
+    "src/components/ui/tooltip.tsx": {
+      "css": 0,
+      "tsxArbitrary": 2,
+      "inlineStyle": 0
+    },
+    "src/index.css": {
+      "css": 37,
+      "tsxArbitrary": 0,
+      "inlineStyle": 0
+    },
+    "src/integrations/pages/IntegrationsGitHubWorkspace.tsx": {
+      "css": 0,
+      "tsxArbitrary": 2,
+      "inlineStyle": 0
+    },
+    "src/pages/agents/AgentFormDialog.tsx": {
+      "css": 0,
+      "tsxArbitrary": 3,
+      "inlineStyle": 0
+    },
+    "src/pages/Dashboard.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/DeploymentDetail.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/deployments/shared.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/EvalCaseDetail.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/evals/GitRefPicker.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/FilesList.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/Login.tsx": {
+      "css": 0,
+      "tsxArbitrary": 2,
+      "inlineStyle": 0
+    },
+    "src/pages/MemoryStoreDetail.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/session-detail/Panels.tsx": {
+      "css": 0,
+      "tsxArbitrary": 2,
+      "inlineStyle": 0
+    },
+    "src/pages/session-detail/Trajectory.tsx": {
+      "css": 0,
+      "tsxArbitrary": 1,
+      "inlineStyle": 0
+    },
+    "src/pages/SessionDetail.tsx": {
+      "css": 0,
+      "tsxArbitrary": 0,
+      "inlineStyle": 1
+    },
+    "src/styles/console-list.css": {
+      "css": 7,
+      "tsxArbitrary": 0,
+      "inlineStyle": 0
+    },
+    "src/styles/console-pages.css": {
+      "css": 51,
+      "tsxArbitrary": 0,
+      "inlineStyle": 0
+    },
+    "src/styles/console-shell.css": {
+      "css": 9,
+      "tsxArbitrary": 0,
+      "inlineStyle": 0
+    }
+  },
+  "hits": [
+    {
+      "file": "src/index.css",
+      "line": 129,
+      "category": "css",
+      "kind": "should-token",
+      "text": "font-size: 0.78125rem",
+      "literals": [
+        "0.78125rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 159,
+      "category": "css",
+      "kind": "should-token",
+      "text": "outline-offset: 2px",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 186,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding-block: 0 1rem",
+      "literals": [
+        "1rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 203,
+      "category": "css",
+      "kind": "should-token",
+      "text": "box-shadow: var(--shadow-input-rest, 0 1px 2px rgb(0 0 0 / 0.06))",
+      "literals": [
+        "2px",
+        "rgb(…)"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 215,
+      "category": "css",
+      "kind": "should-token",
+      "text": "max-height: 240px",
+      "literals": [
+        "240px"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 216,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding: 0 0.25rem",
+      "literals": [
+        "0.25rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 219,
+      "category": "css",
+      "kind": "should-token",
+      "text": "font-size: 0.875rem",
+      "literals": [
+        "0.875rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 220,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 1.75rem",
+      "literals": [
+        "1.75rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 236,
+      "category": "css",
+      "kind": "should-token",
+      "text": "border-radius: 0.5rem",
+      "literals": [
+        "0.5rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 248,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 0.375rem",
+      "literals": [
+        "0.375rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 250,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding: 0 0.25rem",
+      "literals": [
+        "0.25rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 255,
+      "category": "css",
+      "kind": "should-token",
+      "text": "max-width: 13rem",
+      "literals": [
+        "13rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 259,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 0.375rem",
+      "literals": [
+        "0.375rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 261,
+      "category": "css",
+      "kind": "should-token",
+      "text": "border-radius: 0.5rem",
+      "literals": [
+        "0.5rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 262,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding: 0.125rem 0.25rem 0.125rem 0.125rem",
+      "literals": [
+        "0.125rem",
+        "0.25rem",
+        "0.125rem",
+        "0.125rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 264,
+      "category": "css",
+      "kind": "should-token",
+      "text": "font-size: 0.75rem",
+      "literals": [
+        "0.75rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 268,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 1.375rem",
+      "literals": [
+        "1.375rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 269,
+      "category": "css",
+      "kind": "should-token",
+      "text": "height: 1.375rem",
+      "literals": [
+        "1.375rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 270,
+      "category": "css",
+      "kind": "should-token",
+      "text": "border-radius: 0.375rem",
+      "literals": [
+        "0.375rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 282,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 1.25rem",
+      "literals": [
+        "1.25rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 283,
+      "category": "css",
+      "kind": "should-token",
+      "text": "height: 1.25rem",
+      "literals": [
+        "1.25rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 287,
+      "category": "css",
+      "kind": "should-token",
+      "text": "border-radius: 999px",
+      "literals": [
+        "999px"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 297,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 6px",
+      "literals": [
+        "6px"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 298,
+      "category": "css",
+      "kind": "should-token",
+      "text": "height: 6px",
+      "literals": [
+        "6px"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 305,
+      "category": "css",
+      "kind": "should-token",
+      "text": "border-radius: 3px",
+      "literals": [
+        "3px"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 320,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #8b949e",
+      "literals": [
+        "#8b949e"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 326,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #ff7b72",
+      "literals": [
+        "#ff7b72"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 331,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #a5d6ff",
+      "literals": [
+        "#a5d6ff"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 336,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #79c0ff",
+      "literals": [
+        "#79c0ff"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 341,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #ffa657",
+      "literals": [
+        "#ffa657"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 346,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #d2a8ff",
+      "literals": [
+        "#d2a8ff"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 351,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #ffa657",
+      "literals": [
+        "#ffa657"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 354,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #ffdcd7",
+      "literals": [
+        "#ffdcd7"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 355,
+      "category": "css",
+      "kind": "hljs",
+      "text": "background-color: #67060c",
+      "literals": [
+        "#67060c"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 358,
+      "category": "css",
+      "kind": "hljs",
+      "text": "color: #aff5b4",
+      "literals": [
+        "#aff5b4"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 359,
+      "category": "css",
+      "kind": "hljs",
+      "text": "background-color: #033a16",
+      "literals": [
+        "#033a16"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 435,
+      "category": "css",
+      "kind": "should-token",
+      "text": "transform: translateX(calc(100% + 1rem))",
+      "literals": [
+        "1rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 440,
+      "category": "css",
+      "kind": "should-token",
+      "text": "transform: translateX(calc(100% + 1rem))",
+      "literals": [
+        "1rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 444,
+      "category": "css",
+      "kind": "should-token",
+      "text": "transform: translateX(calc(100% + 1rem))",
+      "literals": [
+        "1rem"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 570,
+      "category": "css",
+      "kind": "should-token",
+      "text": "margin: 1.5cm",
+      "literals": [
+        "1.5cm"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 574,
+      "category": "css",
+      "kind": "should-token",
+      "text": "background: #ffffff !important",
+      "literals": [
+        "#ffffff"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 575,
+      "category": "css",
+      "kind": "should-token",
+      "text": "color: #000000 !important",
+      "literals": [
+        "#000000"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 576,
+      "category": "css",
+      "kind": "should-token",
+      "text": "font-size: 11pt",
+      "literals": [
+        "11pt"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 608,
+      "category": "css",
+      "kind": "should-token",
+      "text": "font-size: 0.85em",
+      "literals": [
+        "0.85em"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 609,
+      "category": "css",
+      "kind": "should-token",
+      "text": "color: #555555",
+      "literals": [
+        "#555555"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 653,
+      "category": "css",
+      "kind": "should-token",
+      "text": "background: #f5f5f5 !important",
+      "literals": [
+        "#f5f5f5"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 654,
+      "category": "css",
+      "kind": "should-token",
+      "text": "color: #1a1a1a !important",
+      "literals": [
+        "#1a1a1a"
+      ]
+    },
+    {
+      "file": "src/index.css",
+      "line": 663,
+      "category": "css",
+      "kind": "should-token",
+      "text": "color: #000000 !important",
+      "literals": [
+        "#000000"
+      ]
+    },
+    {
+      "file": "src/styles/console-list.css",
+      "line": 141,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: min(256px, 38vw)",
+      "literals": [
+        "256px"
+      ]
+    },
+    {
+      "file": "src/styles/console-list.css",
+      "line": 142,
+      "category": "css",
+      "kind": "should-token",
+      "text": "min-width: 136px",
+      "literals": [
+        "136px"
+      ]
+    },
+    {
+      "file": "src/styles/console-list.css",
+      "line": 143,
+      "category": "css",
+      "kind": "should-token",
+      "text": "flex: 0 1 256px",
+      "literals": [
+        "256px"
+      ]
+    },
+    {
+      "file": "src/styles/console-list.css",
+      "line": 298,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: min(100%, 420px)",
+      "literals": [
+        "420px"
+      ]
+    },
+    {
+      "file": "src/styles/console-list.css",
+      "line": 313,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 168px",
+      "literals": [
+        "168px"
+      ]
+    },
+    {
+      "file": "src/styles/console-list.css",
+      "line": 314,
+      "category": "css",
+      "kind": "should-token",
+      "text": "min-width: 136px",
+      "literals": [
+        "136px"
+      ]
+    },
+    {
+      "file": "src/styles/console-list.css",
+      "line": 315,
+      "category": "css",
+      "kind": "should-token",
+      "text": "flex: 0 1 168px",
+      "literals": [
+        "168px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 13,
+      "category": "css",
+      "kind": "should-token",
+      "text": "grid-template-columns: minmax(0, 1fr) minmax(300px, var(--detail-rail-w))",
+      "literals": [
+        "300px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 42,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 34px",
+      "literals": [
+        "34px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 46,
+      "category": "css",
+      "kind": "should-token",
+      "text": "max-width: 68ch",
+      "literals": [
+        "68ch"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 64,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 20px",
+      "literals": [
+        "20px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 85,
+      "category": "css",
+      "kind": "should-token",
+      "text": "grid-template-columns: minmax(88px, 0.42fr) minmax(0, 1fr)",
+      "literals": [
+        "88px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 158,
+      "category": "css",
+      "kind": "should-token",
+      "text": "max-height: 256px",
+      "literals": [
+        "256px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 177,
+      "category": "css",
+      "kind": "should-token",
+      "text": "min-width: 560px",
+      "literals": [
+        "560px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 212,
+      "category": "css",
+      "kind": "should-token",
+      "text": "min-width: 1044px",
+      "literals": [
+        "1044px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 215,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 160px",
+      "literals": [
+        "160px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 216,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 160px",
+      "literals": [
+        "160px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 217,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 152px",
+      "literals": [
+        "152px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 219,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 82px",
+      "literals": [
+        "82px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 220,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 190px",
+      "literals": [
+        "190px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 221,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 120px",
+      "literals": [
+        "120px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 233,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: min(100%, 760px)",
+      "literals": [
+        "760px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 250,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 34px",
+      "literals": [
+        "34px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 282,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 16px",
+      "literals": [
+        "16px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 349,
+      "category": "css",
+      "kind": "should-token",
+      "text": "transform: translateX(calc(var(--switch-w) - var(--switch-thumb-size) - 2 * var(--switch-inset) - 2px))",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 358,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: min(100%, 1100px)",
+      "literals": [
+        "1100px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 364,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: min(100%, 900px)",
+      "literals": [
+        "900px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 368,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: min(100%, 760px)",
+      "literals": [
+        "760px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 381,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 34px",
+      "literals": [
+        "34px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 395,
+      "category": "css",
+      "kind": "should-token",
+      "text": "max-width: 1560px",
+      "literals": [
+        "1560px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 405,
+      "category": "css",
+      "kind": "should-token",
+      "text": "font-size: clamp(24px, 3vw, 34px)",
+      "literals": [
+        "24px",
+        "34px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 412,
+      "category": "css",
+      "kind": "should-token",
+      "text": "max-width: 680px",
+      "literals": [
+        "680px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 413,
+      "category": "css",
+      "kind": "should-token",
+      "text": "margin-top: 7px",
+      "literals": [
+        "7px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 416,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 20px",
+      "literals": [
+        "20px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 450,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 28px",
+      "literals": [
+        "28px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 463,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 14px",
+      "literals": [
+        "14px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 499,
+      "category": "css",
+      "kind": "should-token",
+      "text": "grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr)",
+      "literals": [
+        "320px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 501,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 12px",
+      "literals": [
+        "12px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 508,
+      "category": "css",
+      "kind": "should-token",
+      "text": "border-radius: 8px",
+      "literals": [
+        "8px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 514,
+      "category": "css",
+      "kind": "should-token",
+      "text": "min-height: 54px",
+      "literals": [
+        "54px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 517,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 16px",
+      "literals": [
+        "16px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 518,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding: 11px 14px",
+      "literals": [
+        "11px",
+        "14px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 526,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 20px",
+      "literals": [
+        "20px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 533,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 16px",
+      "literals": [
+        "16px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 547,
+      "category": "css",
+      "kind": "should-token",
+      "text": "grid-template-columns: 132px minmax(0, 1fr)",
+      "literals": [
+        "132px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 548,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 16px",
+      "literals": [
+        "16px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 549,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding: 14px",
+      "literals": [
+        "14px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 562,
+      "category": "css",
+      "kind": "should-token",
+      "text": "line-height: 15px",
+      "literals": [
+        "15px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 566,
+      "category": "css",
+      "kind": "should-token",
+      "text": "margin-top: 2px",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 586,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 8px",
+      "literals": [
+        "8px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 587,
+      "category": "css",
+      "kind": "should-token",
+      "text": "margin-top: calc(var(--density-unit) * 9)",
+      "literals": [
+        "density-unit*9"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 589,
+      "category": "css",
+      "kind": "should-token",
+      "text": "border-radius: 6px",
+      "literals": [
+        "6px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 590,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding: 4px 7px",
+      "literals": [
+        "4px",
+        "7px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 672,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 16px",
+      "literals": [
+        "16px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 680,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 6px",
+      "literals": [
+        "6px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 737,
+      "category": "css",
+      "kind": "should-token",
+      "text": "--detail-frame-inset: 18px",
+      "literals": [
+        "18px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 738,
+      "category": "css",
+      "kind": "should-token",
+      "text": "--dashboard-frame-inset: 14px",
+      "literals": [
+        "14px"
+      ]
+    },
+    {
+      "file": "src/styles/console-pages.css",
+      "line": 747,
+      "category": "css",
+      "kind": "should-token",
+      "text": "gap: 6px",
+      "literals": [
+        "6px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 241,
+      "category": "css",
+      "kind": "should-token",
+      "text": "right: -4px",
+      "literals": [
+        "-4px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 242,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 8px",
+      "literals": [
+        "8px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 252,
+      "category": "css",
+      "kind": "should-token",
+      "text": "left: 3px",
+      "literals": [
+        "3px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 253,
+      "category": "css",
+      "kind": "should-token",
+      "text": "width: 2px",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 254,
+      "category": "css",
+      "kind": "should-token",
+      "text": "height: 32px",
+      "literals": [
+        "32px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 391,
+      "category": "css",
+      "kind": "should-token",
+      "text": "padding: 5px var(--sidebar-row-inset)",
+      "literals": [
+        "5px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 415,
+      "category": "css",
+      "kind": "should-token",
+      "text": "font-size: 9px",
+      "literals": [
+        "9px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 423,
+      "category": "css",
+      "kind": "should-token",
+      "text": "max-height: min(288px, var(--radix-dropdown-menu-content-available-height))",
+      "literals": [
+        "288px"
+      ]
+    },
+    {
+      "file": "src/styles/console-shell.css",
+      "line": 433,
+      "category": "css",
+      "kind": "should-token",
+      "text": "grid-template-columns: var(--shell-slot-size) minmax(0, 1fr) 14px",
+      "literals": [
+        "14px"
+      ]
+    },
+    {
+      "file": "src/components/AppBreadcrumb.tsx",
+      "line": 77,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-w-[40%]",
+      "literals": [
+        "40%"
+      ]
+    },
+    {
+      "file": "src/components/AppBreadcrumb.tsx",
+      "line": 80,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-w-[200px]",
+      "literals": [
+        "200px"
+      ]
+    },
+    {
+      "file": "src/components/AppBreadcrumb.tsx",
+      "line": 80,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "sm:max-w-[280px]",
+      "literals": [
+        "280px"
+      ]
+    },
+    {
+      "file": "src/components/BrandLoader.tsx",
+      "line": 17,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "gap-[1px]",
+      "literals": [
+        "1px"
+      ]
+    },
+    {
+      "file": "src/components/BrandLoader.tsx",
+      "line": 18,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "gap-[2px]",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/components/BrandLoader.tsx",
+      "line": 19,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "gap-[2px]",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/components/BrandLoader.tsx",
+      "line": 38,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "px-[0.4em]",
+      "literals": [
+        "0.4em"
+      ]
+    },
+    {
+      "file": "src/components/DataTable.tsx",
+      "line": 290,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "min-h-[350px]",
+      "literals": [
+        "350px"
+      ]
+    },
+    {
+      "file": "src/components/DataTable.tsx",
+      "line": 433,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[55%]",
+      "literals": [
+        "55%"
+      ]
+    },
+    {
+      "file": "src/components/DataTable.tsx",
+      "line": 434,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[42%]",
+      "literals": [
+        "42%"
+      ]
+    },
+    {
+      "file": "src/components/DataTable.tsx",
+      "line": 436,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[80%]",
+      "literals": [
+        "80%"
+      ]
+    },
+    {
+      "file": "src/components/DataTable.tsx",
+      "line": 437,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[62%]",
+      "literals": [
+        "62%"
+      ]
+    },
+    {
+      "file": "src/components/ErrorBoundary.tsx",
+      "line": 52,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "min-h-[60vh]",
+      "literals": [
+        "60vh"
+      ]
+    },
+    {
+      "file": "src/components/ListPage.tsx",
+      "line": 202,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[55%]",
+      "literals": [
+        "55%"
+      ]
+    },
+    {
+      "file": "src/components/ListPage.tsx",
+      "line": 202,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[42%]",
+      "literals": [
+        "42%"
+      ]
+    },
+    {
+      "file": "src/components/ListPage.tsx",
+      "line": 204,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[38%]",
+      "literals": [
+        "38%"
+      ]
+    },
+    {
+      "file": "src/components/ListPage.tsx",
+      "line": 204,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[48%]",
+      "literals": [
+        "48%"
+      ]
+    },
+    {
+      "file": "src/components/ListPage.tsx",
+      "line": 205,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[85%]",
+      "literals": [
+        "85%"
+      ]
+    },
+    {
+      "file": "src/components/ListPage.tsx",
+      "line": 205,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[72%]",
+      "literals": [
+        "72%"
+      ]
+    },
+    {
+      "file": "src/components/ListPage.tsx",
+      "line": 205,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[60%]",
+      "literals": [
+        "60%"
+      ]
+    },
+    {
+      "file": "src/components/LocalDebugOnlyWarning.tsx",
+      "line": 26,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "text-[11px]",
+      "literals": [
+        "11px"
+      ]
+    },
+    {
+      "file": "src/components/NavigationProgress.tsx",
+      "line": 50,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "h-[2px]",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/components/OpenmaStartupLoader.tsx",
+      "line": 9,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "h-[72px]",
+      "literals": [
+        "72px"
+      ]
+    },
+    {
+      "file": "src/components/OpenmaStartupLoader.tsx",
+      "line": 9,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[88px]",
+      "literals": [
+        "88px"
+      ]
+    },
+    {
+      "file": "src/components/Turnstile.tsx",
+      "line": 178,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "min-h-[140px]",
+      "literals": [
+        "140px"
+      ]
+    },
+    {
+      "file": "src/components/Turnstile.tsx",
+      "line": 178,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "min-h-[65px]",
+      "literals": [
+        "65px"
+      ]
+    },
+    {
+      "file": "src/components/ai-elements/code-block.tsx",
+      "line": 317,
+      "category": "inlineStyle",
+      "kind": "should-token",
+      "text": "containIntrinsicSize: \"auto 200px\"",
+      "literals": [
+        "200px"
+      ]
+    },
+    {
+      "file": "src/components/ai-elements/message.tsx",
+      "line": 40,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-w-[95%]",
+      "literals": [
+        "95%"
+      ]
+    },
+    {
+      "file": "src/components/timeline/TimelineView.tsx",
+      "line": 395,
+      "category": "inlineStyle",
+      "kind": "should-token",
+      "text": "containIntrinsicSize: \"auto 48px\"",
+      "literals": [
+        "48px"
+      ]
+    },
+    {
+      "file": "src/components/ui/button.tsx",
+      "line": 28,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[min(var(--radius-md),10px)]",
+      "literals": [
+        "10px"
+      ]
+    },
+    {
+      "file": "src/components/ui/button.tsx",
+      "line": 29,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[min(var(--radius-md),12px)]",
+      "literals": [
+        "12px"
+      ]
+    },
+    {
+      "file": "src/components/ui/button.tsx",
+      "line": 33,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[min(var(--radius-md),10px)]",
+      "literals": [
+        "10px"
+      ]
+    },
+    {
+      "file": "src/components/ui/button.tsx",
+      "line": 35,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[min(var(--radius-md),12px)]",
+      "literals": [
+        "12px"
+      ]
+    },
+    {
+      "file": "src/components/ui/checkbox.tsx",
+      "line": 15,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "rounded-[4px]",
+      "literals": [
+        "4px"
+      ]
+    },
+    {
+      "file": "src/components/ui/dialog.tsx",
+      "line": 64,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-w-[calc(100%-2rem)]",
+      "literals": [
+        "100%",
+        "-2rem"
+      ]
+    },
+    {
+      "file": "src/components/ui/dropdown-menu.tsx",
+      "line": 247,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "min-w-[96px]",
+      "literals": [
+        "96px"
+      ]
+    },
+    {
+      "file": "src/components/ui/input-group.tsx",
+      "line": 24,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[calc(var(--radius)-5px)]",
+      "literals": [
+        "-5px"
+      ]
+    },
+    {
+      "file": "src/components/ui/input-group.tsx",
+      "line": 29,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "ml-[-0.3rem]",
+      "literals": [
+        "-0.3rem"
+      ]
+    },
+    {
+      "file": "src/components/ui/input-group.tsx",
+      "line": 29,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "ml-[-0.15rem]",
+      "literals": [
+        "-0.15rem"
+      ]
+    },
+    {
+      "file": "src/components/ui/input-group.tsx",
+      "line": 31,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "mr-[-0.3rem]",
+      "literals": [
+        "-0.3rem"
+      ]
+    },
+    {
+      "file": "src/components/ui/input-group.tsx",
+      "line": 31,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "mr-[-0.15rem]",
+      "literals": [
+        "-0.15rem"
+      ]
+    },
+    {
+      "file": "src/components/ui/input-group.tsx",
+      "line": 71,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[calc(var(--radius)-3px)]",
+      "literals": [
+        "-3px"
+      ]
+    },
+    {
+      "file": "src/components/ui/input-group.tsx",
+      "line": 74,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[calc(var(--radius)-3px)]",
+      "literals": [
+        "-3px"
+      ]
+    },
+    {
+      "file": "src/components/ui/modern-login-signup.tsx",
+      "line": 29,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-w-[360px]",
+      "literals": [
+        "360px"
+      ]
+    },
+    {
+      "file": "src/components/ui/select.tsx",
+      "line": 45,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "rounded-[min(var(--radius-md),10px)]",
+      "literals": [
+        "10px"
+      ]
+    },
+    {
+      "file": "src/components/ui/sidebar.tsx",
+      "line": 235,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/components/ui/sidebar.tsx",
+      "line": 291,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "after:w-[2px]",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/components/ui/sidebar.tsx",
+      "line": 475,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "shadow-[0_0_0_1px_var(--sidebar-border)]",
+      "literals": [
+        "1px"
+      ]
+    },
+    {
+      "file": "src/components/ui/sidebar.tsx",
+      "line": 475,
+      "category": "tsxArbitrary",
+      "kind": "mixed",
+      "text": "hover:shadow-[0_0_0_1px_var(--sidebar-accent)]",
+      "literals": [
+        "1px"
+      ]
+    },
+    {
+      "file": "src/components/ui/tabs.tsx",
+      "line": 32,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "p-[3px]",
+      "literals": [
+        "3px"
+      ]
+    },
+    {
+      "file": "src/components/ui/tabs.tsx",
+      "line": 70,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "h-[calc(100%-1px)]",
+      "literals": [
+        "100%",
+        "-1px"
+      ]
+    },
+    {
+      "file": "src/components/ui/tabs.tsx",
+      "line": 75,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "tabs:after:bottom-[-5px]",
+      "literals": [
+        "-5px"
+      ]
+    },
+    {
+      "file": "src/components/ui/tooltip.tsx",
+      "line": 51,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "translate-y-[calc(-50%_-_2px)]",
+      "literals": [
+        "-50%",
+        "2px"
+      ]
+    },
+    {
+      "file": "src/components/ui/tooltip.tsx",
+      "line": 51,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "rounded-[2px]",
+      "literals": [
+        "2px"
+      ]
+    },
+    {
+      "file": "src/integrations/pages/IntegrationsGitHubWorkspace.tsx",
+      "line": 112,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "lg:grid-cols-[1fr_280px]",
+      "literals": [
+        "280px"
+      ]
+    },
+    {
+      "file": "src/integrations/pages/IntegrationsGitHubWorkspace.tsx",
+      "line": 409,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-w-[160px]",
+      "literals": [
+        "160px"
+      ]
+    },
+    {
+      "file": "src/pages/Dashboard.tsx",
+      "line": 200,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[42%]",
+      "literals": [
+        "42%"
+      ]
+    },
+    {
+      "file": "src/pages/DeploymentDetail.tsx",
+      "line": 173,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "sm:grid-cols-[160px_minmax(0,1fr)]",
+      "literals": [
+        "160px"
+      ]
+    },
+    {
+      "file": "src/pages/EvalCaseDetail.tsx",
+      "line": 148,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-h-[28rem]",
+      "literals": [
+        "28rem"
+      ]
+    },
+    {
+      "file": "src/pages/FilesList.tsx",
+      "line": 126,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-w-[280px]",
+      "literals": [
+        "280px"
+      ]
+    },
+    {
+      "file": "src/pages/Login.tsx",
+      "line": 383,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "tracking-[-0.015em]",
+      "literals": [
+        "-0.015em"
+      ]
+    },
+    {
+      "file": "src/pages/Login.tsx",
+      "line": 553,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "tracking-[0.5em]",
+      "literals": [
+        "0.5em"
+      ]
+    },
+    {
+      "file": "src/pages/MemoryStoreDetail.tsx",
+      "line": 536,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-h-[40vh]",
+      "literals": [
+        "40vh"
+      ]
+    },
+    {
+      "file": "src/pages/SessionDetail.tsx",
+      "line": 1425,
+      "category": "inlineStyle",
+      "kind": "should-token",
+      "text": "paddingRight: \"0.75rem\"",
+      "literals": [
+        "0.75rem"
+      ]
+    },
+    {
+      "file": "src/pages/agents/AgentFormDialog.tsx",
+      "line": 584,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-h-[85vh]",
+      "literals": [
+        "85vh"
+      ]
+    },
+    {
+      "file": "src/pages/agents/AgentFormDialog.tsx",
+      "line": 782,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "min-h-[300px]",
+      "literals": [
+        "300px"
+      ]
+    },
+    {
+      "file": "src/pages/agents/AgentFormDialog.tsx",
+      "line": 983,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "grid-cols-[minmax(0,1fr)_9rem]",
+      "literals": [
+        "9rem"
+      ]
+    },
+    {
+      "file": "src/pages/deployments/shared.tsx",
+      "line": 173,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "md:grid-cols-[200px_minmax(0,1fr)]",
+      "literals": [
+        "200px"
+      ]
+    },
+    {
+      "file": "src/pages/evals/GitRefPicker.tsx",
+      "line": 112,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "min-w-[260px]",
+      "literals": [
+        "260px"
+      ]
+    },
+    {
+      "file": "src/pages/session-detail/Panels.tsx",
+      "line": 69,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[420px]",
+      "literals": [
+        "420px"
+      ]
+    },
+    {
+      "file": "src/pages/session-detail/Panels.tsx",
+      "line": 149,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "w-[420px]",
+      "literals": [
+        "420px"
+      ]
+    },
+    {
+      "file": "src/pages/session-detail/Trajectory.tsx",
+      "line": 128,
+      "category": "tsxArbitrary",
+      "kind": "should-token",
+      "text": "max-h-[60vh]",
+      "literals": [
+        "60vh"
+      ]
+    }
+  ],
+  "allowed": {
+    "hljs": 11,
+    "inTokenDef": 212,
+    "tsxMixed": 11
+  },
+  "health": {
+    "cssVarLines": 478,
+    "tsxVarArbitrary": 291
+  }
+}

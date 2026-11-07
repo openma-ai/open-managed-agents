@@ -1,0 +1,512 @@
+{
+  "routes": [
+    {
+      "pattern": "/",
+      "url": "/",
+      "module": "./pages/Dashboard"
+    },
+    {
+      "pattern": "/agents",
+      "url": "/agents",
+      "module": "./pages/AgentsList"
+    },
+    {
+      "pattern": "/agents/:id",
+      "url": "/agents/agent_fixture",
+      "module": "./pages/AgentDetail"
+    },
+    {
+      "pattern": "/sessions",
+      "url": "/sessions",
+      "module": "./pages/SessionsList"
+    },
+    {
+      "pattern": "/sessions/:id",
+      "url": "/sessions/session_fixture",
+      "module": "./pages/SessionDetail"
+    },
+    {
+      "pattern": "/deployments",
+      "url": "/deployments",
+      "module": "./pages/DeploymentsList"
+    },
+    {
+      "pattern": "/deployments/new",
+      "url": "/deployments/new",
+      "module": "./pages/DeploymentNew"
+    },
+    {
+      "pattern": "/deployments/:id",
+      "url": "/deployments/deployment_fixture",
+      "module": "./pages/DeploymentDetail"
+    },
+    {
+      "pattern": "/files",
+      "url": "/files",
+      "module": "./pages/FilesList"
+    },
+    {
+      "pattern": "/evals",
+      "url": "/evals",
+      "module": "./pages/EvalRunsList"
+    },
+    {
+      "pattern": "/evals/benchmarks",
+      "url": "/evals/benchmarks",
+      "module": "./pages/EvalBenchmarksList"
+    },
+    {
+      "pattern": "/evals/benchmarks/:benchmarkId",
+      "url": "/evals/benchmarks/:benchmarkId",
+      "module": "./pages/EvalBenchmarkDetail"
+    },
+    {
+      "pattern": "/evals/benchmarks/:benchmarkId/cases/:caseName",
+      "url": "/evals/benchmarks/:benchmarkId/cases/:caseName",
+      "module": "./pages/EvalCaseDetail"
+    },
+    {
+      "pattern": "/evals/datasets",
+      "url": "/evals/datasets",
+      "redirect": "/evals/benchmarks"
+    },
+    {
+      "pattern": "/evals/datasets/:benchmarkId",
+      "url": "/evals/datasets/:benchmarkId"
+    },
+    {
+      "pattern": "/evals/:id",
+      "url": "/evals/eval_fixture",
+      "module": "./pages/EvalRunDetail"
+    },
+    {
+      "pattern": "/environments",
+      "url": "/environments",
+      "module": "./pages/EnvironmentsList"
+    },
+    {
+      "pattern": "/environments/:id",
+      "url": "/environments/env_fixture",
+      "module": "./pages/EnvironmentDetail"
+    },
+    {
+      "pattern": "/skills",
+      "url": "/skills",
+      "module": "./pages/SkillsList"
+    },
+    {
+      "pattern": "/vaults",
+      "url": "/vaults",
+      "module": "./pages/VaultsList"
+    },
+    {
+      "pattern": "/vaults/:id",
+      "url": "/vaults/vault_fixture",
+      "module": "./pages/VaultDetail"
+    },
+    {
+      "pattern": "/memory",
+      "url": "/memory",
+      "module": "./pages/MemoryStoresList"
+    },
+    {
+      "pattern": "/memory/:id",
+      "url": "/memory/ms_fixture",
+      "module": "./pages/MemoryStoreDetail"
+    },
+    {
+      "pattern": "/model-cards",
+      "url": "/model-cards",
+      "module": "./pages/ModelCardsList"
+    },
+    {
+      "pattern": "/budget",
+      "url": "/budget",
+      "module": "./pages/Budget"
+    },
+    {
+      "pattern": "/members",
+      "url": "/members",
+      "module": "./pages/WorkspaceMembers"
+    },
+    {
+      "pattern": "/api-keys",
+      "url": "/api-keys",
+      "module": "./pages/ApiKeysList"
+    },
+    {
+      "pattern": "/runtimes",
+      "url": "/runtimes",
+      "module": "./pages/RuntimesList"
+    },
+    {
+      "pattern": "/loops",
+      "url": "/loops",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/loops/new",
+      "url": "/loops/new",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/loops/templates",
+      "url": "/loops/templates",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/loops/:id",
+      "url": "/loops/loop_fixture",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/bonds",
+      "url": "/bonds",
+      "module": "./pages/Bonds"
+    },
+    {
+      "pattern": "/bonds/new",
+      "url": "/bonds/new",
+      "module": "./pages/Bonds"
+    },
+    {
+      "pattern": "/bonds/:id",
+      "url": "/bonds/slack:fixture",
+      "module": "./pages/Bonds"
+    },
+    {
+      "pattern": "/integrations/linear",
+      "url": "/integrations/linear",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/linear/publish",
+      "url": "/integrations/linear/publish",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/linear/install-pat",
+      "url": "/integrations/linear/install-pat",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/linear/installations/:id",
+      "url": "/integrations/linear/installations/installation_fixture",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/github",
+      "url": "/integrations/github",
+      "module": "./pages/IntegrationsGitHub"
+    },
+    {
+      "pattern": "/integrations/github/bind",
+      "url": "/integrations/github/bind",
+      "module": "./pages/IntegrationsGitHub"
+    },
+    {
+      "pattern": "/integrations/github/installations/:id",
+      "url": "/integrations/github/installations/installation_fixture",
+      "module": "./pages/IntegrationsGitHub"
+    },
+    {
+      "pattern": "/integrations/slack",
+      "url": "/integrations/slack",
+      "module": "./pages/IntegrationsSlack"
+    },
+    {
+      "pattern": "/integrations/slack/publish",
+      "url": "/integrations/slack/publish",
+      "module": "./pages/IntegrationsSlack"
+    },
+    {
+      "pattern": "/integrations/slack/installations/:id",
+      "url": "/integrations/slack/installations/installation_fixture",
+      "module": "./pages/IntegrationsSlack"
+    },
+    {
+      "pattern": "/integrations/feishu/*",
+      "url": "/integrations/feishu/modal-fixture-unknown",
+      "redirect": "/loops?template=feishu-agent"
+    },
+    {
+      "pattern": "/integrations",
+      "url": "/integrations",
+      "shellOnlyParent": true
+    },
+    {
+      "pattern": "/*",
+      "url": "/modal-fixture-unknown",
+      "redirect": "/agents"
+    }
+  ],
+  "cases": [
+    {
+      "name": "01-dashboard",
+      "route": "/"
+    },
+    {
+      "name": "02-list-agents",
+      "route": "/agents"
+    },
+    {
+      "name": "03-detail-agent",
+      "route": "/agents/agent_503_fixture_with_a_long_identifier_for_breadcrumb_truncation_checks_0123456789"
+    },
+    {
+      "name": "04-sidebar-desktop-full",
+      "route": "/agents"
+    },
+    {
+      "name": "05-sidebar-desktop-hidden-restore-gutter",
+      "route": "/agents"
+    },
+    {
+      "name": "06-sidebar-restore-hover",
+      "route": "/agents"
+    },
+    {
+      "name": "07-sidebar-desktop-preview",
+      "route": "/agents"
+    },
+    {
+      "name": "08-sidebar-resize-hover",
+      "route": "/agents"
+    },
+    {
+      "name": "09-tenant-menu-open",
+      "route": "/agents"
+    },
+    {
+      "name": "10-mobile-hidden",
+      "route": "/agents"
+    },
+    {
+      "name": "11-mobile-drawer",
+      "route": "/agents"
+    },
+    {
+      "name": "12-mobile-detail-breadcrumb",
+      "route": "/agents/agent_503_fixture_with_a_long_identifier_for_breadcrumb_truncation_checks_0123456789"
+    },
+    {
+      "name": "13-startup-loader",
+      "route": "/"
+    },
+    {
+      "name": "14-nav-progress-forced-visible",
+      "route": "/agents"
+    },
+    {
+      "name": "20-route-sessions",
+      "route": "/sessions"
+    },
+    {
+      "name": "21-route-deployments",
+      "route": "/deployments"
+    },
+    {
+      "name": "22-route-files",
+      "route": "/files"
+    },
+    {
+      "name": "23-route-evals",
+      "route": "/evals"
+    },
+    {
+      "name": "24-route-environments",
+      "route": "/environments"
+    },
+    {
+      "name": "25-route-vaults",
+      "route": "/vaults"
+    },
+    {
+      "name": "26-route-skills",
+      "route": "/skills"
+    },
+    {
+      "name": "27-route-memory",
+      "route": "/memory"
+    },
+    {
+      "name": "28-route-model-cards",
+      "route": "/model-cards"
+    },
+    {
+      "name": "29-route-budget",
+      "route": "/budget"
+    },
+    {
+      "name": "30-route-members",
+      "route": "/members"
+    },
+    {
+      "name": "31-route-api-keys",
+      "route": "/api-keys"
+    },
+    {
+      "name": "32-route-runtimes",
+      "route": "/runtimes"
+    },
+    {
+      "name": "33-route-loops",
+      "route": "/loops"
+    },
+    {
+      "name": "34-route-bonds",
+      "route": "/bonds"
+    },
+    {
+      "name": "40-loading-agent",
+      "route": "/agents/agent_503_fixture_with_a_long_identifier_for_breadcrumb_truncation_checks_0123456789"
+    },
+    {
+      "name": "41-loading-environment",
+      "route": "/environments/env_503"
+    },
+    {
+      "name": "42-loading-vault",
+      "route": "/vaults/vlt_503"
+    },
+    {
+      "name": "43-loading-memory-store",
+      "route": "/memory/ms_503"
+    },
+    {
+      "name": "44-loading-deployment",
+      "route": "/deployments/dep_503"
+    },
+    {
+      "name": "closure-2",
+      "route": "/agents/agent_fixture"
+    },
+    {
+      "name": "closure-4",
+      "route": "/sessions/session_fixture"
+    },
+    {
+      "name": "closure-6",
+      "route": "/deployments/new"
+    },
+    {
+      "name": "closure-7",
+      "route": "/deployments/deployment_fixture"
+    },
+    {
+      "name": "closure-10",
+      "route": "/evals/benchmarks"
+    },
+    {
+      "name": "closure-11",
+      "route": "/evals/benchmarks/benchmark_fixture"
+    },
+    {
+      "name": "closure-12",
+      "route": "/evals/benchmarks/benchmark_fixture/cases/case_fixture"
+    },
+    {
+      "name": "closure-13",
+      "route": "/evals/datasets"
+    },
+    {
+      "name": "closure-14",
+      "route": "/evals/datasets/benchmark_fixture"
+    },
+    {
+      "name": "closure-15",
+      "route": "/evals/eval_fixture"
+    },
+    {
+      "name": "closure-17",
+      "route": "/environments/env_fixture"
+    },
+    {
+      "name": "closure-20",
+      "route": "/vaults/vault_fixture"
+    },
+    {
+      "name": "closure-22",
+      "route": "/memory/ms_fixture"
+    },
+    {
+      "name": "closure-29",
+      "route": "/loops/new"
+    },
+    {
+      "name": "closure-30",
+      "route": "/loops/templates"
+    },
+    {
+      "name": "closure-31",
+      "route": "/loops/loop_fixture"
+    },
+    {
+      "name": "closure-33",
+      "route": "/bonds/new"
+    },
+    {
+      "name": "closure-34",
+      "route": "/bonds/slack:fixture"
+    },
+    {
+      "name": "closure-35",
+      "route": "/integrations/linear"
+    },
+    {
+      "name": "closure-36",
+      "route": "/integrations/linear/publish"
+    },
+    {
+      "name": "closure-37",
+      "route": "/integrations/linear/install-pat"
+    },
+    {
+      "name": "closure-38",
+      "route": "/integrations/linear/installations/installation_fixture"
+    },
+    {
+      "name": "closure-39",
+      "route": "/integrations/github"
+    },
+    {
+      "name": "closure-40",
+      "route": "/integrations/github/bind"
+    },
+    {
+      "name": "closure-41",
+      "route": "/integrations/github/installations/installation_fixture"
+    },
+    {
+      "name": "closure-42",
+      "route": "/integrations/slack"
+    },
+    {
+      "name": "closure-43",
+      "route": "/integrations/slack/publish"
+    },
+    {
+      "name": "closure-44",
+      "route": "/integrations/slack/installations/installation_fixture"
+    },
+    {
+      "name": "closure-45",
+      "route": "/integrations/feishu/modal-fixture-unknown"
+    },
+    {
+      "name": "closure-46",
+      "route": "/integrations"
+    },
+    {
+      "name": "closure-47",
+      "route": "/modal-fixture-unknown"
+    }
+  ],
+  "detailState": "loading",
+  "outsideShell": [
+    "/join",
+    "/login",
+    "/cli/login",
+    "/connect-runtime"
+  ]
+}

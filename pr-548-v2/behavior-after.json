@@ -1,0 +1,20 @@
+[
+  {
+    "font": 16,
+    "hitArea": 20,
+    "resize": "236→276px",
+    "collapse": true,
+    "restore": true,
+    "mobileDrawer": true,
+    "escape": true
+  },
+  {
+    "font": 20,
+    "hitArea": 25,
+    "resize": "236→276px",
+    "collapse": true,
+    "restore": true,
+    "mobileDrawer": true,
+    "escape": true
+  }
+]
