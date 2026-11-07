@@ -75,11 +75,11 @@ export function Modal({
       }}
     >
       <DialogContent
-        overlayClassName={confirmation ? "bg-black/35" : undefined}
+        overlayClassName={confirmation ? "bg-[var(--modal-confirmation-dim)]" : undefined}
         showCloseButton={!confirmation}
         aria-describedby={subtitle ? undefined : undefined}
         className={cn(
-          "console-modal max-h-[calc(85vh-var(--overlay-top))] flex flex-col gap-0 p-0",
+          "console-modal max-h-[calc(var(--modal-viewport-cap)-var(--overlay-top))] flex flex-col gap-0 p-0",
           widthClass,
           confirmation && "top-1/2 -translate-y-1/2",
         )}

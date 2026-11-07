@@ -92,6 +92,10 @@
   --menu-picker-row-h: var(--control-h);
   --tenant-avatar-optical-x: 0px;
   --overlay-top: 15vh;
+  /* Modal's viewport cap is separate from its top offset. Keep these
+     inherited so deployment styles and theme variants can override them. */
+  --modal-viewport-cap: 85vh;
+  --modal-confirmation-dim: rgb(0 0 0 / 35%);
   /* Edge fade for capped scroll containers (.console-scroll-fade). */
   --scroll-fade-size: var(--console-pad-2xl);
 
