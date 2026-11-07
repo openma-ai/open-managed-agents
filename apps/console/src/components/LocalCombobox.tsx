@@ -50,7 +50,7 @@ export interface LocalComboboxProps<T> {
   className?: string;
   /** Shown inside the dropdown when no options match. */
   emptyHint?: ReactNode;
-  /** Max dropdown height. Default 18rem. */
+  /** Max dropdown height. Defaults to the console's local-combobox menu token (18rem). */
   maxHeight?: string;
   disabled?: boolean;
   autoFocus?: boolean;
@@ -71,7 +71,7 @@ export function LocalCombobox<T>({
   placeholder,
   className,
   emptyHint,
-  maxHeight = "18rem",
+  maxHeight = "var(--local-combobox-menu-max-h)",
   disabled,
   autoFocus,
 }: LocalComboboxProps<T>) {

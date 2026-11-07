@@ -121,8 +121,8 @@
 }
 
 .console-filter-chip-clear {
-  width: 20px;
-  flex: 0 0 20px;
+  width: var(--filter-chip-clear-w);
+  flex: 0 0 var(--filter-chip-clear-w);
   padding: 0;
   margin-right: var(--console-gap-3xs);
 }
