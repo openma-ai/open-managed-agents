@@ -29,7 +29,7 @@
     //   3. durable_objects.bindings: { "name": "SANDBOX_FIX_GIT", "class_name": "SandboxFixGit" }
     //   4. migrations: a new tag with "new_sqlite_classes": ["SandboxFixGit"]
     //   5. apps/main SANDBOX_IMAGES var: {"fix-git": {"reference": "alexgshaw/fix-git:20251031",
-    //        "binding": "SANDBOX_FIX_GIT", "workdir": "/app"}}
+    //        "binding": "SANDBOX_FIX_GIT", "workdir": "/app/personal-site"}}
     // Repeat in env.production / env.staging when deploying those overlays.
   ],
 

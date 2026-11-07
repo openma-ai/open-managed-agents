@@ -19,7 +19,7 @@ plus two Cloudflare keys:
   "fix-git": {
     "reference": "alexgshaw/fix-git:20251031",
     "binding": "SANDBOX_FIX_GIT",
-    "workdir": "/app",
+    "workdir": "/app/personal-site",
     "label": "fix-git"
   }
 }
@@ -29,7 +29,7 @@ plus two Cloudflare keys:
 |---|---|
 | `reference` | The source image. Keep it equal to the Harbor task's `docker_image` so the eval importer maps the task to this alias. Not used to pull anything. |
 | `binding` | Required. The agent worker's Durable Object binding of the container class built from that image. |
-| `workdir` | The image's `WORKDIR` (absolute). Default `/workspace`. The CF SDK cannot read it from the image, so declare it. |
+| `workdir` | The image's `WORKDIR` (absolute), exactly as the image declares it (`docker inspect -f '{{.Config.WorkingDir}}' <image>`). Default `/workspace`. The CF SDK cannot read it from the image, so declare it. Evals run Harbor's solve.sh and tests in this directory: a wrong value makes every trial fail. |
 
 - `GET /v1/oma/sandbox_images` lists the aliases (never `reference`/`binding`).
 - `POST/PUT /v1/environments` accepts `_oma.sandbox_image` only for an alias in the catalog.
@@ -67,6 +67,14 @@ operator's deployment config.
 `/workspace` (ADR 0016). With a `workdir`, every `exec` and background process
 runs with that `cwd`. Workspace backups still cover `/workspace` (ADR 0016
 rollout step 4 is not done on Cloudflare).
+
+## Image WORKDIR and ENV for evals
+
+Harbor runs the oracle and the verifier in the image's `WORKDIR` with its
+`ENV`. On Cloudflare the eval runner takes the `WORKDIR` from the catalog's
+`workdir` and reads no registry: the container is built `FROM` the task image,
+so its `ENV` is already in every exec, and Docker Hub rate-limits the shared
+Workers egress (HTTP 429). Node still reads both from the image registry.
 
 ## Grading in the session sandbox
 

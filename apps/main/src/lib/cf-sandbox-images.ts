@@ -9,7 +9,7 @@
 //   SANDBOX_IMAGES='{"fix-git":{
 //     "reference": "alexgshaw/fix-git:20251031",   // the source image (Harbor task.toml docker_image)
 //     "binding":   "SANDBOX_FIX_GIT",              // agent worker DO binding of the container class
-//     "workdir":   "/app",                         // the image WORKDIR; default /workspace
+//     "workdir":   "/app/personal-site",           // the image WORKDIR, exactly; default /workspace
 //     "label":     "fix-git"}}'
 //
 // `reference` stays the original image so the eval importer can match a
