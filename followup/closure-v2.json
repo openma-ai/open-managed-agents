@@ -1,0 +1,355 @@
+{
+  "wrappers": {
+    "Modal": {
+      "directCount": 17,
+      "direct": [
+        "components/McpServerPickerModal.tsx",
+        "components/SkillSources.tsx",
+        "components/TenantSwitcher.tsx",
+        "pages/ApiKeysList.tsx",
+        "pages/DeploymentNew.tsx",
+        "pages/EnvironmentsList.tsx",
+        "pages/MemoryStoreDetail.tsx",
+        "pages/MemoryStoresList.tsx",
+        "pages/ModelCardsList.tsx",
+        "pages/RuntimesList.tsx",
+        "pages/SessionDetail.tsx",
+        "pages/SessionsList.tsx",
+        "pages/SkillsList.tsx",
+        "pages/VaultDetail.tsx",
+        "pages/VaultsList.tsx",
+        "pages/WorkspaceMembers.tsx",
+        "pages/session-detail/Trajectory.tsx"
+      ],
+      "closure": [
+        "components/AppShell.tsx",
+        "components/AppSidebar.tsx",
+        "components/ListPage.tsx",
+        "components/McpServerPickerModal.tsx",
+        "components/PageHeader.tsx",
+        "components/SkillSources.tsx",
+        "components/TenantSwitcher.tsx",
+        "main.tsx",
+        "pages/AgentDetail.tsx",
+        "pages/AgentsList.tsx",
+        "pages/ApiKeysList.tsx",
+        "pages/DeploymentNew.tsx",
+        "pages/EnvironmentsList.tsx",
+        "pages/MemoryStoreDetail.tsx",
+        "pages/MemoryStoresList.tsx",
+        "pages/ModelCardsList.tsx",
+        "pages/RuntimesList.tsx",
+        "pages/SessionDetail.tsx",
+        "pages/SessionsList.tsx",
+        "pages/SkillsList.tsx",
+        "pages/VaultDetail.tsx",
+        "pages/VaultsList.tsx",
+        "pages/WorkspaceMembers.tsx",
+        "pages/agents/AgentFormDialog.tsx",
+        "pages/session-detail/Trajectory.tsx"
+      ]
+    },
+    "Select": {
+      "directCount": 9,
+      "direct": [
+        "components/RuntimeAttachmentFields.tsx",
+        "components/SandboxImageSelect.tsx",
+        "pages/DeploymentNew.tsx",
+        "pages/EnvironmentDetail.tsx",
+        "pages/EnvironmentsList.tsx",
+        "pages/SessionsList.tsx",
+        "pages/VaultDetail.tsx",
+        "pages/agents/AgentFormDialog.tsx",
+        "pages/agents/HarnessPicker.tsx"
+      ],
+      "closure": [
+        "components/RuntimeAttachmentFields.tsx",
+        "components/SandboxImageSelect.tsx",
+        "main.tsx",
+        "pages/AgentDetail.tsx",
+        "pages/AgentsList.tsx",
+        "pages/DeploymentNew.tsx",
+        "pages/EnvironmentDetail.tsx",
+        "pages/EnvironmentsList.tsx",
+        "pages/SessionsList.tsx",
+        "pages/VaultDetail.tsx",
+        "pages/agents/AgentFormDialog.tsx",
+        "pages/agents/HarnessPicker.tsx"
+      ]
+    },
+    "Input": {
+      "directCount": 5,
+      "direct": [
+        "integrations/pages/IntegrationsLinearPatInstall.tsx",
+        "integrations/pages/IntegrationsLinearPublishWizard.tsx",
+        "integrations/pages/IntegrationsSlackPublishWizard.tsx",
+        "pages/ModelCardsList.tsx",
+        "pages/VaultDetail.tsx"
+      ],
+      "closure": [
+        "integrations/index.ts",
+        "integrations/pages/IntegrationsLinearPatInstall.tsx",
+        "integrations/pages/IntegrationsLinearPublishWizard.tsx",
+        "integrations/pages/IntegrationsSlackPublishWizard.tsx",
+        "main.tsx",
+        "pages/IntegrationsGitHub.tsx",
+        "pages/IntegrationsLinear.tsx",
+        "pages/IntegrationsSlack.tsx",
+        "pages/ModelCardsList.tsx",
+        "pages/VaultDetail.tsx"
+      ]
+    },
+    "Avatar": {
+      "directCount": 6,
+      "direct": [
+        "components/TenantSwitcher.tsx",
+        "components/UserProfile.tsx",
+        "integrations/pages/IntegrationsGitHubList.tsx",
+        "integrations/pages/IntegrationsLinearList.tsx",
+        "integrations/pages/IntegrationsSlackList.tsx",
+        "pages/CliLogin.tsx"
+      ],
+      "closure": [
+        "components/AppShell.tsx",
+        "components/AppSidebar.tsx",
+        "components/ListPage.tsx",
+        "components/PageHeader.tsx",
+        "components/TenantSwitcher.tsx",
+        "components/UserProfile.tsx",
+        "integrations/index.ts",
+        "integrations/pages/IntegrationsGitHubList.tsx",
+        "integrations/pages/IntegrationsLinearList.tsx",
+        "integrations/pages/IntegrationsSlackList.tsx",
+        "main.tsx",
+        "pages/AgentDetail.tsx",
+        "pages/CliLogin.tsx",
+        "pages/IntegrationsGitHub.tsx",
+        "pages/IntegrationsLinear.tsx",
+        "pages/IntegrationsSlack.tsx",
+        "pages/MemoryStoreDetail.tsx",
+        "pages/VaultDetail.tsx"
+      ]
+    }
+  },
+  "shellRoutes": [
+    {
+      "pattern": "/",
+      "url": "/",
+      "module": "./pages/Dashboard"
+    },
+    {
+      "pattern": "/agents",
+      "url": "/agents",
+      "module": "./pages/AgentsList"
+    },
+    {
+      "pattern": "/agents/:id",
+      "url": "/agents/agent_fixture",
+      "module": "./pages/AgentDetail"
+    },
+    {
+      "pattern": "/sessions",
+      "url": "/sessions",
+      "module": "./pages/SessionsList"
+    },
+    {
+      "pattern": "/sessions/:id",
+      "url": "/sessions/session_fixture",
+      "module": "./pages/SessionDetail"
+    },
+    {
+      "pattern": "/deployments",
+      "url": "/deployments",
+      "module": "./pages/DeploymentsList"
+    },
+    {
+      "pattern": "/deployments/new",
+      "url": "/deployments/new",
+      "module": "./pages/DeploymentNew"
+    },
+    {
+      "pattern": "/deployments/:id",
+      "url": "/deployments/deployment_fixture",
+      "module": "./pages/DeploymentDetail"
+    },
+    {
+      "pattern": "/files",
+      "url": "/files",
+      "module": "./pages/FilesList"
+    },
+    {
+      "pattern": "/evals",
+      "url": "/evals",
+      "module": "./pages/EvalRunsList"
+    },
+    {
+      "pattern": "/evals/:id",
+      "url": "/evals/eval_fixture",
+      "module": "./pages/EvalRunDetail"
+    },
+    {
+      "pattern": "/environments",
+      "url": "/environments",
+      "module": "./pages/EnvironmentsList"
+    },
+    {
+      "pattern": "/environments/:id",
+      "url": "/environments/env_fixture",
+      "module": "./pages/EnvironmentDetail"
+    },
+    {
+      "pattern": "/skills",
+      "url": "/skills",
+      "module": "./pages/SkillsList"
+    },
+    {
+      "pattern": "/vaults",
+      "url": "/vaults",
+      "module": "./pages/VaultsList"
+    },
+    {
+      "pattern": "/vaults/:id",
+      "url": "/vaults/vault_fixture",
+      "module": "./pages/VaultDetail"
+    },
+    {
+      "pattern": "/memory",
+      "url": "/memory",
+      "module": "./pages/MemoryStoresList"
+    },
+    {
+      "pattern": "/memory/:id",
+      "url": "/memory/ms_fixture",
+      "module": "./pages/MemoryStoreDetail"
+    },
+    {
+      "pattern": "/model-cards",
+      "url": "/model-cards",
+      "module": "./pages/ModelCardsList"
+    },
+    {
+      "pattern": "/budget",
+      "url": "/budget",
+      "module": "./pages/Budget"
+    },
+    {
+      "pattern": "/members",
+      "url": "/members",
+      "module": "./pages/WorkspaceMembers"
+    },
+    {
+      "pattern": "/api-keys",
+      "url": "/api-keys",
+      "module": "./pages/ApiKeysList"
+    },
+    {
+      "pattern": "/runtimes",
+      "url": "/runtimes",
+      "module": "./pages/RuntimesList"
+    },
+    {
+      "pattern": "/loops",
+      "url": "/loops",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/loops/new",
+      "url": "/loops/new",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/loops/templates",
+      "url": "/loops/templates",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/loops/:id",
+      "url": "/loops/loop_fixture",
+      "module": "./pages/Loops"
+    },
+    {
+      "pattern": "/bonds",
+      "url": "/bonds",
+      "module": "./pages/Bonds"
+    },
+    {
+      "pattern": "/bonds/new",
+      "url": "/bonds/new",
+      "module": "./pages/Bonds"
+    },
+    {
+      "pattern": "/bonds/:id",
+      "url": "/bonds/slack:fixture",
+      "module": "./pages/Bonds"
+    },
+    {
+      "pattern": "/integrations/linear",
+      "url": "/integrations/linear",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/linear/publish",
+      "url": "/integrations/linear/publish",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/linear/install-pat",
+      "url": "/integrations/linear/install-pat",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/linear/installations/:id",
+      "url": "/integrations/linear/installations/installation_fixture",
+      "module": "./pages/IntegrationsLinear"
+    },
+    {
+      "pattern": "/integrations/github",
+      "url": "/integrations/github",
+      "module": "./pages/IntegrationsGitHub"
+    },
+    {
+      "pattern": "/integrations/github/bind",
+      "url": "/integrations/github/bind",
+      "module": "./pages/IntegrationsGitHub"
+    },
+    {
+      "pattern": "/integrations/github/installations/:id",
+      "url": "/integrations/github/installations/installation_fixture",
+      "module": "./pages/IntegrationsGitHub"
+    },
+    {
+      "pattern": "/integrations/slack",
+      "url": "/integrations/slack",
+      "module": "./pages/IntegrationsSlack"
+    },
+    {
+      "pattern": "/integrations/slack/publish",
+      "url": "/integrations/slack/publish",
+      "module": "./pages/IntegrationsSlack"
+    },
+    {
+      "pattern": "/integrations/slack/installations/:id",
+      "url": "/integrations/slack/installations/installation_fixture",
+      "module": "./pages/IntegrationsSlack"
+    },
+    {
+      "pattern": "/integrations/feishu/*",
+      "url": "/integrations/feishu/modal-fixture-unknown",
+      "redirect": "/loops?template=feishu-agent"
+    },
+    {
+      "pattern": "/*",
+      "url": "/modal-fixture-unknown",
+      "redirect": "/agents"
+    }
+  ],
+  "pluginRoutes": [],
+  "shellReason": "Modal <- TenantSwitcher <- AppSidebar <- AppShell; every protected route mounts this shell.",
+  "outsideShell": [
+    "/join",
+    "/login",
+    "/cli/login",
+    "/connect-runtime"
+  ],
+  "outsideReason": "Separate router branches; no TenantSwitcher. Sharing a module (e.g. JoinWorkspace/WorkspaceMembers) does not mount every export in it."
+}

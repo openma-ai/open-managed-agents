@@ -1,0 +1,58 @@
+[
+  {
+    "group": "shell",
+    "name": "shell-loops-new-light-1280-16-closed.jpg",
+    "maxChannelDifference": 228,
+    "meanChannelDifference": 0.5088888888888888,
+    "pixelsAbove8": 2560
+  },
+  {
+    "group": "shell",
+    "name": "shell-environments-id-light-390-16-dismissed.jpg",
+    "maxChannelDifference": 1,
+    "meanChannelDifference": 0.00010016025641025641,
+    "pixelsAbove8": 0
+  },
+  {
+    "group": "shell",
+    "name": "shell-environments-id-light-390-20-closed.jpg",
+    "maxChannelDifference": 5,
+    "meanChannelDifference": 0.0004407051282051282,
+    "pixelsAbove8": 0
+  },
+  {
+    "group": "shell",
+    "name": "shell-environments-id-light-390-20-dismissed.jpg",
+    "maxChannelDifference": 1,
+    "meanChannelDifference": 0.00009615384615384615,
+    "pixelsAbove8": 0
+  },
+  {
+    "group": "shell",
+    "name": "shell-loops-new-light-390-20-closed.jpg",
+    "maxChannelDifference": 3,
+    "meanChannelDifference": 0.0005048076923076923,
+    "pixelsAbove8": 0
+  },
+  {
+    "group": "shell",
+    "name": "shell-environments-id-dark-390-16-closed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.0002884615384615385,
+    "pixelsAbove8": 0
+  },
+  {
+    "group": "shell",
+    "name": "shell-environments-id-dark-390-20-dismissed.jpg",
+    "maxChannelDifference": 2,
+    "meanChannelDifference": 0.0001362179487179487,
+    "pixelsAbove8": 0
+  },
+  {
+    "group": "shell",
+    "name": "shell-loops-new-dark-390-20-closed.jpg",
+    "maxChannelDifference": 4,
+    "meanChannelDifference": 0.0011097756410256411,
+    "pixelsAbove8": 0
+  }
+]

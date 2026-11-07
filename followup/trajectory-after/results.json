@@ -1,0 +1,126 @@
+{
+  "kind": "isolated real component; not route reachability",
+  "baseRef": "0d26903185e3fd8bb89c6499ae21f021e3a3b23e",
+  "results": [
+    {
+      "key": "trajectory-ready-light-1280-16",
+      "state": "ready",
+      "passed": true,
+      "maxHeight": "630px",
+      "height": 630,
+      "top": 135,
+      "bottom": 765,
+      "padding": "16px 24px",
+      "bodyClientHeight": 490,
+      "bodyScrollHeight": 572
+    },
+    {
+      "key": "trajectory-loading-light-1280-16",
+      "state": "loading",
+      "passed": true,
+      "maxHeight": "630px",
+      "height": 190,
+      "top": 135,
+      "bottom": 325,
+      "padding": "16px 24px",
+      "bodyClientHeight": 50,
+      "bodyScrollHeight": 50
+    },
+    {
+      "key": "trajectory-error-light-1280-16",
+      "state": "error",
+      "passed": true,
+      "maxHeight": "630px",
+      "height": 190,
+      "top": 135,
+      "bottom": 325,
+      "padding": "16px 24px",
+      "bodyClientHeight": 50,
+      "bodyScrollHeight": 50
+    },
+    {
+      "key": "trajectory-ready-light-390-16",
+      "state": "ready",
+      "passed": true,
+      "maxHeight": "448px",
+      "height": 448,
+      "top": 96,
+      "bottom": 544,
+      "padding": "16px 24px",
+      "bodyClientHeight": 268,
+      "bodyScrollHeight": 416
+    },
+    {
+      "key": "trajectory-ready-light-390-20",
+      "state": "ready",
+      "passed": true,
+      "maxHeight": "448px",
+      "height": 448,
+      "top": 96,
+      "bottom": 544,
+      "padding": "20px 30px",
+      "bodyClientHeight": 228,
+      "bodyScrollHeight": 424
+    },
+    {
+      "key": "trajectory-ready-dark-1280-16",
+      "state": "ready",
+      "passed": true,
+      "maxHeight": "630px",
+      "height": 630,
+      "top": 135,
+      "bottom": 765,
+      "padding": "16px 24px",
+      "bodyClientHeight": 490,
+      "bodyScrollHeight": 572
+    },
+    {
+      "key": "trajectory-loading-dark-1280-16",
+      "state": "loading",
+      "passed": true,
+      "maxHeight": "630px",
+      "height": 190,
+      "top": 135,
+      "bottom": 325,
+      "padding": "16px 24px",
+      "bodyClientHeight": 50,
+      "bodyScrollHeight": 50
+    },
+    {
+      "key": "trajectory-error-dark-1280-16",
+      "state": "error",
+      "passed": true,
+      "maxHeight": "630px",
+      "height": 190,
+      "top": 135,
+      "bottom": 325,
+      "padding": "16px 24px",
+      "bodyClientHeight": 50,
+      "bodyScrollHeight": 50
+    },
+    {
+      "key": "trajectory-ready-dark-390-16",
+      "state": "ready",
+      "passed": true,
+      "maxHeight": "448px",
+      "height": 448,
+      "top": 96,
+      "bottom": 544,
+      "padding": "16px 24px",
+      "bodyClientHeight": 268,
+      "bodyScrollHeight": 416
+    },
+    {
+      "key": "trajectory-ready-dark-390-20",
+      "state": "ready",
+      "passed": true,
+      "maxHeight": "448px",
+      "height": 448,
+      "top": 96,
+      "bottom": 544,
+      "padding": "20px 30px",
+      "bodyClientHeight": 228,
+      "bodyScrollHeight": 424
+    }
+  ]
+}

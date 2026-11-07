@@ -1,0 +1,10 @@
+PASS trajectory-ready-light-1280-16
+PASS trajectory-loading-light-1280-16
+PASS trajectory-error-light-1280-16
+PASS trajectory-ready-light-390-16
+PASS trajectory-ready-light-390-20
+PASS trajectory-ready-dark-1280-16
+PASS trajectory-loading-dark-1280-16
+PASS trajectory-error-dark-1280-16
+PASS trajectory-ready-dark-390-16
+PASS trajectory-ready-dark-390-20

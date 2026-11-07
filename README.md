@@ -1,5 +1,7 @@
 # Modal #506 browser evidence
 
+**Acceptance follow-up:** [full shell-route and real Trajectory component captures](followup/README.md) for head `ba6b3096`. The original captures below are preserved. The earlier shell sampling limitation is superseded; the disabled SessionDetail trajectory route remains a limitation.
+
 Base: `0d26903185e3fd8bb89c6499ae21f021e3a3b23e`. After: `e458cda28efa4a1ff7faafe803ba2df8a2160e01`.
 
 Real production console builds with intercepted browser API fixtures, not live backend evidence.

@@ -1,0 +1,39 @@
+{
+  "shell": {
+    "casesPerBuild": 104,
+    "screenshotsPerBuild": 312,
+    "geometryDifferences": [],
+    "identicalImages": 304,
+    "differentImages": [
+      "shell-loops-new-light-1280-16-closed.jpg",
+      "shell-environments-id-light-390-16-dismissed.jpg",
+      "shell-environments-id-light-390-20-closed.jpg",
+      "shell-environments-id-light-390-20-dismissed.jpg",
+      "shell-loops-new-light-390-20-closed.jpg",
+      "shell-environments-id-dark-390-16-closed.jpg",
+      "shell-environments-id-dark-390-20-dismissed.jpg",
+      "shell-loops-new-dark-390-20-closed.jpg"
+    ]
+  },
+  "shell-configured": {
+    "casesPerBuild": 6,
+    "screenshotsPerBuild": 18,
+    "geometryDifferences": [],
+    "identicalImages": 18,
+    "differentImages": []
+  },
+  "trajectory": {
+    "casesPerBuild": 10,
+    "screenshotsPerBuild": 36,
+    "geometryDifferences": [],
+    "identicalImages": 36,
+    "differentImages": []
+  },
+  "trajectory-route": {
+    "casesPerBuild": 2,
+    "screenshotsPerBuild": 2,
+    "geometryDifferences": [],
+    "identicalImages": 2,
+    "differentImages": []
+  }
+}

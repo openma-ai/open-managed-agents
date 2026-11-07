@@ -1,0 +1,38 @@
+{
+  "baseline": false,
+  "baseURL": "http://127.0.0.1:4187",
+  "results": [
+    {
+      "key": "trajectory-light-1280-16",
+      "path": "/sessions/session_fixture",
+      "finalUrl": "http://127.0.0.1:4187/sessions/session_fixture",
+      "passed": true,
+      "disabled": true,
+      "clickError": "TimeoutError: locator.click: Timeout 500ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: 'Trajectory', exact: true })\n    - locator resolved to <button disabled data-slot=\"button\" data-size=\"default\" data-variant=\"ghost\" title=\"View raw Trajectory v1 envelope\" class=\"group/button shrink-0 justify-center border border-transparent bg-clip-padding font-medium whitespace-nowrap outline-none select-none focus-visible:border-fg-muted focus-visible:ring-1 focus-visible:ring-fg/10 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-auto aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invali…>Trajectory</button>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is not enabled\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is not enabled\n    - retrying click action\n      - waiting 100ms\n    - waiting for element to be visible, enabled and stable\n    - element is not enabled\n  - retrying click action\n    - waiting 500ms\n",
+      "requests": [
+        "/v1/oma/me/tenants",
+        "/v1/sessions/session_fixture",
+        "/v1/sessions/session_fixture/events",
+        "/v1/sessions/session_fixture/events/stream",
+        "/v1/sessions/session_fixture/threads"
+      ],
+      "limitation": "Existing SessionDetail never loads trajectory; normal click times out because the button is disabled. No route open-state coverage."
+    },
+    {
+      "key": "trajectory-dark-1280-16",
+      "path": "/sessions/session_fixture",
+      "finalUrl": "http://127.0.0.1:4187/sessions/session_fixture",
+      "passed": true,
+      "disabled": true,
+      "clickError": "TimeoutError: locator.click: Timeout 500ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: 'Trajectory', exact: true })\n    - locator resolved to <button disabled data-slot=\"button\" data-size=\"default\" data-variant=\"ghost\" title=\"View raw Trajectory v1 envelope\" class=\"group/button shrink-0 justify-center border border-transparent bg-clip-padding font-medium whitespace-nowrap outline-none select-none focus-visible:border-fg-muted focus-visible:ring-1 focus-visible:ring-fg/10 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-auto aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invali…>Trajectory</button>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is not enabled\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is not enabled\n    - retrying click action\n      - waiting 100ms\n    - waiting for element to be visible, enabled and stable\n    - element is not enabled\n  - retrying click action\n    - waiting 500ms\n",
+      "requests": [
+        "/v1/oma/me/tenants",
+        "/v1/sessions/session_fixture",
+        "/v1/sessions/session_fixture/events",
+        "/v1/sessions/session_fixture/events/stream",
+        "/v1/sessions/session_fixture/threads"
+      ],
+      "limitation": "Existing SessionDetail never loads trajectory; normal click times out because the button is disabled. No route open-state coverage."
+    }
+  ]
+}
