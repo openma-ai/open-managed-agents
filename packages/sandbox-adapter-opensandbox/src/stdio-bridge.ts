@@ -85,7 +85,7 @@ export async function spawnBridge(
   const token = Buffer.from(randomBytes(32)).toString("hex");
   const dir = `/tmp/openma-stdio-${Buffer.from(randomBytes(12)).toString("hex")}`;
   const config = {
-    command: spec.command, args: spec.args, cwd: spec.cwd,
+    command: spec.command, args: spec.args, cwd: spec.cwd ?? sandbox.workspaceRoot,
     env: sandbox.commandEnv(spec.command, spec.env), port, token,
   };
   const cleanup = () => sandbox.removeDirectory(dir).catch(() => undefined);

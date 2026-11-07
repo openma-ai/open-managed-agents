@@ -1,5 +1,5 @@
 import type { HarnessContext } from "../../interface";
-import type { SkillMountDescriptor } from "./types";
+import { skillMountRoot, type SkillMountDescriptor } from "./types";
 
 const SKILL_SOURCE_PREFIX = "skill:";
 
@@ -22,14 +22,14 @@ function legacyMountsFromReminders(
         skillId,
         name: inline[1] || skillId,
         description: "",
-        mountRoot: `/workspace/.openma/skills/${encodeURIComponent(skillId)}/latest/`,
+        mountRoot: skillMountRoot(skillId, "latest"),
         body: inline[2],
         source: "custom",
       });
       continue;
     }
     const mountMatch = /mounted at (\S+)/u.exec(reminder.text);
-    const mountRoot = mountMatch?.[1] ?? `/workspace/.openma/skills/${encodeURIComponent(skillId)}/latest/`;
+    const mountRoot = mountMatch?.[1] ?? skillMountRoot(skillId, "latest");
     mounts.push({
       skillId,
       name: skillId,

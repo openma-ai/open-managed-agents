@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
+import { I18nProvider } from "../i18n";
 import { EvalRunDetail } from "./EvalRunDetail";
 
 vi.mock("../lib/api", () => ({ useApi: () => ({ api: vi.fn() }) }));
@@ -34,11 +35,13 @@ vi.mock("../lib/useApiQuery", () => ({
 describe("EvalRunDetail Linear surface", () => {
   it("uses the canonical detail inset and wireless result table", async () => {
     render(
-      <MemoryRouter initialEntries={["/evals/eval-1"]}>
-        <Routes>
-          <Route path="/evals/:id" element={<EvalRunDetail />} />
-        </Routes>
-      </MemoryRouter>,
+      <I18nProvider>
+        <MemoryRouter initialEntries={["/evals/eval-1"]}>
+          <Routes>
+            <Route path="/evals/:id" element={<EvalRunDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>,
     );
 
     expect(await screen.findByTestId("detail-layout")).toHaveAttribute(

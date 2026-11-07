@@ -231,8 +231,40 @@ export function supportsCredentialEgress(value: unknown): value is SandboxCreden
   return port !== null && typeof port === "object" && typeof port.prepareCredentialEgress === "function" && typeof port.clearCredentialEgress === "function";
 }
 
+/** Fallback workspace root for images that declare no WORKDIR (ADR 0016). */
+export const DEFAULT_WORKSPACE_ROOT = "/workspace";
+/** Fixed root for platform-owned files (skills, harness state, agent homes).
+ * Never under the workspace root, so the task tree is what the image ships. */
+export const PLATFORM_ROOT = "/oma";
+
+/** Workspace root a provider observed for a fresh sandbox: the working
+ * directory of a command run without an explicit cwd, which is the image's
+ * WORKDIR. `/` (no WORKDIR) and empty fall back to {@link DEFAULT_WORKSPACE_ROOT}. */
+export function workspaceRootFromProbe(observed: string): string {
+  const root = observed.trim().replace(/\/+$/u, "");
+  if (root === "") return DEFAULT_WORKSPACE_ROOT;
+  if (!root.startsWith("/") || root.includes("\n") || root.split("/").includes("..")) {
+    throw new Error(`Sandbox reported an invalid working directory: ${JSON.stringify(observed.slice(0, 200))}`);
+  }
+  return root;
+}
+
+/** The directory the agent works in. Adapters that do not resolve one work
+ * in {@link DEFAULT_WORKSPACE_ROOT}. */
+export async function workspaceRootOf(sandbox: Pick<SandboxPort, "resolveWorkspaceRoot">): Promise<string> {
+  return (await sandbox.resolveWorkspaceRoot?.()) ?? DEFAULT_WORKSPACE_ROOT;
+}
+
 export interface SandboxPort {
   exec(command: string, timeout?: number): Promise<string>;
+  /**
+   * Absolute directory the agent works in, resolved once when the sandbox
+   * was created: the image's WORKDIR, or {@link DEFAULT_WORKSPACE_ROOT} when
+   * the image declares none (ADR 0016). `exec` runs there and relative paths
+   * resolve against it. Absent means {@link DEFAULT_WORKSPACE_ROOT}. Read it
+   * through {@link workspaceRootOf}.
+   */
+  resolveWorkspaceRoot?(): Promise<string>;
   /** Start a process without blocking. Returns handle for kill/status/logs. */
   startProcess?(command: string): Promise<ProcessHandle | null>;
   /** Set global environment variables for all subsequent exec calls. */

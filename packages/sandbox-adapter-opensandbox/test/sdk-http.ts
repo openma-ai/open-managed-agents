@@ -21,6 +21,8 @@ export function mockSdkServer() {
     commands: [completed] as unknown[],
     format: "sse" as "sse" | "json",
     state: "Running",
+    /** What `pwd` reports without a cwd: the image WORKDIR ("/" = none). */
+    workdir: "/",
     override: undefined as ((request: RecordedRequest) => Response | undefined) | undefined,
   };
   vi.stubGlobal("fetch", vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -39,7 +41,10 @@ export function mockSdkServer() {
     if (path.endsWith("/pause")) server.state = "Paused";
     if (path.endsWith("/resume")) server.state = "Running";
     if (path.endsWith("/command")) {
-      const text = server.commands.map(event => (server.format === "sse" ? "data: " : "") + JSON.stringify(event) + "\r\n\r\n").join("");
+      const events = (call.body as { command?: string } | undefined)?.command === "pwd"
+        ? [{ type: "stdout", text: server.workdir }, completed]
+        : server.commands;
+      const text = events.map(event => (server.format === "sse" ? "data: " : "") + JSON.stringify(event) + "\r\n\r\n").join("");
       const bytes = new TextEncoder().encode(text);
       return new Response(new ReadableStream({
         start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); },

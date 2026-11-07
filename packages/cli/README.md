@@ -35,6 +35,27 @@ oma api                              # HTTP API quick reference
 
 Run `oma --help` for the full command tree.
 
+## Evals
+
+Benchmarks hold cases; an eval run executes a benchmark against an agent on
+managed Sessions. Harbor benchmarks are read-only imports with immutable
+revisions: edit the tasks at the source, then sync.
+
+```bash
+oma evals benchmarks refs https://github.com/laude-institute/terminal-bench-2   # branches and tags
+oma evals benchmarks import --git https://github.com/laude-institute/terminal-bench-2 --ref main --case fix-git
+oma evals benchmarks import --builtin terminal-bench-sample@2.0     # or --registry <name>[@version]
+oma evals benchmarks upload ./my-tasks --name my-tasks              # a directory or .tar/.tar.gz
+oma evals benchmarks sync <benchmark-id> [--ref v2 | --file ./my-tasks]  # new revision only if content changed
+oma evals benchmarks show <benchmark-id> [--revision 1]
+oma evals run --benchmark <benchmark-id> --agent <agent-id> --wait  # --mode oracle runs solution/solve.sh
+oma evals runs show <run-id>
+```
+
+Messages benchmarks (scripted conversations) are created with
+`oma evals benchmarks create --name <n>` and edited with `oma evals cases add|replace|delete`.
+See the [Evals guide](https://github.com/openma-ai/open-managed-agents/blob/main/apps/docs/src/content/docs/build/evals.mdx).
+
 ## MCP OAuth connection
 
 Run `oma connect linear --vault <vault-id>` (or pass an MCP server URL). The CLI

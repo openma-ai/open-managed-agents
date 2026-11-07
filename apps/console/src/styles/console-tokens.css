@@ -1,10 +1,8 @@
 :root {
-  /* Console uses black primary actions with contrasting white labels. */
-  --brand: #111111;
-  --brand-hover: #000000;
-  --brand-subtle: #f4f4f4;
-  --brand-fg: #ffffff;
-  /* Linear template geometry, with Console's black primary and warm
+  /* Shared brand ships white-on-coral in light mode (3.41:1). Reuse
+     its dark ink for readable action labels without changing the coral. */
+  --brand-fg: #1a0e09;
+  /* Linear template geometry, with OpenMA's existing coral brand and warm
      neutral materials. Components consume these aliases instead of
      reintroducing approximate spacing values. */
   --console-pad-xs: 6px;
@@ -54,6 +52,9 @@
   --control-h: calc(var(--type-line) + var(--density-unit) * 10);
   --chip-h: 26px;
   --filter-chip-max-w: 240px;
+  --filter-chip-clear-w: 20px;
+  --combobox-menu-min-w: 200px;
+  --local-combobox-menu-max-h: 18rem;
   --switch-w: 36px;
   --switch-h: 20px;
   --switch-thumb-size: 14px;
@@ -92,6 +93,10 @@
   --menu-picker-row-h: var(--control-h);
   --tenant-avatar-optical-x: 0px;
   --overlay-top: 15vh;
+  /* Modal's viewport cap is separate from its top offset. Keep these
+     inherited so deployment styles and theme variants can override them. */
+  --modal-viewport-cap: 85vh;
+  --modal-confirmation-dim: rgb(0 0 0 / 35%);
   /* Edge fade for capped scroll containers (.console-scroll-fade). */
   --scroll-fade-size: var(--console-pad-2xl);
 
@@ -118,10 +123,6 @@
 }
 
 .dark {
-  --brand: #f5f5f5;
-  --brand-hover: #ffffff;
-  --brand-subtle: #262626;
-  --brand-fg: #111111;
   --surface-row-hover: color-mix(in srgb, var(--fg) 7%, var(--surface-stage));
   --surface-row-selected: color-mix(in srgb, var(--fg) 11%, var(--surface-stage));
   --data-row-bg: color-mix(in srgb, var(--fg) 5%, var(--surface-route));

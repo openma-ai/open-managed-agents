@@ -19,6 +19,46 @@ import { cloudflareWorkspaceMountPrefix } from "@open-managed-agents/managed-run
 // @ts-ignore
 import parseShell from "bash-parser";
 
+/**
+ * Operator catalog image a managed session runs on (resolved by the main
+ * worker from its SANDBOX_IMAGES catalog and passed in the /init body).
+ * `binding` is the agent worker's Durable Object binding of the container
+ * class that was built from the image; `workdir` is the image's WORKDIR.
+ * Absent: the default `SANDBOX` container and `/workspace`.
+ */
+export interface CloudflareSandboxImage {
+  alias: string;
+  binding: string;
+  workdir?: string;
+}
+
+const CLOUDFLARE_DEFAULT_WORKSPACE_ROOT = "/workspace";
+const BINDING_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/** Validate an /init `sandbox_image` and look up its container namespace.
+ * Throws instead of falling back to `SANDBOX`: a session that selected a
+ * task image must never silently run on the default image. */
+export function resolveCloudflareSandboxNamespace(
+  env: Env,
+  image: CloudflareSandboxImage | null | undefined,
+): unknown {
+  if (image === null || image === undefined) return env.SANDBOX;
+  if (typeof image.binding !== "string" || !BINDING_NAME.test(image.binding)) {
+    throw new Error(`Sandbox image "${image.alias}" has an invalid container binding name`);
+  }
+  if (image.workdir !== undefined && (typeof image.workdir !== "string" || !image.workdir.startsWith("/") || image.workdir.split("/").includes(".."))) {
+    throw new Error(`Sandbox image "${image.alias}" has an invalid workdir`);
+  }
+  const namespace = (env as unknown as Record<string, unknown>)[image.binding];
+  if (namespace === undefined || namespace === null) {
+    throw new Error(
+      `Sandbox image "${image.alias}" needs container binding ${image.binding}, which this agent worker does not declare. ` +
+        "Add the container class and Durable Object binding to apps/agent/wrangler.jsonc (docs/cloudflare-sandbox-images.md).",
+    );
+  }
+  return namespace;
+}
+
 const parseShellCommand = parseShell as (command: string) => {
   type: string;
   commands?: Array<Record<string, any>>;
@@ -34,17 +74,41 @@ export class CloudflareSandbox
   private processEnv: Record<string, string> = {};
   private outboundRequired = false;
   private controlPlaneHostname: string | null = null;
+  private readonly image: CloudflareSandboxImage | null;
+  private readonly namespace: unknown;
+  /** Workdir from the catalog entry; null keeps the SDK default /workspace. */
+  private readonly workdir: string | null;
 
-  constructor(env: Env, sessionId: string) {
+  constructor(env: Env, sessionId: string, image?: CloudflareSandboxImage | null) {
     this.env = env;
     this.sessionId = sessionId;
+    this.image = image ?? null;
+    this.workdir = this.image?.workdir ?? null;
+    let namespace: unknown;
     try {
-      this.sandboxPromise = Promise.resolve(cfGetSandbox(env.SANDBOX! as any, sessionId));
+      namespace = resolveCloudflareSandboxNamespace(env, this.image);
+    } catch (err) {
+      this.namespace = undefined;
+      this.sandboxPromise = Promise.reject(err);
+      // Surface on first use, not as an unhandled rejection at construction.
+      this.sandboxPromise.catch(() => {});
+      return;
+    }
+    this.namespace = namespace;
+    try {
+      this.sandboxPromise = Promise.resolve(cfGetSandbox(namespace as any, sessionId));
     } catch (err: any) {
+      const binding = this.image?.binding ?? "SANDBOX";
       this.sandboxPromise = Promise.reject(
-        new Error(`getSandbox failed (SANDBOX: ${typeof env.SANDBOX}, id: ${sessionId}): ${err?.message || err}`)
+        new Error(`getSandbox failed (${binding}: ${typeof namespace}, id: ${sessionId}): ${err?.message || err}`)
       );
     }
+  }
+
+  /** ADR 0016: the catalog entry's declared workdir, else /workspace. The
+   * CF SDK cannot report the image WORKDIR, so the operator declares it. */
+  async resolveWorkspaceRoot(): Promise<string> {
+    return this.workdir ?? CLOUDFLARE_DEFAULT_WORKSPACE_ROOT;
   }
 
   private async getSandbox() {
@@ -470,6 +534,7 @@ export class CloudflareSandbox
       const execPromise = sandbox.exec(command, {
         timeout: timeoutMs,
         env: processEnv,
+        ...(this.workdir !== null && { cwd: this.workdir }),
       }).then((result: { stdout?: string; stderr?: string; exitCode?: number }) => {
         const out = result.stdout || "";
         const err = result.stderr || "";
@@ -494,6 +559,7 @@ export class CloudflareSandbox
     try {
       const proc = await sandbox.startProcess(command, {
         env: this.processEnvironmentForCommand(command),
+        ...(this.workdir !== null && { cwd: this.workdir }),
       });
       if (!proc?.id) return null;
       return {
@@ -928,7 +994,9 @@ export class CloudflareSandbox
     // RPC handle (observed staging 2026-05-19: "An RPC stub was not
     // disposed properly" warning preceded the 53-min container wedge by
     // ~12s, suggesting stale-stub reuse plays a role in the hang loop).
-    this.sandboxPromise = Promise.resolve(cfGetSandbox(this.env.SANDBOX! as any, this.sessionId));
+    this.sandboxPromise = this.namespace === undefined
+      ? this.sandboxPromise
+      : Promise.resolve(cfGetSandbox(this.namespace as any, this.sessionId));
     this.mounted = false;
   }
 
@@ -1112,6 +1180,10 @@ function assertSandboxCommandSucceeded(
   }
 }
 
-export function createSandbox(env: Env, sessionId: string): SandboxExecutor {
-  return new CloudflareSandbox(env, sessionId);
+export function createSandbox(
+  env: Env,
+  sessionId: string,
+  image?: CloudflareSandboxImage | null,
+): SandboxExecutor {
+  return new CloudflareSandbox(env, sessionId, image);
 }
