@@ -119,15 +119,23 @@ describe("evals argument parsing", () => {
       source: { type: "registry", name: "terminal-bench", version: "2.0", registry_url: "https://reg.example/registry.json" },
     });
     expect(parseImportArgs(["--registry", "swebench"])).toEqual({ source: { type: "registry", name: "swebench" } });
-    expect(() => parseImportArgs([])).toThrow(/exactly one of/);
+    expect(parseImportArgs(["--git", "https://github.com/o/r", "--ref", "v1", "--path", "tasks/hello"])).toEqual({
+      source: { type: "git", url: "https://github.com/o/r", ref: "v1", path: "tasks/hello" },
+    });
+    expect(parseImportArgs(["--git=https://huggingface.co/datasets/o/d"])).toEqual({ source: { type: "git", url: "https://huggingface.co/datasets/o/d" } });
+    expect(() => parseImportArgs([])).toThrow(/exactly one of --git/);
     expect(() => parseImportArgs(["--builtin", "a", "--registry", "b"])).toThrow(/only one of/);
+    expect(() => parseImportArgs(["--git", "https://github.com/o/r", "--builtin", "b"])).toThrow(/only one of/);
+    expect(() => parseImportArgs(["--builtin", "a", "--ref", "main"])).toThrow(/--ref is only valid with --git/);
+    expect(() => parseImportArgs(["--registry", "a", "--path", "x"])).toThrow(/--path is only valid with --git/);
+    expect(() => parseImportArgs(["--git", "not a url"])).toThrow(/Invalid --git URL/);
     expect(() => parseImportArgs(["--builtin", "a", "--registry-url", "https://x"])).toThrow(/only valid with --registry/);
     expect(() => parseImportArgs(["--registry", "a@"])).toThrow(/Invalid --registry/);
     expect(() => parseImportArgs(["--registry", "a", "--registry-url", "not a url"])).toThrow(/Invalid --registry-url/);
     expect(parseCreateArgs(["--name", "smoke", "--kind", "messages"])).toEqual({ kind: "messages", name: "smoke" });
-    expect(parseCreateArgs(["--kind=harbor", "--name=tb"])).toEqual({ kind: "harbor", name: "tb" });
+    expect(parseCreateArgs(["--name=smoke"])).toEqual({ kind: "messages", name: "smoke" });
+    expect(() => parseCreateArgs(["--kind=harbor", "--name=tb"])).toThrow(/imported read-only/);
     expect(() => parseCreateArgs(["--kind", "messages"])).toThrow(/--name <n> is required/);
-    expect(() => parseCreateArgs(["--name", "x"])).toThrow(/--kind messages\|harbor is required/);
     expect(() => parseCreateArgs(["--name", "x", "--kind", "csv"])).toThrow(/--kind must be/);
   });
 
@@ -144,6 +152,8 @@ describe("evals output", () => {
     const text = formatRun(baseRun());
     expect(text).toMatch(/CASE\s+STATUS\s+PASSED\s+MEAN REWARD\s+SESSIONS/);
     expect(text).toContain("Benchmark: evb_1");
+    expect(text).not.toContain("Revision:");
+    expect(formatRun(baseRun({ benchmark_revision: 4 }))).toContain("Revision:  4");
     expect(formatRun(baseRun(), { id: "evb_1", name: "tb-sample" })).toContain("Benchmark: tb-sample (evb_1)");
     expect(text).toMatch(/hello\s+completed\s+2\/2\s+1\.000\s+sess_a,sess_b/);
     expect(text).toMatch(/broken\s+failed\s+0\/1\s+0\.000\s+sess_c/);
@@ -161,23 +171,37 @@ describe("evals output", () => {
   });
 
   it("formats harbor and messages benchmarks and cases", () => {
-    const harbor = formatBenchmark({ id: "evb_1", name: "tb", kind: "harbor", source: { type: "registry", name: "tb", version: "2.0" }, case_count: 2, runnable_count: 1,
-      created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-01T00:00:00Z", cases: [
-        { kind: "harbor", name: "ok", image: "img:1", image_alias: "py", supported: true, agent_timeout_sec: 600, verifier_timeout_sec: 60, cpus: null, memory_mb: null, has_solution: true, instruction_preview: "", updated_at: "x" },
-        { kind: "harbor", name: "gpu", image: "img:2", image_alias: null, supported: false, unsupported_reason: "gpus", agent_timeout_sec: null, verifier_timeout_sec: 60, cpus: null, memory_mb: null, has_solution: false, instruction_preview: "", updated_at: "x" },
+    const harbor = formatBenchmark({ id: "evb_1", name: "tb", kind: "harbor", source: { type: "registry", name: "tb", version: "2.0" }, revision: 2, cases_revision: 1,
+      case_count: 2, runnable_count: 1, created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-01T00:00:00Z",
+      revisions: [
+        { revision: 2, digest: "sha256:abcdef0123456789ffff", source: { type: "registry", name: "tb", version: "2.0" },
+          pins: [{ url: "https://github.com/o/r", ref: "main", commit: "deadbeef" }], case_count: 2, created_at: "2026-11-02T00:00:00Z" },
+        { revision: 1, digest: "sha256:1111", source: { type: "git", url: "https://github.com/o/r", ref: "v1", path: "tasks" }, pins: [], case_count: 1, created_at: "2026-11-01T00:00:00Z" },
+      ],
+      cases: [
+        { kind: "harbor", name: "ok", digest: "sha256:aa", image: "img:1", image_alias: "py", supported: true, agent_timeout_sec: 600, verifier_timeout_sec: 60, cpus: null, memory_mb: null, has_solution: true, instruction_preview: "", updated_at: "x" },
+        { kind: "harbor", name: "gpu", digest: "sha256:bb", image: "img:2", image_alias: null, supported: false, unsupported_reason: "gpus", agent_timeout_sec: null, verifier_timeout_sec: 60, cpus: null, memory_mb: null, has_solution: false, instruction_preview: "", updated_at: "x" },
       ] });
     expect(harbor).toContain("Kind:     harbor");
     expect(harbor).toContain("Source:   registry:tb@2.0");
+    expect(harbor).toContain("  pinned  https://github.com/o/r main @ deadbeef");
+    expect(harbor).toContain("Revision: 2");
+    expect(harbor).toContain("Showing:  cases of revision 1");
+    expect(harbor).toMatch(/REVISION\s+CASES\s+SOURCE\s+DIGEST\s+CREATED/);
+    expect(harbor).toMatch(/2\s+2\s+registry:tb@2\.0\s+sha256:abcdef012345\s/);
+    expect(harbor).toMatch(/1\s+1\s+git:https:\/\/github\.com\/o\/r#v1 \(tasks\)\s+sha256:1111/);
     expect(harbor).toMatch(/ok\s+yes\s+py\s+yes\s+600s/);
     expect(harbor).toMatch(/gpu\s+no\s+—\s+no\s+—\s+unsupported: gpus/);
     const messages = formatBenchmark({ id: "evb_m", name: "smoke", kind: "messages", source: null, case_count: 1, runnable_count: 1, created_at: "x", updated_at: "x",
       cases: [{ kind: "messages", name: "greets", messages: ["Say hi", "Again"], reward: { type: "verifiable" }, updated_at: "x" }] });
     expect(messages).toContain("Source:   —");
     expect(messages).toMatch(/greets\s+2\s+verifiable\s+—\s+Say hi/);
-    const hc = formatCase({ kind: "harbor", name: "ok", image: "img:1", image_alias: "py", supported: true, agent_timeout_sec: 600, verifier_timeout_sec: 60, cpus: null,
+    const hc = formatCase({ kind: "harbor", name: "ok", revision: 3, digest: "sha256:cafe", image: "img:1", image_alias: "py", supported: true, agent_timeout_sec: 600, verifier_timeout_sec: 60, cpus: null,
       memory_mb: null, has_solution: true, instruction_preview: "Do", instruction: "Do it all.", updated_at: "x", files: [{ path: "tests/test.sh", size: 10, executable: true }] });
     expect(hc).toMatch(/tests\/test\.sh\s+10\s+yes/);
     expect(hc).toContain("Do it all.");
+    expect(hc).toContain("Revision: 3");
+    expect(hc).toContain("Digest:   sha256:cafe");
     const mc = formatCase({ kind: "messages", name: "greets", messages: ["Say hi"], setup_script: "touch a", reward: { type: "verifiable" }, updated_at: "x" });
     expect(mc).toContain("  1. Say hi");
     expect(mc).toContain('Reward:   {"type":"verifiable"}');
@@ -251,7 +275,11 @@ describe("evals commands", () => {
     expect(await runEvalsCommand(io, ["evals", "run", "--benchmark", "b", "--mode", "oracle", "--agent", "a"])).toBe(1);
     expect(await runEvalsCommand(io, ["evals", "cases", "show", "evb_1"])).toBe(1);
     expect(await runEvalsCommand(io, ["evals", "cases", "add", "evb_1"])).toBe(1);
-    expect(await runEvalsCommand(io, ["evals", "cases", "add", "evb_1", "--file", "c.json", "--builtin", "x"])).toBe(1);
+    expect(await runEvalsCommand(io, ["evals", "cases", "add", "evb_1", "--from", "dir"])).toBe(1);
+    expect(await runEvalsCommand(io, ["evals", "cases", "add", "evb_1", "--builtin", "x"])).toBe(1);
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "sync", "evb_1", "--ref", "v1", "--file", "x.tgz"])).toBe(1);
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "show", "evb_1", "--revision", "0"])).toBe(1);
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "create", "--name", "x", "--kind", "harbor"])).toBe(1);
     expect(await runEvalsCommand(io, ["evals", "cases", "replace", "evb_1", "c"])).toBe(1);
     expect(await runEvalsCommand(io, ["evals", "benchmarks", "rename", "evb_1"])).toBe(1);
     expect(await runEvalsCommand(io, ["evals", "datasets", "list"])).toBe(1);
@@ -261,8 +289,13 @@ describe("evals commands", () => {
     expect(err.join("\n")).toMatch(/Unknown command: oma evals benchmarks frobnicate/);
     expect(err.join("\n")).toMatch(/--agent cannot be used with --mode oracle/);
     expect(err.join("\n")).toMatch(/Missing <case>\. Usage: oma evals cases show/);
-    expect(err.join("\n")).toMatch(/Pass exactly one of --file, --from, --builtin or --registry/);
-    expect(err.join("\n")).toMatch(/Pass exactly one of --file or --from/);
+    expect(err.join("\n")).toMatch(/--file case.json is required\. Usage: oma evals cases add/);
+    expect(err.join("\n")).toMatch(/Unknown option: --from/);
+    expect(err.join("\n")).toMatch(/Unknown option: --builtin/);
+    expect(err.join("\n")).toMatch(/--file case.json is required\. Usage: oma evals cases replace/);
+    expect(err.join("\n")).toMatch(/not both/);
+    expect(err.join("\n")).toMatch(/--revision must be an integer/);
+    expect(err.join("\n")).toMatch(/imported read-only/);
     expect(err.join("\n")).toMatch(/Missing <name>\. Usage: oma evals benchmarks rename/);
   });
 
@@ -296,18 +329,22 @@ describe("evals commands", () => {
       ["benchmarks", "list"], ["benchmarks", "builtin"], ["benchmarks", "show", "evb/1"],
       ["benchmarks", "create", "--name", "b", "--kind", "messages"],
       ["benchmarks", "import", "--builtin", "hello", "--case", "a"],
+      ["benchmarks", "import", "--git", "https://github.com/o/r", "--ref", "main"],
+      ["benchmarks", "show", "evb_1", "--revision", "2"],
       ["benchmarks", "rename", "evb_1", "renamed"], ["benchmarks", "delete", "evb_1"],
     ];
     for (const c of cmds) expect(await runEvalsCommand(io, ["evals", ...c]), c.join(" ")).toBe(0);
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
       "GET /v1/oma/evals/benchmarks", "GET /v1/oma/evals/benchmarks/builtin", "GET /v1/oma/evals/benchmarks/evb%2F1",
-      "POST /v1/oma/evals/benchmarks", "POST /v1/oma/evals/benchmarks", "PATCH /v1/oma/evals/benchmarks/evb_1", "DELETE /v1/oma/evals/benchmarks/evb_1",
+      "POST /v1/oma/evals/benchmarks", "POST /v1/oma/evals/benchmarks", "POST /v1/oma/evals/benchmarks", "GET /v1/oma/evals/benchmarks/evb_1?revision=2",
+      "PATCH /v1/oma/evals/benchmarks/evb_1", "DELETE /v1/oma/evals/benchmarks/evb_1",
     ]);
     expect(calls[3].body).toEqual({ kind: "messages", name: "b" });
     expect(calls[4].body).toEqual({ source: { type: "builtin", name: "hello" }, case_names: ["a"] });
-    expect(calls[5].body).toEqual({ name: "renamed" });
+    expect(calls[5].body).toEqual({ source: { type: "git", url: "https://github.com/o/r", ref: "main" } });
+    expect(calls[7].body).toEqual({ name: "renamed" });
     const text = out.join("\n");
-    expect(text).toMatch(/NAME\s+ID\s+KIND\s+SOURCE\s+CASES\s+RUNNABLE/);
+    expect(text).toMatch(/NAME\s+ID\s+KIND\s+SOURCE\s+REVISION\s+CASES\s+RUNNABLE/);
     expect(text).toMatch(/hello\s+2\s+Hello tasks/);
     expect(text).toContain("Benchmark created: b (evb_1) — messages");
     expect(text).toContain("oma evals cases add evb_1 --file case.json");
@@ -315,42 +352,32 @@ describe("evals commands", () => {
     expect(text).toContain("Benchmark deleted: evb_1");
   });
 
-  it("cases show, add, replace and delete send the contract bodies", async () => {
+  it("cases show, add, replace and delete send messages case bodies", async () => {
     const dir = tmp();
     const caseFile = join(dir, "case.json");
     writeFileSync(caseFile, JSON.stringify({ name: "greets", messages: ["hi"], reward: { type: "verifiable" } }));
     writeFileSync(join(dir, "bad.json"), JSON.stringify({ name: "x", messages: "hi" }));
     writeFileSync(join(dir, "broken.json"), "{");
-    const tasks = tmp();
-    harborTask(tasks, "one");
-    harborTask(tasks, "two");
-    const { io, out, err, calls, uploads } = mockIO((_path, init) => {
+    const { io, out, err, calls } = mockIO((_path, init) => {
       if (init?.method === "DELETE") return { type: "eval_case_deleted", benchmark_id: "evb_1", name: "greets" };
       if (init?.method === "POST") return benchBody;
       return { kind: "messages", name: "greets", messages: ["hi"], updated_at: "x" };
     });
     const run = (...a: string[]) => runEvalsCommand(io, ["evals", "cases", ...a]);
     expect(await run("show", "evb_1", "greets")).toBe(0);
+    expect(await run("show", "evb_1", "greets", "--revision", "3")).toBe(0);
     expect(await run("add", "evb_1", "--file", caseFile)).toBe(0);
-    expect(await run("add", "evb_1", "--registry", "tb@2.0", "--case", "a", "--case", "b")).toBe(0);
-    expect(await run("add", "evb_1", "--from", tasks)).toBe(0);
     expect(await run("replace", "evb_1", "greets", "--file", caseFile)).toBe(0);
-    expect(await run("replace", "evb_1", "one", "--from", join(tasks, "one"))).toBe(0);
     expect(await run("delete", "evb_1", "greets")).toBe(0);
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
       "GET /v1/oma/evals/benchmarks/evb_1/cases/greets",
-      "POST /v1/oma/evals/benchmarks/evb_1/cases",
-      "POST /v1/oma/evals/benchmarks/evb_1/cases",
+      "GET /v1/oma/evals/benchmarks/evb_1/cases/greets?revision=3",
       "POST /v1/oma/evals/benchmarks/evb_1/cases",
       "PUT /v1/oma/evals/benchmarks/evb_1/cases/greets",
-      "PUT /v1/oma/evals/benchmarks/evb_1/cases/one",
       "DELETE /v1/oma/evals/benchmarks/evb_1/cases/greets",
     ]);
-    expect(calls[1].body).toEqual({ name: "greets", messages: ["hi"], reward: { type: "verifiable" } });
-    expect(calls[2].body).toEqual({ source: { type: "registry", name: "tb", version: "2.0" }, case_names: ["a", "b"] });
-    expect(calls[3].body).toEqual({ source: { type: "upload", file_id: "file_up" } });
-    expect(calls[5].body).toEqual({ source: { type: "upload", file_id: "file_up" } });
-    expect(uploads.map((u) => u.filename)).toEqual([`${tasks.split("/").pop()}.tar.gz`, "one.tar.gz"]);
+    expect(calls[2].body).toEqual({ name: "greets", messages: ["hi"], reward: { type: "verifiable" } });
+    expect(calls[3].body).toEqual({ name: "greets", messages: ["hi"], reward: { type: "verifiable" } });
     const text = out.join("\n");
     expect(text).toContain("  1. hi");
     expect(text).toContain("Benchmark updated: b (evb_1) — 1 cases, 1 runnable");
@@ -358,16 +385,35 @@ describe("evals commands", () => {
     expect(text).toContain("Case deleted: greets from evb_1");
 
     const before = calls.length;
-    expect(await run("replace", "evb_1", "one", "--from", tasks)).toBe(1);
     expect(await run("add", "evb_1", "--file", join(dir, "bad.json"))).toBe(1);
     expect(await run("add", "evb_1", "--file", join(dir, "broken.json"))).toBe(1);
     expect(await run("add", "evb_1", "--file", caseFile, "--case", "x")).toBe(1);
     expect(calls).toHaveLength(before);
     const errors = err.join("\n");
-    expect(errors).toMatch(/has 2 task.toml files; replacing a case needs exactly one/);
     expect(errors).toMatch(/"messages" must be an array of strings/);
     expect(errors).toMatch(/Invalid JSON in/);
-    expect(errors).toMatch(/--case only applies to harbor sources/);
+    expect(errors).toMatch(/Unknown option: --case/);
+  });
+
+  it("benchmarks sync posts {}, {ref} or an uploaded {file_id} and reports the revision", async () => {
+    const tasks = tmp();
+    harborTask(tasks, "one");
+    const harbor = { ...benchBody, kind: "harbor", name: "tb", source: { type: "git", url: "https://github.com/o/r" }, revision: 3, case_count: 2, runnable_count: 2 };
+    let changed = false;
+    const { io, out, calls, uploads } = mockIO(() => ({ changed, benchmark: harbor }));
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "sync", "evb_1"])).toBe(0);
+    changed = true;
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "sync", "evb_1", "--ref", "v2"])).toBe(0);
+    expect(await runEvalsCommand(io, ["evals", "benchmarks", "sync", "evb_1", "--file", join(tasks, "one")])).toBe(0);
+    expect(calls).toEqual([
+      { path: "/v1/oma/evals/benchmarks/evb_1/sync", method: "POST", body: {} },
+      { path: "/v1/oma/evals/benchmarks/evb_1/sync", method: "POST", body: { ref: "v2" } },
+      { path: "/v1/oma/evals/benchmarks/evb_1/sync", method: "POST", body: { file_id: "file_up" } },
+    ]);
+    expect(uploads.map((u) => u.filename)).toEqual(["one.tar.gz"]);
+    const text = out.join("\n");
+    expect(text).toContain("Benchmark unchanged: tb (evb_1) — still revision 3");
+    expect(text).toContain("Benchmark synced: tb (evb_1) — revision 3, 2 cases, 2 runnable");
   });
 
   it("runs inline tasks from --file and shows runs with the benchmark name", async () => {
@@ -393,6 +439,9 @@ describe("evals commands", () => {
     expect(text).toContain("Benchmark: tb-sample (evb_1)");
     expect(text).toMatch(/ID\s+STATUS\s+KIND\s+BENCHMARK/);
     expect(text).toMatch(/evr_1\s+completed\s+harbor\/agent\s+evb_1/);
+    const listed = mockIO(() => ({ data: [baseRun({ benchmark_revision: 2 })] }));
+    expect(await runEvalsCommand(listed.io, ["evals", "runs", "list"])).toBe(0);
+    expect(listed.out.join("\n")).toMatch(/evr_1\s+completed\s+harbor\/agent\s+evb_1@r2/);
     expect(await runEvalsCommand(io, ["evals", "run", "--file", join(dir, "empty.json"), "--agent", "a", "--environment", "e"])).toBe(1);
     expect(err.join("\n")).toMatch(/non-empty JSON array of tasks/);
   });
@@ -412,6 +461,7 @@ describe("evals CLI end to end", () => {
     const { stdout } = await execFileAsync(process.execPath, ["--import", "tsx", entry, "api", "evals"], { env: { ...process.env, OMA_API_KEY: "k" } });
     expect(stdout).toContain("GET    /v1/oma/evals/benchmarks/builtin");
     expect(stdout).toContain("PUT    /v1/oma/evals/benchmarks/:id/cases/:name");
+    expect(stdout).toContain("POST   /v1/oma/evals/benchmarks/:id/sync");
     expect(stdout).not.toContain("datasets");
     expect(stdout).toContain("POST   /v1/oma/evals/runs/:id/cancel");
     expect(stdout).not.toContain("Get eval run results");

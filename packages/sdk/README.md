@@ -98,21 +98,24 @@ benchmark (all or some cases) against an agent.
 ```ts
 const evals = client.oma.evals;
 
-// Harbor: import a builtin / registry dataset, or upload task directories.
-const bench = await evals.benchmarks.upload({
-  file: await readFile("tasks.tar.gz"), // .tar / .tar.gz / .tgz
-  filename: "tasks.tar.gz",
+// Harbor benchmarks are read-only imports with immutable revisions: edit the
+// tasks at the source, then sync. Import from a git repo (github.com or
+// huggingface.co), a Harbor registry, a builtin set, or an uploaded archive.
+const bench = await evals.benchmarks.create({
+  source: { type: "git", url: "https://github.com/org/tasks", ref: "main", path: "tasks" },
 });
 // or: evals.benchmarks.create({ source: { type: "builtin", name: "terminal-bench-sample@2.0" } })
 // or: evals.benchmarks.create({ source: { type: "registry", name: "terminal-bench", version: "2.0" }, case_names: ["hello"] })
+// or: evals.benchmarks.upload({ file: await readFile("tasks.tar.gz"), filename: "tasks.tar.gz" })
 
-// Manage cases one by one.
-await evals.benchmarks.cases.upload(bench.id, { file: moreTasks, filename: "more.tar.gz" });
-await evals.benchmarks.cases.replaceUpload(bench.id, "hello", { file: oneTask, filename: "hello.tar.gz" });
-await evals.benchmarks.cases.delete(bench.id, "broken");
+// Re-read the source; a new revision is made only when content changed.
+const { changed, benchmark } = await evals.benchmarks.sync(bench.id, { ref: "v2" }); // ref: git only
+// upload benchmarks: evals.benchmarks.syncUpload(id, { file, filename })
+const rev1 = await evals.benchmarks.retrieve(bench.id, { revision: 1 }); // cases + revisions (pins)
+await evals.benchmarks.cases.retrieve(bench.id, "hello", { revision: 1 });
 await evals.benchmarks.update(bench.id, { name: "terminal-bench (mine)" });
 
-// Messages: create empty, then add cases.
+// Messages: create empty, then add / replace / delete cases in OMA.
 const chat = await evals.benchmarks.create({ kind: "messages", name: "smoke" });
 await evals.benchmarks.cases.add(chat.id, {
   name: "greets",
@@ -121,7 +124,7 @@ await evals.benchmarks.cases.add(chat.id, {
 });
 
 const { run_id } = await evals.runs.create({
-  benchmark_id: bench.id, agent_id: "agent_123", trials: 2,
+  benchmark_id: bench.id, agent_id: "agent_123", trials: 2, // harbor runs bind to the latest revision
   // messages benchmarks also need environment_id; harbor rejects it.
   // mode: "oracle" (harbor only, no agent_id) runs solution/solve.sh.
 });

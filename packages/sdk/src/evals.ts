@@ -7,35 +7,71 @@ import Anthropic, { toFile } from "@anthropic-ai/sdk";
 // with identical names and fields; @openma/sdk must not depend on it.
 //
 // Endpoints (all JSON, header anthropic-beta: managed-agents-2026-04-01):
-//   GET    /v1/oma/evals/benchmarks                  -> { data: EvalBenchmark[] }   (no cases)
+//   GET    /v1/oma/evals/benchmarks                  -> { data: EvalBenchmark[] }   (no cases, no revisions)
 //   GET    /v1/oma/evals/benchmarks/builtin          -> { data: BuiltinEvalBenchmark[] }
-//   POST   /v1/oma/evals/benchmarks                  CreateEvalBenchmarkRequest -> EvalBenchmark (with cases)
-//   GET    /v1/oma/evals/benchmarks/:id              -> EvalBenchmark (with cases)
-//   PATCH  /v1/oma/evals/benchmarks/:id              UpdateEvalBenchmarkRequest -> EvalBenchmark
-//   DELETE /v1/oma/evals/benchmarks/:id              -> { type: "eval_benchmark_deleted", id }
-//   GET    /v1/oma/evals/benchmarks/:id/cases/:name  -> EvalCaseDetail
-//   POST   /v1/oma/evals/benchmarks/:id/cases        AddEvalCasesRequest -> EvalBenchmark (with cases)
-//   PUT    /v1/oma/evals/benchmarks/:id/cases/:name  ReplaceEvalCaseRequest -> EvalCaseDetail
-//   DELETE /v1/oma/evals/benchmarks/:id/cases/:name  -> { type: "eval_case_deleted", benchmark_id, name }
+//   POST   /v1/oma/evals/benchmarks                  CreateEvalBenchmarkRequest -> 201 EvalBenchmark (with cases)
+//   GET    /v1/oma/evals/benchmarks/:id?revision=N   -> EvalBenchmark (with cases of revision N, default latest, and revisions)
+//   PATCH  /v1/oma/evals/benchmarks/:id              UpdateEvalBenchmarkRequest -> EvalBenchmark (with cases)
+//   POST   /v1/oma/evals/benchmarks/:id/sync         SyncEvalBenchmarkRequest -> SyncEvalBenchmarkResponse   (harbor only)
+//   DELETE /v1/oma/evals/benchmarks/:id              -> { type: "eval_benchmark_deleted", id }   (409 while a run is active)
+//   GET    /v1/oma/evals/benchmarks/:id/cases/:name?revision=N -> EvalCaseDetail
+//   POST   /v1/oma/evals/benchmarks/:id/cases        AddEvalCasesRequest -> 201 EvalBenchmark (messages only)
+//   PUT    /v1/oma/evals/benchmarks/:id/cases/:name  ReplaceEvalCaseRequest -> EvalCaseDetail (messages only)
+//   DELETE /v1/oma/evals/benchmarks/:id/cases/:name  -> { type: "eval_case_deleted", benchmark_id, name } (messages only)
 //   POST   /v1/oma/evals/runs                        CreateEvalRunRequest -> CreateEvalRunResponse
 //   GET    /v1/oma/evals/runs?status=&agent_id=&benchmark_id=&limit= -> { data: EvalRun[] }
 //   GET    /v1/oma/evals/runs/:id                    -> EvalRun
-//   POST   /v1/oma/evals/runs/:id/cancel             -> EvalRun
+//   POST   /v1/oma/evals/runs/:id/cancel             -> EvalRun (status "cancelled"; sessions interrupted)
 //   DELETE /v1/oma/evals/runs/:id                    -> { type: "eval_run_deleted", id }
+// Errors: 4xx/5xx with { error: string }. Case writes on a harbor benchmark
+// return 400 (sync it from its source instead); benchmark delete returns 409
+// while a pending/running run uses the benchmark; adding a messages case whose
+// name exists returns 409.
 
 // ── Benchmarks ────────────────────────────────────────────────────────────
 
 export type EvalBenchmarkKind = "harbor" | "messages";
 
-/** Where harbor cases come from (benchmark import, or adding cases later). */
+/** Where harbor cases come from. */
 export type HarborCaseSource =
-  /** A .tar or .tar.gz uploaded through the Files API. Task directories are
-   *  found anywhere in the archive by their task.toml. */
-  | { type: "upload"; file_id: string }
-  /** A dataset from a Harbor registry (default: Harbor's public registry). */
+  /** Task directories (found by their task.toml) in a git repository:
+   *  https://github.com/<owner>/<repo> or
+   *  https://huggingface.co/datasets/<org>/<name>. ref is a branch, tag or
+   *  commit sha (default HEAD), resolved to a commit at import and at every
+   *  sync. path limits the import to one directory (a task or a folder of
+   *  tasks). */
+  | { type: "git"; url: string; ref?: string; path?: string }
+  /** A dataset from a Harbor registry.json (default: Harbor's public
+   *  registry). Its tasks are git entries pinned to commits. */
   | { type: "registry"; name: string; version?: string; registry_url?: string }
   /** A dataset shipped with OMA; see GET /v1/oma/evals/benchmarks/builtin. */
-  | { type: "builtin"; name: string };
+  | { type: "builtin"; name: string }
+  /** A .tar or .tar.gz uploaded through the Files API. Task directories are
+   *  found anywhere in the archive by their task.toml. */
+  | { type: "upload"; file_id: string };
+
+/** A git repository at the commit a revision was read from. */
+export interface EvalSourcePin {
+  url: string;
+  /** The ref that was resolved (git sources). */
+  ref?: string;
+  commit: string;
+}
+
+/** One immutable state of a harbor benchmark's cases. */
+export interface EvalBenchmarkRevision {
+  /** 1, 2, ... */
+  revision: number;
+  /** "sha256:<hex>" over the sorted "<case name>\0<case digest>\n" lines. */
+  digest: string;
+  source: HarborCaseSource;
+  /** Commits read (empty for uploads). */
+  pins: EvalSourcePin[];
+  /** The case_names filter of the import, reused by sync. */
+  case_names?: string[];
+  case_count: number;
+  created_at: string;
+}
 
 /** A messages case as written by clients (create, add, replace). */
 export interface MessagesCaseInput {
@@ -53,34 +89,44 @@ export interface MessagesCaseInput {
 }
 
 export type CreateEvalBenchmarkRequest =
-  /** Import a harbor benchmark. name defaults to the registry/builtin name or
-   *  the upload file name. */
+  /** Import a harbor benchmark (revision 1). name defaults to the source's
+   *  name (registry/builtin name, repository/path, upload file name). */
   | { kind?: "harbor"; name?: string; source: HarborCaseSource; case_names?: string[] }
-  /** An empty harbor benchmark (add cases later), or a messages benchmark
-   *  with optional initial cases. name is required. */
-  | { kind: "harbor" | "messages"; name: string; source?: undefined; cases?: MessagesCaseInput[] };
+  /** A messages benchmark with optional initial cases. */
+  | { kind: "messages"; name: string; source?: undefined; cases?: MessagesCaseInput[] };
 
 export interface UpdateEvalBenchmarkRequest {
   name?: string;
 }
 
-export type AddEvalCasesRequest =
-  /** messages benchmark: one case. */
-  | MessagesCaseInput
-  /** harbor benchmark: every task found in the source (or case_names of it). */
-  | { source: HarborCaseSource; case_names?: string[] };
+/** Re-read a harbor benchmark's source. A new revision is made only when the
+ *  content changed. */
+export interface SyncEvalBenchmarkRequest {
+  /** git sources: resolve this ref instead of the source's ref; it becomes
+   *  the source's ref in the new revision. */
+  ref?: string;
+  /** upload sources: required, the new archive. */
+  file_id?: string;
+}
 
-export type ReplaceEvalCaseRequest =
-  /** messages benchmark: the new case content. */
-  | MessagesCaseInput
-  /** harbor benchmark: an upload holding exactly one task directory; its
-   *  files replace the case's files and the case keeps its name. */
-  | { source: { type: "upload"; file_id: string } };
+export interface SyncEvalBenchmarkResponse {
+  /** false: same content digest as the latest revision; nothing was written. */
+  changed: boolean;
+  benchmark: EvalBenchmark;
+}
 
-/** A harbor case as listed in a benchmark. */
+/** messages benchmarks only: one case. */
+export type AddEvalCasesRequest = MessagesCaseInput;
+
+/** messages benchmarks only: the new case content. */
+export type ReplaceEvalCaseRequest = MessagesCaseInput;
+
+/** A harbor case as listed in a benchmark revision. */
 export interface HarborEvalCase {
   kind: "harbor";
   name: string;
+  /** "sha256:<hex>", Harbor's package hash over the stored files. */
+  digest: string;
   /** [environment].docker_image from task.toml. */
   image: string;
   /** SANDBOX_IMAGES alias whose reference equals `image`; null when the
@@ -96,6 +142,7 @@ export interface HarborEvalCase {
   has_solution: boolean;
   /** First 2000 characters of instruction.md. */
   instruction_preview: string;
+  /** When this content first entered the benchmark's revisions. */
   updated_at: string;
 }
 
@@ -112,6 +159,7 @@ export type EvalCase = HarborEvalCase | MessagesEvalCase;
  *  stored files (task.toml, instruction.md, tests/, solution/). */
 export type EvalCaseDetail =
   | (HarborEvalCase & {
+      revision: number;
       instruction: string;
       files: Array<{ path: string; size: number; executable: boolean }>;
     })
@@ -121,14 +169,22 @@ export interface EvalBenchmark {
   id: string;
   name: string;
   kind: EvalBenchmarkKind;
-  /** Harbor source the benchmark was imported from; null when created empty. */
+  /** harbor: the latest revision's source. messages: null. */
   source: HarborCaseSource | null;
+  /** harbor: latest revision number. messages: null. */
+  revision: number | null;
+  /** Cases of the latest revision (or of ?revision=N on GET). */
   case_count: number;
   /** harbor: cases supported and with an image alias. messages: case_count. */
   runnable_count: number;
   created_at: string;
   updated_at: string;
-  cases?: EvalCase[]; // present on GET /benchmarks/:id and write responses
+  /** present on GET /benchmarks/:id and write responses */
+  cases?: EvalCase[];
+  /** harbor, on GET /benchmarks/:id and write responses: newest first. */
+  revisions?: EvalBenchmarkRevision[];
+  /** Revision the listed cases belong to (harbor, with cases). */
+  cases_revision?: number;
 }
 
 export interface BuiltinEvalBenchmark {
@@ -143,12 +199,12 @@ export type EvalRunStatus = "pending" | "running" | "completed" | "failed" | "ca
 
 export type CreateEvalRunRequest =
   /** Run a benchmark (all runnable cases, or case_names). The run's kind is
-   *  the benchmark's kind. */
+   *  the benchmark's kind; a harbor run is bound to the latest revision. */
   | {
       benchmark_id: string;
       /** harbor only: "agent" (default) needs agent_id; "oracle" runs
-       * solution/solve.sh and rejects agent_id (400). messages benchmarks
-       * accept "agent" only. */
+       * solution/solve.sh in a Session owned by a hidden platform agent and
+       * rejects agent_id (400). messages benchmarks accept "agent" only. */
       mode?: "agent" | "oracle";
       agent_id?: string;
       /** messages benchmarks: required (the Session environment). harbor:
@@ -218,12 +274,14 @@ export interface EvalRunTask {
   trials: EvalTrial[];
   trial_total: number;
   trial_pass_count?: number;
-  /** harbor: mean over every finished trial, errored trials counting 0.
-   *  messages: mean over completed trials. */
+  /** harbor: mean over every finished trial, errored trials counting 0 (Harbor's
+   * convention). messages: mean over completed trials. */
   mean_reward?: number;
   error?: string;
   /** harbor kind: image alias used. */
   image_alias?: string;
+  /** harbor kind: content digest of the case that ran. */
+  digest?: string;
 }
 
 export interface EvalRun {
@@ -233,6 +291,8 @@ export interface EvalRun {
   environment_id: string | null;
   /** Set when the run executes a benchmark. */
   benchmark_id?: string;
+  /** harbor benchmark runs: the revision the run is bound to. */
+  benchmark_revision?: number;
   mode?: "agent" | "oracle";
   status: EvalRunStatus;
   created_at: string;
@@ -300,13 +360,18 @@ export interface UploadEvalBenchmarkParams extends EvalArchiveUpload {
   case_names?: string[];
 }
 
-export interface UploadEvalCasesParams extends EvalArchiveUpload {
-  /** Add only these tasks from the archive. */
-  case_names?: string[];
+/** Sync an upload benchmark from a new archive. */
+export type SyncUploadEvalBenchmarkParams = EvalArchiveUpload;
+
+export interface EvalBenchmarkRetrieveParams {
+  /** harbor: list the cases of this revision instead of the latest. */
+  revision?: number;
 }
 
-/** The archive must hold exactly one Harbor task directory. */
-export type UploadReplaceEvalCaseParams = EvalArchiveUpload;
+export interface EvalCaseRetrieveParams {
+  /** harbor: read the case from this revision instead of the latest. */
+  revision?: number;
+}
 
 export interface WaitForEvalRunOptions {
   /** Delay between polls. Default 5000 ms. */
@@ -348,6 +413,11 @@ function enc(id: string): string {
   return encodeURIComponent(id);
 }
 
+/** GET query for an optional revision; omitted when unset. */
+function revisionQuery(params?: { revision?: number }): { query?: { revision: number } } {
+  return params?.revision === undefined ? {} : { query: { revision: params.revision } };
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
@@ -382,40 +452,26 @@ export class EvalCasesResource {
     return name === undefined ? base : `${base}/${enc(name)}`;
   }
 
-  retrieve(benchmarkId: string, name: string, options?: Anthropic.RequestOptions) {
-    return this.client.get<EvalCaseDetail>(this.path(benchmarkId, name), withBeta(options));
+  /** One case; harbor benchmarks accept { revision } (default latest). */
+  retrieve(benchmarkId: string, name: string, params: EvalCaseRetrieveParams = {}, options?: Anthropic.RequestOptions) {
+    return this.client.get<EvalCaseDetail>(this.path(benchmarkId, name), { ...revisionQuery(params), ...withBeta(options) });
   }
 
-  /** messages benchmark: one case. harbor benchmark: every task of a source (or case_names of it). */
+  /** messages benchmarks only (harbor cases are read-only; sync the benchmark instead). */
   add(benchmarkId: string, params: AddEvalCasesRequest, options?: Anthropic.RequestOptions) {
     return this.client.post<EvalBenchmark>(this.path(benchmarkId), { body: params, ...withBeta(options) });
   }
 
+  /** messages benchmarks only. */
   replace(benchmarkId: string, name: string, params: ReplaceEvalCaseRequest, options?: Anthropic.RequestOptions) {
     return this.client.put<EvalCaseDetail>(this.path(benchmarkId, name), { body: params, ...withBeta(options) });
   }
 
+  /** messages benchmarks only. */
   delete(benchmarkId: string, name: string, options?: Anthropic.RequestOptions) {
     return this.client.delete<EvalCaseDeleted>(this.path(benchmarkId, name), withBeta(options));
   }
 
-  /** harbor: upload a .tar/.tar.gz through the Files API, then add its tasks as cases. */
-  async upload(benchmarkId: string, params: UploadEvalCasesParams, options?: Anthropic.RequestOptions): Promise<EvalBenchmark> {
-    enc(benchmarkId);
-    const fileId = await uploadArchive(this.client, params, options);
-    return this.add(benchmarkId, {
-      source: { type: "upload", file_id: fileId },
-      ...(params.case_names?.length ? { case_names: params.case_names } : {}),
-    }, options);
-  }
-
-  /** harbor: upload an archive holding one task directory and replace the case's files with it. */
-  async replaceUpload(benchmarkId: string, name: string, params: UploadReplaceEvalCaseParams, options?: Anthropic.RequestOptions): Promise<EvalCaseDetail> {
-    enc(benchmarkId);
-    enc(name);
-    const fileId = await uploadArchive(this.client, params, options);
-    return this.replace(benchmarkId, name, { source: { type: "upload", file_id: fileId } }, options);
-  }
 }
 
 export class EvalBenchmarksResource {
@@ -433,13 +489,27 @@ export class EvalBenchmarksResource {
     return this.client.get<BuiltinEvalBenchmarkListResponse>("/v1/oma/evals/benchmarks/builtin", withBeta(options));
   }
 
-  /** Import a harbor benchmark from a source, or create an empty harbor / messages benchmark. */
+  /** Import a harbor benchmark from a source (revision 1), or create a messages benchmark. */
   create(params: CreateEvalBenchmarkRequest, options?: Anthropic.RequestOptions) {
     return this.client.post<EvalBenchmark>("/v1/oma/evals/benchmarks", { body: params, ...withBeta(options) });
   }
 
-  retrieve(id: string, options?: Anthropic.RequestOptions) {
-    return this.client.get<EvalBenchmark>(`/v1/oma/evals/benchmarks/${enc(id)}`, withBeta(options));
+  /** With cases (of { revision }, default latest) and, for harbor, its revisions. */
+  retrieve(id: string, params: EvalBenchmarkRetrieveParams = {}, options?: Anthropic.RequestOptions) {
+    return this.client.get<EvalBenchmark>(`/v1/oma/evals/benchmarks/${enc(id)}`, { ...revisionQuery(params), ...withBeta(options) });
+  }
+
+  /** harbor: re-read the source; a new revision is made only when content changed.
+   *  git sources accept { ref }; upload sources need { file_id } (see syncUpload). */
+  sync(id: string, params: SyncEvalBenchmarkRequest = {}, options?: Anthropic.RequestOptions) {
+    return this.client.post<SyncEvalBenchmarkResponse>(`/v1/oma/evals/benchmarks/${enc(id)}/sync`, { body: params, ...withBeta(options) });
+  }
+
+  /** harbor upload benchmark: upload a new .tar/.tar.gz through the Files API, then sync from it. */
+  async syncUpload(id: string, params: SyncUploadEvalBenchmarkParams, options?: Anthropic.RequestOptions): Promise<SyncEvalBenchmarkResponse> {
+    enc(id);
+    const fileId = await uploadArchive(this.client, params, options);
+    return this.sync(id, { file_id: fileId }, options);
   }
 
   update(id: string, params: UpdateEvalBenchmarkRequest, options?: Anthropic.RequestOptions) {

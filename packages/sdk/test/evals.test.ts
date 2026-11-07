@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { OpenMA, type EvalBenchmark, type EvalCaseDetail, type EvalRun } from "../src/index.js";
+import { OpenMA, type EvalBenchmark, type EvalCaseDetail, type EvalRun, type SyncEvalBenchmarkResponse } from "../src/index.js";
 
 type Call = { method: string; path: string; search: string; headers: Headers; body: string | FormData | null };
 
@@ -31,7 +31,7 @@ const run = (status: EvalRun["status"]): EvalRun => ({
 });
 
 const bench = (over: Partial<EvalBenchmark> = {}): EvalBenchmark => ({
-  id: "evb_1", name: "hello", kind: "harbor", source: { type: "builtin", name: "hello" }, case_count: 2, runnable_count: 2,
+  id: "evb_1", name: "hello", kind: "harbor", source: { type: "builtin", name: "hello" }, revision: 1, case_count: 2, runnable_count: 2,
   created_at: "x", updated_at: "x", cases: [], ...over,
 });
 
@@ -93,9 +93,41 @@ describe("evals benchmarks", () => {
   it("rejects non-archive file names before uploading", async () => {
     const { client, calls } = mockClient(() => ({}));
     await expect(client.oma.evals.benchmarks.upload({ file: new Uint8Array([1]), filename: "tasks.zip" })).rejects.toThrow(/\.tar/);
-    await expect(client.oma.evals.benchmarks.cases.upload("evb_1", { file: new Uint8Array([1]), filename: "x.zip" })).rejects.toThrow(/\.tar/);
-    await expect(client.oma.evals.benchmarks.cases.replaceUpload("", "c", { file: new Uint8Array([1]), filename: "x.tgz" })).rejects.toThrow(TypeError);
+    await expect(client.oma.evals.benchmarks.syncUpload("evb_1", { file: new Uint8Array([1]), filename: "x.zip" })).rejects.toThrow(/\.tar/);
+    await expect(client.oma.evals.benchmarks.syncUpload("", { file: new Uint8Array([1]), filename: "x.tgz" })).rejects.toThrow(TypeError);
     expect(calls).toHaveLength(0);
+  });
+
+  it("imports from git, reads a revision and syncs (ref, upload, no body)", async () => {
+    const { client, calls } = mockClient((c) => {
+      if (c.path === "/v1/files") return filesResponse;
+      if (c.path.endsWith("/sync")) return { changed: true, benchmark: bench({ revision: 2 }) };
+      return bench({ source: { type: "git", url: "https://github.com/o/r", ref: "main", path: "tasks" } });
+    });
+    const benchmarks = client.oma.evals.benchmarks;
+    await benchmarks.create({ source: { type: "git", url: "https://github.com/o/r", ref: "main", path: "tasks" } });
+    await benchmarks.retrieve("evb_1", { revision: 1 });
+    await benchmarks.retrieve("evb_1");
+    const synced = await benchmarks.sync("evb_1", { ref: "v2" });
+    expectTypeOf(synced).toExtend<SyncEvalBenchmarkResponse>();
+    expect(synced.changed).toBe(true);
+    expect(synced.benchmark.revision).toBe(2);
+    await benchmarks.sync("evb_1");
+    await benchmarks.syncUpload("evb_1", { file: new Uint8Array([1]), filename: "new.tgz" });
+    expect(calls.map((c) => `${c.method} ${c.path}${c.search}`)).toEqual([
+      "POST /v1/oma/evals/benchmarks",
+      "GET /v1/oma/evals/benchmarks/evb_1?revision=1",
+      "GET /v1/oma/evals/benchmarks/evb_1",
+      "POST /v1/oma/evals/benchmarks/evb_1/sync",
+      "POST /v1/oma/evals/benchmarks/evb_1/sync",
+      "POST /v1/files",
+      "POST /v1/oma/evals/benchmarks/evb_1/sync",
+    ]);
+    expect(JSON.parse(calls[0].body as string)).toEqual({ source: { type: "git", url: "https://github.com/o/r", ref: "main", path: "tasks" } });
+    expect(JSON.parse(calls[3].body as string)).toEqual({ ref: "v2" });
+    expect(JSON.parse(calls[4].body as string)).toEqual({});
+    expect(JSON.parse(calls[6].body as string)).toEqual({ file_id: "file_9" });
+    for (const c of calls) expect(c.headers.get("anthropic-beta")).toContain("managed-agents-2026-04-01");
   });
 
   it("surfaces server errors", async () => {
@@ -105,7 +137,7 @@ describe("evals benchmarks", () => {
 });
 
 describe("evals cases", () => {
-  it("retrieves, adds, replaces and deletes cases under the benchmark", async () => {
+  it("retrieves (optionally at a revision), adds, replaces and deletes messages cases", async () => {
     const detail: EvalCaseDetail = { kind: "messages", name: "c 1", messages: ["hi"], updated_at: "x" };
     const { client, calls } = mockClient((c) => {
       if (c.method === "DELETE") return { type: "eval_case_deleted", benchmark_id: "evb_1", name: "c 1" };
@@ -115,42 +147,23 @@ describe("evals cases", () => {
     const cases = client.oma.evals.benchmarks.cases;
     const got = await cases.retrieve("evb_1", "c 1");
     expectTypeOf(got).toExtend<EvalCaseDetail>();
+    await cases.retrieve("evb_1", "c 1", { revision: 3 });
     await cases.add("evb_1", { name: "c2", messages: ["a", "b"], timeout_ms: 1000 });
-    await cases.add("evb_1", { source: { type: "builtin", name: "hello" }, case_names: ["t"] });
     await cases.replace("evb_1", "c 1", { name: "ignored", messages: ["new"] });
     const deleted = await cases.delete("evb_1", "c 1");
     expect(deleted).toEqual({ type: "eval_case_deleted", benchmark_id: "evb_1", name: "c 1" });
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+    expect(calls.map((c) => `${c.method} ${c.path}${c.search}`)).toEqual([
       "GET /v1/oma/evals/benchmarks/evb_1/cases/c%201",
-      "POST /v1/oma/evals/benchmarks/evb_1/cases",
+      "GET /v1/oma/evals/benchmarks/evb_1/cases/c%201?revision=3",
       "POST /v1/oma/evals/benchmarks/evb_1/cases",
       "PUT /v1/oma/evals/benchmarks/evb_1/cases/c%201",
       "DELETE /v1/oma/evals/benchmarks/evb_1/cases/c%201",
     ]);
-    expect(calls.slice(1, 4).map((c) => JSON.parse(c.body as string))).toEqual([
+    expect(calls.slice(2, 4).map((c) => JSON.parse(c.body as string))).toEqual([
       { name: "c2", messages: ["a", "b"], timeout_ms: 1000 },
-      { source: { type: "builtin", name: "hello" }, case_names: ["t"] },
       { name: "ignored", messages: ["new"] },
     ]);
     for (const c of calls) expect(c.headers.get("anthropic-beta")).toContain("managed-agents-2026-04-01");
-  });
-
-  it("uploads archives to add harbor cases and to replace one case", async () => {
-    const { client, calls } = mockClient((c) => {
-      if (c.path === "/v1/files") return filesResponse;
-      if (c.method === "PUT") return { kind: "harbor", name: "hello" };
-      return bench();
-    });
-    const cases = client.oma.evals.benchmarks.cases;
-    await cases.upload("evb_1", { file: new Uint8Array([1]), filename: "more.tgz", case_names: ["a"] });
-    await cases.replaceUpload("evb_1", "hello", { file: new Uint8Array([2]), filename: "hello.tar" });
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-      "POST /v1/files", "POST /v1/oma/evals/benchmarks/evb_1/cases",
-      "POST /v1/files", "PUT /v1/oma/evals/benchmarks/evb_1/cases/hello",
-    ]);
-    expect(JSON.parse(calls[1].body as string)).toEqual({ source: { type: "upload", file_id: "file_9" }, case_names: ["a"] });
-    expect(JSON.parse(calls[3].body as string)).toEqual({ source: { type: "upload", file_id: "file_9" } });
-    expect(((calls[2].body as FormData).get("file") as File).type).toBe("application/x-tar");
   });
 });
 

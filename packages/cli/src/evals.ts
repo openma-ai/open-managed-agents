@@ -2,7 +2,6 @@ import { lstat, readdir, readFile, readlink, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import type {
-  AddEvalCasesRequest,
   BuiltinEvalBenchmark,
   CreateEvalBenchmarkRequest,
   CreateEvalRunRequest,
@@ -16,7 +15,8 @@ import type {
   HarborCaseSource,
   HarborEvalCase,
   MessagesCaseInput,
-  ReplaceEvalCaseRequest,
+  SyncEvalBenchmarkRequest,
+  SyncEvalBenchmarkResponse,
 } from "@open-managed-agents/api-types";
 
 // `oma evals …` — eval benchmarks, their cases, and eval runs (/v1/oma/evals).
@@ -44,40 +44,43 @@ export interface EvalsCommandSpec {
   http: string;
 }
 
-const HARBOR_SOURCE_FLAGS = "--builtin <name> | --registry <name>[@version] [--registry-url <url>]";
+const HARBOR_SOURCE_FLAGS = "--git <url> [--ref <ref>] [--path <dir>] | --builtin <name> | --registry <name>[@version] [--registry-url <url>]";
 
 export const EVALS_COMMANDS: EvalsCommandSpec[] = [
   { match: ["evals", "benchmarks", "list"], usage: "oma evals benchmarks list", desc: "List eval benchmarks",
     http: "GET    /v1/oma/evals/benchmarks                    List benchmarks (no cases)" },
   { match: ["evals", "benchmarks", "builtin"], usage: "oma evals benchmarks builtin", desc: "List Harbor datasets shipped with OMA",
     http: "GET    /v1/oma/evals/benchmarks/builtin            List builtin benchmarks" },
-  { match: ["evals", "benchmarks", "show"], needsArg: true, usage: "oma evals benchmarks show <id>", desc: "Show a benchmark and its cases",
-    http: "GET    /v1/oma/evals/benchmarks/:id                Get benchmark (with cases)" },
-  { match: ["evals", "benchmarks", "create"], usage: "oma evals benchmarks create --name <n> --kind messages|harbor",
-    desc: "Create an empty benchmark (add cases with oma evals cases add)",
-    http: "POST   /v1/oma/evals/benchmarks                    Create benchmark {kind, name} or {source, name?, case_names?}" },
+  { match: ["evals", "benchmarks", "show"], needsArg: true, usage: "oma evals benchmarks show <id> [--revision N]",
+    desc: "Show a benchmark, its source, revisions and cases (of the latest revision, or --revision N)",
+    http: "GET    /v1/oma/evals/benchmarks/:id?revision=N     Get benchmark (with cases and revisions)" },
+  { match: ["evals", "benchmarks", "create"], usage: "oma evals benchmarks create --name <n> [--kind messages]",
+    desc: "Create an empty messages benchmark (add cases with oma evals cases add); harbor benchmarks are imported",
+    http: "POST   /v1/oma/evals/benchmarks                    Create benchmark {kind:messages, name, cases?} or {source, name?, case_names?}" },
   { match: ["evals", "benchmarks", "import"],
-    usage: `oma evals benchmarks import ${HARBOR_SOURCE_FLAGS} [--case <name> ...] [--name <n>]`,
-    desc: "Import a builtin or Harbor registry dataset as a harbor benchmark",
-    http: "POST   /v1/oma/evals/benchmarks                    {name?, source:{type:builtin|registry,...}, case_names?}" },
-  { match: ["evals", "benchmarks", "upload"], needsArg: true, usage: "oma evals benchmarks upload <dir|archive.tar[.gz]> [--name <n>]",
-    desc: "Upload Harbor task dir(s) or a .tar/.tar.gz as a harbor benchmark",
+    usage: `oma evals benchmarks import (${HARBOR_SOURCE_FLAGS}) [--case <name> ...] [--name <n>]`,
+    desc: "Import a git repository, builtin or Harbor registry dataset as a read-only harbor benchmark",
+    http: "POST   /v1/oma/evals/benchmarks                    {name?, source:{type:git|builtin|registry,...}, case_names?}" },
+  { match: ["evals", "benchmarks", "upload"], needsArg: true, usage: "oma evals benchmarks upload <dir|archive.tar[.gz]> [--name <n>] [--case <name> ...]",
+    desc: "Upload Harbor task dir(s) or a .tar/.tar.gz as a read-only harbor benchmark",
     http: "POST   /v1/files + POST /v1/oma/evals/benchmarks   Upload archive, then create {source:{type:upload,file_id}}" },
+  { match: ["evals", "benchmarks", "sync"], needsArg: true, usage: "oma evals benchmarks sync <id> [--ref <ref>] [--file <dir|archive.tar[.gz]>]",
+    desc: "Re-read a harbor benchmark's source; makes a new revision only when content changed (--ref: git, --file: upload benchmarks)",
+    http: "POST   /v1/oma/evals/benchmarks/:id/sync           Sync harbor benchmark {ref?, file_id?}" },
   { match: ["evals", "benchmarks", "rename"], needsArg: true, usage: "oma evals benchmarks rename <id> <name>", desc: "Rename a benchmark",
     http: "PATCH  /v1/oma/evals/benchmarks/:id                Update benchmark {name}" },
   { match: ["evals", "benchmarks", "delete"], needsArg: true, usage: "oma evals benchmarks delete <id>", desc: "Delete a benchmark",
     http: "DELETE /v1/oma/evals/benchmarks/:id                Delete benchmark (409 while a run is active)" },
-  { match: ["evals", "cases", "show"], needsArg: true, usage: "oma evals cases show <benchmark> <case>", desc: "Show one case in full",
-    http: "GET    /v1/oma/evals/benchmarks/:id/cases/:name    Get case" },
-  { match: ["evals", "cases", "add"], needsArg: true,
-    usage: `oma evals cases add <benchmark> (--file case.json | --from <dir|archive> | ${HARBOR_SOURCE_FLAGS}) [--case <name> ...]`,
-    desc: "Add a messages case (--file) or harbor cases (--from, --builtin, --registry)",
-    http: "POST   /v1/oma/evals/benchmarks/:id/cases          Add case(s): MessagesCaseInput | {source, case_names?}" },
-  { match: ["evals", "cases", "replace"], needsArg: true, usage: "oma evals cases replace <benchmark> <case> (--file case.json | --from <dir|archive>)",
-    desc: "Replace a messages case (--file) or a harbor case's files (--from, one task)",
-    http: "PUT    /v1/oma/evals/benchmarks/:id/cases/:name    Replace case: MessagesCaseInput | {source:{type:upload,file_id}}" },
-  { match: ["evals", "cases", "delete"], needsArg: true, usage: "oma evals cases delete <benchmark> <case>", desc: "Delete a case",
-    http: "DELETE /v1/oma/evals/benchmarks/:id/cases/:name    Delete case" },
+  { match: ["evals", "cases", "show"], needsArg: true, usage: "oma evals cases show <benchmark> <case> [--revision N]", desc: "Show one case in full",
+    http: "GET    /v1/oma/evals/benchmarks/:id/cases/:name?revision=N  Get case" },
+  { match: ["evals", "cases", "add"], needsArg: true, usage: "oma evals cases add <benchmark> --file case.json",
+    desc: "Add a messages case (harbor cases are read-only; sync the benchmark instead)",
+    http: "POST   /v1/oma/evals/benchmarks/:id/cases          Add messages case: MessagesCaseInput" },
+  { match: ["evals", "cases", "replace"], needsArg: true, usage: "oma evals cases replace <benchmark> <case> --file case.json",
+    desc: "Replace a messages case",
+    http: "PUT    /v1/oma/evals/benchmarks/:id/cases/:name    Replace messages case: MessagesCaseInput" },
+  { match: ["evals", "cases", "delete"], needsArg: true, usage: "oma evals cases delete <benchmark> <case>", desc: "Delete a messages case",
+    http: "DELETE /v1/oma/evals/benchmarks/:id/cases/:name    Delete messages case" },
   { match: ["evals", "run"],
     usage: "oma evals run (--benchmark <id> [--mode agent|oracle] [--agent <id>] [--environment <id>] [--case <name> ...] [--trials N] [--concurrency N]"
       + " | --file tasks.json --agent <id> --environment <id>) [--wait]",
@@ -153,11 +156,23 @@ function intFlag(raw: string | undefined, name: string, min: number, max: number
 }
 
 function parseHarborSource(f: ParsedFlags): HarborCaseSource | undefined {
+  const git = f.single["--git"];
   const builtin = f.single["--builtin"];
   const registry = f.single["--registry"];
   const registryUrl = f.single["--registry-url"];
-  if (builtin && registry) throw new EvalsUsageError("Pass only one of --builtin <name> or --registry <name>[@version]");
+  if ([git, builtin, registry].filter(Boolean).length > 1) {
+    throw new EvalsUsageError("Pass only one of --git <url>, --builtin <name> or --registry <name>[@version]");
+  }
   if (registryUrl !== undefined && !registry) throw new EvalsUsageError("--registry-url is only valid with --registry");
+  for (const flag of ["--ref", "--path"]) {
+    if (f.single[flag] !== undefined && !git) throw new EvalsUsageError(`${flag} is only valid with --git`);
+  }
+  if (git) {
+    try { new URL(git); } catch { throw new EvalsUsageError(`Invalid --git URL: ${git}`); }
+    const ref = f.single["--ref"];
+    const path = f.single["--path"];
+    return { type: "git", url: git, ...(ref ? { ref } : {}), ...(path ? { path } : {}) };
+  }
   if (builtin) return { type: "builtin", name: builtin };
   if (!registry) return undefined;
   const at = registry.lastIndexOf("@");
@@ -170,12 +185,12 @@ function parseHarborSource(f: ParsedFlags): HarborCaseSource | undefined {
   return { type: "registry", name, ...(version ? { version } : {}), ...(registryUrl ? { registry_url: registryUrl } : {}) };
 }
 
-const SOURCE_SINGLE = ["--builtin", "--registry", "--registry-url"];
+const SOURCE_SINGLE = ["--git", "--ref", "--path", "--builtin", "--registry", "--registry-url"];
 
 export function parseImportArgs(args: string[]): CreateEvalBenchmarkRequest {
   const f = parseFlags(args, { single: [...SOURCE_SINGLE, "--name"], multi: ["--case"] }, 0);
   const source = parseHarborSource(f);
-  if (!source) throw new EvalsUsageError("Pass exactly one of --builtin <name> or --registry <name>[@version]");
+  if (!source) throw new EvalsUsageError("Pass exactly one of --git <url>, --builtin <name> or --registry <name>[@version]");
   const cases = f.multi["--case"];
   return {
     ...(f.single["--name"] ? { name: f.single["--name"] } : {}),
@@ -187,12 +202,18 @@ export function parseImportArgs(args: string[]): CreateEvalBenchmarkRequest {
 export function parseCreateArgs(args: string[]): CreateEvalBenchmarkRequest {
   const f = parseFlags(args, { single: ["--name", "--kind"] }, 0);
   const name = f.single["--name"];
-  if (!name) throw new EvalsUsageError("--name <n> is required. Usage: oma evals benchmarks create --name <n> --kind messages|harbor");
+  if (!name) throw new EvalsUsageError("--name <n> is required. Usage: oma evals benchmarks create --name <n> [--kind messages]");
   const kind = f.single["--kind"];
-  if (kind !== "messages" && kind !== "harbor") {
-    throw new EvalsUsageError(kind === undefined ? "--kind messages|harbor is required" : `--kind must be "messages" or "harbor" (got "${kind}")`);
+  if (kind === "harbor") {
+    throw new EvalsUsageError("Harbor benchmarks are imported read-only: use oma evals benchmarks import or oma evals benchmarks upload");
   }
-  return { kind, name };
+  if (kind !== undefined && kind !== "messages") throw new EvalsUsageError(`--kind must be "messages" (got "${kind}")`);
+  return { kind: "messages", name };
+}
+
+/** Parse --revision N (a positive integer) for benchmark/case show. */
+function revisionFlag(f: ParsedFlags): number | undefined {
+  return intFlag(f.single["--revision"], "--revision", 1, Number.MAX_SAFE_INTEGER);
 }
 
 export type ParsedRunArgs = { request: CreateEvalRunRequest; wait: boolean; file?: undefined } | { file: string; agent: string; environment: string; wait: boolean };
@@ -295,9 +316,10 @@ export function table(rows: string[][]): string {
 const fmtReward = (n: number | undefined) => (typeof n === "number" ? n.toFixed(3) : "—");
 const fmtDate = (s: string | undefined) => (s ? new Date(s).toLocaleString() : "—");
 
-function sourceLabel(b: EvalBenchmark): string {
+function sourceLabel(b: Pick<EvalBenchmark, "source">): string {
   const s = b.source;
   if (!s) return "—";
+  if (s.type === "git") return `git:${s.url}${s.ref ? `#${s.ref}` : ""}${s.path ? ` (${s.path})` : ""}`;
   if (s.type === "upload") return `upload:${s.file_id}`;
   if (s.type === "builtin") return `builtin:${s.name}`;
   return `registry:${s.name}${s.version ? `@${s.version}` : ""}`;
@@ -363,12 +385,34 @@ export function formatBenchmark(b: EvalBenchmark): string {
     `ID:       ${b.id}`,
     `Kind:     ${b.kind}`,
     `Source:   ${sourceLabel(b)}`,
+  ];
+  const latest = b.revisions?.[0];
+  for (const pin of latest?.pins ?? []) lines.push(`  pinned  ${pin.url}${pin.ref ? ` ${pin.ref}` : ""} @ ${pin.commit}`);
+  if (b.revision != null) lines.push(`Revision: ${b.revision}`);
+  if (b.cases_revision != null && b.cases_revision !== b.revision) lines.push(`Showing:  cases of revision ${b.cases_revision}`);
+  lines.push(
     `Cases:    ${b.case_count} (${b.runnable_count} runnable)`,
     `Created:  ${fmtDate(b.created_at)}`,
     `Updated:  ${fmtDate(b.updated_at)}`,
-  ];
+  );
+  if (b.revisions?.length) {
+    lines.push("", table([
+      ["REVISION", "CASES", "SOURCE", "DIGEST", "CREATED"],
+      ...b.revisions.map((r) => [String(r.revision), String(r.case_count), sourceLabel(r), shortDigest(r.digest), fmtDate(r.created_at)]),
+    ]));
+  }
   if (b.cases?.length) lines.push("", casesTable(b.kind, b.cases));
   return lines.join("\n");
+}
+
+function shortDigest(d: string | undefined): string {
+  if (!d) return "—";
+  return d.startsWith("sha256:") ? `sha256:${d.slice(7, 19)}` : d.slice(0, 19);
+}
+
+function benchmarkRef(run: Pick<EvalRun, "benchmark_id" | "benchmark_revision">): string {
+  if (!run.benchmark_id) return "—";
+  return run.benchmark_revision != null ? `${run.benchmark_id}@r${run.benchmark_revision}` : run.benchmark_id;
 }
 
 export function formatCase(c: EvalCaseDetail): string {
@@ -376,6 +420,8 @@ export function formatCase(c: EvalCaseDetail): string {
     const lines = [
       `Case:     ${c.name}`,
       `Kind:     harbor`,
+      ...(c.revision != null ? [`Revision: ${c.revision}`] : []),
+      ...(c.digest ? [`Digest:   ${c.digest}`] : []),
       `Image:    ${c.image}${c.image_alias ? ` (alias ${c.image_alias})` : ""}`,
       `Runnable: ${harborRunnable(c) ? "yes" : `no (${harborNote(c)})`}`,
       `Solution: ${c.has_solution ? "yes" : "no"}`,
@@ -410,6 +456,7 @@ export function formatRun(run: EvalRun, benchmark?: Pick<EvalBenchmark, "id" | "
     `Kind:      ${run.kind}${run.mode ? ` (${run.mode})` : ""}`,
   ];
   if (run.benchmark_id) lines.push(`Benchmark: ${benchmark ? `${benchmark.name} (${run.benchmark_id})` : run.benchmark_id}`);
+  if (run.benchmark_revision != null) lines.push(`Revision:  ${run.benchmark_revision}`);
   if (run.agent_id) lines.push(`Agent:     ${run.agent_id}`);
   if (run.environment_id) lines.push(`Env:       ${run.environment_id}`);
   lines.push(`Cases:     ${run.completed_count} completed, ${run.failed_count} failed, ${run.task_count} total`);
@@ -571,16 +618,13 @@ function requirePositionals(f: ParsedFlags, names: string[], usage: string): str
 }
 
 /** Pack a directory (or read a .tar/.tar.gz) and upload it through the Files API. */
-async function uploadPath(io: EvalsIO, path: string, opts: { exactlyOneTask?: boolean } = {}): Promise<{ fileId: string; filename: string }> {
+async function uploadPath(io: EvalsIO, path: string): Promise<{ fileId: string; filename: string }> {
   let st;
   try { st = await stat(path); } catch { throw new EvalsUsageError(`No such file or directory: ${path}`); }
   let bytes: Uint8Array;
   let filename: string;
   if (st.isDirectory()) {
     const packed = await createTarGz(path);
-    if (opts.exactlyOneTask && packed.taskCount !== 1) {
-      throw new EvalsUsageError(`${path} has ${packed.taskCount} task.toml files; replacing a case needs exactly one task directory`);
-    }
     bytes = packed.bytes;
     filename = `${basename(resolve(path))}.tar.gz`;
     if (!io.json) io.print(`Packed ${packed.fileCount} files (${packed.taskCount} task.toml) into ${filename} (${bytes.length} bytes)`);
@@ -608,8 +652,8 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
       const res = await io.request<{ data: EvalBenchmark[] }>("/v1/oma/evals/benchmarks");
       if (io.json) { printJson(io, res); return 0; }
       if (!res.data.length) { io.print("No eval benchmarks. Import one with: oma evals benchmarks import --builtin <name>"); return 0; }
-      io.print(table([["NAME", "ID", "KIND", "SOURCE", "CASES", "RUNNABLE", "CREATED"],
-        ...res.data.map((b) => [b.name, b.id, b.kind, sourceLabel(b), String(b.case_count), String(b.runnable_count), fmtDate(b.created_at)])]));
+      io.print(table([["NAME", "ID", "KIND", "SOURCE", "REVISION", "CASES", "RUNNABLE", "CREATED"],
+        ...res.data.map((b) => [b.name, b.id, b.kind, sourceLabel(b), b.revision != null ? String(b.revision) : "—", String(b.case_count), String(b.runnable_count), fmtDate(b.created_at)])]));
       return 0;
     }
     case "benchmarks builtin": {
@@ -621,8 +665,10 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
       return 0;
     }
     case "benchmarks show": {
-      const [bId] = requirePositionals(parseFlags(tail, {}, 1), ["id"], "oma evals benchmarks show <id>");
-      const b = await io.request<EvalBenchmark>(benchPath(bId));
+      const f = parseFlags(tail, { single: ["--revision"] }, 1);
+      const [bId] = requirePositionals(f, ["id"], "oma evals benchmarks show <id> [--revision N]");
+      const revision = revisionFlag(f);
+      const b = await io.request<EvalBenchmark>(`${benchPath(bId)}${revision !== undefined ? `?revision=${revision}` : ""}`);
       io.print(io.json ? JSON.stringify(b, null, 2) : formatBenchmark(b));
       return 0;
     }
@@ -630,7 +676,7 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
       const body = parseCreateArgs(tail);
       const b = await io.request<EvalBenchmark>("/v1/oma/evals/benchmarks", { method: "POST", body: JSON.stringify(body) });
       if (io.json) { printJson(io, b); return 0; }
-      io.print(`Benchmark created: ${b.name} (${b.id}) — ${b.kind}\n  Add cases with: oma evals cases add ${b.id} ${b.kind === "messages" ? "--file case.json" : "--from <dir|archive>"}`);
+      io.print(`Benchmark created: ${b.name} (${b.id}) — ${b.kind}\n  Add cases with: oma evals cases add ${b.id} --file case.json`);
       return 0;
     }
     case "benchmarks import": {
@@ -640,12 +686,32 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
       return 0;
     }
     case "benchmarks upload": {
-      const f = parseFlags(tail, { single: ["--name"] }, 1);
-      const [path] = requirePositionals(f, ["path"], "oma evals benchmarks upload <dir|archive.tar[.gz]> [--name <n>]");
+      const f = parseFlags(tail, { single: ["--name"], multi: ["--case"] }, 1);
+      const [path] = requirePositionals(f, ["path"], "oma evals benchmarks upload <dir|archive.tar[.gz]> [--name <n>] [--case <name> ...]");
       const { fileId } = await uploadPath(io, path);
-      const body: CreateEvalBenchmarkRequest = { ...(f.single["--name"] ? { name: f.single["--name"] } : {}), source: { type: "upload", file_id: fileId } };
+      const cases = f.multi["--case"];
+      const body: CreateEvalBenchmarkRequest = {
+        ...(f.single["--name"] ? { name: f.single["--name"] } : {}),
+        source: { type: "upload", file_id: fileId },
+        ...(cases?.length ? { case_names: cases } : {}),
+      };
       const b = await io.request<EvalBenchmark>("/v1/oma/evals/benchmarks", { method: "POST", body: JSON.stringify(body) });
       reportBenchmark(io, b, "uploaded");
+      return 0;
+    }
+    case "benchmarks sync": {
+      const usage = "oma evals benchmarks sync <id> [--ref <ref>] [--file <dir|archive.tar[.gz]>]";
+      const f = parseFlags(tail, { single: ["--ref", "--file"] }, 1);
+      const [bId] = requirePositionals(f, ["id"], usage);
+      const ref = f.single["--ref"];
+      const file = f.single["--file"];
+      if (ref && file) throw new EvalsUsageError(`Pass --ref (git benchmarks) or --file (upload benchmarks), not both. Usage: ${usage}`);
+      const body: SyncEvalBenchmarkRequest = file ? { file_id: (await uploadPath(io, file)).fileId } : ref ? { ref } : {};
+      const res = await io.request<SyncEvalBenchmarkResponse>(`${benchPath(bId)}/sync`, { method: "POST", body: JSON.stringify(body) });
+      if (io.json) { printJson(io, res); return 0; }
+      const b = res.benchmark;
+      if (!res.changed) { io.print(`Benchmark unchanged: ${b.name} (${b.id}) — still revision ${b.revision ?? "—"}`); return 0; }
+      reportBenchmark(io, b, "synced");
       return 0;
     }
     case "benchmarks rename": {
@@ -661,42 +727,31 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
       return 0;
     }
     case "cases show": {
-      const [bId, name] = requirePositionals(parseFlags(tail, {}, 2), ["benchmark", "case"], "oma evals cases show <benchmark> <case>");
-      const c = await io.request<EvalCaseDetail>(casePath(bId, name));
+      const f = parseFlags(tail, { single: ["--revision"] }, 2);
+      const [bId, name] = requirePositionals(f, ["benchmark", "case"], "oma evals cases show <benchmark> <case> [--revision N]");
+      const revision = revisionFlag(f);
+      const c = await io.request<EvalCaseDetail>(`${casePath(bId, name)}${revision !== undefined ? `?revision=${revision}` : ""}`);
       io.print(io.json ? JSON.stringify(c, null, 2) : formatCase(c));
       return 0;
     }
     case "cases add": {
-      const usage = EVALS_COMMANDS.find((c) => c.match[1] === "cases" && c.match[2] === "add")!.usage;
-      const f = parseFlags(tail, { single: ["--file", "--from", ...SOURCE_SINGLE], multi: ["--case"] }, 1);
+      const usage = "oma evals cases add <benchmark> --file case.json";
+      const f = parseFlags(tail, { single: ["--file"] }, 1);
       const [bId] = requirePositionals(f, ["benchmark"], usage);
-      const source = parseHarborSource(f);
       const file = f.single["--file"];
-      const from = f.single["--from"];
-      const given = [file && "--file", from && "--from", source && (source.type === "builtin" ? "--builtin" : "--registry")].filter(Boolean);
-      if (given.length !== 1) throw new EvalsUsageError(`Pass exactly one of --file, --from, --builtin or --registry. Usage: ${usage}`);
-      const caseNames = f.multi["--case"];
-      if (file && caseNames) throw new EvalsUsageError("--case only applies to harbor sources (--from, --builtin, --registry)");
-      let body: AddEvalCasesRequest;
-      if (file) body = await readCaseFile(file);
-      else {
-        const src: HarborCaseSource = from ? { type: "upload", file_id: (await uploadPath(io, from)).fileId } : source!;
-        body = { source: src, ...(caseNames?.length ? { case_names: caseNames } : {}) };
-      }
+      if (!file) throw new EvalsUsageError(`--file case.json is required. Usage: ${usage}`);
+      const body = await readCaseFile(file);
       const b = await io.request<EvalBenchmark>(`${benchPath(bId)}/cases`, { method: "POST", body: JSON.stringify(body) });
       reportBenchmark(io, b, "updated");
       return 0;
     }
     case "cases replace": {
-      const usage = "oma evals cases replace <benchmark> <case> (--file case.json | --from <dir|archive>)";
-      const f = parseFlags(tail, { single: ["--file", "--from"] }, 2);
+      const usage = "oma evals cases replace <benchmark> <case> --file case.json";
+      const f = parseFlags(tail, { single: ["--file"] }, 2);
       const [bId, name] = requirePositionals(f, ["benchmark", "case"], usage);
       const file = f.single["--file"];
-      const from = f.single["--from"];
-      if (!!file === !!from) throw new EvalsUsageError(`Pass exactly one of --file or --from. Usage: ${usage}`);
-      const body: ReplaceEvalCaseRequest = file
-        ? await readCaseFile(file)
-        : { source: { type: "upload", file_id: (await uploadPath(io, from!, { exactlyOneTask: true })).fileId } };
+      if (!file) throw new EvalsUsageError(`--file case.json is required. Usage: ${usage}`);
+      const body = await readCaseFile(file);
       const c = await io.request<EvalCaseDetail>(casePath(bId, name), { method: "PUT", body: JSON.stringify(body) });
       io.print(io.json ? JSON.stringify(c, null, 2) : `Case replaced: ${c.name} in ${bId}`);
       return 0;
@@ -732,7 +787,7 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
       if (io.json) { printJson(io, res); return 0; }
       if (!res.data.length) { io.print("No eval runs. Start one with: oma evals run --benchmark <id> --agent <id>"); return 0; }
       io.print(table([["ID", "STATUS", "KIND", "BENCHMARK", "AGENT", "CASES", "DONE", "FAILED", "SCORE", "CREATED"],
-        ...res.data.map((r) => [r.id, r.status, r.mode ? `${r.kind}/${r.mode}` : r.kind, r.benchmark_id ?? "—", r.agent_id ?? "—",
+        ...res.data.map((r) => [r.id, r.status, r.mode ? `${r.kind}/${r.mode}` : r.kind, benchmarkRef(r), r.agent_id ?? "—",
           String(r.task_count), String(r.completed_count), String(r.failed_count), fmtReward(r.score), fmtDate(r.created_at)])]));
       return 0;
     }
@@ -767,7 +822,7 @@ async function dispatch(io: EvalsIO, args: string[]): Promise<number> {
 
 function reportBenchmark(io: EvalsIO, b: EvalBenchmark, verb: string) {
   if (io.json) { printJson(io, b); return; }
-  io.print(`Benchmark ${verb}: ${b.name} (${b.id}) — ${b.case_count} cases, ${b.runnable_count} runnable`);
+  io.print(`Benchmark ${verb}: ${b.name} (${b.id}) — ${b.revision != null ? `revision ${b.revision}, ` : ""}${b.case_count} cases, ${b.runnable_count} runnable`);
   if (b.runnable_count < b.case_count) {
     const blocked = (b.cases ?? []).filter((c): c is HarborEvalCase => c.kind === "harbor" && !harborRunnable(c));
     io.error(`Warning: ${b.case_count - b.runnable_count} case(s) cannot run yet${blocked.length ? ":" : "."}`);
