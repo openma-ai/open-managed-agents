@@ -3805,6 +3805,9 @@ importers:
       '@open-managed-agents/observability':
         specifier: workspace:*
         version: link:../observability
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
