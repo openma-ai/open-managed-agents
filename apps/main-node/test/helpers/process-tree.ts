@@ -11,9 +11,13 @@ export async function killProcessTree(
   signal: NodeJS.Signals = "SIGKILL",
 ): Promise<void> {
   const alreadyExited = child.exitCode !== null || child.signalCode !== null;
-  const exited = alreadyExited
+  // `exit` only observes the tsx launcher. Its Node child can still own the
+  // inherited output pipes and the native runtime directory lock. `close`
+  // waits until those pipes close too, before a reaper opens that directory.
+  const pipesOpen = [child.stdin, child.stdout, child.stderr].some(stream => stream !== null && !stream.destroyed);
+  const closed = alreadyExited && !pipesOpen
     ? Promise.resolve()
-    : new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    : new Promise<void>((resolve) => child.once("close", () => resolve()));
 
   let killedGroup = false;
   if (process.platform !== "win32" && child.pid !== undefined) {
@@ -25,5 +29,5 @@ export async function killProcessTree(
     }
   }
   if (!killedGroup && !alreadyExited) child.kill(signal);
-  await exited;
+  await closed;
 }
