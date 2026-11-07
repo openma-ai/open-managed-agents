@@ -326,33 +326,36 @@ List benchmarks (without their cases).
 List the Harbor benchmarks shipped with OMA.
 
 ### `POST /v1/oma/evals/benchmarks`
-Create a benchmark (`201`): import a Harbor benchmark from an uploaded archive, a Harbor registry or a built-in set, or create an empty `harbor` or `messages` benchmark (optionally with initial messages cases).
+Create a benchmark (`201`): import a Harbor benchmark (revision 1) from a git repository (`{ type: "git", url, ref?, path? }`, github.com or huggingface.co), a Harbor registry, a built-in set or an uploaded archive; or create a `messages` benchmark (optionally with initial cases).
 
 ### `GET /v1/oma/evals/benchmarks/:id`
-Get a benchmark and its cases, including which cases are runnable here.
+Get a benchmark, its revisions (newest first, with pinned commits) and the cases of the latest revision or of `?revision=N`, including which cases are runnable here.
 
 ### `PATCH /v1/oma/evals/benchmarks/:id`
 Rename a benchmark.
+
+### `POST /v1/oma/evals/benchmarks/:id/sync`
+Re-read a Harbor benchmark's source (`ref` to change a git ref, `file_id` for a new upload). Returns `{ changed, benchmark }`; a new revision is made only when the content digest changed.
 
 ### `DELETE /v1/oma/evals/benchmarks/:id`
 Delete a benchmark (`409` while an active run uses it).
 
 ### `POST /v1/oma/evals/benchmarks/:id/cases`
-Add cases (`201`): one messages case, or every Harbor task found in a source. `409` if a name exists.
+Add a case to a messages benchmark (`201`; `409` if the name exists).
 
 ### `GET /v1/oma/evals/benchmarks/:id/cases/:name`
-Get one case. Harbor cases include the full instruction and the stored file list.
+Get one case (`?revision=N` for Harbor). Harbor cases include the digest, the full instruction and the stored file list.
 
 ### `PUT /v1/oma/evals/benchmarks/:id/cases/:name`
-Replace a case: new messages content, or an uploaded archive holding exactly one Harbor task.
+Replace a messages case.
 
 ### `DELETE /v1/oma/evals/benchmarks/:id/cases/:name`
-Delete a case.
+Delete a messages case.
 
-Case writes return `409` while an active run uses the benchmark.
+Harbor cases are read-only: case writes on a Harbor benchmark return `400`; edit the source and sync instead.
 
 ### `POST /v1/oma/evals/runs`
-Start a run of a benchmark (`benchmark_id`, optional `case_names`, `trials`, `concurrency`; Harbor: `mode: "agent"` or `"oracle"`; messages: `agent_id` and `environment_id`), or of inline messages `tasks`.
+Start a run of a benchmark (bound to its latest revision; `benchmark_id`, optional `case_names`, `trials`, `concurrency`; Harbor: `mode: "agent"` or `"oracle"`; messages: `agent_id` and `environment_id`), or of inline messages `tasks`.
 
 ### `GET /v1/oma/evals/runs`
 List runs. Filters: `status`, `agent_id`, `benchmark_id`, `limit`.

@@ -13,48 +13,67 @@ Evals have three layers:
     `solution/`). This is the format Terminal-Bench 2.0 uses.
   - **`messages`** — cases are scripted conversations: user messages sent in
     order, then an eval-core reward spec scores the Session.
-- **Case** — one task of a benchmark. You add, edit (or replace) and delete
-  cases one by one.
+- **Case** — one task of a benchmark. Harbor cases are read-only in OMA: you
+  edit them where they live (a git repository, a Hugging Face dataset, your own
+  directory) and sync the benchmark. Messages cases are edited in OMA.
 - **Eval run** — one execution of a benchmark (all cases or some of them)
   against an agent. Every attempt (a **trial**) is an ordinary managed Session,
   so you can open it in the Console and read exactly what the agent did. A
   background tick drives runs forward once a minute on both Node and
   Cloudflare deployments.
 
-Cases cannot change, and a benchmark cannot be deleted, while one of its runs
-is pending or running (`409`). A run keeps a copy of each messages case it
-started with, so editing a case later does not change past results.
+A Harbor run is bound to the benchmark revision that was current when it
+started and reads every case by its content digest; a messages run keeps a copy
+of its cases. Syncing or editing later never changes a run. A benchmark cannot
+be deleted while one of its runs is pending or running (`409`).
 
 ## Harbor benchmarks
 
-### Import or create
+### Import
 
 ```bash
-# A benchmark shipped with OMA (pinned to a commit)
-oma evals benchmarks import --builtin terminal-bench-sample@2.0
+# A git repository: github.com or a Hugging Face dataset. --ref is a branch,
+# tag or commit (default HEAD); --path imports one folder of tasks (or one task).
+oma evals benchmarks import --git https://github.com/laude-institute/terminal-bench-2 --ref main
+oma evals benchmarks import --git https://huggingface.co/datasets/harborframework/harbor-datasets \
+  --path datasets/bird-bench --case california_schools__13
 
 # Any dataset in Harbor's public registry (or --registry-url for your own)
 oma evals benchmarks import --registry terminal-bench@2.0 --case fix-git --case regex-log
 
+# A benchmark shipped with OMA (pinned to a commit)
+oma evals benchmarks import --builtin terminal-bench-sample@2.0
+
 # Your own tasks: a directory or a .tar / .tar.gz containing task directories
 oma evals benchmarks upload ./my-tasks --name my-tasks
-
-# Or start empty and add cases later
-oma evals benchmarks create --name my-tasks --kind harbor
 ```
 
-`oma evals benchmarks show <id>` lists each case and whether it can run on
-this deployment.
+An import resolves the ref to a commit, reads the task directories at that
+commit and stores them as **revision 1**. `oma evals benchmarks show <id>`
+lists the source, the pinned commits, the revisions and each case with its
+digest and whether it can run on this deployment.
 
-### Manage cases
+Git sources other than github.com and huggingface.co, and Harbor Hub packages,
+are not supported yet and are rejected with an explicit error. Hub datasets are
+read file by file; import large ones in subsets with `--case`.
+
+### Change cases: edit at the source, then sync
 
 ```bash
-oma evals cases add <benchmark-id> --from ./another-task          # directory or archive
-oma evals cases add <benchmark-id> --registry terminal-bench@2.0 --case build-pmars
-oma evals cases replace <benchmark-id> fix-git --from ./fix-git-v2  # exactly one task
-oma evals cases show <benchmark-id> fix-git
-oma evals cases delete <benchmark-id> fix-git
+oma evals benchmarks sync <benchmark-id>                  # re-resolve the ref, re-read the tasks
+oma evals benchmarks sync <benchmark-id> --ref v2         # git: move to another branch, tag or commit
+oma evals benchmarks sync <benchmark-id> --file ./my-tasks # upload: a new directory or archive
+oma evals benchmarks show <benchmark-id> --revision 1     # an older revision
+oma evals cases show <benchmark-id> fix-git --revision 1
 ```
+
+A sync makes a new revision only when the content changed, as `harbor
+publish` does: each case's digest is Harbor's package hash
+(sha256 over sorted `path\0sha256(file)\n` lines) over the files OMA stores —
+`task.toml`, `instruction.md`, `tests/`, `solution/`. `environment/` is not
+stored, because cases run from their prebuilt image, so the digest is not the
+same as a Harbor Hub digest of the task. A sync that finds the same content
+writes nothing. Revisions are never changed afterwards.
 
 ### How a trial runs
 
