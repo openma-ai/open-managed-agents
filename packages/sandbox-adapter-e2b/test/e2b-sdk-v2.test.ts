@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sdk = vi.hoisted(() => ({
+  setTimeout: vi.fn(async () => {}),
   create: vi.fn(async (template: string) => makeSdkSandbox(`created:${template}`)),
   connect: vi.fn(async (sandboxId: string) => makeSdkSandbox(`connected:${sandboxId}`)),
 }));
@@ -23,7 +24,7 @@ function makeSdkSandbox(sandboxId: string) {
 }
 
 vi.mock("e2b", () => ({
-  Sandbox: { create: sdk.create, connect: sdk.connect },
+  Sandbox: { create: sdk.create, connect: sdk.connect, setTimeout: sdk.setTimeout },
 }));
 
 import * as e2bAdapter from "../src/e2b";
@@ -45,6 +46,18 @@ describe("E2B SDK v2 adapter", () => {
   beforeEach(() => {
     sdk.create.mockClear();
     sdk.connect.mockClear();
+  });
+
+  it("renews an exact persisted ID without connecting, preparing or allocating", async () => {
+    const handle = { provider: "e2b", runtimeId: "persisted-id" };
+    const input = { ttlMs: 60000, signal: new AbortController().signal };
+    await sandboxFactory.runtimeBinding!.renewLease!(handle, input, { E2B_API_KEY: "test" });
+    expect(sdk.setTimeout).toHaveBeenLastCalledWith("persisted-id", 60000, expect.objectContaining({ apiKey: "test", signal: input.signal }));
+    const failure = new Error("unknown renewal response");
+    sdk.setTimeout.mockRejectedValueOnce(failure);
+    await expect(sandboxFactory.runtimeBinding!.renewLease!(handle, input, {})).rejects.toBe(failure);
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
   });
 
   it("rebinds a serialized physical handle through the factory without allocating on failure", async () => {

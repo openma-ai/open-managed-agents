@@ -271,20 +271,27 @@ function findLastMatching<T>(
   return undefined;
 }
 
+/** A live Session owns its SDK handle. This is not provider identity or authority:
+ * those remain in the durable resource binding and its fences. */
+interface ManagedRunnerSession {
+  sandbox?: SandboxExecutor;
+  runtime?: SessionSandboxRuntime;
+  generation?: string;
+  fingerprint?: string;
+  allocationId?: string;
+  workspace?: ManagedWorkspaceState;
+  closed?: boolean;
+}
+
 export class DefaultNodeManagedSessionRunner
   implements NodeManagedSessionRunner
 {
-  private readonly sandboxRuntimes = new ScopedSessionMap<SessionSandboxRuntime>();
-  private readonly sandboxes = new ScopedSessionMap<SandboxExecutor>();
-  private readonly runtimeGenerations = new ScopedSessionMap<string>();
-  private readonly sandboxConfigurationFingerprints = new ScopedSessionMap<string>();
+  private readonly sessions = new ScopedSessionMap<ManagedRunnerSession>();
   private readonly abortControllers = new ScopedSessionMap<AbortController>();
   private readonly attemptIds = new ScopedSessionMap<string>();
-  private readonly durableAllocations = new ScopedSessionMap<string>();
   private readonly startupAborts = new ScopedSessionMap<AbortController>();
   private readonly sandboxStarts = new ScopedSessionMap<Promise<void>>();
   private readonly subagentExecutions = new ScopedSessionMap<ManagedNodeSubagents>();
-  private readonly workspaces = new ScopedSessionMap<ManagedWorkspaceState>();
   private readonly pendingSandboxDisposals = new ScopedSessionMap<Promise<void>>();
   private readonly sandboxRefreshes = new WeakMap<SandboxExecutor, {
     sandbox: SandboxExecutor;
@@ -297,6 +304,30 @@ export class DefaultNodeManagedSessionRunner
     private readonly dependencies: DefaultNodeManagedSessionRunnerDependencies,
   ) {}
 
+  private sessionFor(input: { workspaceId: string; sessionId: string }): ManagedRunnerSession {
+    let session = this.sessions.get(input);
+    if (session === undefined) {
+      session = {};
+      this.sessions.set(input, session);
+    }
+    return session;
+  }
+
+  /** Drop only local ownership. Resource retirement/deletion belongs to lifecycle. */
+  private releaseSession(input: { workspaceId: string; sessionId: string }): void {
+    const session = this.sessions.get(input);
+    if (session === undefined) return;
+    session.closed = true;
+    if (session.sandbox) this.sandboxRefreshes.get(session.sandbox)?.revoke.abort();
+    delete session.sandbox;
+    delete session.runtime;
+    delete session.generation;
+    delete session.fingerprint;
+    delete session.allocationId;
+    delete session.workspace;
+    this.sessions.delete(input);
+  }
+
   /** `lease_lost` means another owner will reclaim and re-run this execution:
    * the stale attempt must not tell the client its turn failed. */
   cancel(input: { workspaceId: string; sessionId: string; reason?: string; attemptId?: string }): void {
@@ -307,14 +338,14 @@ export class DefaultNodeManagedSessionRunner
 
   /** Returns only a prepared live runtime, scoped exactly like execution. */
   connectedSandbox(input: { workspaceId: string; sessionId: string }): SandboxExecutor | null {
-    return this.sandboxes.get(input) ?? null;
+    return this.sessions.get(input)?.sandbox ?? null;
   }
 
   async withSessionSandbox<T>(input: StartNodeManagedSessionRuntime, operation: (sandbox: SandboxExecutor) => Promise<T>): Promise<T> {
     const lifecycle = this.dependencies.sandboxLifecycle;
     if (lifecycle === undefined) throw new Error("Durable sandbox resource access is not configured");
     await this.startDurableSandbox(input);
-    const allocationId = this.durableAllocations.get(input)!;
+    const allocationId = this.sessions.get(input)?.allocationId!;
     return lifecycle.operate({ scope: input, allocationId }, (sandbox, signal) =>
       operation(withSandboxExecutionGuard(sandbox, { signal })));
   }
@@ -367,6 +398,7 @@ export class DefaultNodeManagedSessionRunner
   }
 
   private async startSandbox(input: StartNodeManagedSessionRuntime): Promise<void> {
+    let session = this.sessionFor(input);
     if (this.dependencies.sandboxLifecycle !== undefined &&
       await this.dependencies.sandboxMode?.(input) !== "none") {
       await this.startDurableSandbox(input);
@@ -380,18 +412,18 @@ export class DefaultNodeManagedSessionRunner
       if (signal.aborted) throw abortedError(signal);
       this.assertSandboxDisposed(input);
       const fingerprint = this.sandboxFingerprint(input);
-      const existing = this.sandboxes.get(input);
+      const existing = this.sessions.get(input)?.sandbox;
       if (this.dependencies.workspaceCheckpoints !== undefined && input.executionFence === undefined) {
         throw new Error("Managed workspace checkpoint_restore requires a Session Execution fence");
       }
-      const trusted = this.dependencies.workspaceCheckpoints === undefined || this.workspaces.get(input)?.trusted === true;
+      const trusted = this.dependencies.workspaceCheckpoints === undefined || this.sessions.get(input)?.workspace?.trusted === true;
       let reusable = existing !== undefined
-        && this.sandboxConfigurationFingerprints.get(input) === fingerprint
+        && this.sessions.get(input)?.fingerprint === fingerprint
         && trusted;
       if (reusable && this.dependencies.isSandboxCurrent !== undefined) {
         reusable = await untilAborted(this.dependencies.isSandboxCurrent({
           workspaceId: input.workspaceId, session: input.session, environment: input.environment,
-          runtimeGeneration: this.runtimeGenerations.get(input)!,
+          runtimeGeneration: this.sessions.get(input)?.generation!,
         }), signal);
       }
       // A warm sandbox may have been reclaimed by its provider since the last
@@ -406,7 +438,7 @@ export class DefaultNodeManagedSessionRunner
           const failure = signal.aborted ? abortedError(signal) : error;
           // A successful status probe does not prove the command channel works.
           // Fail this start explicitly; only a later attempt may cold-restore.
-          if (this.sandboxes.get(input) === existing) {
+          if (this.sessions.get(input)?.sandbox === existing) {
             await this.discardSandbox(input, { abortTurn: false }).catch(() => undefined);
           }
           throw failure;
@@ -415,9 +447,10 @@ export class DefaultNodeManagedSessionRunner
       }
       if (existing !== undefined) {
         await untilAborted(this.discardSandbox(input, { abortTurn: false }).catch(() => undefined), signal);
+        session = this.sessionFor(input);
       }
       const acquired = await this.acquireSandbox(input, signal);
-      this.installSandbox(input, acquired, fingerprint);
+      this.installSandbox(input, acquired, fingerprint, session);
     } finally {
       unlinkParent();
       if (this.startupAborts.get(input) === startup) {
@@ -427,6 +460,7 @@ export class DefaultNodeManagedSessionRunner
   }
 
   private async startDurableSandbox(input: StartNodeManagedSessionRuntime): Promise<void> {
+    const session = this.sessionFor(input);
     const lifecycle = this.dependencies.sandboxLifecycle!;
     const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
     const fingerprint = this.sandboxFingerprint(input);
@@ -471,8 +505,8 @@ export class DefaultNodeManagedSessionRunner
     const runtime = new SessionSandboxRuntime({ mode: () => "sandbox", create: () => acquired.sandbox });
     await runtime.acquire();
     this.installSandbox(input, { sandbox: acquired.sandbox, runtime, workspace: undefined,
-      runtimeGeneration: acquired.allocationId, restoredFromMs: null }, fingerprint);
-    this.durableAllocations.set(input, acquired.allocationId);
+      runtimeGeneration: acquired.allocationId, restoredFromMs: null }, fingerprint, session);
+    this.sessionFor(input).allocationId = acquired.allocationId;
   }
 
   private assertSandboxDisposed(input: { workspaceId: string; sessionId: string }): void {
@@ -594,13 +628,15 @@ export class DefaultNodeManagedSessionRunner
     input: { workspaceId: string; sessionId: string },
     acquired: AcquiredSandbox,
     fingerprint: string,
+    session = this.sessionFor(input),
   ): void {
-    if (acquired.workspace !== undefined) this.workspaces.set(input, acquired.workspace);
-    else this.workspaces.delete(input);
-    this.sandboxRuntimes.set(input, acquired.runtime);
-    this.sandboxes.set(input, acquired.sandbox);
-    this.runtimeGenerations.set(input, acquired.runtimeGeneration);
-    this.sandboxConfigurationFingerprints.set(input, fingerprint);
+    if (session.closed || this.sessions.get(input) !== session) throw new Error("Session closed during sandbox startup");
+    if (acquired.workspace !== undefined) session.workspace = acquired.workspace;
+    else delete session.workspace;
+    session.runtime = acquired.runtime;
+    session.sandbox = acquired.sandbox;
+    session.generation = acquired.runtimeGeneration;
+    session.fingerprint = fingerprint;
   }
 
   /** ADR 0005 "Sandbox disappears": reacquire, restore the last committed
@@ -610,9 +646,10 @@ export class DefaultNodeManagedSessionRunner
     lost: SandboxExecutor,
     signal: AbortSignal,
   ): Promise<string> {
-    if (this.sandboxes.get(input) !== lost) return "";
-    const fingerprint = this.sandboxConfigurationFingerprints.get(input) ?? "";
-    const previousWorkspace = this.workspaces.get(input);
+    const session = this.sessionFor(input);
+    if (session.sandbox !== lost) return "";
+    const fingerprint = this.sessions.get(input)?.fingerprint ?? "";
+    const previousWorkspace = this.sessions.get(input)?.workspace;
     await this.disposeSandbox(input, lost, previousWorkspace).catch(() => undefined);
     const acquired = await this.acquireSandbox(input, signal);
     if (signal.aborted) {
@@ -622,7 +659,7 @@ export class DefaultNodeManagedSessionRunner
     // Until this turn reaches its barrier the replacement is as dirty as every
     // sandbox a turn has written to.
     if (acquired.workspace !== undefined) acquired.workspace.trusted = false;
-    this.installSandbox(input, acquired, fingerprint);
+    this.installSandbox(input, acquired, fingerprint, session);
     if (acquired.workspace === undefined) {
       return "Files created in /workspace before the restart are gone.";
     }
@@ -637,6 +674,7 @@ export class DefaultNodeManagedSessionRunner
       // durable resource; neither cancellation nor lease loss is retirement.
       this.cancel(input);
       if (input.reason === "archived" || input.reason === "deleted") {
+        this.releaseSession(input);
         await this.dependencies.sandboxLifecycle.closeSession(input);
       }
       return;
@@ -656,7 +694,7 @@ export class DefaultNodeManagedSessionRunner
     input: { workspaceId: string; sessionId: string },
     options: { abortTurn?: boolean } = {},
   ): Promise<void> {
-    const allocationId = this.durableAllocations.get(input);
+    const allocationId = this.sessions.get(input)?.allocationId;
     if (this.dependencies.sandboxLifecycle !== undefined && allocationId !== undefined) {
       throw new Error("Session sandbox replacement requires durable retirement after its current use drains");
     }
@@ -664,13 +702,9 @@ export class DefaultNodeManagedSessionRunner
       this.abortControllers.get(input)?.abort();
       this.abortControllers.delete(input);
     }
-    const workspace = this.workspaces.get(input);
-    this.workspaces.delete(input);
-    const sandbox = this.sandboxes.get(input);
-    this.sandboxes.delete(input);
-    this.sandboxRuntimes.delete(input);
-    this.runtimeGenerations.delete(input);
-    this.sandboxConfigurationFingerprints.delete(input);
+    const workspace = this.sessions.get(input)?.workspace;
+    const sandbox = this.sessions.get(input)?.sandbox;
+    this.releaseSession(input);
     await this.disposeSandbox(input, sandbox, workspace);
   }
 
@@ -800,6 +834,12 @@ export class DefaultNodeManagedSessionRunner
         remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
       }
     }
+    const sessionOwner = this.sessionFor(input);
+    const assertSessionOpen = () => {
+      if (sessionOwner.closed || this.sessions.get(input) !== sessionOwner) {
+        throw new Error("Session closed while execution was preparing");
+      }
+    };
     const deferred = this.canOverlapSandboxStartup(input);
     // Only the three execution primitives are needed by Pi's host-side tools.
     // Capability inspection must not allocate a provider resource.
@@ -808,31 +848,38 @@ export class DefaultNodeManagedSessionRunner
       readFile: async () => { throw new Error("Sandbox has not been acquired"); },
       writeFile: async () => { throw new Error("Sandbox has not been acquired"); },
     };
-    const rawSandbox = this.sandboxes.get(input) ?? (deferred ? unallocated : undefined);
+    const rawSandbox = this.sessions.get(input)?.sandbox ?? (deferred ? unallocated : undefined);
     if (rawSandbox === undefined) {
       throw new Error(`Session ${input.sessionId} sandbox was not started`);
     }
-    const runtimeGeneration = this.runtimeGenerations.get(input)
+    const runtimeGeneration = this.sessions.get(input)?.generation
       ?? (deferred ? `pending_${randomUUID()}` : undefined);
     if (runtimeGeneration === undefined) {
       throw new Error(`Session ${input.sessionId} runtime generation was not started`);
     }
     const checkpointService = this.dependencies.workspaceCheckpoints;
-    let workspace = this.workspaces.get(input);
+    let workspace = this.sessions.get(input)?.workspace;
     const lifecycle = this.dependencies.sandboxLifecycle;
-    if (lifecycle !== undefined && !deferred && this.durableAllocations.get(input) !== undefined &&
+    if (lifecycle !== undefined && !deferred && this.sessions.get(input)?.allocationId !== undefined &&
       checkpointService !== undefined && input.executionFence !== undefined) {
       const fence = input.executionFence;
       const scope = { workspaceId: input.workspaceId, sessionId: input.sessionId,
         environmentId: input.environment.id, workId: fence.executionId };
       const active = await checkpointService.active(scope);
+      assertSessionOpen();
       const port = checkpointService.port(rawSandbox);
       const binding = await port.materialize({ scope,
         fence: checkpointService.runtimeFence(fence, scope.environmentId), strategy: "checkpoint_restore",
         activeCheckpoint: active?.candidate ?? null, idempotencyKey: runtimeGeneration,
         signal: new AbortController().signal });
+      try { assertSessionOpen(); }
+      catch (failure) {
+        try { await port.release({ scope, fence: checkpointService.runtimeFence(fence, scope.environmentId), binding }); }
+        catch (cleanup) { throw new AggregateError([failure, cleanup], "Session closed and workspace release failed", { cause: failure }); }
+        throw failure;
+      }
       workspace = { port, binding, scope, fence, activeId: active?.candidate.id ?? null, trusted: true };
-      this.workspaces.set(input, workspace);
+      sessionOwner.workspace = workspace;
     }
     if (checkpointService !== undefined) {
       if (input.executionFence === undefined || workspace === undefined) {
@@ -846,6 +893,7 @@ export class DefaultNodeManagedSessionRunner
         throw new Error("Managed workspace checkpoint changed; reacquire the sandbox");
       }
     }
+    assertSessionOpen();
     // Until the turn, Memory/output sync and due checkpoints all settle,
     // a replacement attempt must cold-restore rather than reuse dirty bytes.
     if (workspace !== undefined) workspace.trusted = false;
@@ -878,6 +926,7 @@ export class DefaultNodeManagedSessionRunner
       }
     };
     const assertCanDispatch = (): void => {
+      if (lifecycle !== undefined) assertSessionOpen();
       if (providerOutcomeUnknown) throw new Error("Sandbox operation outcome is unknown; further dispatch is suspended");
       if (input.executionFence !== undefined && Date.parse(input.executionFence.expiresAt) <= this.dependencies.clock.now().getTime()) {
         abortController.abort("lease_lost");
@@ -904,14 +953,16 @@ export class DefaultNodeManagedSessionRunner
       })) as HarnessContext["tools"];
     };
     const borrowSandbox = (): Promise<void> => borrowing ??= (async () => {
-      const allocationId = this.durableAllocations.get(input);
-      if (lifecycle === undefined || allocationId === undefined) return;
+      const allocationId = this.sessions.get(input)?.allocationId;
+      if (lifecycle === undefined) return;
+      assertSessionOpen();
+      if (allocationId === undefined) throw new Error("Sandbox use requires the Session's durable allocation");
       if (input.executionFence === undefined) throw new Error("Sandbox use requires a canonical Session Execution lease");
       if (abortController.signal.aborted) throw abortedError(abortController.signal);
       await lifecycle.borrow({ executionFence: input.executionFence, allocationId });
       borrowedAllocation = allocationId;
       // Capture the exact client; a later start cannot redirect old callbacks.
-      attemptSandbox = this.sandboxes.get(input)!;
+      attemptSandbox = this.sessions.get(input)?.sandbox!;
       if (abortController.signal.aborted) throw abortedError(abortController.signal);
     })();
     /** The sandbox was lost and could not be replaced: nothing can be
@@ -929,7 +980,7 @@ export class DefaultNodeManagedSessionRunner
         }
         console.warn(`[managed-runner] session ${input.sessionId}: sandbox lost, replacing:`, cause);
         return this.replaceLostSandbox(input, lost, abortController.signal).then(result => {
-          attemptSandbox = this.sandboxes.get(input) ?? lost;
+          attemptSandbox = this.sessions.get(input)?.sandbox ?? lost;
           return result;
         });
       },
@@ -1008,11 +1059,11 @@ export class DefaultNodeManagedSessionRunner
       if (abortController.signal.aborted) throw abortedError(abortController.signal);
       // A prior text-only turn may still have been preparing an older
       // resource/environment snapshot when this turn began.
-      if (this.sandboxConfigurationFingerprints.get(input) !== this.sandboxFingerprint(input)) {
+      if (this.sessions.get(input)?.fingerprint !== this.sandboxFingerprint(input)) {
         await this.beginSandboxStartup({ ...input, signal: abortController.signal });
       }
       if (abortController.signal.aborted) throw abortedError(abortController.signal);
-      attemptSandbox = this.sandboxes.get(input) ?? rawSandbox;
+      attemptSandbox = this.sessions.get(input)?.sandbox ?? rawSandbox;
       sandboxReady = true;
     }).catch((error) => {
       acquisition = undefined;
@@ -1396,13 +1447,13 @@ export class DefaultNodeManagedSessionRunner
             this.dependencies.synchronizeSandbox !== undefined
           ) {
             const executionFence = input.executionFence;
-            await this.sandboxRuntimes.get(input)?.withSandbox(async () => {
+            await this.sessions.get(input)?.runtime?.withSandbox(async () => {
               await this.dependencies.synchronizeSandbox!({
                 workspaceId: input.workspaceId,
                 session: input.session,
                 environment: input.environment,
                 sandbox: lifecycle === undefined ? currentSandbox() : access,
-                runtimeGeneration: this.runtimeGenerations.get(input) ?? runtimeGeneration,
+                runtimeGeneration: this.sessions.get(input)?.generation ?? runtimeGeneration,
                 executionFence,
               });
             });
@@ -1414,7 +1465,7 @@ export class DefaultNodeManagedSessionRunner
         // drained. The interval is a target between such points, not a timer
         // that snapshots files while tools are still writing.
         // A lost sandbox replaced mid-turn brings its own workspace binding.
-        const turnWorkspace = this.workspaces.get(input) ?? workspace;
+        const turnWorkspace = this.sessions.get(input)?.workspace ?? workspace;
         if (!runFailed && finalizationError === undefined && (lifecycle === undefined || borrowedAllocation !== undefined) && checkpointService !== undefined && turnWorkspace !== undefined && input.executionFence !== undefined) {
           const workspace = turnWorkspace;
           try {
@@ -1428,7 +1479,7 @@ export class DefaultNodeManagedSessionRunner
                 scope: { ...workspace.scope, workId: fence.executionId },
                 fence: checkpointService.runtimeFence(fence, workspace.scope.environmentId),
                 strategy: "checkpoint_restore", binding: workspace.binding,
-                sandbox: { provider: "node", runtimeId: this.runtimeGenerations.get(input) ?? runtimeGeneration },
+                sandbox: { provider: "node", runtimeId: this.sessions.get(input)?.generation ?? runtimeGeneration },
                 idempotencyKey: `${fence.executionId}-${fence.attemptId}`,
                 signal: abortController.signal,
               });
@@ -1514,14 +1565,14 @@ export class DefaultNodeManagedSessionRunner
               session: input.session,
               environment: input.environment,
               sandbox: lifecycle === undefined ? currentSandbox() : access,
-              runtimeGeneration: this.runtimeGenerations.get(input) ?? runtimeGeneration,
+              runtimeGeneration: this.sessions.get(input)?.generation ?? runtimeGeneration,
               executionFence: input.executionFence,
             });
           }
         if (finalizationError !== undefined) {
           throw finalizationError;
         }
-        const finalWorkspace = this.workspaces.get(input);
+        const finalWorkspace = this.sessions.get(input)?.workspace;
         if (finalWorkspace !== undefined && !runFailed && !abortController.signal.aborted) {
           finalWorkspace.trusted = true;
         }
@@ -1590,13 +1641,13 @@ export class DefaultNodeManagedSessionRunner
     let primary: Error | undefined;
     try {
       if (this.dependencies.afterExecution !== undefined || readOnlyPublication) {
-        if (this.sandboxes.get(input) === undefined) await this.beginSandboxStartup(input);
-        const sandbox = this.sandboxes.get(input);
-        const runtimeGeneration = this.runtimeGenerations.get(input);
+        if (this.sessions.get(input)?.sandbox === undefined) await this.beginSandboxStartup(input);
+        const sandbox = this.sessions.get(input)?.sandbox;
+        const runtimeGeneration = this.sessions.get(input)?.generation;
         if (sandbox === undefined || runtimeGeneration === undefined) {
           throw new Error(`Session ${input.sessionId} sandbox was not started`);
         }
-        const id = this.durableAllocations.get(input);
+        const id = this.sessions.get(input)?.allocationId;
         if (!readOnlyPublication && lifecycle !== undefined && id !== undefined) {
           await lifecycle.borrow({ executionFence, allocationId: id });
           allocationId = id;

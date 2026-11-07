@@ -63,6 +63,7 @@ async function fixture(overrides: Partial<NodeSessionSandboxLifecycleOptions> = 
     return new NodeSessionSandboxLifecycle({
       store, provider: "test", ownerId, allocationIsolation: true, runtimeBindingSupported: true,
       now: clock, id: () => `allocation-${++sequence}`, pollIntervalMs: 1,
+      reaper: { resume: resource => resume(resource.handle!), handle },
       ...overrides, ...more,
     });
   }
@@ -86,6 +87,34 @@ async function fixture(overrides: Partial<NodeSessionSandboxLifecycleOptions> = 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("Node Session sandbox lifecycle", () => {
+  it("renews by durable handle after restart, without resolving a client or changing use ownership", async () => {
+    const renewal = vi.fn(async () => undefined);
+    const f = await fixture({ renewProviderLease: renewal });
+    const first = f.service();
+    const opened = await first.open(f.input);
+    const fence = await f.execution();
+    await first.borrow({ executionFence: fence, allocationId: opened.allocationId });
+    const before = (await f.store.getCurrent(f.scope))!.resource!;
+    const signal = new AbortController().signal;
+    await first.renewProviderLease(before, 60000, signal);
+    await first.close();
+    await f.service("new-manager").renewProviderLease(before, 60000, signal);
+    expect(renewal).toHaveBeenCalledTimes(2);
+    expect(renewal.mock.calls[0]).toEqual(renewal.mock.calls[1]);
+    expect(f.input.create).toHaveBeenCalledOnce();
+    expect(f.input.resume).not.toHaveBeenCalled();
+    expect((await f.store.getCurrent(f.scope))!.resource).toEqual(before);
+  });
+
+  it("does not fall back to resume when handle renewal fails", async () => {
+    const failure = new Error("provider response unknown");
+    const f = await fixture({ renewProviderLease: async () => { throw failure; } });
+    const service = f.service(); const opened = await service.open(f.input);
+    await expect(service.renewProviderLease(opened.resource, 60000, new AbortController().signal)).rejects.toBe(failure);
+    expect(f.input.resume).not.toHaveBeenCalled();
+    expect(f.input.create).toHaveBeenCalledOnce();
+  });
+
   it("persists intent and physical handle before preparation, then rebinds after all client caches are lost", async () => {
     const f = await fixture();
     const original = f.service();

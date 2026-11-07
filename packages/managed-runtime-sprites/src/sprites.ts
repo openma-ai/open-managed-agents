@@ -378,7 +378,8 @@ export class SpritesRuntime
     }
   }
 
-  async renewLease(input: { ttlMs: number }): Promise<void> {
+  async renewLease(input: { ttlMs: number; signal?: AbortSignal }): Promise<void> {
+    input.signal?.throwIfAborted();
     if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) {
       throw new RangeError("Sprite keep-alive TTL must be positive");
     }
@@ -389,7 +390,7 @@ export class SpritesRuntime
         "-lc",
         `sprite-env curl -sS -H 'Content-Type: application/json' -X PUT /v1/tasks/${keepAliveTaskName} -d '{"expire":${expireSeconds}}' >/dev/null`,
       ],
-      { cwd: "/", timeout: 60_000 },
+      { cwd: "/", timeout: 60_000, signal: input.signal },
     );
     if (result.exitCode !== 0) {
       throw new Error(
@@ -791,6 +792,21 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (context: Sand
     scope: "provider" as const,
     getHandle: (sandbox: SandboxPort) => (sandbox as SpritesRuntime).runtimeHandle(),
     resume: resumeSpritesSandbox,
+    async renewLease(handle: SandboxRuntimeHandle, input: { ttlMs: number; signal: AbortSignal }, env: SandboxFactoryEnv) {
+      input.signal.throwIfAborted();
+      if (handle.provider !== providerName || !handle.runtimeId) throw new Error("Incompatible Sprite resource handle");
+      // The guest task API is the existing keep-alive mechanism; never run
+      // provider.resume (network policy and readiness) to obtain its client.
+      const client = await loadClient({ token: env.SPRITES_TOKEN, baseURL: env.SPRITES_API_URL });
+      const sprite = await client.getSprite(handle.runtimeId);
+      if (sprite.name !== handle.runtimeId) throw new Error("Sprite renewal resolved a different resource");
+      input.signal.throwIfAborted();
+      if ((await sprite.check()).status.toLowerCase() !== "running") {
+        throw new Error("Sprite is not running; keep-alive cannot authorize recovery");
+      }
+      input.signal.throwIfAborted();
+      await new SpritesRuntime({ client, sprite }).renewLease(input);
+    },
   },
 });
 

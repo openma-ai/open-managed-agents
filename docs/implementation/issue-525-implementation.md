@@ -6,13 +6,13 @@
 
 用户确定的架构边界是：**attempt 只获得 sandbox 可用性和执行访问；Session 持有持久 handle；sandbox 生命周期和 lease 轮转由独立资源服务管理。** Node 给 harness 的访问对象不暴露 destroy、renewLease、suspend、resume、checkpoint 或 runtime capability；ACP 因而不会再自行续 sandbox lease。
 
-后续合并的 catch-vs-crash 判定、#524 请求/响应流生命周期及 native SQL 合同见 [错误策略与验证映射](./issue-525-error-policy.md)。进程仍缓存 SDK 对象；持久身份和所有权以 SQL 为准，缓存丢失不授权重建或销毁。
+后续合并的 catch-vs-crash 判定、#524 请求/响应流生命周期及 native SQL 合同见 [错误策略与验证映射](./issue-525-error-policy.md)。Session 运行态直接持有 SDK handle；持久身份和所有权以 SQL 为准，进程重启不授权重建或销毁。
 
 ## 实现
 
 - `queue/consumer-runtime` 负责 poll、容量、正在处理的工作和 stop/drain，不导入 Session/domain。Node execution adapter 负责 canonical claim/renew/settle、interrupt 和 steering。
 - Session admission 采用持久序号；同 Session 各 lane 在 Node 领取时串行。修复两个独立交错：候选读早于 mutex 版本导致双 claim，以及 held 输入合并 CAS 失败后仍完成源行。合并、源行完成和事件 held 标记现在位于同一条件事务。
-- Session binding 与 resource inventory 持久化 allocation、provider namespace、值 handle、配置身份、readiness、管理 lease、使用记录和待回收错误。Map 只缓存客户端；新进程从数据库重新发现资源。
+- Session binding 与 resource inventory 持久化 allocation、provider namespace、值 handle、配置身份、readiness、管理 lease、使用记录和待回收错误。不另设 sandbox Map 缓存；新进程从数据库重新发现资源。
 - 资源操作的管理 lease 与 attempt 的 canonical fence 分开。使用记录是远端操作未完成的证据，不是第二个 execution lease；失去 attempt lease 不会自动释放它。Session archive/delete 持久关闭 binding，迟到 create 无法复活 Session。
 - 独立 sandbox lease worker 从资源 inventory 领取自己的 SQL lease，provider 续租不由 attempt 定时器驱动。它可以在 execution use 保留时维护资源，但不能清除 unknown use、派发业务或销毁资源。闲置窗口来自资源活动时间；不会因后台续租无限延长 idle retention。迟到的旧 worker 完成不能释放新 worker 的 claim。
 - 资源回收只处理明确 retired、精确且隔离的 allocation；provider/namespace/actionable 条件在 LIMIT 前过滤，避免未知 intent 阻塞后续回收。删除异常保留责任，确认删除后才记 deleted。
@@ -50,3 +50,27 @@ local-subprocess 与 embedded LiteBox 有主机亲和性；控制平面内存不
 两位空上下文 reviewer 独立发现并复现了 serial claim、held transfer、terminal recovery、reaper starvation 和 provider 吞错等缺口。其后续运行遇到模型额度限制；剩余整合由主 worker 完成，不能把后续改动标成已获独立 approval。
 
 历史评估与 characterization probes 保留作审查证据，以原基线 commit 运行；它们不是当前实现的通过条件。没有合并、部署或发布动作。
+
+## Session handle ownership follow-up
+
+The Node lifecycle no longer keeps a client cache. A live Session owns its
+sandbox SDK handle, runtime, allocation, configuration and workspace together;
+the runner registry locates these Session owners, not parallel sandbox caches.
+Archive/delete releases the local owner without physically deleting its resource.
+Late startup and workspace preparation cannot reinstall a handle or skip the
+resource-use claim after that owner closes. In-flight task tracking remains for
+cancellation, deduplication and shutdown drain.
+
+Provider TTL renewal addresses the persisted handle through the factory binding,
+without resolving a client through `resume`. E2B uses static `Sandbox.setTimeout`;
+OpenSandbox uses `SandboxManager.renewSandbox`. Sprites retains its native guest
+keep-alive task, forwarding cancellation and refusing a non-running probe result.
+That probe is not atomic with guest exec: provider auto-sleep between them may
+still cause the command to wake the Sprite. No strict no-wake guarantee is claimed.
+No renewal failure falls back to allocation or workspace preparation.
+
+Regression coverage includes closing during startup and workspace preparation,
+releasing archived/deleted handles, renewal by a fresh lifecycle instance while
+execution use is retained, and renewal errors without reconnect/create fallback.
+Provider suites verify the renewal endpoints and absence of readiness/network
+configuration; live cloud fault certification remains outside these local tests.

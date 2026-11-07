@@ -447,5 +447,25 @@ export const sandboxFactory: SandboxFactory = Object.assign((
     scope: "provider" as const,
     getHandle: (sandbox: SandboxPort) => (sandbox as OpenSandbox).runtimeHandle(),
     resume: sandboxProvider.resume,
+    async renewLease(handle: SandboxRuntimeHandle, input: { ttlMs: number; signal: AbortSignal }, env: SandboxFactoryEnv) {
+      input.signal.throwIfAborted();
+      if (handle.provider !== "opensandbox" || !handle.runtimeId) throw new Error("Incompatible OpenSandbox resource handle");
+      if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) throw new RangeError("OpenSandbox TTL must be positive");
+      const sdk = await loadSdk();
+      const manager = sdk.SandboxManager.create({ connectionConfig: configuration(sdk, optionsFromEnvironment(env)) });
+      let failure: unknown;
+      let failed = false;
+      try {
+        input.signal.throwIfAborted();
+        await manager.renewSandbox(handle.runtimeId, input.ttlMs / 1000);
+      } catch (error) { failed = true; failure = error; throw error; }
+      finally {
+        try { await manager.close(); }
+        catch (cleanup) {
+          if (failed) throw new AggregateError([failure, cleanup], "Provider renewal and client cleanup failed", { cause: failure });
+          throw cleanup;
+        }
+      }
+    },
   },
 });

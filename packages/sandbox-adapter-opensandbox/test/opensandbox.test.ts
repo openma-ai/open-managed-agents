@@ -19,6 +19,15 @@ afterEach(async () => {
 });
 
 describe("OpenSandbox official SDK adapter", () => {
+  it("renews an exact persisted ID using only the control-plane TTL endpoint", async () => {
+    const server = mockSdkServer();
+    await sandboxFactory.runtimeBinding!.renewLease!(
+      { provider: "opensandbox", runtimeId: "existing-sandbox" },
+      { ttlMs: 60000, signal: new AbortController().signal }, env,
+    );
+    expect(server.calls).toHaveLength(1);
+    expect(server.calls[0]!.url.pathname).toBe("/v1/sandboxes/existing-sandbox/renew-expiration");
+  });
   it("keeps factory cold allocations independent and resumes each captured provider handle", async () => {
     const server = mockSdkServer(); const physical = new Set<string>(); let creates = 0;
     server.override = call => {

@@ -396,6 +396,15 @@ export interface SandboxFactoryRuntimeBinding {
   /** Only accepts a sandbox created or resumed by this factory. The result
    * must survive JSON round trips and contain no credentials or SDK objects. */
   getHandle(sandbox: SandboxPort): SandboxRuntimeHandle;
+  /** Exact-resource TTL/keep-alive operation. Never create, resume, prepare the
+   * workspace or configure networking. A provider's native keep-alive may have
+   * intrinsic activity/wake semantics (Sprites); it is not an atomic no-wake
+   * guarantee. Absence means no renewable provider TTL. */
+  renewLease?(
+    handle: SandboxRuntimeHandle,
+    input: { ttlMs: number; signal: AbortSignal },
+    env: SandboxFactoryEnv,
+  ): Promise<void>;
   resume(
     handle: SandboxRuntimeHandle,
     ctx: SandboxFactoryContext,

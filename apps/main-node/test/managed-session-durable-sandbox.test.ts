@@ -51,11 +51,12 @@ async function fixture() {
   const run = vi.fn(async (_context: HarnessContext) => undefined);
   const tools = deferred<HarnessContext["tools"]>();
   const disposed = vi.fn(async () => undefined);
-  function runner(owner = "node-a", options: { background?: boolean; lateTools?: boolean; tools?: HarnessContext["tools"]; confirmedTools?: DefaultNodeManagedSessionRunnerDependencies["confirmedTools"]; afterExecution?: DefaultNodeManagedSessionRunnerDependencies["afterExecution"]; publishArtifacts?: DefaultNodeManagedSessionRunnerDependencies["publishArtifacts"] } = {}) {
+  function runner(owner = "node-a", options: { workspaceCheckpoints?: DefaultNodeManagedSessionRunnerDependencies["workspaceCheckpoints"]; background?: boolean; lateTools?: boolean; tools?: HarnessContext["tools"]; confirmedTools?: DefaultNodeManagedSessionRunnerDependencies["confirmedTools"]; afterExecution?: DefaultNodeManagedSessionRunnerDependencies["afterExecution"]; publishArtifacts?: DefaultNodeManagedSessionRunnerDependencies["publishArtifacts"] } = {}) {
     const lifecycle = new NodeSessionSandboxLifecycle({ store, provider: "test", ownerId: owner,
       allocationIsolation: true, runtimeBindingSupported: true, now: () => now });
     return new DefaultNodeManagedSessionRunner({
       sandboxLifecycle: lifecycle, executionDispatches: dispatches, backgroundPiSandbox: options.background,
+      workspaceCheckpoints: options.workspaceCheckpoints,
       buildSandbox: async ({ allocationId }) => { creates.push(allocationId!); return client(allocationId!); },
       resumeSandbox: async (_input, handle) => { resumes.push(handle.runtimeId); return client(handle.runtimeId); },
       sandboxHandle: sandbox => ({ provider: "test", runtimeId: clients.get(sandbox)! }),
@@ -89,6 +90,61 @@ async function fixture() {
 }
 
 describe("Node runner with durable Session sandbox ownership", () => {
+  it.each(["archived", "deleted"] as const)("releases the Session handle on %s without destroying the resource", async reason => {
+    const f = await fixture(); const runner = f.runner(); const input = await f.input();
+    await runner.start(input);
+    expect(runner.connectedSandbox(scope)).not.toBeNull();
+    await runner.stop({ ...scope, reason });
+    expect(runner.connectedSandbox(scope)).toBeNull();
+    expect(await runner.sandboxAvailable(scope)).toBe(false);
+    expect(f.destroy).not.toHaveBeenCalled();
+    await expect(runner.start(input)).rejects.toThrow();
+    expect(runner.connectedSandbox(scope)).toBeNull();
+    expect(f.creates).toHaveLength(1);
+  });
+
+  it("refuses dispatch if archive wins while execution workspace preparation is pending", async () => {
+    const f = await fixture(); const input = await f.input();
+    const entered = deferred<void>(); const finish = deferred<void>();
+    const binding = { bindingId: "workspace", mountPath: "/workspace" };
+    const port = {
+      materialize: vi.fn(async () => binding), attach: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+    };
+    const checkpoints = {
+      active: async () => null, port: () => port,
+      runtimeFence: (fence: SessionExecutionFence) => ({ ...fence, token: "test", environmentId: environment.id, workId: fence.executionId }),
+    } as unknown as NonNullable<DefaultNodeManagedSessionRunnerDependencies["workspaceCheckpoints"]>;
+    const runner = f.runner("node-a", { workspaceCheckpoints: checkpoints });
+    await runner.start(input);
+    port.materialize.mockImplementationOnce(async () => { entered.resolve(); await finish.promise; return binding; });
+    f.run.mockImplementation(async ctx => { await ctx.runtime.sandbox.exec("must-not-run"); });
+    const outcome = runner.accept(input).catch(error => error);
+    await entered.promise;
+    await runner.stop({ ...scope, reason: "archived" });
+    finish.resolve();
+    expect(await outcome).toBeInstanceOf(Error);
+    expect(f.exec).not.toHaveBeenCalled();
+    expect(f.run).not.toHaveBeenCalled();
+    expect(runner.connectedSandbox(scope)).toBeNull();
+    expect(port.release).toHaveBeenCalledTimes(2);
+  });
+
+  it("cannot reinstall a handle when preparation finishes after Session close", async () => {
+    const f = await fixture(); const runner = f.runner(); const input = await f.input();
+    const entered = deferred<void>(); const finish = deferred<void>();
+    f.prepare.mockImplementation(async () => { entered.resolve(); await finish.promise; });
+    const started = runner.start(input);
+    const outcome = started.catch(error => error);
+    await entered.promise;
+    await runner.stop({ ...scope, reason: "deleted" });
+    finish.resolve();
+    expect(await outcome).toBeInstanceOf(Error);
+    expect(runner.connectedSandbox(scope)).toBeNull();
+    expect(f.destroy).not.toHaveBeenCalled();
+    expect(f.creates).toHaveLength(1);
+  });
+
   it("retains the execution error when resource release also fails and leaves unknown evidence", async () => {
     const f = await fixture(); const runner = f.runner(); const first = await f.input();
     const original = new Error("harness invariant failed"); const cleanup = new Error("release response lost");

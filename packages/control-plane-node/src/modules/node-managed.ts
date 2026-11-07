@@ -452,6 +452,12 @@ export async function createManagedNodeRuntime(
     ownerId: config.execution.ownerId,
     allocationIsolation: components.sandbox.capabilities?.allocationIsolation === true,
     runtimeBindingSupported: components.sandbox.runtimeBinding != null,
+    renewProviderLease: async (resource, ttlMs, signal) => {
+      signal.throwIfAborted();
+      if (!resource.handle) throw new Error("Provider lease renewal requires a persisted handle");
+      await components.sandbox.runtimeBinding?.renewLease?.(resource.handle, { ttlMs, signal }, config.sandbox.environment);
+      signal.throwIfAborted();
+    },
     reaper: {
       resume: async (resource) => {
         if (resource.handle === null) throw new Error("Sandbox create outcome requires provider reconciliation before deletion");

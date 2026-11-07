@@ -773,6 +773,7 @@ interface E2BModule {
   Sandbox: {
     create(template: string, args?: E2BCreateOptions): Promise<E2BSandboxLike>;
     connect(sandboxId: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
+    setTimeout(sandboxId: string, timeoutMs: number, args?: E2BConnectionOptions & { signal?: AbortSignal }): Promise<void>;
   };
 }
 
@@ -915,5 +916,15 @@ export const sandboxFactory: SandboxFactory = Object.assign((
     scope: "provider" as const,
     getHandle: (sandbox: SandboxPort) => (sandbox as E2BSandboxExecutor).runtimeHandle(),
     resume: sandboxProvider.resume,
+    async renewLease(handle: SandboxRuntimeHandle, input: { ttlMs: number; signal: AbortSignal }, env: SandboxFactoryEnv) {
+      input.signal.throwIfAborted();
+      if (handle.provider !== "e2b" || !handle.runtimeId) throw new Error("Incompatible E2B resource handle");
+      if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) throw new RangeError("E2B TTL must be positive");
+      const sdk = await loadE2BModule();
+      input.signal.throwIfAborted();
+      await sdk.Sandbox.setTimeout(handle.runtimeId, input.ttlMs, {
+        ...connectionOptions(optionsFromFactory(env)), signal: input.signal,
+      });
+    },
   },
 });

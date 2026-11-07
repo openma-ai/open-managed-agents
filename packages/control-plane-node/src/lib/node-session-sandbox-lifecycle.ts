@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
-import { withSandboxExecutionGuard, supportsSandboxRuntime } from "@open-managed-agents/sandbox";
+import { withSandboxExecutionGuard } from "@open-managed-agents/sandbox";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   SessionSandboxBindingPort,
@@ -71,6 +71,7 @@ export interface NodeSessionSandboxLifecycleOptions {
   pollIntervalMs?: number;
   /** Grace period for owned resource work before shutdown aborts local waits. */
   drainTimeoutMs?: number;
+  renewProviderLease?(resource: SessionSandboxResource, ttlMs: number, signal: AbortSignal): Promise<void>;
   reaper?: {
     /** Resolve the original configuration from this durable descriptor. Do not
      * substitute the current Session configuration if its fingerprint differs. */
@@ -89,9 +90,6 @@ interface Management {
 
 function scopeKey(scope: SessionSandboxScope): string {
   return JSON.stringify([scope.workspaceId, scope.sessionId]);
-}
-function resourceKey(resource: SessionSandboxScope & { allocationId: string }): string {
-  return JSON.stringify([resource.workspaceId, resource.sessionId, resource.allocationId]);
 }
 function matchesUse(resource: SessionSandboxResource, fence: SessionExecutionFence): boolean {
   return resource.use?.executionId === fence.executionId && resource.use.attemptId === fence.attemptId
@@ -127,7 +125,6 @@ export class NodeSessionSandboxLifecycle {
   private readonly ttl: number;
   private readonly renewalMs: number;
   private readonly retries: number;
-  private readonly clients = new Map<string, SandboxExecutor>();
   private readonly opening = new Map<string, { fingerprint: string; promise: Promise<OpenedNodeSessionSandbox> }>();
   private readonly managing = new Set<Promise<unknown>>();
   private readonly managementControllers = new Set<AbortController>();
@@ -244,7 +241,6 @@ export class NodeSessionSandboxLifecycle {
           await management.write(mutation => this.store.markReady(mutation));
           return created;
         });
-        this.clients.set(resourceKey(intent.resource), sandbox);
         return { sandbox, allocationId: intent.resource.allocationId, resource: intent.resource };
       }
       this.checkConfiguration(resource);
@@ -278,8 +274,7 @@ export class NodeSessionSandboxLifecycle {
         await management.write(mutation => this.store.recordFailure({
           ...mutation, failure: "Sandbox rebind_in_progress; an expired manager does not prove this operation drained",
         }));
-        const cached = this.clients.get(resourceKey(resource));
-        const resumed = cached ?? await input.resume(resource.handle, resource.allocationId, management.signal, resource);
+        const resumed = await input.resume(resource.handle, resource.allocationId, management.signal, resource);
         management.signal.throwIfAborted();
         if (!sameHandle(this.validateHandle(input.handle(resumed)), resource.handle)) {
           throw error("handle_mismatch", "Sandbox resume returned a different physical resource");
@@ -293,7 +288,6 @@ export class NodeSessionSandboxLifecycle {
         await management.write(mutation => this.store.markReady(mutation));
         return resumed;
       });
-      this.clients.set(resourceKey(resource), sandbox);
       return { sandbox, allocationId: resource.allocationId, resource };
     }
   }
@@ -305,17 +299,8 @@ export class NodeSessionSandboxLifecycle {
     signal.throwIfAborted();
     const current = await this.store.find(resource);
     if (!current || current.desiredState !== "active" || current.observedState !== "ready" || !current.handle) return;
-    let sandbox = this.clients.get(resourceKey(current));
-    if (!sandbox) {
-      if (!this.options.reaper) throw error("unsupported", "No resolver for provider lease renewal");
-      sandbox = await this.options.reaper.resume(current, signal);
-      signal.throwIfAborted();
-      if (this.options.reaper.handle && !sameHandle(this.options.reaper.handle(sandbox), current.handle)) {
-        throw error("handle_mismatch", "Lease renewal resolved a different physical sandbox");
-      }
-    }
-    signal.throwIfAborted();
-    if (supportsSandboxRuntime(sandbox) && sandbox.runtimeCapabilities().lease) await sandbox.renewLease({ ttlMs });
+    if (!this.options.renewProviderLease) throw error("unsupported", "Provider has no handle-based lease renewal operation");
+    await this.options.renewProviderLease(current, ttlMs, signal);
   }
 
   async borrow(input: { executionFence: SessionExecutionFence; allocationId: string }): Promise<SessionSandboxResource> {
@@ -374,11 +359,8 @@ export class NodeSessionSandboxLifecycle {
       await management.write(mutation => this.store.recordFailure({
         ...mutation, failure: "Sandbox operation_in_progress; its provider effect must finish before execution can borrow it",
       }));
-      let sandbox = this.clients.get(resourceKey(resource));
-      if (!sandbox) {
-        if (!this.options.reaper) throw error("unsupported", "No resolver is configured to reopen this Session's sandbox");
-        sandbox = await this.options.reaper.resume(resource, management.signal);
-      }
+      if (!this.options.reaper) throw error("unsupported", "No resolver is configured to reopen this Session's sandbox");
+      const sandbox = await this.options.reaper.resume(resource, management.signal);
       management.signal.throwIfAborted();
       if (this.options.reaper?.handle && !sameHandle(this.validateHandle(this.options.reaper.handle(sandbox)), resource.handle!)) {
         throw error("handle_mismatch", "Session file operation resolved a different physical sandbox");
@@ -386,7 +368,6 @@ export class NodeSessionSandboxLifecycle {
       const result = await operation(withSandboxExecutionGuard(sandbox, { signal: management.signal }), management.signal);
       management.signal.throwIfAborted();
       await management.write(mutation => this.store.markReady(mutation));
-      this.clients.set(resourceKey(resource), sandbox);
       return result;
     });
   }
@@ -402,7 +383,6 @@ export class NodeSessionSandboxLifecycle {
     await this.manage(claim.resource, claim.fence, "retire", async management => {
       await management.write(mutation => this.store.retire(mutation));
     });
-    this.clients.delete(resourceKey(resource));
     return this.requireResource(input);
   }
 
@@ -411,7 +391,6 @@ export class NodeSessionSandboxLifecycle {
   async closeSession(scope: SessionSandboxScope): Promise<void> {
     this.requireAccepting();
     await this.store.closeSession({ ...scope, now: this.timestamp() });
-    this.detach(scope);
   }
 
   async reap(input: SessionSandboxScope & {
@@ -444,7 +423,6 @@ export class NodeSessionSandboxLifecycle {
       management.signal.throwIfAborted();
       await management.write(mutation => this.store.markDeleted(mutation));
     });
-    this.clients.delete(resourceKey(resource));
     return this.requireResource(input);
   }
 
@@ -476,15 +454,6 @@ export class NodeSessionSandboxLifecycle {
     return results;
   }
 
-  /** Drop connection caches only. Never retire, cancel provisioning, or destroy
-   * a Session resource because its worker object is no longer needed. */
-  detach(scope?: SessionSandboxScope): void {
-    if (!scope) this.clients.clear();
-    else for (const key of this.clients.keys()) {
-      const [workspaceId, sessionId] = JSON.parse(key) as string[];
-      if (workspaceId === scope.workspaceId && sessionId === scope.sessionId) this.clients.delete(key);
-    }
-  }
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.accepting = false;
@@ -511,7 +480,6 @@ export class NodeSessionSandboxLifecycle {
       // Aborted local waits normally settle immediately. A driver already
       // inside an uninterruptible call must not make shutdown wait forever.
       await Promise.race([settled(), wait(0)]);
-      this.detach();
     }
   }
 
