@@ -238,8 +238,8 @@
   position: absolute;
   z-index: 2;
   top: 0;
-  right: calc(var(--console-gap-2xs) * -1);
-  width: var(--console-gap-lg);
+  right: -4px;
+  width: 8px;
   height: 100%;
   border: 0;
   background: transparent;
@@ -249,7 +249,7 @@
 .console-sidebar-resize::after {
   position: absolute;
   inset-block: 0;
-  left: var(--console-gap-3xs);
+  left: 3px;
   width: 2px;
   height: 32px;
   margin-block: auto;
@@ -388,7 +388,7 @@
 
 .console-sidebar-group-label {
   height: var(--sidebar-row-h);
-  padding: var(--console-gap-xs) var(--sidebar-row-inset);
+  padding: 5px var(--sidebar-row-inset);
   color: var(--fg-muted);
   font-size: var(--console-type-body);
   font-weight: 560;

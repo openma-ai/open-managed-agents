@@ -1,15 +1,15 @@
-/** Local deterministic shell regression for issue #503 (fixtures only, no backend).
- *
- * Start Vite from apps/console first:
- *   pnpm exec vite --host 127.0.0.1 --port 5183 --strictPort
- * Then, from the repository root:
- *   node apps/console/scripts/capture-503-acceptance.mjs before   # on the base commit
- *   node apps/console/scripts/capture-503-acceptance.mjs after    # on the PR head
- *   node apps/console/scripts/capture-503-acceptance.mjs compare
- *
- * Output goes to the gitignored .docs/screenshots/503/<label>/. Every shot also
- * records computed styles for the declarations the PR touches (styles.json).
+/** Production-build shell regression for issue #503 (API fixtures only).
+ * Serve baseline and changed builds from THIS worktree with Vite preview.
+ * BASE_URL=http://127.0.0.1:5183 node apps/console/scripts/capture-503-acceptance.mjs before
+ * BASE_URL=http://127.0.0.1:5184 node apps/console/scripts/capture-503-acceptance.mjs after
+ * node apps/console/scripts/capture-503-acceptance.mjs compare
+ * BASE_URL=http://127.0.0.1:5184 node apps/console/scripts/capture-503-acceptance.mjs negative
+ * Output: .docs/screenshots/503 (or SHELL_OUTPUT); CHROME_PATH is optional.
+ * Every current OSS shell route, both themes/viewports/root font sizes.
+ * Detail loading states test the shell, not full detail-page functionality.
  */
+import assert from 'node:assert/strict';
+import { modalClosure } from '../../../test/e2e/console-modal-closure.mjs';
 import { chromium } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
@@ -17,14 +17,14 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const outRoot = path.join(root, '.docs/screenshots/503');
+const outRoot = process.env.SHELL_OUTPUT || path.join(root, '.docs/screenshots/503');
 const base = process.env.BASE_URL || 'http://127.0.0.1:5183';
 const mode = process.argv[2];
-if (!['before', 'after', 'compare'].includes(mode)) throw new Error('Usage: capture-503-acceptance.mjs before|after|compare');
-if (!['localhost', '127.0.0.1'].includes(new URL(base).hostname)) throw new Error('Use a local Vite server.');
+if (!['before', 'after', 'compare', 'negative'].includes(mode)) throw new Error('Usage: capture-503-acceptance.mjs before|after|compare|negative');
+if (!['localhost', '127.0.0.1'].includes(new URL(base).hostname)) throw new Error('Use a local preview server.');
 
 const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
+  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
   args: ['--no-sandbox', '--disable-gpu', '--force-color-profile=srgb', '--font-render-hinting=none'],
 });
 
@@ -120,31 +120,6 @@ function readStyles() {
   };
 }
 
-/** Renders the real BrandLoader sizes through Vite's own module graph. */
-async function mountBrandLoaders(page) {
-  await page.evaluate(async () => {
-    const main = await (await fetch('/src/main.tsx')).text();
-    const clientUrl = main.match(/from "([^"]*react-dom_client[^"]*)"/)?.[1];
-    const reactUrl = main.match(/from "([^"]*\/deps\/react\.js[^"]*)"/)?.[1];
-    const [{ BrandLoader }, clientNs, reactNs] = await Promise.all([
-      import('/src/components/BrandLoader.tsx'),
-      import(clientUrl),
-      import(reactUrl),
-    ]);
-    const client = clientNs.default ?? clientNs;
-    const React = reactNs.default ?? reactNs;
-    const host = document.createElement('div');
-    host.setAttribute('style', 'position:fixed;inset:0;z-index:9999;display:flex;gap:48px;align-items:center;justify-content:center;background:var(--bg)');
-    document.body.append(host);
-    client.createRoot(host).render(
-      React.createElement(React.Fragment, null, ...['sm', 'md', 'lg'].map((size) =>
-        React.createElement('span', { key: size, 'data-brand-loader-gap': size },
-          React.createElement(BrandLoader, { size })))),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  });
-}
-
 async function hideSidebar(page) {
   await page.locator('.console-shell[data-sidebar-state="desktop-full"]').waitFor();
   await page.keyboard.press('Control+\\');
@@ -197,7 +172,7 @@ const SHOTS = [
   { name: '14-nav-progress-forced-visible', route: '/agents', interact: (page) => page.addStyleTag({
     content: '.nav-progress-root{opacity:1!important}.nav-progress-bar{transform:scaleX(.6)!important}',
   }) },
-  { name: '15-brand-loader-sizes', route: '/agents', interact: mountBrandLoaders },
+
   ...ROUTE_SWEEP.map(([name, route], i) => ({ name: `${20 + i}-route-${name}`, route })),
   ...LOADING_DETAILS.map(([name, route, prefix], i) => ({
     name: `${40 + i}-loading-${name}`,
@@ -206,22 +181,34 @@ const SHOTS = [
     ready: 'main svg.fill-current[role="status"]',
   })),
 ];
-const DARK_SHOTS = SHOTS.filter((shot) => /^(01|03|05|09|11)-/.test(shot.name));
+// Inventory from the current router, including redirects and empty parent outlets.
+const closure = modalClosure();
+for (const [i, r] of closure.shellRoutes.entries()) {
+  const route = r.url.replaceAll(':benchmarkId', 'benchmark_fixture').replaceAll(':caseName', 'case_fixture');
+  if (SHOTS.some(s => s.route === route)) continue;
+  // Detail contents are intentionally held loading; this is shell coverage,
+  // not certification of the underlying detail API or editor.
+  const detail = r.pattern.includes(':');
+  SHOTS.push({name: `closure-${i}`, route,
+    ...(detail ? {hang: p => p.startsWith('/v1/') && !p.startsWith('/v1/oma/me')} : {})});
+}
+
 
 async function capture(label) {
   const out = path.join(outRoot, label);
   await mkdir(out, { recursive: true });
   const styles = {};
 
-  async function shot({ name, route, viewport = DESKTOP, hang, ready, interact }, theme) {
+  async function shot({ name, route, viewport, hang, ready, interact }, theme, font, mobile) {
     const context = await browser.newContext({
-      viewport,
+      viewport: viewport || (mobile ? MOBILE : DESKTOP),
       timezoneId: 'America/Detroit',
       locale: 'en-US',
       reducedMotion: 'reduce',
-      deviceScaleFactor: 2,
+      deviceScaleFactor: 1,
     });
-    await context.addInitScript((value) => {
+    await context.addInitScript(({value, font}) => {
+      document.addEventListener('DOMContentLoaded', () => { document.documentElement.style.fontSize = `${font}px`; });
       localStorage.setItem('oma-locale', 'en');
       localStorage.setItem('theme', value);
       localStorage.setItem('oma_active_tenant_id', 'tenant_0');
@@ -231,8 +218,10 @@ async function capture(label) {
         seed = (seed * 16807) % 2147483647;
         return (seed - 1) / 2147483646;
       };
-    }, theme);
+    }, {value: theme, font});
     const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
     await page.clock.setFixedTime(new Date(NOW));
     await page.route('**/*', fixtures({ hang }));
     await page.goto(base + route, { waitUntil: 'domcontentloaded' });
@@ -243,15 +232,26 @@ async function capture(label) {
     await page.waitForLoadState('networkidle', { timeout: hang ? 1500 : 10000 }).catch(() => {});
     await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(400);
-    const file = `${name}-${theme}.png`;
+    assert.deepEqual(errors, [], `Browser errors: ${route}`);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).fontSize), `${font}px`);
+    const file = `${name}-${theme}-${mobile ? 'mobile' : 'desktop'}-${font}.png`;
     await page.screenshot({ path: path.join(out, file), animations: 'disabled' });
     styles[file] = await page.evaluate(readStyles);
     await context.close();
     console.log('wrote', file);
   }
 
-  for (const definition of SHOTS) await shot(definition, 'light');
-  for (const definition of DARK_SHOTS) await shot(definition, 'dark');
+  const queue = [];
+  for (const theme of ['light', 'dark']) for (const font of [16, 20]) for (const mobile of [false, true]) {
+    for (const definition of SHOTS) {
+      // Desktop-only interactions cannot run in the mobile-hidden shell.
+      if (mobile && /^(04|05|06|07|08|09)-/.test(definition.name)) continue;
+      if (!mobile && definition.viewport) continue;
+      queue.push(() => shot(definition, theme, font, mobile));
+    }
+  }
+  await writeFile(path.join(out, 'closure.json'), JSON.stringify({ routes: closure.shellRoutes, cases: SHOTS.map(({name,route})=>({name,route})), detailState: 'loading', outsideShell: closure.outsideShell }, null, 2));
+  await Promise.all(Array.from({length:4}, async () => { while(queue.length) await queue.shift()(); }));
   await writeFile(path.join(out, 'styles.json'), `${JSON.stringify(styles, null, 2)}\n`);
 }
 
@@ -260,6 +260,8 @@ async function compare() {
   const afterDir = path.join(outRoot, 'after');
   const names = (await readdir(beforeDir)).filter((name) => name.endsWith('.png')).sort();
   const afterNames = new Set((await readdir(afterDir)).filter((name) => name.endsWith('.png')));
+  assert.ok(names.length > 0, 'Baseline screenshots must exist');
+  assert.deepEqual([...afterNames].sort(), names, 'Both captures must contain the same cases');
   const page = await browser.newPage();
   await page.goto('about:blank');
   const rows = [];
@@ -320,7 +322,30 @@ async function compare() {
 }
 
 try {
-  if (mode === 'compare') await compare();
+  if (mode === 'negative') {
+    const page = await browser.newPage({viewport: DESKTOP});
+    await page.route('**/*', fixtures());
+    await page.goto(base + '/agents');
+    await page.locator('.console-sidebar-group-label').first().waitFor();
+    const before = await page.evaluate(readStyles);
+    assert.equal(before.resizeHandle.width, '20px');
+    assert.equal(before.groupLabel.lineHeight, '18px');
+    assert.equal(before.resizeBar.borderTopLeftRadius, '999px');
+    await page.evaluate(() => {
+      // Scope overrides to changed consumers so unrelated users cannot make
+      // this negative control pass accidentally.
+      document.querySelectorAll('.console-sidebar-group-label').forEach(el => el.style.setProperty('--type-line', '23px'));
+      document.querySelector('.console-sidebar-resize').style.setProperty('--console-radius-pill', '0px');
+    });
+    const after = await page.evaluate(readStyles);
+    assert.equal(after.groupLabel.lineHeight, '23px');
+    assert.equal(after.resizeBar.borderTopLeftRadius, '0px');
+    assert.equal(after.resizeHandle.width, '20px');
+    await mkdir(outRoot, {recursive:true});
+    await page.screenshot({path:path.join(outRoot, 'negative.png'), animations:'disabled'});
+    await writeFile(path.join(outRoot, 'negative.json'), JSON.stringify({before,after,passed:true},null,2));
+    console.log('PASS: both changed declarations consume tokens; resize hit area remains 20px');
+  } else if (mode === 'compare') await compare();
   else await capture(mode);
 } finally {
   await browser.close();
