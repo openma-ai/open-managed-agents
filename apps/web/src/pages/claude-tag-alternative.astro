@@ -167,6 +167,35 @@ const schemas = [
     </div>
   </section>
 
+  <section class="site-container pb-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">When to choose Claude Tag, and when to choose Open Managed Agents</h2>
+    <div class="grid md:grid-cols-2 gap-x-10 gap-y-8">
+      <article>
+        <h3 class="font-semibold text-lg mb-2">Claude Tag is the better fit when</h3>
+        <ul class="space-y-2 text-[var(--color-fg-muted)] leading-relaxed list-disc pl-5">
+          <li>You are on Claude Enterprise or Team and want the fastest Slack-native Claude experience.</li>
+          <li>Slack is the only surface you care about right now.</li>
+          <li>You want Anthropic to own setup, agent behavior, and product updates.</li>
+          <li>Your compliance model allows Anthropic-hosted workplace agents.</li>
+        </ul>
+      </article>
+      <article>
+        <h3 class="font-semibold text-lg mb-2">Open Managed Agents is the better fit when</h3>
+        <ul class="space-y-2 text-[var(--color-fg-muted)] leading-relaxed list-disc pl-5">
+          <li>You need to self-host on Cloudflare, Docker, Node.js, or your own network.</li>
+          <li>The same agent should also work GitHub issues and PRs, update Linear, call MCP servers, and run code in a sandbox.</li>
+          <li>You want to inspect and change the harness instead of accepting a fixed vendor loop.</li>
+          <li>You need model portability and vaults, logs, memory, and workspace files under your own control.</li>
+        </ul>
+      </article>
+    </div>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mt-8 max-w-3xl">
+      To try it, follow the <a href="https://docs.openma.ai/self-host/overview/">self-host overview</a>, then
+      publish an agent with the <a href="https://docs.openma.ai/self-host/oauth-apps/#slack">Slack app setup</a>.
+      The <a href="/self-hosted-claude-tag/">self-hosted Claude Tag guide</a> walks through the architecture and rollout.
+    </p>
+  </section>
+
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold mb-4">What is covered today</h2>

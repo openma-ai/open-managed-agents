@@ -447,6 +447,9 @@ describe("GitHubProvider — publication-first install flow", () => {
     expect(prepared.suggestedAppName).toBe("Coder");
     expect(prepared.manifest.name).toBe("Coder");
     const manifest = prepared.manifest as Record<string, unknown>;
+    // No homepageUrl override: the App page links to the live site, not the
+    // pre-migration openma.dev apex.
+    expect(manifest.url).toBe("https://openma.ai");
     expect(manifest.redirect_url).toBe("https://gw/github/manifest/callback");
     expect((manifest.hook_attributes as Record<string, unknown>).url).toBe(
       `https://gw/github/webhook/app/${appOmaId}`,
