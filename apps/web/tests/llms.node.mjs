@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { softwareApplicationSchema } from "../src/lib/seo.ts";
 import worker from "../src/worker.ts";
 
 const SITE = "https://openma.ai";
@@ -89,3 +90,10 @@ test("worker serves /llms.txt as a static asset without redirecting", async () =
   assert.equal(response.headers.get("x-asset-url"), `${SITE}/llms.txt`);
 });
 
+
+test("SoftwareApplication alternateName covers OpenMA brand spellings", () => {
+  const { alternateName } = softwareApplicationSchema();
+  for (const name of ["openma", "open-managed-agents", "OpenMA", "ma-open", "Open MA"]) {
+    assert.ok(alternateName.includes(name), name);
+  }
+});
