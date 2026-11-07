@@ -64,9 +64,9 @@ cancellation, deduplication and shutdown drain.
 Provider TTL renewal addresses the persisted handle through the factory binding,
 without resolving a client through `resume`. E2B uses static `Sandbox.setTimeout`;
 OpenSandbox uses `SandboxManager.renewSandbox`. Sprites retains its native guest
-keep-alive task, forwarding cancellation and refusing a non-running probe result.
-That probe is not atomic with guest exec: provider auto-sleep between them may
-still cause the command to wake the Sprite. No strict no-wake guarantee is claimed.
+keep-alive task and forwards cancellation. Its guest activity may wake the Sprite;
+a separate status probe cannot atomically prevent that wake and must not invent
+new availability restrictions. No strict no-wake guarantee is claimed.
 No renewal failure falls back to allocation or workspace preparation.
 
 Regression coverage includes closing during startup and workspace preparation,

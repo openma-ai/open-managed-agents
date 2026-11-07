@@ -16,9 +16,10 @@ describe("Sprite handle-based keep-alive", () => {
     expect(exec.mock.calls[0]![1]!.join(" ")).toContain("/v1/tasks/openma-runtime");
     expect(network).not.toHaveBeenCalled();
     expect(spritesFixtureCalls.filter(call => call.type === "create")).toHaveLength(before);
-    vi.spyOn(sprite, "check").mockResolvedValue({ status: "cold" });
-    await expect(sandboxFactory.runtimeBinding!.renewLease!(handle, input, { SPRITES_TOKEN: "test" })).rejects.toThrow("not running");
+    const cancelled = new AbortController(); cancelled.abort(new Error("lease worker stopped"));
+    await expect(sandboxFactory.runtimeBinding!.renewLease!(handle, { ...input, signal: cancelled.signal }, { SPRITES_TOKEN: "test" })).rejects.toThrow("lease worker stopped");
     expect(exec).toHaveBeenCalledOnce();
+    expect(exec.mock.calls[0]![2]).toEqual(expect.objectContaining({ signal: input.signal }));
     await api.deleteSprite("existing");
     await expect(sandboxFactory.runtimeBinding!.renewLease!(handle, input, { SPRITES_TOKEN: "test" })).rejects.toThrow("not found");
     expect(spritesFixtureCalls.filter(call => call.type === "create")).toHaveLength(before);

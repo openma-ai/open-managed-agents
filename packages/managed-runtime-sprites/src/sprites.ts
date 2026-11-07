@@ -801,10 +801,9 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (context: Sand
       const sprite = await client.getSprite(handle.runtimeId);
       if (sprite.name !== handle.runtimeId) throw new Error("Sprite renewal resolved a different resource");
       input.signal.throwIfAborted();
-      if ((await sprite.check()).status.toLowerCase() !== "running") {
-        throw new Error("Sprite is not running; keep-alive cannot authorize recovery");
-      }
-      input.signal.throwIfAborted();
+      // Preserve the provider-native task semantics, including wake on guest
+      // activity. A status probe cannot atomically prevent that wake and must
+      // not invent an availability restriction that the old keep-alive lacked.
       await new SpritesRuntime({ client, sprite }).renewLease(input);
     },
   },
