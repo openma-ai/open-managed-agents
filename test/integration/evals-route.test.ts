@@ -209,17 +209,18 @@ describe("benchmarks and cases", () => {
 
   it("validates harbor benchmark runs", async () => {
     expect((await post("/v1/oma/evals/runs", { benchmark_id: "evds_missing", mode: "oracle" })).status).toBe(404);
-    const created = await post("/v1/oma/evals/benchmarks", { kind: "harbor", name: "empty-harbor" });
-    expect(created.status).toBe(201);
-    const bench = await created.json() as any;
-    expect(bench).toMatchObject({ kind: "harbor", case_count: 0, source: null });
-    expect((await post("/v1/oma/evals/runs", { benchmark_id: bench.id, mode: "oracle", agent_id: "agent_x" })).status).toBe(400);
-    expect((await post("/v1/oma/evals/runs", { benchmark_id: bench.id, mode: "oracle", environment_id: "env_x" })).status).toBe(400);
+    // Harbor benchmarks are read-only imports (ADR 0017): no empty ones, no case writes.
+    const empty = await post("/v1/oma/evals/benchmarks", { kind: "harbor", name: "empty-harbor" });
+    expect(empty.status).toBe(400);
+    expect(JSON.stringify(await empty.json())).toMatch(/imported from a source/);
+    expect((await post("/v1/oma/evals/benchmarks", { source: { type: "git", url: "https://gitlab.com/o/r" } })).status).toBe(400);
+    const messages = await (await post("/v1/oma/evals/benchmarks", { kind: "messages", name: "not-harbor", cases: [CASE] })).json() as any;
+    expect((await post(`/v1/oma/evals/benchmarks/${messages.id}/sync`, {})).status).toBe(400);
   });
 });
 
 describe("messages benchmark runs on managed Sessions", () => {
-  it("snapshots cases, blocks case writes while active, and completes", async () => {
+  it("snapshots cases, keeps cases editable while active, and completes", async () => {
     const { agent, environment } = await setupAgentAndEnv();
     const bench = await (await post("/v1/oma/evals/benchmarks", { kind: "messages", name: `run-${crypto.randomUUID()}`, cases: [CASE] })).json() as any;
     const base = `/v1/oma/evals/benchmarks/${bench.id}`;
@@ -233,7 +234,8 @@ describe("messages benchmark runs on managed Sessions", () => {
     expect(pending).toMatchObject({ kind: "messages", benchmark_id: bench.id, status: "pending" });
     expect(pending.tasks[0].id).toBe("hello");
 
-    expect((await put(`${base}/cases/hello`, { ...CASE, messages: ["changed"] })).status).toBe(409);
+    // The run copied its cases: editing is allowed, deleting the benchmark is not.
+    expect((await put(`${base}/cases/hello`, { ...CASE, messages: ["changed"] })).status).toBe(200);
     expect((await del(base)).status).toBe(409);
 
     const listed = await get(`/v1/oma/evals/runs?benchmark_id=${bench.id}`);
@@ -243,8 +245,9 @@ describe("messages benchmark runs on managed Sessions", () => {
     expect(done.status).toBe("completed");
     expect(done.tasks[0].trials[0].session_id).toBeTruthy();
 
-    // Writes are allowed again once the run is over.
-    expect((await put(`${base}/cases/hello`, { ...CASE, messages: ["changed"] })).status).toBe(200);
+    // The run graded the snapshot, not the edit.
+    expect(done.tasks[0].spec.messages).toEqual(CASE.messages);
+    expect((await del(base)).status).toBe(200);
   });
 });
 
