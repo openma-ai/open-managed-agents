@@ -177,6 +177,34 @@ describe("advanceHarborRun", () => {
     await advanceHarborRun(run, { runtime: fake.runtime, benchmarks: benchmarks({ a: harborTask("a") }), now: () => 0 });
     expect(task).toMatchObject({ status: "completed", mean_reward: 0.5, trial_pass_count: 1 });
   });
+
+  it("uses the deployment's known image WORKDIR/ENV instead of reading the registry", async () => {
+    const fake = fakeRuntime();
+    fake.runtime.imageRuntime = (alias) => alias === "a" ? { workdir: "/app", env: {} } : null;
+    const run = harborRun(["a"]);
+    delete run.tasks[0]!.runtime;
+    const fetch = (() => { throw new Error("registry must not be read"); }) as never;
+    await advanceHarborRun(run, { runtime: fake.runtime, benchmarks: benchmarks({ a: harborTask("a") }), now: () => 0, fetch });
+    expect(run.tasks[0]!.runtime).toEqual({ workdir: "/app", env: {} });
+    expect(run.tasks[0]!.trials[0]).toMatchObject({ status: "running", phase: "agent" });
+  });
+
+  it("reads the image config from the registry when the deployment does not know it", async () => {
+    const fake = fakeRuntime();
+    const run = harborRun(["a"]);
+    delete run.tasks[0]!.runtime;
+    const urls: string[] = [];
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    const fetch = (async (input: string | URL | Request) => {
+      const url = String(input); urls.push(url);
+      if (url.endsWith("/manifests/1")) return json({ config: { digest: "sha256:cfg" } });
+      if (url.endsWith("/blobs/sha256:cfg")) return json({ config: { WorkingDir: "/srv", Env: ["A=1"] } });
+      return new Response("", { status: 404 });
+    }) as typeof globalThis.fetch;
+    await advanceHarborRun(run, { runtime: fake.runtime, benchmarks: benchmarks({ a: harborTask("a") }), now: () => 0, fetch });
+    expect(run.tasks[0]!.runtime).toEqual({ workdir: "/srv", env: { A: "1" } });
+    expect(urls.length).toBeGreaterThan(0);
+  });
 });
 
 describe("harbor benchmarks", () => {

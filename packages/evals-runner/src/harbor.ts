@@ -128,8 +128,10 @@ function noteFailure(trial: EvalTrialResult, error: unknown, now: number) {
   if (trial.attempts >= MAX_ATTEMPTS) failTrial(trial, `${message(error)} (after ${trial.attempts} attempts)`, now);
 }
 
-async function resolveTaskRuntime(task: EvalTaskResult, harborTask: HarborTask, deps: HarborAdvanceDeps): Promise<"ready" | "retry" | string> {
+async function resolveTaskRuntime(task: EvalTaskResult, harborTask: HarborTask, alias: string, deps: HarborAdvanceDeps): Promise<"ready" | "retry" | string> {
   if (task.runtime) return "ready";
+  const known = deps.runtime.imageRuntime?.(alias) ?? null;
+  if (known) { task.runtime = known; return "ready"; }
   try {
     const config = await fetchImageRuntimeConfig(harborTask.image, deps.fetch ? { fetch: deps.fetch } : {});
     task.runtime = { workdir: config.workingDir, env: config.env };
@@ -155,7 +157,7 @@ async function startTrial(
     return "failed";
   }
   task.image_alias = alias;
-  const resolved = await resolveTaskRuntime(task, harborTask, deps);
+  const resolved = await resolveTaskRuntime(task, harborTask, alias, deps);
   if (resolved === "retry") return "deferred";
   if (resolved !== "ready") { failTrial(trial, resolved, now); return "failed"; }
   try {

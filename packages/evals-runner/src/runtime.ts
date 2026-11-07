@@ -9,6 +9,7 @@ import type {
   SessionEventsApplicationPort,
   SessionsApplicationPort,
 } from "@open-managed-agents/managed-agents-application";
+import type { HarborTaskRuntimeConfig } from "./types";
 
 export interface EvalExecResult {
   exit_code: number;
@@ -53,6 +54,9 @@ export interface EvalSessionRuntime {
   releaseSandbox(sessionId: string): Promise<void>;
   /** SANDBOX_IMAGES alias whose reference equals `image`, or null. */
   imageAlias(image: string): string | null;
+  /** The image WORKDIR and ENV the deployment already knows for an alias, or
+   *  null to read them from the image registry. */
+  imageRuntime?(alias: string): HarborTaskRuntimeConfig | null;
 }
 
 export class EvalRuntimeError extends Error {
@@ -72,6 +76,9 @@ export interface ManagedEvalRuntimeDependencies {
   exec(sessionId: string, command: string, timeoutMs: number): Promise<EvalExecResult>;
   ensureSandbox(sessionId: string): Promise<boolean>;
   releaseSandbox?(sessionId: string): Promise<void>;
+  /** Known WORKDIR/ENV per alias (Cloudflare: the catalog's workdir; the
+   *  container already carries the image ENV). Null reads the registry. */
+  imageRuntime?(alias: string): HarborTaskRuntimeConfig | null;
   /** Reject self-hosted environments with this reason (eval Sessions are
    * created by a background tick that has no API origin to hand them). */
   selfHostedUnsupported?: string;
@@ -245,5 +252,6 @@ export function createManagedEvalRuntime(deps: ManagedEvalRuntimeDependencies): 
     imageAlias(image) {
       return deps.images.find((entry) => entry.reference === image)?.alias ?? null;
     },
+    imageRuntime: (alias) => deps.imageRuntime?.(alias) ?? null,
   };
 }

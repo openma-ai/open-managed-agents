@@ -981,12 +981,20 @@ registerCfEvalDeps(async (env, tenantId, request) => {
   const core = managedCoreApplicationFor(ctx);
   const ports = managedSessionsCompositionFor(ctx).portsFor(tenantId);
   const fetcher = new CfManagedRuntimeFetcher(env);
+  const imageCatalog = cfSandboxImageCatalog(env as unknown as { SANDBOX_IMAGES?: string });
   const runtime = createManagedEvalRuntime({
     agents: core.port(managedAgentsPortTokens.agents),
     environments: core.port(managedAgentsPortTokens.environments),
     sessions: ports.sessions,
     sessionEvents: ports.sessionEvents,
-    images: cfSandboxImageCatalog(env as unknown as { SANDBOX_IMAGES?: string }).entries,
+    images: imageCatalog.entries,
+    // The operator declares the image WORKDIR in the catalog and the container
+    // is built FROM the task image, so its ENV is already in every exec. No
+    // registry read: Docker Hub rate-limits Workers' shared egress (HTTP 429).
+    imageRuntime: (alias) => {
+      const placement = imageCatalog.placement(alias);
+      return placement ? { workdir: placement.workdir ?? null, env: {} } : null;
+    },
     exec: (sessionId, command, timeoutMs) => execCfManagedSandbox(fetcher, tenantId, sessionId, command, timeoutMs),
     // SessionDO /exec creates the container on first use; it then sleeps
     // after 5 idle minutes on its own (sleepAfter), so nothing to release.
