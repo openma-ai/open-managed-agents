@@ -44,4 +44,19 @@ describe("fetchImageRuntimeConfig", () => {
     expect(tokenUrl.searchParams.get("scope")).toBe("repository:team/task:pull");
     expect(tokenUrl.searchParams.get("service")).toBe("registry.example");
   });
+
+  it("calls fetch unbound, as Workers' global fetch requires", async () => {
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    // Workers' fetch throws "Illegal invocation" when called as a method.
+    const fetchImpl = (function (this: unknown, input: string | URL | Request) {
+      if (this !== undefined) throw new TypeError("Illegal invocation");
+      const url = String(input);
+      if (url.endsWith("/manifests/1.0")) return Promise.resolve(json({ config: { digest: "sha256:cfg" } }));
+      if (url.endsWith("/blobs/sha256:cfg")) return Promise.resolve(json({ config: { WorkingDir: "/app" } }));
+      return Promise.resolve(new Response("", { status: 404 }));
+    }) as typeof fetch;
+
+    const config = await fetchImageRuntimeConfig("registry.example/team/task:1.0", { fetch: fetchImpl });
+    expect(config.workingDir).toBe("/app");
+  });
 });

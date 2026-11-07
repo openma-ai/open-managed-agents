@@ -589,7 +589,8 @@ async function registryBundles(
   deps: HarborImportDeps,
 ): Promise<{ bundles: HarborTaskBundle[]; pins: EvalSourcePin[]; version: string }> {
   const url = source.registry_url ?? DEFAULT_HARBOR_REGISTRY_URL;
-  const response = await deps.fetch(url);
+  const fetchImpl = deps.fetch; // plain call: Workers' fetch rejects a foreign `this`
+  const response = await fetchImpl(url);
   if (!response.ok) throw new EvalBenchmarkError(`Reading registry ${url} failed: HTTP ${response.status}`, 502);
   const registry = await response.json() as RegistryDataset[];
   if (!Array.isArray(registry)) throw new EvalBenchmarkError(`Registry ${url} is not a JSON array`, 502);

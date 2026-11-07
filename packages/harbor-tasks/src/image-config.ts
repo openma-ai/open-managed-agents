@@ -67,7 +67,12 @@ function bearerChallenge(header: string | null): { realm: string; params: Record
 
 class RegistryClient {
   #token: string | undefined;
-  constructor(private readonly ref: ImageReference, private readonly fetchImpl: Fetch) {}
+  readonly #fetch: Fetch;
+  constructor(private readonly ref: ImageReference, fetchImpl: Fetch) {
+    // Never call fetch as a method of this object: Workers' global fetch
+    // throws "Illegal invocation" when `this` is not the global scope.
+    this.#fetch = (input, init) => fetchImpl(input, init);
+  }
 
   async get(path: string, accept?: string): Promise<Response> {
     const url = `https://${this.ref.registry}/v2/${this.ref.repository}/${path}`;
@@ -75,19 +80,19 @@ class RegistryClient {
       ...(accept ? { accept } : {}),
       ...(this.#token ? { authorization: `Bearer ${this.#token}` } : {}),
     });
-    let response = await this.fetchImpl(url, { headers: headers() });
+    let response = await this.#fetch(url, { headers: headers() });
     if (response.status === 401 && this.#token === undefined) {
       const challenge = bearerChallenge(response.headers.get("www-authenticate"));
       if (!challenge) throw new Error(`Registry ${this.ref.registry} requires unsupported authentication`);
       const tokenUrl = new URL(challenge.realm);
       for (const [key, value] of Object.entries(challenge.params)) tokenUrl.searchParams.set(key, value);
       if (!tokenUrl.searchParams.has("scope")) tokenUrl.searchParams.set("scope", `repository:${this.ref.repository}:pull`);
-      const tokenResponse = await this.fetchImpl(tokenUrl.toString());
+      const tokenResponse = await this.#fetch(tokenUrl.toString());
       if (!tokenResponse.ok) throw new Error(`Registry token request failed (HTTP ${tokenResponse.status})`);
       const body = await tokenResponse.json() as { token?: string; access_token?: string };
       this.#token = body.token ?? body.access_token;
       if (!this.#token) throw new Error("Registry token response had no token");
-      response = await this.fetchImpl(url, { headers: headers() });
+      response = await this.#fetch(url, { headers: headers() });
     }
     if (!response.ok) throw new Error(`Registry request ${path} failed (HTTP ${response.status})`);
     return response;
