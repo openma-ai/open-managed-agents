@@ -35,5 +35,12 @@
     "geometryDifferences": [],
     "identicalImages": 2,
     "differentImages": []
+  },
+  "shell-parent": {
+    "casesPerBuild": 2,
+    "screenshotsPerBuild": 6,
+    "geometryDifferences": [],
+    "identicalImages": 6,
+    "differentImages": []
   }
 }

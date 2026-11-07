@@ -338,6 +338,11 @@
       "redirect": "/loops?template=feishu-agent"
     },
     {
+      "pattern": "/integrations",
+      "url": "/integrations",
+      "shellOnlyParent": true
+    },
+    {
       "pattern": "/*",
       "url": "/modal-fixture-unknown",
       "redirect": "/agents"
