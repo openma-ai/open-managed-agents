@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { APICallError } from "ai";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import { createManagedSandboxBuilder } from "../../../packages/control-plane-node/src/lib/node-managed-sandbox-builder.js";
@@ -1125,10 +1126,11 @@ describe("DefaultNodeManagedSessionRunner", () => {
     expect(summary).toEqual(["session.status_running", "agent.tool_use", "error:exhausted", "idle:retries_exhausted"]);
   });
 
-  it("retries a harness failure in place while the turn has no agent side effects", async () => {
+  it("retries an explicitly retryable model response while the turn has no agent side effects", async () => {
     let failures = 2;
     const { result, runs, summary } = await failingHarnessTurn(async () => {
-      if (failures-- > 0) throw new Error("No output generated. Check the stream for errors.");
+      if (failures-- > 0) throw new APICallError({ message: "model unavailable", url: "https://model.test",
+        requestBodyValues: {}, statusCode: 503, isRetryable: true });
     });
     expect(result).toBeUndefined();
     expect(runs).toBe(3);
@@ -1141,7 +1143,9 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("reports exhausted after the side-effect-free retries run out", async () => {
-    const { result, runs, summary } = await failingHarnessTurn(async () => { throw new Error("model unavailable"); });
+    const { result, runs, summary } = await failingHarnessTurn(async () => {
+      throw new APICallError({ message: "model unavailable", url: "https://model.test", requestBodyValues: {}, statusCode: 503, isRetryable: true });
+    });
     expect((result as Error).message).toBe("model unavailable");
     expect(runs).toBe(3);
     expect(summary).toEqual([
@@ -1151,6 +1155,13 @@ describe("DefaultNodeManagedSessionRunner", () => {
       "error:exhausted", "idle:retries_exhausted",
     ]);
   });
+
+  it.each([new TypeError("owned program defect"), new Error("No output generated. Check the stream for errors.")])(
+    "does not treat an unclassified owned error as retry permission: %s", async error => {
+      const { result, runs } = await failingHarnessTurn(async () => { throw error; });
+      expect(runs).toBe(1); expect((result as Error).cause).toBe(error);
+    },
+  );
 
   it("reports a failed fenced final collection as exhausted and goes idle", async () => {
     const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;

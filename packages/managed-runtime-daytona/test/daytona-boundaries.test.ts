@@ -73,13 +73,15 @@ function sandbox(input: {
 function client(value: DaytonaSandboxSdkPort, input: { getError?: unknown; createError?: unknown } = {}) {
   let getAttempt = 0;
   return {
-    get: vi.fn(async () => {
+    get: vi.fn(async (idOrName: string) => {
       if (Object.prototype.hasOwnProperty.call(input, "getError") && getAttempt++ === 0) {
         throw input.getError;
       }
+      if (idOrName.startsWith("openma-")) Object.defineProperty(value, "name", { value: idOrName, configurable: true });
       return value;
     }),
-    create: vi.fn(async () => {
+    create: vi.fn(async (parameters: Readonly<Record<string, unknown>>) => {
+      Object.defineProperty(value, "name", { value: parameters.name, configurable: true });
       if (Object.prototype.hasOwnProperty.call(input, "createError")) throw input.createError;
       return value;
     }),
@@ -314,7 +316,7 @@ describe("Daytona provider boundary contracts", () => {
       networkAllowList: "10.0.0.0/8", domainAllowList: "example.com", outboundProxyUrl: "https://proxy",
     });
     expect(sdk.create).toHaveBeenCalledWith({
-      name: "openma-session",
+      name: expect.stringMatching(/^openma-[a-f0-9]{40}$/),
       snapshot: "base",
       labels,
       autoStopInterval: 1,
@@ -463,6 +465,8 @@ describe("Daytona provider boundary contracts", () => {
     const value = sandbox().value;
     const sdk = client(value);
     const { composition, lease } = await acquire(sdk);
+    await expect(composition.sandbox.reap({ scope, lease, reason: "completed" })).rejects.toThrow("active sandbox allocation");
+    await composition.sandbox.terminate({ scope, fence, lease, reason: "completed" });
     await composition.sandbox.reap({ scope, lease, reason: "completed" });
     expect(value.delete).toHaveBeenCalledWith(300, true);
   });

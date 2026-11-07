@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./consumer-runtime": "./src/consumer-runtime.ts",
     "./cf": "./src/adapters/cf.ts",
     "./sql": "./src/adapters/pg.ts",
     "./pg": "./src/adapters/pg.ts",

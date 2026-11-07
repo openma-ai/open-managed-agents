@@ -98,9 +98,10 @@ export class ManagedCredentialResolver {
     target: ManagedCredentialTarget,
     staleToken: string,
     failure?: { code: string | null },
+    signal?: AbortSignal,
   ): Promise<string | null> {
     if (target.refresh === undefined) return Promise.resolve(null);
-    return refreshCredential(this.ports, workspaceId, target.refresh, staleToken, failure);
+    return refreshCredential(this.ports, workspaceId, target.refresh, staleToken, failure, signal);
   }
 
   /**
@@ -116,13 +117,22 @@ export class ManagedCredentialResolver {
     workspaceId: string,
     target: ManagedCredentialTarget,
     send: (token: string) => Promise<Response>,
+    signal?: AbortSignal,
   ): Promise<ForwardOutcome> {
+    signal?.throwIfAborted();
     const first = await send(target.upstreamToken);
     if (first.status !== 401 || target.refresh === undefined) {
       return { response: first, refreshed: false, refreshFailed: false, refreshFailureCode: null };
     }
     const failure: { code: string | null } = { code: null };
-    const fresh = await this.refresh(workspaceId, target, target.upstreamToken, failure);
+    let fresh: string | null;
+    try {
+      fresh = await this.refresh(workspaceId, target, target.upstreamToken, failure, signal);
+      signal?.throwIfAborted();
+    } catch (error) {
+      try { await first.body?.cancel(); } catch { /* already errored or consumed */ }
+      throw error;
+    }
     if (fresh === null || await findActiveCredential(this.ports, {
       workspaceId, vaultId: target.refresh.vaultId, credentialId: target.refresh.credentialId,
     }) === null) {
@@ -131,6 +141,7 @@ export class ManagedCredentialResolver {
     // No awaited cleanup between the final authority check and dispatch. This
     // does not cancel calls already dispatched when a later archive completes.
     try {
+      signal?.throwIfAborted();
       return { response: await send(fresh), refreshed: true, refreshFailed: false, refreshFailureCode: null };
     } finally {
       try {

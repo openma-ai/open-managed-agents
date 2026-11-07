@@ -47,7 +47,7 @@ describe("E2B managed runtime provider package", () => {
     const create = vi.fn(async () => providerRuntime());
     const runtime = createE2BManagedRuntime({
       environment: { E2B_API_KEY: "test-only", SANDBOX_IMAGE: "stale-template" },
-      provider: { create, resume: vi.fn(), restore: vi.fn() } as never,
+      provider: { allocationIsolation: true, create, resume: vi.fn(), restore: vi.fn() } as never,
       runtimeEnvironment: {
         type: "custom",
         identity: "custom-e2b-template",
@@ -241,7 +241,7 @@ describe("E2B managed runtime provider package", () => {
     const runtime = createE2BManagedRuntime({
       environment,
       context,
-      provider: { create } as never,
+      provider: { allocationIsolation: true, create } as never,
       leaseTtlMs: 90_000,
       outputStore: null,
     });
@@ -270,7 +270,7 @@ describe("E2B managed runtime provider package", () => {
     expect(environment).toHaveBeenCalledWith(scope);
     expect(context).toHaveBeenCalledWith(scope);
     expect(create).toHaveBeenCalledWith(
-      { sessionId: "custom-session", workdir: "/custom" },
+      expect.objectContaining({ sessionId: "custom-session", workdir: "/custom", allocationId: expect.any(String) }),
       { E2B_API_KEY: "scope-key", SANDBOX_IMAGE: "openma-template" },
       expect.objectContaining({ scope, fence }),
     );
@@ -280,7 +280,7 @@ describe("E2B managed runtime provider package", () => {
     const create = vi.fn<(context: unknown, environment: unknown, acquisition: unknown) => Promise<ReturnType<typeof providerRuntime>>>(async () => providerRuntime());
     const runtime = createE2BManagedRuntime({
       environment: { E2B_API_KEY: "key", SANDBOX_IMAGE: "openma-template" },
-      provider: { create } as never,
+      provider: { allocationIsolation: true, create } as never,
       leaseTtlMs: 90_000,
       outputStore: null,
     });
@@ -294,7 +294,7 @@ describe("E2B managed runtime provider package", () => {
       outputs: null,
       signal,
     });
-    expect(create.mock.calls[0]?.[0]).toEqual({ sessionId: scope.sessionId, workdir: "/workspace" });
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ sessionId: scope.sessionId, workdir: "/workspace", allocationId: expect.any(String) });
   });
 
   it("covers output configuration precedence and every incomplete S3 tuple", async () => {
@@ -328,4 +328,39 @@ describe("E2B managed runtime provider package", () => {
     await expect(driver.create({ placement: "external_worker" } as never)).rejects.toThrow("does not support external_worker");
     await expect(driver.create({ placement: "in_process" } as never)).resolves.toMatchObject({ credentialEgress: expect.any(Object) });
   });
+
+  it("requires custom E2B-compatible providers to declare allocation isolation", async () => {
+    const create = vi.fn(async () => providerRuntime());
+    const composed = createE2BManagedRuntime({ environment: { SANDBOX_IMAGE: "template" },
+      provider: { create } as never, outputStore: null, leaseTtlMs: 90_000 });
+    await expect(composed.sandbox.acquire({ scope, fence,
+      plan: { workspaceStrategy: "ephemeral", outputStrategy: null, runtimeCheckpoint: null, driver: { type: "ama_worker", process: { command: "worker" } } },
+      workspace: { bindingId: "unused", mountPath: "/workspace" }, outputs: null, signal: new AbortController().signal,
+    })).rejects.toThrow(/does not declare independent allocation isolation/i);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("reconnects a retired allocation by value after restart without requiring an acquisition context", async () => {
+    const live = providerRuntime();
+    const destroy = vi.fn().mockRejectedValueOnce(new Error("delete failed")).mockResolvedValue(undefined);
+    live.destroy = destroy;
+    const selected = { allocationIsolation: true, create: vi.fn(async () => live), resume: vi.fn(async () => live), restore: vi.fn() };
+    const options = { environment: { E2B_API_KEY: "test-key", SANDBOX_IMAGE: "template" }, provider: selected as never, outputStore: null, leaseTtlMs: 90_000 };
+    const first = createE2BManagedRuntime(options);
+    const lease = await first.sandbox.acquire({ scope, fence,
+      plan: { workspaceStrategy: "retained_runtime", outputStrategy: null, runtimeCheckpoint: null, driver: { type: "ama_worker", process: { command: "worker" } } },
+      workspace: { bindingId: "first", mountPath: "/workspace" }, outputs: null, signal: new AbortController().signal,
+    });
+    await expect(first.sandbox.terminate({ scope, fence, lease, reason: "failed" })).rejects.toThrow("delete failed");
+    const serialized = JSON.parse(JSON.stringify(lease));
+    const restarted = createE2BManagedRuntime(options);
+    await restarted.sandbox.reap({ scope, lease: serialized, reason: "failed" });
+    expect(selected.resume).toHaveBeenCalledWith(serialized, expect.objectContaining({
+      allocationId: lease.allocation?.id, workspaceId: scope.workspaceId,
+    }), options.environment);
+    expect(destroy).toHaveBeenCalledTimes(2);
+    await restarted.sandbox.reap({ scope, lease: serialized, reason: "failed" });
+    expect(destroy).toHaveBeenCalledTimes(2);
+  });
+
 });

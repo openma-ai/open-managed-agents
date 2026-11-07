@@ -6,9 +6,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const sdk = vi.hoisted(() => ({
   instances: [] as FakeBox[],
   options: [] as Array<Record<string, unknown>>,
+  native: new Map<string, ReturnType<typeof nativeBox>>(),
+  get: vi.fn(async (id: string): Promise<ReturnType<typeof nativeBox> | null> => sdk.native.get(id) ?? null),
+  remove: vi.fn(async (id: string) => { await sdk.native.get(id)?.source.stop(); sdk.native.delete(id); }),
 }));
 
 vi.mock("@boxlite-ai/boxlite", () => ({
+  JsBoxlite: class {
+    async create(options: Record<string, unknown>, name: string) {
+      sdk.options.push({ ...options, name });
+      const id = `physical-${sdk.native.size + 1}`;
+      const value = nativeBox(id, name, sdk.instances.shift() ?? fakeBox());
+      sdk.native.set(id, value);
+      return value;
+    }
+    get = sdk.get;
+    remove = sdk.remove;
+  },
   SimpleBox: class {
     constructor(options: Record<string, unknown>) {
       sdk.options.push(options);
@@ -32,6 +46,18 @@ function fakeBox() {
 
 type FakeBox = ReturnType<typeof fakeBox>;
 
+function nativeBox(id: string, name: string, source: FakeBox) {
+  return {
+    id, name, source,
+    async exec(command: string, args: string[], env: Array<[string, string]>, _tty: boolean, user?: string, timeoutSecs?: number, cwd?: string) {
+      const result = await (source.exec as (...args: unknown[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>)(command, args, Object.fromEntries(env), { user, timeoutSecs, cwd });
+      const stream = (text: string) => { let sent = false; return { next: async () => { if (sent) return null; sent = true; return text; } }; };
+      return { stdout: async () => stream(result.stdout), stderr: async () => stream(result.stderr), wait: async () => ({ exitCode: result.exitCode }) };
+    },
+    copyIn: source.copyIn, copyOut: source.copyOut,
+  };
+}
+
 function queueBox() {
   const box = fakeBox();
   sdk.instances.push(box);
@@ -51,6 +77,9 @@ function restore(name: string, value: string | undefined) {
 beforeEach(() => {
   sdk.instances.length = 0;
   sdk.options.length = 0;
+  sdk.native.clear();
+  sdk.get.mockClear();
+  sdk.remove.mockClear();
   delete process.env.MEMORY_BLOB_DIR;
   delete process.env.FILES_BLOB_DIR;
 });
@@ -62,6 +91,77 @@ afterEach(() => {
 });
 
 describe("LiteBoxSandbox", () => {
+  it("reads and writes mounted output bytes through the VM namespace", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "litebox-volume-bytes-"));
+    const box = queueBox();
+    const bytes = Buffer.from([0, 255, 13, 10, 128]);
+    box.copyOut.mockRejectedValue(new Error("source path does not exist outside the mount namespace"));
+    const sandbox = await sandboxFactory({ workspaceId: "tenant", sessionId: "session", allocationId: "allocation", workdir: root, outputsRoot: join(root, "outputs") }, {});
+    try {
+      box.exec.mockResolvedValueOnce({ exitCode: 0, stdout: bytes.toString("base64") + "\n", stderr: "" });
+      expect(await sandbox.readFileBytes!("/mnt/session/outputs/result.bin")).toEqual(bytes);
+      expect(box.copyOut).not.toHaveBeenCalled();
+      expect(box.exec).toHaveBeenLastCalledWith("base64", ["--", "/mnt/session/outputs/result.bin"], {}, expect.anything());
+      await sandbox.writeFileBytes!("/mnt/session/outputs/restored.bin", bytes);
+      expect(box.copyIn.mock.calls[0]?.[1]).toMatch(/^\/var\/tmp\/openma-litebox-copy-[a-f0-9]+$/);
+      expect(box.exec.mock.calls).toContainEqual(["cp", ["--", box.copyIn.mock.calls[0]![1], "/mnt/session/outputs/restored.bin"], {}, expect.anything()]);
+      const unknown = new Error("mounted copy response lost");
+      box.exec.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+        .mockRejectedValueOnce(unknown).mockRejectedValueOnce(new Error("staging cleanup failed"));
+      await expect(sandbox.writeFileBytes!("/mnt/session/outputs/uncertain.bin", bytes)).rejects.toBe(unknown);
+    } finally { await sandbox.destroy!(); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("stages durable Session outputs before allocation and preserves the mount on rebind", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "litebox-bound-outputs-"));
+    const context = { workspaceId: "tenant", sessionId: "session", allocationId: "allocation", workdir: root, outputsRoot: join(root, "outputs") };
+    const sandbox = await sandboxFactory(context, {});
+    const binding = sandboxFactory.runtimeBinding!;
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(sandbox)));
+    try {
+      expect(sdk.options[0]!.volumes).toEqual([
+        { hostPath: join(root, "outputs", "tenant", "session"), guestPath: "/mnt/session/outputs", readOnly: false },
+      ]);
+      expect(sandbox.sessionOutputMountCapabilities!()).toEqual({ durability: "durable" });
+      // The factory returns a durable handle before the orchestrator configures outputs.
+      await sandbox.mountSessionOutputs!({ tenantId: "tenant", sessionId: "session" });
+      const resumed = await binding.resume(handle, context, {});
+      await resumed.mountSessionOutputs!({ tenantId: "tenant", sessionId: "session" });
+      expect(binding.getHandle(resumed)).toEqual(handle);
+      expect(sdk.options).toHaveLength(1);
+      await expect(resumed.mountSessionOutputs!({ tenantId: "other", sessionId: "session" })).rejects.toThrow("box already created");
+      await expect(binding.resume(handle, { ...context, outputsRoot: join(root, "other") }, {})).rejects.toThrow("output mount");
+    } finally {
+      await sandbox.destroy!();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rebinds a retained native box on the same host/home with no get-or-create fallback", async () => {
+    const context = { workspaceId: "tenant", environmentId: "env", sessionId: "session", allocationId: "physical-a", workdir: undefined } as never;
+    const first = await sandboxFactory(context, {});
+    const binding = sandboxFactory.runtimeBinding!;
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(first)));
+    expect(handle).toMatchObject({ provider: "litebox", runtimeId: "physical-1" });
+    expect(sdk.options[0]).toMatchObject({ autoRemove: false, detach: true });
+    const resumed = await binding.resume(handle, context, {});
+    expect(binding.getHandle(resumed)).toEqual(handle);
+    expect(await resumed.readFile("retained")).toBe("content");
+    expect(await resumed.exec("command")).toBe("ok");
+    expect(sdk.options).toHaveLength(1);
+    await expect(binding.resume({ ...handle, metadata: { ...handle.metadata, host: "another-host" } }, context, {})).rejects.toThrow("host");
+    await expect(binding.resume(handle, context, { LITEBOX_HOME: "/other-runtime" })).rejects.toThrow("runtime home");
+    sdk.remove.mockRejectedValueOnce(new Error("removal response lost"));
+    await expect(resumed.destroy!()).rejects.toThrow("removal response lost");
+    sdk.remove.mockResolvedValueOnce();
+    await expect(resumed.destroy!()).rejects.toThrow("not confirmed");
+    await resumed.destroy!();
+    expect(sdk.remove).toHaveBeenCalledWith("physical-1", true);
+    await expect(binding.resume(handle, context, {})).rejects.toThrow("no longer exists");
+    expect(sdk.options).toHaveLength(1);
+    await first.destroy!();
+  });
+
   it("isolates factory allocation names and late stop while preserving legacy Session naming", async () => {
     const root = await fs.mkdtemp(join(tmpdir(), "oma-litebox-allocation-"));
     let finishStop!: () => void;
@@ -77,6 +177,7 @@ describe("LiteBoxSandbox", () => {
       expect(sdk.options[0]!.name).toMatch(/^oma-[a-f0-9]{30,32}$/);
       expect(sdk.options[2]!.name).toBe("oma-same-logical-session");
       expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+      expect(sandboxFactory.runtimeBinding?.provider).toBe("litebox");
       const deleting = a.destroy!();
       await vi.waitFor(() => expect(oldBox.stop).toHaveBeenCalledOnce());
       expect(await b.exec("while old stop is pending")).toBe("ok");
@@ -130,7 +231,7 @@ describe("LiteBoxSandbox", () => {
     sandbox.registerCommandSecrets("npm ", { NPM: "secret" });
     await expect(sandbox.exec("git clone", 1)).resolves.toBe("out\nerr\n[exit 4]");
     await expect(sandbox.exec("echo clean")).resolves.toBe("out\nerr");
-    await expect(sandbox.exec("npm install")).resolves.toBe("[error: offline]");
+    await expect(sandbox.exec("npm install")).rejects.toThrow("offline");
     expect(box.exec.mock.calls[1]?.[2]).toEqual({ A: "1", B: "2", TOKEN: "secret" });
     expect(box.exec.mock.calls[2]?.[2]).toEqual({ A: "1", B: "2" });
     expect(box.exec.mock.calls[1]?.[3]).toEqual({ cwd: "/workspace", timeoutSecs: 1 });
@@ -144,9 +245,21 @@ describe("LiteBoxSandbox", () => {
     const fresh = await import("../src/litebox");
     const missing = new fresh.LiteBoxSandbox({ logger: { warn: vi.fn(), log: vi.fn() } });
     await expect(missing.exec("x")).rejects.toThrow("failed to load '@boxlite-ai/boxlite'");
-    await missing.destroy();
+    await expect(missing.destroy()).rejects.toThrow("failed to load '@boxlite-ai/boxlite'");
+    await fs.rm((missing as unknown as { tmpRoot: string }).tmpRoot, { recursive: true, force: true });
     vi.doUnmock("@boxlite-ai/boxlite");
     vi.doMock("@boxlite-ai/boxlite", () => ({
+      JsBoxlite: class {
+        async create(options: Record<string, unknown>, name: string) {
+          sdk.options.push({ ...options, name });
+          const id = `physical-${sdk.native.size + 1}`;
+          const value = nativeBox(id, name, sdk.instances.shift() ?? fakeBox());
+          sdk.native.set(id, value);
+          return value;
+        }
+        get = sdk.get;
+        remove = sdk.remove;
+      },
       SimpleBox: class {
         constructor(options: Record<string, unknown>) {
           sdk.options.push(options);
@@ -240,22 +353,24 @@ describe("LiteBoxSandbox", () => {
     expect(cleanup.copyOut).toHaveBeenCalled();
   });
 
-  it("destroy is repeatable and absorbs stop, create, and scratch cleanup failures", async () => {
+  it("destroy preserves stop failures and only ignores scratch cleanup failures", async () => {
     const warn = vi.fn();
     const stopped = queueBox();
     stopped.stop.mockRejectedValueOnce(new Error("stop failed"));
     const sandbox = new LiteBoxSandbox({ logger: { warn, log: vi.fn() } });
     await sandbox.exec("x");
-    await sandbox.destroy();
+    await expect(sandbox.destroy()).rejects.toThrow("stop failed");
     await sandbox.destroy();
     expect(warn).toHaveBeenCalledWith("destroy stop failed: stop failed");
+    expect(stopped.stop).toHaveBeenCalledTimes(2);
+    expect(sdk.options).toHaveLength(1);
 
     const rejected = queueBox();
     rejected.exec
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockRejectedValueOnce(new Error("exec"));
     const createPromise = new LiteBoxSandbox({ logger: { warn, log: vi.fn() } });
-    await createPromise.exec("x");
+    await expect(createPromise.exec("x")).rejects.toThrow("exec");
     await createPromise.destroy();
 
     const scratchRoot = await fs.mkdtemp(join(tmpdir(), "openma-litebox-cleanup-failure-"));
@@ -264,6 +379,64 @@ describe("LiteBoxSandbox", () => {
     await expect(scratch.destroy()).resolves.toBeUndefined();
     rm.mockRestore();
     await fs.rm(scratchRoot, { recursive: true, force: true });
+  });
+
+  it.each([false, true])("rejects the original command response loss after one effect (durable=%s)", async durable => {
+    const box = queueBox();
+    const root = await fs.mkdtemp(join(tmpdir(), "litebox-command-uncertainty-"));
+    const sandbox = durable
+      ? await sandboxFactory({ workspaceId: "w", environmentId: "e", sessionId: "s", allocationId: "a", workdir: root }, {})
+      : new LiteBoxSandbox({ scratchRoot: root });
+    try {
+      if (!durable) await sandbox.exec("initialize");
+      const cause = new Error("socket closed");
+      const failure = new Error("command response lost", { cause });
+      let effects = 0;
+      box.exec.mockImplementationOnce(async () => { effects++; throw failure; });
+      await expect(sandbox.exec("charge-account")).rejects.toBe(failure);
+      expect(failure.cause).toBe(cause);
+      expect(effects).toBe(1);
+      expect(box.exec.mock.calls.filter(call => call[0] === "sh" && call[1]?.[1] === "charge-account")).toHaveLength(1);
+    } finally {
+      await sandbox.destroy!();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an upload response loss after exactly one remote write", async () => {
+    const box = queueBox();
+    const failure = new Error("copy response lost");
+    let writes = 0;
+    box.copyIn.mockImplementationOnce(async () => { writes++; throw failure; });
+    const sandbox = new LiteBoxSandbox();
+    await expect(sandbox.writeFile("file", "data")).rejects.toBe(failure);
+    expect(writes).toBe(1);
+    await sandbox.destroy();
+  });
+
+  it.each(["wait", "stdout"])("preserves native execution %s failures after dispatch", async phase => {
+    queueBox();
+    const root = await fs.mkdtemp(join(tmpdir(), "litebox-native-uncertainty-"));
+    const sandbox = await sandboxFactory({ workspaceId: "w", environmentId: "e", sessionId: "s", allocationId: "a", workdir: root }, {});
+    try {
+      const native = sdk.native.get(sandboxFactory.runtimeBinding!.getHandle(sandbox).runtimeId)!;
+      const failure = new Error("native execution response lost", { cause: new Error("connection reset") });
+      let effects = 0;
+      const dispatched = vi.spyOn(native, "exec").mockImplementationOnce(async () => {
+        effects++;
+        return {
+          stdout: async () => ({ next: async () => { if (phase === "stdout") throw failure; return null; } }),
+          stderr: async () => ({ next: async () => null }),
+          wait: async () => { if (phase === "wait") throw failure; return { exitCode: 0 }; },
+        };
+      });
+      await expect(sandbox.exec("charge-account")).rejects.toBe(failure);
+      expect(dispatched).toHaveBeenCalledTimes(1);
+      expect(effects).toBe(1);
+    } finally {
+      await sandbox.destroy!();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it("factory maps optional provider construction settings", async () => {
@@ -315,6 +488,7 @@ describe("LiteBoxSandbox", () => {
     box.stop.mockRejectedValueOnce(new Error("stop"));
     const sandbox = new LiteBoxSandbox();
     await sandbox.exec("x");
+    await expect(sandbox.destroy()).rejects.toThrow("stop");
     await sandbox.destroy();
   });
 });

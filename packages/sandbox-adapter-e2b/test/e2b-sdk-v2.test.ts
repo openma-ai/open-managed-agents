@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sdk = vi.hoisted(() => ({
+  setTimeout: vi.fn(async () => {}),
   create: vi.fn(async (template: string) => makeSdkSandbox(`created:${template}`)),
   connect: vi.fn(async (sandboxId: string) => makeSdkSandbox(`connected:${sandboxId}`)),
 }));
@@ -23,7 +24,7 @@ function makeSdkSandbox(sandboxId: string) {
 }
 
 vi.mock("e2b", () => ({
-  Sandbox: { create: sdk.create, connect: sdk.connect },
+  Sandbox: { create: sdk.create, connect: sdk.connect, setTimeout: sdk.setTimeout },
 }));
 
 import * as e2bAdapter from "../src/e2b";
@@ -45,6 +46,37 @@ describe("E2B SDK v2 adapter", () => {
   beforeEach(() => {
     sdk.create.mockClear();
     sdk.connect.mockClear();
+  });
+
+  it("renews an exact persisted ID without connecting, preparing or allocating", async () => {
+    const handle = { provider: "e2b", runtimeId: "persisted-id" };
+    const input = { ttlMs: 60000, signal: new AbortController().signal };
+    await sandboxFactory.runtimeBinding!.renewLease!(handle, input, { E2B_API_KEY: "test" });
+    expect(sdk.setTimeout).toHaveBeenLastCalledWith("persisted-id", 60000, expect.objectContaining({ apiKey: "test", signal: input.signal }));
+    const failure = new Error("unknown renewal response");
+    sdk.setTimeout.mockRejectedValueOnce(failure);
+    await expect(sandboxFactory.runtimeBinding!.renewLease!(handle, input, {})).rejects.toBe(failure);
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it("rebinds a serialized physical handle through the factory without allocating on failure", async () => {
+    const context = { sessionId: "logical-session", allocationId: "allocation-a", workdir: "/unused" };
+    const environment = { E2B_API_KEY: "test-secret" };
+    const binding = sandboxFactory.runtimeBinding!;
+    const created = await sandboxFactory(context, environment);
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(created)));
+    expect(handle).toEqual({ provider: "e2b", runtimeId: "created:base" });
+    expect(binding.scope).toBe("provider");
+    expect(JSON.stringify(handle)).not.toContain("test-secret");
+    sdk.connect.mockImplementationOnce(async id => makeSdkSandbox(id));
+    const resumed = await binding.resume(handle, context, environment);
+    expect(binding.getHandle(resumed)).toEqual(handle);
+    expect(sdk.connect).toHaveBeenLastCalledWith(handle.runtimeId, expect.objectContaining({ apiKey: "test-secret" }));
+    sdk.connect.mockRejectedValueOnce(new Error("resource no longer exists"));
+    await expect(binding.resume(handle, context, environment)).rejects.toThrow("resource no longer exists");
+    expect(sdk.create).toHaveBeenCalledTimes(1);
+    await expect(binding.resume({ ...handle, provider: "other" }, context, environment)).rejects.toThrow("incompatible");
   });
 
   it("passes the template and self-hosted endpoints using the official v2 shape", async () => {

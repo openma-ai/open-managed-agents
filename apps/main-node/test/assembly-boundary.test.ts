@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
+import { NodeSessionExecutionWorker } from "../../../packages/control-plane-node/src/lib/node-session-execution-worker";
 import { assembleNodeControlPlane } from "../../../packages/control-plane-node/src/modules/node-assembly";
 
 const dirs: string[] = [];
@@ -32,4 +33,36 @@ describe("Node assembly boundary", () => {
       await cp.stop("test");
     }
   });
+
+  it("awaits execution shutdown before disposing the database", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oma-assembly-drain-"));
+    dirs.push(dir);
+    const components = await nodeDefaults(loadNodeConfig({
+      NODE_ENV: "test", AUTH_DISABLED: "1", OPENMA_TEST_SANDBOX_PROVIDER: "local-subprocess",
+      MEMORY_QUEUE: "disabled", DATABASE_PATH: join(dir, "oma.db"),
+      AUTH_DATABASE_PATH: join(dir, "auth.db"), SANDBOX_WORKDIR: join(dir, "sandbox"),
+      MEMORY_BLOB_DIR: join(dir, "memory"), FILES_BLOB_DIR: join(dir, "files"),
+      SESSION_OUTPUTS_DIR: join(dir, "outputs"), ANTHROPIC_API_KEY: "unused",
+    }));
+    const databaseStop = vi.fn(async () => {});
+    components.database.stop = databaseStop;
+    let release!: () => void;
+    const drain = new Promise<void>((resolve) => { release = resolve; });
+    const shutdown = vi.spyOn(NodeSessionExecutionWorker.prototype, "shutdown").mockImplementation(() => drain);
+    const cp = await assembleNodeControlPlane(components);
+    try {
+      const stopping = cp.stop("test");
+      await Promise.resolve();
+      expect(shutdown).toHaveBeenCalledOnce();
+      expect(databaseStop).not.toHaveBeenCalled();
+      release();
+      await stopping;
+      expect(databaseStop).toHaveBeenCalledOnce();
+    } finally {
+      release();
+      await cp.stop("test");
+      shutdown.mockRestore();
+    }
+  });
+
 });

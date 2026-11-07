@@ -133,7 +133,9 @@ export async function refreshMcpOAuth(
   meta: OauthRefreshMetadata,
   fetcher: typeof fetch = fetch,
   failure?: { code: string | null },
+  signal?: AbortSignal,
 ): Promise<RefreshedTokens | null> {
+  signal?.throwIfAborted();
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: meta.refreshToken,
@@ -147,18 +149,21 @@ export async function refreshMcpOAuth(
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      signal,
     });
   } catch {
+    signal?.throwIfAborted();
     return null;
   }
   if (!res.ok) {
     if (failure && failure.code === null) {
       try {
-        const payload = await res.clone().json() as { error?: unknown };
+        const payload = await res.json() as { error?: unknown };
         if (typeof payload.error === "string" && payload.error.length > 0) {
           failure.code = payload.error;
         }
       } catch {
+        signal?.throwIfAborted();
         /* token endpoint body is not JSON */
       }
     }
@@ -169,6 +174,7 @@ export async function refreshMcpOAuth(
   try {
     tokens = (await res.json()) as typeof tokens;
   } catch {
+    signal?.throwIfAborted();
     return null;
   }
   if (!tokens.access_token) return null;
@@ -202,6 +208,7 @@ export interface ForwardOpts {
   onRefreshed?: (t: RefreshedTokens) => Promise<void>;
   /** Transport for the token endpoint. Defaults to globalThis.fetch. */
   fetcher?: typeof fetch;
+  signal?: AbortSignal;
   /** Called with the final upstream response, after a refresh attempt. */
   onFinal?: (info: {
     status: number;
@@ -213,6 +220,7 @@ export interface ForwardOpts {
 }
 
 export async function forwardWithRefresh(opts: ForwardOpts): Promise<Response> {
+  opts.signal?.throwIfAborted();
   const fetcher = opts.fetcher ?? fetch;
   const send = opts.send;
 
@@ -247,37 +255,26 @@ export async function forwardWithRefresh(opts: ForwardOpts): Promise<Response> {
     });
   }
 
-  // Drain the body so we can return a fresh Response without two
-  // outstanding streams.
+  let returnedFirst = false;
   try {
-    await first.body?.cancel();
-  } catch {
-    /* already consumed / closed */
-  }
-
-  const refreshFailure: { code: string | null } = { code: null };
-  const refreshed = await refreshMcpOAuth(opts.refresh, fetcher, refreshFailure);
-  if (!refreshed) {
-    // Refresh failed — re-issue with the original token to surface the
-    // upstream's actual 401 (matches old apps/main behavior).
-    return finish(await send(opts.accessToken), {
-      refreshed: false,
-      refreshFailed: true,
-      refreshFailureCode: refreshFailure.code,
-    });
-  }
-  if (opts.onRefreshed) {
-    try {
+    const refreshFailure: { code: string | null } = { code: null };
+    const refreshed = await refreshMcpOAuth(opts.refresh, fetcher, refreshFailure, opts.signal);
+    if (refreshed && opts.onRefreshed) {
+      // Persist issued rotations even if the caller has since cancelled.
+      // Persistence does not authorize a second business dispatch.
       await opts.onRefreshed(refreshed);
-    } catch {
-      // Best-effort; caller has the new token regardless.
+    }
+    opts.signal?.throwIfAborted();
+    if (!refreshed) {
+      returnedFirst = true;
+      return finish(first, { refreshed: false, refreshFailed: true, refreshFailureCode: refreshFailure.code });
+    }
+    return finish(await send(refreshed.access_token), { refreshed: true, refreshFailed: false, refreshFailureCode: null });
+  } finally {
+    if (!returnedFirst) {
+      try { await first.body?.cancel(); } catch { /* consumed or already failed */ }
     }
   }
-  return finish(await send(refreshed.access_token), {
-    refreshed: true,
-    refreshFailed: false,
-    refreshFailureCode: null,
-  });
 }
 
 // Re-export the credentials-store's CredentialConfig for convenience —

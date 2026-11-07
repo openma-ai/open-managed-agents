@@ -1,3 +1,4 @@
+import { NodeSessionSandboxLeaseWorker } from "../lib/node-session-sandbox-lease-worker.js";
 
 /**
  * apps/main-node — Node control-plane assembly for the Open Managed Agents API.
@@ -21,6 +22,9 @@ import { resolveProtocolEndpointsFromModelCard } from "@open-managed-agents/infe
 import { resolveManagedSubagentSession } from "../lib/node-managed-subagents.js";
 import { installEnvironmentPackages } from "../lib/environment-packages";
 import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder";
+import { NodeSessionSandboxLifecycle } from "../lib/node-session-sandbox-lifecycle";
+import { NodeSessionExecutionDispatches } from "../lib/node-session-execution-dispatches";
+import { ensureSessionSandboxBindingSchema, SqlSessionSandboxBindingStore } from "@open-managed-agents/session-runtime-sql/sandbox-binding";
 import { createPreparedSandboxBases } from "../lib/prepared-sandbox-bases";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
@@ -29,7 +33,7 @@ import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@o
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
 import { buildOpenAISubagentTools, nodeOpenAISubagentPolicy, openAISubagentSession } from "../openai-subagents.js";
 
-import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../openai-artifact-publication.js";
+import { createNodeReadOnlyArtifactPublisher, withReportedArtifactPublication } from "../openai-artifact-publication.js";
 
 import { buildTools, disposeTools } from "@open-managed-agents/agent/harness/tools";
 
@@ -185,7 +189,7 @@ export async function createManagedNodeRuntime(
         upstreamUrl: target.upstreamUrl,
         accessToken: target.upstreamToken,
         managed: {
-          forward: (send) => managedCredentialResolver.forward(input.tenantId, target, send),
+          forward: (send, signal) => managedCredentialResolver.forward(input.tenantId, target, send, signal),
         },
       };
     }
@@ -316,11 +320,10 @@ export async function createManagedNodeRuntime(
   // Drizzle baseline may predate held_after_exhausted_ms; additive ensure is
   // idempotent and required before claim SQL references the column.
   await ensureSessionExecutionCoordinatorSchema(sql, foundation.dialect);
-  if (config.workspace.strategy === "checkpoint_restore") {
-    await ensureSessionExecutionClaimLockSchema(sql, foundation.dialect);
-  }
+  // Every Node lane shares Session resources, including the retained sandbox.
+  await ensureSessionExecutionClaimLockSchema(sql, foundation.dialect);
   const managedSessionExecutionCoordinator = new SqlSessionExecutionCoordinator(sql, {
-    serializeSessionClaims: config.workspace.strategy === "checkpoint_restore",
+    serializeSessionClaims: true,
     sweepIntervalMs: 5_000,
     onError: (error, op) => logger.error(
       { err: error, op },
@@ -430,12 +433,93 @@ export async function createManagedNodeRuntime(
   // factory declares them; every other sandbox file-syncs Memory Stores.
   const memoryStoreMode = nodeManagedMemoryStoreModeName(components.sandbox);
 
+  await ensureSessionSandboxBindingSchema(sql, foundation.dialect);
+  const managedSandboxBuilder = createManagedSandboxBuilder({
+    capabilities: components.sandbox.capabilities,
+    images: config.sandbox.images,
+    workdir: sessionId => join(config.paths.sandboxWorkdir, sessionId),
+    build: buildSandbox,
+    resume: foundation.resumeSandbox,
+    ...(preparedSandboxBases === undefined ? {} : { preparedBases: preparedSandboxBases }),
+  });
+  let sandboxLeaseWorker: NodeSessionSandboxLeaseWorker | undefined;
+  const sandboxBindingStore = new SqlSessionSandboxBindingStore(sql);
+  const sandboxLifecycle = new NodeSessionSandboxLifecycle({
+    store: sandboxBindingStore,
+    isAvailable: resource => sandboxLeaseWorker?.isAvailable(resource) ?? Promise.resolve(true),
+    provider: components.sandbox.runtimeBinding?.provider ?? config.sandbox.environment.SANDBOX_PROVIDER ?? "unsupported",
+    providerNamespace: config.sandbox.environment.SANDBOX_RESOURCE_NAMESPACE,
+    ownerId: config.execution.ownerId,
+    allocationIsolation: components.sandbox.capabilities?.allocationIsolation === true,
+    runtimeBindingSupported: components.sandbox.runtimeBinding != null,
+    renewProviderLease: async (resource, ttlMs, signal) => {
+      signal.throwIfAborted();
+      if (!resource.handle) throw new Error("Provider lease renewal requires a persisted handle");
+      await components.sandbox.runtimeBinding?.renewLease?.(resource.handle, { ttlMs, signal }, config.sandbox.environment);
+      signal.throwIfAborted();
+    },
+    reaper: {
+      resume: async (resource) => {
+        if (resource.handle === null) throw new Error("Sandbox create outcome requires provider reconciliation before deletion");
+        const original = JSON.parse(resource.configFingerprint) as { environmentId?: string; sandboxImage?: string | null };
+        if (!original.environmentId) throw new Error("Sandbox inventory lacks its original Environment identity");
+        return managedSandboxBuilder.resume({ workspaceId: resource.workspaceId,
+          allocationId: resource.allocationId, session: { id: resource.sessionId },
+          environment: { id: original.environmentId,
+            ...(original.sandboxImage == null ? {} : { openma: { sandboxImage: original.sandboxImage } }) },
+        }, resource.handle);
+      },
+      handle: sandbox => components.sandbox.runtimeBinding!.getHandle(sandbox),
+    },
+  });
+  disposables.add("session_sandbox_clients", () => sandboxLifecycle.close());
+  let reconcilingSandboxes: Promise<unknown> | undefined;
+  const reconcileSandboxes = () => {
+    if (reconcilingSandboxes !== undefined) return;
+    reconcilingSandboxes = sandboxLifecycle.reconcile({ limit: 100 })
+      .then(results => {
+        for (const result of results) if (result.error !== undefined) {
+          logger.error({ err: result.error, allocationId: result.allocationId,
+            op: "main-node.session_sandbox.reap" }, "Session sandbox deletion remains pending");
+        }
+      })
+      .catch(err => logger.error({ err, op: "main-node.session_sandbox.reconcile" }, "Session sandbox cleanup remains pending"))
+      .finally(() => { reconcilingSandboxes = undefined; });
+  };
+  if (config.processMode === "standalone") {
+    reconcileSandboxes();
+    const timer = setInterval(reconcileSandboxes, 30_000);
+    timer.unref();
+    disposables.add("session_sandbox_reconciler", async () => {
+      clearInterval(timer);
+      await reconcilingSandboxes;
+    });
+  }
+
+  if (config.processMode === "standalone" && config.workspace.sandboxLeaseTtlMs !== undefined) {
+    const leaseWorker = new NodeSessionSandboxLeaseWorker({ sql, store: sandboxBindingStore,
+      provider: components.sandbox.runtimeBinding?.provider ?? "unsupported",
+      providerNamespace: config.sandbox.environment.SANDBOX_RESOURCE_NAMESPACE ?? components.sandbox.runtimeBinding?.provider ?? "unsupported",
+      ownerId: config.execution.ownerId, ttlMs: config.workspace.sandboxLeaseTtlMs,
+      renew: (resource, signal, ttlMs) => sandboxLifecycle.renewProviderLease(resource, ttlMs, signal),
+      onError: (err, resource) => logger.error({ err, allocationId: resource?.allocationId,
+        op: "main-node.session_sandbox.renew" }, "Session sandbox lease renewal failed"),
+    });
+    await leaseWorker.ensureSchema(foundation.dialect);
+    sandboxLeaseWorker = leaseWorker;
+    const poll = () => { void leaseWorker.poll().catch(err => logger.error({ err }, "Sandbox lease worker failed")); };
+    poll();
+    const timer = setInterval(poll, leaseWorker.intervalMs);
+    timer.unref();
+    disposables.add("session_sandbox_lease_worker", async () => { clearInterval(timer); await leaseWorker.close(); });
+  }
+
+  const executionDispatches = new NodeSessionExecutionDispatches(sql);
+  await executionDispatches.ensureSchema(foundation.dialect);
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
+    executionDispatches,
     backgroundPiSandbox: true,
     ...(workspaceCheckpoints === undefined ? {} : { workspaceCheckpoints }),
-    ...(config.workspace.sandboxLeaseTtlMs === undefined
-      ? {}
-      : { sandboxLease: { ttlMs: config.workspace.sandboxLeaseTtlMs } }),
     subagentThreads: new SqlSessionThreadStore(sql),
     subagentPolicy: ({ session }) => nodeOpenAISubagentPolicy(session, openAIAgentsSecrets),
     resolveSubagentSession: async ({ session, request }) => {
@@ -444,6 +528,7 @@ export async function createManagedNodeRuntime(
       return resolveManagedSubagentSession(session, request);
     },
     confirmedTools: new NodeManagedConfirmedToolExecutor({
+      disposeTools,
       buildExecutableTools: async ({ workspaceId, session, environment, sandbox }) => {
         const agent = allowAllLegacyHarnessTools(
           toLegacyHarnessAgentConfig(session),
@@ -487,13 +572,14 @@ export async function createManagedNodeRuntime(
       },
     }),
     sandboxMode: ({ session }) => resolveSessionSandboxMode(session, openAIAgentsSecrets),
-    buildSandbox: createManagedSandboxBuilder({
-      capabilities: components.sandbox.capabilities,
-      images: config.sandbox.images,
-      workdir: (sessionId) => join(config.paths.sandboxWorkdir, sessionId),
-      build: buildSandbox,
-      ...(preparedSandboxBases === undefined ? {} : { preparedBases: preparedSandboxBases }),
-    }),
+    buildSandbox: managedSandboxBuilder,
+    sandboxLifecycle,
+    resumeSandbox: (input, handle) => managedSandboxBuilder.resume(input, handle),
+    sandboxHandle: sandbox => {
+      const binding = components.sandbox.runtimeBinding;
+      if (binding == null) throw new Error("Selected sandbox factory cannot expose a persisted handle");
+      return binding.getHandle(sandbox);
+    },
     ...(sharedSessionOutputs === undefined ? {} : {
       isSandboxCurrent: ({ workspaceId, session, runtimeGeneration }: { workspaceId: string; session: { id: string }; runtimeGeneration: string }) =>
         sharedSessionOutputs.isSandboxCurrent(workspaceId, session.id, runtimeGeneration),
@@ -506,6 +592,8 @@ export async function createManagedNodeRuntime(
       runtimeGeneration,
       signal,
       executionFence,
+      reattach,
+      authorizeResourceMutation,
     }) => {
       const memories = managedMemoriesApplicationForWorkspace(workspaceId)
         .port(managedAgentsPortTokens.memories);
@@ -534,9 +622,9 @@ export async function createManagedNodeRuntime(
       // Shared outputs are not a live mount: hydrate canonical files into a
       // fresh sandbox before inputs are staged, so input mounts under the
       // outputs directory win and the next turn can read prior outputs.
-      await sharedSessionOutputs?.restoreToSandbox(workspaceId, session.id, sandbox, runtimeGeneration);
+      if (!reattach) await sharedSessionOutputs?.restoreToSandbox(workspaceId, session.id, sandbox, runtimeGeneration);
       // After the workspace is restored, so packages it carries count.
-      await installEnvironmentPackages(sandbox, environment, {
+      if (!reattach) await installEnvironmentPackages(sandbox, environment, {
         pipIndexUrl: config.sandbox.environment.SANDBOX_PIP_INDEX_URL,
         log: (result) => logger.info({
           op: "main-node.environment_packages",
@@ -567,7 +655,8 @@ export async function createManagedNodeRuntime(
         session,
         sandbox,
         runtimeGeneration,
-        ...(executionFence === undefined
+        ...(reattach === undefined ? {} : { reattach }),
+        ...(authorizeResourceMutation !== undefined ? { authorizeMemoryMutation: authorizeResourceMutation } : executionFence === undefined
           ? {}
           : { authorizeMemoryMutation: () => isManagedSessionExecutionFenceActive(executionFence) }),
         ...(signal === undefined ? {} : { signal }),
@@ -618,7 +707,7 @@ export async function createManagedNodeRuntime(
         runtimeGeneration,
       });
     },
-    afterExecution: withReportedArtifactPublication(createNodeOpenAIArtifactPublisher({
+    publishArtifacts: withReportedArtifactPublication(createNodeReadOnlyArtifactPublisher({
       historyForWorkspace: workspaceId => new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),
       filesForWorkspace: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
       secrets: openAIAgentsSecrets,
@@ -808,6 +897,8 @@ export async function createManagedNodeRuntime(
     coordinator: managedSessionExecutionCoordinator,
     context: managedRuntimeReaders.executionContext,
     runtime: {
+      finished: ({ workspaceId, sessionId, fence }) =>
+        managedRuntimeDriver.forgetAttempt({ workspaceId, sessionId, attemptId: fence.attemptId }),
       run: async ({ executionId: _executionId, fence, ...input }, hooks) => {
         await managedRuntimeDriver.accept({
           ...input,
@@ -822,7 +913,7 @@ export async function createManagedNodeRuntime(
           reason: input.reason,
           attemptId: input.fence.attemptId,
         });
-        managedRuntimeRunner.cancel({ workspaceId: input.workspaceId, sessionId: input.sessionId, reason: input.reason });
+        managedRuntimeRunner.cancel({ workspaceId: input.workspaceId, sessionId: input.sessionId, reason: input.reason, attemptId: input.fence.attemptId });
       },
     },
     ownerId: config.execution.ownerId,

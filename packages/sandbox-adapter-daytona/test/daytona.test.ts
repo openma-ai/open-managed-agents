@@ -31,10 +31,13 @@ function fixture() {
     downloadFile: vi.fn(async () => Buffer.from("content")),
     createFolder: vi.fn(async () => {}),
   };
-  const sandbox = { id: "sandbox-1", process, fs: fileSystem };
+  const sandbox = { id: "sandbox-1", process, fs: fileSystem, state: "started", labels: {} as Record<string, string> };
+  let deleted = false;
   const client = {
-    create: vi.fn(async () => sandbox),
-    delete: vi.fn(async () => {}),
+    create: vi.fn(async (options: { labels?: Record<string, string> }) => { deleted = false; sandbox.labels = options.labels ?? {}; return sandbox; }),
+    get: vi.fn(async (_id: string) => { if (deleted) throw Object.assign(new Error("Not found"), { statusCode: 404 }); return sandbox; }),
+    start: vi.fn(async () => { sandbox.state = "started"; }),
+    delete: vi.fn(async () => { deleted = true; }),
   };
   sdk.client = client;
   return { process, fileSystem, sandbox, client };
@@ -73,9 +76,36 @@ const bucket = {
 };
 
 describe("DaytonaSandbox", () => {
+  it("reopens the captured SDK id, resumes in place and refuses missing or mismatched allocations", async () => {
+    const f = fixture();
+    const context = { workspaceId: "tenant", environmentId: "env", sessionId: "session", allocationId: "physical-a", workdir: "/workspace" };
+    const env = { DAYTONA_API_KEY: "test-token" };
+    const first = await sandboxFactory(context, env);
+    const binding = sandboxFactory.runtimeBinding!;
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(first)));
+    expect(handle).toEqual({ provider: "daytona", runtimeId: "sandbox-1" });
+    f.sandbox.state = "stopped";
+    const resumed = await binding.resume(handle, context, env);
+    expect(binding.getHandle(resumed)).toEqual(handle);
+    expect(f.client.get).toHaveBeenCalledWith("sandbox-1");
+    expect(f.client.start).toHaveBeenCalledWith(f.sandbox, 60);
+    expect(f.client.create).toHaveBeenCalledTimes(1);
+    await expect(binding.resume(handle, { ...context, allocationId: "physical-b" }, env)).rejects.toThrow("allocation");
+    f.client.get.mockRejectedValueOnce(new Error("provider 404"));
+    await expect(binding.resume(handle, context, env)).rejects.toThrow("404");
+    expect(f.client.create).toHaveBeenCalledTimes(1);
+    f.client.delete.mockRejectedValueOnce(new Error("delete unknown"));
+    await expect(resumed.destroy!()).rejects.toThrow("delete unknown");
+    f.client.delete.mockResolvedValueOnce();
+    await expect(resumed.destroy!()).rejects.toThrow("still exists");
+    await resumed.destroy!();
+    await expect(resumed.exec("after delete")).rejects.toThrow("deleted");
+  });
+
   it("provides isolated allocations whose delayed cleanup targets only their SDK instance", async () => {
     const first = fixture();
     expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+    expect(sandboxFactory.runtimeBinding?.provider).toBe("daytona");
     const context = { workspaceId: "workspace", sessionId: "session", environmentId: "env", workdir: "/workspace" };
     const a = await sandboxFactory({ ...context, allocationId: "runtime_a" }, { DAYTONA_API_KEY: "fake-key" }); await a.exec("initial");
     const second = fixture();
@@ -115,7 +145,7 @@ describe("DaytonaSandbox", () => {
     await expect(sandbox.exec("git clone", 1)).resolves.toBe("out\nerr\n[exit 7]");
     await expect(sandbox.exec("echo clean")).resolves.toBe("out\nerr");
     await expect(sandbox.exec("echo empty")).resolves.toBe("");
-    await expect(sandbox.exec("npm install")).resolves.toBe("[error: offline]");
+    await expect(sandbox.exec("npm install")).rejects.toThrow("offline");
     expect(remote.mock.calls[0]?.[2]).toEqual({ BASE: "yes", NEXT: "yes", TOKEN: "secret" });
     expect(remote.mock.calls[0]?.[3]).toBe(1);
     expect(remote.mock.calls[1]?.[2]).toEqual({ BASE: "yes", NEXT: "yes" });
@@ -142,12 +172,11 @@ describe("DaytonaSandbox", () => {
     }));
   });
 
-  it("reads/writes text and bytes, normalises relative paths, and tolerates mkdir failures", async () => {
+  it("reads/writes text and bytes and creates parent directories idempotently", async () => {
     const { fileSystem } = fixture();
     fileSystem.downloadFile
       .mockResolvedValueOnce(Buffer.from("text"))
       .mockResolvedValueOnce(Buffer.from([1, 2, 3]));
-    fileSystem.createFolder.mockRejectedValueOnce(new Error("exists"));
     const sandbox = new DaytonaSandbox({ sessionId: "s", apiKey: "key" });
     await expect(sandbox.readFile("relative.txt")).resolves.toBe("text");
     await expect(sandbox.readFileBytes("/absolute.bin")).resolves.toEqual(new Uint8Array([1, 2, 3]));
@@ -197,24 +226,60 @@ describe("DaytonaSandbox", () => {
     await expect(new DaytonaSandbox({ sessionId: "s", apiKey: "key", memoryBucket: bucket }).mountSessionOutputs({ tenantId: "t", sessionId: "s" })).rejects.toThrow("result");
   });
 
-  it("destroys idempotently and absorbs creation/deletion failures", async () => {
+  it("preserves failed creation/deletion outcomes and retries deletion of the same resource", async () => {
     const { client } = fixture();
     const warn = vi.fn();
     const sandbox = new DaytonaSandbox({ sessionId: "s", apiKey: "key", logger: { warn, log: vi.fn() } });
     await sandbox.destroy();
     await sandbox.exec("x");
     client.delete.mockRejectedValueOnce(new Error("delete failed"));
-    await sandbox.destroy();
+    await expect(sandbox.destroy()).rejects.toThrow("delete failed");
     expect(warn).toHaveBeenCalledWith("destroy failed: delete failed");
     await sandbox.exec("x");
     await sandbox.destroy();
+    expect(client.create).toHaveBeenCalledTimes(1);
 
     const failed = fixture();
     failed.client.create.mockRejectedValueOnce(new Error("create failed"));
     const createFailure = new DaytonaSandbox({ sessionId: "s", apiKey: "key", logger: { warn, log: vi.fn() } });
     await expect(createFailure.exec("x")).rejects.toThrow("create failed");
-    await createFailure.destroy();
+    await expect(createFailure.destroy()).rejects.toThrow("create failed");
     expect(warn).toHaveBeenCalledWith("destroy failed: create failed");
+  });
+
+  it("rejects the original SDK failure after one remote command effect", async () => {
+    const { process: { executeCommand } } = fixture();
+    const cause = new Error("socket closed");
+    const failure = new Error("command response lost", { cause });
+    let effects = 0;
+    executeCommand.mockImplementationOnce(async () => { effects++; throw failure; });
+    const sandbox = new DaytonaSandbox({ sessionId: "s", apiKey: "key" });
+    await expect(sandbox.exec("charge-account")).rejects.toBe(failure);
+    expect(failure.cause).toBe(cause);
+    expect(effects).toBe(1);
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not continue a file write after uncertain parent setup, or swallow an upload response loss", async () => {
+    const { fileSystem, process: { executeCommand } } = fixture();
+    const failure = new Error("remote response lost");
+    const sandbox = new DaytonaSandbox({ sessionId: "s", apiKey: "key" });
+    executeCommand.mockRejectedValueOnce(failure);
+    await expect(sandbox.writeFile("dir/file", "data")).rejects.toBe(failure);
+    expect(fileSystem.uploadFile).not.toHaveBeenCalled();
+    expect(executeCommand).toHaveBeenCalledWith("mkdir -p '/workspace/dir'", undefined, undefined, 30);
+    let writes = 0;
+    fileSystem.uploadFile.mockImplementationOnce(async () => { writes++; throw failure; });
+    await expect(sandbox.writeFile("dir/file", "data")).rejects.toBe(failure);
+    expect(writes).toBe(1);
+  });
+
+  it("rejects a completed but unsuccessful mount link command", async () => {
+    const { process: { executeCommand } } = fixture();
+    executeCommand.mockResolvedValueOnce({ exitCode: 0, result: "" })
+      .mockResolvedValueOnce({ exitCode: 1, result: "link denied" });
+    const sandbox = new DaytonaSandbox({ sessionId: "s", apiKey: "key", memoryBucket: bucket });
+    await expect(sandbox.mountSessionOutputs({ tenantId: "tenant", sessionId: "s" })).rejects.toThrow("link denied");
   });
 
   it("factory reads credentials, image, and S3 settings", async () => {
@@ -260,7 +325,7 @@ describe("DaytonaSandbox", () => {
     client.delete.mockRejectedValueOnce(new Error("delete"));
     const sandbox = new DaytonaSandbox({ sessionId: "s", apiKey: "key" });
     await sandbox.exec("x");
-    await sandbox.destroy();
+    await expect(sandbox.destroy()).rejects.toThrow("delete");
     expect(log).toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
   });

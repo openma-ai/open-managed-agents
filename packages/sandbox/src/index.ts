@@ -11,6 +11,7 @@ export type {
   SandboxPort,
   SandboxPreparedBaseHandle,
   SandboxFactoryCapabilities,
+  SandboxFactoryRuntimeBinding,
   SandboxPreparedBasePort,
   SandboxExecutor,
   SandboxFactory,

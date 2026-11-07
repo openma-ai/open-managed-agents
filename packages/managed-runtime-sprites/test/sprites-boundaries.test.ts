@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
@@ -128,6 +129,31 @@ function acquisition(signal = new AbortController().signal) {
 }
 
 describe("Sprites provider boundary contracts", () => {
+  it("rebinds the factory's serialized allocation using fresh provider clients and never recreates a missing Sprite", async () => {
+    const context = {
+      sessionId: "factory-binding-session", workspaceId: "workspace", environmentId: "environment",
+      allocationId: "physical-a", workdir: "/workspace",
+    };
+    const environment = { SPRITES_TOKEN: "binding-test-token" };
+    spritesFixtureCalls.length = 0;
+    const first = await sandboxFactory(context, environment);
+    await first.writeFile("/workspace/retained.txt", "original data");
+    const binding = sandboxFactory.runtimeBinding!;
+    const handle = JSON.parse(JSON.stringify(binding.getHandle(first)));
+    expect(binding.scope).toBe("provider");
+    expect(handle.provider).toBe("sprites");
+    expect(handle.runtimeId).not.toBe(context.sessionId);
+    const resumed = await binding.resume(handle, context, environment);
+    expect(resumed).not.toBe(first);
+    expect(binding.getHandle(resumed)).toEqual(handle);
+    expect(await resumed.readFile("/workspace/retained.txt")).toBe("original data");
+    expect(spritesFixtureCalls.filter(call => call.type === "create")).toHaveLength(1);
+    await expect(binding.resume(handle, { ...context, allocationId: "physical-b" }, environment)).rejects.toThrow(/ownership/);
+    await resumed.destroy!();
+    await expect(binding.resume(handle, context, environment)).rejects.toThrow("not found");
+    expect(spritesFixtureCalls.filter(call => call.type === "create")).toHaveLength(1);
+  });
+
   it("rejects image carriers instead of pretending Sprites can launch OCI images", async () => {
     const value = sprite();
     const sprites = client(value);
@@ -481,13 +507,18 @@ describe("Sprites provider boundary contracts", () => {
     const withOutput = createSpritesManagedRuntime({ client: client(value), leaseTtlMs: 100, outputStore: new InMemoryBlobStore() });
     await expect(withOutput.outputs.capabilities(scope)).resolves.toMatchObject({ strategies: [expect.any(Object)] });
 
+    const allocationId = "isolated-orphan";
+    const orphanName = `oma-${createHash("sha256")
+      .update(JSON.stringify([scope.workspaceId, scope.environmentId, scope.sessionId, allocationId]))
+      .digest("hex").slice(0, 32)}`;
+    Object.assign(value, { name: orphanName });
     const lease = {
-      leaseId: "lease", runtimeId: name, provider: "sprites", expiresAt: fence.expiresAt,
-      handle: { provider: "sprites", runtimeId: name }, sandbox: {} as never,
+      runtimeId: orphanName, provider: "sprites",
+      allocation: { id: allocationId, scope, ownerId: fence.ownerId, generation: fence.generation },
     };
     const liveClient = client(value);
     await createSpritesManagedRuntime({ client: liveClient, leaseTtlMs: 100 }).sandbox.reap({ scope, lease, reason: "orphan" } as never);
-    expect(liveClient.deleteSprite).toHaveBeenCalledWith(name);
+    expect(liveClient.deleteSprite).toHaveBeenCalledWith(orphanName);
     for (const notFound of [{ statusCode: 404 }, { status: 404 }, new Error("not found")]) {
       const absent = createSpritesManagedRuntime({ client: client(value, { getError: notFound }), leaseTtlMs: 100 });
       await expect(absent.sandbox.reap({ scope, lease, reason: "orphan" } as never)).resolves.toBeUndefined();

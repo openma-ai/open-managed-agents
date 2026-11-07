@@ -5,7 +5,8 @@ import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { getRequestListener } from "@hono/node-server";
 import { describe, expect, it, vi } from "vitest";
-import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
+import { sandboxFactory as localSandboxFactory, type LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
+import type { SandboxFactory } from "@open-managed-agents/sandbox";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "../../../packages/sandbox-egress/src/ca";
 import { NodeSessionExecutionWorker } from "../../../packages/control-plane-node/src/lib/node-session-execution-worker";
 import { loadNodeConfig } from "../src/config";
@@ -79,11 +80,23 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       worker = this;
       return poll.call(this);
     });
-    const sandbox = new LocalSubprocessSandbox({ workdir: join(root, "workspace"), outputsRoot: join(root, "outputs") });
-    await sandbox.setEnvVars({ ANTHROPIC_API_KEY: "inherited-test-provider-key" });
+    let sandbox: LocalSubprocessSandbox | undefined;
+    let workspace = join(root, "workspace");
     let releaseSandbox!: () => void;
     const sandboxReady = new Promise<void>(resolve => { releaseSandbox = resolve; });
     if (variant !== "queued-inputs") releaseSandbox();
+    const sandboxFactory: SandboxFactory = Object.assign(async (context: Parameters<SandboxFactory>[0], environment: Parameters<SandboxFactory>[1]) => {
+      await sandboxReady;
+      sandbox = await localSandboxFactory(context, environment) as LocalSubprocessSandbox;
+      const read = sandbox.readFile.bind(sandbox);
+      sandbox.readFile = async path => {
+        try { return await read(path); }
+        catch (error) { console.error("review sandbox read failed", path, error); throw error; }
+      };
+      workspace = context.workdir;
+      await sandbox.setEnvVars({ ANTHROPIC_API_KEY: "inherited-test-provider-key" });
+      return sandbox;
+    }, { capabilities: localSandboxFactory.capabilities, runtimeBinding: localSandboxFactory.runtimeBinding });
     try {
       cp = await createNodeControlPlane(await nodeDefaults(loadNodeConfig({
         NODE_ENV: "test", AUTH_DISABLED: "0", API_KEY: "test-admin", PLATFORM_ROOT_SECRET: "test-root-secret-not-production",
@@ -91,7 +104,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
         DATABASE_PATH: join(root, "db.sqlite"), AUTH_DATABASE_PATH: join(root, "auth.sqlite"),
         SANDBOX_WORKDIR: join(root, "sandboxes"), MEMORY_BLOB_DIR: join(root, "memories"), FILES_BLOB_DIR: join(root, "files"), SESSION_OUTPUTS_DIR: join(root, "outputs"),
         ANTHROPIC_API_KEY: "platform-key-must-not-be-used",
-      }), { sandbox: async () => { await sandboxReady; return sandbox; } }));
+      }), { sandbox: sandboxFactory }));
       gateway.on("request", getRequestListener(cp.fetch));
       const request = async (path: string, body?: unknown) => {
         const response = await cp!.fetch(new Request(base + path, { method: body === undefined ? "GET" : "POST", headers: { "x-api-key": "test-admin", "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
@@ -126,7 +139,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
         }
         expect(recoveredEvents.filter(event => event.type === "session.status_idle")).toHaveLength(3);
         expect(recoveredEvents.filter(event => event.type === "session.error")).toEqual([]);
-        const prompts = (await readFile(join(root, "workspace", "prompts.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).map((block: { text: string }) => block.text).join(""));
+        const prompts = (await readFile(join(workspace, "prompts.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).map((block: { text: string }) => block.text).join(""));
         expect(prompts).toHaveLength(3);
         expect(prompts[1]).toContain("native-state-missing");
         expect(prompts[1]).not.toContain("execution-B");
@@ -151,7 +164,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
           await new Promise(resolve => setTimeout(resolve, 50));
         }
         expect(queuedEvents.filter(event => event.type === "session.error")).toEqual([]);
-        const prompts = (await readFile(join(root, "workspace", "prompts.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).map((block: { text: string }) => block.text).join(""));
+        const prompts = (await readFile(join(workspace, "prompts.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).map((block: { text: string }) => block.text).join(""));
         expect(prompts).toEqual(["execution-A\nA-followup", "execution-B"]);
         return;
       }
@@ -167,12 +180,12 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
         expect(JSON.stringify(events)).toMatch(variant === "missing-card" ? /active workspace model card/ : /requires \[anthropic-messages\]/);
         expect(events.some(event => event.type === "session.error")).toBe(true);
         expect(upstreamRequests).toEqual([]);
-        await expect(readFile(join(root, "workspace", "launch.json"), "utf8")).rejects.toThrow();
+        await expect(readFile(join(workspace, "launch.json"), "utf8")).rejects.toThrow();
         return;
       }
       expect(JSON.stringify(events)).toContain("fake-result:200:200");
       expect(events.filter(event => event.type === "session.error")).toEqual([]);
-      const launch = JSON.parse(await readFile(join(root, "workspace", "launch.json"), "utf8"));
+      const launch = JSON.parse(await readFile(join(workspace, "launch.json"), "utf8"));
       expect(launch.base).toBe(`${base}/v1/oma/inference-proxy/${session.id}/anthropic`);
       expect(launch.token).toMatch(/^sk-ant-req-v1\./);
       expect(launch.key).toBeUndefined(); expect(launch.maxcompute).toBeUndefined();
@@ -202,7 +215,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       }
       expect(events.filter(event => event.type === "agent.message")).toHaveLength(2);
       expect(events.filter(event => event.type === "session.error")).toEqual([]);
-      const resumed = JSON.parse(await readFile(join(root, "workspace", "launch.json"), "utf8"));
+      const resumed = JSON.parse(await readFile(join(workspace, "launch.json"), "utf8"));
       expect(resumed.mode).toBe("resumed:prior-turn");
       expect(resumed.token).not.toBe(launch.token);
       expect(resumed.pid).not.toBe(launch.pid);
@@ -215,7 +228,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       try {
         await worker?.waitForIdle();
         await cp?.stop("test");
-        await sandbox.destroy();
+        await sandbox?.destroy();
         await close(gateway); await close(upstream);
         await rm(root, { recursive: true, force: true });
       } finally {

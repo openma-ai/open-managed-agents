@@ -249,9 +249,21 @@ export async function runLocalReleaseCertification(options = {}) {
           "--config=playwright.config.ts",
         ],
         { cwd: repoRoot, env: e2eEnvironment, timeout: 360_000 },
-      ).catch((error) => {
+      ).catch(async (error) => {
         // Include the backend tail so a CI failure is diagnosable.
-        throw new Error(`${error.message}\n--- main-node tail ---\n${runtime?.diagnostics() ?? ""}`, { cause: error });
+        let state;
+        try {
+          const { DatabaseSync } = await import("node:sqlite");
+          const db = new DatabaseSync(join(root, "oma.db"), { readOnly: true });
+          try {
+            // Fixture-owned state only. Never print credentials or event bodies.
+            state = JSON.stringify({
+              executions: db.prepare("SELECT id, state, failure FROM managed_session_executions").all(),
+              sandboxes: db.prepare("SELECT allocation_id, observed_state, readiness, failure, management_owner_id, management_lease_expires_at_ms FROM managed_session_sandbox_resources").all(),
+            });
+          } finally { db.close(); }
+        } catch (diagnosticError) { state = `State diagnostics unavailable: ${String(diagnosticError)}`; }
+        throw new Error(`${error.message}\n--- durable fixture state ---\n${state}\n--- main-node tail ---\n${runtime?.diagnostics() ?? ""}`, { cause: error });
       }));
     } else markStepSkipped(report, "console-browser");
     report.ok = true;

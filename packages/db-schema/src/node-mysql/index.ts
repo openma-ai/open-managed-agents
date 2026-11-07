@@ -68,6 +68,12 @@ const heldAfterExhaustedMigration = {
   toSnapshot: "173fcc90-140f-4d11-92d5-9c8d917213e9",
 } as const;
 
+/** Admission FIFO is independent of wall-clock timestamps and event IDs. */
+const sessionAdmissionFifoMigration = {
+  fromSnapshot: heldAfterExhaustedMigration.toSnapshot,
+  toSnapshot: "707d5e5e-e2f0-4960-bae9-524ec170d7d8",
+} as const;
+
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -132,6 +138,7 @@ export async function migrateNodeMysqlSchema(
       legacyAgentsRetirementMigration.toSnapshot,
       modelCardPricingMigration.toSnapshot,
       heldAfterExhaustedMigration.toSnapshot,
+      sessionAdmissionFifoMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -155,18 +162,29 @@ export async function migrateNodeMysqlSchema(
           continue;
         }
         if (installed.snapshot_id === modelCardPricingMigration.fromSnapshot) {
-          await ensureMysqlNullableColumn(sql, "model_cards", "pricing", "TEXT");
+          await ensureMysqlColumn(sql, "model_cards", "pricing", "TEXT");
           installed = { snapshot_id: modelCardPricingMigration.toSnapshot };
           continue;
         }
         if (installed.snapshot_id === heldAfterExhaustedMigration.fromSnapshot) {
-          await ensureMysqlNullableColumn(
+          await ensureMysqlColumn(
             sql,
             "managed_session_executions",
             "held_after_exhausted_ms",
             "BIGINT",
           );
           installed = { snapshot_id: heldAfterExhaustedMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === sessionAdmissionFifoMigration.fromSnapshot) {
+          await ensureMysqlColumn(sql, "managed_session_executions", "admission_sequence", "BIGINT NOT NULL DEFAULT 0");
+          const index = await sql.prepare(`SELECT 1 AS present FROM information_schema.statistics
+            WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ? LIMIT 1`)
+            .bind("managed_session_executions", "managed_session_executions_admission_idx").first();
+          if (!index) {
+            await sql.exec("CREATE INDEX `managed_session_executions_admission_idx` ON `managed_session_executions` (`workspace_id`, `session_id`, `lane_id`, `admission_sequence`)");
+          }
+          installed = { snapshot_id: sessionAdmissionFifoMigration.toSnapshot };
           continue;
         }
       }
@@ -198,7 +216,7 @@ export async function migrateNodeMysqlSchema(
   }
 }
 
-async function ensureMysqlNullableColumn(
+async function ensureMysqlColumn(
   sql: SqlClient,
   table: string,
   column: string,

@@ -1,13 +1,16 @@
 import { SessionSandboxRuntime, type SessionSandboxMode } from "@open-managed-agents/session-runtime";
 import {
   probeSandboxLiveness,
-  startSandboxHeartbeat,
   withSandboxExecutionGuard,
   withSandboxRecovery,
   type SandboxExecutor,
   type SandboxLiveness,
+  type SandboxRuntimeHandle,
 } from "@open-managed-agents/sandbox";
 import { randomUUID } from "node:crypto";
+import { APICallError } from "ai";
+import { hasProcessInvariantFailure, terminateForInvariant } from "./process-invariant";
+import { readOnlyArtifactOutputs, type ReadOnlyArtifactPublicationInput } from "../openai-artifact-publication";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   HarnessContext,
@@ -43,13 +46,13 @@ import {
   type SessionBudgetGate,
 } from "@open-managed-agents/domain/sessions";
 import {
-  clearNodeSessionBudgetGate,
   registerNodeSessionBudgetGate,
 } from "./node-session-budget-gates.js";
 import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
+import type { NodeSessionSandboxLifecycle } from "./node-session-sandbox-lifecycle.js";
 import {
   ManagedNodeSubagents,
   managedEventThread,
@@ -112,6 +115,8 @@ export interface ExecuteManagedNodeConfirmedTool {
   confirmation: ManagedNodeToolConfirmation;
   toolUse: ManagedNodeConfirmableToolUse;
   abortSignal: AbortSignal;
+  onOutcomeUnknown?(error: unknown): Promise<void>;
+  assertCanDispatch?(): void;
 }
 
 export interface ManagedNodeConfirmedToolExecutionResult {
@@ -171,13 +176,20 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   /** Start Pi's sandbox alongside the model; only sandbox operations wait for readiness. */
   backgroundPiSandbox?: boolean;
   buildSandbox(input: ManagedRunnerContext & { signal?: AbortSignal; allocationId?: string }): Promise<SandboxExecutor>;
+  /** Durable Session resource ownership; local clients are only a cache. */
+  sandboxLifecycle?: NodeSessionSandboxLifecycle;
+  resumeSandbox?(input: ManagedRunnerContext & { allocationId: string }, handle: SandboxRuntimeHandle): Promise<SandboxExecutor>;
+  sandboxHandle?(sandbox: SandboxExecutor): SandboxRuntimeHandle;
+  executionDispatches?: {
+    begin(fence: SessionExecutionFence): Promise<boolean>;
+    drained(fence: SessionExecutionFence): Promise<void>;
+    recoverTerminal(fence: SessionExecutionFence, readOnlyPublication?: boolean): Promise<boolean>;
+    publicationWrite(fence: SessionExecutionFence, confirmed: boolean): Promise<boolean>;
+    finish(fence: SessionExecutionFence, unknown: boolean): Promise<void>;
+  };
   /** Liveness probe used before reusing a warm sandbox and after a failed
    * sandbox operation. Default: the provider runtime Port's `status()`. */
   probeSandbox?(sandbox: SandboxExecutor): Promise<SandboxLiveness>;
-  /** Provider lease renewed while a turn runs (ADR 0005 sandbox heartbeat).
-   * After the turn the sandbox lives at most `ttlMs` idle; the next turn
-   * then cold-restores. Omit to leave the provider's own lifetime alone. */
-  sandboxLease?: { ttlMs: number; intervalMs?: number };
   /** Lost sandboxes replaced within one turn before it fails (default 3). */
   maxSandboxReplacements?: number;
   /** Optional checkpoint_restore workspace. Ordinary OSS mounts are a different strategy. */
@@ -188,6 +200,9 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     signal?: AbortSignal;
     /** The execution this sandbox is acquired for; absent outside a claim. */
     executionFence?: SessionExecutionFence;
+    /** Rebuild client-local credentials/mount configuration, preserving files. */
+    reattach?: boolean;
+    authorizeResourceMutation?(): Promise<boolean>;
   }): Promise<void>;
   /** Refresh lightweight Session environment after preparation and on every
    * warm reuse, without restaging resources or rebuilding the sandbox. */
@@ -212,6 +227,9 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     runtimeGeneration: string;
     executionFence: SessionExecutionFence;
   }): Promise<void>;
+  /** Trusted immutable artifact publisher. Receives only reads; every Files
+   * write must use the durable write boundary. Never a general extension hook. */
+  publishArtifacts?(input: ReadOnlyArtifactPublicationInput): Promise<void>;
   buildModel(input: ManagedRunnerContext): Promise<HarnessContext["model"]>;
   /** List prices of the session's model card; null = unpriced. Session
    * budgets are enforced only when this AND `session.budget` are set. */
@@ -253,18 +271,27 @@ function findLastMatching<T>(
   return undefined;
 }
 
+/** A live Session owns its SDK handle. This is not provider identity or authority:
+ * those remain in the durable resource binding and its fences. */
+interface ManagedRunnerSession {
+  sandbox?: SandboxExecutor;
+  runtime?: SessionSandboxRuntime;
+  generation?: string;
+  fingerprint?: string;
+  allocationId?: string;
+  workspace?: ManagedWorkspaceState;
+  closed?: boolean;
+}
+
 export class DefaultNodeManagedSessionRunner
   implements NodeManagedSessionRunner
 {
-  private readonly sandboxRuntimes = new ScopedSessionMap<SessionSandboxRuntime>();
-  private readonly sandboxes = new ScopedSessionMap<SandboxExecutor>();
-  private readonly runtimeGenerations = new ScopedSessionMap<string>();
-  private readonly sandboxConfigurationFingerprints = new ScopedSessionMap<string>();
+  private readonly sessions = new ScopedSessionMap<ManagedRunnerSession>();
   private readonly abortControllers = new ScopedSessionMap<AbortController>();
+  private readonly attemptIds = new ScopedSessionMap<string>();
   private readonly startupAborts = new ScopedSessionMap<AbortController>();
   private readonly sandboxStarts = new ScopedSessionMap<Promise<void>>();
   private readonly subagentExecutions = new ScopedSessionMap<ManagedNodeSubagents>();
-  private readonly workspaces = new ScopedSessionMap<ManagedWorkspaceState>();
   private readonly pendingSandboxDisposals = new ScopedSessionMap<Promise<void>>();
   private readonly sandboxRefreshes = new WeakMap<SandboxExecutor, {
     sandbox: SandboxExecutor;
@@ -277,16 +304,57 @@ export class DefaultNodeManagedSessionRunner
     private readonly dependencies: DefaultNodeManagedSessionRunnerDependencies,
   ) {}
 
+  private sessionFor(input: { workspaceId: string; sessionId: string }): ManagedRunnerSession {
+    let session = this.sessions.get(input);
+    if (session === undefined) {
+      session = {};
+      this.sessions.set(input, session);
+    }
+    return session;
+  }
+
+  /** Drop only local ownership. Resource retirement/deletion belongs to lifecycle. */
+  private releaseSession(input: { workspaceId: string; sessionId: string }): void {
+    const session = this.sessions.get(input);
+    if (session === undefined) return;
+    session.closed = true;
+    if (session.sandbox) this.sandboxRefreshes.get(session.sandbox)?.revoke.abort();
+    delete session.sandbox;
+    delete session.runtime;
+    delete session.generation;
+    delete session.fingerprint;
+    delete session.allocationId;
+    delete session.workspace;
+    this.sessions.delete(input);
+  }
+
   /** `lease_lost` means another owner will reclaim and re-run this execution:
    * the stale attempt must not tell the client its turn failed. */
-  cancel(input: { workspaceId: string; sessionId: string; reason?: string }): void {
+  cancel(input: { workspaceId: string; sessionId: string; reason?: string; attemptId?: string }): void {
+    if (input.attemptId !== undefined && this.attemptIds.get(input) !== input.attemptId) return;
     this.abortControllers.get(input)?.abort(input.reason ?? "cancelled");
-    this.startupAborts.get(input)?.abort(input.reason ?? "cancelled");
+    if (this.dependencies.sandboxLifecycle === undefined) this.startupAborts.get(input)?.abort(input.reason ?? "cancelled");
   }
 
   /** Returns only a prepared live runtime, scoped exactly like execution. */
   connectedSandbox(input: { workspaceId: string; sessionId: string }): SandboxExecutor | null {
-    return this.sandboxes.get(input) ?? null;
+    return this.sessions.get(input)?.sandbox ?? null;
+  }
+
+  async withSessionSandbox<T>(input: StartNodeManagedSessionRuntime, operation: (sandbox: SandboxExecutor) => Promise<T>): Promise<T> {
+    const lifecycle = this.dependencies.sandboxLifecycle;
+    if (lifecycle === undefined) throw new Error("Durable sandbox resource access is not configured");
+    await this.startDurableSandbox(input);
+    const allocationId = this.sessions.get(input)?.allocationId!;
+    return lifecycle.operate({ scope: input, allocationId }, (sandbox, signal) =>
+      operation(withSandboxExecutionGuard(sandbox, { signal })));
+  }
+
+  async sandboxAvailable(input: { workspaceId: string; sessionId: string }): Promise<boolean> {
+    const lifecycle = this.dependencies.sandboxLifecycle;
+    if (lifecycle === undefined) return this.connectedSandbox(input) !== null;
+    const resource = await lifecycle.describe(input);
+    return resource?.desiredState === "active" && resource.observedState === "ready" && resource.failure === null;
   }
 
   async start(input: StartNodeManagedSessionRuntime): Promise<void> {
@@ -313,6 +381,7 @@ export class DefaultNodeManagedSessionRunner
       resources: input.session.resources,
       skills: input.session.agent.skills,
       environment: input.environment.config,
+      environmentId: input.environment.id,
       // A different catalog image needs a different sandbox, like packages.
       sandboxImage: input.environment.openma?.sandboxImage ?? null,
     });
@@ -329,6 +398,12 @@ export class DefaultNodeManagedSessionRunner
   }
 
   private async startSandbox(input: StartNodeManagedSessionRuntime): Promise<void> {
+    let session = this.sessionFor(input);
+    if (this.dependencies.sandboxLifecycle !== undefined &&
+      await this.dependencies.sandboxMode?.(input) !== "none") {
+      await this.startDurableSandbox(input);
+      return;
+    }
     const startup = new AbortController();
     const unlinkParent = linkAbort(input.signal, startup);
     const signal = startup.signal;
@@ -337,18 +412,18 @@ export class DefaultNodeManagedSessionRunner
       if (signal.aborted) throw abortedError(signal);
       this.assertSandboxDisposed(input);
       const fingerprint = this.sandboxFingerprint(input);
-      const existing = this.sandboxes.get(input);
+      const existing = this.sessions.get(input)?.sandbox;
       if (this.dependencies.workspaceCheckpoints !== undefined && input.executionFence === undefined) {
         throw new Error("Managed workspace checkpoint_restore requires a Session Execution fence");
       }
-      const trusted = this.dependencies.workspaceCheckpoints === undefined || this.workspaces.get(input)?.trusted === true;
+      const trusted = this.dependencies.workspaceCheckpoints === undefined || this.sessions.get(input)?.workspace?.trusted === true;
       let reusable = existing !== undefined
-        && this.sandboxConfigurationFingerprints.get(input) === fingerprint
+        && this.sessions.get(input)?.fingerprint === fingerprint
         && trusted;
       if (reusable && this.dependencies.isSandboxCurrent !== undefined) {
         reusable = await untilAborted(this.dependencies.isSandboxCurrent({
           workspaceId: input.workspaceId, session: input.session, environment: input.environment,
-          runtimeGeneration: this.runtimeGenerations.get(input)!,
+          runtimeGeneration: this.sessions.get(input)?.generation!,
         }), signal);
       }
       // A warm sandbox may have been reclaimed by its provider since the last
@@ -363,7 +438,7 @@ export class DefaultNodeManagedSessionRunner
           const failure = signal.aborted ? abortedError(signal) : error;
           // A successful status probe does not prove the command channel works.
           // Fail this start explicitly; only a later attempt may cold-restore.
-          if (this.sandboxes.get(input) === existing) {
+          if (this.sessions.get(input)?.sandbox === existing) {
             await this.discardSandbox(input, { abortTurn: false }).catch(() => undefined);
           }
           throw failure;
@@ -372,15 +447,66 @@ export class DefaultNodeManagedSessionRunner
       }
       if (existing !== undefined) {
         await untilAborted(this.discardSandbox(input, { abortTurn: false }).catch(() => undefined), signal);
+        session = this.sessionFor(input);
       }
       const acquired = await this.acquireSandbox(input, signal);
-      this.installSandbox(input, acquired, fingerprint);
+      this.installSandbox(input, acquired, fingerprint, session);
     } finally {
       unlinkParent();
       if (this.startupAborts.get(input) === startup) {
         this.startupAborts.delete(input);
       }
     }
+  }
+
+  private async startDurableSandbox(input: StartNodeManagedSessionRuntime): Promise<void> {
+    const session = this.sessionFor(input);
+    const lifecycle = this.dependencies.sandboxLifecycle!;
+    const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
+    const fingerprint = this.sandboxFingerprint(input);
+    const acquired = await lifecycle.open({
+      scope: input,
+      configFingerprint: fingerprint,
+      create: (allocationId, signal) => this.dependencies.buildSandbox({ ...context, allocationId, signal }),
+      resume: (handle, allocationId) => {
+        if (this.dependencies.resumeSandbox === undefined) throw new Error("Sandbox provider cannot rebind this Session resource");
+        return this.dependencies.resumeSandbox({ ...context, allocationId }, handle);
+      },
+      handle: sandbox => {
+        if (this.dependencies.sandboxHandle === undefined) throw new Error("Sandbox provider does not expose a durable resource handle");
+        return this.dependencies.sandboxHandle(sandbox);
+      },
+      prepare: async (raw, allocationId, signal, { fresh, isCurrent, fence: management }) => {
+        const sandbox = withSandboxExecutionGuard(raw, { signal });
+        const checkpoints = this.dependencies.workspaceCheckpoints;
+        if (fresh && checkpoints !== undefined) {
+          const scope = { workspaceId: input.workspaceId, sessionId: input.sessionId,
+            environmentId: input.environment.id, workId: allocationId };
+          const active = await checkpoints.active(scope);
+          const port = checkpoints.port(sandbox);
+          // This port only restores immutable bytes; publication later still
+          // requires the canonical Session Execution fence.
+          const fence = { ...scope, ownerId: management.ownerId, generation: management.generation,
+            token: allocationId, expiresAt: management.expiresAt };
+          const binding = await port.materialize({ scope, fence, strategy: "checkpoint_restore",
+            activeCheckpoint: active?.candidate ?? null, idempotencyKey: allocationId, signal });
+          try {
+            await port.attach({ scope, fence, strategy: "checkpoint_restore", binding,
+              sandbox: this.dependencies.sandboxHandle!(raw), signal });
+          } finally {
+            await port.release({ scope, fence, binding });
+          }
+        }
+        await this.dependencies.prepareSandbox?.({ ...context, sandbox, runtimeGeneration: allocationId,
+          signal, reattach: !fresh, authorizeResourceMutation: isCurrent });
+        await this.refreshSandboxEnvironment(context, raw, signal);
+      },
+    });
+    const runtime = new SessionSandboxRuntime({ mode: () => "sandbox", create: () => acquired.sandbox });
+    await runtime.acquire();
+    this.installSandbox(input, { sandbox: acquired.sandbox, runtime, workspace: undefined,
+      runtimeGeneration: acquired.allocationId, restoredFromMs: null }, fingerprint, session);
+    this.sessionFor(input).allocationId = acquired.allocationId;
   }
 
   private assertSandboxDisposed(input: { workspaceId: string; sessionId: string }): void {
@@ -502,13 +628,15 @@ export class DefaultNodeManagedSessionRunner
     input: { workspaceId: string; sessionId: string },
     acquired: AcquiredSandbox,
     fingerprint: string,
+    session = this.sessionFor(input),
   ): void {
-    if (acquired.workspace !== undefined) this.workspaces.set(input, acquired.workspace);
-    else this.workspaces.delete(input);
-    this.sandboxRuntimes.set(input, acquired.runtime);
-    this.sandboxes.set(input, acquired.sandbox);
-    this.runtimeGenerations.set(input, acquired.runtimeGeneration);
-    this.sandboxConfigurationFingerprints.set(input, fingerprint);
+    if (session.closed || this.sessions.get(input) !== session) throw new Error("Session closed during sandbox startup");
+    if (acquired.workspace !== undefined) session.workspace = acquired.workspace;
+    else delete session.workspace;
+    session.runtime = acquired.runtime;
+    session.sandbox = acquired.sandbox;
+    session.generation = acquired.runtimeGeneration;
+    session.fingerprint = fingerprint;
   }
 
   /** ADR 0005 "Sandbox disappears": reacquire, restore the last committed
@@ -518,9 +646,10 @@ export class DefaultNodeManagedSessionRunner
     lost: SandboxExecutor,
     signal: AbortSignal,
   ): Promise<string> {
-    if (this.sandboxes.get(input) !== lost) return "";
-    const fingerprint = this.sandboxConfigurationFingerprints.get(input) ?? "";
-    const previousWorkspace = this.workspaces.get(input);
+    const session = this.sessionFor(input);
+    if (session.sandbox !== lost) return "";
+    const fingerprint = this.sessions.get(input)?.fingerprint ?? "";
+    const previousWorkspace = this.sessions.get(input)?.workspace;
     await this.disposeSandbox(input, lost, previousWorkspace).catch(() => undefined);
     const acquired = await this.acquireSandbox(input, signal);
     if (signal.aborted) {
@@ -530,7 +659,7 @@ export class DefaultNodeManagedSessionRunner
     // Until this turn reaches its barrier the replacement is as dirty as every
     // sandbox a turn has written to.
     if (acquired.workspace !== undefined) acquired.workspace.trusted = false;
-    this.installSandbox(input, acquired, fingerprint);
+    this.installSandbox(input, acquired, fingerprint, session);
     if (acquired.workspace === undefined) {
       return "Files created in /workspace before the restart are gone.";
     }
@@ -540,6 +669,16 @@ export class DefaultNodeManagedSessionRunner
   }
 
   async stop(input: StopNodeManagedSessionRuntime): Promise<void> {
+    if (this.dependencies.sandboxLifecycle !== undefined) {
+      // Stopping execution revokes the borrower. The Session still owns its
+      // durable resource; neither cancellation nor lease loss is retirement.
+      this.cancel(input);
+      if (input.reason === "archived" || input.reason === "deleted") {
+        this.releaseSession(input);
+        await this.dependencies.sandboxLifecycle.closeSession(input);
+      }
+      return;
+    }
     this.startupAborts.get(input)?.abort();
     await this.sandboxStarts.get(input)?.catch(() => undefined);
     await this.discardSandbox(input);
@@ -555,17 +694,17 @@ export class DefaultNodeManagedSessionRunner
     input: { workspaceId: string; sessionId: string },
     options: { abortTurn?: boolean } = {},
   ): Promise<void> {
+    const allocationId = this.sessions.get(input)?.allocationId;
+    if (this.dependencies.sandboxLifecycle !== undefined && allocationId !== undefined) {
+      throw new Error("Session sandbox replacement requires durable retirement after its current use drains");
+    }
     if (options.abortTurn !== false) {
       this.abortControllers.get(input)?.abort();
       this.abortControllers.delete(input);
     }
-    const workspace = this.workspaces.get(input);
-    this.workspaces.delete(input);
-    const sandbox = this.sandboxes.get(input);
-    this.sandboxes.delete(input);
-    this.sandboxRuntimes.delete(input);
-    this.runtimeGenerations.delete(input);
-    this.sandboxConfigurationFingerprints.delete(input);
+    const workspace = this.sessions.get(input)?.workspace;
+    const sandbox = this.sessions.get(input)?.sandbox;
+    this.releaseSession(input);
     await this.disposeSandbox(input, sandbox, workspace);
   }
 
@@ -695,6 +834,12 @@ export class DefaultNodeManagedSessionRunner
         remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
       }
     }
+    const sessionOwner = this.sessionFor(input);
+    const assertSessionOpen = () => {
+      if (sessionOwner.closed || this.sessions.get(input) !== sessionOwner) {
+        throw new Error("Session closed while execution was preparing");
+      }
+    };
     const deferred = this.canOverlapSandboxStartup(input);
     // Only the three execution primitives are needed by Pi's host-side tools.
     // Capability inspection must not allocate a provider resource.
@@ -703,17 +848,39 @@ export class DefaultNodeManagedSessionRunner
       readFile: async () => { throw new Error("Sandbox has not been acquired"); },
       writeFile: async () => { throw new Error("Sandbox has not been acquired"); },
     };
-    const rawSandbox = this.sandboxes.get(input) ?? (deferred ? unallocated : undefined);
+    const rawSandbox = this.sessions.get(input)?.sandbox ?? (deferred ? unallocated : undefined);
     if (rawSandbox === undefined) {
       throw new Error(`Session ${input.sessionId} sandbox was not started`);
     }
-    const runtimeGeneration = this.runtimeGenerations.get(input)
+    const runtimeGeneration = this.sessions.get(input)?.generation
       ?? (deferred ? `pending_${randomUUID()}` : undefined);
     if (runtimeGeneration === undefined) {
       throw new Error(`Session ${input.sessionId} runtime generation was not started`);
     }
     const checkpointService = this.dependencies.workspaceCheckpoints;
-    const workspace = this.workspaces.get(input);
+    let workspace = this.sessions.get(input)?.workspace;
+    const lifecycle = this.dependencies.sandboxLifecycle;
+    if (lifecycle !== undefined && !deferred && this.sessions.get(input)?.allocationId !== undefined &&
+      checkpointService !== undefined && input.executionFence !== undefined) {
+      const fence = input.executionFence;
+      const scope = { workspaceId: input.workspaceId, sessionId: input.sessionId,
+        environmentId: input.environment.id, workId: fence.executionId };
+      const active = await checkpointService.active(scope);
+      assertSessionOpen();
+      const port = checkpointService.port(rawSandbox);
+      const binding = await port.materialize({ scope,
+        fence: checkpointService.runtimeFence(fence, scope.environmentId), strategy: "checkpoint_restore",
+        activeCheckpoint: active?.candidate ?? null, idempotencyKey: runtimeGeneration,
+        signal: new AbortController().signal });
+      try { assertSessionOpen(); }
+      catch (failure) {
+        try { await port.release({ scope, fence: checkpointService.runtimeFence(fence, scope.environmentId), binding }); }
+        catch (cleanup) { throw new AggregateError([failure, cleanup], "Session closed and workspace release failed", { cause: failure }); }
+        throw failure;
+      }
+      workspace = { port, binding, scope, fence, activeId: active?.candidate.id ?? null, trusted: true };
+      sessionOwner.workspace = workspace;
+    }
     if (checkpointService !== undefined) {
       if (input.executionFence === undefined || workspace === undefined) {
         throw new Error("Managed workspace checkpoint_restore requires a prepared fenced sandbox");
@@ -726,11 +893,13 @@ export class DefaultNodeManagedSessionRunner
         throw new Error("Managed workspace checkpoint changed; reacquire the sandbox");
       }
     }
+    assertSessionOpen();
     // Until the turn, Memory/output sync and due checkpoints all settle,
     // a replacement attempt must cold-restore rather than reuse dirty bytes.
     if (workspace !== undefined) workspace.trusted = false;
     const abortController = new AbortController();
     this.abortControllers.set(input, abortController);
+    if (input.executionFence !== undefined) this.attemptIds.set(input, input.executionFence.attemptId);
     // The Node execution worker owns the durable fence and cancels this
     // controller when renewal fails. The guard keeps provider calls from a
     // stale runner from continuing after that cancellation; canonical frame
@@ -738,7 +907,64 @@ export class DefaultNodeManagedSessionRunner
     // Tools see a sandbox that survives the provider reclaiming the real one:
     // a lost sandbox is replaced (workspace restored from the last checkpoint)
     // and only the operations that hit the loss fail, explicitly.
-    const currentSandbox = () => this.sandboxes.get(input) ?? rawSandbox;
+    let attemptSandbox = rawSandbox;
+    const currentSandbox = () => attemptSandbox;
+    let borrowedAllocation: string | undefined;
+    let borrowing: Promise<void> | undefined;
+    let providerOutcomeUnknown = false;
+    let providerDispatched = false;
+    let toolDispatched = false;
+    let dispatchBegan = false;
+    const providerOperations = new Set<Promise<unknown>>();
+    const toolOperations = new Set<Promise<unknown>>();
+    const liveProcesses = new Set<Promise<unknown>>();
+    const quarantineExecution = async (_error: unknown): Promise<void> => {
+      providerOutcomeUnknown = true;
+      abortController.abort("operation_outcome_unknown");
+      if (dispatchBegan && input.executionFence !== undefined) {
+        await this.dependencies.executionDispatches?.finish(input.executionFence, true);
+      }
+    };
+    const assertCanDispatch = (): void => {
+      if (lifecycle !== undefined) assertSessionOpen();
+      if (providerOutcomeUnknown) throw new Error("Sandbox operation outcome is unknown; further dispatch is suspended");
+      if (input.executionFence !== undefined && Date.parse(input.executionFence.expiresAt) <= this.dependencies.clock.now().getTime()) {
+        abortController.abort("lease_lost");
+      }
+      abortController.signal.throwIfAborted();
+    };
+    const guardTools = (tools: HarnessContext["tools"]): HarnessContext["tools"] => {
+      if (this.dependencies.executionDispatches === undefined) return tools;
+      return Object.fromEntries(Object.entries(tools).map(([name, tool]) => {
+        if (typeof tool.execute !== "function") return [name, tool];
+        const execute = tool.execute;
+        return [name, { ...tool, execute: async (...args: Parameters<typeof execute>) => {
+          assertCanDispatch();
+          toolDispatched = true;
+          const operation = Promise.resolve().then(() => execute(...args));
+          toolOperations.add(operation);
+          try { return await operation; }
+          catch (error) {
+            if (!(error instanceof Error && error.name === "ToolFailureError" &&
+              "outcomeUnknown" in error && error.outcomeUnknown === false)) await quarantineExecution(error);
+            throw error;
+          } finally { toolOperations.delete(operation); }
+        } }];
+      })) as HarnessContext["tools"];
+    };
+    const borrowSandbox = (): Promise<void> => borrowing ??= (async () => {
+      const allocationId = this.sessions.get(input)?.allocationId;
+      if (lifecycle === undefined) return;
+      assertSessionOpen();
+      if (allocationId === undefined) throw new Error("Sandbox use requires the Session's durable allocation");
+      if (input.executionFence === undefined) throw new Error("Sandbox use requires a canonical Session Execution lease");
+      if (abortController.signal.aborted) throw abortedError(abortController.signal);
+      await lifecycle.borrow({ executionFence: input.executionFence, allocationId });
+      borrowedAllocation = allocationId;
+      // Capture the exact client; a later start cannot redirect old callbacks.
+      attemptSandbox = this.sessions.get(input)?.sandbox!;
+      if (abortController.signal.aborted) throw abortedError(abortController.signal);
+    })();
     /** The sandbox was lost and could not be replaced: nothing can be
      * synchronized from or published out of it. */
     let sandboxLost = false;
@@ -746,8 +972,17 @@ export class DefaultNodeManagedSessionRunner
       current: currentSandbox,
       probe: (candidate) => this.probe(candidate),
       replace: (lost, cause) => {
+        if (lifecycle !== undefined) {
+          // Failure can mean a command completed remotely. Never replace and
+          // replay an operation with an unknown outcome inside this attempt.
+          providerOutcomeUnknown = true;
+          return Promise.reject(new Error("Sandbox operation outcome is unknown; resource reconciliation is required", { cause }));
+        }
         console.warn(`[managed-runner] session ${input.sessionId}: sandbox lost, replacing:`, cause);
-        return this.replaceLostSandbox(input, lost, abortController.signal);
+        return this.replaceLostSandbox(input, lost, abortController.signal).then(result => {
+          attemptSandbox = this.sessions.get(input)?.sandbox ?? lost;
+          return result;
+        });
       },
       maxReplacements: this.dependencies.maxSandboxReplacements,
       onGiveUp: (error) => {
@@ -757,19 +992,64 @@ export class DefaultNodeManagedSessionRunner
       },
     });
     let sandboxReady = !deferred;
-    let stopHeartbeat: () => Promise<void> = async () => undefined;
-    const beginHeartbeat = () => {
-      if (this.dependencies.sandboxLease === undefined) return;
-      stopHeartbeat = startSandboxHeartbeat(currentSandbox, {
-        ...this.dependencies.sandboxLease,
-        onRenewFailed: (renewed, error) => recovery.check(renewed, error),
-      });
-    };
-    if (!deferred) beginHeartbeat();
+    const durableClient = new Proxy(rawSandbox, {
+      get(_target, property) {
+        if (["destroy", "renewLease", "suspend", "resume", "checkpoint", "runtimeHandle",
+          "runtimeCapabilities", "renewActivityTimeout"].includes(String(property))) return undefined;
+        const target = currentSandbox();
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const access = lifecycle === undefined ? recovery.sandbox : new Proxy(durableClient, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        if (["runtimeHandle", "runtimeCapabilities", "sessionOutputMountCapabilities", "registerCommandSecrets"].includes(String(property))) {
+          return value.bind(target);
+        }
+        return async (...args: unknown[]) => {
+          assertCanDispatch();
+          await borrowSandbox();
+          if (abortController.signal.aborted) throw abortedError(abortController.signal);
+          providerDispatched = true;
+          const operation = Promise.resolve().then(() => value.apply(target, args));
+          providerOperations.add(operation);
+          try {
+            const result = await operation;
+            if (property === "spawnDuplexProcess" && result?.exited instanceof Promise) {
+              const exited: Promise<unknown> = result.exited;
+              liveProcesses.add(exited);
+              void exited.then(() => liveProcesses.delete(exited), () => { providerOutcomeUnknown = true; }).catch(() => {});
+            }
+            return result;
+          } catch (error) {
+            // A failed read cannot have executed the user's mutating command.
+            // Preserve that fact through the tool's model-facing error wrapper.
+            if (["readFile", "readFileBytes", "status"].includes(String(property))) {
+              throw Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }),
+                { outcomeUnknown: false });
+            }
+            await quarantineExecution(error);
+            // Preserve uncertainty before an SDK/harness can turn this into a
+            // normal tool error and ask the model to dispatch it again.
+            if (borrowedAllocation !== undefined && input.executionFence !== undefined) {
+              await lifecycle.release({ executionFence: input.executionFence,
+                allocationId: borrowedAllocation, unknown: true });
+            }
+            throw error;
+          } finally {
+            providerOperations.delete(operation);
+          }
+        };
+      },
+    });
     const guardedSandbox = input.executionFence === undefined
-      ? recovery.sandbox
-      : withSandboxExecutionGuard(recovery.sandbox, {
+      ? access
+      : withSandboxExecutionGuard(access, {
           signal: abortController.signal,
+          isValid: () => input.executionFence === undefined ||
+            Date.parse(input.executionFence.expiresAt) > this.dependencies.clock.now().getTime(),
         });
     let acquisition: Promise<void> | undefined;
     const ensureSandbox = (): Promise<void> => acquisition ??= this.beginSandboxStartup({
@@ -779,12 +1059,12 @@ export class DefaultNodeManagedSessionRunner
       if (abortController.signal.aborted) throw abortedError(abortController.signal);
       // A prior text-only turn may still have been preparing an older
       // resource/environment snapshot when this turn began.
-      if (this.sandboxConfigurationFingerprints.get(input) !== this.sandboxFingerprint(input)) {
+      if (this.sessions.get(input)?.fingerprint !== this.sandboxFingerprint(input)) {
         await this.beginSandboxStartup({ ...input, signal: abortController.signal });
       }
       if (abortController.signal.aborted) throw abortedError(abortController.signal);
+      attemptSandbox = this.sessions.get(input)?.sandbox ?? rawSandbox;
       sandboxReady = true;
-      beginHeartbeat();
     }).catch((error) => {
       acquisition = undefined;
       throw error;
@@ -807,13 +1087,37 @@ export class DefaultNodeManagedSessionRunner
       ...(input.takeSteeringInputs !== undefined && { takeSteeringInputs: input.takeSteeringInputs }),
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
-    if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
     let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
+    let releaseBudgetGate = () => {};
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
+    let primaryFailure: SessionRetriesExhaustedError | undefined;
+    let escapingFailure: Error | undefined;
+    const retainFailure = (error: unknown): Error => {
+      // Shared-state corruption cannot wait for potentially hung cleanup.
+      if (hasProcessInvariantFailure(error)) terminateForInvariant(error);
+      const next = error instanceof Error ? error : new Error(String(error));
+      if (escapingFailure === undefined) escapingFailure = next;
+      else if (escapingFailure !== next) {
+        escapingFailure.cause = new AggregateError(
+          [...(escapingFailure.cause === undefined ? [] : [escapingFailure.cause]), next],
+          "Execution and cleanup failed",
+        );
+      }
+      return escapingFailure;
+    };
+    let toolsAcquisition: Promise<HarnessContext["tools"]> | undefined;
     try {
+      if (this.dependencies.executionDispatches !== undefined && input.executionFence !== undefined) {
+        if (!await this.dependencies.executionDispatches.begin(input.executionFence)) {
+          throw new Error("An earlier execution may have dispatched effects; reconcile its outcome before resuming this Session");
+        }
+        dispatchBegan = true;
+      }
+      if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
       for (const event of input.events) {
         if (event.type !== "user.tool_confirmation") continue;
+        assertCanDispatch();
         if (remainingAfterAnswers !== null && answeredToolCallIds(asWireEvents(input.historyEvents
           .filter((candidate) => candidate.id !== event.id)
           .map((candidate) => encodeRuntimeHistoryEvent(candidate))))
@@ -846,6 +1150,7 @@ export class DefaultNodeManagedSessionRunner
               confirmation: event,
               toolUse,
               abortSignal: abortController.signal,
+              ...(this.dependencies.executionDispatches === undefined ? {} : { onOutcomeUnknown: quarantineExecution, assertCanDispatch }),
             });
         runtime.broadcastProducedEvent(
           toolUse.type === "agent.mcp_tool_use"
@@ -888,7 +1193,7 @@ export class DefaultNodeManagedSessionRunner
               childTools = await this.dependencies.buildTools({ ...childContext, sandbox: childSandbox });
               const harnessContext = await this.dependencies.buildHarnessContext({
                 ...childContext, acceptedEvents: [], sandbox: childSandbox,
-                runtime: childRuntime, model, tools: childTools,
+                runtime: childRuntime, model, tools: guardTools(childTools),
               });
               // One session egress meter: child model calls are gated and
               // recorded by the same gate instance as the parent's.
@@ -914,16 +1219,17 @@ export class DefaultNodeManagedSessionRunner
           },
         };
       }
-      const toolsPromise = this.dependencies
+      const toolsPromise = toolsAcquisition = this.dependencies
         .buildTools({ ...context, ...subagentContext, sandbox })
         .then((tools) => {
           turnTools = tools;
           return tools;
         });
-      const [model, tools] = await Promise.all([
+      const [model, acquiredTools] = await Promise.all([
         this.dependencies.buildModel(context),
         toolsPromise,
       ]);
+      const tools = guardTools(acquiredTools);
       const runHarness = async (): Promise<void> => {
         const harnessContext = await this.dependencies.buildHarnessContext({
           ...context,
@@ -967,22 +1273,28 @@ export class DefaultNodeManagedSessionRunner
         runtime.setBudgetGate(budgetGate);
         subagentContext.subagents?.setBudgetGate?.(budgetGate);
         // Harness-in-sandbox inference-proxy meters via the same gate.
-        registerNodeSessionBudgetGate(input.session.id, budgetGate);
+        if (abortController.signal.aborted || (input.executionFence !== undefined &&
+          Date.parse(input.executionFence.expiresAt) <= this.dependencies.clock.now().getTime())) throw abortedError(abortController.signal);
+        releaseBudgetGate();
+        releaseBudgetGate = registerNodeSessionBudgetGate(input, budgetGate);
         const retry = this.dependencies.harnessRetry ??
           { attempts: 3, delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)) };
         for (let attempt = 1; ; attempt += 1) {
           const agentEventsBefore = runtime.agentEventCount;
           try {
             await this.dependencies.buildHarness().run(harnessContext);
+            if (providerOutcomeUnknown) throw new Error("Sandbox operation outcome is unknown; the execution requires reconciliation");
             return;
           } catch (error) {
             if (!(error instanceof Error)) throw error;
-            const sideEffectFree = runtime.agentEventCount === agentEventsBefore;
+            const sideEffectFree = runtime.agentEventCount === agentEventsBefore && !providerDispatched && !toolDispatched
+              && input.session.agent.openma?.harness !== "acp-sandbox";
             if (
               !sideEffectFree
               || attempt >= retry.attempts
               || abortController.signal.aborted
-              || isNonRetryableHarnessError(error)
+              || hasProcessInvariantFailure(error)
+              || !APICallError.isInstance(error) || !error.isRetryable
             ) {
               throw error;
             }
@@ -1081,10 +1393,16 @@ export class DefaultNodeManagedSessionRunner
         throw new Error(`The environment restarted after the agent's last step. ${unreported.split(" Background processes")[0].replace(/^This tool call was interrupted because the environment restarted\. /, "")} The changes made in this turn were lost.`);
       }
     } catch (error) {
-      await recovery.close();
       runFailed = true;
-      if (abortController.signal.reason === "lease_lost") throw error;
-      runtime.broadcastProducedEvent({
+      if (abortController.signal.reason === "lease_lost") retainFailure(error);
+      else {
+        primaryFailure = new SessionRetriesExhaustedError(error instanceof Error ? error.message : String(error));
+        primaryFailure.cause = error;
+        retainFailure(primaryFailure);
+      }
+      try { await recovery.close(); } catch (cleanup) { retainFailure(cleanup); }
+      if (abortController.signal.reason === "lease_lost") throw escapingFailure;
+      try { runtime.broadcastProducedEvent({
         type: "session.error",
         error: {
           type: "unknown_error",
@@ -1093,154 +1411,211 @@ export class DefaultNodeManagedSessionRunner
           // retried automatically: CMA semantics for a dead turn are `exhausted`.
           retryStatus: "exhausted",
         },
-      });
-      throw new SessionRetriesExhaustedError(
-        error instanceof Error ? error.message : String(error),
-      );
+      }); } catch (publication) { retainFailure(publication); }
+      throw escapingFailure;
     } finally {
-      let finalizationError: Error | undefined;
-      const subagents = this.subagentExecutions.get(input);
       try {
-        if (runFailed) abortController.abort();
-        await subagents?.drain();
-      } catch (error) {
-        finalizationError = error instanceof Error ? error : new Error(String(error));
-      } finally {
-        if (this.subagentExecutions.get(input) === subagents) this.subagentExecutions.delete(input);
-      }
-      try {
-        if (turnTools !== undefined) {
-          await this.dependencies.disposeTools?.(turnTools);
+        let finalizationError: Error | undefined;
+        const recordFinalizationError = (error: unknown) => {
+          const next = error instanceof Error ? error : new Error(String(error));
+          finalizationError = finalizationError === undefined ? next
+            : new AggregateError([finalizationError, next], "Multiple finalization failures");
+        };
+        const subagents = this.subagentExecutions.get(input);
+        try {
+          if (runFailed) abortController.abort();
+          await subagents?.drain();
+        } catch (error) {
+          recordFinalizationError(error);
+        } finally {
+          if (this.subagentExecutions.get(input) === subagents) this.subagentExecutions.delete(input);
         }
-      } catch (error) {
-        finalizationError = error instanceof Error ? error : new Error(String(error));
-      }
-      try {
+        try {
+          // A model failure may race successful tool/MCP acquisition. Join the
+          // acquisition before releasing so a late result never escapes cleanup.
+          await toolsAcquisition?.catch(() => undefined);
+          if (turnTools !== undefined) {
+            await this.dependencies.disposeTools?.(turnTools);
+          }
+        } catch (error) {
+          recordFinalizationError(error);
+        }
+        try {
+          if (
+            sandboxReady && !sandboxLost && (lifecycle === undefined || borrowedAllocation !== undefined) &&
+            input.executionFence !== undefined &&
+            this.dependencies.synchronizeSandbox !== undefined
+          ) {
+            const executionFence = input.executionFence;
+            await this.sessions.get(input)?.runtime?.withSandbox(async () => {
+              await this.dependencies.synchronizeSandbox!({
+                workspaceId: input.workspaceId,
+                session: input.session,
+                environment: input.environment,
+                sandbox: lifecycle === undefined ? currentSandbox() : access,
+                runtimeGeneration: this.sessions.get(input)?.generation ?? runtimeGeneration,
+                executionFence,
+              });
+            });
+          }
+        } catch (error) {
+          finalizationError ??= error instanceof Error ? error : new Error(String(error));
+        }
+        // Turn completion is a safe point: all harness/subagent activity has
+        // drained. The interval is a target between such points, not a timer
+        // that snapshots files while tools are still writing.
+        // A lost sandbox replaced mid-turn brings its own workspace binding.
+        const turnWorkspace = this.sessions.get(input)?.workspace ?? workspace;
+        if (!runFailed && finalizationError === undefined && (lifecycle === undefined || borrowedAllocation !== undefined) && checkpointService !== undefined && turnWorkspace !== undefined && input.executionFence !== undefined) {
+          const workspace = turnWorkspace;
+          try {
+            const active = await checkpointService.active(workspace.scope);
+            if (active?.candidate.id !== (workspace.activeId ?? undefined)) {
+              throw new Error("Managed workspace checkpoint changed during execution");
+            }
+            if (checkpointService.due(active)) {
+              const fence = input.executionFence;
+              const candidate = await (lifecycle === undefined ? workspace.port : checkpointService.port(access)).checkpoint({
+                scope: { ...workspace.scope, workId: fence.executionId },
+                fence: checkpointService.runtimeFence(fence, workspace.scope.environmentId),
+                strategy: "checkpoint_restore", binding: workspace.binding,
+                sandbox: { provider: "node", runtimeId: this.sessions.get(input)?.generation ?? runtimeGeneration },
+                idempotencyKey: `${fence.executionId}-${fence.attemptId}`,
+                signal: abortController.signal,
+              });
+              if (!await checkpointService.publish({ fence, candidate, expectedId: workspace.activeId })) {
+                throw new Error("Managed workspace checkpoint lost its Session Execution fence or canonical pointer");
+              }
+              workspace.activeId = candidate.id;
+            }
+          } catch (error) {
+            recordFinalizationError(error);
+          }
+        }
+        const leaseLost = abortController.signal.reason === "lease_lost";
+        const opaque = input.session.agent.openma?.harness !== undefined &&
+          !["default", "pi"].includes(input.session.agent.openma.harness);
+        const operationsUnknown = providerOutcomeUnknown || providerOperations.size > 0 ||
+          toolOperations.size > 0 || liveProcesses.size > 0 || (runFailed && opaque);
+        // Release only positively drained use, then persist that evidence before
+        // terminal publication. Idle alone never authorizes a takeover.
+        if (!operationsUnknown && dispatchBegan && input.executionFence !== undefined) {
+          if (lifecycle !== undefined && borrowedAllocation !== undefined) {
+            await lifecycle.release({ executionFence: input.executionFence, allocationId: borrowedAllocation, unknown: false });
+            borrowedAllocation = undefined;
+            borrowing = undefined;
+          }
+          await this.dependencies.executionDispatches?.drained(input.executionFence);
+        }
+        if (finalizationError !== undefined && !runFailed && !leaseLost) {
+          runtime.broadcastProducedEvent({
+            type: "session.error",
+            error: {
+              type: "unknown_error",
+              message: finalizationError instanceof Error
+                ? finalizationError.message
+                : String(finalizationError),
+              retryStatus: "exhausted",
+            },
+          });
+        }
         if (
-          sandboxReady && !sandboxLost &&
-          input.executionFence !== undefined &&
-          this.dependencies.synchronizeSandbox !== undefined
+          !leaseLost && !runFailed && finalizationError === undefined
+          && budgetGate?.reached === true
         ) {
-          const executionFence = input.executionFence;
-          await this.sandboxRuntimes.get(input)?.withSandbox(async () => {
-            await this.dependencies.synchronizeSandbox!({
+          // Official budget stop: thread idle → usage → session idle (budget_reached).
+          // requires_action parking is skipped: budget_reached outranks end_turn but
+          // requires_action already short-circuits earlier when tools are pending.
+          const stopReason = { type: "budget_reached" as const };
+          runtime.broadcastProducedEvent({
+            type: "session.thread_status_idle",
+            agentName: input.session.agent.name,
+            sessionThreadId: "sthr_primary",
+            stopReason,
+          });
+          runtime.broadcastProducedEvent({
+            type: "session.usage",
+            usage: runtime.usageSnapshot(),
+            budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
+          });
+          runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
+        } else if (!leaseLost) {
+          const failed = runFailed || finalizationError !== undefined;
+          const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
+            runtime.pendingConfirmations,
+            asWireEvents(runtime.history.getEvents()),
+          );
+          runtime.broadcastProducedEvent({
+            type: "session.status_idle",
+            stopReason: failed ? { type: "retries_exhausted" }
+              : parkIds.length > 0 ? { type: "requires_action", eventIds: parkIds }
+              : { type: "end_turn" },
+          });
+        }
+          await runtime.drain();
+          if (!operationsUnknown && sandboxReady && !sandboxLost &&
+            input.executionFence !== undefined && (this.dependencies.afterExecution !== undefined || this.dependencies.publishArtifacts !== undefined)) {
+            if (dispatchBegan && !await this.dependencies.executionDispatches?.recoverTerminal(input.executionFence, this.dependencies.publishArtifacts !== undefined)) {
+              throw new Error("Post-terminal publication lost its execution authority");
+            }
+            if (this.dependencies.publishArtifacts !== undefined) {
+              await this.publishReadOnlyArtifacts(input, currentSandbox(), input.executionFence, abortController.signal);
+            } else await this.dependencies.afterExecution!({
               workspaceId: input.workspaceId,
               session: input.session,
               environment: input.environment,
-              sandbox: currentSandbox(),
-              runtimeGeneration: this.runtimeGenerations.get(input) ?? runtimeGeneration,
-              executionFence,
+              sandbox: lifecycle === undefined ? currentSandbox() : access,
+              runtimeGeneration: this.sessions.get(input)?.generation ?? runtimeGeneration,
+              executionFence: input.executionFence,
             });
-          });
+          }
+        if (finalizationError !== undefined) {
+          throw finalizationError;
+        }
+        const finalWorkspace = this.sessions.get(input)?.workspace;
+        if (finalWorkspace !== undefined && !runFailed && !abortController.signal.aborted) {
+          finalWorkspace.trusted = true;
         }
       } catch (error) {
-        finalizationError ??= error instanceof Error ? error : new Error(String(error));
-      }
-      // Turn completion is a safe point: all harness/subagent activity has
-      // drained. The interval is a target between such points, not a timer
-      // that snapshots files while tools are still writing.
-      // A lost sandbox replaced mid-turn brings its own workspace binding.
-      const turnWorkspace = this.workspaces.get(input) ?? workspace;
-      if (!runFailed && finalizationError === undefined && checkpointService !== undefined && turnWorkspace !== undefined && input.executionFence !== undefined) {
-        const workspace = turnWorkspace;
-        try {
-          const active = await checkpointService.active(workspace.scope);
-          if (active?.candidate.id !== (workspace.activeId ?? undefined)) {
-            throw new Error("Managed workspace checkpoint changed during execution");
-          }
-          if (checkpointService.due(active)) {
-            const fence = input.executionFence;
-            const candidate = await workspace.port.checkpoint({
-              scope: { ...workspace.scope, workId: fence.executionId },
-              fence: checkpointService.runtimeFence(fence, workspace.scope.environmentId),
-              strategy: "checkpoint_restore", binding: workspace.binding,
-              sandbox: { provider: "node", runtimeId: this.runtimeGenerations.get(input) ?? runtimeGeneration },
-              idempotencyKey: `${fence.executionId}-${fence.attemptId}`,
-              signal: abortController.signal,
-            });
-            if (!await checkpointService.publish({ fence, candidate, expectedId: workspace.activeId })) {
-              throw new Error("Managed workspace checkpoint lost its Session Execution fence or canonical pointer");
-            }
-            workspace.activeId = candidate.id;
-          }
-        } catch (error) {
-          finalizationError = error instanceof Error ? error : new Error(String(error));
+        retainFailure(error);
+        // The post-terminal extension may perform work beyond sandbox calls.
+        // A failed callback is not evidence that all its effects are absent.
+        if (dispatchBegan && input.executionFence !== undefined) {
+          try { await this.dependencies.executionDispatches?.finish(input.executionFence, true); }
+          catch (cleanup) { retainFailure(cleanup); }
         }
-      }
-      const leaseLost = abortController.signal.reason === "lease_lost";
-      if (finalizationError !== undefined && !runFailed && !leaseLost) {
-        runtime.broadcastProducedEvent({
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: finalizationError instanceof Error
-              ? finalizationError.message
-              : String(finalizationError),
-            retryStatus: "exhausted",
-          },
-        });
-      }
-      if (
-        !leaseLost && !runFailed && finalizationError === undefined
-        && budgetGate?.reached === true
-      ) {
-        // Official budget stop: thread idle → usage → session idle (budget_reached).
-        // requires_action parking is skipped: budget_reached outranks end_turn but
-        // requires_action already short-circuits earlier when tools are pending.
-        const stopReason = { type: "budget_reached" as const };
-        runtime.broadcastProducedEvent({
-          type: "session.thread_status_idle",
-          agentName: input.session.agent.name,
-          sessionThreadId: "sthr_primary",
-          stopReason,
-        });
-        runtime.broadcastProducedEvent({
-          type: "session.usage",
-          usage: runtime.usageSnapshot(),
-          budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
-        });
-        runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
-      } else if (!leaseLost) {
-        const failed = runFailed || finalizationError !== undefined;
-        const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
-          runtime.pendingConfirmations,
-          asWireEvents(runtime.history.getEvents()),
-        );
-        runtime.broadcastProducedEvent({
-          type: "session.status_idle",
-          stopReason: failed ? { type: "retries_exhausted" }
-            : parkIds.length > 0 ? { type: "requires_action", eventIds: parkIds }
-            : { type: "end_turn" },
-        });
-      }
-      try {
-        await runtime.drain();
-        if (sandboxReady && !sandboxLost && input.executionFence !== undefined) {
-          await this.dependencies.afterExecution?.({
-            workspaceId: input.workspaceId,
-            session: input.session,
-            environment: input.environment,
-            sandbox: currentSandbox(),
-            runtimeGeneration: this.runtimeGenerations.get(input) ?? runtimeGeneration,
-            executionFence: input.executionFence,
-          });
-        }
+        throw escapingFailure;
       } finally {
-        clearNodeSessionBudgetGate(input.session.id);
-        // ADR 0005: keep the sandbox lease through drain, checkpoint and
-        // output publication, not only while the harness runs.
-        await stopHeartbeat();
-        if (this.abortControllers.get(input) === abortController) {
-          this.abortControllers.delete(input);
+        let cleanupFailed = false;
+        try { releaseBudgetGate(); } catch (error) { cleanupFailed = true; retainFailure(error); }
+        // Release this attempt's access only; resource workers own leases.
+        try {
+          {
+            if (lifecycle !== undefined && borrowedAllocation !== undefined && input.executionFence !== undefined) {
+              try {
+                await lifecycle.release({ executionFence: input.executionFence, allocationId: borrowedAllocation,
+                  unknown: providerOutcomeUnknown || providerOperations.size > 0 || liveProcesses.size > 0 });
+              } catch (error) { cleanupFailed = true; retainFailure(error); }
+            }
+            if (dispatchBegan && input.executionFence !== undefined) {
+              const opaque = input.session.agent.openma?.harness !== undefined &&
+                !["default", "pi"].includes(input.session.agent.openma.harness);
+              try {
+                await this.dependencies.executionDispatches?.finish(input.executionFence,
+                  cleanupFailed || providerOutcomeUnknown || providerOperations.size > 0 || toolOperations.size > 0 ||
+                  liveProcesses.size > 0 || (runFailed && opaque));
+              } catch (error) { cleanupFailed = true; retainFailure(error); }
+            }
+          }
+        } finally {
+          if (this.abortControllers.get(input) === abortController) {
+            this.abortControllers.delete(input);
+            this.attemptIds.delete(input);
+          }
         }
+        if (cleanupFailed) throw escapingFailure;
       }
-      if (finalizationError !== undefined && !runFailed) {
-        throw finalizationError;
-      }
-      const finalWorkspace = this.workspaces.get(input);
-      if (finalWorkspace !== undefined && !runFailed && !abortController.signal.aborted) {
-        finalWorkspace.trusted = true;
-      }
+
     }
   }
 
@@ -1253,27 +1628,70 @@ export class DefaultNodeManagedSessionRunner
     executionFence: SessionExecutionFence,
     terminal: CommittedExecutionTerminal,
   ): Promise<void> {
-    if (this.dependencies.afterExecution !== undefined) {
-      if (this.sandboxes.get(input) === undefined) await this.beginSandboxStartup(input);
-      const sandbox = this.sandboxes.get(input);
-      const runtimeGeneration = this.runtimeGenerations.get(input);
-      if (sandbox === undefined || runtimeGeneration === undefined) {
-        throw new Error(`Session ${input.sessionId} sandbox was not started`);
-      }
-      const stopHeartbeat = this.dependencies.sandboxLease === undefined
-        ? async () => undefined
-        : startSandboxHeartbeat(() => this.sandboxes.get(input) ?? sandbox, this.dependencies.sandboxLease);
-      try {
-        await this.dependencies.afterExecution({
-          workspaceId: input.workspaceId,
-          session: input.session,
-          environment: input.environment,
-          sandbox: this.sandboxes.get(input) ?? sandbox,
-          runtimeGeneration,
-          executionFence,
+    const dispatches = this.dependencies.executionDispatches;
+    const readOnlyPublication = this.dependencies.publishArtifacts !== undefined;
+    if (dispatches !== undefined && !await dispatches.recoverTerminal(executionFence, readOnlyPublication)) {
+      throw new Error("Terminal execution has no durable evidence that its operations drained; reconciliation is required");
+    }
+    let completed = false;
+    const lifecycle = this.dependencies.sandboxLifecycle;
+    let allocationId: string | undefined;
+    let pending = 0;
+    let uncertain = false;
+    let primary: Error | undefined;
+    try {
+      if (this.dependencies.afterExecution !== undefined || readOnlyPublication) {
+        if (this.sessions.get(input)?.sandbox === undefined) await this.beginSandboxStartup(input);
+        const sandbox = this.sessions.get(input)?.sandbox;
+        const runtimeGeneration = this.sessions.get(input)?.generation;
+        if (sandbox === undefined || runtimeGeneration === undefined) {
+          throw new Error(`Session ${input.sessionId} sandbox was not started`);
+        }
+        const id = this.sessions.get(input)?.allocationId;
+        if (!readOnlyPublication && lifecycle !== undefined && id !== undefined) {
+          await lifecycle.borrow({ executionFence, allocationId: id });
+          allocationId = id;
+        }
+        const guarded = new Proxy(sandbox, {
+          get(target, property, receiver) {
+            const value = Reflect.get(target, property, receiver);
+            if (typeof value !== "function") return value;
+            if (["runtimeHandle", "runtimeCapabilities", "sessionOutputMountCapabilities", "registerCommandSecrets"].includes(String(property))) return value.bind(target);
+            return async (...args: unknown[]) => {
+              if (uncertain) throw new Error("Publication outcome requires reconciliation");
+              pending++;
+              try { return await value.apply(target, args); }
+              catch (error) { uncertain = true; throw error; }
+              finally { pending--; }
+            };
+          },
         });
-      } finally {
-        await stopHeartbeat();
+        const signal = new AbortController().signal;
+        const access = withSandboxExecutionGuard(guarded, { signal,
+          isValid: () => Date.parse(executionFence.expiresAt) > this.dependencies.clock.now().getTime() });
+        if (readOnlyPublication) await this.publishReadOnlyArtifacts(input, sandbox, executionFence, signal);
+        else await this.dependencies.afterExecution!({ workspaceId: input.workspaceId, session: input.session,
+          environment: input.environment, sandbox: access, runtimeGeneration, executionFence });
+      }
+      completed = true;
+    } catch (error) {
+      primary = error instanceof Error ? error : new Error(String(error));
+      throw primary;
+    } finally {
+      const cleanup: unknown[] = [];
+      try {
+        if (lifecycle !== undefined && allocationId !== undefined) {
+          await lifecycle.release({ executionFence, allocationId, unknown: uncertain || pending > 0 });
+        }
+      } catch (error) { cleanup.push(error); }
+      try { await dispatches?.finish(executionFence, !completed || uncertain || pending > 0 || cleanup.length > 0); }
+      catch (error) { cleanup.push(error); }
+      if (cleanup.length > 0) {
+        if (primary !== undefined) {
+          primary.cause = new AggregateError([...(primary.cause === undefined ? [] : [primary.cause]), ...cleanup], "Publication cleanup failed");
+          throw primary;
+        }
+        throw new AggregateError(cleanup, "Publication cleanup failed");
       }
     }
     // Settle with the outcome the original attempt would have reported.
@@ -1282,14 +1700,44 @@ export class DefaultNodeManagedSessionRunner
     }
   }
 
+  private async publishReadOnlyArtifacts(
+    input: ManagedRunnerContext, sandbox: SandboxExecutor, fence: SessionExecutionFence, signal: AbortSignal,
+  ): Promise<void> {
+    const dispatches = this.dependencies.executionDispatches;
+    let writeUncertain = false;
+    let writeFailure: unknown;
+    let writing = false;
+    const guarded = withSandboxExecutionGuard(sandbox, { signal,
+      isValid: () => !writeUncertain && Date.parse(fence.expiresAt) > this.dependencies.clock.now().getTime() });
+    // Read-only operations hold no mutable resource use: losing their response
+    // cannot change the workspace. The exact allocation stays Session-owned.
+    await this.dependencies.publishArtifacts!({
+      workspaceId: input.workspaceId, session: input.session, executionFence: fence,
+      outputs: readOnlyArtifactOutputs(guarded),
+      write: async operation => {
+        if (writing || writeUncertain) throw new Error("Artifact write is pending or requires reconciliation");
+        writing = true;
+        try {
+          signal.throwIfAborted();
+          if (dispatches && !await dispatches.publicationWrite(fence, false)) throw new Error("Artifact write lost its execution authority");
+          const result = await operation();
+          if (dispatches && !await dispatches.publicationWrite(fence, true)) throw new Error("Artifact write confirmation lost its execution authority");
+          return result;
+        } catch (error) {
+          writeUncertain = true;
+          writeFailure = error;
+          try { await dispatches?.finish(fence, true); }
+          catch (cleanup) { throw new AggregateError([error, cleanup], "Artifact write and uncertainty persistence failed"); }
+          throw error;
+        } finally { writing = false; }
+      },
+    });
+    if (writeUncertain || writing) throw new Error("Artifact write outcome requires reconciliation", { cause: writeFailure });
+  }
+
   async archiveThread(
     input: ArchiveNodeManagedSessionThread,
   ): Promise<void> {
     await this.subagentExecutions.get(input)?.archiveThread(input.threadId);
   }
-}
-
-/** Non-retryable harness failures use ConfigError (detected by error.name). */
-function isNonRetryableHarnessError(error: Error): boolean {
-  return error.name === "ConfigError";
 }

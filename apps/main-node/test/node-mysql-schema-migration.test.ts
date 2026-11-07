@@ -12,10 +12,26 @@ import type {
 
 const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
 const invitationsSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
-const currentSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
+const heldAfterExhaustedSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
+const currentSnapshot = "707d5e5e-e2f0-4960-bae9-524ec170d7d8";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
+  it.each([false, true])("upgrades admission FIFO after an interrupted column/index upgrade (%s)", async (alreadyUpgraded) => {
+    const sql = new MigrationSqlClient(heldAfterExhaustedSnapshot, ["tenant_id", "created_at", "id"]);
+    sql.admissionColumn = alreadyUpgraded;
+    sql.admissionIndex = alreadyUpgraded;
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.admissionColumn).toBe(true);
+    expect(sql.admissionIndex).toBe(true);
+    expect(sql.ddl.filter(query => query.includes("ADD COLUMN `admission_sequence`"))).toHaveLength(alreadyUpgraded ? 0 : 1);
+    expect(sql.ddl).toEqual(expect.arrayContaining([
+      expect.stringMatching(/CREATE TABLE IF NOT EXISTS `managed_session_admission_counters`[\s\S]*ENGINE=InnoDB/),
+    ]));
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.ddl.filter(query => query.includes("ADD COLUMN `admission_sequence`"))).toHaveLength(alreadyUpgraded ? 0 : 1);
+  });
   it.each([
     { name: "a fresh migration", initialIndex: [] },
     {
@@ -78,6 +94,9 @@ describe("main-node MySQL snapshot migrations", () => {
 
 class MigrationSqlClient implements SqlClient {
   createdAttributionIndex = false;
+  admissionColumn = false;
+  admissionIndex = false;
+  readonly ddl: string[] = [];
   readonly legacyTables = new Map<string, number>();
 
   constructor(
@@ -94,6 +113,9 @@ class MigrationSqlClient implements SqlClient {
   }
 
   async exec(sql: string): Promise<void> {
+    this.ddl.push(sql);
+    if (sql.includes("ADD COLUMN `admission_sequence`")) this.admissionColumn = true;
+    if (sql.includes("CREATE INDEX `managed_session_executions_admission_idx`")) this.admissionIndex = true;
     if (/\bDROP\s+TABLE\b/i.test(sql)) {
       throw new Error("DROP command denied to migration user");
     }
@@ -128,6 +150,12 @@ class MigrationStatement implements SqlStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
+    if (this.sql.includes("information_schema.columns") && this.params[1] === "admission_sequence") {
+      return this.client.admissionColumn ? { present: 1 } as T : null;
+    }
+    if (this.sql.includes("information_schema.statistics") && this.params[1] === "managed_session_executions_admission_idx") {
+      return this.client.admissionIndex ? { present: 1 } as T : null;
+    }
     if (this.sql.includes("GET_LOCK")) return { acquired: 1 } as T;
     if (this.sql.includes("RELEASE_LOCK")) return { released: 1 } as T;
     if (this.sql.includes("SELECT snapshot_id FROM openma_schema_metadata")) {

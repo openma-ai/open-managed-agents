@@ -22,6 +22,7 @@ import type {
   SandboxFactoryEnv,
   SandboxFactory,
   SandboxPort,
+  SandboxRuntimeHandle,
   SandboxRuntimePort,
   SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
@@ -377,7 +378,8 @@ export class SpritesRuntime
     }
   }
 
-  async renewLease(input: { ttlMs: number }): Promise<void> {
+  async renewLease(input: { ttlMs: number; signal?: AbortSignal }): Promise<void> {
+    input.signal?.throwIfAborted();
     if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) {
       throw new RangeError("Sprite keep-alive TTL must be positive");
     }
@@ -388,7 +390,7 @@ export class SpritesRuntime
         "-lc",
         `sprite-env curl -sS -H 'Content-Type: application/json' -X PUT /v1/tasks/${keepAliveTaskName} -d '{"expire":${expireSeconds}}' >/dev/null`,
       ],
-      { cwd: "/", timeout: 60_000 },
+      { cwd: "/", timeout: 60_000, signal: input.signal },
     );
     if (result.exitCode !== 0) {
       throw new Error(
@@ -582,6 +584,7 @@ function createProviderWithClient(
   resolveClient: ClientResolver,
 ): ProviderManagedRuntimeProviderPort<SpritesRuntime> {
   return {
+    allocationIsolation: true,
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("Sprites managed allocation requires acquisition context");
@@ -703,13 +706,35 @@ export async function createSpritesSandbox(
   environment: SandboxFactoryEnv,
   options: SpritesProviderOptions = {},
 ): Promise<SpritesRuntime> {
+  return connectSpritesSandbox(context, environment, options);
+}
+
+/** Reconnect the exact Sprite named by a persisted handle. This runs provider
+ * readiness/network operations and requires the caller's lifecycle claim. */
+export async function resumeSpritesSandbox(
+  handle: SandboxRuntimeHandle,
+  context: SandboxFactoryContext,
+  environment: SandboxFactoryEnv,
+  options: SpritesProviderOptions = {},
+): Promise<SpritesRuntime> {
+  rejectSandboxImageSelection("sprites", context.image);
+  rejectPreparedBase("sprites", context.preparedBase);
+  return connectSpritesSandbox(context, environment, options, handle);
+}
+
+async function connectSpritesSandbox(
+  context: SandboxFactoryContext,
+  environment: SandboxFactoryEnv,
+  options: SpritesProviderOptions,
+  handle?: SandboxRuntimeHandle,
+): Promise<SpritesRuntime> {
   const provider = createSpritesProvider({
     ...options,
     token: options.token ?? environment.SPRITES_TOKEN,
     baseURL: options.baseURL ?? environment.SPRITES_API_URL,
   });
-  const workspaceId = environment.OPENMA_WORKSPACE_ID ?? "node-standalone";
-  const environmentId = environment.OPENMA_ENVIRONMENT_ID ?? "node-standalone";
+  const workspaceId = context.workspaceId ?? environment.OPENMA_WORKSPACE_ID ?? "node-standalone";
+  const environmentId = context.environmentId ?? environment.OPENMA_ENVIRONMENT_ID ?? "node-standalone";
   const workId = `work-${labelHash(context.sessionId)}`;
   const scope = {
     workspaceId,
@@ -719,7 +744,7 @@ export async function createSpritesSandbox(
   };
   const controller = new AbortController();
 
-  return provider.create(context, environment, {
+  const acquisition: ProviderManagedRuntimeAcquisitionContext = {
     scope,
     fence: {
       ...scope,
@@ -746,15 +771,43 @@ export async function createSpritesSandbox(
       artifact: { type: "preinstalled" },
     },
     signal: controller.signal,
-  });
+  };
+  return handle === undefined
+    ? provider.create(context, environment, acquisition)
+    : provider.resume(handle, context, environment, acquisition);
 }
 
+/** Independent allocation requires the host to supply allocationId. The
+ * legacy no-allocationId entry deliberately retains a Session-named Sprite;
+ * this declaration does not grant isolation to that legacy managed path. */
 export const sandboxFactory: SandboxFactory = Object.assign(async (context: SandboxFactoryContext, environment: SandboxFactoryEnv) => {
   // Sprites boot a fixed preinstalled runtime; there is no per-session image.
   rejectSandboxImageSelection("sprites", context.image);
   rejectPreparedBase("sprites", context.preparedBase);
   return createSpritesSandbox(context, environment);
-}, { capabilities: { allocationIsolation: true } });
+}, {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "sprites",
+    scope: "provider" as const,
+    getHandle: (sandbox: SandboxPort) => (sandbox as SpritesRuntime).runtimeHandle(),
+    resume: resumeSpritesSandbox,
+    async renewLease(handle: SandboxRuntimeHandle, input: { ttlMs: number; signal: AbortSignal }, env: SandboxFactoryEnv) {
+      input.signal.throwIfAborted();
+      if (handle.provider !== providerName || !handle.runtimeId) throw new Error("Incompatible Sprite resource handle");
+      // The guest task API is the existing keep-alive mechanism; never run
+      // provider.resume (network policy and readiness) to obtain its client.
+      const client = await loadClient({ token: env.SPRITES_TOKEN, baseURL: env.SPRITES_API_URL });
+      const sprite = await client.getSprite(handle.runtimeId);
+      if (sprite.name !== handle.runtimeId) throw new Error("Sprite renewal resolved a different resource");
+      input.signal.throwIfAborted();
+      // Preserve the provider-native task semantics, including wake on guest
+      // activity. A status probe cannot atomically prevent that wake and must
+      // not invent an availability restriction that the old keep-alive lacked.
+      await new SpritesRuntime({ client, sprite }).renewLease(input);
+    },
+  },
+});
 
 export function createSpritesManagedRuntime(options: SpritesManagedRuntimeOptions) {
   const resolveClient = createClientResolver(options);
@@ -795,7 +848,7 @@ export function createSpritesManagedRuntime(options: SpritesManagedRuntimeOption
     ...(options.credentialEgress === undefined
       ? {}
       : { credentialEgress: options.credentialEgress }),
-    reapRuntime: async ({ scope, lease }) => {
+    reapRuntime: async ({ scope, lease, context }) => {
       const client = await resolveClient();
       let sprite: SpriteSdkPort;
       try {
@@ -806,7 +859,7 @@ export function createSpritesManagedRuntime(options: SpritesManagedRuntimeOption
       }
       validateSprite(
         sprite,
-        stableName(scope.sessionId),
+        allocationName(context),
         scope.environmentId,
         scope.sessionId,
       );

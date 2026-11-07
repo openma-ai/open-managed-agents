@@ -116,7 +116,7 @@ describe("@open-managed-agents/vault-forward", () => {
     expect(sent).toEqual(["only"]);
   });
 
-  it("re-sends with the original token when the refresh is rejected", async () => {
+  it("returns the original response without replaying business input when refresh is rejected", async () => {
     const sent: string[] = [];
     let final: { status: number; refreshFailed: boolean; refreshFailureCode: string | null } | null = null;
     const res = await forwardWithRefresh({
@@ -132,7 +132,7 @@ describe("@open-managed-agents/vault-forward", () => {
       },
     });
     expect(res.status).toBe(401);
-    expect(sent).toEqual(["stale", "stale"]);
+    expect(sent).toEqual(["stale"]);
     expect(final).toEqual({ status: 401, refreshFailed: true, refreshFailureCode: "invalid_grant" });
   });
 });

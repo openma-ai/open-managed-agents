@@ -284,6 +284,20 @@ export async function createNodeFoundation(
     );
   }
 
+  async function resumeSandbox(
+    sessionId: string,
+    workdir: string,
+    scope: Pick<import("@open-managed-agents/sandbox").SandboxFactoryContext,
+      "environmentId" | "workspaceId" | "image" | "preparedBase" | "allocationId">,
+    handle: import("@open-managed-agents/sandbox").SandboxRuntimeHandle,
+  ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
+    const binding = components.sandbox.runtimeBinding;
+    if (binding == null) throw new Error("Selected sandbox factory cannot rebind a persisted Session handle");
+    return binding.resume(handle, {
+      ...scope, sessionId, workdir, memoryRoot: memoryBlobLocalDir ?? "", outputsRoot,
+    }, sandboxEnvironment);
+  }
+
   /** A prepared-base builder: same factory and scope as a Session sandbox,
    * deliberately without memory, outputs or any Session context, so nothing
    * Session-owned can end up in the snapshot. */
@@ -524,6 +538,7 @@ export async function createNodeFoundation(
     hub,
     realtimeDescription,
     buildSandbox,
+    resumeSandbox,
     buildPreparedBaseSandbox,
     resolveNodeModelCreds,
     resolveDreamModelCredentials,

@@ -162,6 +162,9 @@ If the page is an error/404/login wall/empty result, output exactly one line sta
  * message byte-for-byte.
  */
 export class ToolFailureError extends Error {
+  /** Explicit tool results have known outcomes. A transport/implementation
+   * exception converted by safe() must keep its uncertainty for the host. */
+  outcomeUnknown = false;
   constructor(message: string) {
     super(message);
     this.name = "ToolFailureError";
@@ -221,7 +224,7 @@ function safe<T>(
       const truncated = msg.length > 10000
         ? msg.slice(0, 5000) + `\n[${msg.length - 10000} characters truncated]\n` + msg.slice(-5000)
         : msg;
-      throw new ToolFailureError(`Error: ${truncated}`);
+      throw Object.assign(new ToolFailureError(`Error: ${truncated}`), { outcomeUnknown: !(err instanceof Error && "outcomeUnknown" in err && err.outcomeUnknown === false), cause: err });
     }
   };
 }

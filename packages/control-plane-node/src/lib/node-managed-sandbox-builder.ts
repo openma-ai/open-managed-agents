@@ -4,6 +4,7 @@ import {
   type SandboxExecutor,
   type SandboxFactoryContext,
   type SandboxImageCatalog,
+  type SandboxRuntimeHandle,
 } from "@open-managed-agents/sandbox";
 import type {
   Environment,
@@ -24,6 +25,7 @@ export interface ManagedSandboxBuilderDependencies {
   workdir(sessionId: string): string;
   /** The foundation's factory call: shared memory/outputs ctx plus scope. */
   build(sessionId: string, workdir: string, scope: SandboxScope): Promise<SandboxExecutor>;
+  resume?(sessionId: string, workdir: string, scope: SandboxScope, handle: SandboxRuntimeHandle): Promise<SandboxExecutor>;
   /** Prepared-base cache; absent leaves creation untouched. */
   preparedBases?: PreparedSandboxBases;
 }
@@ -38,19 +40,20 @@ export interface ManagedSandboxBuilderDependencies {
  */
 export function createManagedSandboxBuilder(dependencies: ManagedSandboxBuilderDependencies) {
   const images = dependencies.images ?? EMPTY_SANDBOX_IMAGE_CATALOG;
-  return async (input: {
+  type Input = {
     workspaceId: string;
     allocationId?: string;
     session: Pick<Session, "id"> & { agent?: Pick<Session["agent"], "openma"> };
     environment: Pick<Environment, "id" | "openma"> & { config?: Environment["config"] };
-  }): Promise<SandboxExecutor> => {
+  };
+  const resolve = (input: Input) => {
     const image = resolveSandboxImage(
       images,
       input.environment.openma?.sandboxImage,
       input.environment.id,
     );
     if (input.allocationId !== undefined && dependencies.capabilities?.allocationIsolation !== true) {
-      throw new Error("Managed checkpoint_restore requires a sandbox factory with allocation isolation");
+      throw new Error("Managed Session resources require a sandbox factory with allocation isolation");
     }
     const scope = {
       ...(input.allocationId === undefined ? {} : { allocationId: input.allocationId }),
@@ -61,6 +64,10 @@ export function createManagedSandboxBuilder(dependencies: ManagedSandboxBuilderD
     const sessionWorkdir = dependencies.workdir(input.session.id);
     const workdir = input.allocationId === undefined ? sessionWorkdir : join(sessionWorkdir, "allocations",
       createHash("sha256").update(JSON.stringify([input.workspaceId, input.environment.id, input.session.id, input.allocationId])).digest("hex"));
+    return { image, scope, workdir };
+  };
+  const create = async (input: Input): Promise<SandboxExecutor> => {
+    const { image, scope, workdir } = resolve(input);
     const build = (preparedBase?: SandboxFactoryContext["preparedBase"]) =>
       dependencies.build(input.session.id, workdir, preparedBase === undefined ? scope : { ...scope, preparedBase });
     const preparedBases = dependencies.preparedBases;
@@ -78,4 +85,11 @@ export function createManagedSandboxBuilder(dependencies: ManagedSandboxBuilderD
       ...(acp !== undefined && { acpRegistry: acp }),
     }, build);
   };
+  return Object.assign(create, {
+    async resume(input: Input, handle: SandboxRuntimeHandle): Promise<SandboxExecutor> {
+      if (dependencies.resume === undefined) throw new Error("Sandbox factory does not support rebinding a persisted handle");
+      const { scope, workdir } = resolve(input);
+      return dependencies.resume(input.session.id, workdir, scope, handle);
+    },
+  });
 }

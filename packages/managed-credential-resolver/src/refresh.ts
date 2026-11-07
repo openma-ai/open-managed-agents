@@ -75,7 +75,9 @@ export async function exchangeRefreshToken(
     clientId?: string;
     clientSecret?: string;
   },
+  signal?: AbortSignal,
 ): Promise<TokenEndpointResult> {
+  signal?.throwIfAborted();
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: input.refreshToken,
@@ -91,18 +93,21 @@ export async function exchangeRefreshToken(
         Accept: "application/json",
       },
       body: body.toString(),
+      signal,
     });
   } catch {
+    signal?.throwIfAborted();
     return { type: "unreachable" };
   }
   if (!res.ok) {
     let oauthError: string | undefined;
     try {
-      const payload = (await res.clone().json()) as { error?: unknown };
+      const payload = (await res.json()) as { error?: unknown };
       if (typeof payload.error === "string" && payload.error.length > 0) {
         oauthError = payload.error;
       }
     } catch {
+      signal?.throwIfAborted();
       /* token endpoint body is not JSON */
     }
     return { type: "rejected", ...(oauthError && { oauthError }) };
@@ -111,6 +116,7 @@ export async function exchangeRefreshToken(
   try {
     tokens = (await res.json()) as typeof tokens;
   } catch {
+    signal?.throwIfAborted();
     return { type: "rejected" };
   }
   if (!tokens.access_token) return { type: "rejected" };
@@ -180,7 +186,9 @@ export async function refreshCredential(
   refresh: ManagedCredentialRefresh,
   staleToken: string,
   failure?: { code: string | null },
+  signal?: AbortSignal,
 ): Promise<string | null> {
+  signal?.throwIfAborted();
   const store = ports.credentials;
   const location: CredentialLocation = {
     workspaceId,
@@ -205,7 +213,7 @@ export async function refreshCredential(
     refreshToken,
     ...(refresh.clientId !== undefined && { clientId: refresh.clientId }),
     ...(refresh.clientSecret !== undefined && { clientSecret: refresh.clientSecret }),
-  });
+  }, signal);
   if (exchanged.type !== "issued") {
     if (failure && failure.code === null && exchanged.oauthError) {
       failure.code = exchanged.oauthError;

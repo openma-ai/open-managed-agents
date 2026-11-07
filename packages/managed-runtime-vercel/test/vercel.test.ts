@@ -32,7 +32,7 @@ class FakeCommand implements VercelCommandPort {
 }
 
 class FakeSandbox implements VercelSandboxSdkPort {
-  readonly name = "oma-3a1d7b6848ba4816d72ee2f2d98b95b4";
+  name = "oma-3a1d7b6848ba4816d72ee2f2d98b95b4";
   status = "running";
   persistent = true;
   tags: Record<string, string> = {};
@@ -82,6 +82,7 @@ class FakeSandbox implements VercelSandboxSdkPort {
 function sdk(sandbox: FakeSandbox): VercelSdkPort {
   return {
     getOrCreate: vi.fn(async (options) => {
+      sandbox.name = options.name;
       sandbox.tags = options.tags;
       return sandbox;
     }),

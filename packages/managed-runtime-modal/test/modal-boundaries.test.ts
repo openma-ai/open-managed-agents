@@ -1,4 +1,5 @@
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -128,6 +129,35 @@ const providerOptions = {
 };
 
 describe("Modal provider boundary contracts", () => {
+  it("uses independent allocation names and validates allocation tags before late reaping", async () => {
+    const boxes = new Map<string, ModalSandboxSdkPort>();
+    const requests: Array<{ name: string; workspace: unknown }> = [];
+    const client: ModalSdkPort = {
+      findByName: async ({ name }) => boxes.get(name) ?? null,
+      create: async request => {
+        requests.push(request);
+        const value = sandbox({ id: request.name, tags: request.tags });
+        boxes.set(request.name, value);
+        return value;
+      },
+      fromId: async id => boxes.get(id)!,
+    };
+    const provider = createModalProvider({ ...providerOptions, client });
+    expect(provider.allocationIsolation).toBe(true);
+    const context = { ...scope, workdir: "/workspace", allocationId: "allocation-a" };
+    await expect(provider.create({ ...context, workspaceId: undefined }, {}, acquisition())).rejects.toThrow("allocation identity");
+    const a = await provider.create(context, {}, acquisition());
+    const b = await provider.create({ ...context, allocationId: "allocation-b" }, {}, acquisition());
+    expect(a.runtimeHandle().runtimeId).not.toBe(b.runtimeHandle().runtimeId);
+    expect(requests[0].workspace).toEqual(requests[1].workspace);
+    const lease = JSON.parse(JSON.stringify({ ...a.runtimeHandle(), allocation: { id: context.allocationId, scope, ownerId: fence.ownerId, generation: fence.generation } }));
+    const restarted = createModalManagedRuntime({ ...providerOptions, client, leaseTtlMs: 100 });
+    await expect(restarted.sandbox.reap({ scope, lease: { ...lease, runtimeId: b.runtimeHandle().runtimeId }, reason: "completed" })).rejects.toThrow("ownership");
+    await restarted.sandbox.reap({ scope, lease, reason: "completed" });
+    expect(boxes.get(a.runtimeHandle().runtimeId)!.terminate).toHaveBeenCalledOnce();
+    expect(boxes.get(b.runtimeHandle().runtimeId)!.terminate).not.toHaveBeenCalled();
+  });
+
   it("adapts every official Modal client operation and credential option", async () => {
     modalFixtureCalls.length = 0;
     const provider = createModalProvider({
@@ -440,10 +470,14 @@ describe("Modal provider boundary contracts", () => {
     await expect(defaultOutput.outputs.capabilities(scope)).resolves.toMatchObject({ strategies: [expect.any(Object)] });
 
     const { sandbox: port } = createModalManagedRuntime({ ...providerOptions, client: sdk(value), leaseTtlMs: 100 });
+    const allocation = { id: "allocation", scope, ownerId: fence.ownerId, generation: fence.generation };
+    await value.setTags({ ...await value.getTags(), oma_allocation: createHash("sha256").update(allocation.id).digest("hex").slice(0, 32) });
     const lease = {
+      allocation,
       leaseId: "lease", runtimeId: "sandbox", provider: "modal", expiresAt: "2026-09-01T00:00:00.000Z",
       handle: { provider: "modal", runtimeId: "sandbox" }, sandbox: {} as never,
     };
+    await expect(port.reap({ scope, lease: { ...lease, allocation: undefined }, reason: "completed" })).rejects.toThrow("no isolated allocation identity");
     await port.reap({ scope, lease, reason: "orphan" } as never);
     expect(value.terminate).toHaveBeenCalled();
     for (const error of [Object.assign(new Error(), { name: "NotFoundError" }), new Error("not found")]) {

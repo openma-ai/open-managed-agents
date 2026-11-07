@@ -14,6 +14,7 @@ import {
   createProviderManagedRuntime,
   type ProviderManagedRuntimeProviderPort,
 } from "../src/index";
+import { isolatedLease } from "./provider-runtime-fixture";
 import { createSandboxSessionMemoryFilePort } from "../src/session-memory-workspace";
 
 const scope = {
@@ -193,7 +194,7 @@ function composition(
 ) {
   return createProviderManagedRuntime({
     providerName: "e2b",
-    provider,
+    provider: { allocationIsolation: true, ...provider },
     context: (inputScope): SandboxFactoryContext => ({
       sessionId: inputScope.sessionId,
       workdir: `/tmp/${inputScope.workId}`,
@@ -541,6 +542,7 @@ describe("provider managed runtime adapter", () => {
     const composed = createProviderManagedRuntime({
       providerName: "ephemeral-provider",
       provider: {
+        allocationIsolation: true,
         create,
         resume: vi.fn(),
         restore: vi.fn(),
@@ -622,7 +624,7 @@ describe("provider managed runtime adapter", () => {
     let mountIdentity = "r2:workspace-bucket:tenant/session";
     const composed = createProviderManagedRuntime({
       providerName: "mount-provider",
-      provider: { create, resume: vi.fn(), restore },
+      provider: { allocationIsolation: true, create, resume: vi.fn(), restore },
       context: (inputScope) => ({ sessionId: inputScope.sessionId, workdir: "/workspace" }),
       environment: () => ({}),
       leaseTtlMs: 90_000,
@@ -732,6 +734,7 @@ describe("provider managed runtime adapter", () => {
     const composed = createProviderManagedRuntime({
       providerName: "e2b",
       provider: {
+        allocationIsolation: true,
         create: async () => allocation,
         resume: vi.fn(),
         restore: vi.fn(),
@@ -795,6 +798,7 @@ describe("provider managed runtime adapter", () => {
     const composed = createProviderManagedRuntime({
       providerName: "e2b",
       provider: {
+        allocationIsolation: true,
         create: async () => created,
         resume: vi.fn(),
         restore: vi.fn(),
@@ -850,6 +854,7 @@ describe("provider managed runtime adapter", () => {
     const stoppedComposition = createProviderManagedRuntime({
       providerName: "e2b",
       provider: {
+        allocationIsolation: true,
         create: async () => stopped,
         resume: vi.fn(),
         restore: vi.fn(),
@@ -897,6 +902,7 @@ describe("provider managed runtime adapter", () => {
     const composed = createProviderManagedRuntime({
       providerName: "e2b",
       provider: {
+        allocationIsolation: true,
         create: async () => created,
         resume: vi.fn(),
         restore: vi.fn(),
@@ -1001,6 +1007,7 @@ describe("provider managed runtime adapter", () => {
     const composed = createProviderManagedRuntime({
       providerName: "e2b",
       provider: {
+        allocationIsolation: true,
         create: async () => previous,
         resume: vi.fn(),
         restore: vi.fn(),
@@ -1071,7 +1078,7 @@ describe("provider managed runtime adapter", () => {
       scope,
       fence,
       checkpoint,
-    })).resolves.toEqual({ provider: "e2b", runtimeId: "checkpoint-restored" });
+    })).resolves.toMatchObject({ provider: "e2b", runtimeId: "checkpoint-restored" });
 
     const failedRestore = runtime("checkpoint-failed");
     vi.mocked(failedRestore.status).mockResolvedValue("stopped");
@@ -1090,6 +1097,7 @@ describe("provider managed runtime adapter", () => {
     const composed = createProviderManagedRuntime({
       providerName: "e2b",
       provider: {
+        allocationIsolation: true,
         create: async () => created,
         resume: vi.fn(),
         restore: vi.fn(),
@@ -1304,7 +1312,7 @@ describe("provider managed runtime adapter", () => {
     );
   });
 
-  it("publishes and resumes an opaque retained-runtime candidate", async () => {
+  it("publishes and resumes an opaque retained candidate within the exact local acquisition", async () => {
     const first = runtime("sandbox-1");
     const resumed = runtime("sandbox-1");
     const prepare = vi.fn(async () => {});
@@ -1349,7 +1357,7 @@ describe("provider managed runtime adapter", () => {
       signal: new AbortController().signal,
     });
 
-    const nextFence = { ...fence, generation: 2, token: "next-secret" };
+    const nextFence = { ...fence };
     const nextBinding = await composed.workspace.materialize({
       scope,
       fence: nextFence,
@@ -1660,7 +1668,7 @@ describe("provider managed runtime adapter", () => {
       restore: vi.fn(),
     };
     const restarted = composition(provider);
-    const lease = { provider: "e2b", runtimeId: "sandbox-orphan-restart" };
+    const lease = JSON.parse(JSON.stringify(isolatedLease("sandbox-orphan-restart")));
 
     await expect(
       restarted.sandbox.reap({ scope, lease, reason: "lease_lost" }),
@@ -1754,7 +1762,7 @@ describe("provider managed runtime adapter", () => {
     expect(created.destroy).toHaveBeenCalledOnce();
   });
 
-  it("does not let a terminated marker suppress cleanup of a newly acquired runtime with the same provider id", async () => {
+  it("rejects reuse of a terminated physical id without destroying the replacement", async () => {
     const first = runtime("stable-provider-id");
     const second = runtime("stable-provider-id");
     const provider = {
@@ -1791,14 +1799,8 @@ describe("provider managed runtime adapter", () => {
     };
     const firstLease = await acquireGeneration(1);
     await composed.sandbox.terminate({ scope, fence, lease: firstLease, reason: "completed" });
-    const secondLease = await acquireGeneration(2);
-    await composed.sandbox.terminate({
-      scope,
-      fence: { ...fence, generation: 2 },
-      lease: secondLease,
-      reason: "completed",
-    });
+    await expect(acquireGeneration(2)).rejects.toThrow(/reused a physical runtime identity/i);
     expect(first.destroy).toHaveBeenCalledOnce();
-    expect(second.destroy).toHaveBeenCalledOnce();
+    expect(second.destroy).not.toHaveBeenCalled();
   });
 });

@@ -206,6 +206,16 @@ test.describe("deployed Console smoke", () => {
     } catch (error) {
       // Surface the real failure; cleanup errors must not mask it.
       bodyFailed = true;
+      if (session) {
+        try {
+          const events = await client.beta.sessions.events.list(session.id, { limit: 100, order: "asc" });
+          console.error("CONSOLE_SESSION_FAILURE", JSON.stringify(events.data.map(event => ({
+            type: event.type,
+            ...("error" in event ? { error: event.error } : {}),
+            ...("stop_reason" in event ? { stop_reason: event.stop_reason } : {}),
+          }))));
+        } catch (diagnosticError) { console.error("Session failure diagnostics unavailable", String(diagnosticError)); }
+      }
       throw error;
     } finally {
       if (session) {

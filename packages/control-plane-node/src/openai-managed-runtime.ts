@@ -11,6 +11,8 @@ export interface NodeOpenAIAgentsRuntimeDependencies {
   secrets: ResourceSecretSealer;
   /** The caller binds the existing runner lookup to its authenticated workspace. */
   connectedSandbox(sessionId: string): SandboxPort | null;
+  withSandbox?<T>(sessionId: string, operation: (sandbox: SandboxPort) => Promise<T>): Promise<T>;
+  sandboxAvailable?(sessionId: string): Promise<boolean>;
 }
 
 const unsupported = (param: string): never => { throw new OpenAIAgentsProtocolError(501, `The configured Node runtime cannot enact ${param}`, param, "unsupported_feature"); };
@@ -34,6 +36,12 @@ export function createNodeOpenAIAgentsRuntime(deps: NodeOpenAIAgentsRuntimeDepen
     if (!sandbox || isNoEnvironmentSandbox(sandbox)) throw new OpenAIAgentsProtocolError(409, "Execution environment is not connected");
     return sandbox;
   }
+  async function usingSandbox<T>(id: string, operation: (sandbox: SandboxPort) => Promise<T>): Promise<T> {
+    if (!deps.withSandbox) return operation(await connected(id));
+    const session = await findSession(id);
+    if (!session) throw new OpenAIAgentsProtocolError(404, "Execution environment not found");
+    return deps.withSandbox(session.id, operation);
+  }
   function directory(path = "/workspace"): string {
     const normalized = path.endsWith("/") ? path.slice(0, -1) : path;
     if ((normalized !== "/workspace" && !normalized.startsWith("/workspace/")) || normalized.includes("\0") || normalized.split("/").some(part => part === ".." || part === ".")) {
@@ -45,19 +53,20 @@ export function createNodeOpenAIAgentsRuntime(deps: NodeOpenAIAgentsRuntimeDepen
     async getEnvironment(id) {
       const session = await findSession(id);
       if (!session) return null;
-      const live = deps.connectedSandbox(session.id);
-      const status = live && !isNoEnvironmentSandbox(live) ? "connected" : session.status === "running" || session.status === "rescheduling" ? "pending" : "disconnected";
+      const live = deps.sandboxAvailable ? await deps.sandboxAvailable(session.id) : deps.connectedSandbox(session.id);
+      const status = live && (typeof live === "boolean" || !isNoEnvironmentSandbox(live)) ? "connected" : session.status === "running" || session.status === "rescheduling" ? "pending" : "disconnected";
       return { id, object: "agent.environment", type: "openai_hosted", status, files: [], plugins: [], skills: [] };
     },
     async writeFile(id, path, content) {
       directory(path);
-      const sandbox = await connected(id);
-      if (!sandbox.writeFileBytes) unsupported("environment.files.binary_write");
-      await sandbox.writeFileBytes!(path, content);
+      await usingSandbox(id, async sandbox => {
+        if (!sandbox.writeFileBytes) unsupported("environment.files.binary_write");
+        await sandbox.writeFileBytes!(path, content);
+      });
     },
     async listFiles(id, path) {
       const relative = directory(path);
-      const sandbox = await connected(id);
+      return usingSandbox(id, async sandbox => {
       if (!sandbox.setEnvVars) unsupported("environment.files.workspace_path");
       // LocalSubprocess translates logical workspace env values; remote
       // providers retain /workspace. No provider-specific host path is exposed.
@@ -77,6 +86,7 @@ export function createNodeOpenAIAgentsRuntime(deps: NodeOpenAIAgentsRuntimeDepen
         entries.push({ path: logical, size_bytes: size });
       }
       return entries;
+      });
     },
   };
   return { mapping, files };

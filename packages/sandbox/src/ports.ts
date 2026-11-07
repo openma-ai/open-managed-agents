@@ -59,6 +59,8 @@ export interface SandboxDuplexProcessPort {
 export interface SandboxRuntimeHandle {
   provider: string;
   runtimeId: string;
+  /** Non-secret JSON routing/host identity needed to reopen the resource. */
+  metadata?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 export type SandboxCheckpointKind = "filesystem" | "memory";
@@ -374,11 +376,50 @@ export interface SandboxFactoryCapabilities {
   nativeMemoryStoreMount?: boolean;
 }
 
+/** Explicit factory-level access to a durable resource reference. Hosts use
+ * this declaration instead of probing methods on a possibly remote SDK/RPC
+ * object. The reference grants no execution or lifecycle authority.
+ *
+ * `resume` is a lifecycle operation: it may start a paused resource, renew its
+ * lease, configure networking, or run readiness commands. The caller MUST own
+ * the resource's durable management claim before invoking it. A missing or
+ * incompatible resource must fail; resume must never allocate a replacement.
+ * Physical-resource handoff still requires provider fencing or independent
+ * allocations; having this port alone does not make overlapping owners safe. */
+export interface SandboxFactoryRuntimeBinding {
+  /** Canonical provider identity stored in handles, independent of host aliases. */
+  readonly provider: string;
+  /** `host` references require the original host and filesystem. They do not
+   * promise process recovery or cross-host migration. `provider` references
+   * require the original provider endpoint/account configuration. */
+  readonly scope: "provider" | "host";
+  /** Only accepts a sandbox created or resumed by this factory. The result
+   * must survive JSON round trips and contain no credentials or SDK objects. */
+  getHandle(sandbox: SandboxPort): SandboxRuntimeHandle;
+  /** Exact-resource TTL/keep-alive operation. Never create, resume, prepare the
+   * workspace or configure networking. A provider's native keep-alive may have
+   * intrinsic activity/wake semantics (Sprites); it is not an atomic no-wake
+   * guarantee. Absence means no renewable provider TTL. */
+  renewLease?(
+    handle: SandboxRuntimeHandle,
+    input: { ttlMs: number; signal: AbortSignal },
+    env: SandboxFactoryEnv,
+  ): Promise<void>;
+  resume(
+    handle: SandboxRuntimeHandle,
+    ctx: SandboxFactoryContext,
+    env: SandboxFactoryEnv,
+  ): Promise<SandboxPort>;
+}
+
 export type SandboxFactory = ((
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,
 ) => Promise<SandboxPort>) & {
   readonly capabilities?: SandboxFactoryCapabilities;
+  /** null explicitly declares unsupported; absent legacy declarations are
+   * also unsupported. Never replace a failed/missing binding with create. */
+  readonly runtimeBinding?: SandboxFactoryRuntimeBinding | null;
 };
 
 /** Declare capabilities on a factory, e.g. a custom composition that wraps an
@@ -388,7 +429,10 @@ export function withSandboxFactoryCapabilities(
   capabilities: SandboxFactoryCapabilities,
 ): SandboxFactory {
   const wrapped = (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => factory(ctx, env);
-  return Object.assign(wrapped, { capabilities: { ...factory.capabilities, ...capabilities } });
+  return Object.assign(wrapped, {
+    capabilities: { ...factory.capabilities, ...capabilities },
+    ...(factory.runtimeBinding === undefined ? {} : { runtimeBinding: factory.runtimeBinding }),
+  });
 }
 
 /** SDK-style provider composition. `SandboxFactory` remains the v0 create
@@ -397,6 +441,10 @@ export function withSandboxFactoryCapabilities(
 export interface SandboxProviderPort<
   Runtime extends SandboxPort & SandboxRuntimePort = SandboxPort & SandboxRuntimePort,
 > {
+  /** create/portable restore allocate a physical resource never shared across
+   * distinct allocationId values, including after delete. Merely accepting
+   * an allocationId does not satisfy this guarantee. */
+  readonly allocationIsolation?: boolean;
   create(
     ctx: SandboxFactoryContext,
     env: SandboxFactoryEnv,

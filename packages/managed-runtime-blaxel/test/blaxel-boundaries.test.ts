@@ -132,6 +132,36 @@ async function consume(process: Awaited<ReturnType<BlaxelRuntime["spawnDuplexPro
 }
 
 describe("Blaxel provider boundary contracts", () => {
+  it("isolates physical names and external IDs and reaps only the old allocation", async () => {
+    const boxes = new Map<string, BlaxelSandboxSdkPort>();
+    const externalIds = new Set<string>();
+    const sdk: BlaxelSdkPort = {
+      createIfNotExists: async request => {
+        externalIds.add(request.externalId!);
+        const value = boxes.get(request.name) ?? sandbox({ name: request.name, labels: request.labels });
+        boxes.set(request.name, value);
+        return value;
+      },
+      get: async name => boxes.get(name)!,
+      delete: vi.fn(async name => { boxes.delete(name); }),
+      updateNetwork: async name => boxes.get(name)!,
+    };
+    const provider = createBlaxelProvider({ client: sdk, image: "image" });
+    expect(provider.allocationIsolation).toBe(true);
+    const context = { ...scope, workdir: "/workspace", allocationId: "allocation-a" };
+    await expect(provider.create({ ...context, workspaceId: undefined }, {}, acquisition())).rejects.toThrow("allocation identity");
+    const a = await provider.create(context, {}, acquisition());
+    const b = await provider.create({ ...context, allocationId: "allocation-b" }, {}, acquisition());
+    expect(a.runtimeHandle().runtimeId).not.toBe(b.runtimeHandle().runtimeId);
+    expect(externalIds.size).toBe(2);
+    const lease = JSON.parse(JSON.stringify({ ...a.runtimeHandle(), allocation: { id: context.allocationId, scope, ownerId: fence.ownerId, generation: fence.generation } }));
+    const restarted = createBlaxelManagedRuntime({ client: sdk, image: "image", leaseTtlMs: 100 });
+    await expect(restarted.sandbox.reap({ scope, lease: { ...lease, runtimeId: b.runtimeHandle().runtimeId }, reason: "completed" })).rejects.toThrow("allocation identity");
+    await restarted.sandbox.reap({ scope, lease, reason: "completed" });
+    expect(boxes.has(a.runtimeHandle().runtimeId)).toBe(false);
+    expect(boxes.has(b.runtimeHandle().runtimeId)).toBe(true);
+  });
+
   it("loads and delegates to the optional SDK lazily when no client is injected", async () => {
     const provider = createBlaxelProvider({ image: "image" });
     await expect(provider.create(
@@ -436,12 +466,15 @@ describe("Blaxel provider boundary contracts", () => {
   });
 
   it("reaps only owned runtimes and recognizes every provider not-found shape", async () => {
+    const allocation = { id: "allocation", scope, ownerId: fence.ownerId, generation: fence.generation };
+    const name = `oma-${createHash("sha256").update(JSON.stringify(["blaxel", scope.workspaceId, scope.environmentId, scope.sessionId, allocation.id])).digest("hex").slice(0, 32)}`;
     const lease = {
+      allocation,
       leaseId: "lease",
-      runtimeId: expectedName,
+      runtimeId: name,
       provider: "blaxel",
       expiresAt: "2026-09-01T00:00:00.000Z",
-      handle: { provider: "blaxel", runtimeId: expectedName },
+      handle: { provider: "blaxel", runtimeId: name },
       sandbox: {} as never,
     };
     for (const error of [

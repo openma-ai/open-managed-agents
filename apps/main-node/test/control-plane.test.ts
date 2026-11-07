@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { sandboxFactory as localSandboxFactory } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import type { SandboxFactory } from "@open-managed-agents/sandbox";
 import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-store";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
@@ -187,10 +188,10 @@ describe("createNodeControlPlane dependency injection", () => {
 describe("createNodeControlPlane dependency injection (official /v1 Sessions)", () => {
   it("runs v1 session turns through the injected sandbox factory as well", async () => {
     const calls: string[] = [];
-    const sandboxFactory: SandboxFactory = async (ctx) => {
+    const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0]) => {
       calls.push(ctx.sessionId);
       throw new Error("injected sandbox factory was called");
-    };
+    }, { capabilities: localSandboxFactory.capabilities, runtimeBinding: localSandboxFactory.runtimeBinding });
     const cp = await controlPlane({ sandbox: sandboxFactory }, { OPENMA_TEST_SANDBOX_PROVIDER: undefined });
     const env = await (await cp.fetch(new Request("http://cp/v1/environments", json({
       name: "cp-env", config: { type: "cloud", networking: { type: "unrestricted" } },

@@ -31,7 +31,7 @@ class FakeCommand implements SuperserveCommandSessionPort {
 
 class FakeSandbox implements SuperserveSandboxSdkPort {
   readonly id = "sandbox-1";
-  readonly name = "oma-3a1d7b6848ba4816d72ee2f2d98b95b4";
+  name = "oma-3a1d7b6848ba4816d72ee2f2d98b95b4";
   readonly metadata: Record<string, string> = {};
   status = "active";
   readonly files = {
@@ -74,6 +74,7 @@ class FakeSandbox implements SuperserveSandboxSdkPort {
 function sdk(sandbox: FakeSandbox): SuperserveSdkPort {
   return {
     create: vi.fn(async (options) => {
+      sandbox.name = options.name;
       Object.assign(sandbox.metadata, options.metadata);
       return sandbox;
     }),

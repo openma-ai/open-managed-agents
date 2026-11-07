@@ -1,4 +1,5 @@
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -133,18 +134,51 @@ function acquisition(signal = new AbortController().signal) {
 }
 
 describe("Superserve provider boundary contracts", () => {
+  it("filters Session lookups by allocation name and never reaps the replacement allocation", async () => {
+    const boxes = new Map<string, SuperserveSandboxSdkPort>();
+    const client: SuperserveSdkPort = {
+      create: async request => {
+        const value = sandbox({ id: request.name, name: request.name, metadata: request.metadata });
+        boxes.set(value.id, value);
+        return value;
+      },
+      connect: async id => boxes.get(id)!,
+      list: async () => [...boxes.values()].map(value => info(value)),
+      killById: vi.fn(async id => { boxes.delete(id); }),
+    };
+    const provider = createSuperserveProvider({ client });
+    expect(provider.allocationIsolation).toBe(true);
+    const context = { ...scope, workdir: "/workspace", allocationId: "allocation-a" };
+    await expect(provider.create({ ...context, workspaceId: undefined }, {}, acquisition())).rejects.toThrow("allocation identity");
+    const a = await provider.create(context, {}, acquisition());
+    const b = await provider.create({ ...context, allocationId: "allocation-b" }, {}, acquisition());
+    expect(a.runtimeHandle().runtimeId).not.toBe(b.runtimeHandle().runtimeId);
+    const lease = JSON.parse(JSON.stringify({ ...a.runtimeHandle(), allocation: { id: context.allocationId, scope, ownerId: fence.ownerId, generation: fence.generation } }));
+    const restarted = createSuperserveManagedRuntime({ client, leaseTtlMs: 100 });
+    await expect(restarted.sandbox.reap({ scope, lease: { ...lease, runtimeId: b.runtimeHandle().runtimeId }, reason: "completed" })).rejects.toThrow("ownership");
+    await restarted.sandbox.reap({ scope, lease, reason: "completed" });
+    expect(boxes.has(a.runtimeHandle().runtimeId)).toBe(false);
+    expect(boxes.has(b.runtimeHandle().runtimeId)).toBe(true);
+    await provider.create({ ...context, allocationId: "snapshot-allocation" }, {}, {
+      ...acquisition(), environment: { type: "base", identity: "snapshot", artifact: { type: "snapshot", reference: "checkpoint" } },
+    });
+    createSuperserveManagedRuntime({ client, fromTemplate: "template", leaseTtlMs: 100 });
+  });
+
   it("adapts every official SDK operation and connection option", async () => {
     superserveFixtureCalls.length = 0;
     const provider = createSuperserveProvider({ credentials: { apiKey: "key", baseUrl: "https://superserve" }, fromTemplate: "template" });
-    const created = await provider.create({ sessionId: scope.sessionId, workdir: "/workspace" }, {}, acquisition());
-    await provider.resume(created.runtimeHandle(), { sessionId: scope.sessionId, workdir: "/workspace" }, {}, acquisition());
+    const allocation = { id: "allocation", scope, ownerId: fence.ownerId, generation: fence.generation };
+    const context = { ...scope, allocationId: allocation.id, workdir: "/workspace" };
+    const created = await provider.create(context, {}, acquisition());
+    await provider.resume(created.runtimeHandle(), context, {}, acquisition());
     expect(superserveFixtureCalls).toEqual(expect.arrayContaining([
       { type: "list", input: expect.objectContaining({ apiKey: "key", baseUrl: "https://superserve", metadata }) },
       { type: "create", input: expect.objectContaining({ apiKey: "key", baseUrl: "https://superserve", fromTemplate: "template" }) },
       { type: "connect", input: expect.objectContaining({ id: created.runtimeHandle().runtimeId, options: expect.objectContaining({ apiKey: "key", baseUrl: "https://superserve" }) }) },
     ]));
     const runtime = createSuperserveManagedRuntime({ credentials: { apiKey: "key" }, leaseTtlMs: 100 });
-    const lease = { leaseId: "lease", runtimeId: created.runtimeHandle().runtimeId, provider: "superserve", expiresAt: fence.expiresAt, handle: created.runtimeHandle(), sandbox: {} as never };
+    const lease = { allocation, runtimeId: created.runtimeHandle().runtimeId, provider: "superserve" };
     await runtime.sandbox.reap({ scope, lease, reason: "completed" } as never);
     expect(superserveFixtureCalls).toContainEqual({
       type: "kill", input: { id: created.runtimeHandle().runtimeId, options: { apiKey: "key" } },
@@ -361,13 +395,15 @@ describe("Superserve provider boundary contracts", () => {
     const withOutput = createSuperserveManagedRuntime({ client: sdk(value), leaseTtlMs: 100, outputStore: new InMemoryBlobStore() });
     await expect(withOutput.outputs.capabilities(scope)).resolves.toMatchObject({ strategies: [expect.any(Object)] });
 
-    const lease = { leaseId: "lease", runtimeId: value.id, provider: "superserve", expiresAt: fence.expiresAt, handle: { provider: "superserve", runtimeId: value.id }, sandbox: {} as never };
+    const allocation = { id: "allocation", scope, ownerId: fence.ownerId, generation: fence.generation };
+    const allocationName = `oma-${createHash("sha256").update(JSON.stringify(["superserve", scope.workspaceId, scope.environmentId, scope.sessionId, allocation.id])).digest("hex").slice(0, 32)}`;
+    const lease = { allocation, runtimeId: value.id, provider: "superserve" };
     const absent = createSuperserveManagedRuntime({ client: sdk(value), leaseTtlMs: 100 });
     await expect(absent.sandbox.reap({ scope, lease, reason: "orphan" } as never)).resolves.toBeUndefined();
-    const liveSdk = sdk(value, { boxes: [info(value)] });
+    const liveSdk = sdk(value, { boxes: [info(value, { name: allocationName })] });
     await createSuperserveManagedRuntime({ client: liveSdk, leaseTtlMs: 100 }).sandbox.reap({ scope, lease, reason: "orphan" } as never);
     expect(liveSdk.killById).toHaveBeenCalledWith(value.id);
-    const foreign = sandbox({ metadata: {} });
+    const foreign = sandbox({ name: allocationName, metadata: {} });
     await expect(createSuperserveManagedRuntime({ client: sdk(foreign, { boxes: [info(foreign)] }), leaseTtlMs: 100 }).sandbox.reap(
       { scope, lease, reason: "orphan" } as never,
     )).rejects.toThrow("ownership metadata");

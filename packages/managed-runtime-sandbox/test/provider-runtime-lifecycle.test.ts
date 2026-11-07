@@ -7,6 +7,7 @@ import type { SandboxCheckpointHandle } from "@open-managed-agents/sandbox";
 
 import {
   acquire,
+  isolatedLease,
   binding,
   composition,
   fence,
@@ -251,7 +252,7 @@ describe("provider runtime lifecycle invariants", () => {
     await expect(composed.sandbox.terminate({
       scope,
       fence,
-      lease: { provider: "e2b", runtimeId: "missing" },
+      lease: isolatedLease("missing"),
       reason: "failed",
     })).rejects.toThrow(/not attached/i);
   });
@@ -259,7 +260,7 @@ describe("provider runtime lifecycle invariants", () => {
   it("supports provider-specific orphan reaping and rejects wrong-provider orphans", async () => {
     const reapRuntime = vi.fn(async () => {});
     const composed = composition(provider(), { reapRuntime });
-    const lease = { provider: "e2b", runtimeId: "orphan" };
+    const lease = isolatedLease("orphan");
     await composed.sandbox.reap({ scope, lease, reason: "lease_lost" });
     expect(reapRuntime).toHaveBeenCalledWith(expect.objectContaining({ scope, lease }));
     await composed.sandbox.reap({ scope, lease, reason: "lease_lost" });
@@ -276,15 +277,20 @@ describe("provider runtime lifecycle invariants", () => {
     const attached = runtime("attached-orphan");
     const composed = composition(provider(attached));
     const attachedLease = await acquire(composed);
+    await expect(composed.sandbox.reap({ scope, lease: attachedLease, reason: "failed" }))
+      .rejects.toThrow(/active sandbox allocation/i);
+    vi.mocked(attached.destroy!).mockRejectedValueOnce(new Error("delete temporarily failed"));
+    await expect(composed.sandbox.terminate({ scope, fence, lease: attachedLease, reason: "failed" }))
+      .rejects.toThrow("delete temporarily failed");
     await composed.sandbox.reap({ scope, lease: attachedLease, reason: "failed" });
-    expect(attached.destroy).toHaveBeenCalledOnce();
+    expect(attached.destroy).toHaveBeenCalledTimes(2);
 
     const resumed = runtime("undestroyable-orphan", { destroy: undefined });
     const selected = provider(resumed);
     const orphaned = composition(selected);
     await expect(orphaned.sandbox.reap({
       scope,
-      lease: { provider: "e2b", runtimeId: "undestroyable-orphan" },
+      lease: isolatedLease("undestroyable-orphan"),
       reason: "failed",
     })).rejects.toThrow(/reaping requires a destroy method/i);
   });
@@ -539,9 +545,9 @@ describe("provider process checkpoint validation", () => {
     expect(invalid.destroy).toHaveBeenCalledOnce();
   });
 
-  it("treats a restored provider id as a new live generation", async () => {
+  it("restores a process checkpoint into an independently owned allocation", async () => {
     const first = runtime("checkpoint-runtime");
-    const restored = runtime("checkpoint-runtime");
+    const restored = runtime("restored-checkpoint-runtime");
     const composed = composition(provider(first), {
       runtimeCheckpoint: {
         kind: "process",

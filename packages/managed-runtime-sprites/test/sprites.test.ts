@@ -262,7 +262,7 @@ describe("Sprites managed runtime provider", () => {
     expect(sdk.deleteSprite).toHaveBeenCalledWith(sprite.name);
   });
 
-  it("uses stable identity, persistent filesystem, auto-pause handoff, and duplex execution", async () => {
+  it("uses an allocation identity, persistent filesystem, suspend, and duplex execution", async () => {
     const sprite = new FakeSprite("placeholder");
     const sdk = client(sprite);
     (sdk.getSprite as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
@@ -337,7 +337,7 @@ describe("Sprites managed runtime provider", () => {
     const suspended = await runtime.sandbox.suspend({ scope, fence, lease, signal });
     expect(sprite.execFileHTTP).toHaveBeenCalledWith("/bin/sync", [], expect.any(Object));
     expect(sprite.closeControlConnection).toHaveBeenCalledOnce();
-    await runtime.sandbox.reap({ scope, lease: suspended, reason: "completed" });
+    await runtime.sandbox.terminate({ scope, fence, lease: suspended, reason: "completed" });
     expect(sdk.deleteSprite).toHaveBeenCalledWith(sprite.name);
   });
 

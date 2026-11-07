@@ -996,6 +996,20 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       const runtime = createNodeOpenAIAgentsRuntime({
         environments, sessions: native.sessions, secrets: openAIAgentsSecrets,
         connectedSandbox: sessionId => managedRuntimeRunner.connectedSandbox({ workspaceId, sessionId }),
+        sandboxAvailable: sessionId => managedRuntimeRunner.sandboxAvailable({ workspaceId, sessionId }),
+        withSandbox: async (sessionId, operation) => {
+          if (config.processMode !== "standalone") throw new OpenAIAgentsProtocolError(409, "Execution environment is not connected to this runtime");
+          const context = await managedRuntimeReaders.executionContext.find({ workspaceId, sessionId });
+          if (!context) throw new OpenAIAgentsProtocolError(404, "Execution environment not found");
+          try {
+            return await managedRuntimeRunner.withSessionSandbox({ workspaceId, sessionId, ...context, initialEvents: [] }, operation);
+          } catch (error) {
+            if (error instanceof Error && error.name === "NodeSessionSandboxLifecycleError") {
+              throw new OpenAIAgentsProtocolError(409, error.message);
+            }
+            throw error;
+          }
+        },
       });
       const resources = createResourcesHandler({
         agents, environments, files, secrets: openAIAgentsSecrets, runtime: runtime.files,

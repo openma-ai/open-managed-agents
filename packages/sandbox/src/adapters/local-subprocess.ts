@@ -37,11 +37,14 @@ import {
   mkdirSync,
   readlinkSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { hostname } from "node:os";
+import { createHash } from "node:crypto";
 import type {
   ProcessHandle,
   SandboxDuplexProcess,
@@ -49,6 +52,9 @@ import type {
   SandboxDuplexProcessSpec,
   SandboxExecutor,
   SandboxFactory,
+  SandboxFactoryContext,
+  SandboxFactoryRuntimeBinding,
+  SandboxRuntimeHandle,
 } from "../ports";
 import { rejectSandboxImageSelection } from "../sandbox-images";
 import { rejectPreparedBase } from "../ports";
@@ -59,6 +65,10 @@ const moduleLogger = getLogger("local-sandbox");
 export interface LocalSubprocessSandboxOptions {
   /** Per-session working directory. Created if missing. */
   workdir: string;
+  /** Physical allocation identity supplied by the host. */
+  allocationId?: string;
+  /** Reopen an existing workspace without creating a missing directory. */
+  existingWorkdir?: boolean;
   /**
    * Default command timeout in milliseconds (matches the SandboxExecutor
    * port contract). Per-call timeout overrides this.
@@ -128,6 +138,7 @@ export class LocalSubprocessSandbox
   private rootMountBase: string | null;
   private ownedRootSymlinks = new Map<string, string>();
   private logger: NonNullable<LocalSubprocessSandboxOptions["logger"]>;
+  private readonly handle: SandboxRuntimeHandle;
 
   constructor(opts: LocalSubprocessSandboxOptions) {
     this.workdir = resolve(opts.workdir);
@@ -139,8 +150,13 @@ export class LocalSubprocessSandbox
       warn: (msg, ctx) => moduleLogger.warn({ ...(ctx as Record<string, unknown> ?? {}) }, msg),
       log: (msg) => moduleLogger.info(msg),
     };
-    mkdirSync(this.workdir, { recursive: true });
+    if (!opts.existingWorkdir) mkdirSync(this.workdir, { recursive: true });
+    this.handle = localRuntimeHandle(this.workdir, opts.allocationId);
   }
+
+  /** Filesystem identity only; child processes, mounts and command secrets
+   * belong to this disposable client and are not recovered by this handle. */
+  runtimeHandle(): SandboxRuntimeHandle { return { ...this.handle }; }
 
   async exec(command: string, timeout?: number): Promise<string> {
     const timeoutMs = timeout ?? this.defaultTimeoutMs;
@@ -469,6 +485,7 @@ export class LocalSubprocessSandbox
       rmSync(this.workdir, { recursive: true, force: true });
     } catch (err) {
       this.logger.warn(`destroy: failed to remove workdir ${this.workdir}`, err);
+      throw err;
     }
   }
 
@@ -724,12 +741,52 @@ class BackgroundProcess implements ProcessHandle {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0]) => {
+function localRuntimeHandle(workdir: string, allocationId?: string): SandboxRuntimeHandle {
+  const canonical = realpathSync(workdir);
+  const directory = lstatSync(canonical);
+  if (!directory.isDirectory()) throw new Error("Local subprocess workspace is not a directory");
+  return {
+    provider: "local-subprocess",
+    runtimeId: createHash("sha256").update(JSON.stringify({
+      version: 1, host: hostname(), workdir: canonical,
+      device: String(directory.dev), inode: String(directory.ino), allocationId: allocationId ?? null,
+    })).digest("hex"),
+  };
+}
+
+function createLocalSandbox(ctx: SandboxFactoryContext, existingWorkdir = false): LocalSubprocessSandbox {
   rejectSandboxImageSelection("local-subprocess", ctx.image);
   rejectPreparedBase("local-subprocess", ctx.preparedBase);
   return new LocalSubprocessSandbox({
     workdir: ctx.workdir,
+    allocationId: ctx.allocationId,
+    existingWorkdir,
     memoryRoot: ctx.memoryRoot,
     outputsRoot: ctx.outputsRoot,
   });
-}, { capabilities: { allocationIsolation: true } });
+}
+
+const runtimeBinding: SandboxFactoryRuntimeBinding = {
+  provider: "local-subprocess",
+  scope: "host",
+  getHandle: sandbox => (sandbox as LocalSubprocessSandbox).runtimeHandle(),
+  async resume(handle, ctx) {
+    if (handle.provider !== "local-subprocess"
+      || handle.runtimeId !== localRuntimeHandle(ctx.workdir, ctx.allocationId).runtimeId) {
+      throw new Error("Local subprocess handle does not match this host, workspace or allocation");
+    }
+    const sandbox = createLocalSandbox(ctx, true);
+    // Refuse a directory replacement between the first check and construction.
+    if (sandbox.runtimeHandle().runtimeId !== handle.runtimeId) {
+      throw new Error("Local subprocess workspace changed while reconnecting");
+    }
+    return sandbox;
+  },
+};
+
+/** Rebinding recovers the existing filesystem on this host only. It does not
+ * recover child processes, in-memory settings, or prove that old work drained. */
+export const sandboxFactory: SandboxFactory = Object.assign(
+  async (ctx: SandboxFactoryContext) => createLocalSandbox(ctx),
+  { capabilities: { allocationIsolation: true }, runtimeBinding },
+);

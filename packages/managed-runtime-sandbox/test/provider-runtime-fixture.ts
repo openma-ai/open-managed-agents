@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 import type {
   ManagedRuntimePlan,
+  ManagedSandboxLease,
   RuntimeResourceFence,
   RuntimeResourceScope,
   WorkspaceStrategy,
@@ -113,6 +114,7 @@ export function provider(
   created: TestRuntime = runtime(),
 ): ProviderManagedRuntimeProviderPort<TestRuntime> {
   return {
+    allocationIsolation: true,
     create: vi.fn(async () => created),
     resume: vi.fn(async () => created),
     restore: vi.fn(async () => created),
@@ -125,7 +127,7 @@ export function composition(
 ): ProviderManagedRuntimeComposition {
   return createProviderManagedRuntime({
     providerName: "e2b",
-    provider: selectedProvider,
+    provider: { allocationIsolation: true, ...selectedProvider },
     context: (inputScope) => ({
       sessionId: inputScope.sessionId,
       workdir: `/tmp/${inputScope.workId}`,
@@ -184,4 +186,12 @@ export async function acquire(
     outputs: null,
     signal: options.signal ?? new AbortController().signal,
   });
+}
+
+/** Stand-in for an identity persisted by a completed isolated acquisition. */
+export function isolatedLease(runtimeId: string): ManagedSandboxLease {
+  return {
+    provider: "e2b", runtimeId,
+    allocation: { id: `allocation-${runtimeId}`, scope: { ...scope }, ownerId: fence.ownerId, generation: fence.generation },
+  };
 }

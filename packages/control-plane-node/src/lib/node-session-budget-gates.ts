@@ -8,24 +8,24 @@ import {
  * Live SessionBudgetGate instances for in-flight Node turns. Sandbox
  * inference-proxy and Pi share this gate → domain modelEgress only.
  */
-const GATES = new Map<string, SessionBudgetGate>();
+type Scope = { workspaceId: string; sessionId: string };
+const GATES = new Map<string, { gate: SessionBudgetGate; token: object }>();
+const key = (scope: Scope) => JSON.stringify([scope.workspaceId, scope.sessionId]);
 
 export function registerNodeSessionBudgetGate(
-  sessionId: string,
+  scope: Scope,
   gate: SessionBudgetGate | null | undefined,
-): void {
-  if (!gate) {
-    GATES.delete(sessionId);
-    return;
-  }
-  GATES.set(sessionId, gate);
-}
-
-export function clearNodeSessionBudgetGate(sessionId: string): void {
-  GATES.delete(sessionId);
+): () => void {
+  if (!gate) return () => {};
+  const identity = key(scope);
+  const token = {};
+  GATES.set(identity, { gate, token });
+  return () => {
+    if (GATES.get(identity)?.token === token) GATES.delete(identity);
+  };
 }
 
 /** Domain ModelEgress for the session's live gate, or null when inactive. */
-export function nodeSessionModelEgress(sessionId: string): ModelEgress | null {
-  return modelEgress(GATES.get(sessionId) ?? null);
+export function nodeSessionModelEgress(scope: Scope): ModelEgress | null {
+  return modelEgress(GATES.get(key(scope))?.gate ?? null);
 }

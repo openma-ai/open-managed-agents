@@ -183,7 +183,7 @@ export type SqlErrorTranslator = (error: unknown, hints?: { sql?: string }) => u
 export function driverRetry(translate: SqlErrorTranslator) {
   return function retry<A>(
     operation: () => Promise<A>,
-    hints?: { sql?: string },
+    hints?: { sql?: string; retryConnectionLost?: boolean },
   ): Promise<A> {
     return retryTransientDb(operation, { ...hints, translate });
   };
@@ -205,7 +205,7 @@ function noteRetries(count: number, tag: string | undefined): void {
  */
 export async function retryTransientDb<A>(
   operation: () => Promise<A>,
-  options?: { sql?: string; translate?: SqlErrorTranslator },
+  options?: { sql?: string; translate?: SqlErrorTranslator; retryConnectionLost?: boolean },
 ): Promise<A> {
   const hints = options?.sql !== undefined ? { sql: options.sql } : undefined;
   const translate = options?.translate ?? ((error: unknown) => error);
@@ -218,7 +218,12 @@ export async function retryTransientDb<A>(
     {
       schedule: transientDbRetrySchedule,
       while: (error: unknown) => {
-        const transient = isTransientDbError(error);
+        // A lost connection may have followed a committed write. Neither SQL
+        // text nor first()/all() proves a read-only/idempotent operation (e.g.
+        // INSERT RETURNING). Retry only when the caller explicitly supplies
+        // that guarantee; rollback-confirmed deadlocks/lock waits remain safe.
+        const transient = isTransientDbError(error) &&
+          (errorTag(error) !== "ConnectionLost" || options?.retryConnectionLost === true);
         if (transient) {
           failures.n += 1;
           failures.tag = errorTag(error);

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   Environment,
   Session,
@@ -21,6 +21,7 @@ import {
   type RunNodeSessionExecution,
 } from "../../../packages/control-plane-node/src/lib/node-session-execution-worker";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import { ProcessInvariantError } from "../../../packages/control-plane-node/src/lib/process-invariant";
 
 const session: Session = {
   id: "session_01",
@@ -89,6 +90,12 @@ function accepted(id: string, type: "user.message" | "user.interrupt" = "user.me
           processedAt: "2026-09-04T00:00:01.000Z",
         }] as const,
       };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((yes) => { resolve = yes; });
+  return { promise, resolve };
 }
 
 describe("NodeSessionExecutionWorker", () => {
@@ -673,6 +680,170 @@ describe("NodeSessionExecutionWorker", () => {
     expect(errors.some((error) => error.message === "poll failed")).toBe(true);
   });
 
+  it("settles an active run after stop but leaves queued work for a restart", async () => {
+    const finished = deferred<void>();
+    runtime.run = async (input) => {
+      runs.push(input);
+      if (input.executionId === "before_stop") await finished.promise;
+    };
+    const executor = worker("stopping_worker", { maxConcurrent: 1 });
+    await executor.sessionEventsAccepted(accepted("before_stop"));
+    await executor.sessionEventsAccepted(accepted("after_stop"));
+
+    executor.stop();
+    await executor.sessionEventsAccepted(accepted("admitted_after_stop"));
+    finished.resolve();
+    await executor.waitForIdle();
+    await executor.poll();
+    expect(runs.map((run) => run.executionId)).toEqual(["before_stop"]);
+    await expect(coordinator.find({
+      workspaceId: "workspace_01", executionId: "before_stop",
+    })).resolves.toMatchObject({ state: "completed" });
+    await expect(coordinator.find({
+      workspaceId: "workspace_01", executionId: "after_stop",
+    })).resolves.toMatchObject({ state: "queued" });
+    await expect(coordinator.find({
+      workspaceId: "workspace_01", executionId: "admitted_after_stop",
+    })).resolves.toMatchObject({ state: "queued" });
+
+    executor.start();
+    try {
+      await executor.waitForIdle();
+      expect(runs.map((run) => run.executionId).sort()).toEqual([
+        "admitted_after_stop", "after_stop", "before_stop",
+      ]);
+      await expect(coordinator.find({
+        workspaceId: "workspace_01", executionId: "after_stop",
+      })).resolves.toMatchObject({ state: "completed" });
+      await expect(coordinator.find({
+        workspaceId: "workspace_01", executionId: "admitted_after_stop",
+      })).resolves.toMatchObject({ state: "completed" });
+    } finally {
+      executor.stop();
+    }
+  });
+
+  it("runs and settles a claim that returns after stop without abandoning its lease", async () => {
+    const claimed = deferred<void>();
+    const deliverClaim = deferred<void>();
+    const started = deferred<void>();
+    const finished = deferred<void>();
+    let claimCount = 0;
+    runtime.run = async (input) => {
+      runs.push(input);
+      started.resolve();
+      await finished.promise;
+    };
+    const executor = worker("claim_during_stop", {
+      coordinator: Object.assign(Object.create(coordinator), {
+        claim: async (input: Parameters<typeof coordinator.claim>[0]) => {
+          claimCount++;
+          const result = await coordinator.claim(input);
+          claimed.resolve();
+          await deliverClaim.promise;
+          return result;
+        },
+      }),
+    });
+
+    const admission = executor.sessionEventsAccepted(accepted("claim_before_stop"));
+    await claimed.promise;
+    executor.stop();
+    let drained = false;
+    const draining = executor.waitForIdle().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    deliverClaim.resolve();
+    await admission;
+    await started.promise;
+    expect(drained).toBe(false);
+    finished.resolve();
+    await draining;
+    expect(claimCount).toBe(1);
+    expect(runs.map((run) => run.executionId)).toEqual(["claim_before_stop"]);
+    await expect(coordinator.find({
+      workspaceId: "workspace_01", executionId: "claim_before_stop",
+    })).resolves.toMatchObject({ state: "completed" });
+  });
+
+  it("drains a final shutdown before returning and keeps the Session out of cancellation", async () => {
+    const finished = deferred<void>();
+    runtime.run = async (input) => { runs.push(input); await finished.promise; };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("shutdown_drain"));
+    let drained = false;
+    const stopping = executor.shutdown({ drainTimeoutMs: 1_000, cancelTimeoutMs: 5 });
+    expect(executor.shutdown()).toBe(stopping);
+    void stopping.then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    finished.resolve();
+    await stopping;
+    expect(cancellations).toEqual([]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "shutdown_drain" }))
+      .resolves.toMatchObject({ state: "completed" });
+    expect(() => executor.start()).toThrow(/shut down/i);
+  });
+
+  it("bounds shutdown cancellation, stops renewal and leaves unfinished work for lease recovery", async () => {
+    const finished = deferred<void>();
+    runtime.run = async (input) => { runs.push(input); await finished.promise; };
+    runtime.cancel = async (input) => {
+      cancellations.push(input.reason);
+      await new Promise<void>(() => {});
+    };
+    const renew = vi.fn(coordinator.renew.bind(coordinator));
+    const settle = vi.fn(coordinator.settle.bind(coordinator));
+    const executor = worker("shutdown_deadline", {
+      heartbeatIntervalMs: 2,
+      leaseTtlMs: 50,
+      coordinator: Object.assign(Object.create(coordinator), { renew, settle }),
+    });
+    await executor.sessionEventsAccepted(accepted("shutdown_deadline"));
+    await executor.shutdown({ drainTimeoutMs: 0, cancelTimeoutMs: 5 });
+    expect(cancellations).toEqual(["lease_lost"]);
+    const renewals = renew.mock.calls.length;
+    finished.resolve();
+    await executor.waitForIdle();
+    await new Promise((resolve) => setTimeout(resolve, 8));
+    expect(renew).toHaveBeenCalledTimes(renewals);
+    expect(settle).not.toHaveBeenCalled();
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "shutdown_deadline" }))
+      .resolves.toMatchObject({ state: "running" });
+  });
+
+  it("does not start or renew a claim arriving after the final shutdown deadline", async () => {
+    const claimed = deferred<void>();
+    const deliver = deferred<void>();
+    const findContext = vi.fn(context.find);
+    const renew = vi.fn(coordinator.renew.bind(coordinator));
+    const settle = vi.fn(coordinator.settle.bind(coordinator));
+    const executor = worker("late_shutdown_claim", {
+      context: { find: findContext },
+      coordinator: Object.assign(Object.create(coordinator), {
+        renew, settle,
+        claim: async (input: Parameters<typeof coordinator.claim>[0]) => {
+          const result = await coordinator.claim(input);
+          claimed.resolve();
+          await deliver.promise;
+          return result;
+        },
+      }),
+    });
+    const admission = executor.sessionEventsAccepted(accepted("late_shutdown_claim"));
+    await claimed.promise;
+    await executor.shutdown({ drainTimeoutMs: 0, cancelTimeoutMs: 0 });
+    deliver.resolve();
+    await admission;
+    await executor.waitForIdle();
+    expect(runs).toEqual([]);
+    expect(findContext).not.toHaveBeenCalled();
+    expect(renew).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "late_shutdown_claim" }))
+      .resolves.toMatchObject({ state: "running" });
+  });
+
   it("applies the documented scheduler defaults", () => {
     expect(() => new NodeSessionExecutionWorker({
       coordinator,
@@ -878,7 +1049,7 @@ describe("NodeSessionExecutionWorker", () => {
     await executor.waitForIdle();
   });
 
-  it("keeps the newer active handle if a faulty coordinator duplicates a claim", async () => {
+  it("stops admission and exits when a coordinator duplicates active ownership", async () => {
     await coordinator.admit({
       execution: {
         id: "duplicate_claim",
@@ -889,7 +1060,7 @@ describe("NodeSessionExecutionWorker", () => {
       },
     });
     const claimed = await coordinator.claim({
-      ownerId: "seed",
+      ownerId: "duplicate_worker",
       attemptId: "seed_attempt",
       claimedAt: "2026-09-04T00:00:02.000Z",
       leaseTtlMs: 30_000,
@@ -899,8 +1070,10 @@ describe("NodeSessionExecutionWorker", () => {
 
     let claimCount = 0;
     const releases: Array<() => void> = [];
+    const processExit = vi.fn();
     runtime.run = async () => await new Promise<void>((resolve) => releases.push(resolve));
     const executor = worker("duplicate_worker", {
+      processExit,
       maxConcurrent: 2,
       coordinator: {
         ...coordinator,
@@ -914,12 +1087,24 @@ describe("NodeSessionExecutionWorker", () => {
       },
     });
 
-    await executor.poll();
-    expect(releases).toHaveLength(2);
+    await expect(executor.poll()).rejects.toBeInstanceOf(ProcessInvariantError);
+    expect(processExit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(releases).toHaveLength(1);
     releases[0]?.();
     await Promise.resolve();
-    releases[1]?.();
     await executor.waitForIdle();
+  });
+
+  it("escalates an explicitly shared invariant even when it has an attempt owner", async () => {
+    const processExit = vi.fn(); const settle = vi.fn(coordinator.settle.bind(coordinator));
+    runtime.run = async () => { throw new ProcessInvariantError("shared coordination state corrupted"); };
+    const executor = worker("fatal-owner", { processExit,
+      coordinator: Object.assign(Object.create(coordinator), { settle }),
+      onError: () => { throw new Error("broken observer"); },
+    });
+    await executor.sessionEventsAccepted(accepted("fatal-owned")); await executor.waitForIdle();
+    expect(processExit).toHaveBeenCalledExactlyOnceWith(1); expect(settle).not.toHaveBeenCalled();
+    expect(await coordinator.find({ workspaceId: "workspace_01", executionId: "fatal-owned" })).toMatchObject({ state: "running" });
   });
 
   it("contains background polling errors when no observer is configured", async () => {
@@ -1089,6 +1274,24 @@ describe("NodeSessionExecutionWorker", () => {
     expect(observedFence?.expiresAt).toBe("2026-09-04T00:01:00.000Z");
     release?.();
     await executor.waitForIdle();
+  });
+
+  it.each([false, true])("does not invent an ACK or replay settle after response loss (committed=%s)", async committed => {
+    const settle = vi.fn(async (input: Parameters<typeof coordinator.settle>[0]) => {
+      if (committed) await coordinator.settle(input);
+      throw new ConnectionLost({ op: "settle", cause: "response lost" });
+    });
+    const observer = vi.fn(() => { throw new Error("observer failed"); });
+    runtime.run = async input => { runs.push(input); throw new Error("owned failure"); };
+    const executor = worker("settler", {
+      coordinator: Object.assign(Object.create(coordinator), { settle }), onError: observer,
+    });
+    await executor.sessionEventsAccepted(accepted("settle-unknown")); await executor.waitForIdle();
+    expect(settle).toHaveBeenCalledOnce(); expect(observer).toHaveBeenCalledOnce();
+    expect(await coordinator.find({ workspaceId: "workspace_01", executionId: "settle-unknown" }))
+      .toMatchObject({ state: committed ? "failed" : "running" });
+    await executor.poll(); await executor.waitForIdle(); expect(runs).toHaveLength(1);
+    executor.stop();
   });
 
   it("cancels a completed local attempt when settlement loses its fence", async () => {

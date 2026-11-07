@@ -227,8 +227,13 @@ function hash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-function stableName(sessionId: string): string {
-  return `oma-${hash(sessionId, 32)}`;
+function stableName(context: SandboxFactoryContext): string {
+  if (context.allocationId === undefined) return `oma-${hash(context.sessionId, 32)}`;
+  if (!context.allocationId || !context.workspaceId || !context.environmentId) {
+    throw new Error("Superserve allocation identity requires workspace and environment scope");
+  }
+  return `oma-${hash(JSON.stringify([providerName, context.workspaceId, context.environmentId,
+    context.sessionId, context.allocationId]), 32)}`;
 }
 
 function ownershipMetadata(environmentId: string, sessionId: string): Record<string, string> {
@@ -476,10 +481,10 @@ async function findOwnedSandbox(
   environmentId: string,
   sessionId: string,
   signal: AbortSignal,
+  name: string,
 ): Promise<SuperserveSandboxInfo | undefined> {
   const metadata = ownershipMetadata(environmentId, sessionId);
   const boxes = await sdk.list({ metadata, signal });
-  const name = stableName(sessionId);
   return boxes.find((candidate) => candidate.name === name && !isTerminal(candidate.status));
 }
 
@@ -491,13 +496,14 @@ async function acquireSandbox(
 ): Promise<SuperserveSandboxSdkPort> {
   acquisition.signal.throwIfAborted();
   const sdk = await resolveSdk();
-  const name = stableName(context.sessionId);
+  const name = stableName(context);
   const metadata = ownershipMetadata(acquisition.scope.environmentId, acquisition.scope.sessionId);
   const existing = await findOwnedSandbox(
     sdk,
     acquisition.scope.environmentId,
     acquisition.scope.sessionId,
     acquisition.signal,
+    name,
   );
   let sandbox: SuperserveSandboxSdkPort;
   if (existing !== undefined) {
@@ -544,6 +550,7 @@ async function acquireSandbox(
         acquisition.scope.environmentId,
         acquisition.scope.sessionId,
         acquisition.signal,
+        name,
       );
       if (raced === undefined) throw error;
       sandbox = await sdk.connect(raced.id, { signal: acquisition.signal });
@@ -567,6 +574,7 @@ function createProviderWithSdk(
   resolveSdk: SdkResolver,
 ): ProviderManagedRuntimeProviderPort<SuperserveRuntime> {
   return {
+    allocationIsolation: true,
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("Superserve managed allocation requires acquisition context");
@@ -590,7 +598,7 @@ function createProviderWithSdk(
         const info = await sandbox.getInfo();
         validateSandbox(
           info,
-          stableName(context.sessionId),
+          stableName(context),
           acquisition.scope.environmentId,
           acquisition.scope.sessionId,
         );
@@ -665,14 +673,15 @@ export function createSuperserveManagedRuntime(options: SuperserveManagedRuntime
     ...(options.credentialEgress === undefined
       ? {}
       : { credentialEgress: options.credentialEgress }),
-    reapRuntime: async ({ scope, lease }) => {
+    reapRuntime: async ({ scope, lease, context }) => {
+      // The generic host requires allocation proof before invoking cleanup.
       const sdk = await resolveSdk();
       const boxes = await sdk.list({
         metadata: ownershipMetadata(scope.environmentId, scope.sessionId),
       });
       const info = boxes.find((candidate) => candidate.id === lease.runtimeId);
       if (info === undefined) return;
-      validateSandbox(info, stableName(scope.sessionId), scope.environmentId, scope.sessionId);
+      validateSandbox(info, stableName(context), scope.environmentId, scope.sessionId);
       // killById is idempotent and, unlike connect(), does not wake a paused orphan.
       await sdk.killById(info.id);
     },

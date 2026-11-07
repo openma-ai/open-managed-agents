@@ -63,7 +63,11 @@ export class Disposables {
     try {
       await stop();
     } catch (error) {
-      this.#onError(name, error);
+      try {
+        this.#onError(name, error);
+      } catch {
+        // Observability failure must not skip the remaining stop hooks.
+      }
     }
   }
 }

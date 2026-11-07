@@ -106,8 +106,13 @@ function hash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-function stableName(sessionId: string): string {
-  return `oma-${hash(sessionId, 32)}`;
+function stableName(context: SandboxFactoryContext): string {
+  if (context.allocationId === undefined) return `oma-${hash(context.sessionId, 32)}`;
+  if (!context.allocationId || !context.workspaceId || !context.environmentId) {
+    throw new Error("Vercel allocation identity requires workspace and environment scope");
+  }
+  return `oma-${hash(JSON.stringify([providerName, context.workspaceId, context.environmentId,
+    context.sessionId, context.allocationId]), 32)}`;
 }
 
 function ownershipTags(environmentId: string, sessionId: string): Record<string, string> {
@@ -328,13 +333,14 @@ function createProviderWithSdk(
   resolveSdk: SdkResolver,
 ): ProviderManagedRuntimeProviderPort<VercelRuntime> {
   return {
+    allocationIsolation: true,
     async create(context, _environment, acquisition) {
       if (acquisition === undefined) {
         throw new Error("Vercel managed allocation requires acquisition context");
       }
       acquisition.signal.throwIfAborted();
       const sdk = await resolveSdk();
-      const name = stableName(context.sessionId);
+      const name = stableName(context);
       const tags = ownershipTags(acquisition.scope.environmentId, acquisition.scope.sessionId);
       const [extra, policy] = await Promise.all([
         options.createOptions?.({ ...acquisition, name, ownershipTags: tags }) ?? {},
@@ -382,6 +388,9 @@ function createProviderWithSdk(
       }
       acquisition.signal.throwIfAborted();
       const sdk = await resolveSdk();
+      if (context.allocationId !== undefined && handle.runtimeId !== stableName(context)) {
+        throw new Error("Vercel runtime handle does not match the allocation identity");
+      }
       const sandbox = await sdk.get({
         name: handle.runtimeId,
         resume: true,
@@ -389,7 +398,7 @@ function createProviderWithSdk(
       });
       validateSandbox(
         sandbox,
-        stableName(context.sessionId),
+        stableName(context),
         acquisition.scope.environmentId,
         acquisition.scope.sessionId,
       );
@@ -453,7 +462,10 @@ export function createVercelManagedRuntime(options: VercelManagedRuntimeOptions)
     ...(options.credentialEgress === undefined
       ? {}
       : { credentialEgress: options.credentialEgress }),
-    reapRuntime: async ({ scope, lease }) => {
+    reapRuntime: async ({ scope, lease, context }) => {
+      if (!context.allocationId || lease.runtimeId !== stableName(context)) {
+        throw new Error("Vercel cleanup requires matching allocation identity");
+      }
       const sdk = await resolveSdk();
       let sandbox: VercelSandboxSdkPort;
       try {
@@ -464,7 +476,7 @@ export function createVercelManagedRuntime(options: VercelManagedRuntimeOptions)
       }
       validateSandbox(
         sandbox,
-        stableName(scope.sessionId),
+        stableName(context),
         scope.environmentId,
         scope.sessionId,
       );

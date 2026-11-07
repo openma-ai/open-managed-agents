@@ -397,6 +397,8 @@ async function allocate(
 }
 
 export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
+  // Both create and portable restore receive a fresh server-generated ID.
+  allocationIsolation: true,
   create: (ctx, env) => allocate(ctx, env),
   async resume(handle, _ctx, env) {
     if (handle.provider !== "opensandbox" || !handle.runtimeId) throw new Error("Incompatible OpenSandbox runtime handle");
@@ -438,4 +440,32 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
 // Every create owns a fresh provider ID; resume and destroy use captured IDs.
 export const sandboxFactory: SandboxFactory = Object.assign((
   ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1],
-) => sandboxProvider.create(ctx, env), { capabilities: { allocationIsolation: true } });
+) => sandboxProvider.create(ctx, env), {
+  capabilities: { allocationIsolation: true },
+  runtimeBinding: {
+    provider: "opensandbox",
+    scope: "provider" as const,
+    getHandle: (sandbox: SandboxPort) => (sandbox as OpenSandbox).runtimeHandle(),
+    resume: sandboxProvider.resume,
+    async renewLease(handle: SandboxRuntimeHandle, input: { ttlMs: number; signal: AbortSignal }, env: SandboxFactoryEnv) {
+      input.signal.throwIfAborted();
+      if (handle.provider !== "opensandbox" || !handle.runtimeId) throw new Error("Incompatible OpenSandbox resource handle");
+      if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) throw new RangeError("OpenSandbox TTL must be positive");
+      const sdk = await loadSdk();
+      const manager = sdk.SandboxManager.create({ connectionConfig: configuration(sdk, optionsFromEnvironment(env)) });
+      let failure: unknown;
+      let failed = false;
+      try {
+        input.signal.throwIfAborted();
+        await manager.renewSandbox(handle.runtimeId, input.ttlMs / 1000);
+      } catch (error) { failed = true; failure = error; throw error; }
+      finally {
+        try { await manager.close(); }
+        catch (cleanup) {
+          if (failed) throw new AggregateError([failure, cleanup], "Provider renewal and client cleanup failed", { cause: failure });
+          throw cleanup;
+        }
+      }
+    },
+  },
+});

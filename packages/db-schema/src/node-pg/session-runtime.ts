@@ -9,6 +9,7 @@ export const managed_session_executions = pgTable(
     lane_id: text("lane_id").notNull(),
     id: text("id").notNull(),
     admitted_at_ms: bigint("admitted_at_ms", { mode: "number" }).notNull(),
+    admission_sequence: bigint("admission_sequence", { mode: "number" }).notNull().default(0),
     events_json: text("events_json").notNull(),
     events_fingerprint: text("events_fingerprint").notNull(),
     state: text("state").notNull(),
@@ -41,5 +42,19 @@ export const managed_session_executions = pgTable(
       table.admitted_at_ms,
       table.id,
     ),
+    index("managed_session_executions_admission_idx").on(
+      table.workspace_id, table.session_id, table.lane_id, table.admission_sequence,
+    ),
   ],
+);
+
+/** Serializes admission in each Session; the counter is not execution authority. */
+export const managed_session_admission_counters = pgTable(
+  "managed_session_admission_counters",
+  {
+    workspace_id: text("workspace_id").notNull(),
+    session_id: text("session_id").notNull(),
+    last_sequence: bigint("last_sequence", { mode: "number" }).notNull().default(0),
+  },
+  (table) => [primaryKey({ columns: [table.workspace_id, table.session_id] })],
 );

@@ -10,6 +10,7 @@
     "./dispatch": "./src/dispatch.ts",
     "./history": "./src/history.ts",
     "./lifecycle": "./src/lifecycle.ts",
+    "./sandbox-binding": "./src/sandbox-binding.ts",
     "./stream": "./src/stream.ts",
     "./settle-events": "./src/settle-events.ts"
   },

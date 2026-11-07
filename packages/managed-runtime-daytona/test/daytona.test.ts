@@ -151,6 +151,40 @@ async function acquireRetainedRuntime(
 }
 
 describe("Daytona managed runtime provider package", () => {
+  it("isolates create and portable restore allocations and reaps only the serialized old incarnation", async () => {
+    const client = new FakeDaytonaClient();
+    const options = { client, image: "image", leaseTtlMs: 30_000, environmentId: scope.environmentId };
+    const provider = daytonaRuntime.createDaytonaProvider(client, options, scope.environmentId);
+    expect(provider.allocationIsolation).toBe(true);
+    await expect(provider.create({ sessionId: scope.sessionId, workdir: "/workspace", allocationId: "unscoped" }, {})).rejects.toThrow("allocation identity");
+    await provider.create({ sessionId: "legacy-image", workdir: "/workspace" }, {});
+    await daytonaRuntime.createDaytonaProvider(client, { ...options, image: undefined, snapshot: "base" }, scope.environmentId)
+      .create({ sessionId: "legacy-snapshot", workdir: "/workspace" }, {});
+    await expect(daytonaRuntime.createDaytonaProvider(client, { ...options, image: undefined }, scope.environmentId)
+      .create({ sessionId: "legacy-no-image", workdir: "/workspace" }, {})).rejects.toThrow("requires an Environment image or snapshot");
+    for (const restoring of [false, true]) {
+      const prefix = restoring ? "restore" : "create";
+      const contextA = { ...scope, workdir: "/workspace", allocationId: `${prefix}-a` };
+      const contextB = { ...contextA, allocationId: `${prefix}-b` };
+      const checkpoint = { provider: "daytona", checkpointId: "same-checkpoint", sourceRuntimeId: "original",
+        kind: "filesystem" as const, scope: "portable" as const };
+      const a = restoring ? await provider.restore(checkpoint, contextA, {}) : await provider.create(contextA, {});
+      const b = restoring ? await provider.restore(checkpoint, contextB, {}) : await provider.create(contextB, {});
+      await provider.resume(a.runtimeHandle(), contextA, {});
+      expect(a.runtimeHandle().runtimeId).not.toBe(b.runtimeHandle().runtimeId);
+      expect(client.sandboxes.get(a.runtimeHandle().runtimeId)!.name)
+        .not.toBe(client.sandboxes.get(b.runtimeHandle().runtimeId)!.name);
+      const lease = JSON.parse(JSON.stringify({ ...a.runtimeHandle(),
+        allocation: { id: contextA.allocationId, scope, ownerId: fence.ownerId, generation: fence.generation } }));
+      const restarted = await daytonaRuntime.createDaytonaManagedRuntime(options);
+      await expect(restarted.sandbox.reap({ scope, lease: { ...lease, runtimeId: b.runtimeHandle().runtimeId }, reason: "completed" })).rejects.toThrow("ownership");
+      await restarted.sandbox.reap({ scope, lease, reason: "completed" });
+      expect(await a.status()).toBe("stopped");
+      expect(await b.status()).toBe("running");
+      await expect(restarted.sandbox.reap({ scope, lease: { ...lease, allocation: undefined }, reason: "completed" })).rejects.toThrow("no isolated allocation identity");
+    }
+  });
+
   it("runs an AMA worker through the swappable lifecycle and resource Ports", async () => {
     const createDriver = Reflect.get(
       daytonaRuntime,
@@ -267,7 +301,7 @@ describe("Daytona managed runtime provider package", () => {
     expect(sandbox.state).toBe("stopped");
   });
 
-  it("refuses to attach a stable-name sandbox owned by another Environment", async () => {
+  it("allocates independently of a legacy stable-name sandbox owned by another Environment", async () => {
     const client = new FakeDaytonaClient();
     const foreign = new FakeDaytonaSandbox(
       "sandbox_foreign",
@@ -285,10 +319,9 @@ describe("Daytona managed runtime provider package", () => {
       leaseTtlMs: 90_000,
     });
 
-    await expect(acquireRetainedRuntime(driver)).rejects.toThrow(
-      "ownership labels do not match",
-    );
-    expect(client.sandboxes).toHaveLength(1);
+    const { lease } = await acquireRetainedRuntime(driver);
+    expect(lease.runtimeId).not.toBe(foreign.id);
+    expect(client.sandboxes).toHaveLength(2);
     expect(foreign.state).toBe("started");
   });
 
@@ -304,8 +337,9 @@ describe("Daytona managed runtime provider package", () => {
       },
     );
     let raced = false;
-    client.create = async () => {
+    client.create = async (input) => {
       raced = true;
+      Object.defineProperty(winner, "name", { value: input.name });
       client.sandboxes.set(winner.id, winner);
       const error = new Error("conflict") as Error & { statusCode?: number };
       error.statusCode = 409;

@@ -206,7 +206,8 @@ describe("Blaxel managed runtime provider", () => {
       idempotencyKey: "checkpoint-1",
       signal,
     });
-    const nextFence = { ...fence, generation: 2, token: "next" };
+    // Retained compute can resume only under the exact original owner fence.
+    const nextFence = fence;
     const nextWorkspace = await runtime.workspace.materialize({
       scope,
       fence: nextFence,
@@ -231,6 +232,8 @@ describe("Blaxel managed runtime provider", () => {
     expect(sandbox.archive).toHaveBeenCalledOnce();
     expect(sandbox.unarchive).toHaveBeenCalledOnce();
 
+    await expect(runtime.sandbox.reap({ scope, lease, reason: "completed" })).rejects.toThrow("active sandbox allocation");
+    await runtime.sandbox.terminate({ scope, fence, lease, reason: "completed" });
     await runtime.sandbox.reap({ scope, lease, reason: "completed" });
     expect(client.delete).toHaveBeenCalledWith(sandbox.metadata.name);
   });

@@ -636,7 +636,9 @@ describe("Sandbox lifecycle", () => {
         R2_ACCESS_KEY_ID: "access",
         R2_SECRET_ACCESS_KEY: "secret",
       } as any,
-      { createSandbox: () => fakeSandbox as any },
+      { createSandbox: (_env, runtimeId) => ({ ...fakeSandbox,
+        runtimeHandle: () => ({ provider: "cloudflare", runtimeId }),
+      }) as any },
     );
     const scope = {
       workspaceId: "tenant-1",
@@ -726,7 +728,9 @@ describe("Sandbox lifecycle", () => {
     const runtime = createCloudflareManagedRuntime(
       { SANDBOX: {} } as any,
       {
-        createSandbox: () => fakeSandbox as any,
+        createSandbox: (_env, runtimeId) => ({ ...fakeSandbox,
+          runtimeHandle: () => ({ provider: "cloudflare", runtimeId }),
+        }) as any,
         controlPlaneBaseUrl: "https://api.openma.test/v1",
       },
     );

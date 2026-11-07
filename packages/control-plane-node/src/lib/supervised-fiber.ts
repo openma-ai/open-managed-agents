@@ -1,20 +1,20 @@
-import { Effect, Fiber } from "effect";
+import { Cause, Effect, Fiber } from "effect";
 
 /**
- * Run a background effect as a fiber. Typed failures and defects are logged
- * by `onFailure` and do not escape as unhandled rejections.
+ * Own a critical background fiber. The caller must handle expected operation
+ * failures inside the loop; unhandled failures/defects go to its fatal owner.
+ * Interruption is the only normal way to stop a still-required supervisor.
  */
 export function runSupervised<A>(
   effect: Effect.Effect<A, unknown>,
   onFailure: (error: unknown) => void,
+  onUnexpectedExit: () => void = () => {},
 ): Fiber.RuntimeFiber<void, never> {
   const supervised = effect.pipe(
-    Effect.catchAll((error) => Effect.sync(() => {
-      onFailure(error);
-    })),
-    Effect.catchAllDefect((defect) => Effect.sync(() => {
-      onFailure(defect);
-    })),
+    Effect.tap(() => Effect.sync(onUnexpectedExit)),
+    Effect.catchAllCause((cause) => Cause.isInterruptedOnly(cause)
+      ? Effect.void
+      : Effect.sync(() => { onFailure(Cause.squash(cause)); })),
     Effect.asVoid,
   );
   return Effect.runFork(supervised);
