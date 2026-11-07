@@ -52,6 +52,9 @@
   --control-h: calc(var(--type-line) + var(--density-unit) * 10);
   --chip-h: 26px;
   --filter-chip-max-w: 240px;
+  --filter-chip-clear-w: 20px;
+  --combobox-menu-min-w: 200px;
+  --local-combobox-menu-max-h: 18rem;
   --switch-w: 36px;
   --switch-h: 20px;
   --switch-thumb-size: 14px;

@@ -290,7 +290,7 @@ export function Combobox<T>({
       <PopoverContent
         align="start"
         // Match trigger width so the dropdown lines up with the trigger.
-        className="p-0 w-[var(--radix-popover-trigger-width)] min-w-[200px]"
+        className="p-0 w-[var(--radix-popover-trigger-width)] min-w-[var(--combobox-menu-min-w)]"
       >
         <Command shouldFilter={false} className="max-h-80">
           {!noSearch && (
