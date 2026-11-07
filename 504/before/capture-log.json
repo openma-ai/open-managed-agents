@@ -1,0 +1,646 @@
+[
+  {
+    "name": "01-agents",
+    "routePath": "/agents",
+    "reqs": [
+      "GET /agents",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/agents?limit=20",
+      "GET /v1/agents?limit=200&include_archived=true",
+      "GET /v1/skills?limit=200",
+      "GET /v1/oma/model_cards?limit=200"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 64,
+          "width": 95.0625,
+          "height": 28
+        },
+        {
+          "x": 350.0625,
+          "y": 65,
+          "width": 132.03125,
+          "height": 26
+        },
+        {
+          "x": 488.09375,
+          "y": 65,
+          "width": 148.9375,
+          "height": 26
+        },
+        {
+          "x": 643.03125,
+          "y": 78,
+          "width": 415.359375,
+          "height": 0
+        },
+        {
+          "x": 1064.390625,
+          "y": 62,
+          "width": 256,
+          "height": 32
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "02-sessions",
+    "routePath": "/sessions",
+    "reqs": [
+      "GET /sessions",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/deployments?limit=200",
+      "GET /v1/sessions?limit=20",
+      "GET /v1/agents?limit=200&include_archived=true",
+      "GET /v1/environments?limit=200",
+      "GET /v1/vaults?limit=200",
+      "GET /v1/files?limit=200",
+      "GET /v1/memory_stores?limit=200"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": null,
+      "toolbarChildren": [
+        {
+          "x": 519,
+          "y": 153,
+          "width": 165.109375,
+          "height": 26
+        },
+        {
+          "x": 690.109375,
+          "y": 153,
+          "width": 148.9375,
+          "height": 26
+        },
+        {
+          "x": 845.046875,
+          "y": 153,
+          "width": 107.96875,
+          "height": 26
+        },
+        {
+          "x": 959.015625,
+          "y": 152,
+          "width": 130.78125,
+          "height": 28
+        },
+        {
+          "x": 1095.796875,
+          "y": 153,
+          "width": 133.03125,
+          "height": 26
+        },
+        {
+          "x": 249,
+          "y": 150,
+          "width": 256,
+          "height": 32
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "03-deployments",
+    "routePath": "/deployments",
+    "reqs": [
+      "GET /deployments",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/agents?limit=200&include_archived=true",
+      "GET /v1/deployments?status=active&limit=20"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": null,
+      "toolbarChildren": [
+        {
+          "x": 519,
+          "y": 153,
+          "width": 165.109375,
+          "height": 26
+        },
+        {
+          "x": 690.109375,
+          "y": 153,
+          "width": 107.96875,
+          "height": 26
+        },
+        {
+          "x": 804.078125,
+          "y": 153,
+          "width": 133.03125,
+          "height": 26
+        },
+        {
+          "x": 249,
+          "y": 150,
+          "width": 256,
+          "height": 32
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "04-environments",
+    "routePath": "/environments",
+    "reqs": [
+      "GET /environments",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/oma/sandbox_images",
+      "GET /v1/environments?limit=20"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": null,
+      "toolbarChildren": [
+        {
+          "x": 519,
+          "y": 153,
+          "width": 132.03125,
+          "height": 26
+        },
+        {
+          "x": 249,
+          "y": 150,
+          "width": 256,
+          "height": 32
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "05-runtimes",
+    "routePath": "/runtimes",
+    "reqs": [
+      "GET /runtimes",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/oma/runtimes"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 64,
+          "width": 134.25,
+          "height": 28
+        },
+        {
+          "x": 389.25,
+          "y": 65,
+          "width": 80.328125,
+          "height": 26
+        },
+        {
+          "x": 475.578125,
+          "y": 78,
+          "width": 844.8125,
+          "height": 0
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "06-evals",
+    "routePath": "/evals",
+    "reqs": [
+      "GET /evals",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/oma/evals/runs?limit=100"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 65,
+          "width": 80.328125,
+          "height": 26
+        },
+        {
+          "x": 335.328125,
+          "y": 78,
+          "width": 985.0625,
+          "height": 0
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "07-files",
+    "routePath": "/files",
+    "reqs": [
+      "GET /files",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/files?limit=20",
+      "GET /v1/sessions?limit=200"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 65,
+          "width": 79.140625,
+          "height": 26
+        },
+        {
+          "x": 334.140625,
+          "y": 78,
+          "width": 724.25,
+          "height": 0
+        },
+        {
+          "x": 1064.390625,
+          "y": 62,
+          "width": 256,
+          "height": 32
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "08-skills",
+    "routePath": "/skills",
+    "reqs": [
+      "GET /skills",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/skills?limit=20",
+      "GET /v1/oma/skill-sources/installed"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": null,
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 128,
+          "width": 116.09375,
+          "height": 28
+        },
+        {
+          "x": 371.09375,
+          "y": 129,
+          "width": 83.40625,
+          "height": 26
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "09-vaults",
+    "routePath": "/vaults",
+    "reqs": [
+      "GET /vaults",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/vaults?limit=20"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 64,
+          "width": 90.546875,
+          "height": 28
+        },
+        {
+          "x": 345.546875,
+          "y": 65,
+          "width": 132.03125,
+          "height": 26
+        },
+        {
+          "x": 483.578125,
+          "y": 65,
+          "width": 148.9375,
+          "height": 26
+        },
+        {
+          "x": 638.515625,
+          "y": 78,
+          "width": 681.875,
+          "height": 0
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "10-memory",
+    "routePath": "/memory",
+    "reqs": [
+      "GET /memory",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/memory_stores?limit=20"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 64,
+          "width": 142.328125,
+          "height": 28
+        },
+        {
+          "x": 397.328125,
+          "y": 65,
+          "width": 132.03125,
+          "height": 26
+        },
+        {
+          "x": 535.359375,
+          "y": 65,
+          "width": 148.9375,
+          "height": 26
+        },
+        {
+          "x": 690.296875,
+          "y": 78,
+          "width": 368.09375,
+          "height": 0
+        },
+        {
+          "x": 1064.390625,
+          "y": 62,
+          "width": 256,
+          "height": 32
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "11-model-cards",
+    "routePath": "/model-cards",
+    "reqs": [
+      "GET /model-cards",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/oma/model_cards?limit=20"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 64,
+          "width": 126.9375,
+          "height": 28
+        },
+        {
+          "x": 381.9375,
+          "y": 65,
+          "width": 91,
+          "height": 26
+        },
+        {
+          "x": 478.9375,
+          "y": 65,
+          "width": 148.9375,
+          "height": 26
+        },
+        {
+          "x": 633.875,
+          "y": 78,
+          "width": 424.515625,
+          "height": 0
+        },
+        {
+          "x": 1064.390625,
+          "y": 62,
+          "width": 256,
+          "height": 32
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "12-api-keys",
+    "routePath": "/api-keys",
+    "reqs": [
+      "GET /api-keys",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /v1/oma/api_keys"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 64,
+          "width": 105.046875,
+          "height": 28
+        },
+        {
+          "x": 360.046875,
+          "y": 78,
+          "width": 960.34375,
+          "height": 0
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "13-bonds",
+    "routePath": "/bonds",
+    "reqs": [
+      "GET /bonds",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /matter/bonds"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 64,
+          "width": 94.09375,
+          "height": 28
+        },
+        {
+          "x": 349.09375,
+          "y": 78,
+          "width": 971.296875,
+          "height": 0
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  },
+  {
+    "name": "14-loops",
+    "routePath": "/loops",
+    "reqs": [
+      "GET /loops",
+      "GET /branding/branding.json",
+      "GET /auth/get-session",
+      "GET /v1/oma/me/tenants",
+      "GET /matter/loop-templates",
+      "GET /matter/loops",
+      "GET /matter/bonds",
+      "GET /v1/agents?limit=200",
+      "GET /v1/environments?limit=200",
+      "GET /v1/vaults?limit=200"
+    ],
+    "errs": [],
+    "geom": {
+      "toolbarGap": "6px",
+      "spacerMinWidth": "8px",
+      "toolbarChildren": [
+        {
+          "x": 249,
+          "y": 62,
+          "width": 102.359375,
+          "height": 32
+        },
+        {
+          "x": 357.359375,
+          "y": 65,
+          "width": 65.4375,
+          "height": 26
+        },
+        {
+          "x": 428.796875,
+          "y": 65,
+          "width": 80.328125,
+          "height": 26
+        },
+        {
+          "x": 515.125,
+          "y": 78,
+          "width": 543.265625,
+          "height": 0
+        },
+        {
+          "x": 1064.390625,
+          "y": 62,
+          "width": 256,
+          "height": 32
+        },
+        {
+          "x": 1326.390625,
+          "y": 64,
+          "width": 93.609375,
+          "height": 28
+        }
+      ],
+      "rows": 3
+    }
+  }
+]
