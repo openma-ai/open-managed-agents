@@ -341,10 +341,50 @@ jobs:
           RELEASE_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: node scripts/release-check.mjs
 
+  # Console design-token gate (#502, epic #501). Plain Node, no install:
+  # token allowlist, per-file hardcode budget (ratchet) and new-component
+  # checks. Rules: apps/console/token-gate/README.md.
+  console-token-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the base branch
+        if: github.event_name == 'pull_request'
+        run: git fetch origin "${{ github.base_ref }}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Test the token gate
+        run: node --test apps/console/scripts/token-audit.test.mjs
+
+      # Pull requests also compare the gate files with the base branch and
+      # check added component files. Raising the baseline needs the
+      # `owner-approved:console-tokens` label (re-run this job after labelling).
+      # Merge Queue and pushes re-check the tree against the baseline only.
+      - name: Check tokens and hardcode budget
+        env:
+          TOKEN_GATE_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            node apps/console/scripts/token-audit.mjs --check --base "origin/${{ github.base_ref }}"
+          else
+            node apps/console/scripts/token-audit.mjs --check
+          fi
+
   # Required check name stays `verify` (branch protection). Skipped surfaces
   # count as success so docs-only / CF-only / Node-only PRs still pass.
   verify:
-    needs: [changes, docs, web, cf, node, release-check]
+    needs: [changes, docs, web, cf, node, release-check, console-token-gate]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -359,6 +399,7 @@ jobs:
           echo "cf=${{ needs.cf.result }}"
           echo "node=${{ needs.node.result }}"
           echo "release-check=${{ needs.release-check.result }}"
+          echo "console-token-gate=${{ needs.console-token-gate.result }}"
           echo "meta_only=${{ needs.changes.outputs.meta_only }}"
 
           fail=0
@@ -379,6 +420,7 @@ jobs:
           check cf "${{ needs.cf.result }}"
           check node "${{ needs.node.result }}"
           check release-check "${{ needs.release-check.result }}"
+          check console-token-gate "${{ needs.console-token-gate.result }}"
 
           if [[ "$fail" -ne 0 ]]; then
             exit 1

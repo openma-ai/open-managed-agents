@@ -50,6 +50,7 @@
     "dev:agent": "wrangler dev -c apps/agent/wrangler.dev.jsonc",
     "dev:console": "cd apps/console && npx vite",
     "build:console": "cd apps/console && npx vite build",
+    "console:token-audit": "node apps/console/scripts/token-audit.mjs",
     "build:vercel": "node apps/main-vercel/scripts/build-function.mjs",
     "vercel-build": "pnpm build:vercel",
     "dev:docs": "pnpm --filter open-managed-agents-docs dev",
