@@ -34,9 +34,24 @@ Use **squash merge**. Recent PRs on this repository's `main` each produce one si
 
 ## Small PRs
 
-Change one concern or responsibility at a time. The `main-node` control-plane extraction was a sequence of small PRs (#225, #228–#234), each changing one layer. Separate documentation, renames, and behavior changes.
+Change one concern or responsibility at a time. The `main-node` control-plane extraction was a sequence of small PRs (#225, #228–#234), each changing one layer. Separate documentation, renames, and behavior changes. Documentation that describes the PR's own behavior change is part of that change and ships with it (see [User-facing documentation](#user-facing-documentation)); unrelated documentation edits go in their own PR.
 
 When lockfiles conflict, related dependency updates may be combined into one PR with one full CI run (#202 included #201–#206). List the included PRs in the description.
+
+## User-facing documentation
+
+A PR that adds or changes user-visible behavior updates the documentation in the same PR, so a merged feature is never undocumented:
+
+| Change | Update |
+|---|---|
+| A `/v1` endpoint, request or response field, or error status | The guide in `apps/docs` and `apps/docs/src/content/docs/reference/api.mdx` |
+| A `@openma/sdk` method or option | `packages/sdk/README.md` (published to npm) and the `apps/docs` guide |
+| An `oma` command or flag | `packages/cli/README.md` (published to npm), the command's `--help` / `oma api` text and the `apps/docs` guide |
+| A Console feature | The `apps/docs` guide, plus screenshots in the evidence report |
+| Configuration, environment variables or deployment steps | The self-hosting pages in `apps/docs` and, when it changes setup, the root `README.md` |
+| A new top-level capability | The root `README.md` |
+
+Examples in READMEs and docs must be commands and code that were run against a real deployment (see [Sandbox provider adapters](#sandbox-provider-adapters): do not claim support before live verification). Write "not applicable" with a reason in the evidence report when nothing user-visible changed.
 
 ## Design decisions (ADR)
 
@@ -274,6 +289,6 @@ The source guide records that `release.yml`'s `version-pr` runs `pnpm typecheck`
 4. Review the versions and changelogs before merging. Before `pnpm release`, `publish` runs `node scripts/release-check.mjs --publish`; it does not change the bump or publication mechanism. Publication uses the GitHub Environment `production` and requires approval, then publishes with npm OIDC. Stable tags look like `@openma/cli@0.6.0`. For beta releases, run `pnpm changeset pre enter beta`; versions have `-beta.N` and the npm dist-tag is `beta`.
 5. Manual release PRs have also been used: `chore: release stable CLI 0.6.0 and SDK 1.0.0` (#209) ran `changeset pre exit` after beta.2.
 
-User documentation lives in `apps/docs`. Its Contributing page still uses the older What / Why / Test plan outline; this file and the GitHub PR template are authoritative.
+User documentation lives in `apps/docs`; see [User-facing documentation](#user-facing-documentation) for what a PR must update. Its Contributing page still uses the older What / Why / Test plan outline; this file and the GitHub PR template are authoritative.
 
 Join [Discord](https://discord.gg/P3EfQFm5bD) for questions and discussion; English and Chinese are welcome. Report reproducible bugs in GitHub Issues.
