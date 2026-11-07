@@ -268,10 +268,16 @@ test("Cloudflare sandbox SDK, container runtime, and deployment image stay lock-
     sdkVersion,
     "main and agent must use the same Sandbox SDK version",
   );
+
+  // Sandbox SDK 1.0: the custom image is a Debian/Node base that copies
+  // sandbox-shim from cloudflare/sandbox:<sdkVersion> instead of extending it.
   assert.match(
     imageDockerfile,
-    new RegExp(`^FROM docker\\.io/cloudflare/sandbox:${sdkVersion}$`, "m"),
-    "custom container must extend the matching Cloudflare runtime",
+    new RegExp(
+      `^COPY --from=docker\\.io/cloudflare/sandbox:${sdkVersion}\\s+/usr/local/bin/sandbox-shim\\s+/usr/local/bin/sandbox-shim$`,
+      "m",
+    ),
+    "custom container must copy sandbox-shim from the matching Cloudflare runtime",
   );
 
   const contentHash = createHash("sha256").update(imageDockerfile).digest("hex");
@@ -280,6 +286,7 @@ test("Cloudflare sandbox SDK, container runtime, and deployment image stay lock-
     new RegExp(`^FROM docker\\.io/openma/sandbox-base:${contentHash}$`, "m"),
     "deployment must pin the custom image by Dockerfile content hash",
   );
+
   assert.match(
     imageWorkflow,
     /CONTENT_HASH=\$\(sha256sum apps\/agent\/Dockerfile/,

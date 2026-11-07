@@ -13,7 +13,7 @@
 // anything about this route.
 import { registerCoreHarnesses } from "../../apps/agent/src/harness/builtins";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
-import { setSandboxForTest } from "../sandbox-stub";
+import { setCloudflareSandboxForTest } from "../../apps/agent/src/runtime/sandbox";
 import { env, exports } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";
 import mainApp from "../../apps/main/src/index";
@@ -35,7 +35,7 @@ const ok = (stdout: string) => ({ stdout, stderr: "", exitCode: 0, success: true
 
 beforeAll(async () => {
   await ensureModelCards(["claude-sonnet-4-6"]);
-  setSandboxForTest({
+  setCloudflareSandboxForTest({
     exec: async (command: string) => {
       if (command.includes("find ./outputs")) {
         const paths = [...workspace.keys()].filter(path => path.startsWith("/workspace/outputs/")).sort();
@@ -56,7 +56,7 @@ beforeAll(async () => {
   });
 });
 afterAll(() => {
-  setSandboxForTest(undefined);
+  setCloudflareSandboxForTest(undefined);
   registerCoreHarnesses();
 });
 
