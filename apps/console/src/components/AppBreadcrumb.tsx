@@ -74,10 +74,10 @@ export function AppBreadcrumb() {
                   <ChevronRightIcon className="size-3.5" />
                 </BreadcrumbSeparator>
               )}
-              <BreadcrumbItem className={isLast ? "min-w-0 flex-1" : "min-w-0 max-w-[40%]"}>
+              <BreadcrumbItem className={isLast ? "min-w-0 flex-1" : "min-w-0 max-w-2/5"}>
                 {isLast ? (
                   <BreadcrumbPage
-                    className="block min-w-0 truncate max-w-[200px] sm:max-w-[280px]"
+                    className="block min-w-0 truncate max-w-50 sm:max-w-70"
                     title={c.label}
                   >
                     {c.label}
