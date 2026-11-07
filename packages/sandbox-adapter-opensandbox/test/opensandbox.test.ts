@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
 import { OpenSandbox, openSandboxDurableMount, openSandboxVolumeIdentity, optionsFromEnvironment, sandboxProvider, sandboxFactory } from "../src/index";
 import { completed, mockSdkServer, sandboxInfo } from "./sdk-http";
+import { sessionLabel } from "../src/opensandbox";
 
 const ctx = { sessionId: "session-test", workdir: "/workspace" };
 const env = { OPENSANDBOX_DOMAIN: "control.test:8080", OPENSANDBOX_API_KEY: "provider-secret" };
@@ -72,7 +73,7 @@ describe("OpenSandbox official SDK adapter", () => {
       env: {},
     });
     expect(creation.headers.get("OPEN-SANDBOX-API-KEY")).toBe("provider-secret");
-    expect(server.calls.find(call => call.url.pathname === "/command")!.body).toEqual({
+    expect(server.calls.find(call => call.url.pathname === "/command" && (call.body as { command: string }).command !== "pwd")!.body).toEqual({
       command: "git status", timeout: 1234, background: false, cwd: "/workspace", envs: { COMMON: "yes", TOKEN: "scoped-secret" },
     });
     for (const call of server.calls.filter(call => call.url.hostname === "exec.test")) {
@@ -90,6 +91,30 @@ describe("OpenSandbox official SDK adapter", () => {
     expect(server.calls.some(call => call.url.pathname.endsWith("/renew-expiration"))).toBe(true);
   });
 
+  it("works in the image WORKDIR and resolves relative paths there (ADR 0016)", async () => {
+    const server = mockSdkServer();
+    server.workdir = "/app";
+    const sandbox = await create();
+    expect(await sandbox.resolveWorkspaceRoot()).toBe("/app");
+    expect(sandbox.resolvePath("src/a.ts")).toBe("/app/src/a.ts");
+    expect(sandbox.resolvePath("/etc/hosts")).toBe("/etc/hosts");
+    await sandbox.exec("ls");
+    const ls = server.calls.find(call => call.url.pathname === "/command" && (call.body as { command: string }).command === "ls")!;
+    expect((ls.body as { cwd: string }).cwd).toBe("/app");
+  });
+
+  it("falls back to /workspace when the image declares no WORKDIR", async () => {
+    mockSdkServer();
+    const sandbox = await create();
+    expect(await sandbox.resolveWorkspaceRoot()).toBe("/workspace");
+  });
+
+  it("fails creation when the working directory cannot be resolved", async () => {
+    const server = mockSdkServer();
+    server.workdir = "relative/dir";
+    await expect(create()).rejects.toThrow("invalid working directory");
+  });
+
   it.each(["sse", "json"] as const)("delegates fragmented %s command streams to the SDK and still rejects truncation", async format => {
     const server = mockSdkServer();
     server.format = format;
@@ -98,6 +123,37 @@ describe("OpenSandbox official SDK adapter", () => {
     expect(await sandbox.exec("printf hello")).toBe("héllo");
     server.commands = [{ type: "stdout", text: "partial" }];
     await expect(sandbox.exec("true")).rejects.toThrow("before execution_complete");
+  });
+
+  it("restores line breaks the execd server strips from each output line", async () => {
+    const server = mockSdkServer();
+    // Framing observed from opensandbox/execd v1.1.0: one message per line,
+    // line break removed, an empty line sent as a lone "\n".
+    server.commands = [
+      { type: "stdout", text: "x" }, { type: "stdout", text: "\n" }, { type: "stdout", text: "y" },
+      { type: "stderr", text: "warn" }, completed,
+    ];
+    const sandbox = await create();
+    expect(await sandbox.exec("printf 'x\\n\\ny\\n'; echo warn >&2")).toBe("x\n\ny\nwarn");
+  });
+
+  it("creates from the Environment's catalog image instead of SANDBOX_IMAGE", async () => {
+    const server = mockSdkServer();
+    const sandbox = await sandboxProvider.create(
+      { ...ctx, image: { alias: "fix-git", reference: "alexgshaw/fix-git:20251031" } },
+      { ...env, SANDBOX_IMAGE: "node:22-slim" },
+    );
+    allocations.push(sandbox);
+    const creation = server.calls.find(call => call.url.pathname.endsWith("/sandboxes") && call.method === "POST")!;
+    expect(creation.body).toMatchObject({ image: { uri: "alexgshaw/fix-git:20251031" } });
+  });
+
+  it("refuses a catalog image on Fast Sandbox templates", async () => {
+    mockSdkServer();
+    await expect(sandboxProvider.create(
+      { ...ctx, image: { alias: "fix-git", reference: "alexgshaw/fix-git:20251031" } },
+      { ...env, OPENSANDBOX_RUNTIME: "fast", OPENSANDBOX_TEMPLATE_ID: "tpl-node" },
+    )).rejects.toThrow(/cannot honour a per-environment sandbox image/);
   });
 
   it("preserves nonzero exits, command startup errors and scoped command environment", async () => {
@@ -438,5 +494,14 @@ describe("OpenSandbox official SDK adapter", () => {
     for (const domain of ["", "https://host/v1", "user:pass@host", "host/v1", "host?key=value", "host#fragment"]) {
       expect(() => optionsFromEnvironment({ OPENSANDBOX_DOMAIN: domain })).toThrow("OPENSANDBOX_DOMAIN");
     }
+  });
+});
+
+describe("sessionLabel", () => {
+  it("normalises Session ids OpenSandbox would reject as metadata labels", () => {
+    expect(sessionLabel("session_WaboXu65Gh283G4evtfj_")).toEqual({ "oma-session-id": "session_WaboXu65Gh283G4evtfj" });
+    expect(sessionLabel("-a b-")).toEqual({ "oma-session-id": "a-b" });
+    expect(sessionLabel("x".repeat(70))["oma-session-id"]).toHaveLength(63);
+    expect(sessionLabel("__")).toEqual({});
   });
 });

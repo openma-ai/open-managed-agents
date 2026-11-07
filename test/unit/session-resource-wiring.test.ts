@@ -441,7 +441,7 @@ describe("in-sandbox Session resource wiring", () => {
       ],
     }]);
     expect(skillFileMountPaths(mountedSkills[0]!, "assets/logo.bin")).toEqual([
-      "/workspace/.openma/skills/skill-1/latest/assets/logo.bin",
+      "/oma/skills/skill-1/latest/assets/logo.bin",
       "/home/user/.skills/repository-guide/assets/logo.bin",
     ]);
     expect(bucket.get).toHaveBeenCalledWith(

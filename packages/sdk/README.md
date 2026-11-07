@@ -88,6 +88,55 @@ These are intentionally different catalogs:
 old Anthropic/OpenAI live-discovery endpoint. New clients should not forward a
 provider credential just to browse Pi's catalog.
 
+## Evals
+
+`client.oma.evals` wraps `/v1/oma/evals`: a **benchmark** is a named set of
+**cases** (`kind: "harbor"` Harbor-format tasks, or `kind: "messages"` scripted
+conversations graded by a reward spec), and an **eval run** executes a
+benchmark (all or some cases) against an agent.
+
+```ts
+const evals = client.oma.evals;
+
+// Harbor benchmarks are read-only imports with immutable revisions: edit the
+// tasks at the source, then sync. Import from a git repo (github.com or
+// huggingface.co), a Harbor registry, a builtin set, or an uploaded archive.
+// Branches and tags to pick a git ref from (default branch first, tags newest first):
+const { default_branch, branches, tags } = await evals.gitRefs({ url: "https://github.com/org/tasks" });
+const bench = await evals.benchmarks.create({
+  source: { type: "git", url: "https://github.com/org/tasks", ref: "main", path: "tasks" },
+});
+// or: evals.benchmarks.create({ source: { type: "builtin", name: "terminal-bench-sample@2.0" } })
+// or: evals.benchmarks.create({ source: { type: "registry", name: "terminal-bench", version: "2.0" }, case_names: ["hello"] })
+// or: evals.benchmarks.upload({ file: await readFile("tasks.tar.gz"), filename: "tasks.tar.gz" })
+
+// Re-read the source; a new revision is made only when content changed.
+const { changed, benchmark } = await evals.benchmarks.sync(bench.id, { ref: "v2" }); // ref: git only
+// upload benchmarks: evals.benchmarks.syncUpload(id, { file, filename })
+const rev1 = await evals.benchmarks.retrieve(bench.id, { revision: 1 }); // cases + revisions (pins)
+await evals.benchmarks.cases.retrieve(bench.id, "hello", { revision: 1 });
+await evals.benchmarks.update(bench.id, { name: "terminal-bench (mine)" });
+
+// Messages: create empty, then add / replace / delete cases in OMA.
+const chat = await evals.benchmarks.create({ kind: "messages", name: "smoke" });
+await evals.benchmarks.cases.add(chat.id, {
+  name: "greets",
+  messages: ["Create hello.txt containing hi"],
+  reward: { type: "verifiable", scorer: "bashExit", opts: { expectedCode: 0 } }, // eval-core RewardSpec
+});
+
+const { run_id } = await evals.runs.create({
+  benchmark_id: bench.id, agent_id: "agent_123", trials: 2, // harbor runs bind to the latest revision
+  // messages benchmarks also need environment_id; harbor rejects it.
+  // mode: "oracle" (harbor only, no agent_id) runs solution/solve.sh.
+});
+const run = await evals.runs.waitForRun(run_id, {
+  intervalMs: 5000,
+  onProgress: (r) => console.log(r.status, r.completed_count, "/", r.task_count),
+});
+console.log(run.status, run.score);
+```
+
 ## Agent model controls
 
 Managed Agents model controls belong to an **Agent version**, not to a Model

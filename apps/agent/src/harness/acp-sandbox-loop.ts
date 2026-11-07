@@ -1,10 +1,12 @@
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import {
+  PLATFORM_ROOT,
   runWithSandboxLease,
   SandboxLeaseLostError,
   supportsDuplexProcess,
   supportsSandboxRuntime,
+  workspaceRootOf,
 } from "@open-managed-agents/sandbox";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
@@ -57,11 +59,9 @@ export class AcpSandboxHarness implements HarnessInterface {
   #preparation: AcpSandboxAgentPreparation | null = null;
   #semanticRecoveryReason: AcpSemanticRecoveryReason | null = null;
 
-  async onSessionInit(ctx: HarnessContext, runtime: HarnessRuntime): Promise<void> {
-    const prompt = ctx.systemPrompt.trimEnd();
-    if (prompt) {
-      await runtime.sandbox.writeFile("/workspace/AGENTS.md", `${prompt}\n`);
-    }
+  async onSessionInit(_ctx: HarnessContext, _runtime: HarnessRuntime): Promise<void> {
+    // Platform context is delivered with the first prompt of each fresh ACP
+    // session, never written into the task's working directory (ADR 0016).
   }
 
   shouldCompact(): boolean {
@@ -102,6 +102,8 @@ export class AcpSandboxHarness implements HarnessInterface {
       preparation = prepareAcpSandboxAgent({
         sessionId: ctx.session_id,
         agent: config.agent,
+        workspaceRoot: await workspaceRootOf(runtime.sandbox),
+        stateRoot: `${PLATFORM_ROOT}/harness-state`,
       });
     } catch (error) {
       this.#emitError(runtime, error instanceof Error ? error.message : String(error));
@@ -146,8 +148,10 @@ export class AcpSandboxHarness implements HarnessInterface {
     const translator = new AcpTranslator(runtime, {
       model: typeof ctx.agent.model === "string" ? ctx.agent.model : ctx.agent.model.id,
     });
+    let freshAcpSession = false;
     try {
       if (!this.#session) {
+        freshAcpSession = !this.#resumeAcpSessionId;
         // Harbor-style install: pinned registry agents get their launcher
         // before spawn. A failure rejects into the turn error below; it never
         // falls back to a bare command or an unpinned package.
@@ -240,13 +244,17 @@ export class AcpSandboxHarness implements HarnessInterface {
 
       const session = this.#session;
       const recoveryReason = this.#semanticRecoveryReason;
-      const promptText = recoveryReason
+      const turnText = recoveryReason
         ? buildAcpSemanticRecoveryPrompt(
             ctx.acpRecoveryHistory ?? runtime.history.getEvents(),
             ctx.userMessage,
             { reason: recoveryReason },
           )
         : text;
+      const platformPrompt = ctx.systemPrompt.trimEnd();
+      const promptText = (freshAcpSession || recoveryReason) && platformPrompt
+        ? `<openma-platform>\n${platformPrompt}\n</openma-platform>\n\n${turnText}`
+        : turnText;
       if (recoveryReason) {
         runtime.broadcast({
           type: "session.warning",
@@ -331,9 +339,10 @@ export class AcpSandboxHarness implements HarnessInterface {
     await session?.dispose();
     let failure: unknown;
     // A host shutdown is a placement change, not logical session deletion.
-    // Keep the native ACP id and session artifacts in /workspace so a
-    // replacement host can resume after restoring the provider filesystem
-    // checkpoint. Explicit logical destruction or harness replacement removes
+    // Keep the native ACP id and session artifacts under /oma/harness-state
+    // (ADR 0016) so a replacement host can resume after restoring the
+    // workspace checkpoint, which carries that directory alongside the
+    // workspace root. Explicit logical destruction or harness replacement removes
     // the complete isolated session root; configuration and cache files must
     // not outlive the session merely because the agent wrote them beside its
     // native transcript.
