@@ -24,7 +24,7 @@
     "test:e2e:codex-acp-docker": "pnpm run test:prepare && tsx scripts/harness-in-sandbox/live.e2e.ts codex-acp",
     "test:e2e:mcode-acp-docker": "pnpm run test:prepare && tsx scripts/harness-in-sandbox/live.e2e.ts mcode",
     "test:e2e:pi-acp-sprites": "pnpm run test:prepare && tsx scripts/pi-acp-deepseek-sprites.e2e.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.openai-mcp-auth.json"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1096.0",
