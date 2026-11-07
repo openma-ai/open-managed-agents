@@ -10,7 +10,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "token-audit": "node scripts/token-audit.mjs",
+    "token-audit:check": "node scripts/token-audit.mjs --check",
+    "token-audit:update": "node scripts/token-audit.mjs --update",
+    "test:token-audit": "node --test scripts/token-audit.test.mjs"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.163",

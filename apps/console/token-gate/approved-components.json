@@ -1,0 +1,4 @@
+{
+  "$comment": "Owner-approved new component files (paths relative to apps/console). The token gate fails on files added under src/components/ui/**, directly under src/components/ (top-level wrappers), or in a src/components/<dir>/ outside ai-elements/session/timeline unless listed here. Entry: {\"file\": \"src/components/...\", \"approval\": \"<link to Owner approval>\", \"reason\": \"why no existing primitive/wrapper fits\"}.",
+  "files": []
+}
