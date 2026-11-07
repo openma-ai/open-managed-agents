@@ -101,6 +101,8 @@ const evals = client.oma.evals;
 // Harbor benchmarks are read-only imports with immutable revisions: edit the
 // tasks at the source, then sync. Import from a git repo (github.com or
 // huggingface.co), a Harbor registry, a builtin set, or an uploaded archive.
+// Branches and tags to pick a git ref from (default branch first, tags newest first):
+const { default_branch, branches, tags } = await evals.gitRefs({ url: "https://github.com/org/tasks" });
 const bench = await evals.benchmarks.create({
   source: { type: "git", url: "https://github.com/org/tasks", ref: "main", path: "tasks" },
 });
