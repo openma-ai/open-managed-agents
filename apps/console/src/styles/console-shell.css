@@ -238,8 +238,8 @@
   position: absolute;
   z-index: 2;
   top: 0;
-  right: -4px;
-  width: 8px;
+  right: calc(var(--console-gap-2xs) * -1);
+  width: var(--console-gap-lg);
   height: 100%;
   border: 0;
   background: transparent;
@@ -249,11 +249,11 @@
 .console-sidebar-resize::after {
   position: absolute;
   inset-block: 0;
-  left: 3px;
+  left: var(--console-gap-3xs);
   width: 2px;
   height: 32px;
   margin-block: auto;
-  border-radius: 999px;
+  border-radius: var(--console-radius-pill);
   background: transparent;
   content: "";
   transition: background var(--dur-quick) var(--ease-soft);
@@ -388,12 +388,12 @@
 
 .console-sidebar-group-label {
   height: var(--sidebar-row-h);
-  padding: 5px var(--sidebar-row-inset);
+  padding: var(--console-gap-xs) var(--sidebar-row-inset);
   color: var(--fg-muted);
   font-size: var(--console-type-body);
   font-weight: 560;
   letter-spacing: 0;
-  line-height: 18px;
+  line-height: var(--type-line);
   text-transform: none;
 }
 
