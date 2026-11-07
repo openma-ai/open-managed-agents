@@ -27,7 +27,7 @@ export interface GitHubConfig {
   /**
    * Public homepage URL embedded in manifests as the GitHub App's `url` field.
    * Shown on the App's GitHub-side page; informational only. Defaults to
-   * `https://openma.dev` if not overridden.
+   * `https://openma.ai` if not overridden.
    */
   homepageUrl?: string;
 }

@@ -1,6 +1,8 @@
 // Built-in avatars for integration personas. Files live at
 // apps/console/public/integration-avatars/ and are served by apps/main's
-// ASSETS binding from `https://openma.dev/integration-avatars/<file>.png`.
+// ASSETS binding from `https://app.openma.ai/integration-avatars/<file>.png`.
+// The marketing apex (openma.ai) does not serve them, and the old
+// `https://openma.dev/integration-avatars/` prefix 301s there and 404s.
 //
 // `id` is a stable positional slug matching the filename — safe to persist
 // in DB rows or external configs. `label` is a human-readable description
@@ -16,14 +18,21 @@ export interface IntegrationAvatar {
   url: string;
 }
 
-const AVATAR_BASE_URL = "https://openma.dev/integration-avatars";
+const AVATAR_BASE_URL = "https://app.openma.ai/integration-avatars";
+// URLs minted before the openma.ai move are still stored on existing
+// publications; keep recognising them as built-in avatars.
+const LEGACY_AVATAR_BASE_URL = "https://openma.dev/integration-avatars";
 
 export function getIntegrationAvatarUrl(id: string): string {
   return `${AVATAR_BASE_URL}/avatar_${id}.png`;
 }
 
 export function isIntegrationAvatarUrl(url: string): boolean {
-  return url.startsWith(`${AVATAR_BASE_URL}/avatar_`) && url.endsWith(".png");
+  if (!url.endsWith(".png")) return false;
+  return (
+    url.startsWith(`${AVATAR_BASE_URL}/avatar_`) ||
+    url.startsWith(`${LEGACY_AVATAR_BASE_URL}/avatar_`)
+  );
 }
 
 const entries: ReadonlyArray<readonly [string, string]> = [
