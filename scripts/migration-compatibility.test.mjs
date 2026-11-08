@@ -42,3 +42,34 @@ for (const [name, bootstrap] of [
     }
   });
 }
+
+const runtimeResourceTablesMigration = await readFile(
+  new URL("../apps/main/migrations/0027_runtime_resource_tables.sql", import.meta.url),
+  "utf8",
+);
+
+// What ensureRuntimeResourceFenceSchema created before these tables had a
+// migration (Node deployments with initializeFenceSchema: true).
+const operatorCreatedFenceSchema = `
+  CREATE TABLE runtime_resource_fences (scope_key TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, environment_id TEXT NOT NULL, session_id TEXT NOT NULL, work_id TEXT NOT NULL, generation BIGINT NOT NULL, owner_id TEXT NOT NULL, fence_token TEXT NOT NULL, expires_at_ms BIGINT NOT NULL, publication_json TEXT, publication_generation BIGINT, revision BIGINT NOT NULL DEFAULT 0);
+  CREATE INDEX runtime_resource_fences_expiry_idx ON runtime_resource_fences(expires_at_ms);
+  CREATE TABLE runtime_resource_orphans (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, environment_id TEXT NOT NULL, session_id TEXT NOT NULL, work_id TEXT NOT NULL, generation BIGINT NOT NULL, owner_id TEXT NOT NULL, sandbox_json TEXT NOT NULL, reason TEXT NOT NULL, attempts BIGINT NOT NULL DEFAULT 0, last_error TEXT NOT NULL);
+  INSERT INTO runtime_resource_orphans VALUES ('kept', 'w', 'e', 's', 'x', 1, 'o', '{}', 'failed', 0, 'boom');
+`;
+
+for (const [name, bootstrap, orphans] of [
+  ["a database without the tables", "", 0],
+  ["a database where the operator already created them", operatorCreatedFenceSchema, 1],
+]) {
+  test(`0027 applies to ${name}`, () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      if (bootstrap) database.exec(bootstrap);
+      database.exec(runtimeResourceTablesMigration);
+      assert.equal(database.prepare("SELECT count(*) AS n FROM runtime_resource_orphans").get().n, orphans);
+      assert.equal(database.prepare("SELECT count(*) AS n FROM runtime_resource_fences").get().n, 0);
+    } finally {
+      database.close();
+    }
+  });
+}

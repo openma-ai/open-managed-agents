@@ -224,13 +224,11 @@ export function createE2BSessionSandbox(input: {
             // control plane's existing ingress (apps/main), which verifies the
             // pass and the Session itself.
             endpoint: { url: gateway ?? "https://egress-unconfigured.invalid" },
-            issueToken: async ({ scope }) => {
+            issueToken: async ({ attempt }) => {
               if (passes === null || gateway === undefined) {
                 throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PLATFORM_ROOT_SECRET and PUBLIC_BASE_URL");
               }
-              const current = input.fence?.();
-              return issueSandboxRelayPass((claims) => passes.issue(claims), current === undefined ? null
-                : { workspaceId: scope.workspaceId, sessionId: scope.sessionId, ...current }, RELAY_PASS_TTL_MS);
+              return issueSandboxRelayPass((claims) => passes.issue(claims), attempt, RELAY_PASS_TTL_MS);
             },
             authenticate: async () => null,
             handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),

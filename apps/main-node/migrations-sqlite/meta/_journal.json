@@ -218,6 +218,13 @@
       "when": 1793521172700,
       "tag": "0030_elite_mother_askani",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1794168375781,
+      "tag": "0031_runtime_resource_tables",
+      "breakpoints": true
     }
   ]
 }

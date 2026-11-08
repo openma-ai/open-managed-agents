@@ -12,7 +12,8 @@
     "./execution-host": "./src/execution-host.ts",
     "./settle-batch": "./src/settle-batch.ts",
     "./execution-lease": "./src/execution-lease.ts",
-    "./session-sandbox": "./src/session-sandbox.ts"
+    "./session-sandbox": "./src/session-sandbox.ts",
+    "./session-sandbox-fence": "./src/session-sandbox-fence.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

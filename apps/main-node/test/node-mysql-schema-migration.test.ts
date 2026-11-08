@@ -12,7 +12,8 @@ import type {
 
 const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
 const invitationsSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
-const currentSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
+const heldAfterExhaustedSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
+const currentSnapshot = "a569ec0b-0d55-4c2a-bd30-401b50191e4b";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
@@ -36,6 +37,13 @@ describe("main-node MySQL snapshot migrations", () => {
     const sql = new MigrationSqlClient("2f8c3bdc-8be5-4f77-bc24-0d50f5ec66b3", ["tenant_id", "created_at", "id"]);
     await migrateNodeMysqlSchema(sql, migrations);
     expect(sql.snapshotId).toBe(currentSnapshot);
+  });
+
+  it("upgrades an installed schema to the runtime resource tables", async () => {
+    const sql = new MigrationSqlClient(heldAfterExhaustedSnapshot, ["tenant_id", "created_at", "id"]);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.createdTables).toEqual(expect.arrayContaining(["runtime_resource_fences", "runtime_resource_orphans"]));
   });
 
   it.each([invitationsSnapshot, currentSnapshot])(
@@ -78,6 +86,7 @@ describe("main-node MySQL snapshot migrations", () => {
 
 class MigrationSqlClient implements SqlClient {
   createdAttributionIndex = false;
+  readonly createdTables: string[] = [];
   readonly legacyTables = new Map<string, number>();
 
   constructor(
@@ -97,6 +106,8 @@ class MigrationSqlClient implements SqlClient {
     if (/\bDROP\s+TABLE\b/i.test(sql)) {
       throw new Error("DROP command denied to migration user");
     }
+    const created = /CREATE TABLE IF NOT EXISTS `([a-z_]+)`/.exec(sql);
+    if (created) this.createdTables.push(created[1]!);
     if (sql.includes("CREATE INDEX `idx_usage_events_attribution`")) {
       this.createdAttributionIndex = true;
       this.indexColumns = ["tenant_id", "created_at", "id"];
