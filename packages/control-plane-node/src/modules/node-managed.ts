@@ -520,7 +520,7 @@ export async function createManagedNodeRuntime(
         sandboxEnv = {
           ANTHROPIC_API_KEY: "",
           mcpProxy: capability,
-          hostedInference: { ...capability, model: { providerId: model.provider, baseUrl: model.baseURL ?? null, protocolEndpoints: model.protocolEndpoints } },
+          hostedInference: { ...capability, model: { providerId: model.provider, baseUrl: model.baseURL ?? null, wireModel: model.wireModel, protocolEndpoints: model.protocolEndpoints } },
         };
       }
       const creds = await resolveNodeModelCreds(input.workspaceId, agent.model);
