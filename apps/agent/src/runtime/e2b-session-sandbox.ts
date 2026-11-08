@@ -1,35 +1,30 @@
 // Sandbox SDK v2 on E2B for the Cloudflare control plane (SANDBOX_ADAPTER=e2b).
 //
-// SessionDO keeps talking to a SandboxExecutor; this facade implements it
-// over the v2 Ports from createSandboxPorts + createE2BV2Adapter:
-//   - the sandbox is opened lazily: attach the saved handle, else acquire;
-//     the handle lives in DO storage ("changes" handle);
-//   - egress.attach runs once per open (provider firewall from the
-//     Environment networking; no Vault substitutions on this path);
+// Composition only: createSandboxPorts + createE2BV2Adapter, handed to the
+// shared Session runtime (session-sandbox.ts):
+//   - the handle lives in DO storage ("changes" handle);
+//   - egress is the provider firewall from the Environment networking (no
+//     Vault substitutions on this path);
 //   - Memory Stores are s3fs mounts with prefix-scoped temporary R2
 //     credentials minted here from the memory-bucket key (the key itself
 //     never enters the sandbox);
 //   - /mnt/session/outputs is copied out at turn end into FILES_BUCKET
 //     through the R2 binding (best effort, not a live mount).
-// The Cloudflare path (SANDBOX_ADAPTER unset or "cloudflare") is unchanged.
 
 import type {
   EgressPolicy,
   MemoryStoreBinding,
-  SandboxDuplexProcess,
-  SandboxDuplexProcessSpec,
-  SandboxExecutor,
   SandboxHandle,
   SandboxPlan,
   SandboxPorts,
 } from "@open-managed-agents/sandbox";
-import { SandboxGoneError } from "@open-managed-agents/sandbox";
-import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
+import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { createSandboxPorts, type SandboxOutputSinkPort, type SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit";
 import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-kit/object-storage";
 import { createE2BV2Adapter, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
+import { PortsSessionSandbox, type SessionSandboxExecutor } from "./session-sandbox";
 
 export interface E2BSandboxEnv {
   E2B_API_KEY?: string;
@@ -83,137 +78,38 @@ export interface E2BSessionSandboxOptions {
   plan(scope: RuntimeResourceScope, stores: MemoryStoreBinding[]): Promise<SandboxPlan>;
 }
 
-/** SandboxExecutor over the v2 Ports. Exec output uses the Cloudflare
+/** The shared Session runtime on E2B. Exec output uses the Cloudflare
  * `exit=N\n<stdout>\nstderr: <stderr>` shape SessionDO's probes read. */
-export class E2BSessionSandbox implements SandboxExecutor {
-  private live: { runtime: E2BSandboxExecutor; handle: SandboxHandle } | null = null;
-  private opening: Promise<{ runtime: E2BSandboxExecutor; handle: SandboxHandle }> | null = null;
-  private composed: ReturnType<E2BSessionSandboxOptions["compose"]> | null = null;
-  private env: Record<string, string> = {};
-  private stores: MemoryStoreBinding[] = [];
-  private outputs = false;
-
-  constructor(private readonly options: E2BSessionSandboxOptions) {}
-
-  async exec(command: string, timeout?: number): Promise<string> {
-    const result = await this.call((runtime) => runtime.run(command, timeout === undefined ? {} : { timeoutMs: timeout }));
-    return `exit=${result.exitCode}\n${result.stdout}${result.stderr ? `\nstderr: ${result.stderr}` : ""}`;
+export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
+  constructor(options: E2BSessionSandboxOptions) {
+    super({
+      compose: options.compose,
+      executor: e2bExecutor,
+      state: options.state,
+      scope: options.scope,
+      plan: ({ scope, stores }) => options.plan(scope, stores),
+      // E2B paused sandboxes are found again by attach; there is no
+      // separately published restore point on this path.
+      resumeRef: async () => null,
+      warn: () => undefined,
+      outputDurability: () => ({ durability: "best_effort" }),
+    });
   }
-  startProcess(command: string) { return this.call((runtime) => runtime.startProcess(command)); }
-  spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> {
-    return this.call((runtime) => runtime.spawnDuplexProcess(spec));
-  }
-  readFile(path: string) { return this.call((runtime) => runtime.readFile(path)); }
-  readFileBytes(path: string) { return this.call((runtime) => runtime.readFileBytes(path)); }
-  writeFile(path: string, content: string) { return this.call((runtime) => runtime.writeFile(path, content)); }
-  writeFileBytes(path: string, bytes: Uint8Array) { return this.call((runtime) => runtime.writeFileBytes(path, bytes)); }
+}
 
-  async setEnvVars(env: Record<string, string>): Promise<void> {
-    this.env = { ...this.env, ...env };
-    if (this.live !== null) await this.live.runtime.setEnvVars(env);
-  }
-
-  async mountMemoryStore(store: MemoryStoreBinding): Promise<void> {
-    this.stores = [...this.stores.filter((item) => item.storeName !== store.storeName), store];
-    await this.attachStorage();
-  }
-
-  sessionOutputMountCapabilities(): { durability: "best_effort" } {
-    return { durability: "best_effort" };
-  }
-
-  async mountSessionOutputs(): Promise<void> {
-    this.outputs = true;
-    await this.attachStorage();
-  }
-
-  /** Turn end: publish /mnt/session/outputs (Memory mounts are write-through). */
-  async syncStorage(reason: "turn_end" | "before_stop"): Promise<void> {
-    if (this.live === null || !this.outputs) return;
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const plan = await this.options.plan(scope, this.stores);
-    await ports.storage.sync({ runtime: this.live.runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: plan.outputs, reason, signal: new AbortController().signal });
-  }
-
-  async renewActivityTimeout(): Promise<void> {
-    if (this.live === null) return;
-    const { ports } = await this.compose();
-    if (await ports.sandbox.keepAlive(this.live) === "gone") this.live = null;
-  }
-
-  async destroy(): Promise<void> {
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const live = this.live;
-    this.live = null;
-    if (live !== null) {
-      await ports.storage.detach({ runtime: live.runtime, scope }).catch(() => undefined);
-      await ports.egress.revoke({ runtime: live.runtime, scope, fence: fenceFor(scope), reason: "completed" }).catch(() => undefined);
-    }
-    const handle = live?.handle ?? (await this.options.state.load())?.handle;
-    if (handle !== undefined) await ports.sandbox.release({ scope, handle });
-    await this.options.state.clear();
-  }
-
-  private compose() {
-    return this.composed ??= this.options.compose();
-  }
-
-  private async attachStorage(): Promise<void> {
-    const opened = this.live === null;
-    const { runtime, handle } = await this.open();
-    // A fresh open already attached the current stores and outputs.
-    if (opened) return;
-    await this.options.state.save({ handle, stores: this.stores, outputs: this.outputs });
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const plan = await this.options.plan(scope, this.stores);
-    await ports.storage.attach({ runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: plan.outputs, signal: new AbortController().signal });
-  }
-
-  private async call<T>(operation: (runtime: E2BSandboxExecutor) => Promise<T>): Promise<T> {
-    const { runtime } = await this.open();
-    try {
-      return await operation(runtime);
-    } catch (error) {
-      const name = (error as { name?: unknown } | null)?.name;
-      if (error instanceof SandboxGoneError || name === "SandboxNotFoundError" || name === "SandboxNotRunningError") this.live = null;
-      throw error;
-    }
-  }
-
-  private open() {
-    if (this.live !== null) return Promise.resolve(this.live);
-    return this.opening ??= this.start().finally(() => { this.opening = null; });
-  }
-
-  private async start(): Promise<{ runtime: E2BSandboxExecutor; handle: SandboxHandle }> {
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const signal = new AbortController().signal;
-    const saved = await this.options.state.load();
-    if (saved !== undefined) {
-      this.stores = mergeStores(saved.stores, this.stores);
-      this.outputs ||= saved.outputs;
-    }
-    const plan = await this.options.plan(scope, this.stores);
-    let acquired = saved === undefined ? "gone" as const : await ports.sandbox.attach({ scope, handle: saved.handle, signal });
-    if (acquired === "gone") {
-      if (saved !== undefined) await ports.sandbox.release({ scope, handle: saved.handle }).catch(() => undefined);
-      acquired = await ports.sandbox.acquire({ scope, plan, signal });
-      if (acquired === "gone") throw new Error(`E2B template ${JSON.stringify(plan.from)} was not found`);
-    }
-    await this.options.state.save({ handle: acquired.handle, stores: this.stores, outputs: this.outputs });
-    if (Object.keys(this.env).length > 0) await acquired.runtime.setEnvVars(this.env);
-    const fence = fenceFor(scope);
-    await ports.egress.attach({ runtime: acquired.runtime, scope, fence, policy: plan.egress, signal });
-    if (this.outputs || this.stores.length > 0) {
-      await ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores: this.stores, outputs: plan.outputs, signal });
-    }
-    this.live = acquired;
-    return acquired;
-  }
+function e2bExecutor(runtime: E2BSandboxExecutor): SessionSandboxExecutor {
+  return {
+    async exec(command, timeout) {
+      const result = await runtime.run(command, timeout === undefined ? {} : { timeoutMs: timeout });
+      return `exit=${result.exitCode}\n${result.stdout}${result.stderr ? `\nstderr: ${result.stderr}` : ""}`;
+    },
+    startProcess: (command) => runtime.startProcess(command),
+    spawnDuplexProcess: (spec) => runtime.spawnDuplexProcess(spec),
+    readFile: (path) => runtime.readFile(path),
+    writeFile: (path, content) => runtime.writeFile(path, content),
+    writeFileBytes: (path, bytes) => runtime.writeFileBytes(path, bytes),
+    setEnvVars: (env) => runtime.setEnvVars(env),
+  };
 }
 
 /** Builds the facade from Worker env. Missing configuration fails here with
@@ -332,14 +228,4 @@ export function createR2BindingOutputSink(bucket: R2Bucket, keyPrefix: (scope: R
       if (previous.size > 0) await bucket.delete([...previous]);
     },
   };
-}
-
-function fenceFor(scope: RuntimeResourceScope): RuntimeResourceFence {
-  return { ...scope, ownerId: "session-do", generation: 1, token: "session-do", expiresAt: "9999-12-31T00:00:00.000Z" };
-}
-
-function mergeStores(saved: MemoryStoreBinding[], current: MemoryStoreBinding[]): MemoryStoreBinding[] {
-  const byName = new Map(saved.map((store) => [store.storeName, store]));
-  for (const store of current) byName.set(store.storeName, store);
-  return [...byName.values()];
 }
