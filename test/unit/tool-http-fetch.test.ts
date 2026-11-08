@@ -1,12 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  fetchWebSearchGet,
-  fetchWithTimeout,
-  httpFetchErrorMessage,
-  mergeAbortSignals,
-  postTavilySearch,
-  WEB_SEARCH_TAVILY_TIMEOUT_MS,
-} from "../../apps/agent/src/harness/tool-http-fetch";
+import { fetchWebSearchGet, fetchWithTimeout, httpFetchErrorMessage, mergeAbortSignals, postTavilySearch, WEB_SEARCH_TAVILY_TIMEOUT_MS } from "../../packages/agent-harness/src/tool-http-fetch";
 
 function abortAwareFetch() {
   return vi.fn((_url: string, init?: RequestInit) =>

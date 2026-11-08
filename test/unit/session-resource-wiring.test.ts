@@ -1,19 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { zipSync } from "fflate";
 
-import {
-  getSkillFilesFromManagedSource,
-  getSkillFiles,
-  skillFileMountPaths,
-  resolveCustomSkills,
-} from "../../apps/agent/src/harness/skills";
+import { getSkillFilesFromManagedSource, getSkillFiles, skillFileMountPaths, resolveCustomSkills } from "../../packages/agent-harness/src/skills";
 import {
   installGhCli,
   loadManagedSessionResources,
   proxiedRepositoryAccess,
 } from "../../apps/agent/src/runtime/managed-session-resources";
 import { mountSessionResources, type SessionResourceRecord } from "@open-managed-agents/session-runtime";
-import type { SandboxExecutor } from "../../apps/agent/src/harness/interface";
+import type { SandboxExecutor } from "../../packages/agent-harness/src/interface";
 import { fileR2Key, skillFileR2Key } from "@open-managed-agents/shared";
 
 /** The Cloudflare composition of the shared Session resource mount

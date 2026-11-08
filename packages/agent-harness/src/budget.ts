@@ -1,10 +1,10 @@
-// Pi surface over the ONE domain model-egress meter, plus the wire form of the
-// application budget stop (packages/managed-agents-application sessions/budget).
+// Pi surface over the ONE domain model-egress meter. The budget stop itself is
+// the application's budgetReachedStopEvents (managed-agents-application).
 // Domain owns SessionBudgetGate, `list_cost_pico`, ListCostPicoStore, and
 // beginModelEgress / completeModelEgress. This module re-exports that API and
 // wraps Pi `models` so every request hits the same meter as the sandbox
 // inference-proxy (withHostedInferenceBudget).
-import type { ModelPricing, SessionEvent } from "@open-managed-agents/api-types";
+import type { ModelPricing } from "@open-managed-agents/api-types";
 import {
   type BudgetAmount,
   type ListCostPicoStore,
@@ -26,8 +26,6 @@ import {
   requestListCostPico,
   runtimeListCost,
 } from "@open-managed-agents/domain/sessions";
-import { budgetReachedStopEvents, type SessionUsage } from "@open-managed-agents/managed-agents-application";
-import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 export {
   SessionBudgetReachedError,
@@ -52,23 +50,6 @@ export function createSessionBudgetGate(
   store: ListCostPicoStore,
 ): SessionBudgetGate | null {
   return domainCreateSessionBudgetGate(budget, pricing as ListPricing | null | undefined, store);
-}
-
-/** Wire form of the ONE budget stop (application budgetReachedStopEvents).
- * `usage` may be wire (snake_case) or application (camelCase) shaped; the
- * runtime encoder snake-cases either. */
-export function budgetReachedEvents(input: {
-  sessionThreadId?: string | null;
-  agentName?: string;
-  usage: Record<string, unknown>;
-  budget: BudgetAmount;
-}): SessionEvent[] {
-  return budgetReachedStopEvents({
-    ...(input.agentName !== undefined && { agentName: input.agentName }),
-    sessionThreadId: input.sessionThreadId ?? null,
-    usage: input.usage as SessionUsage,
-    budget: input.budget,
-  }).map((event) => encodeRuntimeHistoryEvent(event as never) as unknown as SessionEvent);
 }
 
 interface PiUsageLike { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }

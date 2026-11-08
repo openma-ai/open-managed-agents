@@ -5,7 +5,7 @@
 
 import { logWarn } from "@open-managed-agents/shared";
 import { assertCommandSucceeded, type RepositoryAccessPort, type SessionResourceRecord } from "@open-managed-agents/session-runtime";
-import type { SandboxExecutor } from "../harness/interface";
+import type { SandboxExecutor } from "@open-managed-agents/agent-harness";
 
 export interface ManagedSessionFileSource {
   downloadFile(fileId: string): Promise<{ content: Uint8Array }>;

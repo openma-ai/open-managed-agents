@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  assertWebFetchUrlAllowed,
-  fetchWebFetchUrl,
-  webFetchGuardError,
-  webFetchHttpErrorMessage,
-  WebFetchHttpError,
-} from "../../apps/agent/src/harness/web-fetch-http";
+import { assertWebFetchUrlAllowed, fetchWebFetchUrl, webFetchGuardError, webFetchHttpErrorMessage, WebFetchHttpError } from "../../packages/agent-harness/src/web-fetch-http";
 
 afterEach(() => {
   vi.restoreAllMocks();

@@ -1,4 +1,4 @@
-import "../../apps/agent/src/harness/builtins";
+import "../../packages/agent-harness/src/builtins";
 import { createExecutionContext } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";

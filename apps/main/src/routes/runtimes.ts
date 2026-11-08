@@ -943,7 +943,7 @@ async function renderSessionBundle(
  * null when anything in the chain is missing — caller falls back to a
  * stub so a single bad skill doesn't break the whole spawn-cwd bundle.
  *
- * Mirrors the lookup chain in apps/agent/src/harness/skills.ts:91 so a
+ * Mirrors the lookup chain in packages/agent-harness/src/skills.ts:91 so a
  * skill that mounts in cloud sandbox also mounts identically in a daemon
  * spawn-cwd. Binary skill files (icons, fonts, etc.) are deliberately
  * not bundled: BundleFile.content is utf-8 string only — base64-encoding

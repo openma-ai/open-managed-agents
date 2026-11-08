@@ -2,7 +2,7 @@ import { generateText } from "ai";
 import type { ModelMessage, LanguageModel } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { ContentBlock, SessionEvent } from "@open-managed-agents/shared";
-import { eventsToMessages } from "../runtime/history";
+import { eventsToMessages } from "./history/events-to-messages";
 import type { HarnessRuntime } from "./interface";
 
 /**

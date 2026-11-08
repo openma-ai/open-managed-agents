@@ -495,6 +495,7 @@ export interface AgentToolResultEvent extends EventBase {
   // downstream consumers (UI, scorers, projections) should extract a
   // text representation if they only need text.
   content: string | ContentBlock[];
+  is_error?: boolean;
 }
 
 export interface SessionRunningEvent extends EventBase {

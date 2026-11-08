@@ -9,14 +9,14 @@ import {
 } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessRuntime } from "../src/harness/interface";
-import type { PiCompactionPolicy } from "../src/harness/pi-compaction";
-import { PiSummaryCompactionPolicy } from "../src/harness/pi-compaction";
-import { PiHarness } from "../src/harness/pi-loop";
-import { createPiModelRuntime } from "../src/harness/pi-provider";
-import { TOOL_ASSEMBLY_WARNING_SOURCE } from "../src/harness/assembly/loaded-tools-state";
-import { SKILL_ASSEMBLY_WARNING_SOURCE } from "../src/harness/assembly/loaded-skills-state";
-import { CONTEXT_REASSEMBLED_WARNING_SOURCE } from "../src/harness/assembly/context-reassembled-state";
+import type { HarnessContext, HarnessRuntime } from "../../../packages/agent-harness/src/interface";
+import type { PiCompactionPolicy } from "../../../packages/agent-harness/src/pi-compaction";
+import { PiSummaryCompactionPolicy } from "../../../packages/agent-harness/src/pi-compaction";
+import { PiHarness } from "../../../packages/agent-harness/src/pi-loop";
+import { createPiModelRuntime } from "../../../packages/agent-harness/src/pi-provider";
+import { TOOL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-tools-state";
+import { SKILL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-skills-state";
+import { CONTEXT_REASSEMBLED_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/context-reassembled-state";
 
 function makeContext(responses: ReturnType<typeof fauxAssistantMessage>[]) {
   const faux = fauxProvider({ tokensPerSecond: 100_000 });
@@ -200,7 +200,7 @@ describe("PiHarness", () => {
     faux.setResponses([fauxAssistantMessage("after reassembly")]);
 
     const assemblyProbe = vi.fn();
-    const piAdapter = await import("../src/harness/assembly/adapters/pi");
+    const piAdapter = await import("../../../packages/agent-harness/src/assembly/adapters/pi");
     const createAssembly = piAdapter.createPiToolAssembly;
     const assemblySpy = vi.spyOn(piAdapter, "createPiToolAssembly").mockImplementation((harnessCtx) => {
       const assembly = createAssembly(harnessCtx);
@@ -588,7 +588,7 @@ describe("PiHarness", () => {
     it("keeps all MCP tools visible when tool_search is off", async () => {
       const { ctx, faux } = makeToolSearchContext([fauxAssistantMessage("ok")], "off");
       const assemblyProbe = vi.fn();
-      const piAdapter = await import("../src/harness/assembly/adapters/pi");
+      const piAdapter = await import("../../../packages/agent-harness/src/assembly/adapters/pi");
       const createAssembly = piAdapter.createPiToolAssembly;
       vi.spyOn(piAdapter, "createPiToolAssembly").mockImplementation((harnessCtx) => {
         const assembly = createAssembly(harnessCtx);
@@ -606,7 +606,7 @@ describe("PiHarness", () => {
     it("defers MCP tools and exposes tool_search when mode is on", async () => {
       const { ctx, faux } = makeToolSearchContext([fauxAssistantMessage("ok")], "on");
       const assemblyProbe = vi.fn();
-      const piAdapter = await import("../src/harness/assembly/adapters/pi");
+      const piAdapter = await import("../../../packages/agent-harness/src/assembly/adapters/pi");
       const createAssembly = piAdapter.createPiToolAssembly;
       vi.spyOn(piAdapter, "createPiToolAssembly").mockImplementation((harnessCtx) => {
         const assembly = createAssembly(harnessCtx);
@@ -644,7 +644,7 @@ describe("PiHarness", () => {
     it("keeps MCP tools visible in auto mode when defs are below the threshold", async () => {
       const { ctx, faux } = makeToolSearchContext([fauxAssistantMessage("ok")], "auto");
       const assemblyProbe = vi.fn();
-      const piAdapter = await import("../src/harness/assembly/adapters/pi");
+      const piAdapter = await import("../../../packages/agent-harness/src/assembly/adapters/pi");
       const createAssembly = piAdapter.createPiToolAssembly;
       vi.spyOn(piAdapter, "createPiToolAssembly").mockImplementation((harnessCtx) => {
         const assembly = createAssembly(harnessCtx);
@@ -666,7 +666,7 @@ describe("PiHarness", () => {
       );
       ctx.pi!.model = { ...ctx.pi!.model, contextWindow: 10_000 };
       const assemblyProbe = vi.fn();
-      const piAdapter = await import("../src/harness/assembly/adapters/pi");
+      const piAdapter = await import("../../../packages/agent-harness/src/assembly/adapters/pi");
       const createAssembly = piAdapter.createPiToolAssembly;
       vi.spyOn(piAdapter, "createPiToolAssembly").mockImplementation((harnessCtx) => {
         const assembly = createAssembly(harnessCtx);
@@ -698,7 +698,7 @@ describe("PiHarness", () => {
         content: [{ type: "text", text: "second turn" }],
       });
       const assemblyProbe = vi.fn();
-      const piAdapter = await import("../src/harness/assembly/adapters/pi");
+      const piAdapter = await import("../../../packages/agent-harness/src/assembly/adapters/pi");
       const createAssembly = piAdapter.createPiToolAssembly;
       vi.spyOn(piAdapter, "createPiToolAssembly").mockImplementation((harnessCtx) => {
         const assembly = createAssembly(harnessCtx);

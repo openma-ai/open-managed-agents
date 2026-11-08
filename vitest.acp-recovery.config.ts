@@ -9,7 +9,7 @@ export default defineConfig({
     testTimeout: 30_000,
     coverage: {
       provider: "v8",
-      include: ["apps/agent/src/harness/acp-recovery.ts"],
+      include: ["packages/agent-harness/src/acp-recovery.ts"],
       reporter: ["text", "json-summary"],
       reportsDirectory: "coverage/acp-recovery",
       thresholds: {

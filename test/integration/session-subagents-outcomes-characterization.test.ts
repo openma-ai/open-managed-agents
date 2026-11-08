@@ -8,7 +8,7 @@
 // the convergence report.
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { ensureModelCards } from "./_model-cards";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };

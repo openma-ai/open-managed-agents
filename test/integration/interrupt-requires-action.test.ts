@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 // Official CMA: against an already-idle session (including idle
 // requires_action) an interrupt is a true no-op — accept, leave event_ids /

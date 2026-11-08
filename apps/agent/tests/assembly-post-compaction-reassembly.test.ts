@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import { CONTEXT_REASSEMBLED_WARNING_SOURCE } from "../src/harness/assembly/context-reassembled-state";
-import { TOOL_ASSEMBLY_WARNING_SOURCE } from "../src/harness/assembly/loaded-tools-state";
-import { SKILL_ASSEMBLY_WARNING_SOURCE } from "../src/harness/assembly/loaded-skills-state";
-import {
-  buildLoadedSkillRetentionSection,
-  resolvePostCompactionAssembly,
-} from "../src/harness/assembly/post-compaction-reassembly";
-import type { SkillMountDescriptor } from "../src/harness/skills";
+import { CONTEXT_REASSEMBLED_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/context-reassembled-state";
+import { TOOL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-tools-state";
+import { SKILL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-skills-state";
+import { buildLoadedSkillRetentionSection, resolvePostCompactionAssembly } from "../../../packages/agent-harness/src/assembly/post-compaction-reassembly";
+import type { SkillMountDescriptor } from "../../../packages/agent-harness/src/skills";
 
 const model = {
   id: "test",

@@ -2,7 +2,8 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { eventsToMessages, InMemoryHistory } from "../../apps/agent/src/runtime/history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
+import { InMemoryHistory } from "../../packages/agent-harness/src/history/in-memory-history";
 import type {
   SessionEvent,
   UserMessageEvent,

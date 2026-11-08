@@ -30,12 +30,12 @@ import { buildOpenAISubagentTools, nodeOpenAISubagentPolicy, openAISubagentSessi
 
 import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../openai-artifact-publication.js";
 
-import { buildTools, disposeTools } from "@open-managed-agents/agent/harness/tools";
+import {
+  buildTools, disposeTools, composeSystemPrompt, agentUsesAssemblySkillMount, type HarnessContext,
+  readHarnessAgentModelSettings, createPiModelRuntime, resolveHarness,
+} from "@open-managed-agents/agent-harness";
 
 import { generateText } from "ai";
-import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform-guidance";
-import { agentUsesAssemblySkillMount } from "@open-managed-agents/agent/harness/assembly/skill-config";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 
 import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import { buildMcpOAuthCliRoutes, buildMcpOAuthCliCallback, buildCapCliDeviceFlowRoutes, buildMcpOAuthRoutes, buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
@@ -81,9 +81,6 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 
-import { readHarnessAgentModelSettings } from "@open-managed-agents/agent/harness/agent-model-settings";
-import { createPiModelRuntime } from "@open-managed-agents/agent/harness/pi-provider";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarnessEnvironmentConfig, resolveNodeManagedAuxiliaryToolModel } from "../lib/node-managed-agent-codec.js";
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";

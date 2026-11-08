@@ -24,12 +24,10 @@ import {
   nodeManagedMemoryRoot,
   nodeManagedMemoryStoreName,
 } from "./node-managed-memory-stores.js";
-import { resolveAppendablePrompts } from "@open-managed-agents/agent/runtime/appendable-prompts";
-import type { SkillMountDescriptor } from "@open-managed-agents/agent/harness/skills";
 import {
-  resolveSkillAssemblyConfig,
+  resolveAppendablePrompts, type SkillMountDescriptor, resolveSkillAssemblyConfig,
   skillMountsShouldFetchBodies,
-} from "@open-managed-agents/agent/harness/assembly/skill-config";
+} from "@open-managed-agents/agent-harness";
 import { toLegacyHarnessAgentConfig } from "./node-managed-agent-codec.js";
 import { repositoryToken } from "./node-repository-egress.js";
 

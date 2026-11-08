@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 // Characterization (design §0.7 regression rule 1) of CF requires_action
 // bookkeeping, locked before it moved into packages/session-runtime: a
@@ -65,7 +65,8 @@ describe("CF requires_action batch bookkeeping", () => {
       expect(room.state.pending_tool_calls).toEqual([]);
       expect(resumed).toHaveLength(1);
       expect((resumed[0] as any[])[0]).toEqual({ type: "user.message", content: [{ type: "text", text: "" }] });
-      expect((resumed[0] as any[])[2]).toBe(true);
+      // A custom tool's resume has not announced status_running yet.
+      expect((resumed[0] as any[])[2]).toBe(false);
     });
   });
 

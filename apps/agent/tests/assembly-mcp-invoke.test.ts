@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { createMcpInvokeTool } from "../src/harness/assembly/components/mcp-invoke";
-import { supportsNativeToolLoading } from "../src/harness/assembly/model-capabilities";
-import { MCP_INVOKE_TOOL_NAME, resolveProxiedToolCall } from "../src/harness/tool-proxy";
+import { createMcpInvokeTool } from "../../../packages/agent-harness/src/assembly/components/mcp-invoke";
+import { supportsNativeToolLoading } from "../../../packages/agent-harness/src/assembly/model-capabilities";
+import { MCP_INVOKE_TOOL_NAME, resolveProxiedToolCall } from "../../../packages/agent-harness/src/tool-proxy";
 
 const TARGET = "mcp__github__create_issue";
 

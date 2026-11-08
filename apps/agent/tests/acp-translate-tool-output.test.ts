@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AcpTranslator } from "../src/harness/acp-translate";
-import type { HarnessRuntime } from "../src/harness/interface";
+import { AcpTranslator } from "../../../packages/agent-harness/src/acp-translate";
+import type { HarnessRuntime } from "../../../packages/agent-harness/src/interface";
 
 function translator() {
   const events: Array<Record<string, unknown>> = [];

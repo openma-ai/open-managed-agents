@@ -1,9 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import {
-  AI_SDK_HARNESS_DEPRECATION_MESSAGE,
-  resetAiSdkHarnessDeprecationWarningsForTests,
-  warnAiSdkHarnessDeprecatedOnce,
-} from "../src/harness/ai-sdk-deprecation";
+import { AI_SDK_HARNESS_DEPRECATION_MESSAGE, resetAiSdkHarnessDeprecationWarningsForTests, warnAiSdkHarnessDeprecatedOnce } from "../../../packages/agent-harness/src/ai-sdk-deprecation";
 
 describe("ai-sdk harness deprecation", () => {
   afterEach(() => {

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import {
-  restoreLoadedToolNames,
-  TOOL_ASSEMBLY_WARNING_SOURCE,
-} from "../src/harness/assembly/loaded-tools-state";
+import { restoreLoadedToolNames, TOOL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-tools-state";
 
 describe("restoreLoadedToolNames", () => {
   it("restores from session.warning assembly events", () => {

@@ -1,15 +1,10 @@
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import type { ModelMessage } from "ai";
-import type {
-  HarnessRuntime,
-  HistoryStore,
-} from "@open-managed-agents/agent/harness/interface";
 import {
-  eventsToMessages,
-  eventsToMessagesAsync,
+  type HarnessRuntime, type HistoryStore, eventsToMessages, eventsToMessagesAsync,
   type FileResolver,
-} from "@open-managed-agents/agent/runtime/history";
+} from "@open-managed-agents/agent-harness";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
 import type { ContentBlock, SessionEvent } from "@open-managed-agents/shared";

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 
-import { answerAcpPermission } from "../../apps/agent/src/harness/acp-permission";
+import { answerAcpPermission } from "../../packages/agent-harness/src/acp-permission";
 
 const options = [
   { optionId: "allow", kind: "allow_once" },

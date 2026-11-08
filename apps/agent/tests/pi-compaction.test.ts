@@ -8,15 +8,9 @@ import {
   type Model,
   type Models,
 } from "@earendil-works/pi-ai";
-import type { HarnessRuntime } from "../src/harness/interface";
-import { resolveCompactionTriggerInputTokens } from "../src/harness/compaction-config";
-import {
-  estimatePiMessagesTokens,
-  PI_CONTEXT_OUTPUT_RESERVE_TOKENS,
-  piCompactionInputBudget,
-  PiSummaryCompactionPolicy,
-  resolvePiCompactionPolicy,
-} from "../src/harness/pi-compaction";
+import type { HarnessRuntime } from "../../../packages/agent-harness/src/interface";
+import { resolveCompactionTriggerInputTokens } from "../../../packages/agent-harness/src/compaction-config";
+import { estimatePiMessagesTokens, PI_CONTEXT_OUTPUT_RESERVE_TOKENS, piCompactionInputBudget, PiSummaryCompactionPolicy, resolvePiCompactionPolicy } from "../../../packages/agent-harness/src/pi-compaction";
 
 const model = {
   id: "summary-model",

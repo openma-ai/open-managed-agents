@@ -1,6 +1,6 @@
 import { jsonSchema, tool } from "ai";
 import { describe, expect, it } from "vitest";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
+import type { HarnessContext } from "@open-managed-agents/agent-harness";
 import { ManagedNodeDefaultHarness } from "../../../packages/control-plane-node/src/lib/node-managed-default-harness";
 import { ManagedNodeHarnessRuntime } from "../../../packages/control-plane-node/src/lib/node-managed-harness-runtime";
 import { createNoEnvironmentSandbox } from "../../../packages/control-plane-node/src/openai-no-environment";

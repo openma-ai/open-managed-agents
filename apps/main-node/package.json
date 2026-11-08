@@ -70,6 +70,7 @@
     "@hono/node-server": "^1.13.0",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/agent": "workspace:*",
+    "@open-managed-agents/agent-harness": "workspace:*",
     "@open-managed-agents/agent-store-memory": "workspace:*",
     "@open-managed-agents/agent-store-sql": "workspace:*",
     "@open-managed-agents/auth": "workspace:*",

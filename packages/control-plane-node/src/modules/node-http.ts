@@ -19,7 +19,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
 import { Hono } from "hono";
 import { mountKimiKhaCompat } from "../kimi-kha/index.js";
-import { getHarnessCatalog } from "@open-managed-agents/agent/harness/registry";
+import { getHarnessCatalog } from "@open-managed-agents/agent-harness";
 import { OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createArtifactsHandler, createManagedSessionMapping, createResourcesHandler, createSessionsHandler } from "@open-managed-agents/openai-agents-compat";
 
