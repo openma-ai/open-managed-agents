@@ -183,7 +183,8 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       // per-Session placeholder, like every other harness (design §0.5).
       expect(launch.key).toBeUndefined(); expect(launch.maxcompute).toMatch(/^oma_vault_[A-Za-z0-9_-]{43}$/u);
       expect(JSON.stringify(launch)).not.toContain("raw-vault-test-secret");
-      expect(launch.model).toBe("workspace-model");
+      // In-sandbox agents select by the card's upstream id; pi silently falls back on an unknown one.
+      expect(launch.model).toBe("claude-sonnet-5-5");
       expect(launch.servers[0].url).toBe(`${base}/v1/oma/mcp-proxy/${session.id}/maxcompute`);
       expect(JSON.stringify(launch)).not.toContain("workspace-model-secret");
       expect(JSON.stringify(launch)).not.toContain("maxcompute-server-secret");
