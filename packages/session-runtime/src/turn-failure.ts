@@ -80,6 +80,21 @@ export function reportTurnFailure(
   }
 }
 
+/** Decides a failed attempt, announces the decision, and waits out a retry's
+ * backoff. The caller runs the next attempt or ends the turn from the plan. */
+export async function settleTurnFailure(
+  input: PlanTurnFailureInput & {
+    message: string;
+    events: TurnFailureEventsPort;
+    wait(ms: number): Promise<void>;
+  },
+): Promise<TurnFailurePlan> {
+  const plan = planTurnFailure(input);
+  reportTurnFailure(plan, input.message, input.events);
+  if (plan.type === "retry") await input.wait(plan.delayMs);
+  return plan;
+}
+
 const CANCELLATION_ERROR_NAMES = new Set([
   "AbortError",
   "ExecutionFenceLostError",

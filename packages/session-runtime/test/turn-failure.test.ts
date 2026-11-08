@@ -4,6 +4,7 @@ import {
   isTurnCancellationError,
   planTurnFailure,
   reportTurnFailure,
+  settleTurnFailure,
   type PlanTurnFailureInput,
   type TurnFailurePlan,
 } from "../src/turn-failure";
@@ -77,5 +78,31 @@ describe("classifyTurnFailure", () => {
   it("retries an unclassified failure only while the turn has no agent events", () => {
     expect(classifyTurnFailure(new Error("boom"), false)).toBe("transient");
     expect(classifyTurnFailure(new Error("boom"), true)).toBe("turn_dead");
+  });
+});
+
+describe("settleTurnFailure", () => {
+  const settle = async (input: Partial<PlanTurnFailureInput>) => {
+    const log: string[] = [];
+    const plan = await settleTurnFailure({
+      ...base,
+      ...input,
+      message: "boom",
+      events: {
+        sessionError: (_message, status) => log.push(`error:${status}`),
+        rescheduled: () => log.push("rescheduled"),
+      },
+      wait: async (ms) => { log.push(`wait:${ms}`); },
+    });
+    return { plan, log };
+  };
+
+  it("announces a retry before waiting out its backoff", async () => {
+    expect((await settle({})).log).toEqual(["error:retrying", "rescheduled", "wait:1000"]);
+  });
+
+  it("does not wait on a final failure and stays silent on cancellation", async () => {
+    expect((await settle({ attempt: 3 })).log).toEqual(["error:exhausted"]);
+    expect((await settle({ cancelled: true })).log).toEqual([]);
   });
 });

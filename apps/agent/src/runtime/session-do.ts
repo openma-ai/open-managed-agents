@@ -48,8 +48,7 @@ import {
   type StaleToolUse,
   isTurnCancellationError,
   openTurnMarker,
-  planTurnFailure,
-  reportTurnFailure,
+  settleTurnFailure,
   type RuntimeAdapter,
   type TurnRuntimeAgent,
   type RecoveryDecision,
@@ -6516,7 +6515,7 @@ export class SessionDO extends DurableObject<Env> {
       // ModelError is turn-dead only (exhausted + retries_exhausted): same
       // prompt fails again, but the session stays usable for a new prompt.
       // Caught 2026-05-11 sess-y2bfxm1de4e1zqxm: retries burned tokens.
-      const plan = planTurnFailure({
+      const plan = await settleTurnFailure({
         cancelled: false,
         // A turn that already produced agent events is not re-run: a retry
         // would repeat its tool calls.
@@ -6528,23 +6527,24 @@ export class SessionDO extends DurableObject<Env> {
         maxAttempts: 3,
         // Exponential backoff: 1s, 2s
         delayMs: (attempt) => 1000 * Math.pow(2, attempt - 1),
-      });
-
-      // Official CMA ordering: session.error{retrying} then status_rescheduled.
-      reportTurnFailure(plan, errorMessage, {
-        sessionError: (message, retry_status) => {
-          const event = {
-            type: "session.error",
-            error: { type: "unknown_error", message, retry_status },
-          } as SessionEvent;
-          history.append(event);
-          this.broadcastEvent(event, activeFence);
+        message: errorMessage,
+        // Official CMA ordering: session.error{retrying} then status_rescheduled.
+        events: {
+          sessionError: (message, retry_status) => {
+            const event = {
+              type: "session.error",
+              error: { type: "unknown_error", message, retry_status },
+            } as SessionEvent;
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          },
+          rescheduled: (reason) => {
+            const event: SessionEvent = { type: "session.status_rescheduled", reason };
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          },
         },
-        rescheduled: (reason) => {
-          const event: SessionEvent = { type: "session.status_rescheduled", reason };
-          history.append(event);
-          this.broadcastEvent(event, activeFence);
-        },
+        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       });
 
       if (plan.type === "retry") {
@@ -6552,7 +6552,6 @@ export class SessionDO extends DurableObject<Env> {
         // mid-turn inputs and do not start a new agent turn from them.
         // Leave them until the next consume boundary after this resume;
         // takeSteeringInputs then ingests them into the continuing turn.
-        await new Promise(r => setTimeout(r, plan.delayMs));
         // Recursive call owns the next idle emit (success or its own
         // finally). Suppress this frame's catch-all so we don't get
         // two status_idle events on a successful retry.

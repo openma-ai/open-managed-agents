@@ -95,6 +95,7 @@ export {
   isTurnCancellationError,
   planTurnFailure,
   reportTurnFailure,
+  settleTurnFailure,
   type PlanTurnFailureInput,
   type TurnFailureClass,
   type TurnFailureEventsPort,

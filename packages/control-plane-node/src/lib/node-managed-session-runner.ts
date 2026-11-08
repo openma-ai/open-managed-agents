@@ -1,8 +1,8 @@
 import {
   classifyTurnFailure,
   decideTurnStop,
-  planTurnFailure,
   reportTurnFailure,
+  settleTurnFailure,
   SessionSandboxRuntime,
   type SessionSandboxMode,
   type TurnFailureClass,
@@ -845,6 +845,8 @@ export class DefaultNodeManagedSessionRunner
     let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
+    // The retry loop already announced this turn's final failure.
+    let failureReported = false;
     // user.interrupt ended the turn (abort reason INTERRUPT_REQUESTED).
     let interrupted = false;
     try {
@@ -1001,17 +1003,20 @@ export class DefaultNodeManagedSessionRunner
           } catch (error) {
             if (!(error instanceof Error)) throw error;
             const sideEffectFree = runtime.agentEventCount === agentEventsBefore;
-            const plan = planTurnFailure({
+            const plan = await settleTurnFailure({
               cancelled: abortController.signal.aborted,
               failureClass: nodeTurnFailureClass(error, !sideEffectFree),
               attempt,
               maxAttempts: retry.attempts,
               delayMs: retry.delayMs,
+              message: error.message,
+              events: nodeTurnFailureEvents(runtime),
+              wait: (ms) => abortableDelay(ms, abortController.signal),
             });
-            // Exhausted and cancelled turns are settled by the outer catch.
-            if (plan.type !== "retry") throw error;
-            reportTurnFailure(plan, error.message, nodeTurnFailureEvents(runtime));
-            await abortableDelay(plan.delayMs, abortController.signal);
+            if (plan.type !== "retry") {
+              failureReported = plan.type === "exhausted";
+              throw error;
+            }
             if (abortController.signal.aborted) throw error;
           }
         }
@@ -1043,11 +1048,13 @@ export class DefaultNodeManagedSessionRunner
         if (abortController.signal.reason === "lease_lost") throw error;
         // The turn may have produced side effects (tool calls), so it is not
         // retried automatically: CMA semantics for a dead turn are `exhausted`.
-        reportTurnFailure(
-          { type: "exhausted" },
-          error instanceof Error ? error.message : String(error),
-          nodeTurnFailureEvents(runtime),
-        );
+        if (!failureReported) {
+          reportTurnFailure(
+            { type: "exhausted" },
+            error instanceof Error ? error.message : String(error),
+            nodeTurnFailureEvents(runtime),
+          );
+        }
         throw new SessionRetriesExhaustedError(
           error instanceof Error ? error.message : String(error),
         );
