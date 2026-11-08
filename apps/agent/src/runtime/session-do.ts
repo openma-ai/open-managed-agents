@@ -801,6 +801,8 @@ export class SessionDO extends DurableObject<Env> {
   private portsSandbox: PortsSessionSandbox<unknown> | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
+  /** The warm-up started by /init; owned here so /destroy (and tests) wait for it. */
+  private _sandboxWarm: Promise<void> = Promise.resolve();
   /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
   private readonly processedClock = createMonotonicClock();
 
@@ -2697,9 +2699,8 @@ export class SessionDO extends DurableObject<Env> {
         });
       }
 
-      // Warm the sandbox at creation (design §0.0 rule 10): acquire and record
-      // only; the first execution attaches it. A DO reset loses only the warm-up.
-      void this.sessionSandboxRuntime().acquire().then(() => this.portsSandbox?.warm())
+      // Warm at creation (§0.0 rule 10): acquire + record only; the first execution attaches it.
+      this._sandboxWarm = this.sessionSandboxRuntime().acquire().then(() => this.portsSandbox?.warm())
         .catch(error => logWarn({ op: "session_do.sandbox_warm", session_id: this.state.session_id, err: error }, "sandbox warm-up failed"));
 
       return new Response("ok");
@@ -2712,6 +2713,7 @@ export class SessionDO extends DurableObject<Env> {
         ctrl.abort();
       }
       this._threadAbortControllers.clear();
+      await this._sandboxWarm; // a warm-up still running would record a sandbox after this destroy
       await this._primaryHarness.dispose();
       // Snapshot /workspace BEFORE we destroy the container — once destroy()
       // runs the container is gone and we can't read its filesystem.
