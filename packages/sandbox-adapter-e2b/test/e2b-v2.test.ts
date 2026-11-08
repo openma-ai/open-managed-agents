@@ -278,6 +278,31 @@ describe("E2B v2 storage", () => {
     expect(fake.calls.commands.filter((c) => c.cmd.startsWith("umount"))).toHaveLength(3);
   });
 
+  it("native: storage commands do not inherit the Session's relay env (rclone's S3 SDK rejects AWS_CA_BUNDLE)", async () => {
+    const fake = fakeSdk();
+    const kit = adapter(fake, { objectStorage: objectStorage() });
+    const { ports } = createSandboxPorts(kit, { storage: {} as never, egress: gatewayDeps });
+    const acquired = await kit.lifecycle.acquire({ scope, plan, signal });
+    if (acquired === "gone") throw new Error("unexpected");
+    // Execution order (design §0.0 rule 7): egress.attach, then storage.attach.
+    const policy = {
+      scope: { workspaceId: "ws", sessionId: "sess", generation: 1 },
+      networking: { type: "unrestricted" as const },
+      substitutions: [{ credentialId: "vault", envName: "API_TOKEN", placeholder: "oma_vault_x", hosts: [], inject: { header: true, body: false } }],
+    };
+    await ports.egress.attach({ runtime: acquired.runtime, scope, fence, policy, signal });
+    await kit.native!.storage!({} as never).attach({ runtime: acquired.runtime, scope, fence, stores: [stores[0]!], outputs, signal });
+    const storageCalls = fake.calls.commands.filter((c) => c.cmd.includes("rclone mount ") || c.cmd.startsWith("mountpoint -q ") || c.cmd.startsWith("mkdir -p /mnt/session/outputs"));
+    expect(storageCalls.length).toBeGreaterThanOrEqual(5);
+    for (const call of storageCalls) {
+      const envs = (call.opts.envs ?? {}) as Record<string, string>;
+      for (const name of ["AWS_CA_BUNDLE", "SSL_CERT_FILE", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "API_TOKEN"]) expect(envs).not.toHaveProperty(name);
+    }
+    // The agent's own commands still see the relay env.
+    await acquired.runtime.run("env");
+    expect(fake.calls.commands.at(-1)!.opts.envs).toMatchObject({ API_TOKEN: "oma_vault_x", HTTPS_PROXY: "http://127.0.0.1:18080" });
+  });
+
   it("native: re-mints and remounts once less than half the credential lifetime is left", async () => {
     const fake = fakeSdk();
     let issued = 0;

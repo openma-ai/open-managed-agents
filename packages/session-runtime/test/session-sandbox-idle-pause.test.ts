@@ -70,4 +70,17 @@ describe("Session sandbox idle pause", () => {
     expect(await gone.sandbox.idlePause()).toBe("skipped");
     expect(gone.log).toEqual(["attach:r9"]);
   });
+
+  it("a timer armed before the host was evicted fires on a fresh instance: it attaches the recorded sandbox and pauses it", async () => {
+    // Cloudflare: the DO alarm outlives the in-memory instance that armed it;
+    // a cancelled timer never fires (the schedule row is deleted).
+    const saved: SessionSandboxState = { handle: { provider: "fake", runtimeId: "r9" }, stores: [], outputs: true };
+    const h = fakeSessionSandbox({ saved });
+    h.setExecution(undefined);
+    expect(await h.sandbox.idlePause()).toBe("paused");
+    expect(h.log).toEqual(["attach:r9", "storage.sync:before_stop", "storage.detach", "pause"]);
+    expect(h.stored()).toMatchObject({ handle: { runtimeId: "r9" }, paused: true });
+    // Already paused: a second fire is a no-op.
+    expect(await h.sandbox.idlePause()).toBe("skipped");
+  });
 });
