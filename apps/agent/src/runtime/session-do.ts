@@ -48,6 +48,7 @@ import {
   asWireEvents,
   awaitsCustomToolResult,
   knownToolCallIds,
+  mountSessionResources,
   remainingAfterAnswer,
   requiresActionStopReason,
   RuntimeAdapterImpl,
@@ -175,10 +176,7 @@ import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
 import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
-import {
-  loadManagedSessionResources,
-  mountResources,
-} from "./resource-mounter";
+import { installGhCli, loadManagedSessionResources, proxiedRepositoryAccess } from "./managed-session-resources";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
 import {
   createSessionWakeups,
@@ -4390,16 +4388,12 @@ export class SessionDO extends DurableObject<Env> {
         );
 
         if (resources.length) {
-          await mountResources(
-            sandbox,
-            resources,
-            this.env.CONFIG_KV,
-            new Map(),
-            undefined,
-            this.state.tenant_id,
-            undefined,
-            loaded.fileSource,
-          );
+          await mountSessionResources(sandbox, resources, {
+            downloadFile: async (fileId) => (await loaded.fileSource.downloadFile(fileId)).content,
+            repositories: proxiedRepositoryAccess(sandbox),
+            memoryStores: { mode: "native" },
+            afterRepositories: () => installGhCli(sandbox),
+          });
         }
       }
 
@@ -5925,7 +5919,7 @@ export class SessionDO extends DurableObject<Env> {
     // each attached store appears as /mnt/memory/<store_name>/ inside the
     // sandbox. The agent reads/writes via the standard file tools (no
     // bespoke memory_* tools). The mount itself is set up further down in
-    // the resource-mounter call. We only need MemoryStoreService here to
+    // the mountSessionResources call. We only need MemoryStoreService here to
     // resolve store metadata for the system-prompt reminder block.
     let memoryStoreService: MemoryStoreService | null = null;
     if (memoryAttachments.length && this.env.MAIN_DB) {

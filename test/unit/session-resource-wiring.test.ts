@@ -8,11 +8,48 @@ import {
   resolveCustomSkills,
 } from "../../apps/agent/src/harness/skills";
 import {
+  installGhCli,
   loadManagedSessionResources,
-  mountResources,
-} from "../../apps/agent/src/runtime/resource-mounter";
+  proxiedRepositoryAccess,
+} from "../../apps/agent/src/runtime/managed-session-resources";
+import { mountSessionResources, type SessionResourceRecord } from "@open-managed-agents/session-runtime";
 import type { SandboxExecutor } from "../../apps/agent/src/harness/interface";
 import { fileR2Key, skillFileR2Key } from "@open-managed-agents/shared";
+
+/** The Cloudflare composition of the shared Session resource mount
+ * (SessionDO warmup): proxied repository access, native Memory mounts,
+ * best-effort gh CLI. Keeps this suite's positional call shape: a bucket
+ * becomes the tenant-scoped file source, a lookup the Memory name Port. */
+function mountResources(
+  sandbox: SandboxExecutor,
+  resources: Array<Record<string, unknown>>,
+  _kv: KVNamespace,
+  envSecrets?: Map<string, string>,
+  filesBucket?: R2Bucket,
+  tenantId?: string,
+  memoryStoreLookup?: (storeId: string) => Promise<{ name: string } | null>,
+  fileSource?: { downloadFile(fileId: string): Promise<{ content: Uint8Array }> },
+): Promise<void> {
+  const downloadFile = fileSource !== undefined
+    ? async (fileId: string) => (await fileSource.downloadFile(fileId)).content
+    : filesBucket !== undefined && tenantId !== undefined
+      ? async (fileId: string) => {
+          const object = await filesBucket.get(fileR2Key(tenantId, fileId));
+          if (!object) throw new Error(`Session file ${fileId} was not found`);
+          return new Uint8Array(await object.arrayBuffer());
+        }
+      : undefined;
+  return mountSessionResources(sandbox, resources as SessionResourceRecord[], {
+    ...(downloadFile === undefined ? {} : { downloadFile }),
+    repositories: proxiedRepositoryAccess(sandbox),
+    memoryStores: {
+      mode: "native",
+      ...(memoryStoreLookup === undefined ? {} : { lookupName: async (id: string) => (await memoryStoreLookup(id))?.name ?? null }),
+    },
+    ...(envSecrets === undefined ? {} : { envSecrets }),
+    afterRepositories: () => installGhCli(sandbox),
+  });
+}
 
 function objectBody(bytes: Uint8Array) {
   return {
@@ -168,7 +205,7 @@ describe("in-sandbox Session resource wiring", () => {
       name: "a File without object storage",
       resource: { id: "resource-file", type: "file", file_id: "file-1" },
       sandbox: { exec: vi.fn(), writeFileBytes: vi.fn() },
-      expected: /file.*FILES_BUCKET/i,
+      expected: /file resource requires a tenant-scoped file source/i,
     },
     {
       name: "a Memory Store without a mount Port",
@@ -547,8 +584,8 @@ describe("in-sandbox Session resource wiring", () => {
     );
     expect(exec.mock.calls.map(([command]) => command)).toEqual([
       expect.stringContaining("credential.helper"),
-      expect.stringContaining("git config user.name"),
-      expect.stringContaining("git fetch origin 'feature/resource-wiring:refs/remotes/origin/feature/resource-wiring'"),
+      expect.stringContaining("git -C 'example' config user.name"),
+      expect.stringContaining("git -C 'example' fetch origin 'feature/resource-wiring:refs/remotes/origin/feature/resource-wiring'"),
       expect.stringContaining("which gh"),
     ]);
     expect(JSON.stringify(exec.mock.calls)).not.toContain("github-token-must-not-enter-sandbox");
@@ -578,11 +615,12 @@ describe("in-sandbox Session resource wiring", () => {
       { targetDir: mountPath },
     );
     const commands = exec.mock.calls.map(([command]) => command);
+    // exec runs in the /workspace root, so the path is workspace-relative.
     expect(commands).toContain(
-      "cd '/workspace/repo name; echo unsafe' && git config user.name \"Agent\" && git config user.email \"agent@managed-agents.dev\"",
+      "git -C 'repo name; echo unsafe' config user.name \"Agent\" && git -C 'repo name; echo unsafe' config user.email \"agent@managed-agents.dev\"",
     );
     expect(commands).toContain(
-      "cd '/workspace/repo name; echo unsafe' && git checkout '0123456789abcdef'",
+      "git -C 'repo name; echo unsafe' checkout --detach '0123456789abcdef'",
     );
   });
 
@@ -670,9 +708,9 @@ describe("in-sandbox Session resource wiring", () => {
         {} as KVNamespace,
       );
       const commands = exec.mock.calls.map(([command]) => command);
-      expect(commands).toContain("git clone -- 'https://github.com/o/r.git' '/workspace' 2>&1");
+      expect(commands).toContain("git clone -- 'https://github.com/o/r.git' '.' 2>&1");
       expect(commands).toContain(
-        "cd '/workspace' && (git fetch origin 'topic:refs/remotes/origin/topic' 2>/dev/null && git checkout 'topic') || git checkout -b 'topic'",
+        "(git -C '.' fetch origin 'topic:refs/remotes/origin/topic' 2>/dev/null && git -C '.' checkout 'topic') || git -C '.' checkout -b 'topic'",
       );
     });
 

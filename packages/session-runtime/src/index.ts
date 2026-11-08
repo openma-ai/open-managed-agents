@@ -57,6 +57,25 @@ export {
   type PendingToolCall,
 } from "./requires-action";
 
+export {
+  mountSessionResources,
+  type SessionResourceMountPorts,
+  type SessionResourceSandbox,
+} from "./session-resource-mount";
+export {
+  memoryStoreMountTarget,
+  planSessionResourceMounts,
+  type RepositoryMount,
+  type SessionResourceMount,
+  type SessionResourceRecord,
+} from "./session-resource-records";
+export {
+  assertCommandSucceeded,
+  commandScopedRepositoryAccess,
+  shellQuote,
+  type RepositoryAccessPort,
+} from "./session-resource-repository";
+
 export { SessionSandboxRuntime, type SessionSandboxMode } from "./session-sandbox";
 export { PortsSessionSandbox } from "./ports-session-sandbox";
 export type {
