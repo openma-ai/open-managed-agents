@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   deletedSessionResourceResponseSchema,
   sessionResourceAddBodySchema,
@@ -27,7 +26,6 @@ export function buildSessionResourceRoutes(
   source: ApplicationPortSource<SessionResourcesApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/:sessionId/resources", async (c) => {
     const query = sessionResourceListQuerySchema.safeParse({

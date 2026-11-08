@@ -19,9 +19,6 @@ import {
 import type { RouteServicesArg } from "../types";
 import { resolveServices } from "../types";
 
-const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
-const DREAMING_BETA = "dreaming-2026-04-21";
-
 interface Vars {
   Variables: { tenant_id: string; user_id?: string };
 }
@@ -42,8 +39,6 @@ interface CreateDreamBody {
 
 export function buildDreamRoutes(deps: DreamRoutesDeps) {
   const app = new Hono<Vars>();
-
-  app.use("*", requireBetas([MANAGED_AGENTS_BETA, DREAMING_BETA]));
 
   app.post("/", async (c) => {
     const services = resolveServices(deps.services, c);
@@ -171,31 +166,6 @@ export function buildDreamRoutes(deps: DreamRoutesDeps) {
   });
 
   return app;
-}
-
-function requireBetas(required: string[]) {
-  return async (c: Parameters<Parameters<Hono<Vars>["use"]>[1]>[0], next: () => Promise<void>) => {
-    const raw = c.req.header("anthropic-beta") ?? "";
-    const present = new Set(
-      raw
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean),
-    );
-    const missing = required.filter((beta) => !present.has(beta));
-    if (missing.length > 0) {
-      return c.json(
-        {
-          error: {
-            type: "invalid_request_error",
-            message: `Missing required anthropic-beta flag(s): ${missing.join(", ")}`,
-          },
-        },
-        400,
-      );
-    }
-    await next();
-  };
 }
 
 function parseInputs(inputs: CreateDreamBody["inputs"]): {

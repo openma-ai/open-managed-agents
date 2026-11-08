@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MCP_TUNNELS_BETA, requireBeta } from "../beta";
 import {
   tunnelCertificateCreateBodySchema,
   tunnelCertificateListQuerySchema,
@@ -29,7 +28,6 @@ export function buildTunnelCertificateRoutes(
   source: ApplicationPortSource<TunnelCertificatesApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MCP_TUNNELS_BETA));
 
   app.post("/:tunnelId/certificates", async (c) => {
     let body: unknown;

@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   environmentWorkHeartbeatQuerySchema,
   environmentWorkHeartbeatResponseSchema,
@@ -33,7 +32,6 @@ export function buildEnvironmentWorkRoutes(
   source: ApplicationPortSource<EnvironmentWorkApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/:environmentId/work", async (c) => {
     const query = environmentWorkListQuerySchema.safeParse({

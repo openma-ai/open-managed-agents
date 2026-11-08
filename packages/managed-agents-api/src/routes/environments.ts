@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   deletedEnvironmentResponseSchema,
   environmentCreateBodySchema,
@@ -53,7 +52,6 @@ export function buildEnvironmentRoutes(
   options: EnvironmentRoutesOptions = {},
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.post("/", async (c) => {
     let body: unknown;

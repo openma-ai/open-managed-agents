@@ -78,7 +78,7 @@ OpenMA extension that lists durable files deliberately written beneath
 `/mnt/session/outputs`. Returns `{ data, has_more: false }`. It is available
 on the Node entrypoint and on Cloudflare when `FILES_BUCKET` is configured.
 This is not currently a generated `@anthropic-ai/sdk` method, so call it with
-ordinary HTTP and include `anthropic-beta: managed-agents-2026-04-01`.
+ordinary HTTP.
 
 ### `GET /v1/sessions/:id/outputs/:filename`
 Streams one durable output. Filenames are a single path segment; parent or
