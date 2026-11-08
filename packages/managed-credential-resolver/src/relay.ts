@@ -2,9 +2,20 @@ import { egressRequestHeaders } from "./egress";
 import type { ManagedCredentialResolver } from "./resolver";
 
 export const EGRESS_RELAY_PATH = "/v1/oma/egress";
-export interface EgressRelayClaims { workspaceId: string; sessionId: string; expiresAt: number }
+/** The Session execution attempt a pass is bound to (design §0.0 rule 10). */
+export interface EgressRelayFence {
+  workspaceId: string;
+  sessionId: string;
+  executionId: string;
+  attemptId: string;
+  ownerId: string;
+  generation: number;
+}
+/** A pass dies with its attempt: `expiresAt` only bounds it, the relay's
+ * authorize port checks the attempt is still current on every request. */
+export interface EgressRelayClaims extends EgressRelayFence { expiresAt: number }
 export interface EgressRelayPasses {
-  issue(input: { workspaceId: string; sessionId: string; ttlMs: number }): Promise<string>;
+  issue(input: EgressRelayFence & { ttlMs: number }): Promise<string>;
   verify(pass: string): Promise<EgressRelayClaims | null>;
 }
 const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
@@ -12,11 +23,17 @@ const decode = (text: string) => Uint8Array.from(atob(text.replaceAll("-", "+").
 
 /** WebCrypto only: identical authority on Workers and Node, no platform storage. */
 export function createEgressRelayPasses(secret: string, now: () => number): EgressRelayPasses {
-  const key = crypto.subtle.importKey("raw", new TextEncoder().encode(`credential-relay.v1:${secret}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+  // v2: a pass carries the execution attempt; v1 (Session-only) passes no longer verify.
+  const key = crypto.subtle.importKey("raw", new TextEncoder().encode(`credential-relay.v2:${secret}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
   return {
     async issue(input) {
-      if (!input.workspaceId || !input.sessionId || input.ttlMs <= 0) throw new Error("Invalid relay scope");
-      const payload = encode(new TextEncoder().encode(JSON.stringify({ workspaceId: input.workspaceId, sessionId: input.sessionId, expiresAt: now() + input.ttlMs })));
+      if (!input.workspaceId || !input.sessionId || !input.executionId || !input.attemptId || !input.ownerId
+        || !Number.isSafeInteger(input.generation) || input.generation < 1 || input.ttlMs <= 0) throw new Error("Invalid relay scope");
+      const claims: EgressRelayClaims = {
+        workspaceId: input.workspaceId, sessionId: input.sessionId, executionId: input.executionId,
+        attemptId: input.attemptId, ownerId: input.ownerId, generation: input.generation, expiresAt: now() + input.ttlMs,
+      };
+      const payload = encode(new TextEncoder().encode(JSON.stringify(claims)));
       return `${payload}.${encode(new Uint8Array(await crypto.subtle.sign("HMAC", await key, new TextEncoder().encode(payload))))}`;
     },
     async verify(pass) {
@@ -24,7 +41,10 @@ export function createEgressRelayPasses(secret: string, now: () => number): Egre
         const [payload, signature, extra] = pass.split(".");
         if (!payload || !signature || extra !== undefined || !await crypto.subtle.verify("HMAC", await key, decode(signature), new TextEncoder().encode(payload))) return null;
         const claims = JSON.parse(new TextDecoder().decode(decode(payload))) as EgressRelayClaims;
-        return typeof claims.workspaceId === "string" && claims.workspaceId !== "" && typeof claims.sessionId === "string" && claims.sessionId !== "" && Number.isFinite(claims.expiresAt) && claims.expiresAt > now() ? claims : null;
+        const text = (value: unknown) => typeof value === "string" && value !== "";
+        return text(claims.workspaceId) && text(claims.sessionId) && text(claims.executionId) && text(claims.attemptId) && text(claims.ownerId)
+          && Number.isSafeInteger(claims.generation) && claims.generation >= 1
+          && Number.isFinite(claims.expiresAt) && claims.expiresAt > now() ? claims : null;
       } catch { return null; }
     },
   };
@@ -99,7 +119,10 @@ export function createCredentialEgressCore(ports: CredentialEgressCorePorts): Cr
 
 export interface CredentialEgressRelayPorts extends CredentialEgressCorePorts {
   passes: EgressRelayPasses;
-  findSession(claims: Pick<EgressRelayClaims, "workspaceId" | "sessionId">): Promise<{ vaultIds: readonly string[]; archivedAt: string | null } | null>;
+  /** The pass's attempt is current and its Session usable → the egress
+   * scope; otherwise null (403). One shared implementation:
+   * @open-managed-agents/sandbox-gateway authorizeSandboxEgress. */
+  authorize(claims: EgressRelayClaims): Promise<CredentialEgressScope | null>;
 }
 export interface CredentialEgressRelay { handle(action: "resolve" | "forward", request: Request): Promise<Response> }
 
@@ -110,9 +133,8 @@ export function createCredentialEgressRelay(ports: CredentialEgressRelayPorts): 
     const pass = /^Bearer (\S+)$/u.exec(request.headers.get("authorization") ?? "")?.[1];
     const claims = pass ? await ports.passes.verify(pass) : null;
     if (claims === null) return credentialEgressDenied(401);
-    const session = await ports.findSession(claims);
-    if (session === null || session.archivedAt !== null) return credentialEgressDenied(403);
-    const scope = { workspaceId: claims.workspaceId, sessionId: claims.sessionId, vaultIds: session.vaultIds };
+    const scope = await ports.authorize(claims);
+    if (scope === null) return credentialEgressDenied(403);
     const target = request.headers.get("x-oma-egress-target") ?? "";
     if (action === "resolve") return core.resolve(scope, target);
     // Decoded lazily so a denied request is never parsed or buffered.

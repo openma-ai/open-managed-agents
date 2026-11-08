@@ -8,13 +8,11 @@
 // that OmaSandbox writes when it backs up and stops an idle or destroyed
 // container.
 //
-// Two deliberate differences from the adapter defaults, both keeping today's
-// SessionDO behavior:
-//   - egress binds the outbound handler without a runtime fence. The
-//     adapter's native egress sends a required runtime-resource fence that
-//     main checks against D1; SessionDO executions are not registered there,
-//     so every intercepted request would be denied. Revoke is a no-op: the
-//     binding is torn down with the container on release.
+// Two deliberate differences from the adapter defaults:
+//   - egress binds the outbound handler to the Session execution attempt
+//     (design §0.0 rule 10), not to a runtime-resource fence: main checks the
+//     attempt live (sandbox-gateway). With no attempt the binding carries
+//     none and gets no Vault; revoke rebinds it that way.
 //   - acquire / resume keep the 3-attempt container start retry and bind the
 //     backup and billing context OmaSandbox needs for its idle teardown.
 
@@ -37,8 +35,15 @@ export interface CloudflareSessionSandboxDeps {
   /** Operator catalog image (container binding + workdir); null = SANDBOX. */
   sandboxImage: CloudflareSandboxImage | null;
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
+  /** The Session's current execution attempt (SessionDO's fence); undefined between turns. */
+  fence(): SandboxExecutionFence | undefined;
   warn(message: string): void;
 }
+
+/** What the outbound binding needs of a SessionExecutionFence. */
+export interface SandboxExecutionFence { executionId: string; attemptId: string; ownerId: string; generation: number }
+export const sandboxExecutionFenceKey = (fence: SandboxExecutionFence | undefined): string =>
+  fence === undefined ? "" : `${fence.executionId}/${fence.attemptId}/${fence.ownerId}/${fence.generation}`;
 
 const IDLE_MS = 5 * 60_000;
 const START_ATTEMPTS = 3;
@@ -58,7 +63,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
       const { ports } = createSandboxPorts({
         ...adapter,
         lifecycle: withSessionContext(adapter.lifecycle, sandbox, deps.session),
-        native: { ...adapter.native, egress: () => ({ port: unfencedEgress(deps.session) }) },
+        native: { ...adapter.native, egress: () => ({ port: executionEgress(deps.session, deps.fence) }) },
       // Both are native, so the generic implementations' deps are never read.
       }, { storage: {} as never, egress: {} as never });
       return { ports };
@@ -87,8 +92,10 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     },
     warn: deps.warn,
     outputDurability: () => sandbox.sessionOutputMountCapabilities(),
-    // The outbound handler holds no expiring credential.
+    // The outbound handler holds no expiring credential; it is rebound when
+    // the execution attempt changes.
     egressRenewMs: null,
+    egressKey: () => sandboxExecutionFenceKey(deps.fence?.()),
   });
 }
 
@@ -142,15 +149,22 @@ async function startWithRetry<T>(start: () => Promise<T>): Promise<T> {
   throw new Error(`Sandbox container failed to start after ${START_ATTEMPTS} attempts. Last error: ${message}`);
 }
 
-function unfencedEgress(session: CloudflareSessionSandboxDeps["session"]): SandboxEgressPort<CloudflareSandboxRuntime> {
-  const bind = async (runtime: CloudflareSandboxRuntime) => {
+function executionEgress(
+  session: CloudflareSessionSandboxDeps["session"],
+  fence: CloudflareSessionSandboxDeps["fence"],
+): SandboxEgressPort<CloudflareSandboxRuntime> {
+  const bind = async (runtime: CloudflareSandboxRuntime, current: SandboxExecutionFence | undefined) => {
     const s = session();
-    if (s.sessionId && s.tenantId) await runtime.setOutboundContext({ tenantId: s.tenantId, sessionId: s.sessionId });
+    if (!s.sessionId || !s.tenantId) return;
+    await runtime.setOutboundContext({
+      tenantId: s.tenantId, sessionId: s.sessionId,
+      ...(current === undefined ? {} : { executionId: current.executionId, attemptId: current.attemptId, ownerId: current.ownerId, generation: current.generation }),
+    });
   };
   return {
-    attach: ({ runtime }) => bind(runtime),
-    update: ({ runtime }) => bind(runtime),
-    async revoke() {},
+    attach: ({ runtime }) => bind(runtime, fence?.()),
+    update: ({ runtime }) => bind(runtime, fence?.()),
+    revoke: ({ runtime }) => bind(runtime, undefined),
   };
 }
 

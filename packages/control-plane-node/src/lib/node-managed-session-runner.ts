@@ -192,6 +192,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
    * warm reuse, without restaging resources or rebuilding the sandbox. */
   refreshSandboxEnvironment?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
+    /** The execution the sandbox serves; its relay pass binds to it (design §0.0 rule 10). */
+    executionFence?: SessionExecutionFence;
     /** Cleanup receives the raw, allocation-bound sandbox after refresh drains. */
     registerCleanup(cleanup: (sandbox: SandboxExecutor) => Promise<void>): void;
   }): Promise<void>;
@@ -389,7 +391,7 @@ export class DefaultNodeManagedSessionRunner
   }
 
   private async refreshSandboxEnvironment(
-    context: ManagedRunnerContext,
+    context: ManagedRunnerContext & { executionFence?: SessionExecutionFence },
     sandbox: SandboxExecutor,
     signal: AbortSignal,
   ): Promise<void> {
@@ -451,7 +453,10 @@ export class DefaultNodeManagedSessionRunner
           ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
         });
         if (signal.aborted) throw abortedError(signal);
-        await this.refreshSandboxEnvironment(context, sandbox, signal);
+        await this.refreshSandboxEnvironment({
+          ...context,
+          ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
+        }, sandbox, signal);
       },
     });
     const allocation = runtime.acquire();

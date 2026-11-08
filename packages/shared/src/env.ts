@@ -302,6 +302,8 @@ export interface Env {
     credentialEgress(scope: {
       tenantId: string; sessionId: string;
       runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
+      /** Session sandbox: the execution attempt (design §0.0 rule 10). Without either fence: denied. */
+      executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
     }, action: "resolve" | "forward", request: Request): Promise<Response>;
     /**
      * Per-repo GitHub credential lookup for the network-layer proxy
@@ -322,6 +324,7 @@ export interface Env {
         generation: number;
         token: string;
       };
+      executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
     }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null>;
     /**
      * Transparent HTTP proxy for the cloud agent's MCP traffic. Agent

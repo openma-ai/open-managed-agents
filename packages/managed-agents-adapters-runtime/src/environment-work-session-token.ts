@@ -402,3 +402,14 @@ export async function authenticateEnvironmentWorkSessionBearer(
     return null;
   }
 }
+
+/** The sealed bearer as a @open-managed-agents/sandbox-gateway SandboxBearerCodec
+ * (structural): the same envelope, crypto purpose chosen by the caller. */
+export function sealedSandboxBearerCodec(crypto: EnvironmentWorkSessionTokenCrypto, now: () => Date) {
+  return {
+    open: (
+      request: { token: string; method: string; path: string },
+      isCurrent: (claim: EnvironmentWorkSessionClaim) => Promise<boolean>,
+    ) => authenticateEnvironmentWorkSessionBearer({ ...request, crypto, now, isCurrent }),
+  };
+}

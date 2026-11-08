@@ -15,6 +15,7 @@ const CORE_PACKAGES = [
   "packages/managed-agents-app",
   "packages/session-outcomes",
   "packages/session-subagents",
+  "packages/sandbox-gateway",
 ];
 
 const FORBIDDEN_PREFIXES = [

@@ -89,6 +89,8 @@ import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarness
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
 import { ManagedCredentialResolver, createCredentialEgressRelay, createEgressRelayPasses } from "@open-managed-agents/managed-credential-resolver";
+import { authorizeSandboxEgress, issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import { isSessionExecutionFenceActive, sessionExecutionLeasesFrom, type SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { prepareSandboxEgress } from "@open-managed-agents/sandbox-egress";
@@ -328,26 +330,11 @@ export async function createManagedNodeRuntime(
     ),
   });
 
-  async function isManagedSessionExecutionFenceActive(fence: {
-    workspaceId: string;
-    sessionId: string;
-    executionId: string;
-    attemptId: string;
-    ownerId: string;
-    generation: number;
-    expiresAt: string;
-  }): Promise<boolean> {
-    if (Date.parse(fence.expiresAt) <= Date.now()) return false;
-    const execution = await managedSessionExecutionCoordinator.find({
-      workspaceId: fence.workspaceId,
-      executionId: fence.executionId,
-    });
-    return execution?.state === "running"
-      && execution.sessionId === fence.sessionId
-      && execution.attempt?.id === fence.attemptId
-      && execution.attempt.ownerId === fence.ownerId
-      && execution.attempt.generation === fence.generation
-      && Date.parse(execution.attempt.leaseExpiresAt) > Date.now();
+  // The one Session execution fence check (design §0.0 rule 10): the lease
+  // row is the authority; a fence snapshot's own expiresAt is not.
+  const managedSessionExecutionLeases = sessionExecutionLeasesFrom(input => managedSessionExecutionCoordinator.find(input));
+  async function isManagedSessionExecutionFenceActive(fence: SessionExecutionAttemptRef & { expiresAt: string }): Promise<boolean> {
+    return isSessionExecutionFenceActive(managedSessionExecutionLeases, fence);
   }
 
   const managedAcpCapabilities = createNodeManagedAcpCapabilities({
@@ -586,7 +573,7 @@ export async function createManagedNodeRuntime(
     },
     // Cold preparation calls this last (after repository clones); warm reuse
     // calls it again to renew the pass and honor the current Vault bindings.
-    refreshSandboxEnvironment: async ({ workspaceId, session, sandbox, registerCleanup }) => {
+    refreshSandboxEnvironment: async ({ workspaceId, session, sandbox, registerCleanup, executionFence }) => {
       if (session.vaultIds.length > 0 && (!relayPasses || !config.http.publicBaseUrl)) {
         throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
       }
@@ -596,7 +583,9 @@ export async function createManagedNodeRuntime(
         scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
         placeholders: (scope) => managedCredentialResolver.placeholderEnvironment(scope),
         relay: { endpoint: config.http.publicBaseUrl ?? "https://unavailable.invalid", pass: "" },
-        issuePass: () => relayPasses!.issue({ workspaceId, sessionId: session.id, ttlMs: 86_400_000 }),
+        // Bound to the execution attempt (design §0.0 rule 10): the relay
+        // checks it live, so the pass dies with the attempt.
+        issuePass: () => issueSandboxRelayPass(claims => relayPasses!.issue(claims), executionFence, 86_400_000),
       });
     },
     synchronizeSandbox: async ({
@@ -1253,10 +1242,7 @@ export async function createManagedNodeRuntime(
     return createCredentialEgressRelay({
       passes: relayPasses,
       credentials: managedCredentialResolver,
-      findSession: async input => {
-        const session = (await managedRuntimeReaders.executionContext.find(input))?.session;
-        return session === undefined ? null : { vaultIds: session.vaultIds, archivedAt: session.archivedAt };
-      },
+      authorize: claims => authorizeSandboxEgress(managedAcpCapabilities.stores, claims),
       send: sendDirectHttps,
     });
   });
