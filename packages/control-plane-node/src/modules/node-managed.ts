@@ -107,8 +107,13 @@ import {
 import { NodeManagedMemorySnapshotMaterializer } from "../lib/node-managed-memory-snapshots.js";
 import { synchronizeNodeManagedMemoryStores } from "../lib/node-managed-memory-stores.js";
 import { NodeSessionExecutionWorker } from "../lib/node-session-execution-worker.js";
-import { createNodeMcpProxyBinding, type NodeMcpProxyTarget } from "../lib/http-mcp-proxy.js";
+import {
+  createMcpProxyBinding,
+  type InferenceProxyPorts,
+  type McpProxyPorts,
+} from "@open-managed-agents/http-routes/proxy";
 import { createNodeAccessLossRuntime } from "../lib/mcp-access-loss.js";
+import { nodeSessionModelEgress } from "../lib/node-session-budget-gates.js";
 
 import { Disposables } from "../lifecycle.js";
 import type { NodeComponents } from "../components.js";
@@ -146,148 +151,6 @@ export async function createManagedNodeRuntime(
   } = foundation;
   // ─── Official Managed Sessions composition ─────────────────────────────
 
-  async function resolveNodeMcpProxyTarget(input: {
-    tenantId: string;
-    sessionId: string;
-    serverName: string;
-    agentId?: string;
-    agentVersion?: number;
-  }): Promise<NodeMcpProxyTarget | null> {
-    const managedContext = await managedRuntimeReaders.executionContext.find({
-      workspaceId: input.tenantId,
-      sessionId: input.sessionId,
-    });
-    if (managedContext !== null) {
-      if (managedContext.session.archivedAt !== null) return null;
-      const root = managedContext.session.agent;
-      const selected = input.agentId === undefined || (input.agentId === root.id && input.agentVersion === root.version)
-        ? root
-        : root.multiagent?.subagents.type === "enabled"
-          ? root.multiagent.subagents.predefinedAgents.find(member => member.type === "agent" && member.id === input.agentId && member.version === input.agentVersion)
-          : undefined;
-      if (!selected || !("mcpServers" in selected)) return null;
-      const server = selected.mcpServers.find(
-        (candidate) => candidate.name === input.serverName,
-      );
-      if (server === undefined || server.type !== "url") return null;
-      // Session ownership and the declared target are already validated. No
-      // attached Vaults explicitly permits anonymous access; a failed lookup
-      // with Vaults attached must still fail closed (including revocation).
-      if (managedContext.session.vaultIds.length === 0) {
-        return { upstreamUrl: server.url, accessToken: null };
-      }
-      const target = await managedCredentialResolver.mcpTarget({
-        workspaceId: input.tenantId,
-        sessionId: input.sessionId,
-        vaultIds: managedContext.session.vaultIds,
-      }, server.url);
-      if (target === null) return null;
-      return {
-        upstreamUrl: target.upstreamUrl,
-        accessToken: target.upstreamToken,
-        managed: {
-          forward: (send) => managedCredentialResolver.forward(input.tenantId, target, send),
-        },
-      };
-    }
-
-    const session = await sessionsService.get({
-      tenantId: input.tenantId,
-      sessionId: input.sessionId,
-    }).catch(() => null);
-    if (session === null || session.archived_at) return null;
-    const snapshot = session.agent_snapshot as import("@open-managed-agents/api-types").RuntimeAgentConfig | undefined;
-    const selected = input.agentId === undefined || (snapshot?.id === input.agentId && snapshot.version === input.agentVersion)
-      ? snapshot
-      : snapshot?.multiagent?.subagents.type === "enabled"
-        ? snapshot.multiagent.subagents.predefined_agents.find(member => member.id === input.agentId && member.version === input.agentVersion)
-        : undefined;
-    const server = selected?.mcp_servers?.find(candidate => candidate.name === input.serverName);
-    if (server === undefined || !("url" in server) || !server.url) return null;
-    if (server.authorization_token) {
-      return {
-        upstreamUrl: server.url,
-        accessToken: server.authorization_token,
-      };
-    }
-    const vaultIds = session.vault_ids ?? [];
-    if (vaultIds.length === 0) return { upstreamUrl: server.url, accessToken: null };
-    const groups = await credentialService.listByVaults({
-      tenantId: input.tenantId,
-      vaultIds,
-    });
-    for (const group of groups) {
-      for (const credential of group.credentials) {
-        if (credential.archived_at !== null) continue;
-        const auth = credential.auth as {
-          type?: string;
-          mcp_server_url?: string;
-          bearer_token?: string;
-          token?: string;
-          access_token?: string;
-          refresh_token?: string;
-          token_endpoint?: string;
-          client_id?: string;
-          client_secret?: string;
-        };
-        if (auth.mcp_server_url !== server.url) continue;
-        const accessToken = auth.bearer_token ?? auth.token ?? auth.access_token;
-        if (!accessToken) continue;
-        const target: NodeMcpProxyTarget = {
-          upstreamUrl: server.url,
-          accessToken,
-        };
-        if (auth.type === "mcp_oauth" && auth.refresh_token && auth.token_endpoint) {
-          target.refresh = {
-            refreshToken: auth.refresh_token,
-            tokenEndpoint: auth.token_endpoint,
-            clientId: auth.client_id,
-            clientSecret: auth.client_secret,
-          };
-          target.onRefreshed = async (tokens) => {
-            await credentialService.refreshAuth({
-              tenantId: input.tenantId,
-              vaultId: group.vault_id,
-              credentialId: credential.id,
-              auth: {
-                access_token: tokens.access_token,
-                refresh_token: tokens.refresh_token,
-              },
-            });
-          };
-        }
-        return target;
-      }
-    }
-    return null;
-  }
-
-  async function resolveNodeInferenceUpstream(input: {
-    tenantId: string;
-    sessionId: string;
-  }): Promise<import("../lib/http-inference-proxy.js").NodeInferenceUpstream | null> {
-    const managedContext = await managedRuntimeReaders.executionContext.find({
-      workspaceId: input.tenantId,
-      sessionId: input.sessionId,
-    });
-    const legacy = managedContext?.session.agent.model
-      ? null
-      : await sessionsService.get({
-        tenantId: input.tenantId,
-        sessionId: input.sessionId,
-      }).catch(() => null);
-    // An archived Session, v1 or legacy, no longer spends its model card.
-    if (managedContext?.session.archivedAt || legacy?.archived_at) return null;
-    const agentModel = managedContext?.session.agent.model ?? legacy?.agent_snapshot?.model;
-    if (!agentModel) return null;
-    try {
-      // Hosted sandboxes must never fall back to a platform environment key.
-      return await resolveHostedModel(input.tenantId, agentModel);
-    } catch {
-      return null;
-    }
-  }
-
   async function resolveHostedModel(tenantId: string, model: string | { id: string }) {
     const handle = typeof model === "string" ? model : model.id;
     const card = await modelCardsService.findByModelId({ tenantId, modelId: handle });
@@ -302,10 +165,28 @@ export async function createManagedNodeRuntime(
     };
   }
 
-  const nodeMcpProxyBinding = createNodeMcpProxyBinding({
-    resolveTarget: resolveNodeMcpProxyTarget,
+  // The sandbox MCP and inference gateways (design §0.7), shared with
+  // Cloudflare: v1 and legacy Sessions, Vaults and model cards in this
+  // control plane's database.
+  const proxyLog = {
+    info: (fields: Record<string, unknown>, message: string) => logger.info(fields, message),
+    warn: (fields: Record<string, unknown>, message: string) => logger.warn(fields, message),
+  };
+  const proxySessions = { managed: new SqlSessionSource(sql), legacy: sessionsService };
+  const mcpProxyPorts: McpProxyPorts = {
+    sessions: proxySessions,
+    legacyCredentials: credentialService,
+    managedCredentials: () => managedCredentialResolver,
     accessLoss: await createNodeAccessLossRuntime(sql),
-  });
+    log: proxyLog,
+  };
+  const inferenceProxyPorts: InferenceProxyPorts = {
+    sessions: proxySessions,
+    modelCards: modelCardsService,
+    log: proxyLog,
+    budget: nodeSessionModelEgress,
+  };
+  const nodeMcpProxyBinding = createMcpProxyBinding(() => mcpProxyPorts);
 
   const managedSessionResourceSecrets = new SqlSessionResourceSecretSource(sql, {
     open: async (value) => {
@@ -1453,8 +1334,8 @@ export async function createManagedNodeRuntime(
 
   return {
     managedCredentialEgressRoutes,
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,

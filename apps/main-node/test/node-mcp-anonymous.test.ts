@@ -89,6 +89,7 @@ async function setup() {
   const legacyBinding = createLegacySessionMcpProxy({
     sessions: createSqliteSessionService({ db: cp.components.database.drizzle }),
     credentials: createSqliteCredentialService({ db: cp.components.database.drizzle }),
+    log: { info: () => undefined, warn: () => undefined },
   });
   function proxy(sessionId: string, method = "tools/list", serverName = "public", requestHeaders: Record<string, string> = headers, binding = false) {
     const params = method === "initialize"

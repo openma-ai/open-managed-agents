@@ -389,6 +389,10 @@ export async function createNodeFoundation(
   const legacySessionMcpProxy = createLegacySessionMcpProxy({
     sessions: sessionsService,
     credentials: credentialService,
+    log: {
+      info: (fields, message) => logger.info(fields, message),
+      warn: (fields, message) => logger.warn(fields, message),
+    },
   });
 
   const sessionRegistry = new SessionRegistry({

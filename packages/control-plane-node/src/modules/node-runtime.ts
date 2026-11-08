@@ -63,8 +63,8 @@ export async function createNodeRuntime(
 
   const managed = await createManagedNodeRuntime(foundation, components, disposables);
   const {
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
@@ -288,8 +288,8 @@ export async function createNodeRuntime(
     realtimeDescription,
     sessionRegistry,
     resolveDreamModelCredentials: foundation.resolveDreamModelCredentials,
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
