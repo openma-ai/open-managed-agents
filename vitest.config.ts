@@ -294,6 +294,10 @@ export default defineConfig({
       { find: "@open-managed-agents/sandbox-adapter-daytona", replacement: "./packages/sandbox-adapter-daytona/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-opensandbox", replacement: "./packages/sandbox-adapter-opensandbox/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-e2b", replacement: "./packages/sandbox-adapter-e2b/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit/firewall", replacement: "./packages/sandbox-port-kit/src/firewall.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit/object-storage", replacement: "./packages/sandbox-port-kit/src/object-storage.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit/ports", replacement: "./packages/sandbox-port-kit/src/ports.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit", replacement: "./packages/sandbox-port-kit/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-boxrun", replacement: "./packages/sandbox-adapter-boxrun/src/index.ts" },
       { find: "@open-managed-agents/sandbox", replacement: "./packages/sandbox/src/index.ts" },
       { find: "@open-managed-agents/runtime-resource-contract", replacement: "./packages/runtime-resource-contract/src/index.ts" },
@@ -515,6 +519,7 @@ export default defineConfig({
       "packages/sandbox-adapter-e2b/**",
       "packages/sandbox-adapter-opensandbox/**",
       "packages/sandbox-adapter-litebox/**",
+      "packages/sandbox-port-kit/**",
       // Real Node fetch (undici) behaviour of the shared proxy hop.
       "packages/http-routes/test/node/**",
       "packages/harness-supervisor/**",

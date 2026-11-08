@@ -1,0 +1,27 @@
+{
+  "name": "@open-managed-agents/sandbox-port-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./firewall": "./src/firewall.ts",
+    "./object-storage": "./src/object-storage.ts",
+    "./ports": "./src/ports.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/managed-runtime-sandbox": "workspace:*",
+    "@open-managed-agents/runtime-resource-contract": "workspace:*",
+    "@open-managed-agents/sandbox": "workspace:*",
+    "@open-managed-agents/sandbox-egress": "workspace:*",
+    "aws4fetch": "1.0.20"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "vitest": "^5.0.5"
+  }
+}
