@@ -107,7 +107,6 @@ import type { HarnessContext, HarnessInterface, HistoryStore, SandboxExecutor, P
 import {
   supportsManagedWorkspaceLifecycle,
   supportsSessionOutputMount,
-  supportsWorkspaceBackup,
   withSandboxExecutionGuard,
 } from "@open-managed-agents/sandbox";
 import { HarnessLease, resolveHarness } from "../harness/registry";
@@ -155,22 +154,13 @@ import { resolveAppendablePrompts } from "./appendable-prompts";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
-import { createSandbox } from "./sandbox";
-import { createE2BSessionSandbox, type E2BSessionSandbox } from "./e2b-session-sandbox";
+import { createSessionSandbox } from "./session-sandbox-adapters";
+import type { PortsSessionSandbox } from "./session-sandbox";
 import {
   loadManagedSessionResources,
   mountResources,
 } from "./resource-mounter";
-import {
-  provisionSessionSandbox,
-  supportsSandboxProvisioning,
-  withoutDeferredMemoryMounts,
-} from "./sandbox-provisioning";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
-import { prepareSandboxEgress } from "./sandbox-warmup-egress";
-import {
-  findLatestBackup as findWorkspaceBackup,
-} from "./workspace-backups";
 import {
   createSessionWakeups,
   type SessionWakeupApplication,
@@ -787,8 +777,8 @@ export class SessionDO extends DurableObject<Env> {
   observability: { emit?: (event: unknown) => void } | null = null;
   private initialized = false;
   private sandbox: SandboxExecutor | null = null;
-  /** Set when SANDBOX_ADAPTER=e2b: the same object as `sandbox`. */
-  private e2bSandbox: E2BSessionSandbox | null = null;
+  /** The Sandbox SDK v2 runtime (any SANDBOX_ADAPTER): the same object as `sandbox`. */
+  private portsSandbox: PortsSessionSandbox<unknown> | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
   /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
@@ -2752,7 +2742,7 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
       this.sandbox = null;
-      this.e2bSandbox = null;
+      this.portsSandbox = null;
       this.wrappedSandbox = null;
       this.sandboxRuntime = null;
       // Close the browser session if one was created
@@ -4078,31 +4068,29 @@ export class SessionDO extends DurableObject<Env> {
 
   private ensureSandboxCreated() {
     if (!this.sandbox) {
-      // Sandbox ID must be 1-63 chars; DO hex ID is 64 chars — truncate to fit
-      const sandboxId = this.ctx.id.toString().slice(0, 63);
-      const adapter = this.env.SANDBOX_ADAPTER ?? "cloudflare";
-      if (adapter === "e2b") {
-        this.e2bSandbox = createE2BSessionSandbox({
-          env: this.env,
-          storage: this.ctx.storage,
-          scope: () => ({
-            workspaceId: this.state.tenant_id,
-            environmentId: this.state.environment_id,
-            sessionId: this.state.session_id,
-            workId: this.state.session_id,
-          }),
-          networking: async () => {
-            const envId = this.state.environment_id;
-            const config = envId ? await this.getEnvConfig(envId) : null;
-            return (config?.config as { networking?: { type?: string; allowed_hosts?: string[]; allow_package_managers?: boolean } } | undefined)?.networking;
-          },
-        });
-        this.sandbox = this.e2bSandbox;
-      } else if (adapter === "cloudflare") {
-        this.sandbox = createSandbox(this.env, sandboxId);
-      } else {
-        throw new Error(`Unknown SANDBOX_ADAPTER: ${adapter}`);
-      }
+      this.portsSandbox = createSessionSandbox(this.env.SANDBOX_ADAPTER, {
+        env: this.env,
+        storage: this.ctx.storage,
+        // Sandbox ID must be 1-63 chars; DO hex ID is 64 chars — truncate to fit
+        sandboxId: this.ctx.id.toString().slice(0, 63),
+        session: () => ({
+          tenantId: this.state.tenant_id,
+          environmentId: this.state.environment_id,
+          sessionId: this.state.session_id,
+          agentId: this.state.agent_id || null,
+        }),
+        networking: async () => {
+          const envId = this.state.environment_id;
+          const config = envId ? await this.getEnvConfig(envId) : null;
+          return (config?.config as { networking?: { type?: string; allowed_hosts?: string[]; allow_package_managers?: boolean } } | undefined)?.networking;
+        },
+        warn: (message) => {
+          try {
+            this.persistAndBroadcastEvent({ type: "session.warning", message } as unknown as SessionEvent);
+          } catch {}
+        },
+      });
+      this.sandbox = this.portsSandbox;
       this.wrappedSandbox = this.wrapSandboxWithLazyWarmup(this.sandbox);
     }
   }
@@ -4280,251 +4268,14 @@ export class SessionDO extends DurableObject<Env> {
     try {
       // Raw sandbox — wrapped one would recurse back into warmUpSandbox here.
       const sandbox = this.getRawSandbox();
-
-      // Sandbox SDK 1.0 attaches mounts only while a container starts, so
-      // a Cloudflare sandbox is provisioned with its complete mount set
-      // (outputs + Memory Stores) before anything else touches it.
       const sessionId = this.state.session_id;
-      const provisioned = supportsSandboxProvisioning(sandbox)
-        ? await provisionSessionSandbox({
-            sandbox,
-            tenantId: this.state.tenant_id,
-            sessionId,
-            loadResources: sessionId
-              ? (runtimeGeneration: string) => {
-                  const source = this.env.MAIN_MCP;
-                  if (source === undefined) {
-                    throw new Error(
-                      "Managed Session input source service binding is unavailable",
-                    );
-                  }
-                  return loadManagedSessionResources(source, {
-                    tenantId: this.state.tenant_id,
-                    sessionId,
-                    runtimeGeneration,
-                  });
-                }
-              : null,
-          })
-        : null;
-      if (provisioned !== null) {
-        this.currentWarmupGen = provisioned.incarnation;
-      } else {
-        // Trigger container startup with retries — local dev containers can take
-        // 30-60s to start. SDK returns 503 while container port isn't listening.
-        // See: https://github.com/cloudflare/containers/issues/155
-        //
-        // Health-check semantics: `exec("true")` is the smallest possible probe
-        // (no-op posix binary, no fs/network IO). Cold-start: container needs
-        // ~30s for port 3000 to bind, so first attempt allows 30s. Steady-
-        // state: a healthy container responds in <100ms — anything over a few
-        // seconds means the shim is wedged (in-flight exec never resolved,
-        // file descriptors exhausted, kernel D-state on a dead socket).
-        // Using the default 120000ms timeout made wedged-container detection
-        // pathologically slow: staging 2026-05-19 saw 26× 120s timeouts =
-        // 53 min of retry-loop on a single bad container before recovery
-        // finally kicked in.
-        //
-        // After NUKE_AFTER_ATTEMPT failed probes we call sandbox.destroy() to
-        // force-tear-down the wedged container. CF's @cloudflare/sandbox SDK
-        // re-creates a fresh container on the next exec since the underlying
-        // Sandbox DO is keyed on sessionId (same DO, new container instance).
-        const HEALTH_TIMEOUT_FIRST_MS = 30_000;  // cold start allowance
-        const HEALTH_TIMEOUT_RETRY_MS = 5_000;   // wedged shim should answer <1s
-        const NUKE_AFTER_ATTEMPT = 3;
-        let ready = false;
-        let lastError = "";
-        let destroyed = false;
-        for (let attempt = 0; attempt < 10; attempt++) {
-          const timeout = attempt === 0 ? HEALTH_TIMEOUT_FIRST_MS : HEALTH_TIMEOUT_RETRY_MS;
-          try {
-            await sandbox.exec("true", timeout);
-            ready = true;
-            break;
-          } catch (err: any) {
-            lastError = err?.message || String(err);
-            if (attempt === NUKE_AFTER_ATTEMPT && !destroyed) {
-              console.warn(
-                `[warmup] container unhealthy after ${attempt + 1} probes ` +
-                  `(last: ${lastError.slice(0, 120)}); destroying + recreating`,
-              );
-              try {
-                if (typeof (sandbox as { destroy?: () => Promise<void> }).destroy === "function") {
-                  await (sandbox as { destroy: () => Promise<void> }).destroy();
-                }
-              } catch (destroyErr: any) {
-                console.warn(`[warmup] destroy failed: ${destroyErr?.message ?? destroyErr}`);
-              }
-              destroyed = true;
-            }
-            const delay = 1000 * Math.pow(1.5, attempt);
-            await new Promise(r => setTimeout(r, Math.min(delay, 5000)));
-          }
-        }
-        if (!ready) {
-          throw new Error(`Sandbox container failed to start after 10 attempts. Last error: ${lastError}`);
-        }
-      }
 
-      // Network egress is a warmup prerequisite, not a post-mount concern.
-      // Cloudflare sandboxes run with direct internet disabled; this installs
-      // the TLS interception handler and the GitHub host routes before package
-      // installation or repository materialization makes its first request.
-      if (this.state.session_id && this.state.tenant_id) {
-        await prepareSandboxEgress(sandbox, {
-          tenantId: this.state.tenant_id,
-          sessionId: this.state.session_id,
-        });
-      }
-
-      // Restore the most recent workspace backup for (tenant, environment)
-      // BEFORE mountResources runs, so the agent picks up where it left
-      // off. Per CF's recommended pattern (changelog 2026-02-23, "pick up
-      // where you left off, even after days of inactivity").
-      //
-      // Skip when the session attaches a github_repository resource: that
-      // resource git-clones into /workspace, and `git clone` requires the
-      // target dir to be empty. Restore-then-clone would fail; the user
-      // explicitly asked for a clone so they want clone semantics, not
-      // restore semantics. (Future: smarter merge — restore then `git pull`.)
-      if (
-        supportsWorkspaceBackup(sandbox) &&
-        this.state.tenant_id &&
-        this.state.environment_id &&
-        this.env.MAIN_DB
-      ) {
-        try {
-          // If /tmp/.oma-warm is present, the container survived since a
-          // previous warmup — /workspace is already populated by whoever
-          // wrote the marker. Skip restore: re-running it would download
-          // the latest backup over a live /workspace, throwing away any
-          // writes since that backup. This is the path that lets a verify
-          // exec arriving N minutes after the agent turn just see the
-          // files the agent wrote, no D1 round-trip needed.
-          let containerWarmAlready = false;
-          if (provisioned !== null) {
-            containerWarmAlready = !provisioned.started;
-            if (containerWarmAlready) {
-              logWarn(
-                { op: "session_do.warmup.skip_restore_container_alive", session_id: this.state.session_id, marker: this.currentWarmupGen },
-                "skipping workspace restore — container still warm with previous /workspace",
-              );
-            }
-          } else try {
-            const probed = await sandbox.exec("cat /tmp/.oma-warm 2>/dev/null");
-            const m = /^exit=(-?\d+)\n([\s\S]*)$/.exec(probed);
-            if (m && m[1] === "0" && m[2].trim().length > 0) {
-              containerWarmAlready = true;
-              this.currentWarmupGen = m[2].trim();
-              logWarn(
-                { op: "session_do.warmup.skip_restore_container_alive", session_id: this.state.session_id, marker: this.currentWarmupGen },
-                "skipping workspace restore — container still warm with previous /workspace",
-              );
-            }
-          } catch { /* probe failed → fall through to normal restore path */ }
-
-          let hasGitRepo = false;
-          if (this.state.session_id) {
-            const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
-            const rows = await services.sessions.listResourcesBySession({ sessionId: this.state.session_id });
-            hasGitRepo = rows.some(
-              (r) => r.type === "github_repository" || r.type === "github_repo",
-            );
-          }
-          if (containerWarmAlready) {
-            // already short-circuited above with a warning log
-          } else if (hasGitRepo) {
-            logWarn(
-              { op: "session_do.warmup.skip_restore_github_repo", session_id: this.state.session_id },
-              "skipping workspace restore — session attaches github_repository (git clone needs empty /workspace)",
-            );
-          } else {
-            // Route to the tenant's shard — workspace_backups is per-tenant
-            // data, so the row lives wherever this tenant was sharded.
-            const provider = buildCfTenantDbProvider(this.env);
-            const backupDb = await provider.resolve(this.state.tenant_id);
-            const handle = await findWorkspaceBackup(
-              backupDb,
-              this.state.tenant_id,
-              this.state.environment_id,
-              this.state.session_id ?? "unknown",
-              Date.now(),
-            );
-            if (handle) {
-              const restoreStart = Date.now();
-              const result = await sandbox.restoreWorkspaceBackup(handle);
-              const restoreMs = Date.now() - restoreStart;
-              const ok = result.ok;
-              const restoreError = result.error;
-              try {
-                this.persistAndBroadcastEvent({
-                  type: "session.warning",
-                  message: ok
-                    ? `workspace_restored backup_id=${handle.id} elapsed_ms=${restoreMs}`
-                    : `workspace_restore_failed backup_id=${handle.id} elapsed_ms=${restoreMs} error=${(restoreError ?? "unknown").slice(0, 300)}`,
-                } as unknown as SessionEvent);
-              } catch {}
-              if (!ok) {
-                logWarn(
-                  {
-                    op: "session_do.warmup.restore_backup",
-                    session_id: this.state.session_id,
-                    tenant_id: this.state.tenant_id,
-                    environment_id: this.state.environment_id,
-                    backup_id: handle.id,
-                    elapsed_ms: restoreMs,
-                    error: restoreError,
-                  },
-                  "workspace backup restore failed — continuing with empty workspace",
-                );
-              }
-            } else {
-              // No backup found — fresh session, expected case. Log
-              // for ops/debugging only; don't emit as session.warning
-              // because a "warning" event leaks into the trajectory
-              // and confuses operators reading session timelines (it's
-              // not actually a problem). Failed restore (above) and
-              // successful restore (above) are different — those ARE
-              // worth a session event.
-              log(
-                {
-                  op: "session_do.warmup.no_backup",
-                  session_id: this.state.session_id,
-                  tenant_id: this.state.tenant_id,
-                  environment_id: this.state.environment_id,
-                },
-                "no workspace backup found for this session — starting fresh",
-              );
-            }
-          }
-        } catch (err) {
-          // Best-effort. Workspace persistence shouldn't block session
-          // warmup — agent still works with empty /workspace.
-          logWarn(
-            { op: "session_do.warmup.restore_backup", session_id: this.state.session_id, err },
-            "workspace backup restore failed; continuing with empty /workspace",
-          );
-        }
-      }
-
-      // A writable Memory workspace must be private to one concrete sandbox
-      // incarnation. Reuse the marker when this DO reconnects to a live
-      // container; mint it only after workspace restore has decided whether
-      // the container is fresh, otherwise the marker would incorrectly make
-      // the first warmup look retained.
-      if (this.currentWarmupGen === null) {
-        try {
-          const probed = await sandbox.exec("cat /tmp/.oma-warm 2>/dev/null");
-          const match = /^exit=(-?\d+)\n([\s\S]*)$/.exec(probed);
-          const retained = match?.[1] === "0" ? match[2].trim() : "";
-          if (retained.length > 0) this.currentWarmupGen = retained;
-        } catch { /* fresh container */ }
-      }
-      if (this.currentWarmupGen === null) {
-        const generation = crypto.randomUUID().slice(0, 12);
-        await sandbox.exec(`echo ${generation} > /tmp/.oma-warm`);
-        this.currentWarmupGen = generation;
-      }
+      // Sandbox SDK v2 Ports (session-sandbox.ts): attach the Session's
+      // sandbox, else resume from its latest restore point, else acquire;
+      // then egress.attach and storage.attach. A failed step rolls back and
+      // throws. The generation is the /tmp/.oma-warm marker and the private
+      // Memory runtime generation.
+      this.currentWarmupGen = await this.portsSandbox!.prepare();
 
       // image_strategy fast path REMOVED. Was a base_snapshot lazy-prepare
       // path that ran a multi-minute install + tar + R2 upload via a single
@@ -4615,24 +4366,12 @@ export class SessionDO extends DurableObject<Env> {
             "Managed Session input source service binding is unavailable",
           );
         }
-        const loaded = provisioned?.resources ?? await loadManagedSessionResources(source, {
+        const loaded = await loadManagedSessionResources(source, {
           tenantId: this.state.tenant_id,
           sessionId,
           runtimeGeneration: this.currentWarmupGen,
         });
-        const { resources, deferredStores } = withoutDeferredMemoryMounts(
-          loaded.resources,
-          provisioned?.deferredMounts ?? [],
-        );
-        for (const storeName of deferredStores) {
-          // Sandbox SDK 1.0 cannot add a mount to a running container.
-          try {
-            this.persistAndBroadcastEvent({
-              type: "session.warning",
-              message: `memory_store_mount_deferred store=${storeName} reason=attached_after_sandbox_start`,
-            } as unknown as SessionEvent);
-          } catch {}
-        }
+        const resources = loaded.resources;
         this.hasWritableManagedMemoryMount = resources.some((resource) =>
           resource.type === "memory_store" && resource.access !== "read_only"
         );
@@ -4697,44 +4436,6 @@ export class SessionDO extends DurableObject<Env> {
           }
         },
       });
-
-      // Hand backup context to OmaSandbox so its onActivityExpired hook
-      // (sleepAfter teardown) writes the final /workspace snapshot scoped
-      // to this (tenant, env, session). Container DO is keyed by sessionId,
-      // so this only needs to land once per warmup. Restoration on the
-      // next session uses (tenant, env) — see findWorkspaceBackup above.
-      if (
-        supportsManagedWorkspaceLifecycle(sandbox)
-        && this.state.session_id
-        && this.state.tenant_id
-        && this.state.environment_id
-      ) {
-        await sandbox.setBackupContext({
-          tenantId: this.state.tenant_id,
-          environmentId: this.state.environment_id,
-          sessionId: this.state.session_id,
-        });
-      }
-
-      // Hand billing context to OmaSandbox so its onStop hook (sleepAfter
-      // teardown OR explicit destroy) emits one sandbox_active_seconds
-      // row scoped to this (tenant, session, agent). Same idempotency
-      // story as setBackupContext — same-session rewarms keep the
-      // original startedAt; new-session containers mint a fresh one.
-      const sandboxAny = sandbox as unknown as {
-        setBillingContext?: (c: {
-          tenantId: string;
-          sessionId: string;
-          agentId: string | null;
-        }) => Promise<void>;
-      };
-      if (sandboxAny.setBillingContext && this.state.session_id && this.state.tenant_id) {
-        await sandboxAny.setBillingContext({
-          tenantId: this.state.tenant_id,
-          sessionId: this.state.session_id,
-          agentId: this.state.agent_id || null,
-        });
-      }
 
     } catch (err) {
       this.currentWarmupGen = null;
@@ -6792,18 +6493,13 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
 
+      // storage.sync before the Memory barrier: a copy sync publishes the
+      // sandbox's Memory edits here. A failed publish fails the step.
+      if (this.portsSandbox !== null) await this.portsSandbox.syncStorage("turn_end");
       // Memory mutations are part of turn completion, not an asynchronous
       // afterthought. This barrier precedes status_idle and execution settle.
       await this.synchronizeManagedMemoryStores(activeFence);
       managedMemorySynchronized = true;
-      if (this.e2bSandbox !== null) {
-        // E2B outputs are copied out at turn end, not mounted live.
-        try {
-          await this.e2bSandbox.syncStorage("turn_end");
-        } catch (error) {
-          logWarn({ op: "session_do.e2b.outputs_sync", session_id: this.state.session_id, err: error }, "E2B Session outputs could not be published");
-        }
-      }
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
