@@ -132,8 +132,8 @@ const NO_CREDENTIAL_EGRESS = "Vault credential egress requires PLATFORM_ROOT_SEC
 /** One facade per runner allocation, found again by the runner's hooks. */
 export class NodeSessionSandboxes {
   private readonly current = new Map<string, NodeSessionSandbox>();
-  /** Handle records of sandboxes warmed at Session creation, until the first build adopts them. */
-  private readonly warmed = new Map<string, SessionSandboxState>();
+  /** Warm-ups at Session creation (in flight or done), until the first build adopts them. */
+  private readonly warmed = new Map<string, Promise<SessionSandboxState | undefined>>();
   /** v1 runtimes this process holds, shared by every facade's bridge. */
   private readonly held = new Map<string, SandboxPort>();
 
@@ -155,7 +155,7 @@ export class NodeSessionSandboxes {
     this.warmed.delete(key);
     const sandbox: NodeSessionSandbox = new NodeSessionSandbox(context, input.allocationId, this.options, this.held, () => {
       if (this.current.get(key) === sandbox) this.current.delete(key);
-    }, warmed);
+    }, warmed?.catch(() => undefined));
     sandbox.bind({
       context,
       ...(input.runtimeGeneration === undefined ? {} : { runtimeGeneration: input.runtimeGeneration }),
@@ -172,18 +172,20 @@ export class NodeSessionSandboxes {
     if (this.current.has(key) || this.warmed.has(key)) return;
     let state: SessionSandboxState | undefined;
     const sandbox = new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, undefined, (next) => { state = next; });
-    await sandbox.warm();
-    if (state !== undefined && !this.current.has(key)) this.warmed.set(key, state);
-    else if (state !== undefined) await sandbox.destroy().catch(() => undefined);
+    // A build that starts meanwhile awaits this and adopts the sandbox.
+    const warming = sandbox.warm().then(() => state);
+    this.warmed.set(key, warming);
+    await warming;
   }
 
   /** The Session ended before its first execution: release the warmed sandbox. */
   async discardWarm(context: NodeSessionSandboxContext): Promise<void> {
     const key = keyOf(context.workspaceId, context.session.id);
-    const state = this.warmed.get(key);
-    if (state === undefined) return;
+    const warming = this.warmed.get(key);
+    if (warming === undefined) return;
     this.warmed.delete(key);
-    await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, state).destroy();
+    const state = await warming.catch(() => undefined);
+    if (state !== undefined) await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, Promise.resolve(state)).destroy();
   }
 
   /** `runtime` plus the warm-up at Session creation and the release of a
@@ -252,11 +254,11 @@ export class NodeSessionSandbox implements SandboxPort {
     private readonly options: NodeSessionSandboxOptions,
     held: Map<string, SandboxPort>,
     private readonly onDestroyed: () => void,
-    initialState?: SessionSandboxState,
+    initialState?: Promise<SessionSandboxState | undefined>,
     onSaved?: (state: SessionSandboxState) => void,
   ) {
     this.context = context;
-    this.state = initialState;
+    let adopting = initialState;
     const scope = () => scopeOf(this.context);
     this.core = new PortsSessionSandbox<SandboxPort>({
       compose: async () => {
@@ -289,9 +291,12 @@ export class NodeSessionSandbox implements SandboxPort {
       },
       executor: (runtime) => this.track(runtime),
       state: {
-        load: async () => this.state,
-        save: async (state) => { this.state = state; onSaved?.(state); },
-        clear: async () => { this.state = undefined; },
+        load: async () => {
+          if (adopting !== undefined) { const warmed = await adopting; adopting = undefined; this.state ??= warmed; }
+          return this.state;
+        },
+        save: async (state) => { adopting = undefined; this.state = state; onSaved?.(state); },
+        clear: async () => { adopting = undefined; this.state = undefined; },
       },
       scope,
       plan: async ({ scope: s, stores }) => {

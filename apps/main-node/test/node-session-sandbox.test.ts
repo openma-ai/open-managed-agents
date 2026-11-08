@@ -199,6 +199,16 @@ describe("Node Session sandbox warm-up at Session creation", () => {
     expect(on.box.destroyed()).toBe(1);
   });
 
+  it("a first execution that starts while the warm-up is in flight adopts it instead of racing it", async () => {
+    const t = setup();
+    const warming = t.sandboxes.warm(context);
+    const sandbox = t.sandboxes.build({ ...context, runtimeGeneration: "rt_1", executionFence: fence("a1") });
+    await Promise.all([warming, sandbox.open()]);
+    expect(t.created).toEqual(["v1"]);
+    expect(t.box.destroyed()).toBe(0);
+    expect(t.attached).toEqual([{ runtimeGeneration: "rt_1", attemptId: "a1" }]);
+  });
+
   it("releases the warmed sandbox when the Session ends before its first execution", async () => {
     const t = setup();
     await t.sandboxes.warm(context);
