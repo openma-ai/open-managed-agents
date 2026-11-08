@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeAdapter } from "../src/ports";
-import { runAgentTurn, TurnAborted, type TurnRuntimeAgent } from "../../../apps/agent/src/runtime/turn-runtime";
+import { runAgentTurn, TurnAborted, type TurnRuntimeAgent } from "../src/turn-lifetime";
 
 function fakeAgent(overrides: Partial<RuntimeAdapter> = {}) {
   const calls: string[] = [];

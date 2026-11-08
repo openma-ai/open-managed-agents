@@ -54,3 +54,20 @@ export type {
 export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";
+export {
+  runAgentTurn,
+  TurnAborted,
+  type RunAgentTurnOptions,
+  type TurnContext,
+  type TurnError,
+  type TurnRuntimeAgent,
+} from "./turn-lifetime";
+export {
+  clearTurnRecoveryCount,
+  recoverAgentTurn,
+  type PartialStream,
+  type RecoverAgentTurnOptions,
+  type RecoveryContext,
+  type RecoveryDecision,
+} from "./turn-recovery";
+export { abortableDelay, abortedError, cancellationError, isAbortError, linkAbort, untilAborted } from "./turn-abort";

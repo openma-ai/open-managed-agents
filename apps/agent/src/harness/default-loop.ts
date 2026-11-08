@@ -365,7 +365,7 @@ export class DefaultHarness implements HarnessInterface {
     // row. The same id lands on the `agent.message` event so clients
     // can swap chunk display for canonical content.
       // Single-attempt model call. Retry/keepAlive/permanent-stall logic
-      // moved out to runtime/turn-runtime.ts (Primitive 1). Caller decides
+      // moved out to session-runtime turn-lifetime.ts (Primitive 1). Caller decides
       // whether to retry on TurnAborted; default-loop just runs the model
       // once and propagates errors. Stale-chunk detection stays here
       // because it needs direct access to streamText's onChunk timing —

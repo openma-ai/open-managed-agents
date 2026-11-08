@@ -6,7 +6,7 @@ import {
   isAbortError,
   linkAbort,
   untilAborted,
-} from "../../control-plane-node/src/lib/node-managed-session-runtime";
+} from "../src/turn-abort";
 
 describe("turn abort primitives", () => {
   it("names cancellations AbortError and keeps the reason", () => {

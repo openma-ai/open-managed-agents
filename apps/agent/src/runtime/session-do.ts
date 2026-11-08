@@ -7,15 +7,6 @@ import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api
 import { nanoid } from "nanoid";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import { parseCronExpression } from "cron-schedule";
-import {
-  runAgentTurn,
-  recoverAgentTurn,
-  clearTurnRecoveryCount,
-  TurnAborted,
-  type TurnRuntimeAgent,
-  type RecoveryDecision,
-  type PartialStream,
-} from "./turn-runtime";
 import type { Env } from "@open-managed-agents/shared";
 import {
   logWarn,
@@ -46,7 +37,14 @@ import type {
 import { recoverInterruptedState as runRecovery } from "./recovery";
 import {
   RuntimeAdapterImpl,
+  runAgentTurn,
+  recoverAgentTurn,
+  clearTurnRecoveryCount,
+  TurnAborted,
   type RuntimeAdapter,
+  type TurnRuntimeAgent,
+  type RecoveryDecision,
+  type PartialStream,
 } from "@open-managed-agents/session-runtime";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
@@ -2537,7 +2535,7 @@ export class SessionDO extends DurableObject<Env> {
         this._activeTurnIds.add(turnId);
       },
       onTurnEnded: (_sessionId, turnId) => {
-        // Idempotent: turn-runtime.ts also fires hintTurnEnded as a
+        // Idempotent: turn-lifetime.ts also fires hintTurnEnded as a
         // safety net in its outer finally if endTurn itself throws.
         // Set.delete on missing key is a no-op.
         this._activeTurnIds.delete(turnId);
