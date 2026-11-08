@@ -4,8 +4,8 @@ import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ensureModelCards } from "./_model-cards";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 const post = (path: string, body: any) =>
