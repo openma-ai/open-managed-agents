@@ -57,6 +57,21 @@ describe("createR2MemoryPrefixAccess", () => {
     await expect(access.list({ memoryStoreId: "../x", projection: "basic", signal })).rejects.toThrow(/Unsafe/);
   });
 
+  it("accepts the writable runtime mount id (a nested prefix) and still rejects unsafe segments", async () => {
+    // materializeManagedMemorySnapshot: read_write stores mount `.openma-managed-memory-workspaces/<ws>/<session>/<generation>/<store>/data`.
+    const mount = ".openma-managed-memory-workspaces/default/sess/gen1/memstore_1/data";
+    const { bucket, objects } = fakeBucket({ [`${mount}/seed.md`]: "seed" });
+    const access = createR2MemoryPrefixAccess(bucket);
+    expect(await access.list({ memoryStoreId: mount, projection: "full", signal })).toEqual([
+      { id: `${mount}/seed.md`, path: "/seed.md", contentSha256: await sha("seed"), content: "seed" },
+    ]);
+    expect(await access.create({ memoryStoreId: mount, path: "/new.md", content: "n", signal })).toEqual({ type: "applied" });
+    expect(objects.has(`${mount}/new.md`)).toBe(true);
+    for (const bad of ["", "a//b", "a/../b", "./a", "a/", "/a"]) {
+      await expect(access.list({ memoryStoreId: bad, projection: "basic", signal })).rejects.toThrow(/Unsafe Memory Store id/);
+    }
+  });
+
   it("drives the shared Memory file sync: copy in, write back, pull", async () => {
     const { bucket, objects } = fakeBucket({ "st/a.md": "one" });
     const files = new Map<string, string>();

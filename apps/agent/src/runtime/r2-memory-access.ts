@@ -86,8 +86,10 @@ export function createR2MemoryPrefixAccess(bucket: MemoryPrefixBucket): SessionM
   };
 }
 
+/** A store id is an object prefix: the store id itself for legacy stores,
+ * or the nested runtime mount id of a writable Managed Memory workspace. */
 function prefixOf(storeId: string): string {
-  if (storeId === "" || storeId.includes("/") || storeId === "." || storeId === "..") {
+  if (storeId.split("/").some((part) => part === "" || part === "." || part === "..")) {
     throw new Error(`Unsafe Memory Store id: ${JSON.stringify(storeId)}`);
   }
   return `${storeId}/`;
