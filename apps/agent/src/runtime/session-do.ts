@@ -42,7 +42,6 @@ import {
   clearTurnRecoveryCount,
   TurnAborted,
   isTurnCancellationError,
-  linkAbort,
   openTurnMarker,
   planTurnFailure,
   reportTurnFailure,
@@ -53,7 +52,7 @@ import {
 } from "@open-managed-agents/session-runtime";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
-import { interruptedTurnStopReason } from "@open-managed-agents/session-runtime-contract";
+import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,

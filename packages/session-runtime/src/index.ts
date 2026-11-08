@@ -70,7 +70,6 @@ export {
   type RecoveryContext,
   type RecoveryDecision,
 } from "./turn-recovery";
-export { abortableDelay, abortedError, cancellationError, isAbortError, linkAbort, untilAborted } from "./turn-abort";
 export {
   isTurnCancellationError,
   planTurnFailure,

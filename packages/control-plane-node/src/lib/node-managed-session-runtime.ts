@@ -41,8 +41,13 @@ import type {
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
 import { randomUUID } from "node:crypto";
-import { idleStopReasonForCancelledTurn } from "@open-managed-agents/session-runtime-contract";
-import { abortableDelay, abortedError, cancellationError, isAbortError } from "@open-managed-agents/session-runtime";
+import {
+  abortableDelay,
+  abortedError,
+  cancellationError,
+  idleStopReasonForCancelledTurn,
+  isAbortError,
+} from "@open-managed-agents/session-runtime-contract";
 import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
