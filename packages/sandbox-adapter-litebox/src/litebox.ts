@@ -80,6 +80,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private volumes: Array<{ hostPath: string; guestPath: string; readOnly?: boolean }> = [];
   private boxPromise: Promise<LiteBoxInstance> | null = null;
+  private outputsMount: { tenantId: string; sessionId: string } | null = null;
   private logger: NonNullable<LiteBoxSandboxOptions["logger"]>;
   private tmpRoot: string;
 
@@ -176,6 +177,9 @@ export class LiteBoxSandbox implements SandboxExecutor {
     tenantId: string;
     sessionId: string;
   }): Promise<void> {
+    // The same outputs mounted again (the host mounts them at create, then
+    // the storage Port attaches them on open) is already in place.
+    if (this.outputsMount?.tenantId === opts.tenantId && this.outputsMount.sessionId === opts.sessionId) return;
     if (this.boxPromise) {
       throw new Error(
         "LiteBoxSandbox.mountSessionOutputs: box already created — mounts must " +
@@ -203,6 +207,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
     const hostPath = join(outputsRoot, opts.tenantId, opts.sessionId);
     mkdirSync(hostPath, { recursive: true });
     this.volumes.push({ hostPath, guestPath: "/mnt/session/outputs", readOnly: false });
+    this.outputsMount = { tenantId: opts.tenantId, sessionId: opts.sessionId };
   }
 
   async readFile(path: string): Promise<string> {
@@ -368,4 +373,4 @@ export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Paramete
     outputsRoot: ctx.outputsRoot,
     scratchRoot: ctx.workdir,
   });
-}, { capabilities: { allocationIsolation: true } });
+}, { capabilities: { allocationIsolation: true, mountsFixedAtCreate: true } });

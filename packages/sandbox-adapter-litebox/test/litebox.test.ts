@@ -190,6 +190,10 @@ describe("LiteBoxSandbox", () => {
     await sandbox.exec("x");
     await expect(sandbox.mountMemoryStore({ storeName: "late", storeId: "s", readOnly: false })).rejects.toThrow("box already created");
     await expect(sandbox.mountSessionOutputs({ tenantId: "late", sessionId: "s" })).rejects.toThrow("box already created");
+    // The same outputs again (mounted at create, then attached on open) is already in place.
+    await expect(sandbox.mountSessionOutputs({ tenantId: "t", sessionId: "s" })).resolves.toBeUndefined();
+    expect(sdk.options[0]?.volumes).toHaveLength(2);
+    expect(sandboxFactory.capabilities).toEqual({ allocationIsolation: true, mountsFixedAtCreate: true });
     await sandbox.destroy();
 
     delete process.env.MEMORY_BLOB_DIR;

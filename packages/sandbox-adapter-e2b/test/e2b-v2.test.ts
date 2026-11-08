@@ -46,7 +46,7 @@ function shellOver(files: Map<string, Uint8Array>) {
 
 
 function fakeSdk() {
-  const calls = { create: [] as Array<[string, Record<string, unknown>]>, commands: [] as Call[], kill: [] as string[], deleted: [] as string[], network: [] as unknown[], timeouts: [] as number[], paused: 0 };
+  const calls = { create: [] as Array<[string, Record<string, unknown>]>, commands: [] as Call[], kill: [] as string[], deleted: [] as string[], network: [] as unknown[], timeouts: [] as number[], paused: 0, listQueries: [] as unknown[] };
   const files = new Map<string, Uint8Array>();
   const shell = shellOver(files);
   const errors: { create?: Error; connect?: Error; setTimeout?: Error; snapshot?: Error; kill?: Error; command?: Error; verifyMount?: { exitCode: number; stderr: string } } = {};
@@ -84,7 +84,8 @@ function fakeSdk() {
       async connect(id: string) { if (errors.connect) throw errors.connect; return sandbox(id); },
       async kill(id: string) { if (errors.kill) throw errors.kill; calls.kill.push(id); return true; },
       async deleteSnapshot(id: string) { calls.deleted.push(id); return true; },
-      list() {
+      list(opts?: { query?: unknown }) {
+        calls.listQueries.push(opts?.query);
         let done = false;
         return {
           get hasNext() { return !done; },
@@ -187,6 +188,13 @@ describe("E2B v2 lifecycle", () => {
     expect(await adapter(fake).lifecycle.list({ labels: { workspaceId: "ws" }, signal })).toEqual([
       { handle: { provider: "e2b", runtimeId: "a" }, labels: { workspaceId: "ws", sessionId: "s1" }, createdAt: "2026-01-01T00:00:00.000Z" },
     ]);
+    expect(fake.calls.listQueries).toEqual([{ metadata: { workspaceId: "ws" }, state: ["running", "paused"] }]);
+  });
+
+  it("lists without a metadata filter when no label is given (the SDK sends metadata= and E2B answers 400)", async () => {
+    const fake = fakeSdk();
+    expect(await adapter(fake).lifecycle.list({ labels: {}, signal })).toHaveLength(1);
+    expect(fake.calls.listQueries).toEqual([{ state: ["running", "paused"] }]);
   });
 });
 

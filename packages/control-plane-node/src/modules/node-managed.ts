@@ -303,7 +303,7 @@ export async function createManagedNodeRuntime(
       : { issue: (claims) => relayPasses.issue(claims), endpoint: config.http.publicBaseUrl },
     isFenceActive: isManagedSessionExecutionFenceActive,
     idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
-    warmAtCreate: config.workspace.strategy !== "checkpoint_restore",
+    warmAtCreate: config.workspace.strategy !== "checkpoint_restore", mountOutputsAtCreate: sharedSessionOutputs === undefined && components.sandbox.capabilities?.mountsFixedAtCreate === true,
     warn: (message, { workspaceId, session }) =>
       logger.warn({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message),
   });

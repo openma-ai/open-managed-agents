@@ -263,7 +263,9 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
     async list(input) {
       const metadata = Object.fromEntries(Object.entries(input.labels).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-      const paginator = sdk.Sandbox.list({ ...connection, query: { metadata, state: ["running", "paused"] } });
+      // An empty filter must be left out: the SDK serialises {} as `metadata=`,
+      // which E2B rejects with 400 "Error parsing metadata".
+      const paginator = sdk.Sandbox.list({ ...connection, query: { ...(Object.keys(metadata).length === 0 ? {} : { metadata }), state: ["running", "paused"] } });
       const found: Awaited<ReturnType<SandboxLifecyclePort<E2BSandboxExecutor>["list"]>> = [];
       while (paginator.hasNext) {
         input.signal.throwIfAborted();
