@@ -113,11 +113,27 @@ export interface NodeSessionSandboxOptions {
   warn(message: string, context: NodeSessionSandboxContext): void;
 }
 
+/** Node's only egress path for Vault sandbox credentials: the in-sandbox
+ * forwarder to the control plane's relay, which needs the pass signer and
+ * an HTTPS origin the sandbox can reach. Without it a Session holding such
+ * credentials is refused at create (400) and never opened: placeholders
+ * would leave the sandbox unsubstituted (design §0.7, §8.0). */
+export function nodeCredentialEgress(relay: ReturnType<NodeSessionSandboxOptions["relay"]>): boolean {
+  return relay !== null && relay.endpoint.startsWith("https://");
+}
+
+const NO_CREDENTIAL_EGRESS = "Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL";
+
 /** One facade per runner allocation, found again by the runner's hooks. */
 export class NodeSessionSandboxes {
   private readonly current = new Map<string, NodeSessionSandbox>();
 
   constructor(private readonly options: NodeSessionSandboxOptions) {}
+
+  /** Session create admission (SandboxCredentialAdmission.substitutes). */
+  credentialEgress(): boolean {
+    return nodeCredentialEgress(this.options.relay());
+  }
 
   build(input: NodeSessionSandboxContext & {
     allocationId?: string;
@@ -190,7 +206,7 @@ export class NodeSessionSandbox implements SandboxPort {
               endpoint: { url: options.relay()?.endpoint ?? "https://unavailable.invalid" },
               issueToken: async ({ scope: s, fence }) => {
                 const relay = options.relay();
-                if (relay === null) throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
+                if (relay === null || !nodeCredentialEgress(relay)) throw new Error(NO_CREDENTIAL_EGRESS);
                 const execution = executionOfFence(fence);
                 return issueSandboxRelayPass((claims) => relay.issue(claims), execution === undefined ? null
                   : { workspaceId: s.workspaceId, sessionId: s.sessionId, ...execution }, NODE_RELAY_PASS_TTL_MS);
@@ -212,9 +228,7 @@ export class NodeSessionSandbox implements SandboxPort {
       scope,
       plan: async ({ scope: s, stores }) => {
         const substitutions = await options.substitutions(this.context);
-        if (substitutions.length > 0 && options.relay() === null) {
-          throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
-        }
+        if (substitutions.length > 0 && !nodeCredentialEgress(options.relay())) throw new Error(NO_CREDENTIAL_EGRESS);
         return {
           from: { image: this.image() },
           egress: sessionEgressPolicy(s, toLegacyHarnessEnvironmentConfig(this.context.environment).networking, substitutions),

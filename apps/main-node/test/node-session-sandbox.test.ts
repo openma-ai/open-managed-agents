@@ -10,6 +10,7 @@ import type { SessionExecutionFence } from "@open-managed-agents/session-runtime
 import {
   DEFAULT_SANDBOX_IDLE_PAUSE_MS,
   NodeSessionSandboxes,
+  nodeCredentialEgress,
   sandboxIdlePauseMs,
   type NodeSessionSandboxOptions,
 } from "../../../packages/control-plane-node/src/lib/node-session-sandbox.js";
@@ -166,6 +167,30 @@ describe("Node Session sandbox", () => {
     await sandbox.destroy();
     expect(t.box.destroyed()).toBe(1);
     expect(() => t.sandboxes.get(context)).toThrow(/has no sandbox/);
+  });
+});
+
+describe("Vault credential egress guard", () => {
+  const issue = async () => "pass";
+  const vaultContext = { ...context, session: { ...context.session, vaultIds: ["vlt_1"] } } as typeof context;
+  const substitution = { credentialId: "vault:OMA_SECRET", envName: "OMA_SECRET", placeholder: "oma_vault_x", hosts: [], inject: { header: true, body: false } };
+
+  it("has an egress path only with the relay signer and an HTTPS origin", () => {
+    expect(nodeCredentialEgress(null)).toBe(false);
+    expect(nodeCredentialEgress({ issue, endpoint: "http://localhost:8787" })).toBe(false);
+    expect(nodeCredentialEgress({ issue, endpoint: "https://oma.example" })).toBe(true);
+    expect(new NodeSessionSandboxes({ relay: () => null } as unknown as NodeSessionSandboxOptions).credentialEgress()).toBe(false);
+    expect(new NodeSessionSandboxes({ relay: () => ({ issue, endpoint: "https://oma.example" }) } as unknown as NodeSessionSandboxOptions).credentialEgress()).toBe(true);
+  });
+
+  it.each([
+    { name: "no relay", relay: () => null },
+    { name: "a plain-HTTP origin", relay: () => ({ issue, endpoint: "http://localhost:8787" }) },
+  ])("never opens a sandbox with sandbox credentials over $name", async ({ relay }) => {
+    const t = setup({ relay, substitutions: async () => [substitution] });
+    const sandbox = t.sandboxes.build({ ...vaultContext, executionFence: fence("att_1") });
+    await expect(sandbox.open()).rejects.toThrow(/Vault credential egress requires/u);
+    expect(t.created).toEqual([]);
   });
 });
 

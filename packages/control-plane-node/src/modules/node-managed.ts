@@ -839,7 +839,7 @@ export async function createManagedNodeRuntime(
     // rate-limit, quota or billing adapters, so every create is admitted,
     // except Vault sandbox credentials without the forwarder gateway (400).
     admission: new SandboxCredentialAdmission(new SessionCreateAdmissionService({ clock: { now: () => new Date() } }), {
-      substitutes: () => relayPasses !== null && config.http.publicBaseUrl?.startsWith("https://") === true,
+      substitutes: () => sessionSandboxes.credentialEgress(),
       credentialIds: (scope) => managedCredentialResolver.sandboxCredentialIds(scope),
     }),
     executionOutbox: true,
