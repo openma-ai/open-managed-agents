@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => vi.restoreAllMocks());
 import { createEgressRelayPasses } from "../../packages/managed-credential-resolver/src/relay";
 import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
-import { ensureRuntimeResourceFenceSchema, SqlRuntimeResourceFencePort } from "../../packages/runtime-resource-fence-sql/src/index";
+import { SqlRuntimeResourceFencePort } from "../../packages/runtime-resource-fence-sql/src/index";
 
 /** A running execution attempt for `sessionId`: Session sandbox credentials
  * (relay pass, native egress) are bound to it (design §0.0 rule 10). */
@@ -168,7 +168,6 @@ describe("Cloudflare native credential egress RPC", () => {
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [vault.id] }), Date.now(), Date.now()).run();
     const sql = sqlClientFromD1(env.MAIN_DB);
-    await ensureRuntimeResourceFenceSchema(sql);
     const acquired = await new SqlRuntimeResourceFencePort(sql).acquire({
       scope: { workspaceId: "default", environmentId: "environment", sessionId: id, workId: "work" }, ownerId: "owner", ttlMs: 600000,
     });

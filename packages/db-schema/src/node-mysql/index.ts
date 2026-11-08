@@ -68,6 +68,13 @@ const heldAfterExhaustedMigration = {
   toSnapshot: "173fcc90-140f-4d11-92d5-9c8d917213e9",
 } as const;
 
+/** ManagedRuntimeHost fence and orphan tables: new tables only, so the
+ * CREATE TABLE IF NOT EXISTS pass below installs them. */
+const runtimeResourceTablesMigration = {
+  fromSnapshot: heldAfterExhaustedMigration.toSnapshot,
+  toSnapshot: "a569ec0b-0d55-4c2a-bd30-401b50191e4b",
+} as const;
+
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -132,6 +139,7 @@ export async function migrateNodeMysqlSchema(
       legacyAgentsRetirementMigration.toSnapshot,
       modelCardPricingMigration.toSnapshot,
       heldAfterExhaustedMigration.toSnapshot,
+      runtimeResourceTablesMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -167,6 +175,10 @@ export async function migrateNodeMysqlSchema(
             "BIGINT",
           );
           installed = { snapshot_id: heldAfterExhaustedMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === runtimeResourceTablesMigration.fromSnapshot) {
+          installed = { snapshot_id: runtimeResourceTablesMigration.toSnapshot };
           continue;
         }
       }
