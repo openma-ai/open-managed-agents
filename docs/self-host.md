@@ -119,6 +119,16 @@ Wipe + restart for a clean slate.
   'content-type: application/json' -d '{"email":…,"password":…}' | grep -i
   set-cookie`: a `__Secure-` prefix plus `Secure` means it is still broken.
 
+- **The server will not start: `SANDBOX_PROVIDER=… requires the "…" SDK`.**
+  Provider SDKs are optional peers of the adapter packages
+  (`autoInstallPeers: false`), so neither a plain `pnpm install` nor the Docker
+  image installs one. Name them in `SANDBOX_PROVIDERS` and rebuild —
+  `e2b`, `@daytonaio/sdk`, `@boxlite-ai/boxlite`, `@alibaba-group/opensandbox` —
+  or use `boxrun`, which is an HTTP client and needs none. Before this startup
+  check existed the server booted anyway and every session turn failed three
+  times with `E2B sandbox provider failed to load 'e2b' SDK` and ended in
+  `retries_exhausted`, which reads as "the agent never answers".
+
 ## Postgres backend
 
 When to flip to Postgres: multi-instance, large tables (50M+ rows on

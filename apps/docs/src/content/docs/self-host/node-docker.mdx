@@ -73,6 +73,15 @@ $EDITOR .env
 # SANDBOX_PROVIDER is required; choose an isolated runtime and add its credentials:
 # SANDBOX_PROVIDER=e2b
 # E2B_API_KEY=...
+#
+# Every provider except boxrun also needs its vendor SDK compiled into the
+# image: the adapter packages declare it as an optional peer, so a plain build
+# installs none and the first session turn fails to load the adapter. Name the
+# SDKs here and the compose build passes them through as a build arg
+# (comma or space separated), e.g. SANDBOX_PROVIDERS=e2b:
+#    daytona -> @daytonaio/sdk    litebox -> @boxlite-ai/boxlite
+#    e2b -> e2b                   opensandbox -> @alibaba-group/opensandbox
+# SANDBOX_PROVIDERS=e2b
 
 # First time builds the image; subsequent runs skip --build
 docker compose up -d --build
@@ -199,12 +208,28 @@ allowed for local testing).
 The agent's `bash` / `read` / `write` / etc. tools execute in a sandbox.
 `SANDBOX_PROVIDER` env picks the backend.
 
-| Mode | When to pick | Required env |
-|---|---|---|
-| `litebox` | Local hardware isolation, no daemon | `SANDBOX_PROVIDER=litebox`. Host needs `/dev/kvm` (Linux) or Apple Silicon (macOS). Per-VM Firecracker-equivalent via libkrun. |
-| `boxrun` | Multi-host with KVM, OMA pods on managed k8s | `SANDBOX_PROVIDER=boxrun BOXRUN_URL=http://host:8100/v1/default`. Run `boxlite serve` on a separate KVM host; OMA pods reach it over HTTP. |
-| `daytona` | Production / untrusted code | `SANDBOX_PROVIDER=daytona DAYTONA_API_KEY=...` (+ optional `DAYTONA_API_URL`). Daytona-managed Linux VMs, one per session. |
-| `e2b` | E2B SaaS / E2B Infra self-host / Aliyun Agent Sandbox (e2b-compatible) | `SANDBOX_PROVIDER=e2b E2B_API_KEY=...` (+ optional `E2B_API_URL`, `E2B_SANDBOX_URL`, and `E2B_DOMAIN` for a compatible endpoint; `SANDBOX_IMAGE` selects the template). Firecracker microVMs. |
+| Mode | When to pick | Required env | SDK the image must include |
+|---|---|---|---|
+| `litebox` | Local hardware isolation, no daemon | `SANDBOX_PROVIDER=litebox`. Host needs `/dev/kvm` (Linux) or Apple Silicon (macOS). Per-VM Firecracker-equivalent via libkrun. | `@boxlite-ai/boxlite` |
+| `boxrun` | Multi-host with KVM, OMA pods on managed k8s | `SANDBOX_PROVIDER=boxrun BOXRUN_URL=http://host:8100/v1/default`. Run `boxlite serve` on a separate KVM host; OMA pods reach it over HTTP. | none — it is an HTTP client |
+| `daytona` | Production / untrusted code | `SANDBOX_PROVIDER=daytona DAYTONA_API_KEY=...` (+ optional `DAYTONA_API_URL`). Daytona-managed Linux VMs, one per session. | `@daytonaio/sdk` |
+| `e2b` | E2B SaaS / E2B Infra self-host / Aliyun Agent Sandbox (e2b-compatible) | `SANDBOX_PROVIDER=e2b E2B_API_KEY=...` (+ optional `E2B_API_URL`, `E2B_SANDBOX_URL`, and `E2B_DOMAIN` for a compatible endpoint; `SANDBOX_IMAGE` selects the template). Firecracker microVMs. | `e2b` |
+
+Every SDK except `boxrun` is an **optional peer** of its adapter package — the
+monorepo install is deliberately provider-neutral (`autoInstallPeers: false`),
+so neither the image nor a `pnpm install` brings one in. On the Docker path,
+name them in `.env` and rebuild; the server refuses to start when the selected
+provider's SDK cannot be loaded:
+
+```bash
+# .env
+SANDBOX_PROVIDERS=e2b          # comma/space separated, e.g. e2b,@daytonaio/sdk
+
+docker compose build           # passes it through as --build-arg
+```
+
+A native (non-Docker) deployment installs the same package directly:
+`pnpm add -w e2b`.
 
 `SANDBOX_PROVIDER` has no default. Missing, unknown, and `subprocess` values
 fail closed; the non-isolated local adapter is retained only as an internal
@@ -332,6 +357,14 @@ is invalid or names a missing file.
 
   The server also logs `main-node.auth.public_base_url_missing` at startup when
   the variable is missing.
+- **The container refuses to start with `SANDBOX_PROVIDER=… requires the "…"
+  SDK, which is not installed`.** Provider SDKs are optional peers, so the
+  image ships none unless you name them: add `SANDBOX_PROVIDERS=e2b` (or
+  `@daytonaio/sdk`, `@boxlite-ai/boxlite`, `@alibaba-group/opensandbox`) to
+  `.env` and rebuild. Before this check existed the server started anyway and
+  every session turn failed three times with
+  `E2B sandbox provider failed to load 'e2b' SDK` before ending in
+  `session.status_idle { type: "retries_exhausted" }`. `boxrun` never needs one.
 - **`AUTH_DISABLED=1` belongs in `.env`, not the shell.** Compose
   substitutes `${AUTH_DISABLED}` from the `.env` file at the compose
   dir — exporting it only in your shell is silently ignored.

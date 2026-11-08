@@ -52,6 +52,11 @@ network names and paths do not apply to a native process.
      proof that a nested sandbox can run.
    - BoxRun: needs an existing reachable service and matching runtime capabilities.
    Do not treat an adapter name as proof that all resource/security features work.
+   Every provider except BoxRun needs its vendor SDK installed — an optional peer
+   the monorepo does not install (`autoInstallPeers: false`). Native deployment:
+   `pnpm add -w e2b`. Docker image: `SANDBOX_PROVIDERS=e2b` before
+   `docker compose build`. The server now refuses to start without it; verify by
+   starting the container, not by reading `.env`.
 5. Check sandbox reachability to the ordinary HTTPS `PUBLIC_BASE_URL`.
    Vault egress uses `/v1/oma/egress`; no additional TCP listener is required.
    Local interception belongs to the sandbox (or its native outbound adapter).

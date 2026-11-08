@@ -26,6 +26,7 @@ import type { NodeConfig } from "./config.js";
 import { openNodeDatabase } from "./database.js";
 import { createNodeRealtime } from "./realtime.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
+import { assertSandboxProviderSdk } from "./sandbox-provider-sdk.js";
 
 // Building blocks. Each default is an ordinary exported constructor, so a
 // composition root can call the ones it wants and hand-build the rest.
@@ -111,10 +112,15 @@ export async function nodeDefaults(
  * and its module loaded at startup (a bad SANDBOX_PROVIDER fails fast).
  * Serverless processes hand sessions to an Environment Worker and may never
  * need a sandbox; resolution is deferred to first use, as before.
+ *
+ * The adapter's vendor SDK is an optional peer, so the provider can resolve and
+ * the module load while the SDK is absent — that used to surface only on the
+ * first session turn. Probe it here so it fails at startup instead.
  */
 async function loadSandboxFactory(config: NodeConfig): Promise<SandboxFactory> {
   const load = async (): Promise<SandboxFactory> => {
     const selection = resolveSandboxProviderForEnvironment(config.sandbox.environment);
+    await assertSandboxProviderSdk(selection);
     const mod = (await import(selection.modulePath)) as { sandboxFactory: SandboxFactory };
     return mod.sandboxFactory;
   };

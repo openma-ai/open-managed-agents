@@ -51,6 +51,12 @@ services:
     build:
       context: .
       dockerfile: apps/main-node/Dockerfile
+      args:
+        # Vendor SDKs the selected adapters import lazily. They are optional
+        # peers, so the image installs none unless named here — without it
+        # `SANDBOX_PROVIDER=e2b` starts fine and then fails on the first
+        # session turn. `boxrun` needs none (it calls `boxlite serve`).
+        SANDBOX_PROVIDERS: ${SANDBOX_PROVIDERS:-}
     image: openma/main-node:dev
     container_name: oma-server
     ports:
