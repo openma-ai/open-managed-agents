@@ -41,6 +41,12 @@ MySQL modes better-auth's tables live in the same database (no separate
 cp .env.example .env
 $EDITOR .env  # set ANTHROPIC_API_KEY
 
+# Also required: PUBLIC_BASE_URL, the origin you open in the browser, no
+# trailing slash. On a plain-HTTP port that is http://<host>:8787. Leave it
+# unset and better-auth marks the session cookie Secure, which browsers drop
+# over http — sign-in returns 200 and then redirects back to /login.
+#   PUBLIC_BASE_URL=http://localhost:8787
+
 # ./data (SQLite db, sandbox workdirs, blobs) is bind-mounted at /app/data.
 # The server runs as uid 1000, so Docker would otherwise create a missing
 # ./data as root:root 0755 and the server would crash-loop with
@@ -95,6 +101,23 @@ ANTHROPIC_API_KEY=sk-... pnpm --filter @open-managed-agents/main-node start
 
 State lives at `./data/` (sqlite db + per-session sandbox workdirs).
 Wipe + restart for a clean slate.
+
+## Common failure modes
+
+- **Container restarts forever, `/health` never passes, `docker compose logs
+  oma-server` shows `SqliteError: unable to open database file`
+  (`SQLITE_CANTOPEN`).** `./data` is bind-mounted at `/app/data` and the server
+  runs as uid 1000, but Docker creates a missing source directory as
+  root:root 0755. The bundled compose files run a one-shot `oma-init` service
+  first, `chown`ing it to uid 1000. A hand-written compose file or `docker run`
+  needs `mkdir -p data && sudo chown -R 1000:1000 data`.
+- **Sign-in succeeds, then the Console returns to `/login`.** Session cookies
+  are issued with `Secure` whenever `PUBLIC_BASE_URL` is unset, and browsers
+  drop those on a plain-HTTP origin. Set `PUBLIC_BASE_URL=http://<host>:<port>`
+  and `docker compose up -d --force-recreate oma-server`. Verify with
+  `curl -s -D - -o /dev/null -X POST localhost:8787/auth/sign-in/email -H
+  'content-type: application/json' -d '{"email":…,"password":…}' | grep -i
+  set-cookie`: a `__Secure-` prefix plus `Secure` means it is still broken.
 
 ## Postgres backend
 

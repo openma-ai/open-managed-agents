@@ -36,7 +36,11 @@ network names and paths do not apply to a native process.
    configuration, not terminal output. Use owner-only file permissions where
    supported, exclude secrets from Git, and explain that the root key must be
    backed up with encrypted data.
-3. Set `PUBLIC_BASE_URL` to the actual origin. Keep authentication on. Let the user
+3. Set `PUBLIC_BASE_URL` to the actual origin, without a trailing slash, and
+   keep the scheme honest: `http://host:8787` for a plain-HTTP port, `https://`
+   only when TLS terminates in front. With it unset, better-auth issues the
+   session cookie `Secure`, browsers drop it over http, and every sign-in
+   returns 200 before redirecting back to `/login`. Leave authentication on. Let the user
    add model credentials in Console Model Cards; a global Anthropic key is not a
    prerequisite for every model choice.
 4. Set a supported isolated `SANDBOX_PROVIDER` and its required configuration.
