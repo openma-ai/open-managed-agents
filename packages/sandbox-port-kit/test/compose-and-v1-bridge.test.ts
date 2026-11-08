@@ -9,7 +9,7 @@ import type {
 } from "@open-managed-agents/sandbox";
 import { createSandboxPorts } from "../src/create-sandbox-ports";
 import { SandboxAssemblyError, SandboxTemplateUnsupportedError, type SandboxPortDeps, type SandboxVendorPort } from "../src/ports";
-import { createSyncStorage } from "../src/sync-storage";
+import { createSyncStorage, OUTPUTS_SEEDED_MARKER } from "../src/sync-storage";
 import { fromV1SandboxProvider, v1Vendor } from "../src/v1-bridge";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "work" };
@@ -24,6 +24,8 @@ function vendor(): SandboxVendorPort<Box> {
   return {
     async exec(box, cmd) {
       box.commands.push(cmd);
+      if (cmd.startsWith("test -e ")) return { exitCode: box.files.has(cmd.slice(8)) ? 0 : 1, stdout: "", stderr: "" };
+      if (cmd.startsWith("touch ")) { box.files.set(cmd.slice(6), new Uint8Array()); return { exitCode: 0, stdout: "", stderr: "" }; }
       if (cmd.includes("find . -type f")) {
         const names = [...box.files.keys()].filter((p) => p.startsWith("/mnt/session/outputs/")).map((p) => `./${p.slice("/mnt/session/outputs/".length)}`);
         return { exitCode: 0, stdout: names.length === 0 ? "" : btoa(names.join("\0") + "\0"), stderr: "" };
@@ -36,12 +38,13 @@ function vendor(): SandboxVendorPort<Box> {
   };
 }
 
-function deps(published: string[][] = [], authorized = true): SandboxPortDeps {
+function deps(published: string[][] = [], authorized = true, current = new Map<string, Uint8Array>()): SandboxPortDeps {
   return {
     storage: {
       memories: () => { throw new Error("no memory stores in this test"); },
       authorize: async () => authorized,
       outputs: {
+        async *read() { yield* current.entries(); },
         async publish(input) {
           const names: string[] = [];
           for await (const [path] of input.files) names.push(path);
@@ -77,6 +80,7 @@ describe("createSandboxPorts", () => {
     const box: Box = { files: new Map([["/mnt/session/outputs/a.txt", new Uint8Array([1])]]), commands: [] };
     await ports.storage.attach({ runtime: box, scope, fence, stores: [], outputs, signal });
     expect(box.commands[0]).toBe("mkdir -p /mnt/session/outputs");
+    expect(box.files.has(OUTPUTS_SEEDED_MARKER)).toBe(true);
     await ports.storage.sync({ runtime: box, scope, fence, stores: [], outputs, reason: "turn_end", signal });
     expect(published).toEqual([["a.txt"]]);
   });
@@ -92,6 +96,29 @@ describe("createSyncStorage", () => {
     expect(published).toEqual([]);
     await storage.sync({ runtime: box, scope, fence, stores: [], outputs, reason: "before_stop", signal });
     expect(published).toEqual([[]]);
+  });
+
+  it("seeds a fresh sandbox with the published outputs so the next publish keeps them", async () => {
+    const enc = (text: string) => new TextEncoder().encode(text);
+    const current = new Map([["report.md", enc("v1")], ["dir/chart.png", enc("png")], ["both.txt", enc("published")]]);
+    const published: string[][] = [];
+    const storage = createSyncStorage(vendor(), deps(published, true, current).storage);
+    // A new sandbox: empty outputs except one local file that must win.
+    const box: Box = { files: new Map([["/mnt/session/outputs/both.txt", enc("local")]]), commands: [] };
+    await storage.attach({ runtime: box, scope, fence, stores: [], outputs, signal });
+    expect(new TextDecoder().decode(box.files.get("/mnt/session/outputs/report.md"))).toBe("v1");
+    expect(box.files.has("/mnt/session/outputs/dir/chart.png")).toBe(true);
+    expect(box.commands).toContain("mkdir -p '/mnt/session/outputs/dir'");
+    expect(new TextDecoder().decode(box.files.get("/mnt/session/outputs/both.txt"))).toBe("local");
+    await storage.sync({ runtime: box, scope, fence, stores: [], outputs, reason: "turn_end", signal });
+    expect(published.at(-1)?.sort()).toEqual(["both.txt", "dir/chart.png", "report.md"]);
+
+    // The agent deletes a file; a re-entrant attach does not bring it back.
+    box.files.delete("/mnt/session/outputs/report.md");
+    await storage.attach({ runtime: box, scope, fence, stores: [], outputs, signal });
+    expect(box.files.has("/mnt/session/outputs/report.md")).toBe(false);
+    await storage.sync({ runtime: box, scope, fence, stores: [], outputs, reason: "turn_end", signal });
+    expect(published.at(-1)?.sort()).toEqual(["both.txt", "dir/chart.png"]);
   });
 
   it("refuses to publish after the fence is lost", async () => {

@@ -218,6 +218,10 @@ export function createE2BSessionSandbox(input: {
             return createR2MemoryPrefixAccess(storage.memory);
           },
           outputs: {
+            read: (input) => {
+              if (storage.kind !== "sync") throw new Error("E2B native storage mounts outputs; the copy sync is not composed");
+              return createR2BindingOutputSink(storage.files, (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId)).read(input);
+            },
             publish: (publication) => {
               if (storage.kind !== "sync") throw new Error("E2B native storage mounts outputs; the copy sync is not composed");
               return createR2BindingOutputSink(storage.files, (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId)).publish(publication);
@@ -312,9 +316,26 @@ export function egressPolicy(scope: RuntimeResourceScope, networking: SessionNet
 }
 
 /** Publishes outputs into FILES_BUCKET through the R2 binding. Replaces the
- * Session's previous set; any failed put or delete rejects. */
-export function createR2BindingOutputSink(bucket: R2Bucket, keyPrefix: (scope: RuntimeResourceScope) => string): SandboxOutputSinkPort {
+ * Session's previous set; any failed put or delete rejects. `read` returns
+ * the published set (seeds a new sandbox on the copy sync). */
+export function createR2BindingOutputSink(bucket: Pick<R2Bucket, "list" | "get" | "put" | "delete">, keyPrefix: (scope: RuntimeResourceScope) => string): SandboxOutputSinkPort {
   return {
+    async *read(input) {
+      const prefix = keyPrefix(input.scope);
+      let cursor: string | undefined;
+      do {
+        input.signal.throwIfAborted();
+        const page = await bucket.list({ prefix, ...(cursor === undefined ? {} : { cursor }) });
+        for (const object of page.objects) {
+          const logicalPath = object.key.slice(prefix.length);
+          if (logicalPath === "" || logicalPath.endsWith("/")) continue;
+          const body = await bucket.get(object.key);
+          if (body === null) continue;
+          yield [logicalPath, new Uint8Array(await body.arrayBuffer())] as const;
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor !== undefined);
+    },
     async publish(input) {
       const prefix = keyPrefix(input.scope);
       const previous = new Set<string>();

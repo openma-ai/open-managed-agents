@@ -1,11 +1,19 @@
 // createSyncStorage (design §0.2): copy-based storage for providers without
 // a native mount. Memory Stores go through the shared Memory Store file sync
 // (sandboxMemoryStoreSync); outputs are published at turn boundaries.
+//
+// Outputs mirror Memory's attach: a sandbox that has not received the
+// published outputs yet (a fresh acquire, or a sandbox from before this
+// marker) gets them copied in first, files already in the sandbox win, and
+// a marker outside the outputs directory records it. Without this the next
+// turn_end publish would replace the published set with an empty directory;
+// with the marker a re-entrant attach does not bring back files the agent
+// deleted since.
 
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { sandboxMemoryStoreSync, type SessionMemoryWorkspaceContext } from "@open-managed-agents/managed-runtime-sandbox";
 import type { MemoryStoreBinding, SandboxPort, SandboxStoragePort } from "@open-managed-agents/sandbox";
-import { readSandboxOutputs, SESSION_OUTPUTS_DIR } from "./object-storage";
+import { assertLogicalPath, listSandboxOutputs, readSandboxOutputs, SESSION_OUTPUTS_DIR } from "./object-storage";
 import type { SandboxStorageDepsPort, SandboxVendorPort } from "./ports";
 
 /** Deployment-level singleton: scope and fence come from each call. Interval
@@ -44,6 +52,7 @@ export function createSyncStorage<R extends object>(
       if (created.exitCode !== 0) {
         throw new Error(`Creating ${SESSION_OUTPUTS_DIR} failed (exit ${created.exitCode}): ${created.stderr.slice(0, 300)}`);
       }
+      await seedOutputs(vendor, deps, input);
       if (input.stores.length > 0) await memory(input.runtime).materialize(context(input));
     },
     async sync(input) {
@@ -62,6 +71,39 @@ export function createSyncStorage<R extends object>(
     },
     async detach() {},
   };
+}
+
+/** Marks a sandbox that already received the published outputs. Outside
+ * the outputs directory, so it is never published. */
+export const OUTPUTS_SEEDED_MARKER = "/mnt/session/.oma-outputs-seeded";
+
+async function seedOutputs<R>(
+  vendor: SandboxVendorPort<R>,
+  deps: SandboxStorageDepsPort,
+  input: { runtime: R; scope: RuntimeResourceScope; signal: AbortSignal },
+): Promise<void> {
+  const probe = await vendor.exec(input.runtime, `test -e ${OUTPUTS_SEEDED_MARKER}`, { timeoutMs: 10_000 });
+  if (probe.exitCode === 0) return;
+  if (probe.exitCode !== 1) throw new Error(`Probing ${OUTPUTS_SEEDED_MARKER} failed (exit ${probe.exitCode}): ${probe.stderr.slice(0, 300)}`);
+  const local = new Set(await listSandboxOutputs(vendor, input.runtime, { maxFiles: 10_000 }));
+  for await (const [logicalPath, bytes] of deps.outputs.read({ scope: input.scope, signal: input.signal })) {
+    input.signal.throwIfAborted();
+    assertLogicalPath(logicalPath);
+    if (local.has(logicalPath)) continue;
+    const slash = logicalPath.lastIndexOf("/");
+    if (slash > 0) {
+      const dir = `${SESSION_OUTPUTS_DIR}/${logicalPath.slice(0, slash)}`;
+      const made = await vendor.exec(input.runtime, `mkdir -p ${shellQuote(dir)}`, { timeoutMs: 10_000 });
+      if (made.exitCode !== 0) throw new Error(`Creating ${dir} failed (exit ${made.exitCode}): ${made.stderr.slice(0, 300)}`);
+    }
+    await vendor.writeFile(input.runtime, `${SESSION_OUTPUTS_DIR}/${logicalPath}`, bytes);
+  }
+  const marked = await vendor.exec(input.runtime, `touch ${OUTPUTS_SEEDED_MARKER}`, { timeoutMs: 10_000 });
+  if (marked.exitCode !== 0) throw new Error(`Writing ${OUTPUTS_SEEDED_MARKER} failed (exit ${marked.exitCode}): ${marked.stderr.slice(0, 300)}`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 /** Memory Store bindings as the Session resources the file sync reads. */

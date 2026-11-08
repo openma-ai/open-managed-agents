@@ -58,6 +58,10 @@ export interface SandboxStorageDepsPort {
 /** Receives the complete set of files under /mnt/session/outputs/ at a turn
  * boundary. Implementations replace the Session's published outputs. */
 export interface SandboxOutputSinkPort {
+  /** The Session's currently published outputs. createSyncStorage copies
+   * them into a sandbox that has not received them yet, so the next
+   * publish does not replace them with an empty directory. */
+  read(input: { scope: RuntimeResourceScope; signal: AbortSignal }): AsyncIterable<readonly [logicalPath: string, bytes: Uint8Array]>;
   publish(input: {
     scope: RuntimeResourceScope;
     fence: RuntimeResourceFence;

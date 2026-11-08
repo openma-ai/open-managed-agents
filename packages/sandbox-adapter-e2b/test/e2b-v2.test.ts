@@ -229,7 +229,7 @@ describe("E2B v2 storage", () => {
   it("native: mounts Memory and outputs from their own buckets; parent keys never reach the sandbox", async () => {
     const fake = fakeSdk();
     const kit = adapter(fake, { objectStorage: objectStorage(900) });
-    const { ports } = createSandboxPorts(kit, { storage: { memories: () => { throw new Error("sync not used"); }, authorize: async () => true, outputs: { publish: async () => { throw new Error("sync not used"); } } }, egress: gatewayDeps });
+    const { ports } = createSandboxPorts(kit, { storage: { memories: () => { throw new Error("sync not used"); }, authorize: async () => true, outputs: { read: () => { throw new Error("sync not used"); }, publish: async () => { throw new Error("sync not used"); } } }, egress: gatewayDeps });
     const acquired = await kit.lifecycle.acquire({ scope, plan, signal });
     if (acquired === "gone") throw new Error("unexpected");
     await ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores, outputs, signal });
@@ -309,7 +309,7 @@ describe("E2B v2 storage", () => {
       storage: {
         memories: () => memories,
         authorize: async () => true,
-        outputs: { async publish(input) {
+        outputs: { async *read() {}, async publish(input) {
           if (failPublish) throw new Error("R2 put failed");
           for await (const [path] of input.files) published.push(path);
         } },
