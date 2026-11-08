@@ -10,6 +10,7 @@ import {
   egressPolicy,
   RELAY_PASS_TTL_MS,
   STORAGE_SYNC_INTERVAL_MS,
+  parseMaxLifetime,
   storageConfig,
 } from "../src/runtime/e2b-session-sandbox";
 
@@ -156,11 +157,21 @@ describe("createE2BSessionSandbox", () => {
   const bucket = {} as R2Bucket;
   it("names every missing deployment variable", () => {
     expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
-      .toThrow("SANDBOX_ADAPTER=e2b requires E2B_TEMPLATE");
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "s2" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+      .toThrow("SANDBOX_ADAPTER=e2b requires E2B_TEMPLATE, E2B_MAX_LIFETIME_MS");
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "s2" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
       .toThrow("SANDBOX_ADAPTER=e2b native storage requires CLOUDFLARE_ACCOUNT_ID, R2_ENDPOINT, MEMORY_BUCKET_NAME, FILES_BUCKET_NAME");
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
       .toThrow("copy sync requires the MEMORY_BUCKET, FILES_BUCKET binding");
+  });
+
+  it("requires E2B_MAX_LIFETIME_MS as a positive integer above the idle window (design §0.0 rule 11)", () => {
+    const base = { E2B_API_KEY: "k", E2B_TEMPLATE: "t", MEMORY_BUCKET: bucket as never, FILES_BUCKET: bucket };
+    const build = (value?: string) => () => createE2BSessionSandbox({ env: { ...base, ...(value === undefined ? {} : { E2B_MAX_LIFETIME_MS: value }) }, storage: {} as never, scope: () => scope, networking: async () => undefined });
+    expect(build()).toThrow("SANDBOX_ADAPTER=e2b requires E2B_MAX_LIFETIME_MS");
+    for (const bad of ["abc", "0", "-5", "1.5", "1e30"]) expect(build(bad)).toThrow(/E2B_MAX_LIFETIME_MS must be a positive integer/);
+    expect(build("300000")).toThrow(/must exceed the idle pause window/);
+    expect(build("3600000")()).toBeInstanceOf(E2BSessionSandbox);
+    expect(parseMaxLifetime("86400000")).toBe(86_400_000);
   });
 
   it("chooses native only with both bucket keys, sync with neither, and rejects half", () => {

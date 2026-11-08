@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RetryableSandboxError, SandboxGoneError } from "@open-managed-agents/sandbox";
 import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-kit/object-storage";
 import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
+import { SandboxAssemblyError } from "@open-managed-agents/sandbox-port-kit/ports";
 import { compileFirewall } from "@open-managed-agents/sandbox-port-kit/firewall";
 import { createE2BV2Adapter, e2bNetwork, type E2BV2Module } from "../src/v2";
 
@@ -101,7 +102,7 @@ function fakeSdk() {
 }
 
 function adapter(fake: ReturnType<typeof fakeSdk>, extra: Partial<Parameters<typeof createE2BV2Adapter>[0]> = {}) {
-  return createE2BV2Adapter({ sdk: fake.sdk, connection: { apiKey: "e2b-key" }, leaseMs: 120_000, user: "root", ...extra });
+  return createE2BV2Adapter({ sdk: fake.sdk, connection: { apiKey: "e2b-key" }, leaseMs: 120_000, maxLifetimeMs: 3_600_000, user: "root", ...extra });
 }
 
 describe("E2B v2 lifecycle", () => {
@@ -115,6 +116,18 @@ describe("E2B v2 lifecycle", () => {
     expect(template).toBe("oma-template");
     expect(args).toMatchObject({ apiKey: "e2b-key", metadata: { workspaceId: "ws", sessionId: "sess" }, timeoutMs: 120_000, lifecycle: { onTimeout: { action: "pause", keepMemory: true }, autoResume: true } });
     expect(fake.calls.commands.find((c) => c.cmd.includes("s3fs"))?.opts.user).toBe("root");
+  });
+
+  it("requires maxLifetimeMs at assembly and keeps every plan's idle window below it (design §0.0 rule 11)", async () => {
+    const fake = fakeSdk();
+    expect(adapter(fake).lifecycle.maxLifetimeMs).toBe(3_600_000);
+    const { maxLifetimeMs: _omit, ...withoutCap } = { sdk: fake.sdk, connection: { apiKey: "e2b-key" }, leaseMs: 120_000, maxLifetimeMs: 1 };
+    expect(() => createE2BV2Adapter(withoutCap as never)).toThrow(SandboxAssemblyError);
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "3600000"]) {
+      expect(() => adapter(fake, { maxLifetimeMs: bad as never })).toThrow(/maxLifetimeMs is required/);
+    }
+    await expect(adapter(fake, { maxLifetimeMs: 60_000 }).lifecycle.acquire({ scope, plan, signal })).rejects.toThrow(/maxLifetimeMs \(60000\) must exceed the plan idleMs/);
+    expect(fake.calls.create).toEqual([]);
   });
 
   it("refuses a lease that does not outlive the plan idle window", async () => {

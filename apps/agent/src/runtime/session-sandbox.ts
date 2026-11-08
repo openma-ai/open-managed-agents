@@ -25,6 +25,18 @@
 // syncStorage throws SandboxGoneError instead of publishing nothing
 // (design §0.0 rule 16), once.
 //
+// Provider continuous-run cap (design §0.0 rule 11, sandbox.maxLifetimeMs;
+// null = none, e.g. Cloudflare). The runtime records when this sandbox's
+// current continuous run started (acquire / resume / its own refresh; kept
+// with the handle so a new SessionDO instance knows it) and never trusts
+// keepAlive: E2B silently truncates a renewal at the cap. Once the run
+// passes maxLifetimeMs − MAX_TOOL_CALL_MS − LIFETIME_REFRESH_MARGIN_MS and
+// no call is in flight (the model-inference gap), it refreshes in the
+// background: fence check, sandbox.pause, sandbox.attach (wakes the paused
+// sandbox), then egress.attach and storage.attach again. The next call
+// waits for it; a failed refresh fails that call, once. Layer 2 (the
+// provider pausing at the cap) is the adapter's (E2B onTimeout: pause).
+//
 // Not here yet (reported in #545): per-execution egress.revoke at turn end
 // (a running background process keeps egress between turns, as before),
 // core-driven idle pause (Cloudflare: OmaSandbox idle teardown backs up and
@@ -49,6 +61,10 @@ import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-a
 export const SANDBOX_GENERATION_MARKER = "/tmp/.oma-warm";
 /** Interval write-back at exec boundaries (design §0.1 step 5, default 15 s). */
 export const STORAGE_SYNC_INTERVAL_MS = 15_000;
+/** The longest single tool call (bash MAX_BASH_TIMEOUT, harness/tools.ts). */
+export const MAX_TOOL_CALL_MS = 10 * 60_000;
+/** Headroom for the lifetime refresh itself (pause + attach). */
+export const LIFETIME_REFRESH_MARGIN_MS = 5 * 60_000;
 
 /** What SessionDO calls on a sandbox runtime. */
 export type SessionSandboxExecutor = Pick<SandboxExecutor, "exec" | "readFile" | "writeFile"> & {
@@ -58,7 +74,13 @@ export type SessionSandboxExecutor = Pick<SandboxExecutor, "exec" | "readFile" |
   setEnvVars(env: Record<string, string>): Promise<void>;
 };
 
-export interface SessionSandboxState { handle: SandboxHandle; stores: MemoryStoreBinding[]; outputs: boolean }
+export interface SessionSandboxState {
+  handle: SandboxHandle;
+  stores: MemoryStoreBinding[];
+  outputs: boolean;
+  /** Start (epoch ms) of the sandbox's current continuous run. */
+  runStartedAt?: number;
+}
 
 export interface PortsSessionSandboxOptions<R> {
   compose(): Promise<{ ports: SandboxPorts<R> }>;
@@ -80,9 +102,21 @@ export interface PortsSessionSandboxOptions<R> {
    * credential in the egress, e.g. the E2B relay pass); null = never. */
   egressRenewMs: number | null;
   now?(): number;
+  /** Whether this owner still holds the Session's fence (design §0.0 rule
+   * 10); checked before the lifetime refresh pauses. Default: always
+   * (SessionDO is the single writer of its Session). */
+  isCurrent?(): Promise<boolean>;
 }
 
-interface Live<R> { runtime: R; handle: SandboxHandle; executor: SessionSandboxExecutor; generation: string; plan: SandboxPlan }
+interface Live<R> {
+  runtime: R;
+  handle: SandboxHandle;
+  executor: SessionSandboxExecutor;
+  generation: string;
+  plan: SandboxPlan;
+  /** Start of this sandbox's current continuous run (0 = unknown, treated as due). */
+  runStartedAt: number;
+}
 
 export class PortsSessionSandbox<R> implements SandboxExecutor {
   private live: Live<R> | null = null;
@@ -96,6 +130,12 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   private lost = false;
   private storageSyncedAt = 0;
   private egressAttachedAt = 0;
+  /** sandbox.maxLifetimeMs, known once composed. */
+  private maxLifetimeMs: number | null = null;
+  /** Calls (exec, process start, file I/O) currently in flight. */
+  private inFlight = 0;
+  private refreshing: Promise<void> | null = null;
+  private refreshError: unknown = null;
 
   constructor(private readonly options: PortsSessionSandboxOptions<R>) {}
 
@@ -108,6 +148,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
 
   async setEnvVars(env: Record<string, string>): Promise<void> {
     this.env = { ...this.env, ...env };
+    await this.quiesce();
     if (this.live !== null) await this.live.executor.setEnvVars(env);
   }
 
@@ -128,6 +169,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   /** Opens the sandbox again (attach, else resume, else acquire) and
    * returns its generation. A recycled sandbox is found here. */
   async prepare(): Promise<string> {
+    await this.quiesce();
     this.live = null;
     return (await this.open()).generation;
   }
@@ -136,6 +178,8 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
    * and the outputs upload; native: credential renewal or a no-op). Any
    * failure, including a sandbox lost during the turn, is an error. */
   async syncStorage(reason: "turn_end" | "before_stop"): Promise<void> {
+    await this.quiesce();
+    this.throwRefreshError();
     if (this.lost) {
       this.lost = false;
       throw new SandboxGoneError("The sandbox was lost during the turn; its Memory and outputs changes were not published");
@@ -152,6 +196,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
    * alive). */
   async renewActivityTimeout(): Promise<void> {
     const { ports } = await this.compose();
+    await this.quiesce();
     if (this.live !== null) {
       const live = this.live;
       if (await ports.sandbox.keepAlive(live) === "gone") {
@@ -170,6 +215,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   /** Session end: storage.detach, egress.revoke, release. */
   async destroy(): Promise<void> {
     const { ports } = await this.compose();
+    await this.quiesce();
     const scope = this.options.scope();
     const live = this.live;
     this.live = null;
@@ -183,7 +229,10 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   }
 
   private compose() {
-    return this.composed ??= this.options.compose();
+    return this.composed ??= this.options.compose().then((composed) => {
+      this.maxLifetimeMs = composed.ports.sandbox.maxLifetimeMs;
+      return composed;
+    });
   }
 
   private now(): number {
@@ -201,7 +250,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     // A fresh open already attached the current stores and outputs.
     if (opened) return;
     try {
-      await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs });
+      await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs, runStartedAt: live.runStartedAt });
       const { ports } = await this.compose();
       const scope = this.options.scope();
       await ports.storage.attach({ runtime: live.runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: live.plan.outputs, signal: new AbortController().signal });
@@ -212,7 +261,16 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   }
 
   private async call<T>(operation: (executor: SessionSandboxExecutor) => Promise<T>): Promise<T> {
-    const live = await this.open();
+    await this.quiesce();
+    this.throwRefreshError();
+    let live = await this.open();
+    // Past the threshold during idle time: refresh now, in this gap.
+    if (this.inFlight === 0 && this.lifetimeDue(live)) {
+      await this.refresh(live);
+      this.throwRefreshError();
+      live = await this.open();
+    }
+    this.inFlight += 1;
     try {
       await this.maintain(live);
       return await operation(live.executor);
@@ -220,7 +278,65 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       const name = (error as { name?: unknown } | null)?.name;
       if (name === "SandboxGoneError" || name === "SandboxNotFoundError" || name === "SandboxNotRunningError") this.markLost();
       throw error;
+    } finally {
+      this.inFlight -= 1;
+      // The last call returned: the model is thinking. Refresh in the background.
+      const current = this.live;
+      if (this.inFlight === 0 && current !== null && this.lifetimeDue(current)) void this.refresh(current);
     }
+  }
+
+  /** Waits for a lifetime refresh in progress (it never rejects). */
+  private async quiesce(): Promise<void> {
+    while (this.refreshing !== null) await this.refreshing;
+  }
+
+  /** A failed refresh fails the next call or turn-end sync, once. */
+  private throwRefreshError(): void {
+    if (this.refreshError === null) return;
+    const error = this.refreshError;
+    this.refreshError = null;
+    throw error;
+  }
+
+  private lifetimeDue(live: Live<R>): boolean {
+    const max = this.maxLifetimeMs;
+    if (max === null) return false;
+    return this.now() - live.runStartedAt >= max - MAX_TOOL_CALL_MS - LIFETIME_REFRESH_MARGIN_MS;
+  }
+
+  /** Design §0.0 rule 11 layer 1: pause → attach, single-flight. Only when
+   * this owner still holds the fence (rule 10: a fenced-out owner does not
+   * pause). Never rejects: a failure is kept for the next call. */
+  private refresh(live: Live<R>): Promise<void> {
+    return this.refreshing ??= (async () => {
+      if (!await (this.options.isCurrent ?? (async () => true))()) return;
+      const { ports } = await this.compose();
+      const scope = this.options.scope();
+      const signal = new AbortController().signal;
+      // Nothing may use the runtime being paused; callers wait on `refreshing`.
+      this.live = null;
+      await ports.sandbox.pause({ scope, runtime: live.runtime, handle: live.handle, signal });
+      const attached = await ports.sandbox.attach({ scope, handle: live.handle, signal });
+      if (attached === "gone") {
+        this.markLost();
+        throw new SandboxGoneError("The sandbox did not come back after its lifetime refresh");
+      }
+      const now = this.now();
+      const next: Live<R> = { ...attached, executor: this.options.executor(attached.runtime), generation: live.generation, plan: live.plan, runStartedAt: now };
+      await this.options.state.save({ handle: next.handle, stores: this.stores, outputs: this.outputs, runStartedAt: now });
+      if (Object.keys(this.env).length > 0) await next.executor.setEnvVars(this.env);
+      const fence = fenceFor(scope);
+      await ports.egress.attach({ runtime: next.runtime, scope, fence, policy: live.plan.egress, signal });
+      this.egressAttachedAt = now;
+      if (this.outputs || this.stores.length > 0) {
+        await ports.storage.attach({ runtime: next.runtime, scope, fence, stores: this.stores, outputs: live.plan.outputs, signal });
+      }
+      this.live = next;
+    })().catch((error: unknown) => {
+      this.live = null;
+      this.refreshError = error;
+    }).finally(() => { this.refreshing = null; });
   }
 
   /** Exec-boundary renewals, single-flight; a failure fails the call. */
@@ -243,8 +359,9 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     })().finally(() => { this.maintaining = null; });
   }
 
-  private open(): Promise<Live<R>> {
-    if (this.live !== null) return Promise.resolve(this.live);
+  private async open(): Promise<Live<R>> {
+    await this.quiesce();
+    if (this.live !== null) return this.live;
     return this.opening ??= this.start().finally(() => { this.opening = null; });
   }
 
@@ -273,6 +390,9 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     }
     const reused = opened !== "gone";
     if (!reused) generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+    // An attached sandbox may have kept running: keep the recorded start
+    // (unknown = due). A resumed or new one starts a run now.
+    let runStartedAt = reused ? saved?.runStartedAt ?? 0 : 0;
     let plan: SandboxPlan;
     try {
       plan = await this.options.plan({ scope, generation, stores: this.stores });
@@ -288,14 +408,15 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
         }
         if (opened === "gone") opened = await ports.sandbox.acquire({ scope, plan, signal });
         if (opened === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
+        runStartedAt = this.now();
         // A provider-assigned handle is recorded before the sandbox is used.
-        if (ports.sandbox.handle === "changes") await this.options.state.save({ handle: opened.handle, stores: this.stores, outputs: this.outputs });
+        if (ports.sandbox.handle === "changes") await this.options.state.save({ handle: opened.handle, stores: this.stores, outputs: this.outputs, runStartedAt });
       }
     } catch (error) {
       if (opened !== "gone") await this.rollback(opened);
       throw error;
     }
-    const live: Live<R> = { ...opened, executor: this.options.executor(opened.runtime), generation, plan };
+    const live: Live<R> = { ...opened, executor: this.options.executor(opened.runtime), generation, plan, runStartedAt };
     try {
       if (Object.keys(this.env).length > 0) await live.executor.setEnvVars(this.env);
       const fence = fenceFor(scope);
@@ -306,7 +427,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       }
       this.storageSyncedAt = this.now();
       if (!reused) await writeMarker(live.executor, generation);
-      await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs });
+      await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs, runStartedAt });
     } catch (error) {
       await this.rollback(live);
       throw error;

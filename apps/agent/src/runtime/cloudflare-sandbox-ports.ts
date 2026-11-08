@@ -65,6 +65,8 @@ export function createCloudflareSandboxAdapter(input: {
 
   const lifecycle: SandboxLifecyclePort<CloudflareSandboxRuntime> = {
     handle: "fixed",
+    /** Containers have no continuous-run cap. */
+    maxLifetimeMs: null,
 
     /** From the deployment image, or from a template: provision, then
      * restore its /workspace backup. An expired or deleted template → "gone". */

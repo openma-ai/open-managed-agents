@@ -129,7 +129,7 @@ describe("createSessionSandbox", () => {
   it("still selects E2B with SANDBOX_ADAPTER=e2b and rejects unknown adapters", () => {
     const { deps } = cfDeps();
     const e2bEnv = {
-      E2B_API_KEY: "k", E2B_TEMPLATE: "t", CLOUDFLARE_ACCOUNT_ID: "a", R2_ENDPOINT: "https://r2.example",
+      E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000", CLOUDFLARE_ACCOUNT_ID: "a", R2_ENDPOINT: "https://r2.example",
       R2_ACCESS_KEY_ID: "id", R2_SECRET_ACCESS_KEY: "secret", MEMORY_BUCKET_NAME: "memory",
       R2_FILES_ACCESS_KEY_ID: "fid", R2_FILES_SECRET_ACCESS_KEY: "fsecret", FILES_BUCKET_NAME: "files",
     } as never;

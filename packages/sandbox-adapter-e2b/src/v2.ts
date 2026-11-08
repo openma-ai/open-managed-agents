@@ -6,6 +6,8 @@
 // acquire        Sandbox.create(plan.from) with {workspaceId, sessionId} metadata
 // attach         Sandbox.connect (resumes a paused sandbox)
 // keepAlive      setTimeout(leaseMs); leaseMs must exceed plan.idleMs
+// maxLifetimeMs  required: the account plan's continuous-run cap (Hobby 1 h,
+//                Pro 24 h); plan.idleMs must stay below it
 // pause/resume   pause (full memory) / connect; the ref is the sandbox itself
 // checkpoint     createSnapshot; resume from it = Sandbox.create(snapshotId)
 // snapshotTemplate createSnapshot under a name
@@ -29,7 +31,7 @@ import {
 import type { FirewallRules } from "@open-managed-agents/sandbox-port-kit/firewall";
 import type { ObjectStoreCredentialPort } from "@open-managed-agents/sandbox-port-kit/object-storage";
 import { SESSION_OUTPUTS_DIR } from "@open-managed-agents/sandbox-port-kit/object-storage";
-import type { SandboxAdapterPort, SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit/ports";
+import { SandboxAssemblyError, type SandboxAdapterPort, type SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit/ports";
 import {
   E2BSandboxExecutor,
   createE2BSandbox,
@@ -61,6 +63,12 @@ export interface E2BV2AdapterOptions {
   /** Provider idle reclaim (E2B timeout), renewed by keepAlive. Must exceed
    * every plan's idleMs, or E2B pauses the sandbox before the core does. */
   leaseMs: number;
+  /** E2B's cap on continuous running for this account's plan (Hobby
+   * 3_600_000, Pro 86_400_000; pause + resume restarts it). Required and
+   * never queried from E2B: past it E2B silently truncates setTimeout and
+   * pauses the sandbox (design §0.0 rule 11). Every plan's idleMs must be
+   * below it. */
+  maxLifetimeMs: number;
   /** Sandbox user for exec and files. Default: the SDK default user. */
   user?: string;
   /** Run as root right after a sandbox starts, before its firewall is
@@ -101,6 +109,11 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   if (!Number.isSafeInteger(options.leaseMs) || options.leaseMs <= 0) {
     throw new TypeError("E2B leaseMs must be a positive integer");
   }
+  const declared = (options as { maxLifetimeMs?: unknown }).maxLifetimeMs;
+  if (typeof declared !== "number" || !Number.isSafeInteger(declared) || declared <= 0) {
+    throw new SandboxAssemblyError("E2B maxLifetimeMs is required: a positive integer of milliseconds matching the account plan's continuous-run cap");
+  }
+  const maxLifetimeMs: number = declared;
   const { sdk, connection } = options;
   const executorOptions = { ...connection, ...(options.user === undefined ? {} : { user: options.user }), lifetimeMs: options.leaseMs };
   const handleOf = (runtime: E2BSandboxExecutor): SandboxHandle => ({ provider: "e2b", runtimeId: runtime.runtimeHandle().runtimeId });
@@ -120,6 +133,9 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
     signal.throwIfAborted();
     if (plan.idleMs >= options.leaseMs) {
       throw new Error(`E2B leaseMs (${options.leaseMs}) must exceed the plan idleMs (${plan.idleMs})`);
+    }
+    if (plan.idleMs >= maxLifetimeMs) {
+      throw new SandboxAssemblyError(`E2B maxLifetimeMs (${maxLifetimeMs}) must exceed the plan idleMs (${plan.idleMs})`);
     }
     let runtime: E2BSandboxExecutor;
     try {
@@ -150,6 +166,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
   const lifecycle: SandboxLifecyclePort<E2BSandboxExecutor> = {
     handle: "changes",
+    maxLifetimeMs,
 
     async acquire(input) {
       const from = input.plan.from;

@@ -44,6 +44,7 @@ describe("Cloudflare v2 adapter", () => {
     const adapter = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, backups });
     const { ports } = createSandboxPorts(adapter, { storage: {} as never, egress: {} as never });
     expect(ports.sandbox.handle).toBe("fixed");
+    expect(ports.sandbox.maxLifetimeMs).toBeNull();
     expect(await ports.sandbox.attach({ scope, handle: { provider: "cloudflare", runtimeId: "sess" }, signal })).toBe("gone");
     const acquired = await ports.sandbox.acquire({ scope, plan, signal });
     if (acquired === "gone") throw new Error("unexpected");

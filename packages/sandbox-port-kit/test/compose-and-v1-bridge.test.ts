@@ -167,6 +167,7 @@ describe("fromV1SandboxProvider", () => {
     const contexts: Array<{ preparedBase?: unknown }> = [];
     const adapter = bridge(new Map(), fakeRuntime("new"), contexts);
     expect(adapter.lifecycle.handle).toBe("changes");
+    expect(adapter.lifecycle.maxLifetimeMs).toBeNull();
     const acquired = await adapter.lifecycle.acquire({ scope, plan: { ...plan, from: { template: { provider: "v1", ref: "base-1" } } }, signal });
     expect(acquired).toMatchObject({ handle: { provider: "v1", runtimeId: "new" } });
     expect(contexts[0]!.preparedBase).toEqual({ provider: "v1", id: "base-1" });

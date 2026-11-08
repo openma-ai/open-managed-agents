@@ -14,12 +14,14 @@
 //     prefix-scoped temporary credentials (renewed by the runtime's interval
 //     sync); neither → createSyncStorage copies Memory in and out (over the
 //     MEMORY_BUCKET projection prefixes) and uploads /mnt/session/outputs into
-//     FILES_BUCKET at turn end; exactly one → configuration error.
+//     FILES_BUCKET at turn end; exactly one → configuration error;
+//   - E2B_MAX_LIFETIME_MS (required, the account plan's continuous-run cap)
+//     becomes the adapter's maxLifetimeMs; the shared runtime refreshes the
+//     sandbox before it (design §0.0 rule 11).
 
 import type {
   EgressPolicy,
   MemoryStoreBinding,
-  SandboxHandle,
   SandboxPlan,
   SandboxPorts,
   Substitution,
@@ -32,7 +34,7 @@ import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2
 import { createEgressRelayPasses, EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
-import { PortsSessionSandbox, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxExecutor } from "./session-sandbox";
+import { PortsSessionSandbox, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxExecutor, type SessionSandboxState } from "./session-sandbox";
 
 export { STORAGE_SYNC_INTERVAL_MS };
 
@@ -40,6 +42,8 @@ export interface E2BSandboxEnv {
   E2B_API_KEY?: string;
   E2B_TEMPLATE?: string;
   E2B_DOMAIN?: string;
+  /** The account plan's continuous-run cap in ms (Hobby 3600000, Pro 86400000). */
+  E2B_MAX_LIFETIME_MS?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   R2_ENDPOINT?: string;
   /** Memory bucket parent key (native storage). */
@@ -94,7 +98,7 @@ const PACKAGE_HOSTS = [
   "crates.io", "static.crates.io", "index.crates.io", "proxy.golang.org", "sum.golang.org", "rubygems.org",
 ];
 
-interface PersistedState { handle: SandboxHandle; stores: MemoryStoreBinding[]; outputs: boolean }
+type PersistedState = SessionSandboxState;
 
 export interface E2BSessionSandboxOptions {
   compose(): Promise<{ ports: SandboxPorts<E2BSandboxExecutor>; vendor: SandboxVendorPort<E2BSandboxExecutor> }>;
@@ -186,8 +190,9 @@ export function createE2BSessionSandbox(input: {
   networking(): Promise<SessionNetworking | undefined>;
 }): E2BSessionSandbox {
   const { env } = input;
-  const missing = (["E2B_API_KEY", "E2B_TEMPLATE"] as const).filter((name) => !env[name]);
+  const missing = (["E2B_API_KEY", "E2B_TEMPLATE", "E2B_MAX_LIFETIME_MS"] as const).filter((name) => !env[name]);
   if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b requires ${missing.join(", ")}`);
+  const maxLifetimeMs = parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!);
   const storage = storageConfig(env);
   const template = env.E2B_TEMPLATE!;
   const passes = env.PLATFORM_ROOT_SECRET ? createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now) : null;
@@ -199,6 +204,7 @@ export function createE2BSessionSandbox(input: {
         sdk,
         connection: { apiKey: env.E2B_API_KEY!, ...(env.E2B_DOMAIN ? { domain: env.E2B_DOMAIN } : {}) },
         leaseMs: LEASE_MS,
+        maxLifetimeMs,
         user: "root",
         ...(storage.kind === "native"
           ? { setup: E2B_SANDBOX_SETUP, channels: [new URL(env.R2_ENDPOINT!).hostname], objectStorage: storage.objectStorage }
@@ -257,6 +263,17 @@ export function createE2BSessionSandbox(input: {
     },
     now: Date.now,
   });
+}
+
+/** E2B_MAX_LIFETIME_MS → ms. The idle window must fit inside it (design
+ * §0.0 rule 11), checked here at assembly with the deployment's idle time. */
+export function parseMaxLifetime(value: string): number {
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error("E2B_MAX_LIFETIME_MS must be a positive integer of milliseconds (the E2B plan's continuous-run cap: Hobby 3600000, Pro 86400000)");
+  }
+  if (IDLE_MS >= ms) throw new Error(`E2B_MAX_LIFETIME_MS (${ms}) must exceed the idle pause window (${IDLE_MS} ms)`);
+  return ms;
 }
 
 /** The Session's cap_cli placeholders, from the same main-worker RPC SessionDO

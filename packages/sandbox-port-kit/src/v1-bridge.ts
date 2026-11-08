@@ -121,6 +121,8 @@ export function fromV1SandboxProvider<R extends V1Runtime>(
 
   const lifecycle: SandboxLifecyclePort<R> = {
     handle: "changes",
+    /** v1 declares no continuous-run cap. */
+    maxLifetimeMs: null,
 
     /** v1 create cannot report an expired template apart from other
      * failures, so it never returns "gone": a failed create throws. */
