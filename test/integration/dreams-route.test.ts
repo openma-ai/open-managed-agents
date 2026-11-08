@@ -67,8 +67,8 @@ async function poll<T>(
   }
 }
 
-describe("/v1/oma/dreams — beta header gate", () => {
-  it("rejects POST without the required beta flags", async () => {
+describe("/v1/oma/dreams — anthropic-beta header is optional", () => {
+  it("reaches input validation without the beta flags", async () => {
     const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: {
@@ -76,25 +76,11 @@ describe("/v1/oma/dreams — beta header gate", () => {
         "Content-Type": "application/json",
         // No anthropic-beta header.
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ model: "claude-opus-4-7" }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error.type).toBe("invalid_request_error");
-    expect(body.error.message).toContain("dreaming-2026-04-21");
-  });
-
-  it("rejects when only one of the two flags is present", async () => {
-    const res = await api("/v1/oma/dreams", {
-      method: "POST",
-      headers: {
-        "x-api-key": "test-key",
-        "Content-Type": "application/json",
-        "anthropic-beta": "managed-agents-2026-04-01",
-      },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(400);
+    expect(body.error.message).toContain("inputs[]");
   });
 });
 
