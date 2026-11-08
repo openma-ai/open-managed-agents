@@ -7,6 +7,12 @@ import {
 } from "@open-managed-agents/session-runtime";
 import { abortableDelay, abortedError, linkAbort, untilAborted } from "@open-managed-agents/session-runtime-contract";
 import {
+  answeredToolCallIds,
+  asWireEvents,
+  outstandingRequiresAction,
+  stillPending,
+} from "@open-managed-agents/session-runtime-contract/requires-action";
+import {
   probeSandboxLiveness,
   startSandboxHeartbeat,
   withSandboxExecutionGuard,
@@ -107,8 +113,6 @@ export type ManagedNodeConfirmableToolUse = Extract<
 >;
 
 import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
-import { answeredToolCallIds, asWireEvents,
-  outstandingRequiresAction, stillPending } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;

@@ -499,7 +499,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from("x-access-token:glpat-bond").toString("base64")}`,
       });
       const commands = sandbox.exec.mock.calls.map(([command]) => command);
-      expect(commands).toContain("git clone -- 'https://gitlab.example.test/group/app.git' 'app'");
+      expect(commands).toContain("git clone -- 'https://gitlab.example.test/group/app.git' 'app' 2>&1");
       expect(commands.join("\n")).not.toContain("glpat-bond");
     });
 
@@ -734,5 +734,37 @@ describe("NodeManagedSessionInputPreparer", () => {
       session,
       sandbox,
     })).rejects.toThrow(/unsafe skill archive path/i);
+  });
+
+  // Characterization (design §0.7 regression rule 1), locked before the
+  // repository checkout moved into packages/session-runtime.
+  // Behaviour change (shared checkout, CF semantics): the default branch is
+  // cloned, then the branch is fetched + checked out, or created locally when
+  // the remote lacks it, instead of failing the clone.
+  it("clones the default branch, then checks out or creates the requested branch", async () => {
+    const session = managedSession();
+    session.agent.skills = [];
+    session.resources = [{ ...session.resources[1]!, checkout: { type: "branch", name: "topic" } } as Session["resources"][number]];
+    const gitCheckout = vi.fn(async () => undefined);
+    const exec = vi.fn(async () => "");
+    await new NodeManagedSessionInputPreparer({
+      files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
+      skillVersions: {} as never,
+      repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
+    }).prepareInputs({
+      workspaceId: "workspace_inputs",
+      session,
+      sandbox: {
+        exec, gitCheckout,
+        readFile: async () => { throw new Error("missing"); },
+        registerCommandSecrets: vi.fn(),
+      } as unknown as SandboxExecutor,
+    });
+    expect(gitCheckout).toHaveBeenCalledWith("http://git.example.test/repository.git", { targetDir: "/workspace/repository" });
+    expect(exec.mock.calls.map(([command]) => command)).toEqual([
+      "git -C 'repository' config user.name \"Agent\" && git -C 'repository' config user.email \"agent@managed-agents.dev\"",
+      "(git -C 'repository' fetch origin 'topic:refs/remotes/origin/topic' 2>/dev/null && git -C 'repository' checkout 'topic') || git -C 'repository' checkout -b 'topic'",
+    ]);
   });
 });

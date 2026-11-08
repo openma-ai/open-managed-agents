@@ -24,9 +24,9 @@ import { log, logWarn } from "@open-managed-agents/shared";
 import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
-import { loadManagedSessionResources, memoryStoreMountTarget } from "./resource-mounter";
+import { loadManagedSessionResources } from "./managed-session-resources";
 import { findLatestBackup, type WorkspaceBackupHandle } from "./workspace-backups";
-import { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
+import { memoryStoreMountTarget, PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 
 export interface CloudflareSessionSandboxDeps {
   env: Env;

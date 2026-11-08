@@ -1371,6 +1371,6 @@ export async function buildTools(
 // get bespoke memory_* tools. Each attached store is mounted as a directory
 // under /mnt/memory/<store_name>/ in the sandbox, and the agent reads/writes
 // it with the standard file tools above (bash/read/write/edit/glob/grep).
-// The mount itself is set up in apps/agent/src/runtime/resource-mounter.ts.
+// The mount itself is set up in packages/session-runtime/src/session-resource-mount.ts.
 // Audit / version rows are produced asynchronously via R2 Event Notifications
 // → Queue → consumer at apps/main/src/queue/memory-events.ts.
