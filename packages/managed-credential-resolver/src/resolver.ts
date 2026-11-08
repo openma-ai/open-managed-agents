@@ -96,7 +96,7 @@ export class ManagedCredentialResolver {
    * values. CF SessionDO, the CF E2B forwarder and the Node forwarder all
    * write exactly this (design §0.1, §8.0). */
   async placeholderEnvironment(scope: ManagedSessionScope): Promise<Record<string, string>> {
-    const { secrets, env } = await this.compile(scope, await this.recordsFor(scope));
+    const { secrets, env } = await this.compile(scope, await this.recordsFor(scope), true);
     return { ...env, ...Object.fromEntries(secrets.map(({ substitution }) => [substitution.envName, substitution.placeholder])) };
   }
 
@@ -110,7 +110,7 @@ export class ManagedCredentialResolver {
     const records = await this.recordsFor(scope);
     return {
       target: records.length === 0 ? null : selectOutboundTarget(records, hostname, this.registry),
-      substitutions: (await this.compile(scope, records)).secrets,
+      substitutions: (await this.compile(scope, records, false)).secrets,
     };
   }
 
@@ -123,9 +123,12 @@ export class ManagedCredentialResolver {
     return scope.vaultIds.length === 0 ? [] : this.listForSession(scope);
   }
 
-  private async compile(scope: ManagedSessionScope, records: readonly StoredCredential[]) {
+  /** `forSandbox`: refuse to hand a sandbox credentials it could only get
+   * in plaintext. The gateway side is lenient: without the key no
+   * placeholder was ever issued, so there is nothing to substitute. */
+  private async compile(scope: ManagedSessionScope, records: readonly StoredCredential[], forSandbox: boolean) {
     if (this.ports.placeholders === undefined) {
-      if (vaultSandboxCredentialIds(records).length > 0) {
+      if (forSandbox && vaultSandboxCredentialIds(records).length > 0) {
         throw new Error("Vault environment_variable and cap_cli credentials need sandbox placeholders (PLATFORM_ROOT_SECRET)");
       }
       return { secrets: [], env: {} };
