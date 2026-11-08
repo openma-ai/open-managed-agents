@@ -167,8 +167,8 @@ describe("characterization: Node session usage and budget", () => {
   // state (usage-budget-characterization.test.ts in test/integration). Node at
   // 94d603e7 restarts every execution's ledger at 0, so the projected
   // Session.usage regresses to that execution's tokens. Kept: CF (cumulative,
-  // the more complete behaviour, §0.7). Expected to fail until converged.
-  it.fails("runner: token totals continue from the session's persisted usage (kept: Cloudflare, cumulative)", async () => {
+  // the more complete behaviour, §0.7). Passes since the convergence.
+  it("runner: token totals continue from the session's persisted usage (kept: Cloudflare, cumulative)", async () => {
     const { frames } = await execute({
       session: session({ inputTokens: 100, outputTokens: 50 }, null),
       harness: async ({ runtime: r }) => { await r.reportUsage(100, 50); },

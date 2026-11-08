@@ -197,29 +197,3 @@ export class SessionBudgetReachedError extends Error {
     this.name = "SessionBudgetReachedError";
   }
 }
-
-export interface BudgetReachedFrame {
-  type: string;
-  [key: string]: unknown;
-}
-
-export function budgetReachedEvents(input: {
-  sessionThreadId?: string | null;
-  usage: Record<string, unknown>;
-  budget: BudgetAmount;
-}): BudgetReachedFrame[] {
-  const stop = { type: "budget_reached" as const };
-  return [
-    {
-      type: "session.thread_status_idle",
-      ...(input.sessionThreadId ? { session_thread_id: input.sessionThreadId } : {}),
-      stop_reason: stop,
-    },
-    {
-      type: "session.usage",
-      usage: input.usage,
-      budget: { amount_minor: input.budget.amount, currency: input.budget.currency },
-    },
-    { type: "session.status_idle", stop_reason: stop },
-  ];
-}
