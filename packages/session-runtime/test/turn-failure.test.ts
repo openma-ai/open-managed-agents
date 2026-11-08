@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyTurnFailure,
   isTurnCancellationError,
   planTurnFailure,
   reportTurnFailure,
@@ -63,5 +64,18 @@ describe("isTurnCancellationError", () => {
   it("rejects anything else", () => {
     expect(isTurnCancellationError(new Error("x"))).toBe(false);
     expect(isTurnCancellationError("AbortError")).toBe(false);
+  });
+});
+
+describe("classifyTurnFailure", () => {
+  it("treats auth, payment and config failures as session-terminal even after agent events", () => {
+    expect(classifyTurnFailure(new Error("401 unauthorized"), false)).toBe("session_terminal");
+    expect(classifyTurnFailure(new Error("payment required"), true)).toBe("session_terminal");
+    expect(classifyTurnFailure(new Error("Agent not found"), false)).toBe("session_terminal");
+  });
+
+  it("retries an unclassified failure only while the turn has no agent events", () => {
+    expect(classifyTurnFailure(new Error("boom"), false)).toBe("transient");
+    expect(classifyTurnFailure(new Error("boom"), true)).toBe("turn_dead");
   });
 });

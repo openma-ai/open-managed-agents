@@ -48,19 +48,19 @@ async function turn(run: (context: { runtime: any; budget?: SessionBudgetGate | 
 }
 
 describe("characterization: one Node turn", () => {
-  it("budget_reached outranks a parked tool call", async () => {
+  it("a parked tool call outranks budget_reached (requires_action, as on Cloudflare)", async () => {
     const { summary } = await turn(async ({ runtime, budget }) => {
       runtime.broadcast({ type: "agent.custom_tool_use", id: "ctu_1", name: "ask", input: {} });
       runtime.pendingConfirmations.push("ctu_1");
       completeModelEgress(budget, { input_tokens: 1_000_000 });
       beginModelEgress(budget);
     }, { amountMinor: "100", currency: "USD" });
-    expect(summary.at(-1)).toBe("idle:budget_reached");
+    expect(summary.at(-1)).toBe("idle:requires_action");
   });
 
-  it("retries an authentication failure while the turn has no agent events", async () => {
+  it("does not retry an authentication failure", async () => {
     const { runs, summary } = await turn(async () => { throw new Error("401 unauthorized"); });
-    expect(runs).toBe(3);
+    expect(runs).toBe(1);
     expect(summary.at(-1)).toBe("idle:retries_exhausted");
   });
 

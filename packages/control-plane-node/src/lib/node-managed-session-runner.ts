@@ -1,8 +1,11 @@
 import {
+  classifyTurnFailure,
+  decideTurnStop,
   planTurnFailure,
   reportTurnFailure,
   SessionSandboxRuntime,
   type SessionSandboxMode,
+  type TurnFailureClass,
   type TurnFailureEventsPort,
 } from "@open-managed-agents/session-runtime";
 import { abortableDelay, abortedError, linkAbort, untilAborted } from "@open-managed-agents/session-runtime-contract";
@@ -1000,7 +1003,7 @@ export class DefaultNodeManagedSessionRunner
             const sideEffectFree = runtime.agentEventCount === agentEventsBefore;
             const plan = planTurnFailure({
               cancelled: abortController.signal.aborted,
-              failureClass: sideEffectFree && !isNonRetryableHarnessError(error) ? "transient" : "turn_dead",
+              failureClass: nodeTurnFailureClass(error, !sideEffectFree),
               attempt,
               maxAttempts: retry.attempts,
               delayMs: retry.delayMs,
@@ -1137,34 +1140,35 @@ export class DefaultNodeManagedSessionRunner
           },
         });
       }
-      if (
-        !leaseLost && !runFailed && finalizationError === undefined
-        && budgetGate?.reached === true
-      ) {
-        // Official budget stop: thread idle → usage → session idle (budget_reached).
-        // requires_action parking is skipped: budget_reached outranks end_turn but
-        // requires_action already short-circuits earlier when tools are pending.
-        // Usage source on Node: the primary runtime's meter.
-        for (const event of budgetReachedStopEvents({
-          agentName: input.session.agent.name,
-          sessionThreadId: "sthr_primary",
-          usage: runtime.usageSnapshot(),
-          budget: budgetGate.maxListCost,
-        })) {
-          runtime.broadcastProducedEvent(event);
-        }
-      } else if (!leaseLost) {
+      if (!leaseLost) {
         const failed = runFailed || finalizationError !== undefined;
         const parkIds = failed || interrupted ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
           runtime.pendingConfirmations,
           asWireEvents(runtime.history.getEvents()),
         );
-        runtime.broadcastProducedEvent({
-          type: "session.status_idle",
-          stopReason: failed ? { type: "retries_exhausted" }
-            : parkIds.length > 0 ? { type: "requires_action", eventIds: parkIds }
-            : { type: "end_turn" },
+        const stop = decideTurnStop({
+          parkedOnClient: parkIds.length > 0,
+          budgetReached: !failed && budgetGate?.reached === true,
         });
+        if (stop === "budget_reached") {
+          // Official budget stop: thread idle → usage → session idle (budget_reached).
+          // Usage source on Node: the primary runtime's meter.
+          for (const event of budgetReachedStopEvents({
+            agentName: input.session.agent.name,
+            sessionThreadId: "sthr_primary",
+            usage: runtime.usageSnapshot(),
+            budget: budgetGate!.maxListCost,
+          })) {
+            runtime.broadcastProducedEvent(event);
+          }
+        } else {
+          runtime.broadcastProducedEvent({
+            type: "session.status_idle",
+            stopReason: failed ? { type: "retries_exhausted" }
+              : stop === "requires_action" ? { type: "requires_action", eventIds: parkIds }
+              : { type: "end_turn" },
+          });
+        }
       }
       try {
         await runtime.drain();
@@ -1358,6 +1362,10 @@ function nodeTurnFailureEvents(runtime: ManagedNodeHarnessRuntime): TurnFailureE
   };
 }
 
-function isNonRetryableHarnessError(error: Error): boolean {
-  return error.name === "ConfigError";
+/** Node has no terminated Session state yet, so a session-terminal failure
+ * ends only this turn (exhausted). */
+function nodeTurnFailureClass(error: Error, producedAgentEvents: boolean): TurnFailureClass {
+  if (error.name === "ConfigError") return "turn_dead";
+  const failureClass = classifyTurnFailure(error, producedAgentEvents);
+  return failureClass === "session_terminal" ? "turn_dead" : failureClass;
 }

@@ -42,6 +42,8 @@ import {
   recoverAgentTurn,
   clearTurnRecoveryCount,
   TurnAborted,
+  classifyTurnFailure,
+  decideTurnStop,
   isTurnCancellationError,
   openTurnMarker,
   planTurnFailure,
@@ -5760,6 +5762,8 @@ export class SessionDO extends DurableObject<Env> {
     // has finished closing so clients cannot observe idle while resources are
     // still live.
     let completedIdleEvent: SessionEvent | undefined;
+    // Null until the harness starts: preparation has no agent side effects.
+    let agentEventsBeforeRun: number | null = null;
 
     // Reuse session-level sandbox (singleton) — files persist across turns.
     // Returned object is a lazy proxy. Warmup starts concurrently with the
@@ -6252,6 +6256,7 @@ export class SessionDO extends DurableObject<Env> {
       history.append(runningEvent);
       this.broadcastEvent(runningEvent, activeFence);
 
+      agentEventsBeforeRun = countAgentEvents(history.getEvents());
       await harness.run(ctx);
 
       // A parked call can already be closed by the time the run returns
@@ -6421,9 +6426,13 @@ export class SessionDO extends DurableObject<Env> {
       // A pending custom tool use (no execute function) outranks always_ask confirmations.
       const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
       let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"];
-      if (storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0) {
+      const stop = decideTurnStop({
+        parkedOnClient: storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0,
+        budgetReached: ctx.budget?.reached === true,
+      });
+      if (stop === "requires_action") {
         stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations);
-      } else if (ctx.budget?.reached) {
+      } else if (stop === "budget_reached" && ctx.budget) {
         // Official budget stop (requires_action outranks it, above):
         // thread idle → usage snapshot → session idle (emitted below).
         // Usage source on CF: every model span in this session's event log.
@@ -6487,14 +6496,14 @@ export class SessionDO extends DurableObject<Env> {
       // ModelError is turn-dead only (exhausted + retries_exhausted): same
       // prompt fails again, but the session stays usable for a new prompt.
       // Caught 2026-05-11 sess-y2bfxm1de4e1zqxm: retries burned tokens.
-      const isSessionTerminal =
-        classified instanceof PaymentRequiredError ||
-        classified instanceof ConfigError ||
-        classified instanceof AuthError;
-      const isModelTurnDead = classified instanceof ModelError;
       const plan = planTurnFailure({
         cancelled: false,
-        failureClass: isSessionTerminal ? "session_terminal" : isModelTurnDead ? "turn_dead" : "transient",
+        // A turn that already produced agent events is not re-run: a retry
+        // would repeat its tool calls.
+        failureClass: classifyTurnFailure(
+          classified,
+          agentEventsBeforeRun !== null && countAgentEvents(history.getEvents()) > agentEventsBeforeRun,
+        ),
         attempt: retryCount + 1,
         maxAttempts: 3,
         // Exponential backoff: 1s, 2s
@@ -8199,6 +8208,10 @@ type SessionScheduleType = "scheduled" | "delayed" | "cron" | "interval";
  *  boundary (CMA coherent turn / after-call), not deferred to after-turn drain. */
 export function agentAdvertisesSteering(agent: { metadata?: Record<string, unknown> } | null | undefined): boolean {
   return agent?.metadata?.["oma.session.steering"] === "enabled";
+}
+
+function countAgentEvents(events: readonly SessionEvent[]): number {
+  return events.filter((event) => event.type.startsWith("agent.")).length;
 }
 
 /** Stdout of a CF sandbox command (`exit=N\n<stdout>`); throws on failure. */

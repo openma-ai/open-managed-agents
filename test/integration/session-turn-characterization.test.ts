@@ -36,7 +36,7 @@ const events = (id: string): Promise<any[]> => runInDurableObject(stubOf(id), as
   new SqliteHistory(state.storage.sql, null).getEvents() as any[]);
 
 describe("characterization: one Cloudflare turn", () => {
-  it("re-runs a turn that failed after producing agent events", async () => {
+  it("does not re-run a turn that failed after producing agent events", async () => {
     const id = await createSession("crash-after-agent-event");
     runs = 0;
     await post(`/v1/oma/sessions/${id}/events`, { events: [{ type: "user.message", content: [{ type: "text", text: "go" }] }] });
@@ -45,7 +45,7 @@ describe("characterization: one Cloudflare turn", () => {
       await new Promise((r) => setTimeout(r, 200));
       seen = await events(id);
     }
-    expect(runs).toBe(3);
+    expect(runs).toBe(1);
     expect(seen.filter((e) => e.type === "session.status_idle").map((e) => e.stop_reason.type)).toEqual(["retries_exhausted"]);
   }, 30_000);
 });
