@@ -23,9 +23,9 @@ Two properties keep that claim honest:
   Node server (`apps/main-node`) — under `/v1`. OpenMA-specific extensions live
   under `/v1/oma/*` so the compatible surface stays clean.
 
-The Anthropic SDK sends the required `anthropic-beta` flags automatically. When
-calling endpoints by hand, send the flag listed in the matrix (for example
-`anthropic-beta: managed-agents-2026-04-01`) or the route rejects the request.
+The Anthropic SDK sends the `anthropic-beta` flags listed in the matrix
+automatically. OpenMA accepts a request with or without them, so a hand-written
+HTTP call does not need the header.
 
 ## API surface matrix
 
@@ -192,9 +192,9 @@ narrates it.
 
 ## Known deltas vs hosted CMA
 
-- **Beta flags are enforced per resource family.** Requests missing the
-  documented `anthropic-beta` value get a 400 (`requireBeta` in
-  `packages/managed-agents-api/src/beta.ts`).
+- **Beta flags are not required.** Hosted CMA rejects a request that lacks
+  the documented `anthropic-beta` value; OpenMA accepts it with or without
+  the header.
 - **Session list filters.** `metadata_key` / `metadata_value` query params are
   rejected with a 400 — list filters cover `agent_id`, `agent_version`,
   `created_at` bounds, `deployment_id`, `memory_store_id`, `statuses[]`,
