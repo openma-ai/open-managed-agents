@@ -49,13 +49,14 @@ function fakeSdk() {
   const calls = { create: [] as Array<[string, Record<string, unknown>]>, commands: [] as Call[], kill: [] as string[], deleted: [] as string[], network: [] as unknown[], timeouts: [] as number[], paused: 0 };
   const files = new Map<string, Uint8Array>();
   const shell = shellOver(files);
-  const errors: { create?: Error; connect?: Error; setTimeout?: Error; snapshot?: Error; kill?: Error; command?: Error } = {};
+  const errors: { create?: Error; connect?: Error; setTimeout?: Error; snapshot?: Error; kill?: Error; command?: Error; verifyMount?: { exitCode: number; stderr: string } } = {};
   const sandbox = (id: string) => ({
     sandboxId: id,
     commands: {
       async run(cmd: string, opts: Record<string, unknown> = {}) {
         if (errors.command) throw errors.command;
         calls.commands.push({ cmd, opts });
+        if (errors.verifyMount && cmd.startsWith("mountpoint -q ")) return { stdout: "", ...errors.verifyMount };
         return shell(cmd.replace(/^cd \/workspace 2>\/dev\/null; /u, ""));
       },
     },
@@ -233,8 +234,12 @@ describe("E2B v2 storage", () => {
     const acquired = await kit.lifecycle.acquire({ scope, plan, signal });
     if (acquired === "gone") throw new Error("unexpected");
     await ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores, outputs, signal });
-    const mounts = fake.calls.commands.filter((c) => c.cmd.includes("s3fs "));
+    const mounts = fake.calls.commands.filter((c) => c.cmd.includes("rclone mount "));
     expect(mounts).toHaveLength(3);
+    // Every mount is verified right after it.
+    const verifies = fake.calls.commands.filter((c) => c.cmd.startsWith("mountpoint -q "));
+    expect(verifies.map((c) => /^mountpoint -q '([^']+)'/u.exec(c.cmd)![1])).toEqual(["/mnt/session/outputs", "/mnt/memory/notes", "/mnt/memory/docs"]);
+    for (const call of verifies) expect(call.cmd).toContain("ls -A");
     for (const call of fake.calls.commands) {
       for (const secret of [MEMORY_SECRET, FILES_SECRET]) {
         expect(call.cmd).not.toContain(secret);
@@ -246,25 +251,29 @@ describe("E2B v2 storage", () => {
       expect(new TextDecoder().decode(bytes)).not.toMatch(new RegExp(`${MEMORY_SECRET}|${FILES_SECRET}`, "u"));
     }
     const [out, rw, ro] = mounts;
-    expect(out!.cmd).toContain("'files:/t/ws/session-outputs/sess' '/mnt/session/outputs'");
-    expect(rw!.cmd).toContain("'memory:/store_rw' '/mnt/memory/notes'");
-    expect(ro!.cmd).toContain("-o 'ro'");
+    // Remotes are rooted at the prefix and never check the bucket (no bucket-root probe).
+    expect(out!.cmd).toContain("rclone mount ':s3:files/t/ws/session-outputs/sess' '/mnt/session/outputs'");
+    expect(rw!.cmd).toContain("rclone mount ':s3:memory/store_rw' '/mnt/memory/notes'");
+    expect(ro!.cmd).toContain("'--read-only'");
+    expect(rw!.cmd).not.toContain("--read-only");
     for (const call of mounts) {
       expect(call.opts.user).toBe("root");
-      expect(call.cmd).not.toMatch(/AWS_|session_token=|passwd/u);
+      expect(call.cmd).toContain("'--s3-no-check-bucket'");
+      expect(call.cmd).not.toMatch(/AWS_|RCLONE_|session_token|passwd/u);
     }
     const envs = (call: (typeof mounts)[number]) => call.opts.envs as Record<string, string>;
-    expect(envs(out!).AWS_ACCESS_KEY_ID).toBe("files-parent-id");
-    expect(envs(rw!).AWS_ACCESS_KEY_ID).toBe("memory-parent-id");
-    expect(claimsOf(envs(out!).AWS_SESSION_TOKEN!)).toMatchObject({ bucket: "files", scope: "object-read-write", paths: { prefixPaths: ["t/ws/session-outputs/sess/"] } });
-    expect(claimsOf(envs(rw!).AWS_SESSION_TOKEN!)).toMatchObject({ bucket: "memory", scope: "object-read-write", paths: { prefixPaths: ["store_rw/"] } });
-    const ro_claims = claimsOf(envs(ro!).AWS_SESSION_TOKEN!);
+    expect(envs(out!).RCLONE_S3_ACCESS_KEY_ID).toBe("files-parent-id");
+    expect(envs(rw!).RCLONE_S3_ACCESS_KEY_ID).toBe("memory-parent-id");
+    expect(envs(rw!)).toMatchObject({ RCLONE_S3_PROVIDER: "Cloudflare", RCLONE_S3_ENDPOINT: "https://acct.r2.cloudflarestorage.com", RCLONE_S3_REGION: "auto" });
+    expect(claimsOf(envs(out!).RCLONE_S3_SESSION_TOKEN!)).toMatchObject({ bucket: "files", scope: "object-read-write", paths: { prefixPaths: ["t/ws/session-outputs/sess/"] } });
+    expect(claimsOf(envs(rw!).RCLONE_S3_SESSION_TOKEN!)).toMatchObject({ bucket: "memory", scope: "object-read-write", paths: { prefixPaths: ["store_rw/"] } });
+    const ro_claims = claimsOf(envs(ro!).RCLONE_S3_SESSION_TOKEN!);
     expect(ro_claims).toMatchObject({ bucket: "memory", scope: "object-read-only", paths: { prefixPaths: ["store_ro/"] } });
     expect(ro_claims.exp - ro_claims.iat).toBe(900);
     // Idempotent while the credentials are fresh; turn_end publishes nothing (mounts are live).
     await ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores, outputs, signal });
     await ports.storage.sync({ runtime: acquired.runtime, scope, fence, stores, outputs, reason: "turn_end", signal });
-    expect(fake.calls.commands.filter((c) => c.cmd.includes("s3fs "))).toHaveLength(3);
+    expect(fake.calls.commands.filter((c) => c.cmd.includes("rclone mount "))).toHaveLength(3);
     await ports.storage.detach({ runtime: acquired.runtime, scope });
     expect(fake.calls.commands.filter((c) => c.cmd.startsWith("umount"))).toHaveLength(3);
   });
@@ -284,11 +293,37 @@ describe("E2B v2 storage", () => {
     expect(issued).toBe(1);
     await storage.sync({ runtime: acquired.runtime, scope, fence, stores: [stores[0]!], outputs, reason: "interval", signal });
     expect(issued).toBe(2);
-    const remounts = fake.calls.commands.filter((c) => c.cmd.includes("'memory:/store_rw'"));
+    const remounts = fake.calls.commands.filter((c) => c.cmd.includes("':s3:memory/store_rw'"));
     expect(remounts).toHaveLength(2);
     expect(remounts[1]!.cmd).toMatch(/^\(mountpoint -q '\/mnt\/memory\/notes' && \(umount/u);
     // The outputs mount has a full hour left: not remounted.
-    expect(fake.calls.commands.filter((c) => c.cmd.includes("session-outputs"))).toHaveLength(1);
+    expect(fake.calls.commands.filter((c) => c.cmd.includes("rclone mount ':s3:files/t/ws/session-outputs/sess'"))).toHaveLength(1);
+  });
+
+  it("native: a mount process that exits 0 without a mountpoint fails attach (Memory and outputs)", async () => {
+    for (const [stores_, expected] of [[[], "/mnt/session/outputs"], [[stores[0]!], "/mnt/session/outputs"]] as const) {
+      const fake = fakeSdk();
+      const kit = adapter(fake, { objectStorage: objectStorage() });
+      const acquired = await kit.lifecycle.acquire({ scope, plan, signal });
+      if (acquired === "gone") throw new Error("unexpected");
+      const storage = kit.native!.storage!({} as never);
+      // rclone (or s3fs) daemonizes and exits 0; the FUSE process then dies.
+      fake.errors.verifyMount = { exitCode: 90, stderr: "not a mountpoint" };
+      await expect(storage.attach({ runtime: acquired.runtime, scope, fence, stores: [...stores_], outputs, signal }))
+        .rejects.toThrow(`E2B storage mount ${expected} is not usable (exit 90): not a mountpoint`);
+      expect(fake.calls.commands.filter((c) => c.cmd.includes("rclone mount "))).toHaveLength(1);
+    }
+    // Outputs mounted, the Memory mount alone fails its listing (credential rejected through FUSE).
+    const fake = fakeSdk();
+    const kit = adapter(fake, { objectStorage: objectStorage() });
+    const acquired = await kit.lifecycle.acquire({ scope, plan, signal });
+    if (acquired === "gone") throw new Error("unexpected");
+    const storage = kit.native!.storage!({} as never);
+    const run = acquired.runtime.run.bind(acquired.runtime);
+    (acquired.runtime as unknown as { run: typeof run }).run = async (cmd, opts) =>
+      cmd.startsWith("mountpoint -q '/mnt/memory/notes'") ? { exitCode: 2, stdout: "", stderr: "ls: reading directory: Input/output error" } : run(cmd, opts);
+    await expect(storage.attach({ runtime: acquired.runtime, scope, fence, stores: [stores[0]!], outputs, signal }))
+      .rejects.toThrow("E2B storage mount /mnt/memory/notes is not usable (exit 2): ls: reading directory: Input/output error");
   });
 
   it("without objectStorage there is no native storage: Memory is copied in and written back, outputs upload at turn_end", async () => {
@@ -320,7 +355,7 @@ describe("E2B v2 storage", () => {
     if (acquired === "gone") throw new Error("unexpected");
     await ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores: [stores[0]!], outputs, signal });
     expect(new TextDecoder().decode(fake.files.get("/mnt/memory/notes/a.md"))).toBe("one");
-    expect(fake.calls.commands.some((c) => c.cmd.includes("s3fs "))).toBe(false);
+    expect(fake.calls.commands.some((c) => c.cmd.includes("rclone mount "))).toBe(false);
     fake.files.set("/mnt/memory/notes/b.md", new TextEncoder().encode("two"));
     fake.files.set("/mnt/session/outputs/report.md", new TextEncoder().encode("# done"));
     await ports.storage.sync({ runtime: acquired.runtime, scope, fence, stores: [stores[0]!], outputs, reason: "interval", signal });

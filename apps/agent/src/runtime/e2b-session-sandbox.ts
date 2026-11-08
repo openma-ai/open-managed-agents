@@ -10,7 +10,7 @@
 //     credentials never enter the sandbox. The pass expires, so the shared
 //     runtime re-attaches egress after half its TTL (egressRenewMs);
 //   - storage is one deployment choice (storageConfig): both bucket parent
-//     keys configured → native s3fs mounts for Memory and outputs over
+//     keys configured → native rclone mounts for Memory and outputs over
 //     prefix-scoped temporary credentials (renewed by the runtime's interval
 //     sync); neither → createSyncStorage copies Memory in and out (over the
 //     MEMORY_BUCKET projection prefixes) and uploads /mnt/session/outputs into
@@ -80,15 +80,15 @@ const STATE_KEY = "e2b_sandbox_state";
 /** Lifetime of a relay pass; the relay is re-attached with a new one after half. */
 export const RELAY_PASS_TTL_MS = 60 * 60_000;
 
-/** Creates the mount points; native storage also installs s3fs. Runs as
- * root right after a sandbox starts, before its firewall is applied. */
+/** Creates the mount points; native storage also installs rclone + FUSE.
+ * Runs as root right after a sandbox starts, before its firewall is applied. */
 export const E2B_SANDBOX_DIRECTORIES = "mkdir -p /workspace /mnt/session/outputs /mnt/memory";
 export const E2B_SANDBOX_SETUP = [
   E2B_SANDBOX_DIRECTORIES,
-  "if ! command -v s3fs >/dev/null 2>&1; then",
-  "  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq s3fs >/dev/null;",
-  "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache s3fs-fuse >/dev/null;",
-  "  else echo 'no package manager to install s3fs' >&2; exit 1; fi",
+  "if ! command -v rclone >/dev/null 2>&1 || ! command -v fusermount3 >/dev/null 2>&1; then",
+  "  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rclone fuse3 >/dev/null;",
+  "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache rclone fuse3 >/dev/null;",
+  "  else echo 'no package manager to install rclone' >&2; exit 1; fi",
   "fi",
 ].join("\n");
 

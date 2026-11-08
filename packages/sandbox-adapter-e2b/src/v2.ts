@@ -13,8 +13,9 @@
 // snapshotTemplate createSnapshot under a name
 // release        Sandbox.kill; discard = Sandbox.deleteSnapshot
 // list           Sandbox.list filtered by metadata
-// storage        objectStorage given: s3fs mounts for Memory and outputs
-//                (native); omitted: no native storage (generic sync)
+// storage        objectStorage given: rclone FUSE mounts for Memory and
+//                outputs (native), each verified after mounting; omitted:
+//                no native storage (generic sync)
 // not found → "gone" / SandboxGoneError; 429 / 503 → RetryableSandboxError
 
 import {
@@ -77,7 +78,7 @@ export interface E2BV2AdapterOptions {
   /** Hosts the platform itself needs from inside the sandbox (object
    * storage, ...). Added to every allowlist. */
   channels?: string[];
-  /** Native storage: s3fs mounts for Memory Stores and for
+  /** Native storage: rclone FUSE mounts for Memory Stores and for
    * /mnt/session/outputs, each over prefix-scoped temporary credentials
    * minted from its own bucket's parent key (a parent key only reaches its
    * own bucket). Omitted = no native storage: createSandboxPorts composes
@@ -294,12 +295,23 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   };
 }
 
-/** Native storage: Memory Stores and /mnt/session/outputs as s3fs mounts
- * over prefix-scoped, short-lived credentials. Parent keys never enter the
- * sandbox; the temporary credentials reach s3fs only through its process
- * environment, never its command line. Mounts are live, so sync only renews
- * credentials (re-mint + remount once less than half the TTL is left; s3fs
- * reads credentials only at start), and detach unmounts everything. */
+/** Native storage: Memory Stores and /mnt/session/outputs as rclone FUSE
+ * mounts over prefix-scoped, short-lived credentials. Parent keys never
+ * enter the sandbox; the temporary credentials reach rclone only through
+ * its process environment (RCLONE_S3_*), never its command line.
+ *
+ * The remote is rooted at the credential's prefix and runs with
+ * --s3-no-check-bucket, so nothing touches the bucket root: s3fs 1.90
+ * (Debian 12) probed `GET /<bucket>/`, which a prefix-scoped credential
+ * correctly gets 403 for, retried with SigV2 (R2: 401) and exited after
+ * daemonizing, so its exit 0 left a plain local directory. A mount process
+ * exiting 0 proves nothing: every mount is then verified (`mountpoint -q`
+ * and a listing through FUSE, which needs a working credential) and any
+ * failure fails attach (design §0.0 rule 16).
+ *
+ * Mounts are live, so sync only renews credentials (re-mint + remount once
+ * less than half the TTL is left; rclone reads them only at start), and
+ * detach unmounts everything. */
 export function e2bObjectStorage(
   vendor: SandboxVendorPort<E2BSandboxExecutor>,
   options: E2BObjectStorageOptions,
@@ -314,27 +326,42 @@ export function e2bObjectStorage(
   };
   const mount = async (runtime: E2BSandboxExecutor, owner: string, target: string, entry: Mount) => {
     const credentials = await entry.issue();
+    const remote = `:s3:${credentials.bucket}/${credentials.prefix.replace(/\/$/u, "")}`;
     const flags = [
-      `url=${credentials.endpoint}`,
-      "use_path_request_style",
-      "use_session_token",
-      "allow_other",
-      "nonempty",
-      `uid=${owner}`,
-      `gid=${owner}`,
-      ...(entry.readOnly ? ["ro"] : []),
-    ].map((flag) => `-o ${quote(flag)}`).join(" ");
+      "--daemon",
+      "--s3-no-check-bucket",
+      "--allow-other",
+      "--allow-non-empty",
+      `--uid=${owner}`,
+      `--gid=${owner}`,
+      "--vfs-cache-mode=writes",
+      ...(entry.readOnly ? ["--read-only"] : []),
+    ].map(quote).join(" ");
     await asRoot(
       runtime,
       `(mountpoint -q ${quote(target)} && (umount ${quote(target)} || umount -l ${quote(target)})) || true; `
-        + `mkdir -p ${quote(target)} && s3fs ${quote(`${credentials.bucket}:/${credentials.prefix.replace(/\/$/u, "")}`)} ${quote(target)} ${flags}`,
+        + `mkdir -p ${quote(target)} && rclone mount ${quote(remote)} ${quote(target)} ${flags}`,
       {
-        AWS_ACCESS_KEY_ID: credentials.accessKeyId,
-        AWS_SECRET_ACCESS_KEY: credentials.secretAccessKey,
-        AWS_SESSION_TOKEN: credentials.sessionToken,
+        RCLONE_S3_PROVIDER: "Cloudflare",
+        RCLONE_S3_ENDPOINT: credentials.endpoint,
+        RCLONE_S3_REGION: "auto",
+        RCLONE_S3_ACCESS_KEY_ID: credentials.accessKeyId,
+        RCLONE_S3_SECRET_ACCESS_KEY: credentials.secretAccessKey,
+        RCLONE_S3_SESSION_TOKEN: credentials.sessionToken,
       },
     );
+    await verifyMount(runtime, target);
     entry.expiresAt = credentials.expiresAt;
+  };
+  /** The mount must be a FUSE mountpoint and its prefix listable through it. */
+  const verifyMount = async (runtime: E2BSandboxExecutor, target: string) => {
+    const result = await runtimeCall(() => runtime.run(
+      `mountpoint -q ${quote(target)} || { echo 'not a mountpoint' >&2; exit 90; }; ls -A ${quote(target)} >/dev/null`,
+      { user: "root", timeoutMs: 60_000 },
+    ));
+    if (result.exitCode !== 0) {
+      throw new Error(`E2B storage mount ${target} is not usable (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+    }
   };
   return {
     async attach(input) {
