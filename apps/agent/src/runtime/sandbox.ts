@@ -114,7 +114,6 @@ export class CloudflareSandbox
     if (cloudflareSandboxTestOverride !== undefined) {
       return Promise.resolve(cloudflareSandboxTestOverride);
     }
-    if (this.namespaceError !== null) return Promise.reject(this.namespaceError);
     const ns = this.namespace as DurableObjectNamespace | undefined;
     const binding = this.image?.binding ?? "SANDBOX";
     if (!ns || typeof (ns as any).getByName !== "function") {
@@ -131,6 +130,10 @@ export class CloudflareSandbox
   }
 
   private async getSandbox() {
+    // An invalid or undeclared image fails every call with the stored error.
+    // Thrown from this async function rather than cached as a rejected
+    // promise: a detached rejected promise is reported as unhandled.
+    if (cloudflareSandboxTestOverride === undefined && this.namespaceError !== null) throw this.namespaceError;
     if (!this.sandboxPromise) {
       try {
         this.sandboxPromise = this.resolveSandboxStub();
