@@ -9,7 +9,6 @@ import {
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import {
   createPreparedSandboxBases,
-  isPreparedBaseGone,
   preparedBaseName,
   preparedBaseAcpInstall,
   preparedBaseKey,
@@ -19,6 +18,7 @@ import {
   type PreparedBaseScope,
   type PreparedSandboxBasesDependencies,
 } from "../../../packages/control-plane-node/src/lib/prepared-sandbox-bases.js";
+import { isTemplateGone as isPreparedBaseGone } from "@open-managed-agents/session-runtime";
 import { createManagedSandboxBuilder } from "../../../packages/control-plane-node/src/lib/node-managed-sandbox-builder.js";
 
 /** KvStore that records every access. */
@@ -449,7 +449,7 @@ describe("PreparedSandboxBases", () => {
       // This process backs off; another replica (fresh instance, same KV) still hits.
       await h.bases.create(scope, request, h.createSession());
       expect(h.created.at(-1)).toBeUndefined();
-      const replica = new PreparedSandboxBases({ provider: "e2b", kvFor: () => h.store.kv, createBuilderSandbox: async () => fakeSandbox("b"), logger: logs().logger });
+      const replica = new PreparedSandboxBases({ provider: "e2b", kvFor: () => h.store.kv, createBuilderSandbox: async () => fakeSandbox("b"), logger: logs().logger, clock: { now: () => 1_000_000 } });
       const created: Array<SandboxPreparedBaseHandle | undefined> = [];
       await replica.create(scope, request, async (base) => { created.push(base); return fakeSandbox("r"); });
       expect(created).toEqual([{ provider: "e2b", id: "snap_1" }]);
@@ -712,18 +712,47 @@ describe("prepared base wiring from the composed sandbox factory", () => {
   });
 });
 
-describe("PreparedSandboxBases expiry (characterization before the template cache move)", () => {
-  it("keeps a ready base forever: a hit 60 days after the build still uses it", async () => {
+describe("PreparedSandboxBases expiry (design §0.0 rule 13)", () => {
+  const DAY = 24 * 60 * 60_000;
+
+  it("expires a base never used 7 days after it was built, discards nothing it cannot delete, and rebuilds", async () => {
     const h = harness();
     await h.bases.create(scope, request, h.createSession());
     await h.bases.idle();
     const key = kvKeyOf(h.store);
     expect(key.startsWith("sandbox_prepared_base:v1:e2b:")).toBe(true);
-    expect(JSON.parse(h.store.data.get(key)!)).toMatchObject({ state: "ready", handle: { provider: "e2b", id: "snap_1" } });
-    h.advance(60 * 24 * 60 * 60_000);
+    h.advance(7 * DAY);
     await h.bases.create(scope, request, h.createSession());
     await h.bases.idle();
-    expect(h.created).toEqual([undefined, { provider: "e2b", id: "snap_1" }]);
-    expect(h.builders).toHaveLength(1);
+    expect(h.created).toEqual([undefined, undefined]);
+    expect(h.log.paths()).toContain("expired");
+    expect(h.builders).toHaveLength(2);
+    expect(JSON.parse(h.store.data.get(key)!)).toMatchObject({ state: "ready", createdAtMs: 1_000_000 + 7 * DAY });
+  });
+
+  it("keeps a used base 14 days after its last use, renewed by every hit", async () => {
+    const h = harness();
+    await h.bases.create(scope, request, h.createSession());
+    await h.bases.idle();
+    const key = kvKeyOf(h.store);
+    h.advance(6 * DAY);
+    await h.bases.create(scope, request, h.createSession());
+    expect(JSON.parse(h.store.data.get(key)!)).toMatchObject({ lastUsedAtMs: 1_000_000 + 6 * DAY });
+    h.advance(13 * DAY);
+    await h.bases.create(scope, request, h.createSession());
+    h.advance(13 * DAY);
+    await h.bases.create(scope, request, h.createSession());
+    await h.bases.idle();
+    expect(h.created).toEqual([undefined, ...Array(3).fill({ provider: "e2b", id: "snap_1" })]);
+    h.advance(14 * DAY);
+    await h.bases.create(scope, request, h.createSession());
+    expect(h.created.at(-1)).toBeUndefined();
+  });
+
+  it("takes the windows from SANDBOX_TEMPLATE_*_TTL_MS and rejects invalid ones", () => {
+    const deps = { kvFor: () => recordingKv().kv, createBuilderSandbox: async () => fakeSandbox("b"), logger: logs().logger };
+    const factory = { capabilities: { preparedBase: true } } as never;
+    expect(createPreparedSandboxBases({ environment: { SANDBOX_TEMPLATE_UNUSED_TTL_MS: "60000", SANDBOX_TEMPLATE_USED_TTL_MS: "120000" } }, factory, deps)).toBeInstanceOf(PreparedSandboxBases);
+    expect(() => createPreparedSandboxBases({ environment: { SANDBOX_TEMPLATE_USED_TTL_MS: "soon" } }, factory, deps)).toThrow(/SANDBOX_TEMPLATE_USED_TTL_MS/);
   });
 });

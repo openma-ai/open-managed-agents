@@ -54,3 +54,18 @@ export type {
 export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";
+export {
+  SessionTemplateCache,
+  TEMPLATE_UNUSED_TTL_MS,
+  TEMPLATE_USED_TTL_MS,
+  isTemplateGone,
+  templateExpired,
+  templateExpiry,
+  type SessionTemplateCacheOptions,
+  type TemplateBuilder,
+  type TemplateEntry,
+  type TemplateExpiry,
+  type TemplateHandle,
+  type TemplateLogger,
+  type TemplateStore,
+} from "./session-sandbox-template-cache";
