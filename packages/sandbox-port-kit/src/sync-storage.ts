@@ -78,7 +78,7 @@ export function memoryResources(stores: readonly MemoryStoreBinding[]): Array<Re
  * over vendor primitives. exec reports "exit=N\n<stdout>\nstderr: <stderr>",
  * the shape parseExecResult reads. */
 export function v1FileView<R>(vendor: SandboxVendorPort<R>, runtime: R): SandboxPort & Required<Pick<SandboxPort, "readFileBytes" | "writeFileBytes" | "setEnvVars">> {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
   const read = async (path: string) => {
     const bytes = await vendor.readFile(runtime, path);
     if (bytes === null) throw new Error(`File not found: ${path}`);
