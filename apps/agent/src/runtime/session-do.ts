@@ -2,7 +2,7 @@ import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-c
 import { DurableObject } from "cloudflare:workers";
 import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
 import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
-import { cloudflareSubagentThreadId, cloudflareSubagentWireEvent } from "./subagents";
+import { cloudflareSubagentThreadId, cloudflareSubagentWireEvents } from "./subagents";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 import { nanoid } from "nanoid";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
@@ -88,9 +88,12 @@ import {
   MODEL_EGRESS_ACTION_REQUIRED,
   openSessionBudgetGate,
   parseModelEgressRequest,
+  reportModelSpanUsage,
+  reportSessionUsage,
   sessionUsageSnapshot,
   sumModelSpanUsage,
   type SessionUsageMeter,
+  type SessionUsageReport,
 } from "@open-managed-agents/managed-agents-application";
 import { sessionDoUsageStore } from "./session-usage-store";
 import { createRuntimeRoomRelay } from "./runtime-room-relay";
@@ -4728,16 +4731,21 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Inspect an outbound event for a `span.model_request_end` carrying
-   * `model_usage` and credit cache tokens to the given thread. Input /
-   * output token totals already arrive via reportUsage at the end of the
-   * turn (default-loop step 10), so this only handles the cache-bucket
-   * deltas reportUsage doesn't carry. Idempotent across primary +
-   * sub-agent broadcast paths because each model_request_end event is
-   * emitted exactly once per LLM step.
+   * Put a shared usage report (reportSessionUsage / reportModelSpanUsage) on
+   * this Session's log: the `session.usage` snapshot is appended, broadcast
+   * and projected onto Session.usage like on Node. A child lane's report is
+   * tagged with its thread.
    */
-  private maybeCreditCacheTokens(threadId: string, event: SessionEvent): void {
-    this.usageMeter.creditModelSpan(threadId, event);
+  private publishSessionUsage(
+    report: SessionUsageReport,
+    history: HistoryStore,
+    executionFence: SessionExecutionFence | undefined,
+    threadId?: string,
+  ): void {
+    const encoded = encodeRuntimeHistoryEvent(report as never) as unknown as SessionEvent;
+    const event = threadId === undefined ? encoded : { ...encoded, session_thread_id: threadId } as SessionEvent;
+    history.append(event);
+    this.broadcastEvent(event, executionFence);
   }
 
   /** The application usage meter over this DO's state (session-usage-store). */
@@ -4752,10 +4760,9 @@ export class SessionDO extends DurableObject<Env> {
    * fields are tracked per-thread only — the session-wide totals just
    * cover input/output (their existing meaning).
    *
-   * Called from the `reportUsage` closures wired into HarnessRuntime
-   * for both the primary turn and sub-agent turns; threadId is the
-   * session_thread_id the closure was bound to ("sthr_primary" or a
-   * sub-agent "sthr_*").
+   * Called by POST /usage; harness turns report through reportSessionUsage
+   * (publishSessionUsage). threadId is the session_thread_id the usage
+   * belongs to ("sthr_primary" or a sub-agent "sthr_*").
    */
   private creditUsageToThread(
     threadId: string,
@@ -5510,11 +5517,11 @@ export class SessionDO extends DurableObject<Env> {
       },
       events: {
         emit: async (event) => {
-          const wire = cloudflareSubagentWireEvent(event);
-          if (wire === null) return;
           try {
-            parentHistory.append(wire);
-            this.broadcastEvent(wire);
+            for (const wire of cloudflareSubagentWireEvents(event)) {
+              parentHistory.append(wire);
+              this.broadcastEvent(wire);
+            }
           } catch (error) {
             // A lost parent fence deliberately rejects the terminal marker.
             if (event.type !== "thread_idle") throw error;
@@ -5654,6 +5661,9 @@ export class SessionDO extends DurableObject<Env> {
       budget: this.activeBudgetGate,
       systemPrompt: composeSystemPrompt(subAgent.system || "", subSkillReminders),
       platformReminders: subSkillReminders,
+      // The child runs inside this Session: per-session harness bookkeeping
+      // (e.g. the one-time ai-sdk deprecation session.warning) keys on it.
+      session_id: this.state.session_id,
       // Sub-agent inherits the parent's tenant — same daemon, same per-tenant
       // ACP child key resolution. AcpProxyHarness reads this to forward
       // x-harness-tenant when opening a RuntimeRoom WS for the sub-agent.
@@ -5697,14 +5707,18 @@ export class SessionDO extends DurableObject<Env> {
           parentHistory.append(taggedEvent);
           this.broadcastEvent(taggedEvent);
           this.fanOutToHooks(taggedEvent);
-          this.maybeCreditCacheTokens(threadId, taggedEvent);
+          const cacheUsage = reportModelSpanUsage(this.usageMeter, threadId, taggedEvent, this.activeBudgetGate);
+          if (cacheUsage !== null) this.publishSessionUsage(cacheUsage, parentHistory, this._executionFences.get(parentThreadId), threadId);
         },
         ...this.buildStreamRuntimeMethods(
           threadId,
           this._executionFences.get(parentThreadId),
         ),
         reportUsage: async (input_tokens: number, output_tokens: number) => {
-          this.creditUsageToThread(threadId, { input_tokens, output_tokens });
+          this.publishSessionUsage(
+            reportSessionUsage(this.usageMeter, threadId, { input_tokens, output_tokens }, this.activeBudgetGate),
+            parentHistory, this._executionFences.get(parentThreadId), threadId,
+          );
         },
         abortSignal: abortController.signal,
         // Sub-agent runs inside supervisor's harness.run, which is
@@ -6221,11 +6235,15 @@ export class SessionDO extends DurableObject<Env> {
           history.append(event);
           this.broadcastEvent(event, activeFence);
           this.fanOutToHooks(event);
-          this.maybeCreditCacheTokens(turnThreadId, event);
+          const cacheUsage = reportModelSpanUsage(this.usageMeter, turnThreadId, event, this.activeBudgetGate);
+          if (cacheUsage !== null) this.publishSessionUsage(cacheUsage, history, activeFence);
         },
         ...this.buildStreamRuntimeMethods(turnThreadId, activeFence),
         reportUsage: async (input_tokens: number, output_tokens: number) => {
-          this.creditUsageToThread(turnThreadId, { input_tokens, output_tokens });
+          this.publishSessionUsage(
+            reportSessionUsage(this.usageMeter, turnThreadId, { input_tokens, output_tokens }, this.activeBudgetGate),
+            history, activeFence,
+          );
         },
         pendingConfirmations: [],
         consumePendingConfirmation: (requestId) => {
@@ -6368,7 +6386,6 @@ export class SessionDO extends DurableObject<Env> {
               history.append(event);
               this.broadcastEvent(event, activeFence);
             },
-            broadcastOnly: (event) => this.broadcastEvent(event, activeFence),
             persistState: (delta) => {
               const next = { ...this.state };
               if ("outcome" in delta) next.outcome = delta.outcome ?? null;

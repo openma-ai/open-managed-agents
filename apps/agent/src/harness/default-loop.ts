@@ -61,8 +61,9 @@ function extractMcpServerName(toolName: string): string {
 
 /**
  * Map a tool-call ContentPart to the right wire event family
- * (mcp / built-in / custom). Also emits agent.thread_message_sent for
- * call_agent_* sub-agent invocations.
+ * (mcp / built-in / custom). A call_agent_* call is an agent.tool_use; its
+ * thread events come from the platform's subagent runtime
+ * (@open-managed-agents/session-subagents), not from the harness.
  *
  * Lives outside DefaultHarness so the bijection contract is co-located
  * with `eventsToMessages` — the inverse mapping in history.ts.
@@ -75,21 +76,6 @@ function emitToolCallEvent(
   const callInput = (part.input ?? {}) as Record<string, unknown>;
   const toolName = part.toolName;
   const toolCallId = part.toolCallId;
-
-  if (toolName.startsWith("call_agent_")) {
-    runtime.broadcast({
-      type: "agent.thread_message_sent",
-      to_thread_id: toolCallId,
-      content: [{ type: "text", text: String(callInput.message || "") }],
-      // v1-additive (docs/trajectory-v1-spec.md "Causality"): mint a
-      // deterministic id keyed on toolCallId so the matching
-      // `agent.thread_message_received` (emitted in emitToolResultEvent)
-      // can set parent_event_id back to the same value. There is exactly
-      // one sent / received pair per call_agent_* tool invocation, so
-      // a derived-from-toolCallId id collides with nothing.
-      id: threadSentEventId(toolCallId),
-    });
-  }
 
   if (isMcpTool(toolName)) {
     const registeredServerName = tools[toolName]?.metadata?.serverName;
@@ -141,23 +127,9 @@ export function emitHarnessToolUseFromCall(
 }
 
 /**
- * Deterministic id for the `agent.thread_message_sent` event paired with
- * a given call_agent_* tool invocation. Lets the eventual
- * `agent.thread_message_received` set parent_event_id = this id without
- * sharing state across the two emit callbacks.
- *
- * Format mirrors the `sevt-` prefix `generateEventId` mints so downstream
- * id-format sniffing keeps working.
- */
-function threadSentEventId(toolCallId: string): string {
-  return `sevt-thread-sent-${toolCallId}`;
-}
-
-/**
  * Map a tool-result (or tool-error) ContentPart to a wire event,
  * normalizing the AI SDK's ToolResultOutput union into the wire's
- * `string | ContentBlock[]` representation. Also emits
- * agent.thread_message_received for call_agent_*.
+ * `string | ContentBlock[]` representation.
  *
  * Normalization rules — fixed so that read(write(m)) === m at byte level:
  *   text       → string
@@ -205,20 +177,6 @@ function emitToolResultEvent(
       // emitToolCallEvent above. (AgentToolUseEvent.id overrides
       // EventBase.id, so tool_use_id IS the parent's EventBase.id.)
       parent_event_id: toolCallId,
-    });
-  }
-
-  if (toolName.startsWith("call_agent_")) {
-    const text = typeof content === "string"
-      ? content
-      : content.map((b) => (b.type === "text" ? b.text : "")).join("");
-    runtime.broadcast({
-      type: "agent.thread_message_received",
-      from_thread_id: toolCallId,
-      content: [{ type: "text", text }],
-      // v1-additive: causal predecessor is the agent.thread_message_sent
-      // emitted in emitToolCallEvent above for the same toolCallId.
-      parent_event_id: threadSentEventId(toolCallId),
     });
   }
 }

@@ -1,0 +1,188 @@
+{
+  "event_types": [
+    "user.message",
+    "session.status_running",
+    "session.warning",
+    "span.model_request_start",
+    "agent.tool_use",
+    "agent.tool_result",
+    "span.model_request_end",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.usage",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "Report written.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "agent.tool_result": [
+      {
+        "content": [
+          {
+            "text": "<host-workdir>/sandboxes/<session>/.mnt/session/outputs/report.txt",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "tool_use_id": "parity_write_1",
+        "type": "agent.tool_result"
+      }
+    ],
+    "agent.tool_use": [
+      {
+        "id": "parity_write_1",
+        "input": {
+          "content": "parity report",
+          "filePath": "/mnt/session/outputs/report.txt"
+        },
+        "name": "write",
+        "processed_at": "<time>",
+        "type": "agent.tool_use"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "session.usage": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "input_tokens": 24,
+          "output_tokens": 12
+        }
+      }
+    ],
+    "session.warning": [
+      {
+        "details": {
+          "harness": "ai-sdk",
+          "replacement": "default"
+        },
+        "id": "<id>",
+        "message": "The ai-sdk harness (AI SDK default-loop) is deprecated. Omit harness or use the default Pi agent-core loop instead.",
+        "processed_at": "<time>",
+        "source": "harness_deprecated",
+        "type": "session.warning"
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 13,
+          "output_tokens": 5
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 11,
+          "output_tokens": 7
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Write the report.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {
+      "input_tokens": 24,
+      "output_tokens": 12
+    }
+  },
+  "reads": {
+    "message_status": 200,
+    "output_read": {
+      "body": "parity report",
+      "status": 200
+    },
+    "outputs": [
+      {
+        "filename": "report.txt",
+        "media_type": "text/plain",
+        "size_bytes": 13,
+        "uploaded_at": "<time>"
+      }
+    ],
+    "outputs_list_status": 200,
+    "session_create_status": 201
+  },
+  "models": {
+    "parity-agent": {
+      "calls": 2,
+      "unconsumed_steps": 0,
+      "aborted": 0,
+      "timed_out": 0
+    }
+  },
+  "timeouts": []
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@open-managed-agents/platform-parity",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-platform parity gate: one platform-free Session scenario suite every platform runner executes against the same golden files (design §0.7 gate 3).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./platforms": "./platforms.mjs"
+  }
+}

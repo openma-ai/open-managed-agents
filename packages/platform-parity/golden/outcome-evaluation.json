@@ -1,0 +1,191 @@
+{
+  "event_types": [
+    "user.define_outcome",
+    "user.message",
+    "session.status_running",
+    "session.warning",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.usage",
+    "span.outcome_evaluation_start",
+    "span.outcome_evaluation_ongoing",
+    "span.outcome_evaluation_end",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "Here is the fibonacci function.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "session.usage": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "input_tokens": 11,
+          "output_tokens": 7
+        }
+      }
+    ],
+    "session.warning": [
+      {
+        "details": {
+          "harness": "ai-sdk",
+          "replacement": "default"
+        },
+        "id": "<id>",
+        "message": "The ai-sdk harness (AI SDK default-loop) is deprecated. Omit harness or use the default Pi agent-core loop instead.",
+        "processed_at": "<time>",
+        "source": "harness_deprecated",
+        "type": "session.warning"
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 11,
+          "output_tokens": 7
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "span.outcome_evaluation_end": [
+      {
+        "explanation": "llm judge exhausted retries: Connection error.",
+        "id": "<id>",
+        "iteration": 0,
+        "outcome_evaluation_start_id": "<id>",
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "result": "max_iterations_reached",
+        "type": "span.outcome_evaluation_end",
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "span.outcome_evaluation_ongoing": [
+      {
+        "id": "<id>",
+        "iteration": 0,
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.outcome_evaluation_ongoing"
+      }
+    ],
+    "span.outcome_evaluation_start": [
+      {
+        "id": "<id>",
+        "iteration": 0,
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.outcome_evaluation_start"
+      }
+    ],
+    "user.define_outcome": [
+      {
+        "description": "A fibonacci function is written",
+        "id": "<id>",
+        "max_iterations": 1,
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "rubric": {
+          "content": "The reply contains a fibonacci function.",
+          "type": "text"
+        },
+        "type": "user.define_outcome"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Write fibonacci.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [
+      {
+        "completed_at": "<time>",
+        "description": "A fibonacci function is written",
+        "explanation": "llm judge exhausted retries: Connection error.",
+        "iteration": 0,
+        "outcome_id": "<id>",
+        "result": "max_iterations_reached",
+        "type": "outcome_evaluation"
+      }
+    ],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {
+      "input_tokens": 11,
+      "output_tokens": 7
+    }
+  },
+  "reads": {
+    "message_and_outcome_status": 200,
+    "session_create_status": 201
+  },
+  "models": {
+    "parity-agent": {
+      "calls": 1,
+      "unconsumed_steps": 0,
+      "aborted": 0,
+      "timed_out": 0
+    }
+  },
+  "timeouts": []
+}

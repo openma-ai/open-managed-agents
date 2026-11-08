@@ -470,6 +470,7 @@ export default defineConfig({
       "scripts/check-dependency-sources.test.mjs",
       "scripts/migration-compatibility.test.mjs",
       "scripts/ci-impact-surfaces.test.mjs",
+      "scripts/check-platform-parity.test.mjs",
       "scripts/ci-console-e2e-scope.test.mjs",
       "scripts/ci-console-e2e-scope.test.mjs",
       "scripts/release-check.test.mjs",

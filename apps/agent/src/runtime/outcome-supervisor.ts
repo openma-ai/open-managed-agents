@@ -5,9 +5,9 @@
 // module only maps SessionDO state (snake_case `state.outcome`,
 // `state.outcome_iteration`, `state.outcome_evaluations[]`) and wire events
 // onto that package's Ports:
-//   - events: start span is broadcast-only (Cloudflare history keeps the
-//     ongoing + end spans); the end span carries the `feedback` alias and
-//     the last agent.message as `parent_event_id`.
+//   - events: start, ongoing and end spans are appended to history and
+//     broadcast (SessionOutcomeEventsPort); the end span carries the
+//     `feedback` alias and the last agent.message as `parent_event_id`.
 //   - progress: SessionState deltas through `persistState`.
 //   - revision: append the feedback user.message and run the harness again.
 //   - rubric files: R2 `FILES_BUCKET` at the tenant file key.
@@ -75,8 +75,6 @@ export interface OutcomeSupervisorDeps {
   filesBucket: R2Bucket | null | undefined;
   /** Append-and-broadcast for events that go to history + WS. */
   appendAndBroadcast: (event: SessionEvent) => void;
-  /** Broadcast-only — used for the start span. */
-  broadcastOnly: (event: SessionEvent) => void;
   /** Read all events for the current iteration's trajectory build. */
   getEvents: () => StoredEvent[] | SessionEvent[];
   /** Build a verifier from the OMA-superset RewardSpec branch. */
@@ -184,7 +182,7 @@ export async function runOutcomeSupervisor(
           iteration,
           ...(parentEventId ? { parent_event_id: parentEventId } : {}),
         };
-        deps.broadcastOnly(start);
+        deps.appendAndBroadcast(start);
         return { startEventId: start.id!, ...(parentEventId ? { parentEventId } : {}) };
       },
       evaluationOngoing({ outcomeId, iteration }) {

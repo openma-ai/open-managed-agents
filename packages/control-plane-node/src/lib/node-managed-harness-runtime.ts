@@ -23,6 +23,8 @@ import type {
 import {
   createSessionUsageMeter,
   memorySessionUsageStore,
+  reportModelSpanUsage,
+  reportSessionUsage,
   sessionTokenTotalsFromUsage,
   sessionUsageSnapshot,
   type ModelSpanLike,
@@ -348,15 +350,13 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     input_tokens: number,
     output_tokens: number,
   ): Promise<void> => {
-    this.usageMeter.credit(RUNTIME_USAGE_THREAD, { input_tokens, output_tokens });
-    this.broadcastProducedEvent({
-      type: "session.usage",
-      usage: this.usageSnapshot(),
-    });
+    this.broadcastProducedEvent(reportSessionUsage(
+      this.usageMeter, RUNTIME_USAGE_THREAD, { input_tokens, output_tokens }, this.budgetGate,
+    ));
   };
 
   broadcast = (event: SessionEvent): void => {
-    const cacheCredited = this.usageMeter.creditModelSpan(RUNTIME_USAGE_THREAD, event as ModelSpanLike);
+    const cacheUsage = reportModelSpanUsage(this.usageMeter, RUNTIME_USAGE_THREAD, event as ModelSpanLike, this.budgetGate);
     const frame = structuredClone(event) as SessionEvent & {
       id?: string;
       processed_at?: string;
@@ -372,9 +372,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
       this.applicationHistoryEvents.push(applicationEvent);
     }
     this.enqueueDetached(frame);
-    if (cacheCredited) {
-      this.broadcastProducedEvent({ type: "session.usage", usage: this.usageSnapshot() });
-    }
+    if (cacheUsage !== null) this.broadcastProducedEvent(cacheUsage);
   };
 
   broadcastProducedEvent(event: UnstampedRuntimeProducedSessionEvent): string {

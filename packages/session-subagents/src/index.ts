@@ -18,6 +18,7 @@ export {
   type SubagentAdmissionPort,
   type SessionSubagentsDependencies,
 } from "./subagents.js";
+export { subagentWireFrame, type SubagentWireFrame } from "./wire-events.js";
 export {
   selectSubagent,
   GENERAL_SUBAGENT_ID,
