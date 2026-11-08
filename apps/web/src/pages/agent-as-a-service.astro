@@ -1,0 +1,236 @@
+---
+import Base from "../layouts/Base.astro";
+import ComparisonTable from "../components/ComparisonTable.astro";
+import FaqSection from "../components/FaqSection.astro";
+import RelatedGuides from "../components/RelatedGuides.astro";
+import { articleSchema } from "../lib/seo";
+
+const title = "Agent as a Service: Hosted or Self-Hosted Runtime | OpenMA";
+const description =
+  "Agent as a service: a runtime runs your agents behind an API, with sessions, sandboxes, tools, credentials and recovery. Use OpenMA hosted or self-host it.";
+
+const services = [
+  {
+    name: "Sessions",
+    body: "The unit of work. A session binds an agent version to an environment and owns an append-only event log, so work can run asynchronously, pause for input or approval, and resume later.",
+  },
+  {
+    name: "Sandboxes",
+    body: "Tools run in a container or microVM, not in the API process. The service provisions the sandbox, applies network policy, and lets you choose the provider.",
+  },
+  {
+    name: "Tools",
+    body: "Shell, file, web, and browser tools out of the box, plus MCP servers and Skills you attach per agent.",
+  },
+  {
+    name: "Credentials",
+    body: "Provider and tool credentials stay with the service and can be added to outbound requests, so tools in the sandbox do not hold them. In OpenMA, how strictly that is enforced depends on the sandbox provider and runtime profile.",
+  },
+  {
+    name: "Recovery",
+    body: "Every input, output, and tool call is persisted before it is broadcast. If a harness crashes, a fresh one rebuilds context from the log and continues.",
+  },
+];
+
+const modelRows = [
+  ["Agent SDK in your app", "Your process", "You build persistence, isolation, retries, and credentials", "One agent inside an existing service"],
+  ["Agent as a service (vendor)", "The vendor's cloud", "Model choice and where the control plane runs", "Teams standardized on one model vendor"],
+  ["Agent as a service (open runtime)", "Hosted by OpenMA, or your own infrastructure", "You pick models, harnesses, and sandboxes; self-hosting means you operate it", "Teams that want the service shape without lock-in"],
+];
+
+const faqItems = [
+  {
+    question: "What is agent as a service?",
+    answer:
+      "A delivery model where a runtime runs your AI agents for you and exposes them through an API. You declare an agent (model, instructions, tools) and send it work; the service handles sessions, sandboxes for tool execution, credentials, persistence, and recovery.",
+  },
+  {
+    question: "How is agent as a service different from an agent SDK?",
+    answer:
+      "An SDK is a library for the agent loop inside your own process, so persistence, isolation, and scaling are your job. Agent as a service moves that loop and its state into a managed runtime you call over an API. See [Claude Agent SDK vs managed agents](/blog/claude-agent-sdk-vs-managed-agents/).",
+  },
+  {
+    question: "Is agent as a service the same as an AI agent platform?",
+    answer:
+      "Closely related. An [AI agent platform](/ai-agent-platform/) is the runtime itself; agent as a service describes consuming that runtime through an API instead of embedding an agent loop in your code.",
+  },
+  {
+    question: "Do I have to use a hosted service?",
+    answer:
+      "No. OpenMA is Apache-2.0 licensed: use hosted openma.ai, or self-host on Node.js, Docker, Fly.io, Vercel (Beta), or Cloudflare.",
+  },
+  {
+    question: "Which models can an OpenMA agent use?",
+    answer:
+      "Any configured provider: Anthropic, OpenAI, DeepSeek, OpenRouter, and custom endpoints through Model Cards. Hosted openma.ai is BYOK for the LLM.",
+  },
+];
+
+const relatedLinks = [
+  { href: "/ai-agent-platform/", anchor: "AI agent platform", note: "The runtime primitives behind agent as a service." },
+  { href: "/compare/", anchor: "Compare agent platforms", note: "OpenMA next to vendor runtimes, open-source runtimes, and coding agents." },
+  { href: "/what-is-claude-managed-agents/", anchor: "What is Claude Managed Agents?", note: "Anthropic's hosted agent runtime, explained." },
+  { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Run the service on your own infrastructure." },
+  { href: "/blog/kimi-hosted-agents-vs-openma/", anchor: "Kimi Hosted Agents vs OpenMA", note: "Moonshot's harness as a service, compared." },
+  { href: "/pricing/", anchor: "OpenMA pricing", note: "Self-host for free; hosted plans charge for sandbox compute." },
+];
+
+const schemas = [
+  articleSchema({
+    headline: "Agent as a Service: Hosted or Self-Hosted Runtime",
+    description,
+    url: "https://openma.ai/agent-as-a-service/",
+    datePublished: "2026-11-07",
+    dateModified: "2026-11-07",
+  }),
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: "Agent as a Service",
+    url: "https://openma.ai/agent-as-a-service/",
+    description,
+    about: [
+      { "@type": "Thing", name: "Agent as a service" },
+      { "@type": "Thing", name: "AI agent platform" },
+      { "@type": "Thing", name: "Open Managed Agents" },
+    ],
+  },
+];
+---
+
+<Base
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Agent as a Service", path: "/agent-as-a-service/" }, ]}
+  ogImage="https://openma.ai/og/agent-as-a-service.png"
+  title={title}
+  description={description}
+  canonical="/agent-as-a-service/"
+  keywords="agent as a service, agents as a service, ai agent as a service, hosted agent runtime, managed agents api, self-hosted agent runtime"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="site-container py-16 md:py-24">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        Agent as a service
+      </p>
+      <div class="grid lg:grid-cols-[1.15fr_0.85fr] gap-10 items-start">
+        <div>
+          <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-6">
+            Agent as a Service: run agents behind an API
+          </h1>
+          <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
+            Agent as a service means a runtime runs your agents for you. You
+            declare an agent and give it work through an API; the service
+            handles sessions, sandboxes, tools, credentials, and recovery.
+            OpenMA provides that runtime as open source: use it hosted, or
+            run it on your own infrastructure.
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a href="https://app.openma.ai/login" class="site-button site-button-primary">Try hosted OpenMA</a>
+            <a href="https://docs.openma.ai/self-host/overview/" class="site-button">Self-host docs</a>
+          </div>
+        </div>
+        <div class="border border-[var(--color-border)] rounded-lg bg-[var(--color-bg-surface)] p-5">
+          <h2 class="font-display text-xl font-semibold mb-4">What the service runs for you</h2>
+          <ul class="space-y-3 text-sm text-[var(--color-fg-muted)]">
+            {services.map((s) => (
+              <li><strong>{s.name}</strong></li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">What agent as a service means</h2>
+    <div class="grid md:grid-cols-2 gap-8 max-w-5xl">
+      <div>
+        <h3 class="font-semibold text-xl mb-2">The loop moves out of your app</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          With an agent SDK, the loop that calls the model and runs tools
+          lives inside your process, and so does everything it needs:
+          history, isolation, retries, and secrets. Agent as a service moves
+          that loop into a runtime you call over an API. Your application
+          creates a session, sends events, and streams progress back.
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-xl mb-2">Many callers, one runtime</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Because the agent is a service, the same agent can be called from
+          your product, a scheduled job, Slack, a GitHub issue, or Linear.
+          Vendor examples include Claude Managed Agents and the OpenAI Agents
+          API; Moonshot describes Kimi Hosted Agents as harness as a service.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">What the service provides</h2>
+      <div class="grid md:grid-cols-2 gap-8 max-w-5xl">
+        {services.map((s) => (
+          <div>
+            <h3 class="font-semibold text-xl mb-2">{s.name}</h3>
+            <p class="text-[var(--color-fg-muted)] leading-relaxed">{s.body}</p>
+          </div>
+        ))}
+      </div>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mt-8 max-w-3xl">
+        These are the same primitives used to compare runtimes on the
+        <a href="/ai-agent-platform/">AI agent platform</a> page.
+      </p>
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">SDK, vendor service, or open runtime</h2>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+      The question is where the agent loop runs and who operates it.
+    </p>
+    <ComparisonTable columns={["Approach", "Where the loop runs", "What you give up or take on", "Fits"]} rows={modelRows} caption="Ways to run agents" />
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
+      Product-by-product comparisons are on the <a href="/compare/">compare page</a>.
+    </p>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">Agent as a service with OpenMA</h2>
+      <div class="grid md:grid-cols-2 gap-8 max-w-5xl">
+        <div>
+          <h3 class="font-semibold text-xl mb-2">Hosted</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            Sign in at <a href="https://app.openma.ai/login">app.openma.ai</a>,
+            create an agent, and run a session from the Console, CLI, or API.
+            Bring your own model key: hosted plans only charge for sandbox
+            compute. See <a href="/pricing/">pricing</a>.
+          </p>
+        </div>
+        <div>
+          <h3 class="font-semibold text-xl mb-2">Self-hosted</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            Run the open-source runtime on Node.js, Docker, Fly.io, Vercel
+            (Beta), or Cloudflare, with the database, queue, and object storage
+            you choose. Self-hosting is free under Apache-2.0. See
+            <a href="/self-hosted-ai-agents/">self-hosted AI agents</a> and the
+            <a href="/deploy/">deployment planner</a>.
+          </p>
+        </div>
+      </div>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mt-8 max-w-3xl">
+        OpenMA exposes a Claude Managed Agents-compatible API and
+        an OpenAI Agents API adapter over the same sessions, and lets you pick
+        the model, harness, and sandbox independently.
+      </p>
+      <div class="mt-8 flex flex-wrap gap-3">
+        <a href="https://docs.openma.ai/quickstart/" class="site-button site-button-primary">Quickstart</a>
+        <a href="https://github.com/openma-ai/open-managed-agents" target="_blank" rel="noopener noreferrer" class="site-button">View on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <FaqSection items={faqItems} />
+  <RelatedGuides links={relatedLinks} />
+</Base>

@@ -1,0 +1,260 @@
+---
+import Base from "../layouts/Base.astro";
+import FaqSection from "../components/FaqSection.astro";
+import RelatedGuides from "../components/RelatedGuides.astro";
+import { articleSchema } from "../lib/seo";
+
+const title = "Compare OpenMA vs Agent Platforms and Runtimes | OpenMA";
+const description =
+  "OpenMA compared with Claude Managed Agents, OpenAI Agents API, Kimi Hosted Agents, open-source runtimes and coding agents, with links to each comparison.";
+
+type Entry = {
+  name: string;
+  href?: string;
+  category: string;
+  summary: string;
+  links: Array<{ href: string; label: string }>;
+};
+
+const groups: Array<{ id: string; heading: string; intro: string; entries: Entry[] }> = [
+  {
+    id: "vendor-runtimes",
+    heading: "Vendor-managed agent runtimes",
+    intro: "Hosted runtimes that run sessions and the agent loop on the vendor's platform. OpenMA keeps this resource shape and lets you run it yourself.",
+    entries: [
+      {
+        name: "Claude Managed Agents",
+        href: "https://platform.claude.com/docs/en/managed-agents/overview",
+        category: "Vendor-managed runtime (Claude)",
+        summary: "Anthropic's hosted runtime. It supports self-hosted sandboxes, but the harness and sessions run on Anthropic.",
+        links: [
+          { href: "/claude-managed-agents-alternative/", label: "Claude Managed Agents alternative" },
+          { href: "/blog/claude-managed-agents-vs-open-managed-agents/", label: "Claude Managed Agents vs OpenMA" },
+          { href: "/what-is-claude-managed-agents/", label: "What is Claude Managed Agents?" },
+          { href: "/blog/claude-managed-agents-pricing/", label: "Claude Managed Agents pricing" },
+        ],
+      },
+      {
+        name: "OpenAI Agents API",
+        href: "https://developers.openai.com/api/docs/guides/agents-api/overview",
+        category: "Vendor-managed runtime (OpenAI)",
+        summary: "OpenAI's hosted agent runtime, separate from the open-source Agents SDK.",
+        links: [{ href: "/blog/openai-agents-api-vs-openma/", label: "OpenAI Agents API vs OpenMA" }],
+      },
+      {
+        name: "Kimi Hosted Agents",
+        category: "Harness as a service (Moonshot)",
+        summary: "Moonshot AI's hosted agents, described as harness as a service and running on Kimi models.",
+        links: [{ href: "/blog/kimi-hosted-agents-vs-openma/", label: "Kimi Hosted Agents vs OpenMA" }],
+      },
+      {
+        name: "Claude Tag",
+        category: "Hosted product (Anthropic)",
+        summary: "Anthropic's hosted product; it is not open source. OpenMA is a foundation for building a Claude Tag-style agent you run yourself.",
+        links: [
+          { href: "/claude-tag-alternative/", label: "Claude Tag alternative" },
+          { href: "/self-hosted-claude-tag/", label: "Self-hosted Claude Tag" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "open-runtimes",
+    heading: "Open-source and self-hosted runtimes",
+    intro: "Projects in the same category as OpenMA: runtimes whose control plane you can run on your own infrastructure.",
+    entries: [
+      {
+        name: "TrueForge, Omnara, and other open runtimes",
+        category: "Open-source managed agent runtimes",
+        summary: "Compared by agent resources, durable sessions, sandboxes, vaults, and deployment options.",
+        links: [
+          { href: "/open-source-managed-agents/", label: "Open-source managed agent runtimes compared" },
+          { href: "/self-hosted-ai-agents/", label: "Self-hosted AI agents" },
+        ],
+      },
+      {
+        name: "AX (Agent Executor)",
+        href: "https://github.com/google/ax",
+        category: "Open orchestration runtime on Kubernetes",
+        summary: "Compared with OpenMA and vendor runtimes on sessions, sandboxes, model routing, and durability.",
+        links: [{ href: "/ai-agent-platform/", label: "AI agent platform comparison" }],
+      },
+    ],
+  },
+  {
+    id: "sdks-and-coding-agents",
+    heading: "SDKs and coding agents",
+    intro: "Different categories that are often compared with OpenMA. SDKs run the loop inside your process; coding agents are tools developers drive. OpenMA can run Claude Code, Codex, and other agents as harnesses through ACP adapters.",
+    entries: [
+      {
+        name: "Claude Agent SDK",
+        category: "Agent SDK (library)",
+        summary: "A library for the agent loop inside your own process.",
+        links: [{ href: "/blog/claude-agent-sdk-vs-managed-agents/", label: "Claude Agent SDK vs managed agents" }],
+      },
+      {
+        name: "OpenHands and other open-source coding agents",
+        category: "Open-source coding agents",
+        summary: "Software-engineering agents, comparable to Claude Code and Codex.",
+        links: [{ href: "/open-source-ai-agents/", label: "Open-source AI agents compared" }],
+      },
+      {
+        name: "Devin",
+        href: "https://devin.ai/",
+        category: "Autonomous coding agent",
+        summary: "An autonomous coding agent product. A detailed comparison with OpenMA is not published yet.",
+        links: [],
+      },
+      {
+        name: "Cursor cloud agents",
+        href: "https://cursor.com/",
+        category: "Cloud coding agents (Cursor)",
+        summary: "Cursor's cloud agents product. A detailed comparison with OpenMA is not published yet.",
+        links: [],
+      },
+    ],
+  },
+];
+
+const faqItems = [
+  {
+    question: "What is OpenMA most often compared with?",
+    answer:
+      "Claude Managed Agents and the OpenAI Agents API. Both are vendor-managed agent runtimes; OpenMA exposes a Claude Managed Agents-compatible API and an OpenAI Agents API adapter, and runs hosted or on your own infrastructure.",
+  },
+  {
+    question: "Is OpenMA a coding agent like Devin or Cursor?",
+    answer:
+      "No. OpenMA is a runtime that runs agents: sessions, sandboxes, tools, credentials, and recovery. Coding agents are a different category. OpenMA can run coding agents such as Claude Code and Codex as harnesses through ACP adapters.",
+  },
+  {
+    question: "How should I compare agent platforms?",
+    answer:
+      "Compare products within the same category, on the same primitives: sessions, sandboxes, model and credential routing, and durability. The [AI agent platform](/ai-agent-platform/) page explains each one.",
+  },
+  {
+    question: "Which open-source alternatives are there?",
+    answer:
+      "OpenMA, TrueForge, and Omnara are open-source managed agent runtimes you can self-host. See [open-source managed agent runtimes compared](/open-source-managed-agents/).",
+  },
+];
+
+const relatedLinks = [
+  { href: "/agent-as-a-service/", anchor: "Agent as a service", note: "What it means to run agents behind an API, hosted or self-hosted." },
+  { href: "/ai-agent-platform/", anchor: "AI agent platform", note: "The runtime primitives used for every comparison here." },
+  { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "One decision table for open and cloud options." },
+  { href: "/open-source-ai-agents/", anchor: "Open-source AI agents", note: "Platforms, harnesses, frameworks, and coding agents by category." },
+];
+
+const schemas = [
+  articleSchema({
+    headline: "Compare OpenMA vs Agent Platforms and Runtimes",
+    description,
+    url: "https://openma.ai/compare/",
+    datePublished: "2026-11-07",
+    dateModified: "2026-11-07",
+  }),
+  {
+    "@context": "https://schema.org",
+    "@type": "CollectionPage",
+    name: "Compare OpenMA vs Agent Platforms and Runtimes",
+    url: "https://openma.ai/compare/",
+    description,
+    about: [
+      { "@type": "Thing", name: "AI agent platform" },
+      { "@type": "Thing", name: "Claude Managed Agents" },
+      { "@type": "Thing", name: "OpenAI Agents API" },
+      { "@type": "Thing", name: "Open Managed Agents" },
+    ],
+  },
+];
+---
+
+<Base
+  breadcrumbs={[ { name: "Home", path: "/" }, { name: "Compare", path: "/compare/" }, ]}
+  ogImage="https://openma.ai/og/compare.png"
+  title={title}
+  description={description}
+  canonical="/compare/"
+  keywords="openma vs, openma alternatives, agent platforms compared, claude managed agents vs openma, openai agents api vs openma, open-source agent runtime comparison"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="site-container py-16 md:py-24">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        Compare
+      </p>
+      <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-6 max-w-4xl">
+        Compare OpenMA with agent platforms and runtimes
+      </h1>
+      <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
+        One index of how Open Managed Agents compares with vendor-managed
+        runtimes, open-source runtimes, SDKs, and coding agents. Each entry
+        names the category and links to the detailed comparison.
+      </p>
+      <nav aria-label="Comparison groups" class="mt-8 flex flex-wrap gap-3">
+        {groups.map((g) => (
+          <a href={`#${g.id}`} class="site-button">{g.heading}</a>
+        ))}
+      </nav>
+    </div>
+  </section>
+
+  {groups.map((group, i) => (
+    <section
+      id={group.id}
+      class:list={[i % 2 === 1 && "border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]"]}
+      data-reveal
+    >
+      <div class="site-container py-16">
+        <h2 class="font-display text-3xl font-bold mb-4">{group.heading}</h2>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">{group.intro}</p>
+        <div class="grid md:grid-cols-2 gap-6 max-w-5xl">
+          {group.entries.map((entry) => (
+            <div class="border border-[var(--color-border)] rounded-lg p-5">
+              <h3 class="font-semibold text-xl mb-1">
+                {entry.href ? (
+                  <a href={entry.href} target="_blank" rel="noopener noreferrer">{entry.name}</a>
+                ) : entry.name}
+              </h3>
+              <p class="text-xs font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-3">{entry.category}</p>
+              <p class="text-sm text-[var(--color-fg-muted)] leading-relaxed mb-3">{entry.summary}</p>
+              {entry.links.length > 0 && (
+                <ul class="space-y-1 text-sm">
+                  {entry.links.map((l) => (
+                    <li><a href={l.href}>{l.label} →</a></li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  ))}
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Where OpenMA fits</h2>
+    <div class="max-w-3xl space-y-4 text-[var(--color-fg-muted)] leading-relaxed">
+      <p>
+        OpenMA is an open-source, self-hostable alternative to Claude Managed
+        Agents and OpenAI Agents API. It handles sessions, execution, and
+        recovery, so you can run agents with any model, any harness, and any
+        sandbox, on any cloud.
+      </p>
+      <p>
+        Use it hosted, or self-host on Node.js, Docker, Fly.io, Vercel (Beta),
+        or Cloudflare under Apache-2.0. Read
+        <a href="/agent-as-a-service/">agent as a service</a> for how the hosted
+        and self-hosted options work.
+      </p>
+    </div>
+    <div class="mt-8 flex flex-wrap gap-3">
+      <a href="https://docs.openma.ai/quickstart/" class="site-button site-button-primary">Quickstart</a>
+      <a href="https://github.com/openma-ai/open-managed-agents" target="_blank" rel="noopener noreferrer" class="site-button">View on GitHub</a>
+    </div>
+  </section>
+
+  <FaqSection items={faqItems} />
+  <RelatedGuides links={relatedLinks} />
+</Base>
