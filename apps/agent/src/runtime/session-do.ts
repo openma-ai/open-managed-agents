@@ -6460,12 +6460,6 @@ export class SessionDO extends DurableObject<Env> {
       // owner and would also try to append a second error/idle pair through
       // the fenced history wrapper.  Treat the sandbox guard's equivalent
       // error the same way as an AbortError.
-      // A lost execution fence is an expected cancellation, not a model or
-      // infrastructure failure.  The lease owner may have been replaced by
-      // another worker; retrying here would let the stale worker race the new
-      // owner and would also try to append a second error/idle pair through
-      // the fenced history wrapper.  Treat the sandbox guard's equivalent
-      // error the same way as an AbortError.
       if (isTurnCancellationError(err)) {
         // Interrupt handler (POST /event user.interrupt branch) already
         // appended its own session.status_idle synchronously before
