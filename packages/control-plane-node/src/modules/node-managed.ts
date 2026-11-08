@@ -92,7 +92,7 @@ import { authorizeSandboxEgress, createVaultPlaceholders } from "@open-managed-a
 import { isSessionExecutionFenceActive, sessionExecutionLeasesFrom, type SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
-import { placeholderSubstitutions } from "@open-managed-agents/sandbox-port-kit";
+import { createNodeRepositoryEgress } from "../lib/node-repository-egress.js";
 import { sendDirectHttps } from "@open-managed-agents/sandbox-egress/direct-https";
 import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents-adapters-http";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
@@ -199,6 +199,8 @@ export async function createManagedNodeRuntime(
       return managedResourceCipher.decrypt(value);
     },
   });
+  const repositorySources = { repositoryCredentials: managedSessionResourceSecrets, ...(config.http.matter ? { repositoryBonds: matterRepositoryCredentials(config.http.matter) } : {}) };
+  const repositoryEgress = createNodeRepositoryEgress({ ...repositorySources, secret: platformRootSecret, findSession: async (s) => (await managedRuntimeReaders.executionContext.find(s))?.session ?? null });
 
   // Drizzle baseline may predate held_after_exhausted_ms; additive ensure is
   // idempotent and required before claim SQL references the column.
@@ -258,8 +260,7 @@ export async function createManagedNodeRuntime(
     sharedOutputs: sharedSessionOutputs !== undefined,
     files: managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
     skillVersions: managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.skillVersions),
-    repositoryCredentials: managedSessionResourceSecrets,
-    ...(config.http.matter === undefined ? {} : { repositoryBonds: matterRepositoryCredentials(config.http.matter) }),
+    ...repositorySources, repositoryPlaceholder: repositoryEgress.placeholder,
     memoryStores: memoryStoreMode === "native"
       ? {
           mode: "native",
@@ -300,8 +301,7 @@ export async function createManagedNodeRuntime(
     }),
     // Vault environment_variable / cap_cli credentials reach the sandbox only
     // as placeholders (design §0.5, §8.8): the relay substitutes them.
-    substitutions: async ({ workspaceId, session }) => session.vaultIds.length === 0 ? [] : placeholderSubstitutions(
-      await managedCredentialResolver.placeholderEnvironment({ workspaceId, sessionId: session.id, vaultIds: session.vaultIds }), "vault"),
+    substitutions: (context) => repositoryEgress.substitutions(context, () => managedCredentialResolver),
     relay: () => relayPasses === null || !config.http.publicBaseUrl ? null
       : { issue: (claims) => relayPasses.issue(claims), endpoint: config.http.publicBaseUrl },
     isFenceActive: isManagedSessionExecutionFenceActive,
@@ -1060,7 +1060,7 @@ export async function createManagedNodeRuntime(
     if (!relayPasses) throw new Error("Credential relay is not configured");
     return createCredentialEgressRelay({
       passes: relayPasses,
-      credentials: managedCredentialResolver,
+      credentials: repositoryEgress.relayCredentials(managedCredentialResolver),
       authorize: claims => authorizeSandboxEgress(managedAcpCapabilities.stores, claims),
       send: sendDirectHttps,
       log: { warn: (fields, message) => logger.warn(fields, message) },

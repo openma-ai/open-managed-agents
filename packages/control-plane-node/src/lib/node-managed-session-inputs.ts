@@ -27,6 +27,7 @@ import {
   skillMountsShouldFetchBodies,
 } from "@open-managed-agents/agent/harness/assembly/skill-config";
 import { toLegacyHarnessAgentConfig } from "./node-managed-agent-codec.js";
+import { repositoryToken } from "./node-repository-egress.js";
 
 type FileSource = Pick<FilesApplicationPort, "downloadFile">;
 type SkillVersionSource = Pick<
@@ -104,6 +105,10 @@ export interface NodeManagedSessionInputPreparerDependencies {
   repositoryCredentials: Pick<SessionResourceSecretSource, "findGithubToken">;
   /** Unset: repositories without a token cannot be prepared. */
   repositoryBonds?: RepositoryBondCredentialSource;
+  /** What git authenticates with instead of the token; the egress relay
+   * substitutes it (node-repository-egress). Unset: credentialed
+   * repositories are refused, never written in plaintext. */
+  repositoryPlaceholder?(input: { workspaceId: string; sessionId: string; resourceId: string }): Promise<string>;
   memoryStores: NodeManagedMemoryStoreMode;
   /** Shared OSS collection uses provider-local outputs, not a FUSE mount. */
   sharedOutputs?: boolean;
@@ -303,16 +308,22 @@ export class NodeManagedSessionInputPreparer {
         GIT_CONFIG_COUNT: String(repositories.length),
       };
       for (const [index, resource] of repositories.entries()) {
-        const token = await this.repositoryToken(input, resource);
+        const token = await repositoryToken(this.dependencies, { workspaceId: input.workspaceId, sessionId: input.session.id }, resource);
         if (token === null) {
           throw new Error(
             `Managed Session GitHub credential for resource ${resource.id} was not found`,
           );
         }
+        // Egress is attached before Session init (design §0.1 step 3): git
+        // sends the placeholder and the relay swaps the token in.
+        if (this.dependencies.repositoryPlaceholder === undefined) {
+          throw new Error("Managed Session GitHub repositories need credential egress (PLATFORM_ROOT_SECRET); the token is never written to the sandbox");
+        }
+        const placeholder = await this.dependencies.repositoryPlaceholder({ workspaceId: input.workspaceId, sessionId: input.session.id, resourceId: resource.id });
         gitCredentialEnv[`GIT_CONFIG_KEY_${index}`] =
           `http.${resource.url}.extraHeader`;
         gitCredentialEnv[`GIT_CONFIG_VALUE_${index}`] =
-          `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+          `Authorization: Basic ${Buffer.from(`x-access-token:${placeholder}`).toString("base64")}`;
       }
       input.sandbox.registerCommandSecrets("git", gitCredentialEnv);
     }
@@ -445,28 +456,6 @@ export class NodeManagedSessionInputPreparer {
           `${nodeManagedMemoryRoot}/${storeName}`,
       });
     }
-  }
-
-  private async repositoryToken(
-    input: PrepareNodeManagedSessionInputs,
-    resource: Extract<Session["resources"][number], { type: "github_repository" }>,
-  ): Promise<string | null> {
-    if (resource.credentialSource !== "bond") {
-      return this.dependencies.repositoryCredentials.findGithubToken({
-        workspaceId: input.workspaceId,
-        sessionId: input.session.id,
-        resourceId: resource.id,
-      });
-    }
-    if (this.dependencies.repositoryBonds === undefined) {
-      throw new Error(
-        `Managed Session repository ${resource.url} has no token, and this deployment has no Bonds to clone it with`,
-      );
-    }
-    return this.dependencies.repositoryBonds.repositoryToken({
-      workspaceId: input.workspaceId,
-      url: resource.url,
-    });
   }
 
   private async materializeRepository(
