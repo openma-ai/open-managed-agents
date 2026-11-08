@@ -3,7 +3,7 @@ import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 

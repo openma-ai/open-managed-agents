@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
+import type { HarnessContext } from "@open-managed-agents/agent-harness";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import {
   DefaultNodeManagedSessionRunner,

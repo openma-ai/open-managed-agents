@@ -5,7 +5,7 @@
 // implementations share. Intentional changes are asserted in the converged
 // package tests and listed in the convergence report.
 import { describe, expect, it } from "vitest";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
+import type { HarnessContext } from "@open-managed-agents/agent-harness";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { MemorySessionThreadStore } from "../../../packages/session-thread-store-memory/src/index";

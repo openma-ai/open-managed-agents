@@ -1,4 +1,4 @@
-import { registerHarness } from "../apps/agent/src/harness/registry";
+import { registerHarness } from "../packages/agent-harness/src/registry";
 
 let initialized = false;
 

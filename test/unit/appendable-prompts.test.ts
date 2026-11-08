@@ -7,10 +7,7 @@
 // behind stale prompt strings.
 
 import { describe, it, expect } from "vitest";
-import {
-  listAppendablePrompts,
-  resolveAppendablePrompts,
-} from "../../apps/agent/src/runtime/appendable-prompts";
+import { listAppendablePrompts, resolveAppendablePrompts } from "../../packages/agent-harness/src/appendable-prompts";
 
 describe("appendable-prompts registry", () => {
   it("resolves the linear-mcp entry by id", () => {

@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ModelPricing } from "@open-managed-agents/api-types";
-import {
-  gateExhausted,
-  memoryListCostPicoStore,
-  meterPiRuntime,
-  recordModelEgress,
-  budgetReachedEvents,
-  createSessionBudgetGate,
-  picoToCentsString,
-  requestListCostPico,
-} from "../src/harness/budget";
+import { gateExhausted, memoryListCostPicoStore, meterPiRuntime, recordModelEgress, createSessionBudgetGate, picoToCentsString, requestListCostPico } from "../../../packages/agent-harness/src/budget";
+import { budgetReachedStopEvents, type SessionUsage } from "@open-managed-agents/managed-agents-application";
+import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 const pricing: ModelPricing = {
   version: 1,
@@ -85,11 +78,11 @@ describe("session list-cost budget", () => {
   });
 
   it("emits thread_status_idle -> session.usage -> status_idle(budget_reached)", () => {
-    const events = budgetReachedEvents({
+    const events = budgetReachedStopEvents({
       sessionThreadId: "sthr_primary",
-      usage: { list_cost: { amount_minor: "330", currency: "USD" } },
+      usage: { list_cost: { amount_minor: "330", currency: "USD" } } as unknown as SessionUsage,
       budget: { amount: "300", currency: "USD" },
-    }) as unknown as Array<Record<string, any>>;
+    }).map((event) => encodeRuntimeHistoryEvent(event as never)) as unknown as Array<Record<string, any>>;
     expect(events.map((e) => e.type)).toEqual([
       "session.thread_status_idle",
       "session.usage",

@@ -36,7 +36,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/cf-do";
 
 registerTestHarnesses();

@@ -6,9 +6,9 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
-import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
+import type { HarnessContext } from "../../packages/agent-harness/src/interface";
 import {
   createScriptedLanguageModel,
   finishChunk,

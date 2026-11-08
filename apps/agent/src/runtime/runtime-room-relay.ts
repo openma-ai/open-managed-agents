@@ -2,11 +2,7 @@
 // Object of a registered runner. The DO class lives in the main worker; the
 // agent worker binds the same namespace through the cross-script binding
 // (wrangler.jsonc `script_name`), so no service hop through main is needed.
-import type {
-  RunnerRelayAttachResult,
-  RunnerRelayPort,
-  RunnerRelaySocket,
-} from "../harness/interface";
+import type { RunnerRelayAttachResult, RunnerRelayPort, RunnerRelaySocket } from "@open-managed-agents/agent-harness";
 
 export const RUNTIME_ROOM_BINDING_MISSING =
   "RUNTIME_ROOM binding missing on agent worker — check wrangler.jsonc cross-script DO binding";

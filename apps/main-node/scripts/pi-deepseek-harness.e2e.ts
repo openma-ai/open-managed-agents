@@ -2,10 +2,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createPiModelRuntime } from "@open-managed-agents/agent/harness/pi-provider";
-import { PiHarness } from "@open-managed-agents/agent/harness/pi-loop";
-import { buildTools } from "@open-managed-agents/agent/harness/tools";
-import type { HarnessRuntime } from "@open-managed-agents/agent/harness/interface";
+import {
+  createPiModelRuntime, PiHarness, buildTools, type HarnessRuntime,
+} from "@open-managed-agents/agent-harness";
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 

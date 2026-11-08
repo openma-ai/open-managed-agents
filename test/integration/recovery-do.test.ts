@@ -5,7 +5,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
 import { CfDoStreamRepo, ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/cf-do";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 // ============================================================
 // recoverInterruptedState — DO-level integration

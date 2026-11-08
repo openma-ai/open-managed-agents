@@ -12,11 +12,9 @@ import {
   textChunks,
   toolCallChunks,
 } from "../../../test/fakes/scripted-language-model";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import type { HarnessRuntime } from "@open-managed-agents/agent/harness/interface";
-import { DefaultHarness } from "@open-managed-agents/agent/harness/default-loop";
-import { PiHarness } from "@open-managed-agents/agent/harness/pi-loop";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
+import {
+  registerCoreHarnesses, type HarnessRuntime, DefaultHarness, PiHarness, resolveHarness,
+} from "@open-managed-agents/agent-harness";
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { eventsToMessages, normalizeInterruptedToolCalls } from "../../apps/agent/src/runtime/history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
+import { normalizeInterruptedToolCalls } from "../../packages/agent-harness/src/history/interrupted-tool-calls";
 
 describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
   it("interrupt + user.message in one batch: next turn history pairs every pending id", () => {
@@ -44,7 +45,7 @@ describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
   });
 });
 
-import { interruptRequiresActionClosure, INTERRUPTED_TOOL_RESULT_TEXT } from "../../apps/agent/src/runtime/history";
+import { interruptRequiresActionClosure, INTERRUPTED_TOOL_RESULT_TEXT } from "../../packages/agent-harness/src/history/interrupted-tool-calls";
 describe("interruptRequiresActionClosure (shared CF/Node core)", () => {
   // Official CMA: interrupt against already-idle (including requires_action)
   // is a no-op — do not invent tool_results or overwrite stop_reason.

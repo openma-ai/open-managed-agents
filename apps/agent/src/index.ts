@@ -10,9 +10,9 @@ import { Hono } from "hono";
 import type { Env } from "@open-managed-agents/shared";
 
 // --- Register harnesses ---
-import { registerHarness } from "./harness/registry";
-import { registerCoreHarnesses } from "./harness/builtins";
-import { AcpProxyHarness } from "./harness/acp-proxy-loop";
+import {
+  registerHarness, registerCoreHarnesses, AcpProxyHarness,
+} from "@open-managed-agents/agent-harness";
 import { reclaimCloudflareOrphanSandboxes, SANDBOX_ORPHAN_RECLAIM_PATH } from "./runtime/sandbox-orphan-reclaim";
 registerCoreHarnesses();
 registerHarness("acp-proxy", () => new AcpProxyHarness());

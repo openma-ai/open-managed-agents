@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { jsonSchema, tool } from "ai";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessRuntime } from "../src/harness/interface";
-import { DefaultHarness } from "../src/harness/default-loop";
+import type { HarnessContext, HarnessRuntime } from "../../../packages/agent-harness/src/interface";
+import { DefaultHarness } from "../../../packages/agent-harness/src/default-loop";
 import {
   createScriptedLanguageModel,
   finishChunk,

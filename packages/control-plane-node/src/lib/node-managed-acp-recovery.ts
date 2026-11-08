@@ -1,4 +1,4 @@
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
+import type { HarnessContext } from "@open-managed-agents/agent-harness";
 import { encodeRuntimeHistoryEvent, encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SentSessionEvent } from "@open-managed-agents/managed-agents-application";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";

@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessRuntime } from "../src/harness/interface";
-import { DefaultHarness } from "../src/harness/default-loop";
-import { PiHarness } from "../src/harness/pi-loop";
-import { buildTools } from "../src/harness/tools";
+import type { HarnessContext, HarnessRuntime } from "../../../packages/agent-harness/src/interface";
+import { DefaultHarness } from "../../../packages/agent-harness/src/default-loop";
+import { PiHarness } from "../../../packages/agent-harness/src/pi-loop";
+import { buildTools } from "../../../packages/agent-harness/src/tools";
 import {
   createScriptedLanguageModel,
   finishChunk,

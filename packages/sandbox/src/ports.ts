@@ -1,5 +1,5 @@
 // Runtime-agnostic sandbox port. Originally lived in
-// apps/agent/src/harness/interface.ts as the legacy `SandboxExecutor` and
+// packages/agent-harness/src/interface.ts as the legacy `SandboxExecutor` and
 // `ProcessHandle` interfaces; lifted here so non-CF runtimes (Node host,
 // future deployments) can implement the same shape without taking on the
 // apps/agent → cloudflare:workers → @cloudflare/sandbox import chain.

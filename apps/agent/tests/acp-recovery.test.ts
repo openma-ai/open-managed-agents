@@ -1,7 +1,7 @@
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import { describe, expect, it } from "vitest";
 
-import { buildAcpSemanticRecoveryPrompt } from "../src/harness/acp-recovery";
+import { buildAcpSemanticRecoveryPrompt } from "../../../packages/agent-harness/src/acp-recovery";
 
 describe("ACP semantic recovery prompt", () => {
   it("honors the last compaction boundary and emits the current request once", () => {
