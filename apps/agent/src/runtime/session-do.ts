@@ -3643,7 +3643,7 @@ export class SessionDO extends DurableObject<Env> {
         session_thread_id?: string;
       };
       const threadId = body.session_thread_id ?? "sthr_primary";
-      this.creditUsageToThread(threadId, {
+      this.usageMeter.credit(threadId, {
         input_tokens: body.input_tokens ?? 0,
         output_tokens: body.output_tokens ?? 0,
         cache_creation_input_tokens: body.cache_creation_input_tokens,
@@ -4753,28 +4753,6 @@ export class SessionDO extends DurableObject<Env> {
     get: () => this.state,
     set: (next) => this.setState(next),
   }));
-
-  /**
-   * Credit token usage to a specific thread AND keep the session-wide
-   * `state.input_tokens` / `state.output_tokens` in sync. Cache token
-   * fields are tracked per-thread only — the session-wide totals just
-   * cover input/output (their existing meaning).
-   *
-   * Called by POST /usage; harness turns report through reportSessionUsage
-   * (publishSessionUsage). threadId is the session_thread_id the usage
-   * belongs to ("sthr_primary" or a sub-agent "sthr_*").
-   */
-  private creditUsageToThread(
-    threadId: string,
-    delta: {
-      input_tokens: number;
-      output_tokens: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    },
-  ): void {
-    this.usageMeter.credit(threadId, delta);
-  }
 
   /**
    * Persist a SessionEvent to the events table AND broadcast to WS subscribers.
