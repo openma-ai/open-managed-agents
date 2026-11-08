@@ -56,6 +56,8 @@ export {
   resolveCustomSkillMounts,
   resolveCustomSkills,
   resolveSkills,
+  type SkillCatalogKvPort,
+  type SkillFileBucketPort,
   type SkillMountDescriptor,
 } from "./skills";
 export {
