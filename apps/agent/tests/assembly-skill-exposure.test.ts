@@ -15,7 +15,7 @@ const mounts: SkillMountDescriptor[] = [
     skillId: "skill_a",
     name: "Skill A",
     description: "Does A things",
-    mountRoot: "/workspace/.openma/skills/skill_a/latest/package-a/",
+    mountRoot: "/oma/skills/skill_a/latest/package-a/",
     body: "# Skill A\n\nBody A",
     source: "custom",
   },
@@ -23,7 +23,7 @@ const mounts: SkillMountDescriptor[] = [
     skillId: "skill_b",
     name: "Skill B",
     description: "Does B things",
-    mountRoot: "/workspace/.openma/skills/skill_b/latest/package-b/",
+    mountRoot: "/oma/skills/skill_b/latest/package-b/",
     body: "# Skill B\n\nBody B",
     source: "custom",
   },
@@ -38,7 +38,7 @@ describe("skill exposure strategies", () => {
       model,
     });
     expect(plan.systemSection).toContain("<available-skills>");
-    expect(plan.systemSection).toContain("Read: `/workspace/.openma/skills/skill_a/latest/package-a/SKILL.md`");
+    expect(plan.systemSection).toContain("Read: `/oma/skills/skill_a/latest/package-a/SKILL.md`");
     expect(plan.systemSection).not.toContain("Body A");
     expect(plan.inlinedSkillIds).toEqual([]);
   });

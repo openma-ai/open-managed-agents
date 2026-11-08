@@ -115,7 +115,7 @@ export class EvalRunService {
   async markCompleted(opts: {
     tenantId: string;
     runId: string;
-    status: "completed" | "failed";
+    status: "completed" | "failed" | "cancelled";
     results?: unknown;
     score?: number;
     error?: string;

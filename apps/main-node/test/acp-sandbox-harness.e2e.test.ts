@@ -21,6 +21,11 @@ import { SessionStateMachine } from "@open-managed-agents/session-runtime";
 import type { RuntimeAdapter } from "@open-managed-agents/session-runtime";
 import { describe, expect, it, vi } from "vitest";
 
+/** ADR 0016: platform context rides on the first prompt of a fresh ACP session. */
+function withPlatform(prompt: string, text: string): string {
+  return `<openma-platform>\n${prompt}\n</openma-platform>\n\n${text}`;
+}
+
 describe("ACP sandbox harness", () => {
   it("reuses one real ACP process across turns through SessionStateMachine", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-machine-"));
@@ -74,7 +79,7 @@ describe("ACP sandbox harness", () => {
       }),
       beforeSandboxDestroy: async () => {
         checkpointBeforeDestroy = await sandbox.readFile(
-          "/workspace/.openma/harness-state/acp/session_acp_machine/claude-code/v1/acp-session.json",
+          "/oma/harness-state/acp/session_acp_machine/claude-code/v1/acp-session.json",
         );
       },
       publish: () => {},
@@ -122,12 +127,13 @@ describe("ACP sandbox harness", () => {
       const stateBinding = bindAcpAgentState({
         sessionId: "session_acp_machine",
         agent: agent.acp!.agent,
+        stateRoot: "/oma/harness-state",
       });
       await expect(sandbox.readFile("state-path.txt")).resolves.toBe(
         stateBinding.nativePath,
       );
       const manifest = JSON.parse(await sandbox.readFile(
-        "/workspace/.openma/harness-state/acp/session_acp_machine/claude-code/v1/session-binding.json",
+        "/oma/harness-state/acp/session_acp_machine/claude-code/v1/session-binding.json",
       ));
       expect(manifest.session_artifacts).toEqual(stateBinding.sessionArtifacts);
     } finally {
@@ -179,12 +185,13 @@ describe("ACP sandbox harness", () => {
       await harness.run(first);
       await harness.run(createContext(agent, runtime, "second"));
 
-      await expect(sandbox.readFile("/workspace/AGENTS.md")).resolves.toBe(
-        "Always answer from the sandbox ACP process.\n",
-      );
+      // ADR 0016: platform context rides on the first ACP prompt; nothing is
+      // written into the task's working directory.
+      await expect(sandbox.readFile("/workspace/AGENTS.md"))
+        .rejects.toMatchObject({ code: "ENOENT" });
       expect(events.filter((event) => event.type === "agent.message")).toEqual([
         expect.objectContaining({
-          content: [{ type: "text", text: "sandbox-acp:1:first" }],
+          content: [{ type: "text", text: `sandbox-acp:1:${withPlatform("Always answer from the sandbox ACP process.", "first")}` }],
         }),
         expect.objectContaining({
           content: [{ type: "text", text: "sandbox-acp:2:second" }],
@@ -262,7 +269,7 @@ describe("ACP sandbox harness", () => {
       created_at: "2026-09-03T00:00:00.000Z",
     } as unknown as AgentConfig;
     const root =
-      "/workspace/.openma/harness-state/acp/session_acp_sandbox/claude-code/v1";
+      "/oma/harness-state/acp/session_acp_sandbox/claude-code/v1";
 
     try {
       await harness.run(createContext(agent, runtime, "one turn"));
@@ -408,7 +415,7 @@ describe("ACP sandbox harness", () => {
       }),
       beforeSandboxDestroy: async () => {
         checkpointBeforeDestroy = await sandbox.readFile(
-          "/workspace/.openma/harness-state/acp/session_acp_e2b/opaque/v1/acp-session.json",
+          "/oma/harness-state/acp/session_acp_e2b/opaque/v1/acp-session.json",
         );
       },
       publish: () => {},
@@ -420,7 +427,7 @@ describe("ACP sandbox harness", () => {
 
     expect(events.filter((event) => event.type === "agent.message")).toEqual([
       expect.objectContaining({
-        content: [{ type: "text", text: "e2b-acp:1:first" }],
+        content: [{ type: "text", text: `e2b-acp:1:${withPlatform("Keep the ACP process alive across E2B turns.", "first")}` }],
       }),
       expect.objectContaining({
         content: [{ type: "text", text: "e2b-acp:2:second" }],
@@ -514,12 +521,12 @@ describe("ACP sandbox harness", () => {
 
       expect(events.filter((event) => event.type === "agent.message")).toEqual([
         expect.objectContaining({
-          content: [{ type: "text", text: "new:first" }],
+          content: [{ type: "text", text: `new:${withPlatform("Recover the native ACP session after a child crash.", "first")}` }],
         }),
         expect.objectContaining({
           content: [{
             type: "text",
-            text: "resume:sandbox-acp-recovery:native=first:second",
+            text: `resume:sandbox-acp-recovery:native=${withPlatform("Recover the native ACP session after a child crash.", "first")}:second`,
           }],
         }),
       ]);
@@ -612,7 +619,7 @@ describe("ACP sandbox harness", () => {
       await cp(workdir, restoredWorkdir, { recursive: true });
       await rm(join(
         restoredWorkdir,
-        ".openma/harness-state/acp/session_acp_sandbox/claude-code/v1/native/projects",
+        ".mnt/oma/harness-state/acp/session_acp_sandbox/claude-code/v1/native/projects",
       ), { recursive: true, force: true });
       await sandbox.destroy();
 
@@ -628,10 +635,10 @@ describe("ACP sandbox harness", () => {
       const recoveredText = (messages[1] as { content: Array<{ text?: string }> })
         .content[0]?.text ?? "";
       expect(recoveredText).toContain(
-        'new:<openma-recovery version="1" reason="native-state-missing">',
+        `new:${withPlatform("Recover safely without repeating completed side effects.", '<openma-recovery version="1" reason="native-state-missing">')}`,
       );
       expect(recoveredText).toContain("User: create the report");
-      expect(recoveredText).toContain("Assistant: new:create the report");
+      expect(recoveredText).toContain(`Assistant: new:${withPlatform("Recover safely without repeating completed side effects.", "create the report")}`);
       expect(recoveredText).toContain(
         "Completed tool bash: created /workspace/report.md",
       );
@@ -697,6 +704,7 @@ describe("ACP sandbox harness", () => {
         const binding = bindAcpAgentState({
           sessionId,
           agent: agent.acp!.agent,
+          stateRoot: "/oma/harness-state",
         });
         const manifest = JSON.parse(await sandbox.readFile(
           `${binding.rootPath}/session-binding.json`,

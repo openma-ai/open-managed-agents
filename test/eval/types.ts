@@ -80,7 +80,7 @@ export interface EvalTask {
      *  by GAIA suite to attach MiniMax MCP for multimodal tasks. */
     mcp_servers?: unknown[];
     /** Auxiliary model id — opt into in-tool LLM work (e.g. web_fetch
-     *  summarization + raw-markdown offload to /workspace/.web/). */
+     *  summarization + raw-markdown offload to /oma/web/). */
     aux_model?: string;
   };
 

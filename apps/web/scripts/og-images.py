@@ -21,6 +21,8 @@ LOGO = re.search(r'(<g transform="translate\(0 -40\).*?</g>)',
 
 LANDING = {
     "ai-agent-platform": "AI Agent Platform & Orchestration Runtime",
+    "agent-as-a-service": "Agent as a Service: Hosted or Self-Hosted Runtime",
+    "compare": "Compare OpenMA vs Agent Platforms and Runtimes",
     "claude-managed-agents-alternative": "Claude Managed Agents Alternatives: Open-Source & Self-Hosted",
     "open-source-managed-agents": "Open-Source Managed Agent Runtimes Compared",
     "self-hosted-ai-agents": "Self-Hosted AI Agents: Run Agents on Your Infra",

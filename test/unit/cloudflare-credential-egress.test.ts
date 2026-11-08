@@ -84,6 +84,22 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("passes plain HTTP through without the credential relay (apt over http://)", async () => {
+    const relay = vi.fn(async () => new Response("https only", { status: 400 }));
+    globalThis.fetch = vi.fn(async (request: Request) => {
+      expect(request.url).toBe("http://deb.debian.org/debian/dists/bookworm/InRelease");
+      expect(request.headers.has("authorization")).toBe(false);
+      return new Response("Release", { status: 200 });
+    });
+    const response = await handleCredentialEgressRequest(
+      new Request("http://deb.debian.org/debian/dists/bookworm/InRelease", { headers: { authorization: "Bearer sandbox-secret" } }),
+      { MAIN_MCP: { credentialEgress: relay } },
+      context,
+    );
+    expect(response.status).toBe(200);
+    expect(relay).not.toHaveBeenCalled();
+  });
+
   it("drops unmanaged sandbox authorization even when a public host has no Vault match", async () => {
     globalThis.fetch = vi.fn(async (request: Request) => {
       expect(request.headers.has("authorization")).toBe(false);

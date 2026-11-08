@@ -656,6 +656,9 @@ importers:
       '@open-managed-agents/runtime-resource-fence-sql':
         specifier: workspace:*
         version: link:../../packages/runtime-resource-fence-sql
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../../packages/sandbox
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../../packages/scheduler
@@ -1988,27 +1991,34 @@ importers:
 
   packages/evals-runner:
     dependencies:
-      '@open-managed-agents/agent-store':
+      '@open-managed-agents/api-types':
         specifier: workspace:*
-        version: link:../agent-store
-      '@open-managed-agents/environments-store':
-        specifier: workspace:*
-        version: link:../environments-store
+        version: link:../api-types
       '@open-managed-agents/evals-store':
         specifier: workspace:*
         version: link:../evals-store
+      '@open-managed-agents/harbor-tasks':
+        specifier: workspace:*
+        version: link:../harbor-tasks
       '@open-managed-agents/kv-store':
         specifier: workspace:*
         version: link:../kv-store
       '@open-managed-agents/managed-agents-adapters-runtime':
         specifier: workspace:*
         version: link:../managed-agents-adapters-runtime
-      '@open-managed-agents/sessions-store':
+      '@open-managed-agents/managed-agents-application':
         specifier: workspace:*
-        version: link:../sessions-store
+        version: link:../managed-agents-application
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
 
   packages/evals-store:
     dependencies:
@@ -2108,6 +2118,28 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/harbor-tasks:
+    dependencies:
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+      smol-toml:
+        specifier: ^1.6.1
+        version: 1.9.1
+    devDependencies:
+      '@open-managed-agents/sandbox-adapter-opensandbox':
+        specifier: workspace:*
+        version: link:../sandbox-adapter-opensandbox
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      tsx:
+        specifier: ^4.19.0
+        version: 4.21.0
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
+
   packages/harness-inference-adapters:
     dependencies:
       '@open-managed-agents/acp-runtime':
@@ -2203,6 +2235,9 @@ importers:
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../environments-store
+      '@open-managed-agents/evals-runner':
+        specifier: workspace:*
+        version: link:../evals-runner
       '@open-managed-agents/evals-store':
         specifier: workspace:*
         version: link:../evals-store

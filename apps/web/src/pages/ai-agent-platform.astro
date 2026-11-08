@@ -72,6 +72,8 @@ const faqItems = [
 ];
 
 const relatedLinks = [
+  { href: "/compare/", anchor: "Compare agent platforms", note: "OpenMA next to vendor runtimes, open-source runtimes, SDKs, and coding agents." },
+  { href: "/agent-as-a-service/", anchor: "Agent as a service", note: "Running agents behind an API, hosted or self-hosted." },
   { href: "/what-is-claude-managed-agents/", anchor: "What Claude Managed Agents is", note: "The hosted runtime this platform category is often compared with." },
   { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "Decision table for buyers evaluating Anthropic's hosted runtime." },
   { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Run the platform on your own infrastructure." },
@@ -214,7 +216,8 @@ const schemas = [
       
       <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
         Compared on the primitives above, from each vendor's documentation as
-        of November 2026.
+        of November 2026. For a per-product index with links to each detailed
+        comparison, see <a href="/compare/">compare agent platforms</a>.
       </p>
       <ComparisonTable columns={["Runtime", "Type", "Models", "Self-host control plane", "Sandbox"]} rows={snapshotRows} caption="AI agent platforms compared by runtime criteria" />
     </div>

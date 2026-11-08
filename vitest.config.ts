@@ -530,6 +530,10 @@ export default defineConfig({
       "packages/session-runtime-sql/test/**",
       "packages/managed-agents-api/test/official-environment-worker.contract.test.ts",
       "packages/sandbox/test/**",
+      // Harbor task archives shell out to tar (node:child_process); run by
+      // their own Node Vitest projects in test:packages.
+      "packages/harbor-tasks/**",
+      "packages/evals-runner/test/harbor.test.ts",
       "packages/agent-store-sql/test/**",
       "packages/credential-store-sql/test/**",
       "packages/deployment-store-sql/test/**",

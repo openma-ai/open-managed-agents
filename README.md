@@ -34,6 +34,7 @@ Create an agent, give it work, and return to the same session later. OpenMA prov
 - **Durable sessions and recovery.** Preserve conversation history, stream progress, and coordinate execution attempts without tying the session to one process. Workspace checkpoints and retained outputs support recovery with the configured runtime.
 - **Tools and integrations you can reuse.** Start with shell, file, web, and browser tools. Add MCP services and Skills, then connect agents to the platforms where your team works.
 - **Control over your deployment.** Choose the model, harness, sandbox, and backend services independently. Operate through the Console, CLI, or API.
+- **Evals on the same sessions.** Import Harbor benchmarks from GitHub, Hugging Face, a Harbor registry or an uploaded archive as immutable revisions, and score agents on managed Sessions on Node and Cloudflare. See [Evals](apps/docs/src/content/docs/build/evals.mdx).
 
 If OpenMA is useful to you, give the repository a **Star**. Use **Watch → Custom → Releases** for release notifications.
 

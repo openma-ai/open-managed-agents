@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Api, Model as PiModel } from "@earendil-works/pi-ai";
+import { EvalsResource } from "./evals.js";
 
 /** Pi provider id. Built-ins and user-defined ids share this open shape. */
 export type OmaModelProvider = string;
@@ -221,11 +222,13 @@ export class OmaResources {
   readonly models: OmaModelsResource;
   readonly modelCards: OmaModelCardsResource;
   readonly harnesses: OmaHarnessesResource;
+  readonly evals: EvalsResource;
 
   constructor(private readonly client: Anthropic) {
     this.models = new OmaModelsResource(client);
     this.modelCards = new OmaModelCardsResource(client);
     this.harnesses = new OmaHarnessesResource(client);
+    this.evals = new EvalsResource(client);
   }
 
   request<Response>(params: OmaRequestParams) {

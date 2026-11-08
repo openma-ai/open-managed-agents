@@ -1,0 +1,25 @@
+{
+  "name": "@open-managed-agents/harbor-tasks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit",
+    "oracle": "tsx scripts/run-oracle.ts"
+  },
+  "dependencies": {
+    "@open-managed-agents/sandbox": "workspace:*",
+    "smol-toml": "^1.6.1"
+  },
+  "devDependencies": {
+    "@open-managed-agents/sandbox-adapter-opensandbox": "workspace:*",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.19.0",
+    "vitest": "^5.0.5"
+  }
+}

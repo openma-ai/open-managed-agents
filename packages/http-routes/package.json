@@ -37,6 +37,7 @@
     "@open-managed-agents/vault-forward": "workspace:*",
     "@open-managed-agents/vaults-store": "workspace:*",
     "hono": "^4.7.0",
-    "nanoid": "^5.1.0"
+    "nanoid": "^5.1.0",
+    "@open-managed-agents/evals-runner": "workspace:*"
   }
 }
