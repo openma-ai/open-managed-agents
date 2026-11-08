@@ -80,6 +80,9 @@ export interface OutboundContextParams {
   ownerId?: string;
   generation?: number;
   fenceToken?: string;
+  /** Session sandbox: the execution attempt this binding serves (design §0.0 rule 10). */
+  executionId?: string;
+  attemptId?: string;
   required?: boolean;
   /** Exact trusted API origin for the Work capability (scheme + host + port). */
   controlPlaneOrigin?: string;
@@ -110,6 +113,17 @@ function runtimeFenceClaim(params: OutboundContextParams): RuntimeFenceLookupCla
     generation: params.generation!,
     token: params.fenceToken,
   };
+}
+
+/** The Session execution attempt bound by SessionDO; null between turns. */
+function executionFenceClaim(params: OutboundContextParams): { executionId: string; attemptId: string; ownerId: string; generation: number } | null {
+  if (
+    typeof params.executionId !== "string" || params.executionId.length === 0
+    || typeof params.attemptId !== "string" || params.attemptId.length === 0
+    || typeof params.ownerId !== "string" || params.ownerId.length === 0
+    || !Number.isSafeInteger(params.generation) || (params.generation ?? 0) < 1
+  ) return null;
+  return { executionId: params.executionId, attemptId: params.attemptId, ownerId: params.ownerId, generation: params.generation! };
 }
 
 /**
@@ -155,13 +169,19 @@ export const handleCredentialEgressRequest = async (
   // any other scheme with 400), so plain HTTP (e.g. apt mirrors) skips the
   // lookup and is forwarded below with sandbox authorization stripped.
   const injectable = url.protocol === "https:";
-  if (injectable && params.tenantId && params.sessionId && e.MAIN_MCP) {
+  // No fence (between turns, or before the first turn) → no Vault: the
+  // request goes out uninjected (design §0.0 rule 10).
+  const execution = fence === null ? executionFenceClaim(params) : null;
+  const fenced = fence !== null || execution !== null;
+  if (injectable && fenced && params.tenantId && params.sessionId && e.MAIN_MCP) {
     try {
       const scope = { tenantId: params.tenantId, sessionId: params.sessionId,
-        ...(fence === null ? {} : { runtimeFence: fence }) };
+        ...(fence !== null ? { runtimeFence: fence } : { executionFence: execution! }) };
       const resolved = await e.MAIN_MCP.credentialEgress(scope, "resolve", new Request(request.url));
-      if (!resolved.ok) return resolved;
-      const { inject } = await resolved.json() as { inject: boolean };
+      // A Session binding whose attempt has ended (a background process
+      // between turns) loses Vault but keeps ordinary egress.
+      if (!resolved.ok && !(resolved.status === 403 && !required)) return resolved;
+      const { inject } = resolved.ok ? await resolved.json() as { inject: boolean } : { inject: false };
       if (inject) return e.MAIN_MCP.credentialEgress(scope, "forward", request);
     } catch {
       return new Response("credential egress unavailable", { status: 502 });
@@ -404,7 +424,7 @@ const githubAuthHandler = async (
         sessionId: params.sessionId,
         hostname: url.hostname,
         pathname: url.pathname,
-        ...(fence === null ? {} : { runtimeFence: fence }),
+        ...(fence !== null ? { runtimeFence: fence } : executionFenceClaim(params) === null ? {} : { executionFence: executionFenceClaim(params)! }),
       });
     } catch (err) {
       console.error(

@@ -5,7 +5,7 @@
 import type { Env } from "@open-managed-agents/shared";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { CloudflareSandboxImage } from "./sandbox";
-import { createCloudflareSessionSandbox } from "./cloudflare-session-sandbox";
+import { createCloudflareSessionSandbox, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { createE2BSessionSandbox, type SessionNetworking } from "./e2b-session-sandbox";
 import type { PortsSessionSandbox } from "./session-sandbox";
 
@@ -18,6 +18,8 @@ export interface SessionSandboxDeps {
   sandboxImage: CloudflareSandboxImage | null;
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
   networking(): Promise<SessionNetworking | undefined>;
+  /** The Session's current execution attempt (design §0.0 rule 10). */
+  fence(): SandboxExecutionFence | undefined;
   warn(message: string): void;
 }
 
@@ -27,7 +29,7 @@ export function createSessionSandbox(adapter: string | undefined, deps: SessionS
     return createCloudflareSessionSandbox(deps) as PortsSessionSandbox<unknown>;
   }
   if (name === "e2b") {
-    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking }) as PortsSessionSandbox<unknown>;
+    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence }) as PortsSessionSandbox<unknown>;
   }
   throw new Error(`Unknown SANDBOX_ADAPTER: ${name}`);
 }

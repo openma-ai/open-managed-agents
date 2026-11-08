@@ -13,6 +13,7 @@ const CORE_PACKAGES = [
   "packages/openai-agents-api",
   "packages/openai-agents-compat",
   "packages/managed-agents-app",
+  "packages/sandbox-gateway",
 ];
 
 const FORBIDDEN_PREFIXES = [

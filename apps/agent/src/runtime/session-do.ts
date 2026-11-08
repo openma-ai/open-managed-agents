@@ -4096,6 +4096,9 @@ export class SessionDO extends DurableObject<Env> {
           const config = envId ? await this.getEnvConfig(envId) : null;
           return (config?.config as { networking?: { type?: string; allowed_hosts?: string[]; allow_package_managers?: boolean } } | undefined)?.networking;
         },
+        // Sandbox egress follows a current execution attempt of this
+        // Session; none between turns (design §0.0 rule 10).
+        fence: () => this._executionFences.values().next().value,
         warn: (message) => {
           try {
             this.persistAndBroadcastEvent({ type: "session.warning", message } as unknown as SessionEvent);
