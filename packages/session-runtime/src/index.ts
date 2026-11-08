@@ -103,6 +103,13 @@ export {
 } from "./turn-failure";
 export { openTurnMarker, type TurnMarker, type TurnMarkerHooks } from "./turn-marker";
 export {
+  interruptTurn,
+  type InterruptibleTurn,
+  type LaneStatus,
+  type TurnInterruptPort,
+  type TurnInterruptResult,
+} from "./turn-interrupt";
+export {
   ORPHAN_SANDBOX_MIN_AGE_MS,
   reclaimOrphanSandboxes,
   type OrphanSandboxSession,
