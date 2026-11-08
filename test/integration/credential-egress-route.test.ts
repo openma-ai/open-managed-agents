@@ -237,4 +237,22 @@ describe("Cloudflare native credential egress RPC", () => {
       await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
     }
   });
+
+  it("GitHub credential lookup fails closed on a stale Environment Work fence (characterization)", async () => {
+    await exports.default.fetch(new Request("http://localhost/health"));
+    const sessionId = `relay-gh-${crypto.randomUUID()}`;
+    const acquired = await new SqlRuntimeResourceFencePort(sqlClientFromD1(env.MAIN_DB)).acquire({
+      scope: { workspaceId: "default", environmentId: "environment", sessionId, workId: "work" }, ownerId: "owner", ttlMs: 600000,
+    });
+    if (acquired.type !== "acquired") throw new Error("expected fence");
+    const { environmentId, workId, ownerId, generation, token } = acquired.fence;
+    const lookup = (fenceToken: string) => env.MAIN_MCP.lookupGithubCredential({
+      tenantId: "default", sessionId, hostname: "github.com", pathname: "/acme/app",
+      runtimeFence: { environmentId, workId, ownerId, generation, token: fenceToken },
+    });
+    await expect(lookup(token)).resolves.toBeNull();
+    // Settled here: an RPC promise handed to expect().rejects is reported as unhandled.
+    const stale = await lookup("stale-token").then(() => null, (error: Error) => error);
+    expect(stale?.message).toMatch(/stale runtime credential-egress fence/);
+  });
 });
