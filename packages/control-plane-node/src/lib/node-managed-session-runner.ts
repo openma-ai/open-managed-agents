@@ -910,12 +910,7 @@ export class DefaultNodeManagedSessionRunner
         this.subagentExecutions.set(input, subagents);
         subagentContext = {
           subagents,
-          delegateToAgent: async (agentId, message) => {
-            const child = await subagents.create({ agentId, message });
-            const result = (await subagents.wait({ threadIds: [child.threadId] })).subagents[0]!;
-            if (result.status === "failed") throw new Error(`Subagent ${child.threadId} failed`);
-            return result.output ?? "(sub-agent produced no text output)";
-          },
+          delegateToAgent: (agentId, message) => subagents.delegate({ agentId, message }),
         };
       }
       const toolsPromise = this.dependencies

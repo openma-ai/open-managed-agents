@@ -162,7 +162,7 @@ describe("createSessionOutcomes", () => {
     const f = fixture({
       steps: [(signal) => new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(abortError()), { once: true });
-        controller.abort();
+        queueMicrotask(() => controller.abort());
       })],
     });
     const report = await f.outcomes.evaluate({ outcome, abortSignal: controller.signal });
