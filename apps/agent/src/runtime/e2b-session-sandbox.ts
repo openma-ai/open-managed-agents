@@ -23,6 +23,7 @@
 
 import type {
   MemoryStoreBinding,
+  SandboxLifecyclePort,
   SandboxPlan,
   SandboxPorts,
   Substitution,
@@ -187,10 +188,10 @@ export function createE2BSessionSandbox(input: {
   const gateway = env.PUBLIC_BASE_URL;
   return new E2BSessionSandbox({
     async compose() {
-      const sdk = await import("e2b") as unknown as E2BV2Module;
+      const sdk = await loadE2BModule();
       const adapter = createE2BV2Adapter({
         sdk,
-        connection: { apiKey: env.E2B_API_KEY!, ...(env.E2B_DOMAIN ? { domain: env.E2B_DOMAIN } : {}) },
+        connection: e2bConnection(env),
         leaseMs: LEASE_MS,
         maxLifetimeMs,
         user: "root",
@@ -257,6 +258,24 @@ export function createE2BSessionSandbox(input: {
     fence: input.fence,
     ...(input.idleTimer === undefined ? {} : { idle: { pauseMs: IDLE_MS, ...input.idleTimer } }),
   });
+}
+
+/** The Session sandboxes' lifecycle alone (list / release), for the orphan
+ * reclaim (design §0.0 rule 14): the same adapter and connection Sessions
+ * acquire with, so it lists exactly their labelled sandboxes. */
+export function createE2BSandboxLifecycle(env: E2BSandboxEnv, sdk: E2BV2Module): SandboxLifecyclePort<E2BSandboxExecutor> {
+  const missing = (["E2B_API_KEY", "E2B_MAX_LIFETIME_MS"] as const).filter((name) => !env[name]);
+  if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b requires ${missing.join(", ")}`);
+  return createE2BV2Adapter({ sdk, connection: e2bConnection(env), leaseMs: LEASE_MS, maxLifetimeMs: parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!) }).lifecycle;
+}
+
+/** The e2b SDK, imported only when a sandbox opens or is reclaimed. */
+export async function loadE2BModule(): Promise<E2BV2Module> {
+  return await import("e2b") as unknown as E2BV2Module;
+}
+
+function e2bConnection(env: E2BSandboxEnv) {
+  return { apiKey: env.E2B_API_KEY!, ...(env.E2B_DOMAIN ? { domain: env.E2B_DOMAIN } : {}) };
 }
 
 /** E2B_MAX_LIFETIME_MS → ms. The idle window must fit inside it (design
