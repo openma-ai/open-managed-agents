@@ -220,14 +220,17 @@ export class E2BSandboxExecutor
   }
 
   /** Structured command result. Extra `envs` reach only this process and
-   * never appear in its command line; `user` overrides the sandbox user. */
+   * never appear in its command line; `user` overrides the sandbox user.
+   * `sessionEnv: false` leaves out the Session env set with setEnvVars (Vault
+   * placeholders, the egress relay's proxy and CA variables): platform
+   * commands such as storage mounts must not run through the agent's relay. */
   async run(
     command: string,
-    opts: { envs?: Record<string, string>; timeoutMs?: number; user?: string } = {},
+    opts: { envs?: Record<string, string>; timeoutMs?: number; user?: string; sessionEnv?: false } = {},
   ): Promise<E2BCommandResult> {
     return settleCommand(this.sandbox.commands.run(command, {
       timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
-      envs: { ...this.buildCommandEnv(command), ...opts.envs },
+      envs: { ...(opts.sessionEnv === false ? {} : this.buildCommandEnv(command)), ...opts.envs },
       ...(opts.user === undefined ? this.user : { user: opts.user }),
     }) as Promise<E2BCommandResult>);
   }
