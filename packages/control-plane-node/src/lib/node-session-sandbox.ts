@@ -127,6 +127,10 @@ const NO_CREDENTIAL_EGRESS = "Vault credential egress requires PLATFORM_ROOT_SEC
 /** One facade per runner allocation, found again by the runner's hooks. */
 export class NodeSessionSandboxes {
   private readonly current = new Map<string, NodeSessionSandbox>();
+  /** Handle records of sandboxes warmed at Session creation, until the first build adopts them. */
+  private readonly warmed = new Map<string, SessionSandboxState>();
+  /** v1 runtimes this process holds, shared by every facade's bridge. */
+  private readonly held = new Map<string, SandboxPort>();
 
   constructor(private readonly options: NodeSessionSandboxOptions) {}
 
@@ -142,9 +146,11 @@ export class NodeSessionSandboxes {
   }): NodeSessionSandbox {
     const key = keyOf(input.workspaceId, input.session.id);
     const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
-    const sandbox: NodeSessionSandbox = new NodeSessionSandbox(context, input.allocationId, this.options, () => {
+    const warmed = input.allocationId === undefined ? this.warmed.get(key) : undefined;
+    this.warmed.delete(key);
+    const sandbox: NodeSessionSandbox = new NodeSessionSandbox(context, input.allocationId, this.options, this.held, () => {
       if (this.current.get(key) === sandbox) this.current.delete(key);
-    });
+    }, warmed);
     sandbox.bind({
       context,
       ...(input.runtimeGeneration === undefined ? {} : { runtimeGeneration: input.runtimeGeneration }),
@@ -152,6 +158,27 @@ export class NodeSessionSandboxes {
     });
     this.current.set(key, sandbox);
     return sandbox;
+  }
+
+  /** Session creation (design §0.0 rule 10): acquire the sandbox and keep
+   * its handle record for the runner's first build; no token, no storage. */
+  async warm(context: NodeSessionSandboxContext): Promise<void> {
+    const key = keyOf(context.workspaceId, context.session.id);
+    if (this.current.has(key) || this.warmed.has(key)) return;
+    let state: SessionSandboxState | undefined;
+    const sandbox = new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, undefined, (next) => { state = next; });
+    await sandbox.warm();
+    if (state !== undefined && !this.current.has(key)) this.warmed.set(key, state);
+    else if (state !== undefined) await sandbox.destroy().catch(() => undefined);
+  }
+
+  /** The Session ended before its first execution: release the warmed sandbox. */
+  async discardWarm(context: NodeSessionSandboxContext): Promise<void> {
+    const key = keyOf(context.workspaceId, context.session.id);
+    const state = this.warmed.get(key);
+    if (state === undefined) return;
+    this.warmed.delete(key);
+    await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, state).destroy();
   }
 
   get(input: { workspaceId: string; session: { id: string } }): NodeSessionSandbox {
@@ -187,9 +214,13 @@ export class NodeSessionSandbox implements SandboxPort {
     context: NodeSessionSandboxContext,
     allocationId: string | undefined,
     private readonly options: NodeSessionSandboxOptions,
+    held: Map<string, SandboxPort>,
     private readonly onDestroyed: () => void,
+    initialState?: SessionSandboxState,
+    onSaved?: (state: SessionSandboxState) => void,
   ) {
     this.context = context;
+    this.state = initialState;
     const scope = () => scopeOf(this.context);
     this.core = new PortsSessionSandbox<SandboxPort>({
       compose: async () => {
@@ -197,6 +228,7 @@ export class NodeSessionSandbox implements SandboxPort {
           name: "node",
           create: ({ signal }) => options.createV1({ ...this.context, ...(allocationId === undefined ? {} : { allocationId }), signal }),
           ...(options.v1LeaseTtlMs === undefined ? {} : { leaseTtlMs: options.v1LeaseTtlMs }),
+          held,
         });
         const { ports } = createSandboxPorts({ ...adapter, native: { ...adapter.native, storage: () => this.storagePort() } }, {
           // Storage is Node's own (native above), so the generic deps are never read.
@@ -222,7 +254,7 @@ export class NodeSessionSandbox implements SandboxPort {
       executor: (runtime) => this.track(runtime),
       state: {
         load: async () => this.state,
-        save: async (state) => { this.state = state; },
+        save: async (state) => { this.state = state; onSaved?.(state); },
         clear: async () => { this.state = undefined; },
       },
       scope,
@@ -273,6 +305,8 @@ export class NodeSessionSandbox implements SandboxPort {
   async open(): Promise<void> {
     await this.core.mountSessionOutputs();
   }
+
+  warm(): Promise<void> { return this.core.warm(); }
 
   /** Execution end (design §0.1 step 7); the sandbox keeps running until the idle pause. */
   async endExecution(): Promise<void> {

@@ -235,6 +235,9 @@ export interface V1SandboxFactoryBridgeOptions<R extends SandboxPort> {
   create(input: { scope: RuntimeResourceScope; plan: SandboxPlan; signal: AbortSignal }): Promise<R>;
   /** Lease renewed by keepAlive on runtimes that have one. */
   leaseTtlMs?: number;
+  /** The runtimes this process holds, by handle; shared by every bridge of a
+   * deployment so a handle recorded by one (e.g. a warm-up) attaches in another. */
+  held?: Map<string, R>;
 }
 
 /** A bare v1 SandboxFactory (no SandboxProviderPort: it cannot find a
@@ -244,7 +247,7 @@ export interface V1SandboxFactoryBridgeOptions<R extends SandboxPort> {
  * pause and checkpoint return a ref to the sandbox itself (the provider's
  * own lease reclaims it); nothing to list, the handles live in memory. */
 export function fromV1SandboxFactory<R extends SandboxPort>(options: V1SandboxFactoryBridgeOptions<R>): SandboxAdapterPort<R> {
-  const held = new Map<string, R>();
+  const held = options.held ?? new Map<string, R>();
   const selfRef = (handle: SandboxHandle): ResumeRef => ({ provider: options.name, ref: handle.runtimeId, metadata: { kind: "self" } });
   const find = async (runtimeId: string): Promise<R | null> => {
     const runtime = held.get(runtimeId);

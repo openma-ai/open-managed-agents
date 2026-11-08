@@ -2697,14 +2697,10 @@ export class SessionDO extends DurableObject<Env> {
         });
       }
 
-      // NO ctx.waitUntil(this.warmUpSandbox()) — that pattern dies on
-      // DO reset (which happens regularly under our concurrent traffic
-      // pattern). Let warmUp fire lazily on the first /event handler
-      // below, where it runs as part of the user's request and holds the
-      // DO alive for the full duration. First user
-      // message pays the cold-start cost (~1-3 min for an env that
-      // needs install + snapshot); subsequent messages restore in
-      // seconds from the persisted handle.
+      // Warm the sandbox at creation (design §0.0 rule 10): acquire and record
+      // only; the first execution attaches it. A DO reset loses only the warm-up.
+      void this.sessionSandboxRuntime().acquire().then(() => this.portsSandbox?.warm())
+        .catch(error => logWarn({ op: "session_do.sandbox_warm", session_id: this.state.session_id, err: error }, "sandbox warm-up failed"));
 
       return new Response("ok");
     }

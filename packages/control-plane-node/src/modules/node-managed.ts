@@ -697,7 +697,18 @@ export async function createManagedNodeRuntime(
   });
   const managedSessionLifecycle = new EnvironmentAwareSessionLifecycleRouter({
     environments: nodeManagedEnvironments,
-    runtime: managedSessionRuntime,
+    // Warm the sandbox at creation (design §0.0 rule 10); not per allocation (checkpoint_restore).
+    runtime: config.workspace.strategy === "checkpoint_restore" ? managedSessionRuntime : {
+      sessionStarted: async (input) => {
+        await managedSessionRuntime.sessionStarted(input);
+        if (await resolveSessionSandboxMode(input.session, openAIAgentsSecrets) === "none") return;
+        void sessionSandboxes.warm(input).catch(error => logger.warn({ err: error, op: "main-node.session_sandbox.warm_failed", sessionId: input.session.id }, "sandbox warm-up failed"));
+      },
+      sessionStopped: async (input) => {
+        await managedSessionRuntime.sessionStopped(input);
+        await sessionSandboxes.discardWarm({ workspaceId: input.workspaceId, session: input.session, environment: { id: input.session.environmentId } as never }).catch(() => undefined);
+      },
+    },
     selfHostedWork: {
       enqueue: (input) =>
         managedEnvironmentWorkEnqueuerFor(input.workspaceId).enqueue(input),

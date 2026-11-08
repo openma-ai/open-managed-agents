@@ -170,6 +170,28 @@ describe("Node Session sandbox", () => {
   });
 });
 
+describe("Node Session sandbox warm-up at Session creation", () => {
+  it("acquires before the first execution, which then attaches the same sandbox", async () => {
+    const t = setup();
+    await t.sandboxes.warm(context);
+    expect(t.created).toEqual(["v1"]);
+    expect(t.attached).toEqual([]);
+    const sandbox = t.sandboxes.build({ ...context, runtimeGeneration: "rt_1", executionFence: fence("a1") });
+    await sandbox.open();
+    expect(t.created).toEqual(["v1"]);
+    expect(t.attached).toEqual([{ runtimeGeneration: "rt_1", attemptId: "a1" }]);
+  });
+
+  it("releases the warmed sandbox when the Session ends before its first execution", async () => {
+    const t = setup();
+    await t.sandboxes.warm(context);
+    await t.sandboxes.discardWarm(context);
+    expect(t.box.destroyed()).toBe(1);
+    await t.sandboxes.discardWarm(context);
+    expect(t.box.destroyed()).toBe(1);
+  });
+});
+
 describe("Vault credential egress guard", () => {
   const issue = async () => "pass";
   const vaultContext = { ...context, session: { ...context.session, vaultIds: ["vlt_1"] } } as typeof context;
