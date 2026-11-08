@@ -36,7 +36,12 @@
     "sdk",
     "llm",
     "streaming",
-    "sse"
+    "sse",
+    "claude-managed-agents",
+    "openai-agents",
+    "self-hosted",
+    "sandbox",
+    "agent-runtime"
   ],
   "license": "Apache-2.0",
   "homepage": "https://openma.ai",
