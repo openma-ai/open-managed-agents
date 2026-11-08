@@ -135,6 +135,12 @@ export class AcpTranslator {
    *  status update, either as `_meta.terminal_output(_delta)` or as
    *  `content`, and leaves `rawOutput` unset. */
   #toolOutputs: Map<string, string> = new Map();
+  #producedOutput = false;
+
+  /** The agent sent text, thinking or a tool call this turn. */
+  get producedOutput(): boolean {
+    return this.#producedOutput;
+  }
 
   constructor(runtime: HarnessRuntime, options: AcpTranslatorOptions = {}) {
     this.#runtime = runtime;
@@ -189,6 +195,8 @@ export class AcpTranslator {
     }
     const upd = msg.event.update;
     if (!upd) return;
+    if (((upd.sessionUpdate === "agent_message_chunk" || upd.sessionUpdate === "agent_thought_chunk") && chunkText(upd.content) !== "")
+      || upd.sessionUpdate === "tool_call" || upd.sessionUpdate === "tool_call_update") this.#producedOutput = true;
     switch (upd.sessionUpdate) {
       case "agent_message_chunk":
         // Agent transitioning from "running tools" to "talking" — flush any

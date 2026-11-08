@@ -3,7 +3,7 @@ import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
 import { SessionSandboxFenceLostError } from "../src/session-sandbox-fence";
 import type { SessionSandboxExecutor } from "../src/session-sandbox-options";
-import { fakeSessionSandbox } from "./fake-session-sandbox-ports";
+import { attempt, fakeSessionSandbox } from "./fake-session-sandbox-ports";
 
 // Opening the Session's sandbox (research/sandbox-sdk-v2-design.md §0.1
 // steps 2-3): the handle record, the fence and the rollback of a failed open.
@@ -14,6 +14,36 @@ describe("Session sandbox open under the fence", () => {
     h.loseFence();
     await expect(h.sandbox.exec("first")).rejects.toBeInstanceOf(SessionSandboxFenceLostError);
     expect(h.log).toEqual(["acquire", "release:r1"]);
+    expect(h.stored()).toBeUndefined();
+  });
+});
+
+describe("Session sandbox warm-up at Session creation (design §0.0 rule 10)", () => {
+  it("acquires and records the handle without egress or storage; the first execution attaches it", async () => {
+    const h = fakeSessionSandbox();
+    h.setExecution(undefined);
+    await Promise.all([h.sandbox.warm(), h.sandbox.warm()]);
+    expect(h.log).toEqual(["acquire"]);
+    expect(h.stored()?.handle).toEqual({ provider: "fake", runtimeId: "r1" });
+    h.setExecution(attempt);
+    await h.sandbox.mountSessionOutputs();
+    expect(h.log).toEqual(["acquire", "attach:r1", "egress.attach", "storage.attach"]);
+  });
+
+  it("keeps a recorded sandbox that is still there and acquires again when it is gone", async () => {
+    const kept = fakeSessionSandbox({ saved: { handle: { provider: "fake", runtimeId: "r0" }, stores: [], outputs: false } });
+    await kept.sandbox.warm();
+    expect(kept.log).toEqual(["attach:r0"]);
+    const gone = fakeSessionSandbox({ attachGone: true, saved: { handle: { provider: "fake", runtimeId: "r0" }, stores: [], outputs: false } });
+    await gone.sandbox.warm();
+    expect(gone.log).toEqual(["attach:r0", "acquire"]);
+  });
+
+  it("acquires nothing without the fence", async () => {
+    const h = fakeSessionSandbox();
+    h.loseFence();
+    await h.sandbox.warm();
+    expect(h.log).toEqual([]);
     expect(h.stored()).toBeUndefined();
   });
 });

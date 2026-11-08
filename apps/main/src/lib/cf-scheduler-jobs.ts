@@ -73,5 +73,19 @@ export function buildCfScheduler(env: Env): CfScheduler {
     handler: () => dreamRecoveryTick(env),
   });
 
+  // Design §0.0 rule 14: the agent worker reaches the Sandbox DOs, so it runs
+  // the shared orphan reclaim; nothing to do without its service binding.
+  scheduler.register({
+    name: "sandbox-orphan-reclaim",
+    cron: envCron(env, "SANDBOX_ORPHAN_RECLAIM_CRON", "* * * * *"),
+    handler: async () => {
+      const agent = (env as unknown as Record<string, Fetcher | undefined>).SANDBOX_sandbox_default;
+      if (agent === undefined) return;
+      const response = await agent.fetch("https://sandbox/__internal/sandbox-orphans/reclaim", { method: "POST" });
+      if (!response.ok) throw new Error(`sandbox orphan reclaim failed: ${response.status}`);
+      log({ op: "cron.sandbox_orphan_reclaim", ...(await response.json() as Record<string, unknown>) }, "sandbox orphan reclaim ok");
+    },
+  });
+
   return scheduler;
 }

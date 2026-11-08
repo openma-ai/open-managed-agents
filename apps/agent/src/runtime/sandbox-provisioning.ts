@@ -3,7 +3,7 @@ import type {
   OmaProvisionResult,
   OmaSandboxDescription,
 } from "../oma-sandbox";
-import { memoryStoreMountTarget } from "./resource-mounter";
+import { memoryStoreMountTarget } from "@open-managed-agents/session-runtime";
 
 /** A sandbox whose container starts with its complete mount set.
  * Sandbox SDK 1.0 attaches mounts only while a container starts: a mount

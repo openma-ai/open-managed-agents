@@ -19,7 +19,7 @@ import { endExecution, failExecution } from "./session-sandbox-execution-end";
 import { disarmIdle, idlePause, touchIdle } from "./session-sandbox-idle-pause";
 import { lifetimeDue, refreshLifetime } from "./session-sandbox-lifetime";
 import { LiveSessionSandbox, mergeStores } from "./session-sandbox-live";
-import { openSandbox, rollbackOpen } from "./session-sandbox-open";
+import { openSandbox, rollbackOpen, warmSandbox } from "./session-sandbox-open";
 import type { PortsSessionSandboxOptions, SessionSandboxExecutor } from "./session-sandbox-options";
 import { renewActivityTimeout, renewAtExecBoundary } from "./session-sandbox-renewal";
 import { attachStorage, syncStorage } from "./session-sandbox-storage-egress";
@@ -75,6 +75,9 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     return (await openSandbox(this.state)).generation;
   }
 
+  /** Session creation: acquire the sandbox and record its handle, without
+   * an egress token or storage; the first execution attaches it. */
+  warm(): Promise<void> { return warmSandbox(this.state); }
   /** Turn end / before stop write-back (session-sandbox-storage-egress). */
   syncStorage(reason: "turn_end" | "before_stop"): Promise<void> { return syncStorage(this.state, reason); }
   /** Execution end: the sandbox keeps running until the idle pause. */

@@ -391,6 +391,10 @@ export interface HarnessContext {
       model?: {
         providerId: string;
         baseUrl: string | null;
+        /** The model card's upstream model id. In-sandbox agents select by
+         * it (pi falls back silently on an unknown id); the agent's own
+         * `model` is the card handle. */
+        wireModel?: string;
         protocolEndpoints?: readonly {
           protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
           proxyPathSegment: string;

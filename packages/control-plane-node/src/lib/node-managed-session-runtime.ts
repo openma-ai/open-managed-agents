@@ -51,9 +51,7 @@ import {
 import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
-import { outstandingRequiresAction,
-  rejectMessageForRequiresActionBatch,
-} from "./requires-action.js";
+import { outstandingRequiresAction, rejectMessageForRequiresActionBatch } from "@open-managed-agents/session-runtime-contract/requires-action";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {

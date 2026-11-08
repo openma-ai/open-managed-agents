@@ -36,6 +36,7 @@ import type {
 } from "@open-managed-agents/event-log";
 import { recoverInterruptedState as runRecovery } from "./recovery";
 import {
+  mountSessionResources,
   RuntimeAdapterImpl,
   runAgentTurn,
   recoverAgentTurn,
@@ -50,6 +51,15 @@ import {
   type RecoveryDecision,
   type PartialStream,
 } from "@open-managed-agents/session-runtime";
+import {
+  asWireEvents,
+  awaitsCustomToolResult,
+  knownToolCallIds,
+  remainingAfterAnswer,
+  requiresActionStopReason,
+  toolResultIds,
+  type PendingToolCall as ResolvedPendingToolCall,
+} from "@open-managed-agents/session-runtime-contract/requires-action";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
@@ -170,10 +180,7 @@ import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
 import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
-import {
-  loadManagedSessionResources,
-  mountResources,
-} from "./resource-mounter";
+import { installGhCli, loadManagedSessionResources, proxiedRepositoryAccess } from "./managed-session-resources";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
 import {
   createSessionWakeups,
@@ -803,6 +810,8 @@ export class SessionDO extends DurableObject<Env> {
   private portsSandbox: PortsSessionSandbox<unknown> | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
+  /** The warm-up started by /init; owned here so /destroy (and tests) wait for it. */
+  private _sandboxWarm: Promise<void> = Promise.resolve();
   /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
   private readonly processedClock = createMonotonicClock();
 
@@ -2686,14 +2695,9 @@ export class SessionDO extends DurableObject<Env> {
         });
       }
 
-      // NO ctx.waitUntil(this.warmUpSandbox()) — that pattern dies on
-      // DO reset (which happens regularly under our concurrent traffic
-      // pattern). Let warmUp fire lazily on the first /event handler
-      // below, where it runs as part of the user's request and holds the
-      // DO alive for the full duration. First user
-      // message pays the cold-start cost (~1-3 min for an env that
-      // needs install + snapshot); subsequent messages restore in
-      // seconds from the persisted handle.
+      // Warm at creation (§0.0 rule 10): acquire + record only; the first execution attaches it.
+      this._sandboxWarm = this.sessionSandboxRuntime().acquire().then(() => this.portsSandbox?.warm())
+        .catch(error => logWarn({ op: "session_do.sandbox_warm", session_id: this.state.session_id, err: error }, "sandbox warm-up failed"));
 
       return new Response("ok");
     }
@@ -2705,6 +2709,7 @@ export class SessionDO extends DurableObject<Env> {
         ctrl.abort();
       }
       this._threadAbortControllers.clear();
+      await this._sandboxWarm; // a warm-up still running would record a sandbox after this destroy
       await this._primaryHarness.dispose();
       // Snapshot /workspace BEFORE we destroy the container — once destroy()
       // runs the container is gone and we can't read its filesystem.
@@ -4372,16 +4377,12 @@ export class SessionDO extends DurableObject<Env> {
         );
 
         if (resources.length) {
-          await mountResources(
-            sandbox,
-            resources,
-            this.env.CONFIG_KV,
-            new Map(),
-            undefined,
-            this.state.tenant_id,
-            undefined,
-            loaded.fileSource,
-          );
+          await mountSessionResources(sandbox, resources, {
+            downloadFile: async (fileId) => (await loaded.fileSource.downloadFile(fileId)).content,
+            repositories: proxiedRepositoryAccess(sandbox),
+            memoryStores: { mode: "native" },
+            afterRepositories: () => installGhCli(sandbox),
+          });
         }
       }
 
@@ -5114,9 +5115,7 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") &&
-        (e as unknown as { id?: string }).id === toolUseId);
+      return knownToolCallIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return true;
     }
@@ -5158,12 +5157,16 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        e.type === "agent.tool_result" &&
-        (e as unknown as { tool_use_id?: string }).tool_use_id === toolUseId);
+      return toolResultIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return false;
     }
+  }
+
+  /** Pending calls named by their resolved tool: a call proxied through
+   * mcp_invoke awaits confirmation of its target. */
+  private resolvedPendingCalls(pending: readonly PendingToolCall[]): ResolvedPendingToolCall[] {
+    return pending.map((p) => ({ toolCallId: p.toolCallId, toolName: resolveProxiedToolCall(p.toolName, p.args).toolName }));
   }
 
   private async resumeWhenToolBatchSettled(
@@ -5172,34 +5175,12 @@ export class SessionDO extends DurableObject<Env> {
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
   ): Promise<void> {
-    const before = this.state.pending_tool_calls ?? [];
-    let resolved = new Set<string>([answeredId]);
-    if (before.length > 1) {
-      try {
-        for (const e of history.getEvents()) {
-          if (e.type === "agent.tool_result") {
-            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
-            if (id) resolved.add(id);
-          }
-        }
-      } catch { resolved = new Set([answeredId]); }
-    }
-    const remaining = before.filter((p) => !resolved.has(p.toolCallId));
+    const remaining = remainingAfterAnswer(this.state.pending_tool_calls ?? [], answeredId, () => asWireEvents(history.getEvents()));
     this.setState({ ...this.state, pending_tool_calls: remaining });
     if (remaining.length > 0) {
-      const builtin = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
-      const anyCustom = remaining.some((p) => {
-        const name = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !builtin.includes(name) && !name.startsWith("mcp_") &&
-          !name.startsWith("call_agent_") && !name.startsWith("memory_");
-      });
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
-        stop_reason: {
-          type: "requires_action",
-          action_type: anyCustom ? "custom_tool_result" : "tool_confirmation",
-          event_ids: remaining.map((p) => p.toolCallId),
-        },
+        stop_reason: requiresActionStopReason(this.resolvedPendingCalls(remaining), remaining.map((p) => p.toolCallId)),
       } as SessionEvent;
       history.append(idleEvent);
       this.broadcastEvent(idleEvent, fence);
@@ -5925,7 +5906,7 @@ export class SessionDO extends DurableObject<Env> {
     // each attached store appears as /mnt/memory/<store_name>/ inside the
     // sandbox. The agent reads/writes via the standard file tools (no
     // bespoke memory_* tools). The mount itself is set up further down in
-    // the resource-mounter call. We only need MemoryStoreService here to
+    // the mountSessionResources call. We only need MemoryStoreService here to
     // resolve store metadata for the system-prompt reminder block.
     let memoryStoreService: MemoryStoreService | null = null;
     if (memoryAttachments.length && this.env.MAIN_DB) {
@@ -6168,6 +6149,8 @@ export class SessionDO extends DurableObject<Env> {
         CONFIG_KV: this.env.CONFIG_KV,
         memoryStoreIds,
         environmentConfig,
+        // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
+        ...(resolvedHarnessName === "acp-sandbox" && activeFence && this.env.MAIN_MCP?.issueManagedAcpExecutionChannels ? { ANTHROPIC_API_KEY: "", ...await this.env.MAIN_MCP.issueManagedAcpExecutionChannels({ tenantId: this.state.tenant_id!, sessionId: this.state.session_id!, executionFence: activeFence }) } : {}),
         // LLM full-body logging context. default-loop wraps each model
         // call in middleware that PUTs request + response to R2 keyed
         // by the per-step span event id. The matching
@@ -6435,30 +6418,11 @@ export class SessionDO extends DurableObject<Env> {
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
 
-      // Check if any pending are custom tool uses (no execute function, not always_ask built-in)
-      const storedPendingCalls = this.state.pending_tool_calls;
-      const hasCustomToolPending = storedPendingCalls.some((p) => {
-        // A call proxied through mcp_invoke awaits confirmation of its target.
-        const toolName = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"].includes(toolName) &&
-          !toolName.startsWith("mcp_") &&
-          !toolName.startsWith("call_agent_") &&
-          !toolName.startsWith("memory_");
-      });
-
+      // A pending custom tool use (no execute function) outranks always_ask confirmations.
+      const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
       let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"];
-      if (hasCustomToolPending) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "custom_tool_result" as const,
-          event_ids: pendingConfirmations,
-        };
-      } else if (pendingConfirmations.length > 0) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "tool_confirmation" as const,
-          event_ids: pendingConfirmations,
-        };
+      if (storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0) {
+        stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations);
       } else if (ctx.budget?.reached) {
         // Official budget stop (requires_action outranks it, above):
         // thread idle → usage snapshot → session idle (emitted below).

@@ -8,6 +8,10 @@
 //   3. egress.attach, then storage.attach, then the marker for a new sandbox.
 // A failed step rolls back what this open did (egress.revoke, release,
 // forget the handle) and the error is thrown.
+// warmSandbox (Session creation, design §0.0 rule 10): only step 2 plus the
+// marker and the handle record; no egress token and no storage. The first
+// open attaches it; a sandbox the provider reclaimed meanwhile is "gone"
+// there and acquired again, so only the warm-up is lost.
 
 import { parseExecResult, type Acquired, type SandboxPlan } from "@open-managed-agents/sandbox";
 import { SessionSandboxFenceLostError } from "./session-sandbox-fence";
@@ -20,6 +24,7 @@ export const SANDBOX_GENERATION_MARKER = "/tmp/.oma-warm";
 /** The open sandbox; opens it (attach, else resume, else acquire) when there is none. */
 export async function openSandbox<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
   await state.quiesce();
+  await state.warming?.catch(() => undefined);
   if (state.current !== null) return state.current;
   return state.opening ??= start(state).finally(() => { state.opening = null; });
 }
@@ -112,6 +117,40 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
   }
   state.current = open;
   return open;
+}
+
+/** Acquire the Session's sandbox ahead of its first execution, once. A
+ * recorded sandbox that is still there is kept; nothing is opened. */
+export function warmSandbox<R>(state: LiveSessionSandbox<R>): Promise<void> {
+  if (state.current !== null || state.opening !== null) return Promise.resolve();
+  return state.warming ??= warm(state).finally(() => { state.warming = null; });
+}
+
+async function warm<R>(state: LiveSessionSandbox<R>): Promise<void> {
+  const { ports } = await state.compose();
+  const scope = state.scope();
+  const signal = new AbortController().signal;
+  const saved = await state.options.state.load();
+  if (saved?.handle !== undefined) {
+    const attached = await ports.sandbox.attach({ scope, handle: saved.handle, signal });
+    if (attached !== "gone" && await readMarker(state.options.executor(attached.runtime)) !== null) return;
+  }
+  // The fence first (design §0.0 rule 10), then acquire and record the handle.
+  if (!await state.isCurrent(state.execution())) return;
+  const generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  const plan = await state.options.plan({ scope, generation, stores: state.stores });
+  const acquired = await ports.sandbox.acquire({ scope, plan, signal });
+  if (acquired === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
+  try {
+    if (ports.sandbox.handle === "changes" && !await state.isCurrent(state.execution())) {
+      throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was warmed");
+    }
+    await writeMarker(state.options.executor(acquired.runtime), generation);
+    await state.options.state.save({ handle: acquired.handle, stores: mergeStores(plan.stores, state.stores), outputs: state.outputs, runStartedAt: state.now() });
+  } catch (error) {
+    await ports.sandbox.release({ scope, handle: acquired.handle }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readMarker(executor: SessionSandboxExecutor): Promise<string | null> {

@@ -136,6 +136,7 @@ import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
 import { authorizeSandboxEgress, type SandboxGatewayStores } from "@open-managed-agents/sandbox-gateway";
 import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
+import { issueCfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
 import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
 import { createSqlSessionExecutionLeases } from "@open-managed-agents/session-runtime-sql/execution-lease";
 import {
@@ -2003,6 +2004,11 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
         isFenceActive: (fence) => cfExecutionFenceActive(client, opts, fence),
       },
     );
+  }
+
+  /** ACP model / MCP channels for one SessionDO execution (design §0.6). */
+  async issueManagedAcpExecutionChannels(opts: Parameters<typeof issueCfAcpExecutionChannels>[1]) {
+    return issueCfAcpExecutionChannels(this.env, opts);
   }
 
   async resolveManagedSkillVersion(opts: {

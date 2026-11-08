@@ -4,7 +4,7 @@ import type {
   UserMessageEvent,
 } from "@open-managed-agents/shared";
 
-export type AcpSemanticRecoveryReason = "native-state-missing";
+export type AcpSemanticRecoveryReason = "native-state-missing" | "resume-unsupported";
 
 export interface AcpSemanticRecoveryOptions {
   reason: AcpSemanticRecoveryReason;

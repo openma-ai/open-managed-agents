@@ -170,6 +170,55 @@ describe("Node Session sandbox", () => {
   });
 });
 
+describe("Node Session sandbox warm-up at Session creation", () => {
+  it("acquires before the first execution, which then attaches the same sandbox", async () => {
+    const t = setup();
+    await t.sandboxes.warm(context);
+    expect(t.created).toEqual(["v1"]);
+    expect(t.attached).toEqual([]);
+    const sandbox = t.sandboxes.build({ ...context, runtimeGeneration: "rt_1", executionFence: fence("a1") });
+    await sandbox.open();
+    expect(t.created).toEqual(["v1"]);
+    expect(t.attached).toEqual([{ runtimeGeneration: "rt_1", attemptId: "a1" }]);
+  });
+
+  it("warms from sessionStarted only when enabled and the Session has a sandbox", async () => {
+    const started: string[] = [];
+    const runtime = { sessionStarted: async () => { started.push("start"); }, sessionStopped: async () => { started.push("stop"); } };
+    const off = setup();
+    expect(off.sandboxes.warmingLifecycle(runtime, async () => "sandbox")).toBe(runtime);
+    const on = setup({ warmAtCreate: true });
+    const lifecycle = on.sandboxes.warmingLifecycle(runtime, async (session) => session.id === "sess_none" ? "none" : "sandbox");
+    await lifecycle.sessionStarted({ ...context, sessionId: "sess_none", session: { ...context.session, id: "sess_none" }, initialEvents: [] } as never);
+    await vi.waitFor(() => expect(started).toEqual(["start"]));
+    expect(on.created).toEqual([]);
+    await lifecycle.sessionStarted({ ...context, sessionId: "sess_1", initialEvents: [] } as never);
+    await vi.waitFor(() => expect(on.created).toEqual(["v1"]));
+    await lifecycle.sessionStopped({ workspaceId: "ws_1", sessionId: "sess_1", session: { ...context.session, environmentId: "env_1" }, reason: "deleted" } as never);
+    expect(started).toEqual(["start", "start", "stop"]);
+    expect(on.box.destroyed()).toBe(1);
+  });
+
+  it("a first execution that starts while the warm-up is in flight adopts it instead of racing it", async () => {
+    const t = setup();
+    const warming = t.sandboxes.warm(context);
+    const sandbox = t.sandboxes.build({ ...context, runtimeGeneration: "rt_1", executionFence: fence("a1") });
+    await Promise.all([warming, sandbox.open()]);
+    expect(t.created).toEqual(["v1"]);
+    expect(t.box.destroyed()).toBe(0);
+    expect(t.attached).toEqual([{ runtimeGeneration: "rt_1", attemptId: "a1" }]);
+  });
+
+  it("releases the warmed sandbox when the Session ends before its first execution", async () => {
+    const t = setup();
+    await t.sandboxes.warm(context);
+    await t.sandboxes.discardWarm(context);
+    expect(t.box.destroyed()).toBe(1);
+    await t.sandboxes.discardWarm(context);
+    expect(t.box.destroyed()).toBe(1);
+  });
+});
+
 describe("Vault credential egress guard", () => {
   const issue = async () => "pass";
   const vaultContext = { ...context, session: { ...context.session, vaultIds: ["vlt_1"] } } as typeof context;

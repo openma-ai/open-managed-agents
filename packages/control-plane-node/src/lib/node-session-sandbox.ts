@@ -51,7 +51,9 @@ import type { SessionExecutionFence } from "@open-managed-agents/session-runtime
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import { EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
 import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import type { SessionLifecycleCommandPort } from "@open-managed-agents/session-runtime-contract";
 import { toLegacyHarnessEnvironmentConfig } from "./node-managed-agent-codec.js";
+import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "./node-sandbox-orphan-reclaim.js";
 
 /** Lifetime of a relay pass; the relay is re-attached with a new one after half. */
 export const NODE_RELAY_PASS_TTL_MS = 60 * 60_000;
@@ -111,6 +113,9 @@ export interface NodeSessionSandboxOptions {
   isFenceActive(fence: SessionExecutionFence): Promise<boolean>;
   idlePauseMs: number;
   warn(message: string, context: NodeSessionSandboxContext): void;
+  /** Warm the sandbox at Session creation (design §0.0 rule 10); off under
+   * checkpoint_restore, whose sandboxes are per allocation. */
+  warmAtCreate?: boolean;
 }
 
 /** Node's only egress path for Vault sandbox credentials: the in-sandbox
@@ -127,6 +132,10 @@ const NO_CREDENTIAL_EGRESS = "Vault credential egress requires PLATFORM_ROOT_SEC
 /** One facade per runner allocation, found again by the runner's hooks. */
 export class NodeSessionSandboxes {
   private readonly current = new Map<string, NodeSessionSandbox>();
+  /** Warm-ups at Session creation (in flight or done), until the first build adopts them. */
+  private readonly warmed = new Map<string, Promise<SessionSandboxState | undefined>>();
+  /** v1 runtimes this process holds, shared by every facade's bridge. */
+  private readonly held = new Map<string, SandboxPort>();
 
   constructor(private readonly options: NodeSessionSandboxOptions) {}
 
@@ -142,9 +151,11 @@ export class NodeSessionSandboxes {
   }): NodeSessionSandbox {
     const key = keyOf(input.workspaceId, input.session.id);
     const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
-    const sandbox: NodeSessionSandbox = new NodeSessionSandbox(context, input.allocationId, this.options, () => {
+    const warmed = input.allocationId === undefined ? this.warmed.get(key) : undefined;
+    this.warmed.delete(key);
+    const sandbox: NodeSessionSandbox = new NodeSessionSandbox(context, input.allocationId, this.options, this.held, () => {
       if (this.current.get(key) === sandbox) this.current.delete(key);
-    });
+    }, warmed?.catch(() => undefined));
     sandbox.bind({
       context,
       ...(input.runtimeGeneration === undefined ? {} : { runtimeGeneration: input.runtimeGeneration }),
@@ -152,6 +163,60 @@ export class NodeSessionSandboxes {
     });
     this.current.set(key, sandbox);
     return sandbox;
+  }
+
+  /** Session creation (design §0.0 rule 10): acquire the sandbox and keep
+   * its handle record for the runner's first build; no token, no storage. */
+  async warm(context: NodeSessionSandboxContext): Promise<void> {
+    const key = keyOf(context.workspaceId, context.session.id);
+    if (this.current.has(key) || this.warmed.has(key)) return;
+    let state: SessionSandboxState | undefined;
+    const sandbox = new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, undefined, (next) => { state = next; });
+    // A build that starts meanwhile awaits this and adopts the sandbox.
+    const warming = sandbox.warm().then(() => state);
+    this.warmed.set(key, warming);
+    await warming;
+  }
+
+  /** The Session ended before its first execution: release the warmed sandbox. */
+  async discardWarm(context: NodeSessionSandboxContext): Promise<void> {
+    const key = keyOf(context.workspaceId, context.session.id);
+    const warming = this.warmed.get(key);
+    if (warming === undefined) return;
+    this.warmed.delete(key);
+    const state = await warming.catch(() => undefined);
+    if (state !== undefined) await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, Promise.resolve(state)).destroy();
+  }
+
+  /** `runtime` plus the warm-up at Session creation and the release of a
+   * warmed sandbox when the Session stops before its first execution. */
+  warmingLifecycle(runtime: SessionLifecycleCommandPort, sandboxMode: (session: Session) => Promise<"none" | "sandbox">): SessionLifecycleCommandPort {
+    if (this.options.warmAtCreate !== true) return runtime;
+    return {
+      sessionStarted: async (input) => {
+        await runtime.sessionStarted(input);
+        if (await sandboxMode(input.session) === "none") return;
+        void this.warm(input).catch((error: unknown) => this.options.warn(`sandbox_warm_failed error=${error instanceof Error ? error.message : String(error)}`, input));
+      },
+      sessionStopped: async (input) => {
+        await runtime.sessionStopped(input);
+        await this.discardWarm({ workspaceId: input.workspaceId, session: input.session, environment: { id: input.session.environmentId } as Environment }).catch(() => undefined);
+      },
+    };
+  }
+
+  /** The orphan reclaim timer (design §0.0 rule 14), with a v2 adapter only; returns its stop. */
+  startOrphanReclaim(
+    intervalMs: string | undefined,
+    findSession: (labels: { workspaceId: string; sessionId: string }) => Promise<{ archivedAt: string | null } | null>,
+    log: { warn(fields: Record<string, unknown>, message: string): void },
+  ): () => void {
+    const adapter = this.options.adapter;
+    if (adapter === undefined) return () => undefined;
+    return startSandboxOrphanReclaim({
+      lifecycle: adapter.adapter.lifecycle, findSession, intervalMs: sandboxOrphanReclaimMs(intervalMs),
+      warn: (fields, message) => log.warn(fields, message),
+    });
   }
 
   get(input: { workspaceId: string; session: { id: string } }): NodeSessionSandbox {
@@ -187,9 +252,13 @@ export class NodeSessionSandbox implements SandboxPort {
     context: NodeSessionSandboxContext,
     allocationId: string | undefined,
     private readonly options: NodeSessionSandboxOptions,
+    held: Map<string, SandboxPort>,
     private readonly onDestroyed: () => void,
+    initialState?: Promise<SessionSandboxState | undefined>,
+    onSaved?: (state: SessionSandboxState) => void,
   ) {
     this.context = context;
+    let adopting = initialState;
     const scope = () => scopeOf(this.context);
     this.core = new PortsSessionSandbox<SandboxPort>({
       compose: async () => {
@@ -197,6 +266,7 @@ export class NodeSessionSandbox implements SandboxPort {
           name: "node",
           create: ({ signal }) => options.createV1({ ...this.context, ...(allocationId === undefined ? {} : { allocationId }), signal }),
           ...(options.v1LeaseTtlMs === undefined ? {} : { leaseTtlMs: options.v1LeaseTtlMs }),
+          held,
         });
         const { ports } = createSandboxPorts({ ...adapter, native: { ...adapter.native, storage: () => this.storagePort() } }, {
           // Storage is Node's own (native above), so the generic deps are never read.
@@ -221,9 +291,12 @@ export class NodeSessionSandbox implements SandboxPort {
       },
       executor: (runtime) => this.track(runtime),
       state: {
-        load: async () => this.state,
-        save: async (state) => { this.state = state; },
-        clear: async () => { this.state = undefined; },
+        load: async () => {
+          if (adopting !== undefined) { const warmed = await adopting; adopting = undefined; this.state ??= warmed; }
+          return this.state;
+        },
+        save: async (state) => { adopting = undefined; this.state = state; onSaved?.(state); },
+        clear: async () => { adopting = undefined; this.state = undefined; },
       },
       scope,
       plan: async ({ scope: s, stores }) => {
@@ -273,6 +346,8 @@ export class NodeSessionSandbox implements SandboxPort {
   async open(): Promise<void> {
     await this.core.mountSessionOutputs();
   }
+
+  warm(): Promise<void> { return this.core.warm(); }
 
   /** Execution end (design §0.1 step 7); the sandbox keeps running until the idle pause. */
   async endExecution(): Promise<void> {
