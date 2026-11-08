@@ -156,6 +156,7 @@ import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf"
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import { createSandbox } from "./sandbox";
+import { createE2BSessionSandbox, type E2BSessionSandbox } from "./e2b-session-sandbox";
 import {
   loadManagedSessionResources,
   mountResources,
@@ -786,6 +787,8 @@ export class SessionDO extends DurableObject<Env> {
   observability: { emit?: (event: unknown) => void } | null = null;
   private initialized = false;
   private sandbox: SandboxExecutor | null = null;
+  /** Set when SANDBOX_ADAPTER=e2b: the same object as `sandbox`. */
+  private e2bSandbox: E2BSessionSandbox | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
   /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
@@ -2749,6 +2752,7 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
       this.sandbox = null;
+      this.e2bSandbox = null;
       this.wrappedSandbox = null;
       this.sandboxRuntime = null;
       // Close the browser session if one was created
@@ -4076,7 +4080,29 @@ export class SessionDO extends DurableObject<Env> {
     if (!this.sandbox) {
       // Sandbox ID must be 1-63 chars; DO hex ID is 64 chars — truncate to fit
       const sandboxId = this.ctx.id.toString().slice(0, 63);
-      this.sandbox = createSandbox(this.env, sandboxId);
+      const adapter = this.env.SANDBOX_ADAPTER ?? "cloudflare";
+      if (adapter === "e2b") {
+        this.e2bSandbox = createE2BSessionSandbox({
+          env: this.env,
+          storage: this.ctx.storage,
+          scope: () => ({
+            workspaceId: this.state.tenant_id,
+            environmentId: this.state.environment_id,
+            sessionId: this.state.session_id,
+            workId: this.state.session_id,
+          }),
+          networking: async () => {
+            const envId = this.state.environment_id;
+            const config = envId ? await this.getEnvConfig(envId) : null;
+            return (config?.config as { networking?: { type?: string; allowed_hosts?: string[]; allow_package_managers?: boolean } } | undefined)?.networking;
+          },
+        });
+        this.sandbox = this.e2bSandbox;
+      } else if (adapter === "cloudflare") {
+        this.sandbox = createSandbox(this.env, sandboxId);
+      } else {
+        throw new Error(`Unknown SANDBOX_ADAPTER: ${adapter}`);
+      }
       this.wrappedSandbox = this.wrapSandboxWithLazyWarmup(this.sandbox);
     }
   }
@@ -6770,6 +6796,14 @@ export class SessionDO extends DurableObject<Env> {
       // afterthought. This barrier precedes status_idle and execution settle.
       await this.synchronizeManagedMemoryStores(activeFence);
       managedMemorySynchronized = true;
+      if (this.e2bSandbox !== null) {
+        // E2B outputs are copied out at turn end, not mounted live.
+        try {
+          await this.e2bSandbox.syncStorage("turn_end");
+        } catch (error) {
+          logWarn({ op: "session_do.e2b.outputs_sync", session_id: this.state.session_id, err: error }, "E2B Session outputs could not be published");
+        }
+      }
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];

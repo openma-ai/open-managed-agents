@@ -414,6 +414,13 @@ export interface Env {
    * InvalidBackupConfigError. See sandbox.ts createWorkspaceBackup.
    */
   BACKUP_BUCKET_NAME?: string;
+  /** Sandbox provider for Sessions: "cloudflare" (default) or "e2b". */
+  SANDBOX_ADAPTER?: string;
+  /** E2B API key (secret) and template name/id, for SANDBOX_ADAPTER=e2b. */
+  E2B_API_KEY?: string;
+  E2B_TEMPLATE?: string;
+  /** Optional E2B-compatible domain. */
+  E2B_DOMAIN?: string;
 }
 
 /**
