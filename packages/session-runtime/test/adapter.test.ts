@@ -192,7 +192,7 @@ describe("RuntimeAdapter — unified shape (Node + CF)", () => {
   it("hintTurnInFlight callback fires when invoked — wires CF's setAlarm path", async () => {
     // hintTurnInFlight is a separate method on the adapter (not auto-
     // called by beginTurn) so callers can place the hint at the exact
-    // point they want — both turn-runtime.ts (SessionDO path) and
+    // point they want — both turn-lifetime.ts (SessionDO path) and
     // SessionStateMachine.runHarnessTurn (Node path) call it right
     // after beginTurn. The test mirrors that pattern.
     expect(f.hintFires).toEqual([]);

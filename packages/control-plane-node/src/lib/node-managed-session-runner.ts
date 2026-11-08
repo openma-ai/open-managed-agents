@@ -1,4 +1,11 @@
-import { SessionSandboxRuntime, type SessionSandboxMode } from "@open-managed-agents/session-runtime";
+import {
+  planTurnFailure,
+  reportTurnFailure,
+  SessionSandboxRuntime,
+  type SessionSandboxMode,
+  type TurnFailureEventsPort,
+} from "@open-managed-agents/session-runtime";
+import { abortableDelay, abortedError, linkAbort, untilAborted } from "@open-managed-agents/session-runtime-contract";
 import {
   probeSandboxLiveness,
   startSandboxHeartbeat,
@@ -23,10 +30,6 @@ import type {
 } from "@open-managed-agents/managed-agents-application";
 import { budgetReachedStopEvents, openSessionBudgetGate } from "@open-managed-agents/managed-agents-application";
 import {
-  abortedError,
-  abortableDelay,
-  linkAbort,
-  untilAborted,
   type NodeManagedSessionRunner,
   type NodeManagedSessionRunnerAcceptInput,
   type StartNodeManagedSessionRuntime,
@@ -991,24 +994,17 @@ export class DefaultNodeManagedSessionRunner
           } catch (error) {
             if (!(error instanceof Error)) throw error;
             const sideEffectFree = runtime.agentEventCount === agentEventsBefore;
-            if (
-              !sideEffectFree
-              || attempt >= retry.attempts
-              || abortController.signal.aborted
-              || isNonRetryableHarnessError(error)
-            ) {
-              throw error;
-            }
-            runtime.broadcastProducedEvent({
-              type: "session.error",
-              error: {
-                type: "unknown_error",
-                message: error instanceof Error ? error.message : String(error),
-                retryStatus: "retrying",
-              },
+            const plan = planTurnFailure({
+              cancelled: abortController.signal.aborted,
+              failureClass: sideEffectFree && !isNonRetryableHarnessError(error) ? "transient" : "turn_dead",
+              attempt,
+              maxAttempts: retry.attempts,
+              delayMs: retry.delayMs,
             });
-            runtime.broadcastProducedEvent({ type: "session.status_rescheduled" });
-            await abortableDelay(retry.delayMs(attempt), abortController.signal);
+            // Exhausted and cancelled turns are settled by the outer catch.
+            if (plan.type !== "retry") throw error;
+            reportTurnFailure(plan, error.message, nodeTurnFailureEvents(runtime));
+            await abortableDelay(plan.delayMs, abortController.signal);
             if (abortController.signal.aborted) throw error;
           }
         }
@@ -1038,16 +1034,13 @@ export class DefaultNodeManagedSessionRunner
       } else {
         runFailed = true;
         if (abortController.signal.reason === "lease_lost") throw error;
-        runtime.broadcastProducedEvent({
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: error instanceof Error ? error.message : String(error),
-            // The turn may have produced side effects (tool calls), so it is not
-            // retried automatically: CMA semantics for a dead turn are `exhausted`.
-            retryStatus: "exhausted",
-          },
-        });
+        // The turn may have produced side effects (tool calls), so it is not
+        // retried automatically: CMA semantics for a dead turn are `exhausted`.
+        reportTurnFailure(
+          { type: "exhausted" },
+          error instanceof Error ? error.message : String(error),
+          nodeTurnFailureEvents(runtime),
+        );
         throw new SessionRetriesExhaustedError(
           error instanceof Error ? error.message : String(error),
         );
@@ -1347,6 +1340,20 @@ export class DefaultNodeManagedSessionRunner
 }
 
 /** Non-retryable harness failures use ConfigError (detected by error.name). */
+function nodeTurnFailureEvents(runtime: ManagedNodeHarnessRuntime): TurnFailureEventsPort {
+  return {
+    sessionError: (message, retryStatus) => {
+      runtime.broadcastProducedEvent({
+        type: "session.error",
+        error: { type: "unknown_error", message, retryStatus },
+      });
+    },
+    rescheduled: () => {
+      runtime.broadcastProducedEvent({ type: "session.status_rescheduled" });
+    },
+  };
+}
+
 function isNonRetryableHarnessError(error: Error): boolean {
   return error.name === "ConfigError";
 }
