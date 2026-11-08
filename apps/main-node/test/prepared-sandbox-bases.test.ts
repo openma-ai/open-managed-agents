@@ -711,3 +711,19 @@ describe("prepared base wiring from the composed sandbox factory", () => {
     });
   });
 });
+
+describe("PreparedSandboxBases expiry (characterization before the template cache move)", () => {
+  it("keeps a ready base forever: a hit 60 days after the build still uses it", async () => {
+    const h = harness();
+    await h.bases.create(scope, request, h.createSession());
+    await h.bases.idle();
+    const key = kvKeyOf(h.store);
+    expect(key.startsWith("sandbox_prepared_base:v1:e2b:")).toBe(true);
+    expect(JSON.parse(h.store.data.get(key)!)).toMatchObject({ state: "ready", handle: { provider: "e2b", id: "snap_1" } });
+    h.advance(60 * 24 * 60 * 60_000);
+    await h.bases.create(scope, request, h.createSession());
+    await h.bases.idle();
+    expect(h.created).toEqual([undefined, { provider: "e2b", id: "snap_1" }]);
+    expect(h.builders).toHaveLength(1);
+  });
+});
