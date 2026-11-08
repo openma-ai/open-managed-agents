@@ -38,7 +38,7 @@ import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
 import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
-import { PortsSessionSandbox, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxExecutor, type SessionSandboxState } from "./session-sandbox";
+import { PortsSessionSandbox, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxExecutor, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 export { STORAGE_SYNC_INTERVAL_MS };
 

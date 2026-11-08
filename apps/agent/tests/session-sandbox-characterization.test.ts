@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SandboxPorts } from "@open-managed-agents/sandbox";
-import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxState } from "../src/runtime/session-sandbox";
+import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 // Characterization (#545 sandbox core move): what the Session sandbox runtime
 // does today at the points the core-driven lifecycle (design §0.1 steps 7–9)

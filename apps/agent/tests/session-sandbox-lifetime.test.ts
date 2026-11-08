@@ -7,7 +7,7 @@ import {
   PortsSessionSandbox,
   type SessionSandboxExecutor,
   type SessionSandboxState,
-} from "../src/runtime/session-sandbox";
+} from "@open-managed-agents/session-runtime";
 
 // Design §0.0 rule 11 / §0.1 maxLifetimeMs: the shared runtime pauses →
 // attaches in a gap between tool calls before the provider's continuous-run

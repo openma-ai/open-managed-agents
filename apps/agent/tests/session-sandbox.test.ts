@@ -4,7 +4,7 @@ import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import { setCloudflareSandboxForTest } from "../src/runtime/sandbox";
 import { createSessionSandbox } from "../src/runtime/session-sandbox-adapters";
 import { E2BSessionSandbox } from "../src/runtime/e2b-session-sandbox";
-import { PortsSessionSandbox, type SessionSandboxExecutor } from "../src/runtime/session-sandbox";
+import { PortsSessionSandbox, type SessionSandboxExecutor } from "@open-managed-agents/session-runtime";
 
 vi.mock("../../../packages/sandbox-port-kit/src/index.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@open-managed-agents/sandbox-port-kit")>();

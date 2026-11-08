@@ -1,9 +1,9 @@
-// One Session sandbox runtime over the Sandbox SDK v2 Ports
-// (research/sandbox-sdk-v2-design.md §0.1). SessionDO keeps talking to a
-// SandboxExecutor; every adapter (SANDBOX_ADAPTER) reaches it through this
-// class, which calls only SandboxPorts. Adapter composition
-// (createSandboxPorts + the adapter) lives in cloudflare-session-sandbox.ts and
-// e2b-session-sandbox.ts; session-sandbox-adapters.ts picks one.
+// The Session sandbox core over the Sandbox SDK v2 Ports
+// (research/sandbox-sdk-v2-design.md §0.1), shared by the Cloudflare
+// SessionDO and the Node Session runner (design §0.0 rule 15). Hosts keep
+// talking to a SandboxExecutor; this class calls only SandboxPorts. Hosts
+// only compose: createSandboxPorts + an adapter, and the infrastructure
+// below (handle record, restore point, scope, plan).
 //
 // Opening a sandbox (lazily, on first use or prepare()):
 //   1. attach the saved handle; its /tmp/.oma-warm marker is the generation

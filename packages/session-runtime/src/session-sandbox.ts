@@ -49,3 +49,15 @@ export class SessionSandboxRuntime {
 
   invalidatePreparation(): void { this.preparation = null; }
 }
+
+export {
+  LIFETIME_REFRESH_MARGIN_MS,
+  MAX_TOOL_CALL_MS,
+  PortsSessionSandbox,
+  SANDBOX_GENERATION_MARKER,
+  STORAGE_SYNC_INTERVAL_MS,
+  fenceFor,
+  type PortsSessionSandboxOptions,
+  type SessionSandboxExecutor,
+  type SessionSandboxState,
+} from "./session-sandbox-core";

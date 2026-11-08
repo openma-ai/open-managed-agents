@@ -26,7 +26,7 @@ import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources, memoryStoreMountTarget } from "./resource-mounter";
 import { findLatestBackup, type WorkspaceBackupHandle } from "./workspace-backups";
-import { PortsSessionSandbox } from "./session-sandbox";
+import { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 
 export interface CloudflareSessionSandboxDeps {
   env: Env;

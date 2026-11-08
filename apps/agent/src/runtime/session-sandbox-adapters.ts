@@ -7,7 +7,7 @@ import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSessionSandbox, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { createE2BSessionSandbox, type SessionNetworking } from "./e2b-session-sandbox";
-import type { PortsSessionSandbox } from "./session-sandbox";
+import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 
 export interface SessionSandboxDeps {
   env: Env;

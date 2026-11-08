@@ -21,6 +21,7 @@
   "dependencies": {
     "@open-managed-agents/execution-control": "workspace:*",
     "@open-managed-agents/event-log": "workspace:*",
+    "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",

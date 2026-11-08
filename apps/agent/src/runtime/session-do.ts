@@ -164,7 +164,7 @@ import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-m
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
-import type { PortsSessionSandbox } from "./session-sandbox";
+import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 import {
   loadManagedSessionResources,
   mountResources,
