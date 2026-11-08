@@ -1,12 +1,16 @@
 import { posix } from "node:path";
 import { unzipSync } from "fflate";
 import {
-  DEFAULT_WORKSPACE_ROOT,
   PLATFORM_ROOT,
   supportsSessionOutputMount,
-  workspaceRootOf,
   type SandboxExecutor,
 } from "@open-managed-agents/sandbox";
+import {
+  assertCommandSucceeded,
+  commandScopedRepositoryAccess,
+  mountSessionResources,
+  type RepositoryMount,
+} from "@open-managed-agents/session-runtime";
 import type {
   FilesApplicationPort,
   MemoriesApplicationPort,
@@ -206,38 +210,6 @@ export function buildNodeManagedAppendablePromptReminders(
   }));
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
-/** A resource path as seen by `exec`, which runs in the workspace root.
- * Only a /workspace root may be a provider-mapped directory (local
- * subprocess), so only there is /workspace rewritten to a relative path;
- * under an image WORKDIR (ADR 0016) the absolute path is what every other
- * sandbox call (readFile, gitCheckout) uses too. */
-function shellWorkspacePath(value: string, workspaceRoot: string): string {
-  if (workspaceRoot !== DEFAULT_WORKSPACE_ROOT) return value;
-  if (value === "/workspace") return ".";
-  return value.startsWith("/workspace/")
-    ? value.slice("/workspace/".length)
-    : value;
-}
-
-function assertCommandSucceeded(command: string, output: string): void {
-  const prefixedExit = /^exit=(-?\d+)\n/u.exec(output);
-  if (
-    (prefixedExit !== null && Number(prefixedExit[1]) !== 0)
-    || /\[(?:error:|exit (?!exit=0\]))/u.test(output)
-  ) {
-    throw new Error(`${command} failed: ${output}`);
-  }
-}
-
-function commandStdout(command: string, output: string): string {
-  assertCommandSucceeded(command, output);
-  return output.replace(/^exit=0\n/u, "").trim();
-}
-
 function safeArchivePath(value: string): string {
   const normalized = posix.normalize(value.replaceAll("\\", "/"));
   if (
@@ -295,65 +267,23 @@ export class NodeManagedSessionInputPreparer {
    * and custom skills. */
   async prepareInputs(input: PrepareNodeManagedSessionInputs): Promise<void> {
 
-    const repositories = input.session.resources.filter(
-      (resource) => resource.type === "github_repository",
-    );
-    if (repositories.length > 0) {
-      if (input.sandbox.registerCommandSecrets === undefined) {
-        throw new Error(
-          "Managed Session has GitHub repositories, but the selected sandbox cannot scope repository credentials",
-        );
-      }
-      const gitCredentialEnv: Record<string, string> = {
-        GIT_CONFIG_COUNT: String(repositories.length),
-      };
-      for (const [index, resource] of repositories.entries()) {
-        const token = await repositoryToken(this.dependencies, { workspaceId: input.workspaceId, sessionId: input.session.id }, resource);
-        if (token === null) {
-          throw new Error(
-            `Managed Session GitHub credential for resource ${resource.id} was not found`,
-          );
-        }
-        // Egress is attached before Session init (design §0.1 step 3): git
-        // sends the placeholder and the relay swaps the token in.
-        if (this.dependencies.repositoryPlaceholder === undefined) {
-          throw new Error("Managed Session GitHub repositories need credential egress (PLATFORM_ROOT_SECRET); the token is never written to the sandbox");
-        }
-        const placeholder = await this.dependencies.repositoryPlaceholder({ workspaceId: input.workspaceId, sessionId: input.session.id, resourceId: resource.id });
-        gitCredentialEnv[`GIT_CONFIG_KEY_${index}`] =
-          `http.${resource.url}.extraHeader`;
-        gitCredentialEnv[`GIT_CONFIG_VALUE_${index}`] =
-          `Authorization: Basic ${Buffer.from(`x-access-token:${placeholder}`).toString("base64")}`;
-      }
-      input.sandbox.registerCommandSecrets("git", gitCredentialEnv);
-    }
+    await mountSessionResources(input.sandbox, input.session.resources, {
+      downloadFile: async (fileId) => {
+        const downloaded = await this.dependencies.files.downloadFile({ fileId });
+        if (downloaded.type !== "found") throw new Error(`Managed Session file ${fileId} was not found`);
+        return downloaded.file.content;
+      },
+      // git authenticates with a placeholder; only the egress relay holds the
+      // token (node-repository-egress). No placeholder source: refused, never plaintext.
+      repositories: commandScopedRepositoryAccess(input.sandbox, (repository) => this.repositoryPlaceholder(input, repository)),
+      // Attached by the sandbox storage Port on every open (prepareStorage).
+      memoryStores: { mode: "storage" },
+    });
 
     const writeFileBytes = input.sandbox.writeFileBytes;
-    const needsBinaryWrites = input.session.resources.some(
-      (resource) => resource.type === "file",
-    ) || input.session.agent.skills.some((skill) => skill.type === "custom");
-    if (needsBinaryWrites && writeFileBytes === undefined) {
+    const needsSkillWrites = input.session.agent.skills.some((skill) => skill.type === "custom");
+    if (needsSkillWrites && writeFileBytes === undefined) {
       throw new Error("Managed Session inputs require sandbox binary file writes");
-    }
-
-    for (const resource of input.session.resources) {
-      if (resource.type === "file") {
-        const downloaded = await this.dependencies.files.downloadFile({
-          fileId: resource.fileId,
-        });
-        if (downloaded.type !== "found") {
-          throw new Error(`Managed Session file ${resource.fileId} was not found`);
-        }
-        await writeFileBytes!.call(
-          input.sandbox,
-          resource.mountPath,
-          downloaded.file.content,
-        );
-        continue;
-      }
-      if (resource.type === "github_repository") {
-        await this.materializeRepository(input.sandbox, resource);
-      }
     }
 
     for (const skill of input.session.agent.skills) {
@@ -458,70 +388,19 @@ export class NodeManagedSessionInputPreparer {
     }
   }
 
-  private async materializeRepository(
-    sandbox: SandboxExecutor,
-    resource: Extract<Session["resources"][number], { type: "github_repository" }>,
-  ): Promise<void> {
-    // A restarted Node process can reopen a retained workspace. Preserve its
-    // edits instead of destructively cloning over the repository again.
-    let retained = true;
-    try {
-      await sandbox.readFile(`${resource.mountPath}/.git/HEAD`);
-    } catch {
-      retained = false;
+  /** What git sends for `resource`: its placeholder, once the token it
+   * stands for is known to exist (the relay substitutes it on the repository's host). */
+  private async repositoryPlaceholder(
+    input: PrepareNodeManagedSessionInputs,
+    resource: RepositoryMount,
+  ): Promise<string | null> {
+    if (resource.id === undefined) return null;
+    const scope = { workspaceId: input.workspaceId, sessionId: input.session.id };
+    const token = await repositoryToken(this.dependencies, scope, resource as Parameters<typeof repositoryToken>[2]);
+    if (token === null) return null;
+    if (this.dependencies.repositoryPlaceholder === undefined) {
+      throw new Error("Managed Session GitHub repositories need credential egress (PLATFORM_ROOT_SECRET); the token is never written to the sandbox");
     }
-    if (!retained) return this.cloneRepository(sandbox, resource);
-
-    const repositoryDir = shellQuote(shellWorkspacePath(resource.mountPath, await workspaceRootOf(sandbox)));
-    const remoteCommand = `git -C ${repositoryDir} remote get-url origin`;
-    const remote = commandStdout(
-      remoteCommand,
-      await sandbox.exec(remoteCommand, 30_000),
-    );
-    if (remote !== resource.url) {
-      throw new Error(
-        `Retained repository at ${resource.mountPath} does not match Session resource ${resource.id}: expected ${resource.url}, found ${remote || "no origin"}`,
-      );
-    }
-    if (resource.checkout?.type === "commit") {
-      const commitCommand = `git -C ${repositoryDir} cat-file -e ${shellQuote(`${resource.checkout.sha}^{commit}`)}`;
-      commandStdout(
-        commitCommand,
-        await sandbox.exec(commitCommand, 30_000),
-      );
-    }
-    // A Bond-backed repository outlives a token: a long-lived Session sees
-    // tags and branches pushed since it was cloned. The working tree is not
-    // touched, so the Agent's edits stay.
-    if (resource.credentialSource === "bond") {
-      const fetchCommand = `git -C ${repositoryDir} fetch --quiet --tags --force --prune origin`;
-      assertCommandSucceeded(fetchCommand, await sandbox.exec(fetchCommand, 120_000));
-    }
-  }
-
-  private async cloneRepository(
-    sandbox: SandboxExecutor,
-    resource: Extract<Session["resources"][number], { type: "github_repository" }>,
-  ): Promise<void> {
-    if (sandbox.gitCheckout !== undefined) {
-      await sandbox.gitCheckout(resource.url, {
-        targetDir: resource.mountPath,
-        ...(resource.checkout?.type === "branch"
-          ? { branch: resource.checkout.name }
-          : {}),
-      });
-    } else {
-      const branch = resource.checkout?.type === "branch"
-        ? `--branch ${shellQuote(resource.checkout.name)} `
-        : "";
-      const command = `git clone ${branch}-- ${shellQuote(resource.url)} ${shellQuote(shellWorkspacePath(resource.mountPath, await workspaceRootOf(sandbox)))}`;
-      const output = await sandbox.exec(command, 120_000);
-      assertCommandSucceeded(command, output);
-    }
-    if (resource.checkout?.type === "commit") {
-      const command = `git -C ${shellQuote(shellWorkspacePath(resource.mountPath, await workspaceRootOf(sandbox)))} checkout --detach ${shellQuote(resource.checkout.sha)}`;
-      const output = await sandbox.exec(command, 60_000);
-      assertCommandSucceeded(command, output);
-    }
+    return this.dependencies.repositoryPlaceholder({ ...scope, resourceId: resource.id });
   }
 }

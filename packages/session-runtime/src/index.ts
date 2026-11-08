@@ -42,6 +42,25 @@ export type {
   FileIdResolver,
 } from "./router";
 
+export {
+  mountSessionResources,
+  type SessionResourceMountPorts,
+  type SessionResourceSandbox,
+} from "./session-resource-mount";
+export {
+  memoryStoreMountTarget,
+  planSessionResourceMounts,
+  type RepositoryMount,
+  type SessionResourceMount,
+  type SessionResourceRecord,
+} from "./session-resource-records";
+export {
+  assertCommandSucceeded,
+  commandScopedRepositoryAccess,
+  shellQuote,
+  type RepositoryAccessPort,
+} from "./session-resource-repository";
+
 export { SessionSandboxRuntime, type SessionSandboxMode } from "./session-sandbox";
 export { PortsSessionSandbox } from "./ports-session-sandbox";
 export type {
@@ -54,6 +73,32 @@ export type {
 export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";
+export {
+  runAgentTurn,
+  TurnAborted,
+  type RunAgentTurnOptions,
+  type TurnContext,
+  type TurnError,
+  type TurnRuntimeAgent,
+} from "./turn-lifetime";
+export {
+  clearTurnRecoveryCount,
+  recoverAgentTurn,
+  type PartialStream,
+  type RecoverAgentTurnOptions,
+  type RecoveryContext,
+  type RecoveryDecision,
+} from "./turn-recovery";
+export {
+  isTurnCancellationError,
+  planTurnFailure,
+  reportTurnFailure,
+  type PlanTurnFailureInput,
+  type TurnFailureClass,
+  type TurnFailureEventsPort,
+  type TurnFailurePlan,
+} from "./turn-failure";
+export { openTurnMarker, type TurnMarker, type TurnMarkerHooks } from "./turn-marker";
 export {
   ORPHAN_SANDBOX_MIN_AGE_MS,
   reclaimOrphanSandboxes,

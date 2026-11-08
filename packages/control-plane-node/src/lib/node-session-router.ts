@@ -30,10 +30,10 @@ import type {
   SessionStreamFrame,
   SessionStreamHandle,
 } from "@open-managed-agents/session-runtime";
+import { rejectMessageForRequiresActionBatch } from "@open-managed-agents/session-runtime-contract/requires-action";
 import type { SessionRegistry } from "../registry.js";
 import type { EventStreamHub } from "./event-stream-hub.js";
 import { aggregateSpanModelUsageFromEvents, ledgerToApiTokenUsage } from "./node-harness-usage.js";
-import { rejectMessageForRequiresActionBatch } from "./requires-action.js";
 
 interface NodeSessionRouterDeps {
   sql: SqlClient;

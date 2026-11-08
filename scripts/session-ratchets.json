@@ -1,7 +1,7 @@
 {
   "$comment": "Baseline for scripts/check-session-ratchets.mjs (design §0.7 测试门禁 1). Numbers only go down: `node scripts/check-session-ratchets.mjs --update` lowers them to the current values and never raises them. unclassifiedPackages are Session packages that predate the gate; a new one must be classified in scripts/check-core-boundaries.mjs.",
   "maxLines": {
-    "apps/agent/src/runtime/session-do.ts": 8287,
+    "apps/agent/src/runtime/session-do.ts": 8223,
     "packages/control-plane-node/src/modules/node-managed.ts": 1315
   },
   "agentImports": {

@@ -7,15 +7,6 @@ import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api
 import { nanoid } from "nanoid";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import { parseCronExpression } from "cron-schedule";
-import {
-  runAgentTurn,
-  recoverAgentTurn,
-  clearTurnRecoveryCount,
-  TurnAborted,
-  type TurnRuntimeAgent,
-  type RecoveryDecision,
-  type PartialStream,
-} from "./turn-runtime";
 import type { Env } from "@open-managed-agents/shared";
 import {
   logWarn,
@@ -45,12 +36,33 @@ import type {
 } from "@open-managed-agents/event-log";
 import { recoverInterruptedState as runRecovery } from "./recovery";
 import {
+  mountSessionResources,
   RuntimeAdapterImpl,
+  runAgentTurn,
+  recoverAgentTurn,
+  clearTurnRecoveryCount,
+  TurnAborted,
+  isTurnCancellationError,
+  openTurnMarker,
+  planTurnFailure,
+  reportTurnFailure,
   type RuntimeAdapter,
+  type TurnRuntimeAgent,
+  type RecoveryDecision,
+  type PartialStream,
 } from "@open-managed-agents/session-runtime";
+import {
+  asWireEvents,
+  awaitsCustomToolResult,
+  knownToolCallIds,
+  remainingAfterAnswer,
+  requiresActionStopReason,
+  toolResultIds,
+  type PendingToolCall as ResolvedPendingToolCall,
+} from "@open-managed-agents/session-runtime-contract/requires-action";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
-import { interruptedTurnStopReason } from "@open-managed-agents/session-runtime-contract";
+import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -168,10 +180,7 @@ import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
 import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
-import {
-  loadManagedSessionResources,
-  mountResources,
-} from "./resource-mounter";
+import { installGhCli, loadManagedSessionResources, proxiedRepositoryAccess } from "./managed-session-resources";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
 import {
   createSessionWakeups,
@@ -2142,23 +2151,19 @@ export class SessionDO extends DurableObject<Env> {
           // harness can issue its model request. D1 is the authority the
           // cold-start finalizer reads; the alarm is what wakes it.
           const turnId = `turn_${nanoid()}`;
-          let turnMarked = false;
-          try {
-            await this.runtimeAdapter.beginTurn(this.state.session_id, turnId);
-            turnMarked = true;
-            this._activeTurnIds.add(turnId);
-          } catch (err) {
-            // Don't fail the execution just because the lifecycle mirror
-            // couldn't be written. The event-log dangling-turn fallback in
-            // _finalizeStaleTurns still ends it after a reset.
-            console.warn(`[drain] beginTurn failed for ${turnId}:`, err);
-          }
+          // A marker that couldn't be written doesn't fail the execution: the
+          // event-log dangling-turn fallback in _finalizeStaleTurns still
+          // ends it after a reset.
+          const turnMarker = await openTurnMarker(this.runtimeAdapter, this.state.session_id, turnId, {
+            began: (id) => { this._activeTurnIds.add(id); },
+            ended: (id) => { this._activeTurnIds.delete(id); },
+          });
           sdoLog("turn.begin", {
             session_id: this.state.session_id,
             thread_id: threadId,
             turn_id: turnId,
             execution_id: execution.id,
-            d1_marked: turnMarked,
+            d1_marked: turnMarker.marked,
           });
           // Await the durable write. A fire-and-forget setAlarm can be lost
           // if the isolate resets right after the turn starts.
@@ -2248,16 +2253,7 @@ export class SessionDO extends DurableObject<Env> {
             // host settles the execution so a successful turn never looks
             // like a cold-start orphan. Filter by turnId inside endTurn, so
             // a finalizer that already ended this turn makes this a no-op.
-            let endTurnOk = true;
-            if (turnMarked) {
-              try {
-                await this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle");
-              } catch (err) {
-                endTurnOk = false;
-                console.warn(`[drain] endTurn failed for ${turnId}:`, err);
-              }
-              this._activeTurnIds.delete(turnId);
-            }
+            const endTurnOk = await turnMarker.end();
             sdoLog("turn.end", {
               session_id: this.state.session_id,
               thread_id: threadId,
@@ -2270,7 +2266,7 @@ export class SessionDO extends DurableObject<Env> {
                   : holdQueuedOnLane
                     ? "held"
                     : "completed",
-              d1_marked: turnMarked,
+              d1_marked: turnMarker.marked,
               end_turn_ok: endTurnOk,
             });
           }
@@ -2539,7 +2535,7 @@ export class SessionDO extends DurableObject<Env> {
         this._activeTurnIds.add(turnId);
       },
       onTurnEnded: (_sessionId, turnId) => {
-        // Idempotent: turn-runtime.ts also fires hintTurnEnded as a
+        // Idempotent: turn-lifetime.ts also fires hintTurnEnded as a
         // safety net in its outer finally if endTurn itself throws.
         // Set.delete on missing key is a no-op.
         this._activeTurnIds.delete(turnId);
@@ -4381,16 +4377,12 @@ export class SessionDO extends DurableObject<Env> {
         );
 
         if (resources.length) {
-          await mountResources(
-            sandbox,
-            resources,
-            this.env.CONFIG_KV,
-            new Map(),
-            undefined,
-            this.state.tenant_id,
-            undefined,
-            loaded.fileSource,
-          );
+          await mountSessionResources(sandbox, resources, {
+            downloadFile: async (fileId) => (await loaded.fileSource.downloadFile(fileId)).content,
+            repositories: proxiedRepositoryAccess(sandbox),
+            memoryStores: { mode: "native" },
+            afterRepositories: () => installGhCli(sandbox),
+          });
         }
       }
 
@@ -5123,9 +5115,7 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") &&
-        (e as unknown as { id?: string }).id === toolUseId);
+      return knownToolCallIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return true;
     }
@@ -5167,12 +5157,16 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        e.type === "agent.tool_result" &&
-        (e as unknown as { tool_use_id?: string }).tool_use_id === toolUseId);
+      return toolResultIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return false;
     }
+  }
+
+  /** Pending calls named by their resolved tool: a call proxied through
+   * mcp_invoke awaits confirmation of its target. */
+  private resolvedPendingCalls(pending: readonly PendingToolCall[]): ResolvedPendingToolCall[] {
+    return pending.map((p) => ({ toolCallId: p.toolCallId, toolName: resolveProxiedToolCall(p.toolName, p.args).toolName }));
   }
 
   private async resumeWhenToolBatchSettled(
@@ -5181,34 +5175,12 @@ export class SessionDO extends DurableObject<Env> {
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
   ): Promise<void> {
-    const before = this.state.pending_tool_calls ?? [];
-    let resolved = new Set<string>([answeredId]);
-    if (before.length > 1) {
-      try {
-        for (const e of history.getEvents()) {
-          if (e.type === "agent.tool_result") {
-            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
-            if (id) resolved.add(id);
-          }
-        }
-      } catch { resolved = new Set([answeredId]); }
-    }
-    const remaining = before.filter((p) => !resolved.has(p.toolCallId));
+    const remaining = remainingAfterAnswer(this.state.pending_tool_calls ?? [], answeredId, () => asWireEvents(history.getEvents()));
     this.setState({ ...this.state, pending_tool_calls: remaining });
     if (remaining.length > 0) {
-      const builtin = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
-      const anyCustom = remaining.some((p) => {
-        const name = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !builtin.includes(name) && !name.startsWith("mcp_") &&
-          !name.startsWith("call_agent_") && !name.startsWith("memory_");
-      });
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
-        stop_reason: {
-          type: "requires_action",
-          action_type: anyCustom ? "custom_tool_result" : "tool_confirmation",
-          event_ids: remaining.map((p) => p.toolCallId),
-        },
+        stop_reason: requiresActionStopReason(this.resolvedPendingCalls(remaining), remaining.map((p) => p.toolCallId)),
       } as SessionEvent;
       history.append(idleEvent);
       this.broadcastEvent(idleEvent, fence);
@@ -5885,9 +5857,7 @@ export class SessionDO extends DurableObject<Env> {
     let resolveTurnSettled!: () => void;
     this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
-    const abortFromParent = () => abortController.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+    const unlinkParentAbort = linkAbort(parentSignal, abortController);
     const effectiveAbortSignal = abortController.signal;
     sandbox = this.bindSandboxToExecution(
       sandbox,
@@ -5936,7 +5906,7 @@ export class SessionDO extends DurableObject<Env> {
     // each attached store appears as /mnt/memory/<store_name>/ inside the
     // sandbox. The agent reads/writes via the standard file tools (no
     // bespoke memory_* tools). The mount itself is set up further down in
-    // the resource-mounter call. We only need MemoryStoreService here to
+    // the mountSessionResources call. We only need MemoryStoreService here to
     // resolve store metadata for the system-prompt reminder block.
     let memoryStoreService: MemoryStoreService | null = null;
     if (memoryAttachments.length && this.env.MAIN_DB) {
@@ -6448,30 +6418,11 @@ export class SessionDO extends DurableObject<Env> {
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
 
-      // Check if any pending are custom tool uses (no execute function, not always_ask built-in)
-      const storedPendingCalls = this.state.pending_tool_calls;
-      const hasCustomToolPending = storedPendingCalls.some((p) => {
-        // A call proxied through mcp_invoke awaits confirmation of its target.
-        const toolName = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"].includes(toolName) &&
-          !toolName.startsWith("mcp_") &&
-          !toolName.startsWith("call_agent_") &&
-          !toolName.startsWith("memory_");
-      });
-
+      // A pending custom tool use (no execute function) outranks always_ask confirmations.
+      const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
       let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"];
-      if (hasCustomToolPending) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "custom_tool_result" as const,
-          event_ids: pendingConfirmations,
-        };
-      } else if (pendingConfirmations.length > 0) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "tool_confirmation" as const,
-          event_ids: pendingConfirmations,
-        };
+      if (storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0) {
+        stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations);
       } else if (ctx.budget?.reached) {
         // Official budget stop (requires_action outranks it, above):
         // thread idle → usage snapshot → session idle (emitted below).
@@ -6509,12 +6460,13 @@ export class SessionDO extends DurableObject<Env> {
       // owner and would also try to append a second error/idle pair through
       // the fenced history wrapper.  Treat the sandbox guard's equivalent
       // error the same way as an AbortError.
-      if (
-        err instanceof Error &&
-        (err.name === "AbortError" ||
-          err.name === "ExecutionFenceLostError" ||
-          err.name === "SandboxExecutionFencedError")
-      ) {
+      // A lost execution fence is an expected cancellation, not a model or
+      // infrastructure failure.  The lease owner may have been replaced by
+      // another worker; retrying here would let the stale worker race the new
+      // owner and would also try to append a second error/idle pair through
+      // the fenced history wrapper.  Treat the sandbox guard's equivalent
+      // error the same way as an AbortError.
+      if (isTurnCancellationError(err)) {
         // Interrupt handler (POST /event user.interrupt branch) already
         // appended its own session.status_idle synchronously before
         // the abort propagated, so the finally block must NOT emit a
@@ -6546,34 +6498,38 @@ export class SessionDO extends DurableObject<Env> {
         classified instanceof ConfigError ||
         classified instanceof AuthError;
       const isModelTurnDead = classified instanceof ModelError;
-      const isTransient = !isSessionTerminal && !isModelTurnDead;
+      const plan = planTurnFailure({
+        cancelled: false,
+        failureClass: isSessionTerminal ? "session_terminal" : isModelTurnDead ? "turn_dead" : "transient",
+        attempt: retryCount + 1,
+        maxAttempts: 3,
+        // Exponential backoff: 1s, 2s
+        delayMs: (attempt) => 1000 * Math.pow(2, attempt - 1),
+      });
 
-      if (isTransient && retryCount < 2) {
-        // Official CMA ordering: session.error{retrying} then status_rescheduled.
-        const retryingError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "retrying",
-          },
-        } as SessionEvent;
-        history.append(retryingError);
-        this.broadcastEvent(retryingError, activeFence);
-        const rescheduledEvent: SessionEvent = {
-          type: "session.status_rescheduled",
-          reason: errorMessage,
-        };
-        history.append(rescheduledEvent);
-        this.broadcastEvent(rescheduledEvent, activeFence);
+      // Official CMA ordering: session.error{retrying} then status_rescheduled.
+      reportTurnFailure(plan, errorMessage, {
+        sessionError: (message, retry_status) => {
+          const event = {
+            type: "session.error",
+            error: { type: "unknown_error", message, retry_status },
+          } as SessionEvent;
+          history.append(event);
+          this.broadcastEvent(event, activeFence);
+        },
+        rescheduled: (reason) => {
+          const event: SessionEvent = { type: "session.status_rescheduled", reason };
+          history.append(event);
+          this.broadcastEvent(event, activeFence);
+        },
+      });
+
+      if (plan.type === "retry") {
         // Retry hold (cma-steer-coherent-turn.md): do not flush unstamped
         // mid-turn inputs and do not start a new agent turn from them.
         // Leave them until the next consume boundary after this resume;
         // takeSteeringInputs then ingests them into the continuing turn.
-
-        // Exponential backoff: 1s, 2s
-        const delay = 1000 * Math.pow(2, retryCount);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise(r => setTimeout(r, plan.delayMs));
         // Recursive call owns the next idle emit (success or its own
         // finally). Suppress this frame's catch-all so we don't get
         // two status_idle events on a successful retry.
@@ -6587,38 +6543,18 @@ export class SessionDO extends DurableObject<Env> {
         );
       }
 
-      if (isTransient || isModelTurnDead) {
+      if (plan.type === "exhausted") {
         // Official CMA exhausted: session.error{exhausted} then idle
         // retries_exhausted. No status_rescheduled on the final failure.
         // Owner lock: retain mid-run queued inputs (holdQueuedOnLane), do not
         // flush/delete (deliberate divergence from SDK "flushed").
-        const exhaustedError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "exhausted",
-          },
-        } as SessionEvent;
-        history.append(exhaustedError);
-        this.broadcastEvent(exhaustedError, activeFence);
         holdQueuedOnLane = true;
         completedIdleEvent = {
           type: "session.status_idle",
           stop_reason: { type: "retries_exhausted" },
         };
-      } else {
+      } else if (plan.type === "terminal") {
         // Official CMA: retry_status terminal → session transitions to terminated.
-        const terminalError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "terminal",
-          },
-        } as SessionEvent;
-        history.append(terminalError);
-        this.broadcastEvent(terminalError, activeFence);
         this.terminate(
           classified instanceof PaymentRequiredError ? "payment_required"
             : classified instanceof AuthError ? "auth"
@@ -6657,7 +6593,7 @@ export class SessionDO extends DurableObject<Env> {
       }
       this._turnSettled.delete(abortController);
       resolveTurnSettled();
-      parentSignal?.removeEventListener("abort", abortFromParent);
+      unlinkParentAbort();
       // Emit status_idle only after turn-scoped resources have settled. On a
       // successful turn this preserves its precise stop_reason; error paths
       // use the generic event because they have no meaningful stop reason.

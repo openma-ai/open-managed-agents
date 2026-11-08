@@ -52,7 +52,7 @@ export interface RuntimeAdapter {
   readonly streams: StreamRepo;
   /** Optional — only callers that actually need to hand a sandbox to
    *  the harness (SessionStateMachine.runHarnessTurn) require this.
-   *  turn-runtime.ts only uses lifecycle methods. */
+   *  turn-lifetime.ts only uses lifecycle methods. */
   readonly sandbox?: SandboxExecutor;
 
   /**

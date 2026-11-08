@@ -30,9 +30,31 @@ describe("golden harness inference adapters", () => {
       wireModel: "deepseek-chat",
       providerId: "deepseek",
     });
-    expect(plan.env).toEqual({ PI_ACP_MODEL: "deepseek/deepseek-chat" });
+    expect(plan.env).toEqual({});
     expect(plan.files[0]?.content).toContain("/openai/v1");
     assertNoSecretInFiles(plan.files, PROXY.proxyToken);
+  });
+
+  // e2e 42d7c785 (session_hLxyQiRfRNX8Gc2KS7wh8): pi sent the literal
+  // "{env:HOSTED_INFERENCE_TOKEN}" as its bearer and ignored PI_ACP_MODEL, so
+  // the turn ended with only pi-acp's banner and no model output.
+  it.each([
+    ["deepseek", "deepseek-v4-flash", "deepseek"],
+    ["openai", "gpt-5", "oma-hosted"],
+  ])("pi reads the gateway token from env and the upstream model from settings (%s)", (providerId, wireModel, piProvider) => {
+    const plan = planFor(piInferenceAdapter, {
+      agent: { id: "pi-acp", command: "pi-acp" },
+      nativePath: "/native/pi",
+      endpoints: providerId === "deepseek" ? DEEPSEEK_ENDPOINTS : OPENAI_ENDPOINTS,
+      wireModel,
+      providerId,
+    });
+    const file = (name: string) => JSON.parse(plan.files.find((f) => f.path === `/native/pi/home/.pi/agent/${name}`)!.content);
+    // pi interpolates only $VAR / ${VAR} (docs/models.md "Value Resolution").
+    expect(file("models.json").providers[piProvider].apiKey).toBe("$HOSTED_INFERENCE_TOKEN");
+    expect(file("settings.json")).toEqual({ defaultProvider: piProvider, defaultModel: wireModel, quietStartup: true });
+    if (piProvider === "oma-hosted") expect(file("models.json").providers[piProvider].models).toEqual([{ id: wireModel }]);
+    else expect(file("models.json").providers[piProvider].models).toBeUndefined();
   });
 
   it("dsh", () => {
