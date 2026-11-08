@@ -160,6 +160,11 @@ import {
   loadManagedSessionResources,
   mountResources,
 } from "./resource-mounter";
+import {
+  provisionSessionSandbox,
+  supportsSandboxProvisioning,
+  withoutDeferredMemoryMounts,
+} from "./sandbox-provisioning";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
 import { prepareSandboxEgress } from "./sandbox-warmup-egress";
 import {
@@ -4250,59 +4255,89 @@ export class SessionDO extends DurableObject<Env> {
       // Raw sandbox — wrapped one would recurse back into warmUpSandbox here.
       const sandbox = this.getRawSandbox();
 
-      // Trigger container startup with retries — local dev containers can take
-      // 30-60s to start. SDK returns 503 while container port isn't listening.
-      // See: https://github.com/cloudflare/containers/issues/155
-      //
-      // Health-check semantics: `exec("true")` is the smallest possible probe
-      // (no-op posix binary, no fs/network IO). Cold-start: container needs
-      // ~30s for port 3000 to bind, so first attempt allows 30s. Steady-
-      // state: a healthy container responds in <100ms — anything over a few
-      // seconds means the shim is wedged (in-flight exec never resolved,
-      // file descriptors exhausted, kernel D-state on a dead socket).
-      // Using the default 120000ms timeout made wedged-container detection
-      // pathologically slow: staging 2026-05-19 saw 26× 120s timeouts =
-      // 53 min of retry-loop on a single bad container before recovery
-      // finally kicked in.
-      //
-      // After NUKE_AFTER_ATTEMPT failed probes we call sandbox.destroy() to
-      // force-tear-down the wedged container. CF's @cloudflare/sandbox SDK
-      // re-creates a fresh container on the next exec since the underlying
-      // Sandbox DO is keyed on sessionId (same DO, new container instance).
-      const HEALTH_TIMEOUT_FIRST_MS = 30_000;  // cold start allowance
-      const HEALTH_TIMEOUT_RETRY_MS = 5_000;   // wedged shim should answer <1s
-      const NUKE_AFTER_ATTEMPT = 3;
-      let ready = false;
-      let lastError = "";
-      let destroyed = false;
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const timeout = attempt === 0 ? HEALTH_TIMEOUT_FIRST_MS : HEALTH_TIMEOUT_RETRY_MS;
-        try {
-          await sandbox.exec("true", timeout);
-          ready = true;
-          break;
-        } catch (err: any) {
-          lastError = err?.message || String(err);
-          if (attempt === NUKE_AFTER_ATTEMPT && !destroyed) {
-            console.warn(
-              `[warmup] container unhealthy after ${attempt + 1} probes ` +
-                `(last: ${lastError.slice(0, 120)}); destroying + recreating`,
-            );
-            try {
-              if (typeof (sandbox as { destroy?: () => Promise<void> }).destroy === "function") {
-                await (sandbox as { destroy: () => Promise<void> }).destroy();
+      // Sandbox SDK 1.0 attaches mounts only while a container starts, so
+      // a Cloudflare sandbox is provisioned with its complete mount set
+      // (outputs + Memory Stores) before anything else touches it.
+      const sessionId = this.state.session_id;
+      const provisioned = supportsSandboxProvisioning(sandbox)
+        ? await provisionSessionSandbox({
+            sandbox,
+            tenantId: this.state.tenant_id,
+            sessionId,
+            loadResources: sessionId
+              ? (runtimeGeneration: string) => {
+                  const source = this.env.MAIN_MCP;
+                  if (source === undefined) {
+                    throw new Error(
+                      "Managed Session input source service binding is unavailable",
+                    );
+                  }
+                  return loadManagedSessionResources(source, {
+                    tenantId: this.state.tenant_id,
+                    sessionId,
+                    runtimeGeneration,
+                  });
+                }
+              : null,
+          })
+        : null;
+      if (provisioned !== null) {
+        this.currentWarmupGen = provisioned.incarnation;
+      } else {
+        // Trigger container startup with retries — local dev containers can take
+        // 30-60s to start. SDK returns 503 while container port isn't listening.
+        // See: https://github.com/cloudflare/containers/issues/155
+        //
+        // Health-check semantics: `exec("true")` is the smallest possible probe
+        // (no-op posix binary, no fs/network IO). Cold-start: container needs
+        // ~30s for port 3000 to bind, so first attempt allows 30s. Steady-
+        // state: a healthy container responds in <100ms — anything over a few
+        // seconds means the shim is wedged (in-flight exec never resolved,
+        // file descriptors exhausted, kernel D-state on a dead socket).
+        // Using the default 120000ms timeout made wedged-container detection
+        // pathologically slow: staging 2026-05-19 saw 26× 120s timeouts =
+        // 53 min of retry-loop on a single bad container before recovery
+        // finally kicked in.
+        //
+        // After NUKE_AFTER_ATTEMPT failed probes we call sandbox.destroy() to
+        // force-tear-down the wedged container. CF's @cloudflare/sandbox SDK
+        // re-creates a fresh container on the next exec since the underlying
+        // Sandbox DO is keyed on sessionId (same DO, new container instance).
+        const HEALTH_TIMEOUT_FIRST_MS = 30_000;  // cold start allowance
+        const HEALTH_TIMEOUT_RETRY_MS = 5_000;   // wedged shim should answer <1s
+        const NUKE_AFTER_ATTEMPT = 3;
+        let ready = false;
+        let lastError = "";
+        let destroyed = false;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const timeout = attempt === 0 ? HEALTH_TIMEOUT_FIRST_MS : HEALTH_TIMEOUT_RETRY_MS;
+          try {
+            await sandbox.exec("true", timeout);
+            ready = true;
+            break;
+          } catch (err: any) {
+            lastError = err?.message || String(err);
+            if (attempt === NUKE_AFTER_ATTEMPT && !destroyed) {
+              console.warn(
+                `[warmup] container unhealthy after ${attempt + 1} probes ` +
+                  `(last: ${lastError.slice(0, 120)}); destroying + recreating`,
+              );
+              try {
+                if (typeof (sandbox as { destroy?: () => Promise<void> }).destroy === "function") {
+                  await (sandbox as { destroy: () => Promise<void> }).destroy();
+                }
+              } catch (destroyErr: any) {
+                console.warn(`[warmup] destroy failed: ${destroyErr?.message ?? destroyErr}`);
               }
-            } catch (destroyErr: any) {
-              console.warn(`[warmup] destroy failed: ${destroyErr?.message ?? destroyErr}`);
+              destroyed = true;
             }
-            destroyed = true;
+            const delay = 1000 * Math.pow(1.5, attempt);
+            await new Promise(r => setTimeout(r, Math.min(delay, 5000)));
           }
-          const delay = 1000 * Math.pow(1.5, attempt);
-          await new Promise(r => setTimeout(r, Math.min(delay, 5000)));
         }
-      }
-      if (!ready) {
-        throw new Error(`Sandbox container failed to start after 10 attempts. Last error: ${lastError}`);
+        if (!ready) {
+          throw new Error(`Sandbox container failed to start after 10 attempts. Last error: ${lastError}`);
+        }
       }
 
       // Network egress is a warmup prerequisite, not a post-mount concern.
@@ -4341,7 +4376,15 @@ export class SessionDO extends DurableObject<Env> {
           // exec arriving N minutes after the agent turn just see the
           // files the agent wrote, no D1 round-trip needed.
           let containerWarmAlready = false;
-          try {
+          if (provisioned !== null) {
+            containerWarmAlready = !provisioned.started;
+            if (containerWarmAlready) {
+              logWarn(
+                { op: "session_do.warmup.skip_restore_container_alive", session_id: this.state.session_id, marker: this.currentWarmupGen },
+                "skipping workspace restore — container still warm with previous /workspace",
+              );
+            }
+          } else try {
             const probed = await sandbox.exec("cat /tmp/.oma-warm 2>/dev/null");
             const m = /^exit=(-?\d+)\n([\s\S]*)$/.exec(probed);
             if (m && m[1] === "0" && m[2].trim().length > 0) {
@@ -4539,7 +4582,6 @@ export class SessionDO extends DurableObject<Env> {
       // consumes a service-binding projection and performs provider I/O.
       // Resolve on every warmup so files added after Session creation are
       // visible before the first model request.
-      const sessionId = this.state.session_id;
       if (sessionId) {
         const source = this.env.MAIN_MCP;
         if (source === undefined) {
@@ -4547,19 +4589,32 @@ export class SessionDO extends DurableObject<Env> {
             "Managed Session input source service binding is unavailable",
           );
         }
-        const loaded = await loadManagedSessionResources(source, {
+        const loaded = provisioned?.resources ?? await loadManagedSessionResources(source, {
           tenantId: this.state.tenant_id,
           sessionId,
           runtimeGeneration: this.currentWarmupGen,
         });
-        this.hasWritableManagedMemoryMount = loaded.resources.some((resource) =>
+        const { resources, deferredStores } = withoutDeferredMemoryMounts(
+          loaded.resources,
+          provisioned?.deferredMounts ?? [],
+        );
+        for (const storeName of deferredStores) {
+          // Sandbox SDK 1.0 cannot add a mount to a running container.
+          try {
+            this.persistAndBroadcastEvent({
+              type: "session.warning",
+              message: `memory_store_mount_deferred store=${storeName} reason=attached_after_sandbox_start`,
+            } as unknown as SessionEvent);
+          } catch {}
+        }
+        this.hasWritableManagedMemoryMount = resources.some((resource) =>
           resource.type === "memory_store" && resource.access !== "read_only"
         );
 
-        if (loaded.resources.length) {
+        if (resources.length) {
           await mountResources(
             sandbox,
-            loaded.resources,
+            resources,
             this.env.CONFIG_KV,
             new Map(),
             undefined,

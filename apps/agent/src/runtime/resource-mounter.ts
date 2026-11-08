@@ -310,6 +310,24 @@ async function mountFile(
   await sandbox.writeFileBytes!(path, bytes);
 }
 
+/** Where a Memory Store resource mounts when its name is declared; null
+ * when the name needs a metadata lookup. Used to plan mounts before a
+ * Cloudflare container starts. */
+export function memoryStoreMountTarget(
+  res: Readonly<Record<string, unknown>>,
+): { storeName: string; storeId: string; readOnly: boolean } | null {
+  const storeId = (res.memoryStoreId as string | undefined)
+    ?? (res.memory_store_id as string | undefined)
+    ?? (res.id as string | undefined);
+  const mountStoreId = typeof res.runtimeMountStoreId === "string"
+    ? res.runtimeMountStoreId
+    : storeId;
+  if (typeof res.name !== "string" || res.name.length === 0 || typeof mountStoreId !== "string") {
+    return null;
+  }
+  return { storeName: res.name, storeId: mountStoreId, readOnly: res.access === "read_only" };
+}
+
 /**
  * Mount a memory store at /mnt/memory/<store_name>/. Looks up the store name
  * from the platform's memory service (passed in via `memoryStoreLookup`) so

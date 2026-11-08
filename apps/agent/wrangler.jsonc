@@ -3,7 +3,7 @@
   "name": "sandbox-default",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-13",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports"],
 
   // ─────────────────────────────────────────────────────────────────────
   // SELF-HOST BASELINE (sandbox/agent worker)
@@ -15,9 +15,13 @@
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./Dockerfile.sandbox",
-      "instance_type": "standard-1",
-      "max_instances": 50
+      "name": "sandbox-default-do-v1",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "sandbox": {
+          "dockerfile": "./Dockerfile.sandbox"
+        }
+      }
     }
   ],
 
@@ -123,9 +127,13 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "image": "./Dockerfile.sandbox",
-          "instance_type": "standard-1",
-          "max_instances": 50
+          "name": "sandbox-default-do-v1-production",
+          "scheduling_policy": "durable_object",
+          "images": {
+            "sandbox": {
+              "dockerfile": "./Dockerfile.sandbox"
+            }
+          }
         }
       ],
       "durable_objects": {
@@ -175,9 +183,13 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "image": "./Dockerfile.sandbox",
-          "instance_type": "standard-1",
-          "max_instances": 50
+          "name": "sandbox-default-do-v1-production",
+          "scheduling_policy": "durable_object",
+          "images": {
+            "sandbox": {
+              "dockerfile": "./Dockerfile.sandbox"
+            }
+          }
         }
       ],
       "services": [
