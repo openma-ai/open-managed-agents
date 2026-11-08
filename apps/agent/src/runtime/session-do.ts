@@ -43,6 +43,7 @@ import {
   TurnAborted,
   isTurnCancellationError,
   linkAbort,
+  openTurnMarker,
   planTurnFailure,
   reportTurnFailure,
   type RuntimeAdapter,
@@ -2142,23 +2143,19 @@ export class SessionDO extends DurableObject<Env> {
           // harness can issue its model request. D1 is the authority the
           // cold-start finalizer reads; the alarm is what wakes it.
           const turnId = `turn_${nanoid()}`;
-          let turnMarked = false;
-          try {
-            await this.runtimeAdapter.beginTurn(this.state.session_id, turnId);
-            turnMarked = true;
-            this._activeTurnIds.add(turnId);
-          } catch (err) {
-            // Don't fail the execution just because the lifecycle mirror
-            // couldn't be written. The event-log dangling-turn fallback in
-            // _finalizeStaleTurns still ends it after a reset.
-            console.warn(`[drain] beginTurn failed for ${turnId}:`, err);
-          }
+          // A marker that couldn't be written doesn't fail the execution: the
+          // event-log dangling-turn fallback in _finalizeStaleTurns still
+          // ends it after a reset.
+          const turnMarker = await openTurnMarker(this.runtimeAdapter, this.state.session_id, turnId, {
+            began: (id) => { this._activeTurnIds.add(id); },
+            ended: (id) => { this._activeTurnIds.delete(id); },
+          });
           sdoLog("turn.begin", {
             session_id: this.state.session_id,
             thread_id: threadId,
             turn_id: turnId,
             execution_id: execution.id,
-            d1_marked: turnMarked,
+            d1_marked: turnMarker.marked,
           });
           // Await the durable write. A fire-and-forget setAlarm can be lost
           // if the isolate resets right after the turn starts.
@@ -2248,16 +2245,7 @@ export class SessionDO extends DurableObject<Env> {
             // host settles the execution so a successful turn never looks
             // like a cold-start orphan. Filter by turnId inside endTurn, so
             // a finalizer that already ended this turn makes this a no-op.
-            let endTurnOk = true;
-            if (turnMarked) {
-              try {
-                await this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle");
-              } catch (err) {
-                endTurnOk = false;
-                console.warn(`[drain] endTurn failed for ${turnId}:`, err);
-              }
-              this._activeTurnIds.delete(turnId);
-            }
+            const endTurnOk = await turnMarker.end();
             sdoLog("turn.end", {
               session_id: this.state.session_id,
               thread_id: threadId,
@@ -2270,7 +2258,7 @@ export class SessionDO extends DurableObject<Env> {
                   : holdQueuedOnLane
                     ? "held"
                     : "completed",
-              d1_marked: turnMarked,
+              d1_marked: turnMarker.marked,
               end_turn_ok: endTurnOk,
             });
           }
