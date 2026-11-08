@@ -41,6 +41,10 @@ import {
   recoverAgentTurn,
   clearTurnRecoveryCount,
   TurnAborted,
+  isTurnCancellationError,
+  linkAbort,
+  planTurnFailure,
+  reportTurnFailure,
   type RuntimeAdapter,
   type TurnRuntimeAgent,
   type RecoveryDecision,
@@ -5885,9 +5889,7 @@ export class SessionDO extends DurableObject<Env> {
     let resolveTurnSettled!: () => void;
     this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
-    const abortFromParent = () => abortController.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+    const unlinkParentAbort = linkAbort(parentSignal, abortController);
     const effectiveAbortSignal = abortController.signal;
     sandbox = this.bindSandboxToExecution(
       sandbox,
@@ -6507,12 +6509,13 @@ export class SessionDO extends DurableObject<Env> {
       // owner and would also try to append a second error/idle pair through
       // the fenced history wrapper.  Treat the sandbox guard's equivalent
       // error the same way as an AbortError.
-      if (
-        err instanceof Error &&
-        (err.name === "AbortError" ||
-          err.name === "ExecutionFenceLostError" ||
-          err.name === "SandboxExecutionFencedError")
-      ) {
+      // A lost execution fence is an expected cancellation, not a model or
+      // infrastructure failure.  The lease owner may have been replaced by
+      // another worker; retrying here would let the stale worker race the new
+      // owner and would also try to append a second error/idle pair through
+      // the fenced history wrapper.  Treat the sandbox guard's equivalent
+      // error the same way as an AbortError.
+      if (isTurnCancellationError(err)) {
         // Interrupt handler (POST /event user.interrupt branch) already
         // appended its own session.status_idle synchronously before
         // the abort propagated, so the finally block must NOT emit a
@@ -6544,34 +6547,38 @@ export class SessionDO extends DurableObject<Env> {
         classified instanceof ConfigError ||
         classified instanceof AuthError;
       const isModelTurnDead = classified instanceof ModelError;
-      const isTransient = !isSessionTerminal && !isModelTurnDead;
+      const plan = planTurnFailure({
+        cancelled: false,
+        failureClass: isSessionTerminal ? "session_terminal" : isModelTurnDead ? "turn_dead" : "transient",
+        attempt: retryCount + 1,
+        maxAttempts: 3,
+        // Exponential backoff: 1s, 2s
+        delayMs: (attempt) => 1000 * Math.pow(2, attempt - 1),
+      });
 
-      if (isTransient && retryCount < 2) {
-        // Official CMA ordering: session.error{retrying} then status_rescheduled.
-        const retryingError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "retrying",
-          },
-        } as SessionEvent;
-        history.append(retryingError);
-        this.broadcastEvent(retryingError, activeFence);
-        const rescheduledEvent: SessionEvent = {
-          type: "session.status_rescheduled",
-          reason: errorMessage,
-        };
-        history.append(rescheduledEvent);
-        this.broadcastEvent(rescheduledEvent, activeFence);
+      // Official CMA ordering: session.error{retrying} then status_rescheduled.
+      reportTurnFailure(plan, errorMessage, {
+        sessionError: (message, retry_status) => {
+          const event = {
+            type: "session.error",
+            error: { type: "unknown_error", message, retry_status },
+          } as SessionEvent;
+          history.append(event);
+          this.broadcastEvent(event, activeFence);
+        },
+        rescheduled: (reason) => {
+          const event: SessionEvent = { type: "session.status_rescheduled", reason };
+          history.append(event);
+          this.broadcastEvent(event, activeFence);
+        },
+      });
+
+      if (plan.type === "retry") {
         // Retry hold (cma-steer-coherent-turn.md): do not flush unstamped
         // mid-turn inputs and do not start a new agent turn from them.
         // Leave them until the next consume boundary after this resume;
         // takeSteeringInputs then ingests them into the continuing turn.
-
-        // Exponential backoff: 1s, 2s
-        const delay = 1000 * Math.pow(2, retryCount);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise(r => setTimeout(r, plan.delayMs));
         // Recursive call owns the next idle emit (success or its own
         // finally). Suppress this frame's catch-all so we don't get
         // two status_idle events on a successful retry.
@@ -6585,38 +6592,18 @@ export class SessionDO extends DurableObject<Env> {
         );
       }
 
-      if (isTransient || isModelTurnDead) {
+      if (plan.type === "exhausted") {
         // Official CMA exhausted: session.error{exhausted} then idle
         // retries_exhausted. No status_rescheduled on the final failure.
         // Owner lock: retain mid-run queued inputs (holdQueuedOnLane), do not
         // flush/delete (deliberate divergence from SDK "flushed").
-        const exhaustedError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "exhausted",
-          },
-        } as SessionEvent;
-        history.append(exhaustedError);
-        this.broadcastEvent(exhaustedError, activeFence);
         holdQueuedOnLane = true;
         completedIdleEvent = {
           type: "session.status_idle",
           stop_reason: { type: "retries_exhausted" },
         };
-      } else {
+      } else if (plan.type === "terminal") {
         // Official CMA: retry_status terminal → session transitions to terminated.
-        const terminalError: SessionEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: errorMessage,
-            retry_status: "terminal",
-          },
-        } as SessionEvent;
-        history.append(terminalError);
-        this.broadcastEvent(terminalError, activeFence);
         this.terminate(
           classified instanceof PaymentRequiredError ? "payment_required"
             : classified instanceof AuthError ? "auth"
@@ -6655,7 +6642,7 @@ export class SessionDO extends DurableObject<Env> {
       }
       this._turnSettled.delete(abortController);
       resolveTurnSettled();
-      parentSignal?.removeEventListener("abort", abortFromParent);
+      unlinkParentAbort();
       // Emit status_idle only after turn-scoped resources have settled. On a
       // successful turn this preserves its precise stop_reason; error paths
       // use the generic event because they have no meaningful stop reason.

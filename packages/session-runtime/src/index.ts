@@ -71,3 +71,12 @@ export {
   type RecoveryDecision,
 } from "./turn-recovery";
 export { abortableDelay, abortedError, cancellationError, isAbortError, linkAbort, untilAborted } from "./turn-abort";
+export {
+  isTurnCancellationError,
+  planTurnFailure,
+  reportTurnFailure,
+  type PlanTurnFailureInput,
+  type TurnFailureClass,
+  type TurnFailureEventsPort,
+  type TurnFailurePlan,
+} from "./turn-failure";
