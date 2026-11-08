@@ -127,21 +127,7 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
       + "mountSessionOutputs uses a local directory (apps/agent/src/runtime/sandbox.ts:540-570), so nothing is published. "
       + "Test environment, not product behaviour: the workerd suite has no R2 FUSE credentials; kept",
   },
-  {
-    scenario: "requires-action",
-    title: "custom tool result echoed as agent.tool_result",
-    paths: ["/events/agent.tool_result"],
-    eventTypes: ["agent.tool_result"],
-    cause: "golden (Node) emits no agent.tool_result for user.custom_tool_result; CF appends and broadcasts one (SessionDO "
-      + "user.custom_tool_result branches in the execution drain and the local queue drain) and so lists the confirmed bash "
-      + "tool_result before session.status_running (golden: after). Golden is the contract side: agent.tool_result.tool_use_id "
-      + "is \"The id of the agent.tool_use event this result corresponds to\" and a custom tool's result is the client's "
-      + "user.custom_tool_result (SDK events.d.ts:370-392, 1484-1511). Not converged yet: the CF DO log is both the public "
-      + "log and the harness transcript, and the echo is the transcript's tool result for history.ts (normalizeInterruptedToolCalls, "
-      + "eventsToMessages[Async]) and SessionDO's tool_use/tool_result pairing (toolUseAlreadyAnswered, resumeWhenToolBatchSettled, "
-      + "recovery stream, finalize-stale); Node maps user.custom_tool_result to agent.tool_result only in its harness history view "
-      + "(node-managed-harness-runtime.ts toHarnessHistoryEvent). The path also carries the sandbox double's \"exit=0\" bash text",
-  },
+  stub("requires-action", [FIRST_RESULT_TEXT]),
   {
     scenario: "interrupt",
     title: "user.interrupt listed after the aborted model span",
