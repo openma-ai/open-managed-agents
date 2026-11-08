@@ -543,6 +543,10 @@ export async function createManagedNodeRuntime(
     synchronizeSandbox: async ({ workspaceId, session }) => {
       await sessionSandboxes.get({ workspaceId, session }).endExecution();
     },
+    // A failed execution publishes nothing and releases the sandbox (design §0.0 rule 16).
+    failSandbox: async ({ workspaceId, session }) => {
+      await sessionSandboxes.get({ workspaceId, session }).failExecution();
+    },
     afterExecution: withReportedArtifactPublication(createNodeOpenAIArtifactPublisher({
       historyForWorkspace: workspaceId => new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),
       filesForWorkspace: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),

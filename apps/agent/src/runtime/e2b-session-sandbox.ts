@@ -10,7 +10,7 @@
 //     execution attempt (design §0.0 rule 10; none between turns). Real
 //     credentials never enter the sandbox. The pass expires, so the shared
 //     runtime re-attaches egress after half its TTL (egressRenewMs) and when
-//     the attempt changes (egressKey);
+//     the attempt changes (execution);
 //   - storage is one deployment choice (storageConfig): both bucket parent
 //     keys configured → native rclone mounts for Memory and outputs over
 //     prefix-scoped temporary credentials (renewed by the runtime's interval
@@ -106,7 +106,10 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       warn: () => undefined,
       outputDurability: () => ({ durability: "best_effort" }),
       egressRenewMs: RELAY_PASS_TTL_MS / 2,
-      ...(options.fence === undefined ? {} : { egressKey: () => sandboxExecutionFenceKey(options.fence!()) }),
+      ...(options.fence === undefined ? {} : {
+        execution: () => options.fence!(),
+        isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(options.fence!()) === sandboxExecutionFenceKey(execution),
+      }),
       now: options.now,
     });
   }

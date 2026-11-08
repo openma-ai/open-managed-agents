@@ -82,9 +82,9 @@ export class LiveSessionSandbox<R> {
     return this.outputs || this.stores.length > 0;
   }
 
-  egressKey(): string | undefined {
-    if (this.options.execution !== undefined) return executionKey(this.options.execution());
-    return this.options.egressKey?.();
+  /** What the egress binding carries: the current execution attempt. */
+  egressKey(): string {
+    return executionKey(this.execution());
   }
 
   markEgress(now: number): void {

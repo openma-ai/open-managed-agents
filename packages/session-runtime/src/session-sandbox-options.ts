@@ -79,13 +79,11 @@ export interface PortsSessionSandboxOptions<R> {
   /** egress.attach again this often at exec boundaries (an expiring
    * credential in the egress, e.g. the E2B relay pass); null = never. */
   egressRenewMs: number | null;
-  /** Identifies what the egress binding carries (the current execution
-   * attempt); egress.attach runs again at the next exec boundary when it
-   * changes. Omitted = never. Ignored when `execution` is given. */
-  egressKey?(): string;
   now?(): number;
   /** The Session execution attempt this owner runs; undefined between
-   * executions. Omitted = SessionDO's single-writer placeholder fence. */
+   * executions. Every Port call carries it as the fence, and egress.attach
+   * runs again at the next exec boundary when it changes. Omitted =
+   * SessionDO's single-writer placeholder fence. */
   execution?(): SessionSandboxExecution | undefined;
   /** Whether `execution` (undefined = the owner between executions) still
    * holds the Session (design §0.0 rule 10); checked before pause and

@@ -93,9 +93,11 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     warn: deps.warn,
     outputDurability: () => sandbox.sessionOutputMountCapabilities(),
     // The outbound handler holds no expiring credential; it is rebound when
-    // the execution attempt changes.
+    // the execution attempt changes. The attempt is the Port fence (design
+    // §0.0 rule 10); the one SessionDO holds now is the current one.
     egressRenewMs: null,
-    egressKey: () => sandboxExecutionFenceKey(deps.fence?.()),
+    execution: () => deps.fence?.(),
+    isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
   });
 }
 
