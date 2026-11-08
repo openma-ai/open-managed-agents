@@ -96,6 +96,8 @@ import tenantInvitationsSchema from "../apps/main/migrations/0023_tenant_invitat
 import modelCardPricingSchema from "../apps/main/migrations/0025_model_card_pricing.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import heldAfterExhaustedSchema from "../apps/main/migrations/0026_closed_tempest.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import runtimeResourceTablesSchema from "../apps/main/migrations/0027_runtime_resource_tables.sql?raw";
 
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
@@ -129,6 +131,7 @@ const MIGRATIONS_RAW: string[] = [
   // vitest DBs match production migrations without requiring a full re-seed.
   modelCardPricingSchema as string,
   heldAfterExhaustedSchema as string,
+  runtimeResourceTablesSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

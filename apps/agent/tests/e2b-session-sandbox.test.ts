@@ -44,6 +44,7 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
       async acquire() { log.push("acquire"); return { runtime: fakeRuntime("new"), handle: { provider: "e2b", runtimeId: "new" } }; },
       async release({ handle }: { handle: { runtimeId: string } }) { log.push(`release:${handle.runtimeId}`); },
       async keepAlive() { log.push("keepAlive"); return "alive"; },
+      async pause({ handle }: { handle: { runtimeId: string } }) { log.push(`pause:${handle.runtimeId}`); return { provider: "e2b", ref: handle.runtimeId, metadata: { kind: "self" } }; },
     },
     storage: {
       async attach({ stores }: { stores: unknown[] }) { log.push(`storage.attach:${stores.length}`); },
@@ -56,8 +57,10 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
       async revoke() { log.push("egress.revoke"); },
     },
   } as unknown as SandboxPorts<E2BSandboxExecutor>;
+  const timers: string[] = [];
   const sandbox = new E2BSessionSandbox({
     compose: async () => ({ ports, vendor: {} as never }),
+    idle: { pauseMs: 300_000, schedule: (ms) => { timers.push(`schedule:${ms}`); }, cancel: () => { timers.push("cancel"); } },
     state: {
       load: async () => stored as never,
       save: async (state) => { stored = state as never; },
@@ -70,7 +73,7 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
     }),
     now: () => clock.now,
   });
-  return { sandbox, log, clock, stored: () => stored, goneOnAttach: () => { attachGone = true; }, failSync: (error: Error) => { syncFails = error; } };
+  return { sandbox, log, clock, timers, stored: () => stored, goneOnAttach: () => { attachGone = true; }, failSync: (error: Error) => { syncFails = error; } };
 }
 
 describe("E2BSessionSandbox", () => {
@@ -114,6 +117,22 @@ describe("E2BSessionSandbox", () => {
       "storage.sync:turn_end", "keepAlive", "storage.detach", "egress.revoke", "release:new",
     ]);
     expect(h.stored()).toBeUndefined();
+  });
+});
+
+describe("E2BSessionSandbox idle pause (design §0.0 rule 11)", () => {
+  it("execution end arms the host timer; when it fires the sandbox is paused, and the next exec attaches it again", async () => {
+    const h = harness();
+    await h.sandbox.mountSessionOutputs();
+    await h.sandbox.endExecution();
+    expect(h.timers).toEqual(["schedule:300000"]);
+    h.clock.now += 300_000;
+    expect(await h.sandbox.idlePause()).toBe("paused");
+    expect(h.log.slice(-3)).toEqual(["storage.sync:before_stop", "storage.detach", "pause:new"]);
+    expect(h.stored()).toMatchObject({ handle: { runtimeId: "new" }, paused: true });
+    const before = h.log.length;
+    await h.sandbox.exec("again");
+    expect(h.log.slice(before)).toEqual(["attach:new", "egress.attach:open", "storage.attach:0"]);
   });
 });
 

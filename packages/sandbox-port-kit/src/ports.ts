@@ -7,6 +7,7 @@ import type {
   RuntimeResourceScope,
   SessionMemoryAccessPort,
 } from "@open-managed-agents/runtime-resource-contract";
+import type { SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 import type {
   SandboxEgressPort,
   SandboxLifecyclePort,
@@ -79,8 +80,9 @@ export interface SandboxOutputSinkPort {
 export interface SandboxEgressDepsPort {
   gateway: {
     endpoint: { url: string; fixedIps?: readonly string[] };
-    /** Short-lived token bound to one execution (#561). */
-    issueToken(input: { scope: RuntimeResourceScope; fence: RuntimeResourceFence }): Promise<string>;
+    /** Short-lived token bound to one Session execution attempt (#561);
+     * `attempt` is null when no execution is running. */
+    issueToken(input: { scope: RuntimeResourceScope; attempt: SessionExecutionAttemptRef | null }): Promise<string>;
     authenticate(id: { via: "token"; token: string } | { via: "source"; claim: SourceClaim }): Promise<EgressScope | null>;
     /** = createCredentialEgressCore: policy decision first, then credential substitution. */
     handle(scope: EgressScope, req: PlainRequest): Promise<Response>;

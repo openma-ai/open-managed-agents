@@ -372,6 +372,31 @@ describe("Managed Runtime Host fault matrix", () => {
       .resolves.toEqual({ type: "lease_lost" });
   });
 
+  it("stops without publishing when a renewal reports the fence lost", async () => {
+    let sleeps = 0;
+    const { dependencies } = fixture({
+      scheduler: {
+        sleep: vi.fn(async (_ms: number, signal: AbortSignal) => {
+          if (sleeps++ === 0) return;
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          signal.throwIfAborted();
+        }),
+      },
+      fences: { renew: vi.fn(async () => ({ type: "lost" })) },
+      harnessDriver: {
+        run: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+          if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          return { type: "aborted" };
+        }),
+      },
+    });
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+      .resolves.toEqual({ type: "lease_lost" });
+    expect(dependencies.fences.publish).not.toHaveBeenCalled();
+    expect(dependencies.sandbox.terminate).toHaveBeenCalledWith(expect.objectContaining({ reason: "lease_lost" }));
+    expect(dependencies.fences.release).toHaveBeenCalledWith(expect.objectContaining({ reason: "lease_lost" }));
+  });
+
   it("self-fences when a partition leaves runtime fence renewal hanging", async () => {
     vi.useFakeTimers();
     try {

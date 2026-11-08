@@ -8,7 +8,7 @@ import type { CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSessionSandbox, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { createE2BSessionSandbox } from "./e2b-session-sandbox";
 import type { SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
-import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
+import type { PortsSessionSandbox, SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
 
 export interface SessionSandboxDeps {
   env: Env;
@@ -22,6 +22,9 @@ export interface SessionSandboxDeps {
   /** The Session's current execution attempt (design §0.0 rule 10). */
   fence(): SandboxExecutionFence | undefined;
   warn(message: string): void;
+  /** Idle pause timer for adapters the host pauses (E2B); the Cloudflare
+   * container stops itself through sleepAfter. */
+  idleTimer: Omit<SessionSandboxIdleTimer, "pauseMs">;
 }
 
 export function createSessionSandbox(adapter: string | undefined, deps: SessionSandboxDeps): PortsSessionSandbox<unknown> {
@@ -30,7 +33,7 @@ export function createSessionSandbox(adapter: string | undefined, deps: SessionS
     return createCloudflareSessionSandbox(deps) as PortsSessionSandbox<unknown>;
   }
   if (name === "e2b") {
-    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence }) as PortsSessionSandbox<unknown>;
+    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
   }
   throw new Error(`Unknown SANDBOX_ADAPTER: ${name}`);
 }

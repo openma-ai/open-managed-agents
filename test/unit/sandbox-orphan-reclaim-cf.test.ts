@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it } from "vitest";
 import { sqlClientFromD1 } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import { ensureRuntimeResourceFenceSchema, SqlRuntimeOrphanPort } from "@open-managed-agents/runtime-resource-fence-sql";
+import { SqlRuntimeOrphanPort } from "@open-managed-agents/runtime-resource-fence-sql";
 import { setCloudflareSandboxForTest } from "../../apps/agent/src/runtime/sandbox";
 import { reclaimCloudflareOrphanSandboxes } from "../../apps/agent/src/runtime/sandbox-orphan-reclaim";
 
@@ -11,9 +11,11 @@ import { reclaimCloudflareOrphanSandboxes } from "../../apps/agent/src/runtime/s
 afterEach(() => setCloudflareSandboxForTest(undefined));
 
 describe("Cloudflare sandbox orphan reclaim", () => {
-  it("reaps queued orphans and resolves them", async () => {
+  // The queue table must come from apps/main/migrations: test-worker applies
+  // them on the first request. No manual schema setup here on purpose.
+  it("reaps queued orphans and resolves them on a database built by the real migrations", async () => {
+    await exports.default.fetch(new Request("http://localhost/health"));
     const sql = sqlClientFromD1(env.MAIN_DB);
-    await ensureRuntimeResourceFenceSchema(sql);
     const destroyed: string[] = [];
     setCloudflareSandboxForTest({
       async destroy() { destroyed.push("destroy"); },

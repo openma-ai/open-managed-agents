@@ -3,6 +3,7 @@
 // Without an attempt the fence is SessionDO's single-writer placeholder.
 
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
+import type { SessionExecutionAttemptRef } from "./execution-lease";
 import type { SessionSandboxExecution } from "./session-sandbox-options";
 
 const NO_EXPIRY = "9999-12-31T00:00:00.000Z";
@@ -27,6 +28,15 @@ export function runtimeFenceOf(scope: RuntimeResourceScope, execution: SessionSa
 export function executionOfFence(fence: RuntimeResourceFence): SessionSandboxExecution | undefined {
   if (fence.ownerId === "session-do" && fence.token === "session-do") return undefined;
   return { executionId: fence.workId, attemptId: fence.token, ownerId: fence.ownerId, generation: fence.generation, ...(fence.expiresAt === NO_EXPIRY ? {} : { expiresAt: fence.expiresAt }) };
+}
+
+/** The attempt a credential issued under this Port fence binds to; null for the placeholder. */
+export function attemptOfFence(fence: RuntimeResourceFence): SessionExecutionAttemptRef | null {
+  const execution = executionOfFence(fence);
+  return execution === undefined ? null : {
+    workspaceId: fence.workspaceId, sessionId: fence.sessionId, executionId: execution.executionId,
+    attemptId: execution.attemptId, ownerId: execution.ownerId, generation: execution.generation,
+  };
 }
 
 /** What the egress binding carries; it is attached again when this changes. */

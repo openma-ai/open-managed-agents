@@ -345,7 +345,9 @@ export function e2bObjectStorage(
   const mounted = new WeakMap<E2BSandboxExecutor, { owner: string; mounts: Map<string, Mount> }>();
   const fresh = (mount: Mount) => mount.expiresAt - Date.now() > (ttlSeconds * 1_000) / 2;
   const asRoot = async (runtime: E2BSandboxExecutor, command: string, envs?: Record<string, string>) => {
-    const result = await runtimeCall(() => runtime.run(command, { user: "root", timeoutMs: 60_000, ...(envs === undefined ? {} : { envs }) }));
+    // Storage traffic goes straight to the bucket, not through the agent's
+    // egress relay: rclone's S3 SDK rejects the relay's AWS_CA_BUNDLE.
+    const result = await runtimeCall(() => runtime.run(command, { user: "root", timeoutMs: 60_000, sessionEnv: false, ...(envs === undefined ? {} : { envs }) }));
     if (result.exitCode !== 0) throw new Error(`E2B storage command failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
   };
   const mount = async (runtime: E2BSandboxExecutor, owner: string, target: string, entry: Mount) => {
@@ -381,7 +383,7 @@ export function e2bObjectStorage(
   const verifyMount = async (runtime: E2BSandboxExecutor, target: string) => {
     const result = await runtimeCall(() => runtime.run(
       `mountpoint -q ${quote(target)} || { echo 'not a mountpoint' >&2; exit 90; }; ls -A ${quote(target)} >/dev/null`,
-      { user: "root", timeoutMs: 60_000 },
+      { user: "root", timeoutMs: 60_000, sessionEnv: false },
     ));
     if (result.exitCode !== 0) {
       throw new Error(`E2B storage mount ${target} is not usable (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);

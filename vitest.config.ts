@@ -370,6 +370,7 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime/settle-batch", replacement: "./packages/session-runtime/src/settle-batch.ts" },
       { find: "@open-managed-agents/session-runtime/recovery", replacement: "./packages/session-runtime/src/recovery.ts" },
       { find: "@open-managed-agents/session-runtime/execution-lease", replacement: "./packages/session-runtime/src/execution-lease.ts" },
+      { find: "@open-managed-agents/session-runtime/session-sandbox-fence", replacement: "./packages/session-runtime/src/session-sandbox-fence.ts" },
       { find: "@open-managed-agents/session-runtime", replacement: "./packages/session-runtime/src/index.ts" },
       { find: "@open-managed-agents/acp-runtime/cf-sandbox", replacement: "./packages/acp-runtime/src/cf-sandbox.ts" },
       { find: "@open-managed-agents/acp-runtime/known-agents", replacement: "./packages/acp-runtime/src/known-agents.ts" },
