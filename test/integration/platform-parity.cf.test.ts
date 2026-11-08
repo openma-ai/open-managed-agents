@@ -125,14 +125,6 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
       + "mountSessionOutputs uses a local directory (apps/agent/src/runtime/sandbox.ts:540-570), so nothing is published",
   },
   {
-    scenario: "outcome-evaluation",
-    title: "span.outcome_evaluation_start not in the event log",
-    paths: ["/events/span.outcome_evaluation_start"],
-    eventTypes: ["span.outcome_evaluation_start"],
-    cause: "golden persists span.outcome_evaluation_start (packages/control-plane-node/src/lib/node-managed-session-runner.ts:1218); "
-      + "CF only broadcasts it and never persists it (apps/agent/src/runtime/outcome-supervisor.ts:187, session-do.ts:6371), so GET events lacks it",
-  },
-  {
     scenario: "requires-action",
     title: "custom tool result echoed as agent.tool_result",
     paths: ["/events/agent.tool_result"],

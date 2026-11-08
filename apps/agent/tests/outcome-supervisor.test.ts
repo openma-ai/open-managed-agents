@@ -76,7 +76,6 @@ function makeFakeHarness(opts: {
     judgeModelId: "fake-model",
     getEvents: () => h.events,
     appendAndBroadcast: (e) => h.events.push(e),
-    broadcastOnly: (e) => h.events.push(e),
     persistState: (delta) => {
       if ("outcome" in delta) h.state.outcome = delta.outcome ?? null;
       if (typeof delta.outcome_iteration === "number")
@@ -145,9 +144,7 @@ describe("runOutcomeSupervisor", () => {
     expect(h.state.outcome).toBeNull(); // active outcome cleared
     expect(h.state.outcome_evaluations).toHaveLength(1);
 
-    // span events emitted: ongoing + end (start is broadcast-only and
-    // also lands in events here because broadcastOnly pushes to the
-    // shared events array in this fake)
+    // span events appended to history: start + ongoing + end
     const spanTypes = h.events
       .map((e) => e.type)
       .filter((t) => t.startsWith("span.outcome_evaluation"));

@@ -6386,7 +6386,6 @@ export class SessionDO extends DurableObject<Env> {
               history.append(event);
               this.broadcastEvent(event, activeFence);
             },
-            broadcastOnly: (event) => this.broadcastEvent(event, activeFence),
             persistState: (delta) => {
               const next = { ...this.state };
               if ("outcome" in delta) next.outcome = delta.outcome ?? null;

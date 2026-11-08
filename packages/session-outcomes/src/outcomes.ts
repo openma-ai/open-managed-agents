@@ -77,6 +77,13 @@ export interface SessionOutcomeEvaluatorPort<Snapshot = unknown> {
   }): Promise<SessionOutcomePreparation<Snapshot>>;
 }
 
+/**
+ * The outcome spans on the Session log. Each one is a durable, listed Session
+ * event on every platform (appended, then broadcast), not a stream-only
+ * signal: AMA lists span.outcome_evaluation_{start,ongoing,end} in
+ * BetaManagedAgentsSessionEvent (GET /v1/sessions/:id/events), and the end
+ * span's outcome_evaluation_start_id points at the start span.
+ */
 export interface SessionOutcomeEventsPort {
   evaluationStarted(input: { outcomeId: string; iteration: number }): SessionOutcomeStarted | Promise<SessionOutcomeStarted>;
   evaluationOngoing(input: { outcomeId: string; iteration: number }): void | Promise<void>;
