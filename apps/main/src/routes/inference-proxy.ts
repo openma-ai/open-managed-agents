@@ -186,9 +186,13 @@ const app = new Hono<{
 
 app.all("/:sid/*", async (c) => {
   const sid = c.req.param("sid");
-  const prefix = `/${sid}/`;
-  const subPath = c.req.path.startsWith(prefix)
-    ? c.req.path.slice(prefix.length)
+  // req.path is the full mounted path (/v1/oma/inference-proxy/<sid>/...),
+  // not the child route's; keep the provider path after the Session segment
+  // and its query string (as on Node).
+  const marker = `/${sid}/`;
+  const at = c.req.path.indexOf(marker);
+  const subPath = at >= 0
+    ? c.req.path.slice(at + marker.length) + new URL(c.req.url).search
     : "";
   let tenantId = (c.var as { tenant_id?: string }).tenant_id;
   if (!tenantId) {

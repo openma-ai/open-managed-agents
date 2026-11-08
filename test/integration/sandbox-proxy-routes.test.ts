@@ -112,16 +112,20 @@ describe("Cloudflare /v1/oma/mcp-proxy", () => {
     expect(seen[0].headers.get("authorization")).toBe("Bearer inline");
   });
 
-  it("handles a Session with neither Vaults nor an inline token (managed and legacy)", async () => {
+  // Was 403. Node forwards these anonymously (#527, f6266e6a): the Session
+  // and the declared server are validated, and with no Vault attached there
+  // is no credential to withhold. Both platforms now share that rule.
+  it("forwards a Session with neither Vaults nor an inline token anonymously (managed and legacy)", async () => {
     interceptUpstream();
     upstream = () => new Response("anonymous-ok");
     const managed = await managedSession({ vaultIds: [], agent: { id: "agent", version: 1, mcpServers: [mcpServer("public")] } });
     const legacy = await legacySession({ mcp_servers: [mcpServer("public")] });
     for (const id of [managed, legacy]) {
       const response = await call(`/v1/oma/mcp-proxy/${id}/public`, rpc());
-      expect(response.status, id).toBe(403);
+      expect(response.status, id).toBe(200);
+      expect(await response.text()).toBe("anonymous-ok");
     }
-    expect(seen).toEqual([]);
+    expect(seen.map((request) => request.headers.get("authorization"))).toEqual([null, null]);
   });
 
   it("rejects unknown Sessions, undeclared servers and archived Sessions without contacting upstream", async () => {
@@ -199,18 +203,23 @@ describe("Cloudflare /v1/oma/inference-proxy", () => {
     body: JSON.stringify({ model: "workspace-handle", messages: [], stream: true }),
   });
 
-  // Characterized as found: the CF route computes the sub-path against the
-  // child route ("/<sid>/") while Hono's req.path is the full mounted path, so
-  // every mounted call loses its endpoint and is refused before any upstream call.
+  // Was 400 inference_endpoint_unsupported for every mounted call: the route
+  // matched the child pattern ("/<sid>/") against Hono's full mounted req.path,
+  // so the provider path was always lost. Fixed to Node's behavior, query kept.
   it("routes a mounted request path to the Session's model card", async () => {
     interceptUpstream();
     const id = await modelSession();
     seen = [];
     upstream = () => new Response("event: message_stop\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
     const response = await call(`/v1/oma/inference-proxy/${id}/v1/messages?beta=true`, message());
-    expect(response.status).toBe(400);
-    expect(await errorMessage(response)).toBe("inference_endpoint_unsupported");
-    expect(seen).toEqual([]);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    expect(await response.text()).toBe("event: message_stop\ndata: {}\n\n");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ url: `${MODEL}/v1/messages?beta=true`, method: "POST" });
+    expect(JSON.parse(seen[0].body)).toEqual({ model: "wire-model", messages: [], stream: true });
+    expect(seen[0].headers.get("x-api-key")).toBe("card-key");
+    for (const name of ["authorization", "x-oma-session", "cookie"]) expect(seen[0].headers.has(name), name).toBe(false);
   });
 
   it("rejects a Session without an active model card, an archived Session and an unknown Session", async () => {
@@ -226,7 +235,7 @@ describe("Cloudflare /v1/oma/inference-proxy", () => {
     expect(seen).toEqual([]);
   });
 
-  it("handles an archived legacy Session", async () => {
+  it("rejects an archived legacy Session", async () => {
     interceptUpstream();
     const id = await legacySession({ model: await modelCard() }, [], true);
     seen = [];

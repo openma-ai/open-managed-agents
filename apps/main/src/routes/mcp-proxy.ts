@@ -155,6 +155,13 @@ export interface ProxyTarget {
   refresh?: LegacyCredentialRefresh | ManagedProxyRefresh;
 }
 
+/** A Session with no Vaults and no inline token: sent without a bearer (#527). */
+export interface AnonymousProxyTarget {
+  upstreamUrl: string;
+  upstreamToken: null;
+  refresh?: undefined;
+}
+
 /** Refresh of a managed v1 credential, carried out by the shared resolver. */
 interface ManagedProxyRefresh extends ManagedCredentialRefresh {
   resolver: ManagedCredentialResolver;
@@ -240,7 +247,7 @@ export async function resolveProxyTargetByTenant(
   sessionSource?: McpProxySessionSource,
   credentialSource?: ManagedCredentialResolver,
   agentIdentity?: { id: string; version: number },
-): Promise<ProxyTarget | null> {
+): Promise<ProxyTarget | AnonymousProxyTarget | null> {
   // 1. Session must exist, belong to the same tenant, not archived.
   const managedSessionRecord = sessionSource
     ? await sessionSource.find({ workspaceId: tenantId, sessionId: sid }).catch(() => null)
@@ -292,7 +299,9 @@ export async function resolveProxyTargetByTenant(
   }
 
   const vaultIds = legacySession.vault_ids ?? managedSession.vaultIds ?? [];
-  if (vaultIds.length === 0) return null;
+  // Session ownership and the declared target are validated; no Vaults
+  // attached is explicit anonymous access (#527, as on Node).
+  if (vaultIds.length === 0) return { upstreamUrl: server.url, upstreamToken: null };
   if (managedSessionRecord !== null && credentialSource !== undefined) {
     return managedProxyTarget(
       credentialSource,
@@ -599,7 +608,7 @@ export async function resolveOutboundCredentialByHost(
  * and the RPC entrypoint share this code path.
  */
 export async function forwardToUpstream(
-  target: ProxyTarget,
+  target: ProxyTarget | AnonymousProxyTarget,
   method: string,
   inboundHeaders: Headers,
   body: BodyInit | null,
@@ -679,7 +688,7 @@ export type ReplayableBody = string | ArrayBuffer | null;
 export async function forwardWithRefresh(
   services: Services,
   tenantId: string,
-  target: ProxyTarget,
+  target: ProxyTarget | AnonymousProxyTarget,
   method: string,
   inboundHeaders: Headers,
   body: ReplayableBody,
@@ -704,7 +713,7 @@ export async function forwardWithRefresh(
   }
 
   const managedRefresh = target.refresh?.resolver === undefined ? undefined : target.refresh;
-  if (managedRefresh !== undefined) {
+  if (managedRefresh !== undefined && target.upstreamToken !== null) {
     const outcome = await managedRefresh.resolver.forward(
       tenantId,
       { upstreamUrl: target.upstreamUrl, upstreamToken: target.upstreamToken, refresh: managedRefresh },
@@ -739,7 +748,7 @@ export async function forwardWithRefresh(
   // without ever recovering. Providers that answer 403 for an expired
   // bearer need a fresh authorization instead.
   const refreshableStatus = first.status === 401;
-  if (!refreshableStatus || !target.refresh) {
+  if (!refreshableStatus || !target.refresh || target.upstreamToken === null) {
     log(
       {
         op: "mcp_proxy.forward",

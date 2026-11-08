@@ -247,13 +247,17 @@ describe("Node /v1/oma/inference-proxy", () => {
     expect(seen).toEqual([]);
   });
 
-  it("handles an archived legacy Session", async () => {
+  // Was forwarded (200). An archived Session is refused on every other proxy
+  // path, here for v1 Sessions, and on Cloudflare for legacy ones too: an
+  // archived Session no longer spends the workspace's model card.
+  it("rejects an archived legacy Session", async () => {
     upstream = reply(200, "{}", { "content-type": "application/json" });
     const id = await legacySession([]);
     await archiveLegacy(id);
     const response = await call(`/v1/oma/inference-proxy/${id}/v1/messages`, message());
-    expect(response.status).toBe(200);
-    expect(seen).toHaveLength(1);
+    expect(response.status).toBe(403);
+    expect(await errorMessage(response)).toBe("forbidden");
+    expect(seen).toEqual([]);
   });
 
   it("requires exactly one caller credential", async () => {

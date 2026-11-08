@@ -270,12 +270,16 @@ export async function createManagedNodeRuntime(
       workspaceId: input.tenantId,
       sessionId: input.sessionId,
     });
-    const agentModel = managedContext?.session.agent.model
-      ?? (await sessionsService.get({
+    const legacy = managedContext?.session.agent.model
+      ? null
+      : await sessionsService.get({
         tenantId: input.tenantId,
         sessionId: input.sessionId,
-      }).catch(() => null))?.agent_snapshot?.model;
-    if (!agentModel || managedContext?.session.archivedAt) return null;
+      }).catch(() => null);
+    // An archived Session, v1 or legacy, no longer spends its model card.
+    if (managedContext?.session.archivedAt || legacy?.archived_at) return null;
+    const agentModel = managedContext?.session.agent.model ?? legacy?.agent_snapshot?.model;
+    if (!agentModel) return null;
     try {
       // Hosted sandboxes must never fall back to a platform environment key.
       return await resolveHostedModel(input.tenantId, agentModel);
