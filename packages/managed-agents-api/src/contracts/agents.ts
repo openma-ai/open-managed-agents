@@ -82,6 +82,8 @@ export interface OpenMaAgentAcpBody {
     max_restarts?: number;
     window_ms?: number;
   };
+  /** acp-proxy only: how long the local daemon keeps an idle ACP child.
+   * Ignored for acp-sandbox, whose child lives one execution (design §0.6). */
   idle_timeout_ms?: number;
   per_turn_timeout_ms?: number;
 }

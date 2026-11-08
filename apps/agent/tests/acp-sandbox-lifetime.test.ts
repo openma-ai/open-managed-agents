@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AcpSandboxHarness } from "../src/harness/acp-sandbox-loop";
 import type { HarnessContext } from "../src/harness/interface";
+import { captureAcpSandboxAgentState } from "../../../packages/acp-runtime/src/sandbox-agent.ts";
 
 // Lifetime of the in-sandbox ACP child (design §0.6 "harness 在沙箱内（ACP）的生命周期").
 
@@ -86,21 +87,32 @@ function context(port: unknown, acp: Record<string, unknown> = {}): HarnessConte
 }
 
 describe("acp-sandbox child lifetime", () => {
-  beforeEach(() => { started.length = 0; disposed.length = 0; alive = true; });
+  beforeEach(() => { started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
 
-  it("passes idle_timeout_ms to the in-sandbox ACP runtime", async () => {
+  it("ignores idle_timeout_ms: it belongs to acp-proxy", async () => {
     const s = sandbox(false);
     await new AcpSandboxHarness().run(context(s.port, { idle_timeout_ms: 1234 }));
     expect(started).toHaveLength(1);
-    expect(started[0]!.idleTimeoutMs).toBe(1234);
+    expect(started[0]).not.toHaveProperty("idleTimeoutMs");
   });
 
-  it("closes nothing at turn end: the host decides when the child exits", async () => {
+  it("closes the child when the execution ends, saves native state after, and resumes next time", async () => {
     const s = sandbox(false);
     const harness = new AcpSandboxHarness();
     await harness.run(context(s.port));
-    expect(disposed).toEqual([]);
-    await harness.dispose("shutdown");
     expect(disposed).toEqual(["acp_1"]);
+    expect(vi.mocked(captureAcpSandboxAgentState)).toHaveBeenCalledTimes(1);
+    await harness.run(context(s.port));
+    expect(started).toHaveLength(2);
+    expect(started[1]!.resumeAcpSessionId).toBe("acp_1");
+    expect(disposed).toEqual(["acp_1", "acp_2"]);
+    await harness.dispose("shutdown");
+    expect(disposed).toEqual(["acp_1", "acp_2"]);
+  });
+
+  it("leaves keep-alive to the core: no lease renewal from the harness", async () => {
+    const s = sandbox(true);
+    await new AcpSandboxHarness().run(context(s.port));
+    expect(s.calls).not.toContain("renewLease");
   });
 });
