@@ -1,8 +1,11 @@
 import {
-  planTurnFailure,
+  classifyTurnFailure,
+  decideTurnStop,
   reportTurnFailure,
+  settleTurnFailure,
   SessionSandboxRuntime,
   type SessionSandboxMode,
+  type TurnFailureClass,
   type TurnFailureEventsPort,
 } from "@open-managed-agents/session-runtime";
 import { abortableDelay, abortedError, linkAbort, untilAborted } from "@open-managed-agents/session-runtime-contract";
@@ -842,6 +845,8 @@ export class DefaultNodeManagedSessionRunner
     let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
+    // The retry loop already announced this turn's final failure.
+    let failureReported = false;
     // user.interrupt ended the turn (abort reason INTERRUPT_REQUESTED).
     let interrupted = false;
     try {
@@ -998,17 +1003,20 @@ export class DefaultNodeManagedSessionRunner
           } catch (error) {
             if (!(error instanceof Error)) throw error;
             const sideEffectFree = runtime.agentEventCount === agentEventsBefore;
-            const plan = planTurnFailure({
+            const plan = await settleTurnFailure({
               cancelled: abortController.signal.aborted,
-              failureClass: sideEffectFree && !isNonRetryableHarnessError(error) ? "transient" : "turn_dead",
+              failureClass: nodeTurnFailureClass(error, !sideEffectFree),
               attempt,
               maxAttempts: retry.attempts,
               delayMs: retry.delayMs,
+              message: error.message,
+              events: nodeTurnFailureEvents(runtime),
+              wait: (ms) => abortableDelay(ms, abortController.signal),
             });
-            // Exhausted and cancelled turns are settled by the outer catch.
-            if (plan.type !== "retry") throw error;
-            reportTurnFailure(plan, error.message, nodeTurnFailureEvents(runtime));
-            await abortableDelay(plan.delayMs, abortController.signal);
+            if (plan.type !== "retry") {
+              failureReported = plan.type === "exhausted";
+              throw error;
+            }
             if (abortController.signal.aborted) throw error;
           }
         }
@@ -1040,11 +1048,13 @@ export class DefaultNodeManagedSessionRunner
         if (abortController.signal.reason === "lease_lost") throw error;
         // The turn may have produced side effects (tool calls), so it is not
         // retried automatically: CMA semantics for a dead turn are `exhausted`.
-        reportTurnFailure(
-          { type: "exhausted" },
-          error instanceof Error ? error.message : String(error),
-          nodeTurnFailureEvents(runtime),
-        );
+        if (!failureReported) {
+          reportTurnFailure(
+            { type: "exhausted" },
+            error instanceof Error ? error.message : String(error),
+            nodeTurnFailureEvents(runtime),
+          );
+        }
         throw new SessionRetriesExhaustedError(
           error instanceof Error ? error.message : String(error),
         );
@@ -1137,34 +1147,35 @@ export class DefaultNodeManagedSessionRunner
           },
         });
       }
-      if (
-        !leaseLost && !runFailed && finalizationError === undefined
-        && budgetGate?.reached === true
-      ) {
-        // Official budget stop: thread idle → usage → session idle (budget_reached).
-        // requires_action parking is skipped: budget_reached outranks end_turn but
-        // requires_action already short-circuits earlier when tools are pending.
-        // Usage source on Node: the primary runtime's meter.
-        for (const event of budgetReachedStopEvents({
-          agentName: input.session.agent.name,
-          sessionThreadId: "sthr_primary",
-          usage: runtime.usageSnapshot(),
-          budget: budgetGate.maxListCost,
-        })) {
-          runtime.broadcastProducedEvent(event);
-        }
-      } else if (!leaseLost) {
+      if (!leaseLost) {
         const failed = runFailed || finalizationError !== undefined;
         const parkIds = failed || interrupted ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
           runtime.pendingConfirmations,
           asWireEvents(runtime.history.getEvents()),
         );
-        runtime.broadcastProducedEvent({
-          type: "session.status_idle",
-          stopReason: failed ? { type: "retries_exhausted" }
-            : parkIds.length > 0 ? { type: "requires_action", eventIds: parkIds }
-            : { type: "end_turn" },
+        const stop = decideTurnStop({
+          parkedOnClient: parkIds.length > 0,
+          budgetReached: !failed && budgetGate?.reached === true,
         });
+        if (stop === "budget_reached") {
+          // Official budget stop: thread idle → usage → session idle (budget_reached).
+          // Usage source on Node: the primary runtime's meter.
+          for (const event of budgetReachedStopEvents({
+            agentName: input.session.agent.name,
+            sessionThreadId: "sthr_primary",
+            usage: runtime.usageSnapshot(),
+            budget: budgetGate!.maxListCost,
+          })) {
+            runtime.broadcastProducedEvent(event);
+          }
+        } else {
+          runtime.broadcastProducedEvent({
+            type: "session.status_idle",
+            stopReason: failed ? { type: "retries_exhausted" }
+              : stop === "requires_action" ? { type: "requires_action", eventIds: parkIds }
+              : { type: "end_turn" },
+          });
+        }
       }
       try {
         await runtime.drain();
@@ -1358,6 +1369,10 @@ function nodeTurnFailureEvents(runtime: ManagedNodeHarnessRuntime): TurnFailureE
   };
 }
 
-function isNonRetryableHarnessError(error: Error): boolean {
-  return error.name === "ConfigError";
+/** Node has no terminated Session state yet, so a session-terminal failure
+ * ends only this turn (exhausted). */
+function nodeTurnFailureClass(error: Error, producedAgentEvents: boolean): TurnFailureClass {
+  if (error.name === "ConfigError") return "turn_dead";
+  const failureClass = classifyTurnFailure(error, producedAgentEvents);
+  return failureClass === "session_terminal" ? "turn_dead" : failureClass;
 }

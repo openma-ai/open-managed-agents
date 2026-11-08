@@ -4,6 +4,14 @@
  * retry budget and renders the events in its own wire shape.
  */
 
+import {
+  AuthError,
+  classifyExternalError,
+  ConfigError,
+  ModelError,
+  PaymentRequiredError,
+} from "@open-managed-agents/shared";
+
 export type TurnFailureClass =
   /** Worth another attempt while the budget lasts. */
   | "transient"
@@ -11,6 +19,19 @@ export type TurnFailureClass =
   | "turn_dead"
   /** The session can no longer run turns. */
   | "session_terminal";
+
+/** Fatal error classes first; then a turn that already produced agent events
+ * is never re-run, because a retry would repeat its tool calls. */
+export function classifyTurnFailure(error: unknown, producedAgentEvents: boolean): TurnFailureClass {
+  const classified = classifyExternalError(error);
+  if (
+    classified instanceof PaymentRequiredError ||
+    classified instanceof ConfigError ||
+    classified instanceof AuthError
+  ) return "session_terminal";
+  if (classified instanceof ModelError || producedAgentEvents) return "turn_dead";
+  return "transient";
+}
 
 export type TurnFailurePlan =
   | { type: "cancelled" }
@@ -57,6 +78,21 @@ export function reportTurnFailure(
   } else if (plan.type === "terminal") {
     events.sessionError(message, "terminal");
   }
+}
+
+/** Decides a failed attempt, announces the decision, and waits out a retry's
+ * backoff. The caller runs the next attempt or ends the turn from the plan. */
+export async function settleTurnFailure(
+  input: PlanTurnFailureInput & {
+    message: string;
+    events: TurnFailureEventsPort;
+    wait(ms: number): Promise<void>;
+  },
+): Promise<TurnFailurePlan> {
+  const plan = planTurnFailure(input);
+  reportTurnFailure(plan, input.message, input.events);
+  if (plan.type === "retry") await input.wait(plan.delayMs);
+  return plan;
 }
 
 const CANCELLATION_ERROR_NAMES = new Set([

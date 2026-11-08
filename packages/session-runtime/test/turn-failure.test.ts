@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyTurnFailure,
   isTurnCancellationError,
   planTurnFailure,
   reportTurnFailure,
+  settleTurnFailure,
   type PlanTurnFailureInput,
   type TurnFailurePlan,
 } from "../src/turn-failure";
@@ -63,5 +65,44 @@ describe("isTurnCancellationError", () => {
   it("rejects anything else", () => {
     expect(isTurnCancellationError(new Error("x"))).toBe(false);
     expect(isTurnCancellationError("AbortError")).toBe(false);
+  });
+});
+
+describe("classifyTurnFailure", () => {
+  it("treats auth, payment and config failures as session-terminal even after agent events", () => {
+    expect(classifyTurnFailure(new Error("401 unauthorized"), false)).toBe("session_terminal");
+    expect(classifyTurnFailure(new Error("payment required"), true)).toBe("session_terminal");
+    expect(classifyTurnFailure(new Error("Agent not found"), false)).toBe("session_terminal");
+  });
+
+  it("retries an unclassified failure only while the turn has no agent events", () => {
+    expect(classifyTurnFailure(new Error("boom"), false)).toBe("transient");
+    expect(classifyTurnFailure(new Error("boom"), true)).toBe("turn_dead");
+  });
+});
+
+describe("settleTurnFailure", () => {
+  const settle = async (input: Partial<PlanTurnFailureInput>) => {
+    const log: string[] = [];
+    const plan = await settleTurnFailure({
+      ...base,
+      ...input,
+      message: "boom",
+      events: {
+        sessionError: (_message, status) => log.push(`error:${status}`),
+        rescheduled: () => log.push("rescheduled"),
+      },
+      wait: async (ms) => { log.push(`wait:${ms}`); },
+    });
+    return { plan, log };
+  };
+
+  it("announces a retry before waiting out its backoff", async () => {
+    expect((await settle({})).log).toEqual(["error:retrying", "rescheduled", "wait:1000"]);
+  });
+
+  it("does not wait on a final failure and stays silent on cancellation", async () => {
+    expect((await settle({ attempt: 3 })).log).toEqual(["error:exhausted"]);
+    expect((await settle({ cancelled: true })).log).toEqual([]);
   });
 });
