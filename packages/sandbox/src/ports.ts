@@ -404,6 +404,12 @@ export interface SandboxFactoryCapabilities {
    * Undeclared (the default for every built-in factory): Memory Stores are
    * file-synced, which works on any sandbox. See docs/memory-stores.md. */
   nativeMemoryStoreMount?: boolean;
+  /** Mounts (Memory Stores, Session outputs) are fixed when the sandbox's
+   * box is created by its first exec/readFile/writeFile, and a mount after
+   * that throws (LiteBox volumes). Such a sandbox cannot be warmed at
+   * Session creation: the warm-up's exec would create the box before the
+   * first execution attaches storage. */
+  mountsFixedAtCreate?: boolean;
 }
 
 export type SandboxFactory = ((

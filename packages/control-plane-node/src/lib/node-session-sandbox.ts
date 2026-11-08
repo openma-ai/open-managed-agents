@@ -25,6 +25,7 @@ import {
   EMPTY_SANDBOX_IMAGE_CATALOG,
   supportsDuplexProcess,
   supportsSandboxRuntime,
+  supportsSessionOutputMount,
   type SandboxDuplexProcess,
   type SandboxDuplexProcessSpec,
   type SandboxImageCatalog,
@@ -116,6 +117,11 @@ export interface NodeSessionSandboxOptions {
   /** Warm the sandbox at Session creation (design §0.0 rule 10); off under
    * checkpoint_restore, whose sandboxes are per allocation. */
   warmAtCreate?: boolean;
+  /** The factory's mounts are fixed by its first exec
+   * (SandboxFactoryCapabilities.mountsFixedAtCreate): mount the Session
+   * outputs right after createV1, before the warm-up marker or the egress
+   * step's exec, so the storage Port's attach finds them already mounted. */
+  mountOutputsAtCreate?: boolean;
 }
 
 /** Node's only egress path for Vault sandbox credentials: the in-sandbox
@@ -264,7 +270,13 @@ export class NodeSessionSandbox implements SandboxPort {
       compose: async () => {
         const adapter = options.adapter?.adapter ?? fromV1SandboxFactory<SandboxPort>({
           name: "node",
-          create: ({ signal }) => options.createV1({ ...this.context, ...(allocationId === undefined ? {} : { allocationId }), signal }),
+          create: async ({ signal }) => {
+            const sandbox = await options.createV1({ ...this.context, ...(allocationId === undefined ? {} : { allocationId }), signal });
+            if (options.mountOutputsAtCreate === true && supportsSessionOutputMount(sandbox)) {
+              await sandbox.mountSessionOutputs({ tenantId: this.context.workspaceId, sessionId: this.context.session.id });
+            }
+            return sandbox;
+          },
           ...(options.v1LeaseTtlMs === undefined ? {} : { leaseTtlMs: options.v1LeaseTtlMs }),
           held,
         });

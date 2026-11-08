@@ -219,6 +219,52 @@ describe("Node Session sandbox warm-up at Session creation", () => {
   });
 });
 
+describe("Node Session sandbox whose mounts are fixed when its box is created (LiteBox)", () => {
+  /** LiteBox: the first exec creates the box; a new mount after that throws. */
+  function fixedMountSandbox() {
+    const box = fakeSandbox();
+    const mounts = new Set<string>();
+    let created = false;
+    const exec = box.sandbox.exec.bind(box.sandbox);
+    const sandbox: SandboxPort = {
+      ...box.sandbox,
+      async exec(command, timeout) { created = true; return exec(command, timeout); },
+      sessionOutputMountCapabilities: () => ({ durability: "durable" }),
+      async mountSessionOutputs({ tenantId, sessionId }) {
+        const key = `${tenantId}/${sessionId}`;
+        if (mounts.has(key)) return;
+        if (created) throw new Error("LiteBoxSandbox.mountSessionOutputs: box already created");
+        mounts.add(key);
+      },
+    };
+    return { sandbox, mounts };
+  }
+  const storage: NodeSessionSandboxOptions["storage"] = {
+    async attach(input) { await input.sandbox.mountSessionOutputs({ tenantId: input.workspaceId, sessionId: input.session.id }); },
+    async synchronize() {},
+  };
+
+  it.each([
+    { name: "a first execution", warm: false },
+    { name: "a first execution after the warm-up at Session creation", warm: true },
+  ])("mounts the outputs before the sandbox's first exec on $name", async ({ warm }) => {
+    const box = fixedMountSandbox();
+    const t = setup({ createV1: async () => box.sandbox, storage, mountOutputsAtCreate: true });
+    if (warm) await t.sandboxes.warm(context);
+    const sandbox = t.sandboxes.build({ ...context, runtimeGeneration: "rt_1", executionFence: fence("a1") });
+    await sandbox.open();
+    expect([...box.mounts]).toEqual(["ws_1/sess_1"]);
+    await expect(sandbox.exec("echo hi")).resolves.toContain("ok");
+  });
+
+  it("without mountOutputsAtCreate the egress step's exec creates the box before storage attaches", async () => {
+    const box = fixedMountSandbox();
+    const t = setup({ createV1: async () => box.sandbox, storage });
+    const sandbox = t.sandboxes.build({ ...context, runtimeGeneration: "rt_1", executionFence: fence("a1") });
+    await expect(sandbox.open()).rejects.toThrow(/box already created/u);
+  });
+});
+
 describe("Vault credential egress guard", () => {
   const issue = async () => "pass";
   const vaultContext = { ...context, session: { ...context.session, vaultIds: ["vlt_1"] } } as typeof context;
