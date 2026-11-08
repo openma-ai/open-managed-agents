@@ -13,6 +13,7 @@ import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-
 import {
   SessionSubagents,
   selectSubagent,
+  subagentWireFrame,
   type CreateSubagent,
   type SubagentControl,
   type SubagentEvent,
@@ -269,42 +270,13 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     return operation;
   }
 
-  private emitFrame(threadId: string, event: Record<string, unknown>): Promise<void> {
+  private emitEvent(event: SubagentEvent<Session>): Promise<void> {
+    const { threadId, frame } = subagentWireFrame(event);
     return this.write({
       id: this.input.ids.nextEventId(),
       processed_at: this.input.clock.now().toISOString(),
-      ...event,
+      ...frame,
     }, threadId);
-  }
-
-  private emitEvent(event: SubagentEvent<Session>): Promise<void> {
-    const content = (text: string) => [{ type: "text", text }];
-    switch (event.type) {
-      case "thread_created":
-        return this.emitFrame(event.thread.id, { type: "session.thread_created", agent_name: event.thread.agentName,
-          parent_thread_id: event.thread.parentThreadId,
-          ...(event.parentToolUseId !== undefined && { parent_tool_use_id: event.parentToolUseId }),
-          ...(event.instructions !== undefined && { content: content(event.instructions) }),
-        });
-      case "message_sent":
-        return this.write({ id: event.id, type: "agent.thread_message_sent",
-          processed_at: this.input.clock.now().toISOString(), to_session_thread_id: event.toThreadId,
-          to_agent_name: event.toAgentName, content: content(event.text) }, event.fromThreadId);
-      case "message_received":
-        return this.emitFrame(event.threadId, { type: "agent.thread_message_received",
-          from_session_thread_id: event.fromThreadId, from_agent_name: event.fromAgentName,
-          from_message_id: event.fromMessageId, content: content(event.text) });
-      case "thread_running":
-        return this.emitFrame(event.threadId, { type: "session.thread_status_running", agent_name: event.agentName });
-      case "thread_idle":
-        return this.emitFrame(event.threadId, { type: "session.thread_status_idle", agent_name: event.agentName,
-          stop_reason: { type: event.stopReason }, ...(event.interrupted && { interrupted: true }) });
-      case "thread_error":
-        return this.emitFrame(event.threadId, { type: "session.error", error: {
-          type: "unknown_error", retry_status: "exhausted", message: event.message } });
-      case "thread_terminated":
-        return this.emitFrame(event.threadId, { type: "session.thread_status_terminated", agent_name: event.agentName });
-    }
   }
 
   private async runTurn(thread: SubagentThread<Session>, abortSignal: AbortSignal): Promise<{ agentMessages: string[] }> {

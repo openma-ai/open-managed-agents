@@ -97,15 +97,11 @@ const USAGE_CAUSE =
   + "(packages/control-plane-node/src/lib/node-managed-harness-runtime.ts:347-355); CF reportUsage only credits the "
   + "thread ledger (apps/agent/src/runtime/session-do.ts:6227-6228 creditUsageToThread) and emits session.usage only on "
   + "budget_reached, so CF has no session.usage event and usage {}";
-const usage = (scenario: string, withEvents = true): KnownDifference => ({
+const usage = (scenario: string): KnownDifference => ({
   scenario,
   title: "no session.usage / session usage",
-  paths: [
-    ...(withEvents ? ["/events/session.usage"] : []),
-    "/session/usage/input_tokens",
-    "/session/usage/output_tokens",
-  ],
-  ...(withEvents ? { eventTypes: ["session.usage"] } : {}),
+  paths: ["/events/session.usage", "/session/usage/input_tokens", "/session/usage/output_tokens"],
+  eventTypes: ["session.usage"],
   cause: USAGE_CAUSE,
 });
 const STUB_CAUSE =
@@ -121,11 +117,8 @@ const stub = (scenario: string, paths: string[]): KnownDifference => ({
 const FIRST_RESULT_TEXT = "/events/agent.tool_result/0/content/0/text";
 
 const KNOWN_DIFFERENCES: KnownDifference[] = [
-  ...["one-turn", "tool-call", "memory-read-write", "session-outputs", "outcome-evaluation", "budget-usage", "requires-action", "interrupt"]
+  ...["one-turn", "tool-call", "memory-read-write", "session-outputs", "subagent-call", "outcome-evaluation", "budget-usage", "requires-action", "interrupt"]
     .map((scenario) => usage(scenario)),
-  // Both platforms fail the events list here (shared defect, see report), so
-  // only the session usage fields differ.
-  usage("subagent-call", false),
   stub("tool-call", [FIRST_RESULT_TEXT]),
   stub("budget-usage", [FIRST_RESULT_TEXT]),
   stub("interrupt", [FIRST_RESULT_TEXT]),

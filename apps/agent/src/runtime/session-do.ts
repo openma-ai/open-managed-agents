@@ -2,7 +2,7 @@ import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-c
 import { DurableObject } from "cloudflare:workers";
 import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
 import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
-import { cloudflareSubagentThreadId, cloudflareSubagentWireEvent } from "./subagents";
+import { cloudflareSubagentThreadId, cloudflareSubagentWireEvents } from "./subagents";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 import { nanoid } from "nanoid";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
@@ -5510,11 +5510,11 @@ export class SessionDO extends DurableObject<Env> {
       },
       events: {
         emit: async (event) => {
-          const wire = cloudflareSubagentWireEvent(event);
-          if (wire === null) return;
           try {
-            parentHistory.append(wire);
-            this.broadcastEvent(wire);
+            for (const wire of cloudflareSubagentWireEvents(event)) {
+              parentHistory.append(wire);
+              this.broadcastEvent(wire);
+            }
           } catch (error) {
             // A lost parent fence deliberately rejects the terminal marker.
             if (event.type !== "thread_idle") throw error;
@@ -5654,6 +5654,9 @@ export class SessionDO extends DurableObject<Env> {
       budget: this.activeBudgetGate,
       systemPrompt: composeSystemPrompt(subAgent.system || "", subSkillReminders),
       platformReminders: subSkillReminders,
+      // The child runs inside this Session: per-session harness bookkeeping
+      // (e.g. the one-time ai-sdk deprecation session.warning) keys on it.
+      session_id: this.state.session_id,
       // Sub-agent inherits the parent's tenant — same daemon, same per-tenant
       // ACP child key resolution. AcpProxyHarness reads this to forward
       // x-harness-tenant when opening a RuntimeRoom WS for the sub-agent.

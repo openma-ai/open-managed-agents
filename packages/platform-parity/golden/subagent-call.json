@@ -1,6 +1,266 @@
 {
-  "event_types": [],
-  "events": {},
+  "event_types": [
+    "user.message",
+    "session.status_running",
+    "session.warning",
+    "span.model_request_start",
+    "session.thread_created",
+    "agent.thread_message_sent",
+    "agent.thread_message_received",
+    "session.thread_status_running",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.usage",
+    "session.thread_status_idle",
+    "agent.tool_use",
+    "agent.tool_result",
+    "span.model_request_end",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.usage",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "Plan summarised by the child.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "type": "agent.message"
+      },
+      {
+        "content": [
+          {
+            "text": "The child answered.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "agent.thread_message_received": [
+      {
+        "content": [
+          {
+            "text": "Summarise the plan.",
+            "type": "text"
+          }
+        ],
+        "from_agent_name": "parity-parent",
+        "from_message_id": "<id>",
+        "from_session_thread_id": "<id>",
+        "id": "<id>",
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "type": "agent.thread_message_received"
+      }
+    ],
+    "agent.thread_message_sent": [
+      {
+        "content": [
+          {
+            "text": "Summarise the plan.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "to_agent_name": "parity-child",
+        "to_session_thread_id": "<id>",
+        "type": "agent.thread_message_sent"
+      }
+    ],
+    "agent.tool_result": [
+      {
+        "content": [
+          {
+            "text": "Plan summarised by the child.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "tool_use_id": "parity_delegate_1",
+        "type": "agent.tool_result"
+      }
+    ],
+    "agent.tool_use": [
+      {
+        "id": "parity_delegate_1",
+        "input": {
+          "message": "Summarise the plan."
+        },
+        "name": "call_agent_<agent:parity-child>",
+        "processed_at": "<time>",
+        "type": "agent.tool_use"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "session.thread_created": [
+      {
+        "agent_name": "parity-child",
+        "id": "<id>",
+        "parent_thread_id": "<id>",
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "type": "session.thread_created"
+      }
+    ],
+    "session.thread_status_idle": [
+      {
+        "agent_name": "parity-child",
+        "id": "<id>",
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.thread_status_idle"
+      }
+    ],
+    "session.thread_status_running": [
+      {
+        "agent_name": "parity-child",
+        "id": "<id>",
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "type": "session.thread_status_running"
+      }
+    ],
+    "session.usage": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "input_tokens": 11,
+          "output_tokens": 7
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "input_tokens": 24,
+          "output_tokens": 12
+        }
+      }
+    ],
+    "session.warning": [
+      {
+        "details": {
+          "harness": "ai-sdk",
+          "replacement": "default"
+        },
+        "id": "<id>",
+        "message": "The ai-sdk harness (AI SDK default-loop) is deprecated. Omit harness or use the default Pi agent-core loop instead.",
+        "processed_at": "<time>",
+        "source": "harness_deprecated",
+        "type": "session.warning"
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 11,
+          "output_tokens": 7
+        },
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 13,
+          "output_tokens": 5
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 11,
+          "output_tokens": 7
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "session_thread_id": "<id>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Delegate to the child.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
   "session": {
     "budget": null,
     "outcome_evaluations": [],
@@ -13,9 +273,6 @@
     }
   },
   "reads": {
-    "events_list_failures": [
-      "events list 500 api_error: Application returned an invalid session event page at data.<n>: Invalid input"
-    ],
     "message_status": 200,
     "session_create_status": 201
   },
@@ -33,7 +290,5 @@
       "timed_out": 0
     }
   },
-  "timeouts": [
-    "idle#1:end_turn"
-  ]
+  "timeouts": []
 }

@@ -630,16 +630,19 @@ export interface AgentThreadMessageEvent extends EventBase {
   content: ContentBlock[];
 }
 
-// Agent thread events (multi-agent)
+// Agent thread events (multi-agent; AMA BetaManagedAgentsAgentThreadMessage{Sent,Received}Event)
 export interface AgentThreadMessageSentEvent extends EventBase {
   type: "agent.thread_message_sent";
-  to_thread_id: string;
+  to_session_thread_id: string;
+  to_agent_name?: string | null;
   content: ContentBlock[];
 }
 
 export interface AgentThreadMessageReceivedEvent extends EventBase {
   type: "agent.thread_message_received";
-  from_thread_id: string;
+  from_session_thread_id: string;
+  from_agent_name?: string | null;
+  from_message_id?: string;
   content: ContentBlock[];
 }
 
