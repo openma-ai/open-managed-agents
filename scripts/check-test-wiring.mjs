@@ -156,8 +156,10 @@ function vitestEntry(root, dir) {
 
 async function listVitestProject(root, dir, flags) {
   const entry = vitestEntry(root, dir);
+  // Listing needs no module cache, and vitest deletes a stale one on startup: with
+  // parallel lists that delete races the others' writes and fails with ENOTEMPTY.
   // --json takes an optional output path: keep it last so no argument is read as one.
-  const args = [entry, "list", "--filesOnly", "--staticParse", ...flags, "--json"];
+  const args = [entry, "list", "--filesOnly", "--staticParse", "--no-fsModuleCache", ...flags, "--json"];
   try {
     const { stdout } = await promisify(execFile)(process.execPath, args, {
       cwd: join(root, dir), encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, CI: "1", FORCE_COLOR: "0" },
