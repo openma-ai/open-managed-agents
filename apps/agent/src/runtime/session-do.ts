@@ -77,7 +77,7 @@ import {
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
-import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
+import { SessionExecutionHost, SessionSandboxRuntime, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
@@ -2101,183 +2101,28 @@ export class SessionDO extends DurableObject<Env> {
       // replacement DO sweeps it after expiry via the shared policy.
       await this._armLeaseWake();
       try {
-      while (true) {
-        this.broadcastedMessageIds.clear();
-        // Parked in requires_action: only the client's answers may run; a
-        // queued user.message waits for the paused turn to finish.
-        const awaitingClient = (this.state.pending_tool_calls?.length ?? 0) > 0;
-        const result = await host.runOne(async (execution, fence, signal) => {
-          this._executionFences.set(threadId, fence);
-          const executionHistory = this.guardHistoryForExecution(history, fence);
-          let holdQueuedOnLane = false;
-          let turnFailed = false;
-          const executionEventIds = execution.events
-            .map((e) => (e as { id?: string }).id)
-            .filter((id): id is string => typeof id === "string");
-          sdoLog("queue.drain", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            source: "outbox",
-            execution_id: execution.id,
-            event_ids: executionEventIds,
-          });
-          sdoLog("queue.claim", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            execution_id: execution.id,
-            event_ids: executionEventIds,
-          });
-          // The outbox path used to call processUserMessage directly, so it
-          // never ran runAgentTurn's beginTurn/hintTurnInFlight pair. That
-          // left no durable `sessions.turn_id` marker and relied solely on
-          // the one-shot alarm above. If that alarm was lost with the
-          // isolate, a cold alarm found no orphan row, finalized nothing,
-          // and the multiplexer deleted it — exactly the stuck
-          // status_running session from the 5d95d88 incident.
-          //
-          // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
-          // harness can issue its model request. D1 is the authority the
-          // cold-start finalizer reads; the alarm is what wakes it.
-          const turnId = `turn_${nanoid()}`;
-          // A marker that couldn't be written doesn't fail the execution: the
-          // event-log dangling-turn fallback in _finalizeStaleTurns still
-          // ends it after a reset.
-          const turnMarker = await openTurnMarker(this.runtimeAdapter, this.state.session_id, turnId, {
-            began: (id) => { this._activeTurnIds.add(id); },
-            ended: (id) => { this._activeTurnIds.delete(id); },
-          });
-          sdoLog("turn.begin", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            turn_id: turnId,
-            execution_id: execution.id,
-            d1_marked: turnMarker.marked,
-          });
-          // Await the durable write. A fire-and-forget setAlarm can be lost
-          // if the isolate resets right after the turn starts.
-          await this._armLeaseWake("turn_start");
-          // Lane is running a new execution (held rows already absorbed on
-          // claim): drop the exhausted mark unless a pre-exhausted queued
-          // input still awaits fallback admission.
-          {
-            const at = this.state.exhausted_at_by_lane?.[threadId];
-            if (at !== undefined && !this.queue.listQueue(threadId).some((r) =>
-              r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
-              this.setExhaustedAt(threadId, undefined);
-            }
-          }
-          try {
-            const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
-            for (const rawEvent of execution.events) {
-              if (rawEvent.type === "system.message") continue;
-              if (rawEvent.type === "session.updated") {
-                // Budget resume: continue from history, no new user input.
-                if (rawEvent.resume === true) {
-                  await this.processUserMessage({
-                    type: "user.message",
-                    content: [{ type: "text", text: "" }],
-                  }, 0, false, signal, fence);
-                }
-                continue;
-              }
-              // Execution rows use the Managed Agents domain shape. The DO
-              // runtime uses the legacy wire shape, so this is the one
-              // explicit protocol projection at the host boundary.
-              const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
-              const localQueued = this.ensureLocalQueueInput(event);
-              if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
-              if (event.type === "user.message") {
-                const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
-                if (turn?.holdQueuedOnLane) {
-                  holdQueuedOnLane = true;
-                  this.setExhaustedAt(threadId, Date.now());
-                }
-              } else if (event.type === "user.tool_confirmation") {
-                await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
-              } else if (event.type === "user.custom_tool_result") {
-                const customResult = event as UserCustomToolResultEvent;
-                // Late answer for a call that is already closed (interrupt
-                // settled it, or a duplicate POST): a second tool_result for
-                // one tool_use makes the provider 400 the whole transcript.
-                if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
-                executionHistory.append(this.customToolResultTranscriptEvent(customResult));
-                await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
-              }
-            }
-            // `broadcastEvent` deliberately serializes the managed-runtime
-            // projection in a promise chain.  Drain that chain while this
-            // lease is still active; otherwise the host could settle the
-            // execution first and every fenced projection would correctly
-            // be rejected as stale.  This is the commit barrier between the
-            // harness side effects and execution settlement.
-            await this._managedProjectionChain;
-            // Node parity (runner `afterExecution`): terminal facts are
-            // committed and this attempt still holds its fence, so completed
-            // root-turn outputs become Agents API artifacts before settle.
-            if (threadId === "sthr_primary" && !signal.aborted) {
-              await this.publishAgentsApiArtifacts(fence);
-            }
-            return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
-          } catch (err) {
-            turnFailed = true;
-            throw err;
-          } finally {
-            const currentFence = this._executionFences.get(threadId);
-            if (
-              currentFence?.executionId === fence.executionId &&
-              currentFence.attemptId === fence.attemptId
-            ) {
-              this._executionFences.delete(threadId);
-            }
-            // Mirror runAgentTurn's finally: clear the D1 marker before the
-            // host settles the execution so a successful turn never looks
-            // like a cold-start orphan. Filter by turnId inside endTurn, so
-            // a finalizer that already ended this turn makes this a no-op.
-            const endTurnOk = await turnMarker.end();
-            sdoLog("turn.end", {
-              session_id: this.state.session_id,
-              thread_id: threadId,
-              turn_id: turnId,
-              execution_id: execution.id,
-              reason: signal.aborted
-                ? "aborted"
-                : turnFailed
-                  ? "error"
-                  : holdQueuedOnLane
-                    ? "held"
-                    : "completed",
-              d1_marked: turnMarker.marked,
-              end_turn_ok: endTurnOk,
-            });
-          }
-        }, { continuationsOnly: awaitingClient });
-        if (result.type === "empty") {
+        await host.drainLane({
+          beforeClaim: () => {
+            this.broadcastedMessageIds.clear();
+            // Parked in requires_action: only the client's answers may run; a
+            // queued user.message waits for the paused turn to finish.
+            return (this.state.pending_tool_calls?.length ?? 0) > 0;
+          },
+          run: (execution, fence, signal) => this.runLaneExecution(threadId, history, execution, fence, signal),
           // Direct DO callers and pre-outbox deliveries may have a queued
           // input row but no D1 admission yet. Admit it once as a
           // reconciliation step; normal main-worker traffic already has the
           // atomic D1 outbox row and takes the claim path directly.
-          if (await this.admitQueueFallback(executionStore, threadId)) continue;
-          break;
-        }
-        if (result.type === "completed") continue;
-        // An interrupt cancels only the running execution; queued ones
-        // survive and drain next (Backchat policy). After cancelSession the
-        // queue is empty and the next runOne returns "empty".
-        if (result.type === "cancelled") continue;
-        if (result.type === "failed") {
-          const errorEvent: SessionEvent = {
-            type: "session.error",
-            error: result.error.message,
-          };
-          history.append(errorEvent);
-          this.broadcastEvent(errorEvent);
-        } else {
+          admitUnclaimed: () => this.admitQueueFallback(executionStore, threadId),
+          failed: (error) => {
+            const errorEvent: SessionEvent = { type: "session.error", error: error.message };
+            history.append(errorEvent);
+            this.broadcastEvent(errorEvent);
+          },
           // A stale incarnation may still have emitted live chunks, but it
           // cannot commit a terminal event. The next alarm/request reclaims.
-          console.warn(`[drain] execution ${result.execution.id} lost its lease`);
-        }
-        break;
-      }
+          lost: (execution) => { console.warn(`[drain] execution ${execution.id} lost its lease`); },
+        });
       } finally {
         this._executionActiveLanes.delete(threadId);
       }
@@ -2410,6 +2255,160 @@ export class SessionDO extends DurableObject<Env> {
     }
     } finally {
       this._draining.delete(threadId);
+    }
+  }
+
+  /** One claimed execution on a lane: its turn marker, the inputs it carries,
+   * and the commit barrier before the host settles it. */
+  private async runLaneExecution(
+    threadId: string,
+    history: HistoryStore,
+    execution: SessionExecution,
+    fence: SessionExecutionFence,
+    signal: AbortSignal,
+  ): Promise<SessionExecutionRunResult> {
+    this._executionFences.set(threadId, fence);
+    const executionHistory = this.guardHistoryForExecution(history, fence);
+    let holdQueuedOnLane = false;
+    let turnFailed = false;
+    const executionEventIds = execution.events
+      .map((e) => (e as { id?: string }).id)
+      .filter((id): id is string => typeof id === "string");
+    sdoLog("queue.drain", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      source: "outbox",
+      execution_id: execution.id,
+      event_ids: executionEventIds,
+    });
+    sdoLog("queue.claim", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      execution_id: execution.id,
+      event_ids: executionEventIds,
+    });
+    // The outbox path used to call processUserMessage directly, so it
+    // never ran runAgentTurn's beginTurn/hintTurnInFlight pair. That
+    // left no durable `sessions.turn_id` marker and relied solely on
+    // the one-shot alarm above. If that alarm was lost with the
+    // isolate, a cold alarm found no orphan row, finalized nothing,
+    // and the multiplexer deleted it — exactly the stuck
+    // status_running session from the 5d95d88 incident.
+    //
+    // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
+    // harness can issue its model request. D1 is the authority the
+    // cold-start finalizer reads; the alarm is what wakes it.
+    const turnId = `turn_${nanoid()}`;
+    // A marker that couldn't be written doesn't fail the execution: the
+    // event-log dangling-turn fallback in _finalizeStaleTurns still
+    // ends it after a reset.
+    const turnMarker = await openTurnMarker(this.runtimeAdapter, this.state.session_id, turnId, {
+      began: (id) => { this._activeTurnIds.add(id); },
+      ended: (id) => { this._activeTurnIds.delete(id); },
+    });
+    sdoLog("turn.begin", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      turn_id: turnId,
+      execution_id: execution.id,
+      d1_marked: turnMarker.marked,
+    });
+    // Await the durable write. A fire-and-forget setAlarm can be lost
+    // if the isolate resets right after the turn starts.
+    await this._armLeaseWake("turn_start");
+    // Lane is running a new execution (held rows already absorbed on
+    // claim): drop the exhausted mark unless a pre-exhausted queued
+    // input still awaits fallback admission.
+    {
+      const at = this.state.exhausted_at_by_lane?.[threadId];
+      if (at !== undefined && !this.queue.listQueue(threadId).some((r) =>
+        r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
+        this.setExhaustedAt(threadId, undefined);
+      }
+    }
+    try {
+      const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
+      for (const rawEvent of execution.events) {
+        if (rawEvent.type === "system.message") continue;
+        if (rawEvent.type === "session.updated") {
+          // Budget resume: continue from history, no new user input.
+          if (rawEvent.resume === true) {
+            await this.processUserMessage({
+              type: "user.message",
+              content: [{ type: "text", text: "" }],
+            }, 0, false, signal, fence);
+          }
+          continue;
+        }
+        // Execution rows use the Managed Agents domain shape. The DO
+        // runtime uses the legacy wire shape, so this is the one
+        // explicit protocol projection at the host boundary.
+        const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
+        const localQueued = this.ensureLocalQueueInput(event);
+        if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
+        if (event.type === "user.message") {
+          const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
+          if (turn?.holdQueuedOnLane) {
+            holdQueuedOnLane = true;
+            this.setExhaustedAt(threadId, Date.now());
+          }
+        } else if (event.type === "user.tool_confirmation") {
+          await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
+        } else if (event.type === "user.custom_tool_result") {
+          const customResult = event as UserCustomToolResultEvent;
+          // Late answer for a call that is already closed (interrupt
+          // settled it, or a duplicate POST): a second tool_result for
+          // one tool_use makes the provider 400 the whole transcript.
+          if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
+          executionHistory.append(this.customToolResultTranscriptEvent(customResult));
+          await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
+        }
+      }
+      // `broadcastEvent` deliberately serializes the managed-runtime
+      // projection in a promise chain.  Drain that chain while this
+      // lease is still active; otherwise the host could settle the
+      // execution first and every fenced projection would correctly
+      // be rejected as stale.  This is the commit barrier between the
+      // harness side effects and execution settlement.
+      await this._managedProjectionChain;
+      // Node parity (runner `afterExecution`): terminal facts are
+      // committed and this attempt still holds its fence, so completed
+      // root-turn outputs become Agents API artifacts before settle.
+      if (threadId === "sthr_primary" && !signal.aborted) {
+        await this.publishAgentsApiArtifacts(fence);
+      }
+      return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
+    } catch (err) {
+      turnFailed = true;
+      throw err;
+    } finally {
+      const currentFence = this._executionFences.get(threadId);
+      if (
+        currentFence?.executionId === fence.executionId &&
+        currentFence.attemptId === fence.attemptId
+      ) {
+        this._executionFences.delete(threadId);
+      }
+      // Mirror runAgentTurn's finally: clear the D1 marker before the
+      // host settles the execution so a successful turn never looks
+      // like a cold-start orphan. Filter by turnId inside endTurn, so
+      // a finalizer that already ended this turn makes this a no-op.
+      const endTurnOk = await turnMarker.end();
+      sdoLog("turn.end", {
+        session_id: this.state.session_id,
+        thread_id: threadId,
+        turn_id: turnId,
+        execution_id: execution.id,
+        reason: signal.aborted
+          ? "aborted"
+          : turnFailed
+            ? "error"
+            : holdQueuedOnLane
+              ? "held"
+              : "completed",
+        d1_marked: turnMarker.marked,
+        end_turn_ok: endTurnOk,
+      });
     }
   }
 

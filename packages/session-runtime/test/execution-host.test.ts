@@ -307,4 +307,45 @@ describe("SessionExecutionHost", () => {
     }));
   });
 
+
+  it("drains a lane until empty, admitting unclaimed input once, and stops on failure", async () => {
+    const results = ["completed", "cancelled", "empty", "failed"];
+    const claims: boolean[] = [];
+    const host = new SessionExecutionHost({
+      store: store(), scope: { workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" },
+      ownerId: "owner_01", clock: { now: () => new Date(now) }, ids: { nextAttemptId: () => "attempt_01" },
+      timers: manualTimers().timers,
+    });
+    host.runOne = vi.fn(async (_run, options) => {
+      claims.push(options?.continuationsOnly === true);
+      const type = results.shift();
+      if (type === "empty") return { type: "empty" as const };
+      if (type === "failed") return { type: "failed" as const, execution: execution(), error: new Error("boom") };
+      return { type: type as "completed" | "cancelled", execution: execution() };
+    });
+    let admitted = 0;
+    const failures: string[] = [];
+    await host.drainLane({
+      run: async () => undefined,
+      beforeClaim: () => claims.length === 0,
+      admitUnclaimed: async () => ++admitted === 1,
+      failed: (error) => { failures.push(error.message); },
+      lost: () => { throw new Error("not lost"); },
+    });
+    expect(claims).toEqual([true, false, false, false]);
+    expect(admitted).toBe(1);
+    expect(failures).toEqual(["boom"]);
+  });
+
+  it("stops draining when the lane is empty and nothing is admitted", async () => {
+    const host = new SessionExecutionHost({
+      store: store({ claim: vi.fn(async () => ({ type: "empty" as const })) }),
+      scope: { workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" },
+      ownerId: "owner_01", clock: { now: () => new Date(now) }, ids: { nextAttemptId: () => "attempt_01" },
+      timers: manualTimers().timers,
+    });
+    const lost = vi.fn();
+    await host.drainLane({ run: async () => undefined, beforeClaim: () => false, admitUnclaimed: async () => false, failed: lost, lost });
+    expect(lost).not.toHaveBeenCalled();
+  });
 });

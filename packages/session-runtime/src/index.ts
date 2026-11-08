@@ -22,6 +22,8 @@ export {
   type SessionExecutionHostResult,
   type SessionExecutionHostTimers,
   type SessionExecutionRun,
+  type SessionExecutionRunResult,
+  type SessionLaneDrain,
 } from "./execution-host";
 export {
   SessionStateMachine,
