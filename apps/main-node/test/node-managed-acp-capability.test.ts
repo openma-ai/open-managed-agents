@@ -4,6 +4,10 @@ import type { SessionExecution, SessionExecutionFence } from "@open-managed-agen
 import { authenticateEnvironmentWorkSessionBearer, SealedEnvironmentWorkSessionCredentialIssuer } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { createNodeManagedAcpCapabilities } from "../../../packages/control-plane-node/src/lib/node-managed-acp-capability";
 import { createNodeSecrets } from "../../../packages/control-plane-node/src/secrets";
+import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
+import { createSqlSessionRuntimeReaders } from "@open-managed-agents/session-runtime-sql";
+import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql/coordination";
+import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
 
 function fixture() {
   let now = new Date("2026-10-23T08:00:00Z");
@@ -79,4 +83,33 @@ describe("Node execution-scoped ACP capability", () => {
     const caps = createNodeManagedAcpCapabilities({ ...f.deps, ...(missing === "crypto" ? { crypto: null } : {}), ...(missing === "url" ? { gatewayBaseUrl: undefined } : {}) });
     await expect(caps.issue({ ...f.input, ...(missing === "fence" ? { executionFence: undefined } : {}) })).rejects.toThrow(/PLATFORM_ROOT_SECRET|PUBLIC_BASE_URL|Execution fence/);
   });
+});
+
+// The Node SandboxGatewayStore as node-managed.ts wires it: the coordinator's
+// lease and the execution-context Session read. CF runs the same suite over
+// @open-managed-agents/sandbox-gateway-sql (test/integration/sandbox-gateway-d1.test.ts).
+sandboxGatewayStoreConformance("Node managed ACP stores (better-sqlite3)", {
+  async withStore(_fixtureId, run) {
+    const sql = await createBetterSqlite3SqlClient(":memory:");
+    await ensureSessionExecutionCoordinatorSchema(sql);
+    await sql.exec(`CREATE TABLE managed_sessions (
+        workspace_id text NOT NULL, id text NOT NULL, document text NOT NULL, revision integer NOT NULL,
+        agent_id text NOT NULL, agent_version integer NOT NULL, environment_id text NOT NULL, status text NOT NULL,
+        created_at integer NOT NULL, updated_at integer NOT NULL, archived_at integer, PRIMARY KEY (workspace_id, id));
+      CREATE TABLE managed_environments (
+        workspace_id text NOT NULL, id text NOT NULL, document text NOT NULL, revision integer NOT NULL,
+        created_at integer NOT NULL, updated_at integer NOT NULL, archived_at integer, PRIMARY KEY (workspace_id, id));`);
+    const executions = new SqlSessionExecutionCoordinator(sql);
+    const readers = createSqlSessionRuntimeReaders(sql);
+    const capabilities = createNodeManagedAcpCapabilities({
+      crypto: null, now: () => new Date(),
+      findExecution: (input) => executions.find(input),
+      findSession: async (input) => (await readers.executionContext.find(input))?.session ?? null,
+    });
+    const workspaceId = "workspace_01";
+    return run({
+      workspaceId, executions, store: await capabilities.stores(workspaceId),
+      seedSession: (session) => seedSandboxGatewaySessionRows(sql, workspaceId, session),
+    });
+  },
 });
