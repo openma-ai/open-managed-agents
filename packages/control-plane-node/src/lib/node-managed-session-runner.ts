@@ -1,11 +1,10 @@
+import { SessionSandboxRuntime, type SessionSandboxMode } from "@open-managed-agents/session-runtime";
 import {
   answeredToolCallIds,
   asWireEvents,
   outstandingRequiresAction,
-  SessionSandboxRuntime,
   stillPending,
-  type SessionSandboxMode,
-} from "@open-managed-agents/session-runtime";
+} from "@open-managed-agents/session-runtime-contract/requires-action";
 import {
   probeSandboxLiveness,
   startSandboxHeartbeat,

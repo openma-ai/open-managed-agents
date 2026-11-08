@@ -44,18 +44,16 @@ import type {
   StreamRepo,
 } from "@open-managed-agents/event-log";
 import { recoverInterruptedState as runRecovery } from "./recovery";
+import { mountSessionResources, RuntimeAdapterImpl, type RuntimeAdapter } from "@open-managed-agents/session-runtime";
 import {
   asWireEvents,
   awaitsCustomToolResult,
   knownToolCallIds,
-  mountSessionResources,
   remainingAfterAnswer,
   requiresActionStopReason,
-  RuntimeAdapterImpl,
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
-  type RuntimeAdapter,
-} from "@open-managed-agents/session-runtime";
+} from "@open-managed-agents/session-runtime-contract/requires-action";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason } from "@open-managed-agents/session-runtime-contract";

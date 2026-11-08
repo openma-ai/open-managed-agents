@@ -10,10 +10,7 @@
  * - Settle-only 400 for user.message uses shared settleOnlyReason (t307u),
  *   including budget_reached when that idle stop exists.
  */
-import {
-  settleOnlyReason,
-  settleOnlyRejectMessage,
-} from "@open-managed-agents/session-runtime-contract";
+import { settleOnlyReason, settleOnlyRejectMessage } from "./settle-events";
 
 type WireEvent = { type?: string; [key: string]: unknown };
 
