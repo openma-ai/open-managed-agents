@@ -22,6 +22,7 @@ import { resolveManagedSubagentSession } from "../lib/node-managed-subagents.js"
 import { installEnvironmentPackages } from "../lib/environment-packages";
 import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder";
 import { createPreparedSandboxBases } from "../lib/prepared-sandbox-bases";
+import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "../lib/node-sandbox-orphan-reclaim";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
 import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
@@ -311,6 +312,16 @@ export async function createManagedNodeRuntime(
     warn: (message, { workspaceId, session }) =>
       logger.warn({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message),
   });
+
+  if (components.sessionSandboxAdapter !== undefined) {
+    const stop = startSandboxOrphanReclaim({
+      lifecycle: components.sessionSandboxAdapter.adapter.lifecycle,
+      findSession: async (labels) => (await managedRuntimeReaders.executionContext.find(labels))?.session ?? null,
+      intervalMs: sandboxOrphanReclaimMs(config.sandbox.environment.SANDBOX_ORPHAN_RECLAIM_MS),
+      warn: (fields, message) => logger.warn(fields, message),
+    });
+    disposables.add("sandbox_orphan_reclaim", stop);
+  }
 
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     backgroundPiSandbox: true,

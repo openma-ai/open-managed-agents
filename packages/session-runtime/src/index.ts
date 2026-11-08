@@ -55,6 +55,13 @@ export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";
 export {
+  ORPHAN_SANDBOX_MIN_AGE_MS,
+  reclaimOrphanSandboxes,
+  type OrphanSandboxSession,
+  type ReclaimOrphanSandboxesInput,
+  type ReclaimOrphanSandboxesResult,
+} from "./session-sandbox-orphans";
+export {
   SessionTemplateCache,
   TEMPLATE_UNUSED_TTL_MS,
   TEMPLATE_USED_TTL_MS,

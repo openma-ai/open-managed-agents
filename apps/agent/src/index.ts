@@ -13,6 +13,7 @@ import type { Env } from "@open-managed-agents/shared";
 import { registerHarness } from "./harness/registry";
 import { registerCoreHarnesses } from "./harness/builtins";
 import { AcpProxyHarness } from "./harness/acp-proxy-loop";
+import { reclaimCloudflareOrphanSandboxes, SANDBOX_ORPHAN_RECLAIM_PATH } from "./runtime/sandbox-orphan-reclaim";
 registerCoreHarnesses();
 registerHarness("acp-proxy", () => new AcpProxyHarness());
 
@@ -32,6 +33,10 @@ export { outbound, outboundByHost } from "./outbound";
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/health", (c) => c.json({ status: "ok", version: "2" }));
+
+// The apps/main cron (service binding): drain the sandbox orphan queue.
+app.post(SANDBOX_ORPHAN_RECLAIM_PATH, async (c) =>
+  c.json(await reclaimCloudflareOrphanSandboxes(c.env, (message) => console.warn(`[sandbox-orphan-reclaim] ${message}`))));
 
 // /__internal/prepare-env, /__internal/prep-tick, /__internal/prep-debug,
 // and the buildInstallScript helper were removed when the per-env CI build
