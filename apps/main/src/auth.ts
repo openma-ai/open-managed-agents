@@ -5,6 +5,7 @@ import { CfKvStore } from "@open-managed-agents/kv-store";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 import { sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { authenticateSandboxBearer } from "@open-managed-agents/sandbox-gateway";
+import { cfAcpExecutionAuthority } from "./lib/cf-acp-execution-capability";
 import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-store-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
@@ -67,9 +68,9 @@ async function resolvePresentedApiCredential(
 ): Promise<ApiKeyResolution | null> {
   if (token.startsWith("sk-ant-req-v1.") && c.env.PLATFORM_ROOT_SECRET) {
     const platformRootSecret = c.env.PLATFORM_ROOT_SECRET;
-    // CF issues no execution token: only the Work bearer (ADR 0005), through
-    // the one shared check (design §0.0 rule 10).
-    const scoped = await authenticateSandboxBearer({ execution: null, work: {
+    // The ACP execution token (model gateway / MCP proxy only, design §0.6)
+    // and the Work bearer (ADR 0005), through the one shared check (§0.0 rule 10).
+    const scoped = await authenticateSandboxBearer({ execution: cfAcpExecutionAuthority(c.env, platformRootSecret), work: {
       codec: sealedSandboxBearerCodec(new WebCryptoAesGcm(
         platformRootSecret,
         "managed.environment-work.session-token",

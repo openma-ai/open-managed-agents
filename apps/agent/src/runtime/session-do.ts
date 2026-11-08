@@ -6177,6 +6177,8 @@ export class SessionDO extends DurableObject<Env> {
         CONFIG_KV: this.env.CONFIG_KV,
         memoryStoreIds,
         environmentConfig,
+        // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
+        ...(resolvedHarnessName === "acp-sandbox" && activeFence && this.env.MAIN_MCP?.issueManagedAcpExecutionChannels ? { ANTHROPIC_API_KEY: "", ...await this.env.MAIN_MCP.issueManagedAcpExecutionChannels({ tenantId: this.state.tenant_id!, sessionId: this.state.session_id!, executionFence: activeFence }) } : {}),
         // LLM full-body logging context. default-loop wraps each model
         // call in middleware that PUTs request + response to R2 keyed
         // by the per-step span event id. The matching

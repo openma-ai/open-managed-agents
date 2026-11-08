@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  authenticateSandboxBearer, authorizeExecutionCredential, authorizeSandboxEgress, issueSandboxRelayPass, UNFENCED_RELAY_PASS,
+  authenticateSandboxBearer, authorizeExecutionCredential, authorizeSandboxEgress, issueExecutionSessionsToken, issueSandboxRelayPass, UNFENCED_RELAY_PASS,
   type SandboxBearerCodec, type SandboxGatewaySession, type SessionExecutionLease,
 } from "../src/index";
 
@@ -53,6 +53,25 @@ describe("authenticateSandboxBearer", () => {
     if (reason === "environment") f.session.environmentId = "other";
     const authority = { execution: { codec: codec("exec"), stores: f.stores }, work: null, now };
     expect(await authenticateSandboxBearer(authority, { token: `exec:${JSON.stringify(claim)}`, method: "POST", path: "/v1/oma/mcp-proxy/sess/s" })).toBeNull();
+  });
+});
+
+describe("issueExecutionSessionsToken", () => {
+  const expected = { workspaceId: "ws", sessionId: "sess", environmentId: "env", agent: { id: "agent", version: 7 } };
+
+  it("mints only for the live attempt, bound to its claim", async () => {
+    const f = fixture();
+    const mint = vi.fn(async (claim: { executionId: string; claimedAt: string; generation: number }) => `token:${claim.executionId}:${claim.generation}`);
+    await expect(issueExecutionSessionsToken(f.stores, f.fence, expected, mint, now)).resolves.toBe("token:exe:2");
+    expect(mint).toHaveBeenCalledWith({ executionId: "exe", claimedAt: new Date(NOW - 1000).toISOString(), generation: 2 });
+  });
+
+  it("never mints for a stale fence", async () => {
+    const f = fixture();
+    const mint = vi.fn(async () => "token");
+    await expect(issueExecutionSessionsToken(f.stores, { ...f.fence, attemptId: "other" }, expected, mint, now)).rejects.toThrow(/stale/);
+    await expect(issueExecutionSessionsToken(f.stores, undefined, expected, mint, now)).rejects.toThrow(/fence/);
+    expect(mint).not.toHaveBeenCalled();
   });
 });
 
