@@ -735,4 +735,30 @@ describe("NodeManagedSessionInputPreparer", () => {
       sandbox,
     })).rejects.toThrow(/unsafe skill archive path/i);
   });
+
+  // Characterization (design §0.7 regression rule 1), locked before the
+  // repository checkout moved into packages/session-runtime.
+  it("characterization: clones a branch checkout directly with the branch", async () => {
+    const session = managedSession();
+    session.agent.skills = [];
+    session.resources = [{ ...session.resources[1]!, checkout: { type: "branch", name: "topic" } } as Session["resources"][number]];
+    const gitCheckout = vi.fn(async () => undefined);
+    const exec = vi.fn(async () => "");
+    await new NodeManagedSessionInputPreparer({
+      files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
+      skillVersions: {} as never,
+      repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
+    }).prepareInputs({
+      workspaceId: "workspace_inputs",
+      session,
+      sandbox: {
+        exec, gitCheckout,
+        readFile: async () => { throw new Error("missing"); },
+        registerCommandSecrets: vi.fn(),
+      } as unknown as SandboxExecutor,
+    });
+    expect(gitCheckout).toHaveBeenCalledWith("http://git.example.test/repository.git", { targetDir: "/workspace/repository", branch: "topic" });
+    expect(exec).not.toHaveBeenCalled();
+  });
 });

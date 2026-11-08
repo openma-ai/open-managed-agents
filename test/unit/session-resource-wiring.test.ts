@@ -604,4 +604,89 @@ describe("in-sandbox Session resource wiring", () => {
 
     expect(gitCheckout).not.toHaveBeenCalled();
   });
+
+  // Characterization (design §0.7 regression rule 1): locked before the
+  // Session resource mount moved into packages/session-runtime.
+  describe("characterization: mount behaviour kept by the shared implementation", () => {
+    it("batches env resources into one setEnvVars call after preflight", async () => {
+      const setEnvVars = vi.fn(async () => undefined);
+      await mountResources(
+        { exec: vi.fn(), setEnvVars } as unknown as SandboxExecutor,
+        [
+          { id: "env-a", type: "env", name: "A_TOKEN" },
+          { id: "env-b", type: "env_secret", name: "B_TOKEN" },
+        ],
+        {} as KVNamespace,
+        new Map([["env-a", "a"], ["env-b", "b"]]),
+      );
+      expect(setEnvVars.mock.calls).toEqual([[{ A_TOKEN: "a", B_TOKEN: "b" }]]);
+    });
+
+    it("validates every resource before any side effect", async () => {
+      const writeFileBytes = vi.fn();
+      const setEnvVars = vi.fn();
+      await expect(mountResources(
+        { exec: vi.fn(), writeFileBytes, setEnvVars } as unknown as SandboxExecutor,
+        [
+          { id: "resource-file", type: "file", fileId: "file-1" },
+          { id: "env-missing", type: "env", name: "MISSING" },
+        ],
+        {} as KVNamespace,
+        new Map(),
+        undefined,
+        "tenant-1",
+        undefined,
+        { downloadFile: async () => ({ content: new Uint8Array([1]) }) },
+      )).rejects.toThrow(/env resource requires its sealed secret value/i);
+      expect(writeFileBytes).not.toHaveBeenCalled();
+      expect(setEnvVars).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unsupported resource type", async () => {
+      await expect(mountResources(
+        { exec: vi.fn() } as unknown as SandboxExecutor,
+        [{ type: "dataset" }],
+        {} as KVNamespace,
+      )).rejects.toThrow(/Unsupported Session resource type: dataset/);
+    });
+
+    it.each([
+      [{ type: "branch", name: "../escape" }, /invalid Git branch/],
+      [{ type: "commit", sha: "not-a-sha" }, /invalid Git commit SHA/],
+      [{ type: "tag", name: "v1" }, /unsupported checkout type/],
+    ])("rejects repository checkout %j", async (checkout, message) => {
+      await expect(mountResources(
+        { exec: vi.fn() } as unknown as SandboxExecutor,
+        [{ type: "github_repository", url: "https://github.com/o/r.git", checkout }],
+        {} as KVNamespace,
+      )).rejects.toThrow(message);
+    });
+
+    it("clones repo_url aliases into /workspace by default and creates a missing branch locally", async () => {
+      const exec = vi.fn(async (command: string) => command.startsWith("which gh ") ? "OK" : "");
+      await mountResources(
+        { exec } as unknown as SandboxExecutor,
+        [{ type: "github_repo", repo_url: "https://github.com/o/r.git", checkout: { type: "branch", name: "topic" } }],
+        {} as KVNamespace,
+      );
+      const commands = exec.mock.calls.map(([command]) => command);
+      expect(commands).toContain("git clone -- 'https://github.com/o/r.git' '/workspace' 2>&1");
+      expect(commands).toContain(
+        "cd '/workspace' && (git fetch origin 'topic:refs/remotes/origin/topic' 2>/dev/null && git checkout 'topic') || git checkout -b 'topic'",
+      );
+    });
+
+    it("keeps the mount when the gh CLI install fails", async () => {
+      const exec = vi.fn(async (command: string) => {
+        if (command.startsWith("which gh ")) return "MISSING";
+        if (command.includes("apt-get")) throw new Error("no network");
+        return "";
+      });
+      await expect(mountResources(
+        { exec, gitCheckout: vi.fn(async () => undefined) } as unknown as SandboxExecutor,
+        [{ type: "github_repository", url: "https://github.com/o/r.git", mount_path: "/workspace/r" }],
+        {} as KVNamespace,
+      )).resolves.toBeUndefined();
+    });
+  });
 });
