@@ -75,7 +75,7 @@ export function softwareApplicationSchema() {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: ORG_NAME,
-    alternateName: ["openma", "open-managed-agents"],
+    alternateName: ["openma", "open-managed-agents", "OpenMA", "ma-open", "Open MA"],
     applicationCategory: "DeveloperApplication",
     operatingSystem: "Cross-platform",
     offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
