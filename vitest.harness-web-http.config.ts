@@ -6,8 +6,8 @@ export default defineConfig({
     pool: "threads",
     environment: "node",
     include: [
-      "test/unit/web-fetch-http.test.ts",
-      "test/unit/tool-http-fetch.test.ts",
+      "packages/agent-harness/test/web-fetch-http.test.ts",
+      "packages/agent-harness/test/tool-http-fetch.test.ts",
     ],
     testTimeout: 30_000,
     coverage: {

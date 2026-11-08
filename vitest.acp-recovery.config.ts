@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     pool: "threads",
     environment: "node",
-    include: ["apps/agent/tests/acp-recovery.test.ts"],
+    include: ["packages/agent-harness/test/acp-recovery.test.ts"],
     testTimeout: 30_000,
     coverage: {
       provider: "v8",
