@@ -78,11 +78,19 @@ const cfWorkerOptions = {
   },
 };
 
+const oauthMcpTestPort = Number(process.env.OMA_OAUTH_MCP_TEST_PORT ?? 47651);
+if (!Number.isInteger(oauthMcpTestPort) || oauthMcpTestPort < 1 || oauthMcpTestPort > 65535) {
+  throw new Error("OMA_OAUTH_MCP_TEST_PORT must be a TCP port number");
+}
+process.env.OMA_OAUTH_MCP_TEST_PORT = String(oauthMcpTestPort);
+
 export default defineConfig({
   // cloudflareTest registers the `cloudflare:test` virtual module
   // (runInDurableObject, listDurableObjectIds, etc.) — the pool runner
   // alone doesn't expose it, only the plugin does.
   plugins: [stripUnpublishedDependencySourcemaps(), cloudflareTest(cfWorkerOptions)],
+  // test/fixtures/oauth-mcp-local-endpoint.ts reads this; see OAUTH_MCP_TEST_PORT.
+  define: { __OMA_OAUTH_MCP_TEST_PORT__: String(oauthMcpTestPort) },
   resolve: {
     // vitest-plugin bridges these into the miniflare/workerd runtime
     // by string match — RegExp entries only work for the vitest module graph
