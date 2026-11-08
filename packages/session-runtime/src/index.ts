@@ -91,7 +91,7 @@ export {
   type RecoveryContext,
   type RecoveryDecision,
 } from "./turn-recovery";
-export { decideTurnStop, type TurnStop } from "./turn-stop";
+export { finishTurn, type TurnEndPort, type TurnStop } from "./turn-end";
 export {
   classifyTurnFailure,
   isTurnCancellationError,

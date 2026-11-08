@@ -55,7 +55,7 @@ import {
   clearTurnRecoveryCount,
   TurnAborted,
   classifyTurnFailure,
-  decideTurnStop,
+  finishTurn,
   finalizeStaleTurns,
   type StaleToolUse,
   isTurnCancellationError,
@@ -6356,35 +6356,31 @@ export class SessionDO extends DurableObject<Env> {
 
       // A pending custom tool use (no execute function) outranks always_ask confirmations.
       const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
-      let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"];
-      const stop = decideTurnStop({
+      let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"] = { type: "end_turn" };
+      const budget = ctx.budget;
+      finishTurn({
         parkedOnClient: storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0,
-        budgetReached: ctx.budget?.reached === true,
+        budgetReached: budget?.reached === true,
+      }, {
+        requiresAction: () => { stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations); },
+        budgetReached: () => {
+          // Thread idle → usage snapshot here; the session idle is emitted
+          // below. Usage source on CF: every model span in this session's log.
+          const [threadIdle, usageEvent] = budgetReachedStopEvents({
+            agentName: agent.name,
+            sessionThreadId: turnThreadId,
+            usage: sessionUsageSnapshot(sumModelSpanUsage(history.getEvents()), budget!),
+            budget: budget!.maxListCost,
+          });
+          for (const applicationEvent of [threadIdle, usageEvent]) {
+            const event = encodeRuntimeHistoryEvent(applicationEvent as never) as unknown as SessionEvent;
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          }
+          stopReason = { type: "budget_reached" } as unknown as typeof stopReason;
+        },
+        endTurn: () => { stopReason = { type: "end_turn" as const }; },
       });
-      if (stop === "requires_action") {
-        stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations);
-      } else if (stop === "budget_reached" && ctx.budget) {
-        // Official budget stop (requires_action outranks it, above):
-        // thread idle → usage snapshot → session idle (emitted below).
-        // Usage source on CF: every model span in this session's event log.
-        const [threadIdle, usageEvent] = budgetReachedStopEvents({
-          agentName: agent.name,
-          sessionThreadId: turnThreadId,
-          usage: sessionUsageSnapshot(
-            sumModelSpanUsage(history.getEvents()),
-            ctx.budget,
-          ),
-          budget: ctx.budget.maxListCost,
-        });
-        for (const applicationEvent of [threadIdle, usageEvent]) {
-          const event = encodeRuntimeHistoryEvent(applicationEvent as never) as unknown as SessionEvent;
-          history.append(event);
-          this.broadcastEvent(event, activeFence);
-        }
-        stopReason = { type: "budget_reached" } as unknown as typeof stopReason;
-      } else {
-        stopReason = { type: "end_turn" as const };
-      }
 
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
