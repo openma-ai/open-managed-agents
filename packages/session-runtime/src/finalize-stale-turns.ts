@@ -47,7 +47,12 @@ export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<
   //    Wrapped in try blocks so a missing events table (very early
   //    cold-start) doesn't short-circuit the sessions row cleanup
   //    below — that's the contract callers depend on.
-  const usedIds = new Map(port.listToolUses().map((use) => [use.id, use] as const));
+  //    Not while this incarnation has live work: a call that is still
+  //    running is unpaired too, and closing it here put an "outcome is
+  //    unknown" result before its real one (an alarm-driven recovery pass
+  //    mid-turn, seen on oma-v2e2b). A dead incarnation's calls are closed
+  //    by the next pass once nothing runs.
+  const usedIds = port.hasLiveWork() ? new Map<string, StaleToolUse>() : new Map(port.listToolUses().map((use) => [use.id, use] as const));
   if (usedIds.size > 0) {
     for (const id of port.listToolResultIds()) usedIds.delete(id);
   }
