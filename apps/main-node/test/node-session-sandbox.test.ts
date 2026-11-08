@@ -182,6 +182,23 @@ describe("Node Session sandbox warm-up at Session creation", () => {
     expect(t.attached).toEqual([{ runtimeGeneration: "rt_1", attemptId: "a1" }]);
   });
 
+  it("warms from sessionStarted only when enabled and the Session has a sandbox", async () => {
+    const started: string[] = [];
+    const runtime = { sessionStarted: async () => { started.push("start"); }, sessionStopped: async () => { started.push("stop"); } };
+    const off = setup();
+    expect(off.sandboxes.warmingLifecycle(runtime, async () => "sandbox")).toBe(runtime);
+    const on = setup({ warmAtCreate: true });
+    const lifecycle = on.sandboxes.warmingLifecycle(runtime, async (session) => session.id === "sess_none" ? "none" : "sandbox");
+    await lifecycle.sessionStarted({ ...context, sessionId: "sess_none", session: { ...context.session, id: "sess_none" }, initialEvents: [] } as never);
+    await vi.waitFor(() => expect(started).toEqual(["start"]));
+    expect(on.created).toEqual([]);
+    await lifecycle.sessionStarted({ ...context, sessionId: "sess_1", initialEvents: [] } as never);
+    await vi.waitFor(() => expect(on.created).toEqual(["v1"]));
+    await lifecycle.sessionStopped({ workspaceId: "ws_1", sessionId: "sess_1", session: { ...context.session, environmentId: "env_1" }, reason: "deleted" } as never);
+    expect(started).toEqual(["start", "start", "stop"]);
+    expect(on.box.destroyed()).toBe(1);
+  });
+
   it("releases the warmed sandbox when the Session ends before its first execution", async () => {
     const t = setup();
     await t.sandboxes.warm(context);

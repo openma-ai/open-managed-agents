@@ -22,7 +22,6 @@ import { resolveManagedSubagentSession } from "../lib/node-managed-subagents.js"
 import { installEnvironmentPackages } from "../lib/environment-packages";
 import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder";
 import { createPreparedSandboxBases } from "../lib/prepared-sandbox-bases";
-import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "../lib/node-sandbox-orphan-reclaim";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
 import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
@@ -248,9 +247,7 @@ export async function createManagedNodeRuntime(
       foundation.buildPreparedBaseSandbox(sessionId, join(config.paths.sandboxWorkdir, sessionId), scope),
     logger,
   });
-  if (preparedSandboxBases !== undefined) {
-    disposables.add("prepared_sandbox_bases", () => preparedSandboxBases.dispose());
-  }
+  if (preparedSandboxBases !== undefined) disposables.add("prepared_sandbox_bases", () => preparedSandboxBases.dispose());
 
   // One decision for the deployment: native mounts only when the composed
   // factory declares them; every other sandbox file-syncs Memory Stores.
@@ -309,19 +306,10 @@ export async function createManagedNodeRuntime(
       : { issue: (claims) => relayPasses.issue(claims), endpoint: config.http.publicBaseUrl },
     isFenceActive: isManagedSessionExecutionFenceActive,
     idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
+    warmAtCreate: config.workspace.strategy !== "checkpoint_restore",
     warn: (message, { workspaceId, session }) =>
       logger.warn({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message),
   });
-
-  if (components.sessionSandboxAdapter !== undefined) {
-    const stop = startSandboxOrphanReclaim({
-      lifecycle: components.sessionSandboxAdapter.adapter.lifecycle,
-      findSession: async (labels) => (await managedRuntimeReaders.executionContext.find(labels))?.session ?? null,
-      intervalMs: sandboxOrphanReclaimMs(config.sandbox.environment.SANDBOX_ORPHAN_RECLAIM_MS),
-      warn: (fields, message) => logger.warn(fields, message),
-    });
-    disposables.add("sandbox_orphan_reclaim", stop);
-  }
 
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     backgroundPiSandbox: true,
@@ -606,6 +594,7 @@ export async function createManagedNodeRuntime(
   });
 
   const managedRuntimeReaders = createSqlSessionRuntimeReaders(sql);
+  disposables.add("sandbox_orphan_reclaim", sessionSandboxes.startOrphanReclaim(config.sandbox.environment.SANDBOX_ORPHAN_RECLAIM_MS, async (labels) => (await managedRuntimeReaders.executionContext.find(labels))?.session ?? null, logger));
   const managedRuntimeEngine = new ApplicationBackedNodeManagedSessionRuntimeEngine({
     historyFor: (workspaceId) =>
       new SessionRuntimeHistoryApplicationService({
@@ -708,18 +697,7 @@ export async function createManagedNodeRuntime(
   });
   const managedSessionLifecycle = new EnvironmentAwareSessionLifecycleRouter({
     environments: nodeManagedEnvironments,
-    // Warm the sandbox at creation (design §0.0 rule 10); not per allocation (checkpoint_restore).
-    runtime: config.workspace.strategy === "checkpoint_restore" ? managedSessionRuntime : {
-      sessionStarted: async (input) => {
-        await managedSessionRuntime.sessionStarted(input);
-        if (await resolveSessionSandboxMode(input.session, openAIAgentsSecrets) === "none") return;
-        void sessionSandboxes.warm(input).catch(error => logger.warn({ err: error, op: "main-node.session_sandbox.warm_failed", sessionId: input.session.id }, "sandbox warm-up failed"));
-      },
-      sessionStopped: async (input) => {
-        await managedSessionRuntime.sessionStopped(input);
-        await sessionSandboxes.discardWarm({ workspaceId: input.workspaceId, session: input.session, environment: { id: input.session.environmentId } as never }).catch(() => undefined);
-      },
-    },
+    runtime: sessionSandboxes.warmingLifecycle(managedSessionRuntime, (session) => resolveSessionSandboxMode(session, openAIAgentsSecrets)),
     selfHostedWork: {
       enqueue: (input) =>
         managedEnvironmentWorkEnqueuerFor(input.workspaceId).enqueue(input),

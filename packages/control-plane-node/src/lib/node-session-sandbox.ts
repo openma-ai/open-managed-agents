@@ -51,7 +51,9 @@ import type { SessionExecutionFence } from "@open-managed-agents/session-runtime
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import { EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
 import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import type { SessionLifecycleCommandPort } from "@open-managed-agents/session-runtime-contract";
 import { toLegacyHarnessEnvironmentConfig } from "./node-managed-agent-codec.js";
+import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "./node-sandbox-orphan-reclaim.js";
 
 /** Lifetime of a relay pass; the relay is re-attached with a new one after half. */
 export const NODE_RELAY_PASS_TTL_MS = 60 * 60_000;
@@ -111,6 +113,9 @@ export interface NodeSessionSandboxOptions {
   isFenceActive(fence: SessionExecutionFence): Promise<boolean>;
   idlePauseMs: number;
   warn(message: string, context: NodeSessionSandboxContext): void;
+  /** Warm the sandbox at Session creation (design §0.0 rule 10); off under
+   * checkpoint_restore, whose sandboxes are per allocation. */
+  warmAtCreate?: boolean;
 }
 
 /** Node's only egress path for Vault sandbox credentials: the in-sandbox
@@ -179,6 +184,37 @@ export class NodeSessionSandboxes {
     if (state === undefined) return;
     this.warmed.delete(key);
     await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, state).destroy();
+  }
+
+  /** `runtime` plus the warm-up at Session creation and the release of a
+   * warmed sandbox when the Session stops before its first execution. */
+  warmingLifecycle(runtime: SessionLifecycleCommandPort, sandboxMode: (session: Session) => Promise<"none" | "sandbox">): SessionLifecycleCommandPort {
+    if (this.options.warmAtCreate !== true) return runtime;
+    return {
+      sessionStarted: async (input) => {
+        await runtime.sessionStarted(input);
+        if (await sandboxMode(input.session) === "none") return;
+        void this.warm(input).catch((error: unknown) => this.options.warn(`sandbox_warm_failed error=${error instanceof Error ? error.message : String(error)}`, input));
+      },
+      sessionStopped: async (input) => {
+        await runtime.sessionStopped(input);
+        await this.discardWarm({ workspaceId: input.workspaceId, session: input.session, environment: { id: input.session.environmentId } as Environment }).catch(() => undefined);
+      },
+    };
+  }
+
+  /** The orphan reclaim timer (design §0.0 rule 14), with a v2 adapter only; returns its stop. */
+  startOrphanReclaim(
+    intervalMs: string | undefined,
+    findSession: (labels: { workspaceId: string; sessionId: string }) => Promise<{ archivedAt: string | null } | null>,
+    log: { warn(fields: Record<string, unknown>, message: string): void },
+  ): () => void {
+    const adapter = this.options.adapter;
+    if (adapter === undefined) return () => undefined;
+    return startSandboxOrphanReclaim({
+      lifecycle: adapter.adapter.lifecycle, findSession, intervalMs: sandboxOrphanReclaimMs(intervalMs),
+      warn: (fields, message) => log.warn(fields, message),
+    });
   }
 
   get(input: { workspaceId: string; session: { id: string } }): NodeSessionSandbox {
