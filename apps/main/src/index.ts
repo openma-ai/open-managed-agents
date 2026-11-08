@@ -2219,12 +2219,13 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
   }
 
   /** Native outbound adapter transport for the shared HTTPS relay core.
+   * The fenced binding is the caller's authority, so no relay pass is minted.
    * Only requests and responses cross this boundary, never Vault tokens. */
   async credentialEgress(scope: {
     tenantId: string; sessionId: string;
     runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
   }, action: "resolve" | "forward", request: Request): Promise<Response> {
-    const { createCredentialEgressRelay, createEgressRelayPasses } = await import("@open-managed-agents/managed-credential-resolver");
+    const { createCredentialEgressCore, credentialEgressDenied } = await import("@open-managed-agents/managed-credential-resolver");
     if (!this.env.PLATFORM_ROOT_SECRET) return new Response("Credential relay unavailable", { status: 503 });
     const fence = scope.runtimeFence === undefined ? null : {
       workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence, expiresAt: new Date(0).toISOString(),
@@ -2232,22 +2233,16 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
     if (fence !== null && !await fences.isCurrent(fence)) return new Response("Credential relay denied", { status: 403 });
     const db = await buildCfTenantDbProvider(this.env).resolve(scope.tenantId);
-    const passes = createEgressRelayPasses(this.env.PLATFORM_ROOT_SECRET, Date.now);
-    const relay = createCredentialEgressRelay({
-      passes, credentials: createManagedCredentialResolver(this.env, db),
-      findSession: async claims => {
-        if (fence !== null && !await fences.isCurrent(fence)) return null;
-        return new SqlSessionSource(new CfD1SqlClient(db)).find(claims);
-      },
-      send: req => fetch(req),
-    });
-    return relay.handle(action, new Request(`https://credential-relay.invalid/v1/oma/egress/${action}`, {
-      method: "POST", headers: {
-        authorization: `Bearer ${await passes.issue({ workspaceId: scope.tenantId, sessionId: scope.sessionId, ttlMs: 60000 })}`,
-        "x-oma-egress-target": request.url, "x-oma-egress-method": request.method,
-        "x-oma-egress-headers": JSON.stringify(Object.fromEntries(request.headers)),
-      }, body: action === "forward" && !["GET", "HEAD"].includes(request.method) ? await request.arrayBuffer() : null,
-    }));
+    const body = action === "forward" && !["GET", "HEAD"].includes(request.method) ? await request.arrayBuffer() : null;
+    // Re-check after buffering, immediately before the Session lookup.
+    const session = fence !== null && !await fences.isCurrent(fence) ? null
+      : await new SqlSessionSource(new CfD1SqlClient(db)).find({ workspaceId: scope.tenantId, sessionId: scope.sessionId });
+    if (session === null || session.archivedAt !== null) return credentialEgressDenied(403);
+    const core = createCredentialEgressCore({ credentials: createManagedCredentialResolver(this.env, db), send: req => fetch(req) });
+    const egressScope = { workspaceId: scope.tenantId, sessionId: scope.sessionId, vaultIds: session.vaultIds };
+    return action === "resolve"
+      ? core.resolve(egressScope, request.url)
+      : core.forward(egressScope, { target: request.url, method: request.method, headers: request.headers, body });
   }
 
   /**
