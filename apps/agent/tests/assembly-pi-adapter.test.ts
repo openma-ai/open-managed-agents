@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessRuntime } from "../src/harness/interface";
+import type { HarnessContext, HarnessRuntime } from "../../../packages/agent-harness/src/interface";
 import type { Agent } from "@earendil-works/pi-agent-core";
-import { createPiToolAssembly } from "../src/harness/assembly/adapters/pi";
-import { TOOL_ASSEMBLY_WARNING_SOURCE } from "../src/harness/assembly/loaded-tools-state";
+import { createPiToolAssembly } from "../../../packages/agent-harness/src/assembly/adapters/pi";
+import { TOOL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-tools-state";
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 
 const MCP_TOOL = "mcp__github__create_issue";

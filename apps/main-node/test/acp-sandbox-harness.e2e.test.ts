@@ -11,12 +11,9 @@ import type {
   SessionEvent,
   UserMessageEvent,
 } from "@open-managed-agents/shared";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import type {
-  HarnessContext,
-  HarnessRuntime,
-} from "@open-managed-agents/agent/harness/interface";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
+import {
+  registerCoreHarnesses, type HarnessContext, type HarnessRuntime, resolveHarness,
+} from "@open-managed-agents/agent-harness";
 import { SessionStateMachine } from "@open-managed-agents/session-runtime";
 import type { RuntimeAdapter } from "@open-managed-agents/session-runtime";
 import { describe, expect, it, vi } from "vitest";

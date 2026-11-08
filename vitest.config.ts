@@ -241,6 +241,7 @@ export default defineConfig({
       { find: "@open-managed-agents/sandbox-gateway", replacement: "./packages/sandbox-gateway/src/index.ts" },
       { find: "@open-managed-agents/session-realtime", replacement: "./packages/session-realtime/src/index.ts" },
       { find: "@open-managed-agents/session-realtime-memory", replacement: "./packages/session-realtime-memory/src/index.ts" },
+      { find: "@open-managed-agents/agent-harness", replacement: "./packages/agent-harness/src/index.ts" },
       { find: "@open-managed-agents/session-outcomes", replacement: "./packages/session-outcomes/src/index.ts" },
       { find: "@open-managed-agents/session-subagents", replacement: "./packages/session-subagents/src/index.ts" },
       { find: "@open-managed-agents/session-wakeup", replacement: "./packages/session-wakeup/src/index.ts" },

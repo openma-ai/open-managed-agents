@@ -4,21 +4,13 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import { getHarnessCatalog, resolveHarness } from "@open-managed-agents/agent/harness/registry";
-import { DefaultHarness } from "@open-managed-agents/agent/harness/default-loop";
-import { PiHarness } from "@open-managed-agents/agent/harness/pi-loop";
-import { composeSystemPrompt, platformGuidance } from "@open-managed-agents/agent/harness/platform-guidance";
-import { readHarnessAgentModelSettings } from "@open-managed-agents/agent/harness/agent-model-settings";
-import { agentUsesAssemblySkillMount } from "@open-managed-agents/agent/harness/assembly/skill-config";
 import {
-  eventsToMessages,
-  eventsToMessagesAsync,
-  INTERRUPTED_TOOL_RESULT_TEXT,
-  interruptRequiresActionClosure,
-} from "@open-managed-agents/agent/runtime/history";
-import { resolveAppendablePrompts } from "@open-managed-agents/agent/runtime/appendable-prompts";
-import { assertRuntimeAgentSnapshot } from "@open-managed-agents/agent/runtime/multiagent";
+  registerCoreHarnesses, getHarnessCatalog, resolveHarness, DefaultHarness, PiHarness,
+  composeSystemPrompt, platformGuidance, readHarnessAgentModelSettings,
+  agentUsesAssemblySkillMount, eventsToMessages, eventsToMessagesAsync,
+  INTERRUPTED_TOOL_RESULT_TEXT, interruptRequiresActionClosure, resolveAppendablePrompts,
+  assertRuntimeAgentSnapshot,
+} from "@open-managed-agents/agent-harness";
 
 describe("harness registry as the Node host sees it", () => {
   it("registers pi, ai-sdk and acp-sandbox with pi as the default", () => {

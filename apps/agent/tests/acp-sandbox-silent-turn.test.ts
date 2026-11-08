@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { AcpSandboxHarness } from "../src/harness/acp-sandbox-loop";
-import type { HarnessContext } from "../src/harness/interface";
+import { AcpSandboxHarness } from "../../../packages/agent-harness/src/acp-sandbox-loop";
+import type { HarnessContext } from "../../../packages/agent-harness/src/interface";
 
 // e2e 42d7c785 (session_hLxyQiRfRNX8Gc2KS7wh8): pi's model call failed and
 // pi-acp answered session/prompt with a plain end_turn, so the turn ended

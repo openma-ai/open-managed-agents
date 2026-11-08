@@ -197,6 +197,6 @@ The tool the fake MCP server exposes (`fake_echo`) returns the access_token used
 - `apps/main/src/routes/mcp-proxy.ts` — their Cloudflare composition
 - `apps/main/src/index.ts` (`McpProxyRpc`) — RPC entrypoint
 - `packages/mcp/src/http-client.ts` — official MCP v2 Streamable HTTP adapter
-- `apps/agent/src/harness/tools.ts` — Managed Agents tool projection + lifecycle
+- `packages/agent-harness/src/tools.ts` — Managed Agents tool projection + lifecycle
 - `apps/agent/src/oma-sandbox.ts` — sandbox HTTPS interceptor
 - `apps/agent/src/runtime/sandbox.ts` (`setOutboundContext`) — interceptor binding wire-up

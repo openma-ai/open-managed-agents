@@ -5,7 +5,7 @@ import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { HarnessInterface, HarnessContext, HarnessRuntime, FileResolver } from "./interface";
 import type { SessionEvent, ContentBlock, AgentToolUseEvent } from "@open-managed-agents/shared";
 import { generateEventId, classifyExternalError, ModelError } from "@open-managed-agents/shared";
-import { eventsToMessagesAsync } from "../runtime/history";
+import { eventsToMessagesAsync } from "./history/events-to-messages";
 import { SummarizeCompactionStrategy, resolveCompactionStrategy } from "./compaction";
 import type { CompactionStrategy } from "./compaction";
 import { ALL_TOOLS } from "./tools";

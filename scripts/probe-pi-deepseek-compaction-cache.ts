@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createPiModelRuntime } from "../apps/agent/src/harness/pi-provider";
-import { PiSummaryCompactionPolicy } from "../apps/agent/src/harness/pi-compaction";
+import { createPiModelRuntime } from "../packages/agent-harness/src/pi-provider";
+import { PiSummaryCompactionPolicy } from "../packages/agent-harness/src/pi-compaction";
 
 type AssistantMessage = any;
 type Message = any;

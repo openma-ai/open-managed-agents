@@ -7,7 +7,7 @@
 import mainApp, { McpProxyRpc as MainMcpProxyRpc } from "../apps/main/src/index";
 
 // --- Agent worker DO + harness registration ---
-import { registerCoreHarnesses } from "../apps/agent/src/harness/builtins";
+import { registerCoreHarnesses } from "../packages/agent-harness/src/builtins";
 import { registerTestHarnesses } from "./harnesses";
 registerCoreHarnesses();
 registerTestHarnesses();

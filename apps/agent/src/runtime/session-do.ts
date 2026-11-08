@@ -1,6 +1,18 @@
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
-import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
+import {
+  assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot,
+  resolveSubagentSkillReminders, resolveRuntimeSkillFiles, type HarnessContext,
+  type HarnessInterface, type HistoryStore, type SandboxExecutor, type ProcessHandle,
+  type FileResolver, HarnessLease, resolveHarness, composeSystemPrompt,
+  resolveRepositoryLocalPath, createPiModelRuntime, toAiSdkLanguageModel,
+  bindStoredModelCardCredentials, delegationCredentials, type ResolvedModelCardCredentials,
+  buildTools, disposeTools, ToolFailureError, resolveProxiedToolCall, resolveSkills,
+  resolveCustomSkills, resolveCustomSkillMounts, type SkillMountDescriptor, getSkillFiles,
+  getSkillFilesFromManagedSource, mountSkillFiles, agentUsesAssemblySkillMount,
+  resolveSkillAssemblyConfig, skillMountsShouldFetchBodies, resolveAppendablePrompts,
+  InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT,
+} from "@open-managed-agents/agent-harness";
 import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
 import { cloudflareSubagentThreadId, cloudflareSubagentWireEvents } from "./subagents";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
@@ -126,24 +138,11 @@ import type {
   SystemUserMessagePromotedEvent,
   SystemUserMessageCancelledEvent,
 } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessInterface, HistoryStore, SandboxExecutor, ProcessHandle, FileResolver } from "../harness/interface";
 import {
   supportsManagedWorkspaceLifecycle,
   supportsSessionOutputMount,
   withSandboxExecutionGuard,
 } from "@open-managed-agents/sandbox";
-import { HarnessLease, resolveHarness } from "../harness/registry";
-import { composeSystemPrompt } from "../harness/platform-guidance";
-import { resolveRepositoryLocalPath } from "../harness/acp-proxy-delivery";
-import {
-  createPiModelRuntime,
-  toAiSdkLanguageModel,
-} from "../harness/pi-provider";
-import {
-  bindStoredModelCardCredentials,
-  delegationCredentials,
-  type ResolvedModelCardCredentials,
-} from "../harness/model-card-credentials";
 import { resolveWorkspaceModelCredentials } from "@open-managed-agents/model-cards-store";
 import type { LanguageModel } from "ai";
 import { generateText } from "ai";
@@ -153,30 +152,13 @@ import {
   type ActiveOutcomeState,
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
-import { buildTools, disposeTools, ToolFailureError } from "../harness/tools";
-import { resolveProxiedToolCall } from "../harness/tool-proxy";
 import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { ensureEnvironmentPackages } from "@open-managed-agents/sandbox";
-import {
-  resolveSkills,
-  resolveCustomSkills,
-  resolveCustomSkillMounts,
-  type SkillMountDescriptor,
-  getSkillFiles,
-  getSkillFilesFromManagedSource,
-  mountSkillFiles,
-} from "../harness/skills";
-import {
-  agentUsesAssemblySkillMount,
-  resolveSkillAssemblyConfig,
-  skillMountsShouldFetchBodies,
-} from "../harness/assembly/skill-config";
-import { resolveAppendablePrompts } from "./appendable-prompts";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
-import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
+import { SqliteHistory } from "./sqlite-history";
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
 import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";

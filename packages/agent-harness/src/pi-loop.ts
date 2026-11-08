@@ -24,7 +24,7 @@ import {
   generateEventId,
   ModelError,
 } from "@open-managed-agents/shared";
-import { eventsToMessagesAsync } from "../runtime/history";
+import { eventsToMessagesAsync } from "./history/events-to-messages";
 import type { HarnessContext, HarnessInterface } from "./interface";
 import {
   PI_CONTEXT_OUTPUT_RESERVE_TOKENS,

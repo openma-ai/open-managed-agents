@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect, vi } from "vitest";
-import { buildTools, ALL_TOOLS, ToolFailureError } from "../../apps/agent/src/harness/tools";
+import { buildTools, ALL_TOOLS, ToolFailureError } from "../../packages/agent-harness/src/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import type { AgentConfig } from "@open-managed-agents/shared";
 
@@ -283,7 +283,7 @@ describe("event classification — schedule tool emits agent.tool_use, not agent
     // If this returns false for "schedule", a real model call would emit
     // agent.custom_tool_use and break the wire contract for downstream
     // consumers.
-    const { isBuiltinTool } = await import("../../apps/agent/src/harness/default-loop");
+    const { isBuiltinTool } = await import("../../packages/agent-harness/src/default-loop");
     for (const name of ["schedule", "cancel_schedule", "list_schedules", "browser", "bash", "read"]) {
       expect(isBuiltinTool(name), `${name} must be built-in`).toBe(true);
     }

@@ -8,8 +8,8 @@
 // (packages/platform-parity/platforms.mjs).
 import { exports } from "cloudflare:workers";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
+import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
 import {
   PARITY_HARNESS,
   PARITY_MODEL,
@@ -39,11 +39,11 @@ const AUTH = { "x-api-key": "test-key" };
 // the product file:line. Anything not declared here fails the file (afterAll).
 const leaks = installLeakCapture([
   // Outcome evaluator judge call against the unreachable parity model card:
-  // every generateText retry attempt (apps/agent/src/harness/outcome-evaluator.ts:53)
-  // rejects at apps/agent/src/harness/pi-ai-sdk.ts:62 and the attempt promise
+  // every generateText retry attempt (packages/agent-harness/src/outcome-evaluator.ts:53)
+  // rejects at packages/agent-harness/src/pi-ai-sdk.ts:62 and the attempt promise
   // is left unobserved on the ai telemetry tracing-channel path
   // (ai/src/telemetry/tracing-channel-publisher.ts:109) under workerd.
-  errorSignature("apps/agent/src/harness/pi-ai-sdk.ts:62 (outcome evaluator retries)", {
+  errorSignature("packages/agent-harness/src/pi-ai-sdk.ts:62 (outcome evaluator retries)", {
     message: "Connection error.",
     stack: ["generateWithPi"],
   }),
@@ -95,7 +95,7 @@ const goldens = Object.fromEntries(
 const STUB_CAUSE =
   "sandbox double: golden runs real commands (local-subprocess); the CF double test/sandbox-stub.ts:76 returns empty "
   + "stdout for every exec and :92-93 no-op read/write, so bash renders \"exit=0\", read \"(completed with no output)\" "
-  + "(apps/agent/src/harness/tools.ts:212) and write \"ok\" — a test-double difference, not product behaviour. Kept: "
+  + "(packages/agent-harness/src/tools.ts:212) and write \"ok\" — a test-double difference, not product behaviour. Kept: "
   + "workerd cannot run commands, and making the stub fake real output would only bend the double to the golden";
 const stub = (scenario: string, paths: string[]): KnownDifference => ({
   scenario,

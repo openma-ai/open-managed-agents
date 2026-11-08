@@ -14,7 +14,7 @@ export default defineConfig({
     testTimeout: 30_000,
     coverage: {
       provider: "v8",
-      include: ["apps/agent/src/harness/pi-compaction.ts"],
+      include: ["packages/agent-harness/src/pi-compaction.ts"],
       reporter: ["text", "json-summary"],
       reportsDirectory: "coverage/pi",
       thresholds: {

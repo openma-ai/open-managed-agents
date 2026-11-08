@@ -1,24 +1,13 @@
 {
   "$comment": "Baseline for scripts/check-session-ratchets.mjs (design §0.7 测试门禁 1). Numbers only go down: `node scripts/check-session-ratchets.mjs --update` lowers them to the current values and never raises them. unclassifiedPackages are Session packages that predate the gate; a new one must be classified in scripts/check-core-boundaries.mjs.",
   "maxLines": {
-    "apps/agent/src/runtime/session-do.ts": 8223,
-    "packages/control-plane-node/src/modules/node-managed.ts": 1315
+    "apps/agent/src/runtime/session-do.ts": 8205,
+    "packages/control-plane-node/src/modules/node-managed.ts": 1312
   },
   "agentImports": {
     "package": "packages/control-plane-node",
     "specifier": "@open-managed-agents/agent",
-    "maxPerFile": {
-      "src/index.ts": 2,
-      "src/lib/node-harness-runtime.ts": 2,
-      "src/lib/node-managed-acp-recovery.ts": 1,
-      "src/lib/node-managed-default-harness.ts": 2,
-      "src/lib/node-managed-harness-runtime.ts": 2,
-      "src/lib/node-managed-session-inputs.ts": 3,
-      "src/lib/node-managed-session-runner.ts": 2,
-      "src/modules/node-foundation.ts": 8,
-      "src/modules/node-http.ts": 1,
-      "src/modules/node-managed.ts": 7
-    }
+    "maxPerFile": {}
   },
   "unclassifiedPackages": [
     "packages/sandbox-egress",

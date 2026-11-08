@@ -1,0 +1,33 @@
+{
+  "name": "@open-managed-agents/agent-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.94",
+    "@ai-sdk/openai": "^4.0.106",
+    "@ai-sdk/provider": "4.0.35",
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@open-managed-agents/acp-runtime": "workspace:*",
+    "@open-managed-agents/api-types": "workspace:*",
+    "@open-managed-agents/browser-harness": "workspace:*",
+    "@open-managed-agents/domain": "workspace:*",
+    "@open-managed-agents/event-log": "workspace:*",
+    "@open-managed-agents/harness-inference-adapters": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/markdown": "workspace:*",
+    "@open-managed-agents/mcp": "workspace:*",
+    "@open-managed-agents/sandbox": "workspace:*",
+    "@open-managed-agents/session-runtime-contract": "workspace:*",
+    "@open-managed-agents/session-subagents": "workspace:*",
+    "@open-managed-agents/shared": "workspace:*",
+    "ai": "^7.0.159",
+    "fflate": "^0.8.2",
+    "nanoid": "^5.1.0",
+    "zod": "4.3.6"
+  }
+}

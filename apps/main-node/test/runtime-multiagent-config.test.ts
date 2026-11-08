@@ -1,8 +1,10 @@
 import { expect, it } from "vitest";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
-import { resolveRuntimeSkillFiles, resolveSubagentSkillReminders, resolvePinnedSubagent, resolveThreadAgentSnapshot, assertRuntimeAgentSnapshot } from "../../agent/src/runtime/multiagent";
-import { buildTools } from "../../agent/src/harness/tools";
-import { registerSkill, getSkillFilesFromManagedSource } from "../../agent/src/harness/skills";
+import {
+  resolveRuntimeSkillFiles, resolveSubagentSkillReminders, resolvePinnedSubagent,
+  resolveThreadAgentSnapshot, assertRuntimeAgentSnapshot, buildTools, registerSkill,
+  getSkillFilesFromManagedSource,
+} from "@open-managed-agents/agent-harness";
 import { zipSync, strToU8 } from "fflate";
 it("assembles managed-only skill instructions from the resolved archive", async () => {
   const files = await getSkillFilesFromManagedSource([{ skill_id: "managed-child", type: "custom", version: "7" }], {

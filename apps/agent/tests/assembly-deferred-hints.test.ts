@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { resolveToolAssemblyConfig } from "../src/harness/assembly/config";
-import {
-  formatClaudeCodeDeferredReminder,
-} from "../src/harness/assembly/deferred-prompt";
-import { createDeferredHintCoordinator } from "../src/harness/assembly/strategies/deferred-hints";
+import { resolveToolAssemblyConfig } from "../../../packages/agent-harness/src/assembly/config";
+import { formatClaudeCodeDeferredReminder } from "../../../packages/agent-harness/src/assembly/deferred-prompt";
+import { createDeferredHintCoordinator } from "../../../packages/agent-harness/src/assembly/strategies/deferred-hints";
 
 const DEFERRED = ["mcp__github__create_issue", "mcp__docs__lookup"];
 

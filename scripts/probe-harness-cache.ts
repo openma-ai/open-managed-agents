@@ -62,9 +62,9 @@
 import { tool } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import { DefaultHarness } from "../apps/agent/src/harness/default-loop";
-import { InMemoryHistory } from "../apps/agent/src/runtime/history";
-import type { HarnessContext, HarnessRuntime } from "../apps/agent/src/harness/interface";
+import { DefaultHarness } from "../packages/agent-harness/src/default-loop";
+import { InMemoryHistory } from "../packages/agent-harness/src/history/in-memory-history";
+import type { HarnessContext, HarnessRuntime } from "../packages/agent-harness/src/interface";
 import type {
   SessionEvent,
   SpanModelRequestEndEvent,

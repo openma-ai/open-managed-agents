@@ -23,10 +23,9 @@ import {
 } from "@open-managed-agents/sandbox";
 import { randomUUID } from "node:crypto";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
-import type {
-  HarnessContext,
-  HarnessInterface,
-} from "@open-managed-agents/agent/harness/interface";
+import {
+  type HarnessContext, type HarnessInterface, interruptRequiresActionClosure,
+} from "@open-managed-agents/agent-harness";
 import type {
   Environment,
   Session,
@@ -45,7 +44,6 @@ import {
 } from "./node-managed-session-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
-import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/api-types";
 import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";

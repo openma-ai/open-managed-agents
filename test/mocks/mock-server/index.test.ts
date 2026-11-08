@@ -3,7 +3,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { stepCountIs, streamText, tool, wrapLanguageModel } from "ai";
 import { z } from "zod";
 import worker, { MockStateDO, type Env } from "./index";
-import { llmLoggingMiddleware } from "../../../apps/agent/src/harness/llm-logging-middleware";
+import { llmLoggingMiddleware } from "../../../packages/agent-harness/src/llm-logging-middleware";
 
 const REPOSITORY_SHA = "9e79e0dd41e23a8900b0b4adec5f55e4ecf24529";
 

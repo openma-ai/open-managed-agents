@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelPricing } from "@open-managed-agents/api-types";
-import {
-  gateExhausted,
-  memoryListCostPicoStore,
-  meterPiRuntime,
-  recordModelEgress,
-  createSessionBudgetGate,
-  picoToCentsString,
-  requestListCostPico,
-} from "../src/harness/budget";
+import { gateExhausted, memoryListCostPicoStore, meterPiRuntime, recordModelEgress, createSessionBudgetGate, picoToCentsString, requestListCostPico } from "../../../packages/agent-harness/src/budget";
 import { budgetReachedStopEvents, type SessionUsage } from "@open-managed-agents/managed-agents-application";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 

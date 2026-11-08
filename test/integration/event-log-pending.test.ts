@@ -24,7 +24,7 @@ import {
   CfDoEventLog,
   ensureSchema as ensureEventLogSchema,
 } from "@open-managed-agents/event-log/cf-do";
-import { eventsToMessages } from "../../apps/agent/src/runtime/history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
 
 function stamp(e: any): void {
   if (!e.id) e.id = `sevt_${Math.random().toString(36).slice(2, 14)}`;

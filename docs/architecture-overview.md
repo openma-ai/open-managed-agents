@@ -183,7 +183,7 @@ open-managed-agents/
 | `runtime/recovery.ts` | DO crash 后扫描 in-flight 流，发 `session.warning` |
 | `runtime/resource-mounter.ts` | 把 file/github_repo/memory_store 资源挂载到容器 |
 | `runtime/workspace-backups.ts` | 用 `@cloudflare/sandbox createBackup` 把 workspace 打包到 R2 |
-| `runtime/appendable-prompts.ts` | 系统提示词的可追加片段（skills 用） |
+| `packages/agent-harness/src/appendable-prompts.ts` | 系统提示词的可追加片段（skills 用） |
 | `harness/interface.ts` | `HarnessInterface`、`HarnessContext` 契约 |
 | `harness/registry.ts` | 名字 → 工厂 |
 | `harness/pi-loop.ts` | **默认 harness**（Pi agent-core 1.1+） |
@@ -256,7 +256,7 @@ Astro Starlight，部署到 `docs.openma.ai`。脚本通过 `pnpm --filter` 触�
   - **Outcome Eval**（生产侧 LLM-judge，supervisor loop）
   - **Eval Framework**（test/eval：质量回归）
   - **RL Reward**（rl/verifier.ts：训练信号）
-- `event-log` 提供 SessionEvent 的追加 / 投影工具，被 `apps/agent/src/runtime/history.ts` 使用。
+- `event-log` 提供 SessionEvent 的追加 / 投影工具，被 `packages/agent-harness/src/history/events-to-messages.ts` 使用。
 
 ### 5.3 12 个领域 Store
 
@@ -540,7 +540,7 @@ Linear webhook  ──▶  apps/integrations /linear/webhook
 
 | 想做的事 | 改动哪些模块 | 参考文档 |
 |---|---|---|
-| 新增工具 | `apps/agent/src/harness/tools.ts` 注册；如有需要更新 `agent_toolset_*` | `AGENTS.md` |
+| 新增工具 | `packages/agent-harness/src/tools.ts` 注册；如有需要更新 `agent_toolset_*` | `AGENTS.md` |
 | 写自定义 harness | 实现 `HarnessInterface`，`registerHarness("...")`；本地 `oma deploy --harness` | `docs/archive/serverless-harness-sdk.md` |
 | 新增 store | 复制任一 `*-store` 模板 → 加进 `Services` → 路由消费 | `packages/services/README.md` |
 | 接入新第三方平台 | 新建 `packages/<provider>/` 实现 `integrations-core` ports；在 `apps/integrations/wire.ts` 注册；加 `routes/<provider>/` | `docs/linear-integration-design.md` |
