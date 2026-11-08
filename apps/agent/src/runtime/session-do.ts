@@ -2190,7 +2190,7 @@ export class SessionDO extends DurableObject<Env> {
                   await this.processUserMessage({
                     type: "user.message",
                     content: [{ type: "text", text: "" }],
-                  }, 0, true, signal, fence);
+                  }, 0, false, signal, fence);
                 }
                 continue;
               }
@@ -2214,15 +2214,7 @@ export class SessionDO extends DurableObject<Env> {
                 // settled it, or a duplicate POST): a second tool_result for
                 // one tool_use makes the provider 400 the whole transcript.
                 if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
-                const toolResultEvent: SessionEvent = {
-                  type: "agent.tool_result",
-                  tool_use_id: customResult.custom_tool_use_id,
-                  content: (customResult.content ?? [])
-                    .map((b) => b.type === "text" ? b.text : "").join(""),
-                  parent_event_id: customResult.custom_tool_use_id,
-                };
-                executionHistory.append(toolResultEvent);
-                this.broadcastEvent(toolResultEvent, fence);
+                executionHistory.append(this.customToolResultTranscriptEvent(customResult));
                 await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
               }
             }
@@ -2364,18 +2356,7 @@ export class SessionDO extends DurableObject<Env> {
             } else if (event.type === "user.custom_tool_result") {
               const customResult = event as UserCustomToolResultEvent;
               if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) return;
-              const toolResultEvent: SessionEvent = {
-                type: "agent.tool_result",
-                tool_use_id: customResult.custom_tool_use_id,
-                content: customResult.content.map(b => b.type === "text" ? b.text : "").join(""),
-                // v1-additive (docs/trajectory-v1-spec.md "Causality"):
-                // matching agent.custom_tool_use's EventBase.id IS the
-                // custom_tool_use_id (AgentCustomToolUseEvent.id overrides
-                // EventBase.id with `id: string`).
-                parent_event_id: customResult.custom_tool_use_id,
-              };
-              history.append(toolResultEvent);
-              this.broadcastEvent(toolResultEvent);
+              history.append(this.customToolResultTranscriptEvent(customResult));
               await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, history);
             }
           },
@@ -3378,6 +3359,7 @@ export class SessionDO extends DurableObject<Env> {
           // same wire contract or a spec-only client would silently get
           // OMA extension events on reconnect.
           if (!includeChunks && !isSpecEvent(event.type)) continue;
+          if ((event as { transcript_only?: boolean }).transcript_only) continue;
           pair[1].send(JSON.stringify(event));
         }
       }
@@ -4948,6 +4930,17 @@ export class SessionDO extends DurableObject<Env> {
     const pendingCalls = this.state.pending_tool_calls;
     const pending = pendingCalls.find(p => p.toolCallId === confirmation.tool_use_id);
 
+    // The turn resumes before the confirmed tool runs, so its result lands
+    // inside running...idle. A partial batch stays parked and announces nothing.
+    let runningAnnounced = false;
+    const announceRunning = () => {
+      if (remainingAfterAnswer(this.state.pending_tool_calls ?? [], confirmation.tool_use_id, () => asWireEvents(history.getEvents())).length > 0) return;
+      const runningEvent: SessionEvent = { type: "session.status_running" };
+      history.append(runningEvent);
+      this.broadcastEvent(runningEvent, executionFence);
+      runningAnnounced = true;
+    };
+
     if (confirmation.result === "allow" && pending) {
       // Execute the tool
       const agent = await this.getThreadAgentConfig(
@@ -5000,6 +4993,7 @@ export class SessionDO extends DurableObject<Env> {
         // its target tool with the target's arguments.
         const target = resolveProxiedToolCall(pending.toolName, pending.args);
         const originalTool = allTools[target.toolName];
+        announceRunning();
         if (originalTool?.execute) {
           try {
             const result = await originalTool.execute(target.args, {
@@ -5012,6 +5006,7 @@ export class SessionDO extends DurableObject<Env> {
               type: "agent.tool_result",
               tool_use_id: pending.toolCallId,
               content: resultStr,
+              is_error: false,
               // v1-additive (docs/trajectory-v1-spec.md "Causality"):
               // matching agent.tool_use's EventBase.id IS pending.toolCallId.
               parent_event_id: pending.toolCallId,
@@ -5025,6 +5020,7 @@ export class SessionDO extends DurableObject<Env> {
               // ToolFailureError messages are pre-formatted model-facing
               // text ("Error: " prefix included); use them verbatim.
               content: e instanceof ToolFailureError ? e.message : `Error: ${e instanceof Error ? e.message : String(e)}`,
+              is_error: true,
               parent_event_id: pending.toolCallId,
             };
             history.append(toolResultEvent);
@@ -5035,11 +5031,13 @@ export class SessionDO extends DurableObject<Env> {
       }
     } else {
       // Denied or not found — inject denial result
+      announceRunning();
       const denyMsg = confirmation.deny_message || "Tool execution was denied by the user.";
       const toolResultEvent: SessionEvent = {
         type: "agent.tool_result",
         tool_use_id: confirmation.tool_use_id,
         content: `Denied: ${denyMsg}`,
+        is_error: true,
         // v1-additive: matching agent.tool_use's EventBase.id IS the
         // tool_use_id the confirmation references.
         parent_event_id: confirmation.tool_use_id,
@@ -5050,7 +5048,7 @@ export class SessionDO extends DurableObject<Env> {
 
     // Remove the confirmed/denied call from pending, and only resume the
     // model once every parallel call of the batch has a result.
-    await this.resumeWhenToolBatchSettled(confirmation.tool_use_id, history, parentSignal, executionFence);
+    await this.resumeWhenToolBatchSettled(confirmation.tool_use_id, history, parentSignal, executionFence, runningAnnounced);
   }
 
   /**
@@ -5115,6 +5113,23 @@ export class SessionDO extends DurableObject<Env> {
     return closedCount;
   }
 
+  /**
+   * The harness transcript's tool result for a client's custom tool answer.
+   * The public log carries only user.custom_tool_result (official CMA), so this
+   * is appended for the model and pairing checks, never broadcast or projected.
+   */
+  private customToolResultTranscriptEvent(result: UserCustomToolResultEvent): SessionEvent {
+    return {
+      type: "agent.tool_result",
+      tool_use_id: result.custom_tool_use_id,
+      content: (result.content ?? []).map((b) => b.type === "text" ? b.text : "").join(""),
+      // v1-additive (docs/trajectory-v1-spec.md "Causality"): matching
+      // agent.custom_tool_use's EventBase.id IS the custom_tool_use_id.
+      parent_event_id: result.custom_tool_use_id,
+      transcript_only: true,
+    } as SessionEvent;
+  }
+
   private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
     try {
       return knownToolCallIds(asWireEvents(history.getEvents())).has(toolUseId);
@@ -5176,6 +5191,7 @@ export class SessionDO extends DurableObject<Env> {
     history: HistoryStore,
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
+    runningAnnounced = false,
   ): Promise<void> {
     const remaining = remainingAfterAnswer(this.state.pending_tool_calls ?? [], answeredId, () => asWireEvents(history.getEvents()));
     this.setState({ ...this.state, pending_tool_calls: remaining });
@@ -5194,7 +5210,7 @@ export class SessionDO extends DurableObject<Env> {
       type: "user.message",
       content: [{ type: "text", text: "" }],
     };
-    await this.processUserMessage(resumeMsg, 0, true, signal, fence);
+    await this.processUserMessage(resumeMsg, 0, runningAnnounced, signal, fence);
   }
 
   /**
@@ -5705,13 +5721,13 @@ export class SessionDO extends DurableObject<Env> {
    * Process a user message: resolve agent, build context, run harness,
    * evaluate outcome, emit status.
    *
-   * @param skipAppend — if true, the message is already in history (resume after tool confirmation)
+   * @param runningAnnounced — if true, this turn's status_running is already out (resume after tool confirmation)
    * @param retryCount — for transient error retries
    */
   private async processUserMessage(
     userMessage: UserMessageEvent,
     retryCount: number = 0,
-    skipAppend: boolean = false,
+    runningAnnounced: boolean = false,
     parentSignal?: AbortSignal,
     executionFence?: SessionExecutionFence,
   ): Promise<{ holdQueuedOnLane?: boolean } | void> {
@@ -6252,9 +6268,11 @@ export class SessionDO extends DurableObject<Env> {
       await this._armLeaseWake("model_request");
 
       // Broadcast running status
-      const runningEvent: SessionEvent = { type: "session.status_running" };
-      history.append(runningEvent);
-      this.broadcastEvent(runningEvent, activeFence);
+      if (!runningAnnounced) {
+        const runningEvent: SessionEvent = { type: "session.status_running" };
+        history.append(runningEvent);
+        this.broadcastEvent(runningEvent, activeFence);
+      }
 
       agentEventsBeforeRun = countAgentEvents(history.getEvents());
       await harness.run(ctx);
@@ -6540,7 +6558,7 @@ export class SessionDO extends DurableObject<Env> {
         return this.processUserMessage(
           userMessage,
           retryCount + 1,
-          skipAppend,
+          false,
           parentSignal,
           activeFence,
         );
