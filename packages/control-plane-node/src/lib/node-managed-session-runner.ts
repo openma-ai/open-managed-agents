@@ -169,7 +169,13 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   sandboxMode?(input: ManagedRunnerContext): SessionSandboxMode | Promise<SessionSandboxMode>;
   /** Start Pi's sandbox alongside the model; only sandbox operations wait for readiness. */
   backgroundPiSandbox?: boolean;
-  buildSandbox(input: ManagedRunnerContext & { signal?: AbortSignal; allocationId?: string }): Promise<SandboxExecutor>;
+  /** `runtimeGeneration` and `executionFence`: the allocation and execution this sandbox opens for. */
+  buildSandbox(input: ManagedRunnerContext & {
+    signal?: AbortSignal;
+    allocationId?: string;
+    runtimeGeneration?: string;
+    executionFence?: SessionExecutionFence;
+  }): Promise<SandboxExecutor>;
   /** Liveness probe used before reusing a warm sandbox and after a failed
    * sandbox operation. Default: the provider runtime Port's `status()`. */
   probeSandbox?(sandbox: SandboxExecutor): Promise<SandboxLiveness>;
@@ -202,6 +208,13 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
    * shared Session outputs advanced by another replica). */
   isSandboxCurrent?(input: ManagedRunnerContext & { runtimeGeneration: string }): Promise<boolean>;
   synchronizeSandbox?(input: ManagedRunnerContext & {
+    sandbox: SandboxExecutor;
+    runtimeGeneration: string;
+    executionFence: SessionExecutionFence;
+  }): Promise<void>;
+  /** A failed (not aborted) execution: replaces `synchronizeSandbox` so
+   * nothing is published (design §0.0 rule 16). Omitted: synchronizeSandbox. */
+  failSandbox?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
     runtimeGeneration: string;
     executionFence: SessionExecutionFence;
@@ -439,8 +452,9 @@ export class DefaultNodeManagedSessionRunner
       mode: () => this.dependencies.sandboxMode?.(context) ?? "sandbox",
       create: () => {
         if (signal.aborted) throw abortedError(signal);
-        return this.dependencies.buildSandbox({ ...context, signal,
+        return this.dependencies.buildSandbox({ ...context, signal, runtimeGeneration,
           ...(this.dependencies.workspaceCheckpoints === undefined ? {} : { allocationId: runtimeGeneration }),
+          ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
         });
       },
       prepare: async (sandbox) => {
@@ -1026,6 +1040,8 @@ export class DefaultNodeManagedSessionRunner
       );
     } finally {
       let finalizationError: Error | undefined;
+      // An interrupted or fenced-out turn is not a failed one.
+      const executionFailed = runFailed && !abortController.signal.aborted;
       const subagents = this.subagentExecutions.get(input);
       try {
         if (runFailed) abortController.abort();
@@ -1043,14 +1059,17 @@ export class DefaultNodeManagedSessionRunner
         finalizationError = error instanceof Error ? error : new Error(String(error));
       }
       try {
+        const barrier = executionFailed
+          ? this.dependencies.failSandbox ?? this.dependencies.synchronizeSandbox
+          : this.dependencies.synchronizeSandbox;
         if (
           sandboxReady && !sandboxLost &&
           input.executionFence !== undefined &&
-          this.dependencies.synchronizeSandbox !== undefined
+          barrier !== undefined
         ) {
           const executionFence = input.executionFence;
           await this.sandboxRuntimes.get(input)?.withSandbox(async () => {
-            await this.dependencies.synchronizeSandbox!({
+            await barrier.call(this.dependencies, {
               workspaceId: input.workspaceId,
               session: input.session,
               environment: input.environment,

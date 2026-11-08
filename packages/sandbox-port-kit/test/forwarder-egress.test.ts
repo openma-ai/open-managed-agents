@@ -75,3 +75,27 @@ describe("platform channels (design §0.6: limited + github_repository)", () => 
     ])).toEqual(["github.example.com"]);
   });
 });
+
+describe("relay installation on a v1 runtime (v1 bridges)", () => {
+  it("installs on the runtime itself, so its own path mapping and exec are used", async () => {
+    const ownCalls: string[] = [];
+    const runtime = {
+      async exec(command: string) { ownCalls.push(`exec:${command.split(" ")[0]}`); return "exit=1\n"; },
+      async readFile() { return ""; },
+      async writeFile(path: string) { ownCalls.push(`writeFile:${path}`); return `/host/mapped${path}`; },
+    };
+    const primitives: string[] = [];
+    const egress = createForwarderEgress<typeof runtime>({
+      async exec() { primitives.push("exec"); return { exitCode: 0, stdout: "", stderr: "" }; },
+      async readFile() { primitives.push("readFile"); return null; },
+      async writeFile() { primitives.push("writeFile"); },
+      async setEnv() { primitives.push("setEnv"); },
+      asSandboxPort: (own) => own,
+    }, deps);
+    const withVault: EgressPolicy = { ...limited, substitutions: [{ credentialId: "vault:TOKEN", envName: "TOKEN", placeholder: "oma_ph_1", hosts: [], inject: { header: true, body: false } }] };
+    // The fake runtime cannot create the relay directory; what matters is who was asked.
+    await expect(egress.attach({ runtime, scope, fence, policy: withVault, signal })).rejects.toThrow();
+    expect(ownCalls[0]).toBe("exec:mkdir");
+    expect(primitives).toEqual([]);
+  });
+});

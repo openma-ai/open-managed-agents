@@ -24,6 +24,7 @@ import { createBetterAuthComponent } from "./auth/node-auth.js";
 import { createFilesBlobs, createMemoryBlobs } from "./blobs.js";
 import type { NodeConfig } from "./config.js";
 import { openNodeDatabase } from "./database.js";
+import { createNodeE2BSessionAdapter } from "./e2b-session-adapter.js";
 import { createNodeRealtime } from "./realtime.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
 
@@ -86,6 +87,8 @@ export async function nodeDefaults(
     ? overrides.auth
     : config.auth.disabled ? null : await createBetterAuthComponent({ config, database, email });
   const sandbox = overrides.sandbox ?? await loadSandboxFactory(config);
+  const sessionSandboxAdapter = overrides.sessionSandboxAdapter
+    ?? (overrides.sandbox === undefined ? await loadSessionSandboxAdapter(config) : undefined);
   const realtime = overrides.realtime ?? await createNodeRealtime(config.realtime, database, {
     ...(config.database.kind === "postgres" && { postgresDsn: config.database.url }),
   });
@@ -100,6 +103,7 @@ export async function nodeDefaults(
     auth,
     email,
     sandbox,
+    ...(sessionSandboxAdapter !== undefined && { sessionSandboxAdapter }),
     realtime,
     blobs,
     ...(overrides.stores !== undefined && { stores: overrides.stores }),
@@ -121,4 +125,16 @@ async function loadSandboxFactory(config: NodeConfig): Promise<SandboxFactory> {
   if (config.processMode === "standalone") return load();
   let loaded: Promise<SandboxFactory> | undefined;
   return (ctx, env) => (loaded ??= load()).then((factory) => factory(ctx, env));
+}
+
+/**
+ * The provider's Sandbox SDK v2 adapter for Session sandboxes, where one
+ * exists (SANDBOX_PROVIDER=e2b); every other provider runs its v1 factory
+ * through the v1 bridge. Standalone only: a serverless process hands its
+ * sessions to an Environment Worker.
+ */
+async function loadSessionSandboxAdapter(config: NodeConfig) {
+  if (config.processMode !== "standalone") return undefined;
+  const selection = resolveSandboxProviderForEnvironment(config.sandbox.environment);
+  return selection.provider === "e2b" ? createNodeE2BSessionAdapter(config.sandbox.environment) : undefined;
 }

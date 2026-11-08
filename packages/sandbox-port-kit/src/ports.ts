@@ -10,6 +10,7 @@ import type {
 import type {
   SandboxEgressPort,
   SandboxLifecyclePort,
+  SandboxPort,
   SandboxStoragePort,
 } from "@open-managed-agents/sandbox";
 import type { FirewallRules } from "./firewall";
@@ -41,6 +42,11 @@ export interface SandboxVendorPort<R> {
    * creation do it in acquire from the Plan. Absent = no provider firewall:
    * the policy is enforced only on traffic that reaches the gateway (§0.3). */
   applyFirewall?(runtime: R, rules: FirewallRules): Promise<void>;
+  /** The runtime itself when it is a v1 SandboxPort (the v1 bridges): the
+   * shared relay installer then uses its own path mapping (a local adapter
+   * maps /workspace to a host directory). Absent = a view over the
+   * primitives above. */
+  asSandboxPort?(runtime: R): SandboxPort;
 }
 
 /** Injected by the core / composition layer. */

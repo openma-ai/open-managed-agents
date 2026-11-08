@@ -7,12 +7,12 @@ import {
   createE2BSessionSandbox,
   createR2BindingOutputSink,
   E2BSessionSandbox,
-  egressPolicy,
   RELAY_PASS_TTL_MS,
-  STORAGE_SYNC_INTERVAL_MS,
   parseMaxLifetime,
   storageConfig,
 } from "../src/runtime/e2b-session-sandbox";
+import { sessionEgressPolicy } from "@open-managed-agents/sandbox-port-kit";
+import { STORAGE_SYNC_INTERVAL_MS } from "@open-managed-agents/session-runtime";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
 
@@ -198,15 +198,15 @@ describe("createE2BSessionSandbox", () => {
   });
 
   it("compiles Environment networking and cap_cli placeholders into the egress policy", async () => {
-    expect(egressPolicy(scope, undefined)).toBeNull();
-    expect(egressPolicy(scope, { type: "unrestricted" })).toBeNull();
-    const limited = egressPolicy(scope, { type: "limited", allowed_hosts: ["api.github.com"], allow_package_managers: true });
+    expect(sessionEgressPolicy(scope, undefined)).toBeNull();
+    expect(sessionEgressPolicy(scope, { type: "unrestricted" })).toBeNull();
+    const limited = sessionEgressPolicy(scope, { type: "limited", allowed_hosts: ["api.github.com"], allow_package_managers: true });
     expect(limited?.networking).toMatchObject({ type: "limited", hosts: ["api.github.com"] });
     expect(limited?.networking.type === "limited" && limited.networking.packageSources).toContain("pypi.org");
     expect(limited?.substitutions).toEqual([]);
     const substitutions = await capCliSubstitutions({ MAIN_MCP: { resolveManagedCapCliEnvironment: async () => ({ type: "found", env: { GITHUB_TOKEN: "__cap_managed__" } }) } }, scope);
     expect(substitutions).toEqual([{ credentialId: "cap_cli:GITHUB_TOKEN", envName: "GITHUB_TOKEN", placeholder: "__cap_managed__", hosts: [], inject: { header: true, body: false } }]);
-    expect(egressPolicy(scope, undefined, substitutions)).toMatchObject({ networking: { type: "unrestricted" }, substitutions });
+    expect(sessionEgressPolicy(scope, undefined, substitutions)).toMatchObject({ networking: { type: "unrestricted" }, substitutions });
     expect(await capCliSubstitutions({ MAIN_MCP: { resolveManagedCapCliEnvironment: async () => ({ type: "not_found" }) } }, scope)).toEqual([]);
     expect(await capCliSubstitutions({}, scope)).toEqual([]);
   });

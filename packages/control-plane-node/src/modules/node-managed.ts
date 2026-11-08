@@ -39,7 +39,7 @@ import type { HarnessContext } from "@open-managed-agents/agent/harness/interfac
 
 import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import { buildMcpOAuthCliRoutes, buildMcpOAuthCliCallback, buildCapCliDeviceFlowRoutes, buildMcpOAuthRoutes, buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
-import { activeModelCardPricing, McpOAuthCliService, CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SandboxCredentialAdmission, SessionCreateAdmissionService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
+import { activeModelCardPricing, McpOAuthCliService, CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SandboxCredentialAdmission, SessionCreateAdmissionService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { deploymentAgentSourcePort, deploymentEnvironmentSourcePort, deploymentFileSourcePort, deploymentMemoryStoreSourcePort, deploymentSchedulePlannerPort, deploymentSessionLauncherPort, deploymentVaultSourcePort } from "@open-managed-agents/app/modules/deployments";
@@ -66,7 +66,7 @@ import { SqlEnvironmentWorkStore, type EnvironmentWorkSecretCipher } from "@open
 import { SqlMcpOAuthCliStore, SqlDeploymentAgentSource, SqlDeploymentVaultSource, SqlEnvironmentPersistence, SqlFileMetadataPersistence, SqlMemoryStoreSource, SqlManagedSessionsComposition, SqlPersistedSessionEventStream, SqlReplicatedSessionEventStream, SqlSessionEnvironmentSource, SqlSessionSource, SqlSessionRuntimeProjectionPersistence, SqlSessionEventPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
 import { createSqlSessionRuntimeReaders, ensureSessionExecutionClaimLockSchema, ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
-import { encodeRuntimeSessionEvent, AnthropicMessagesDreamCurator, ApplicationDreamMemoryWorkspace, ModelCardCatalogSource, CronDeploymentSchedulePlanner, EnvironmentAwareSessionEventDispatchRouter, EnvironmentAwareSessionEventStreamRouter, EnvironmentAwareSessionLifecycleRouter, TimerEnvironmentWorkAvailabilityWaiter, McpOAuthCredentialValidationProbe, inProcessDreamExecutionSchedulerModule, LocalTunnelProvisioner, SealedEnvironmentWorkSessionCredentialIssuer, StandardWebhookEnvironmentWorkWakeup, DeduplicatingDreamCurator, WebCryptoTunnelCertificateAuthority, WebCryptoTunnelTokenManager, WebCryptoMemoryContentDescriptor, ZipSkillPackageCompiler, synchronizeManagedSessionMemoryWorkspaces } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { encodeRuntimeSessionEvent, AnthropicMessagesDreamCurator, ApplicationDreamMemoryWorkspace, ModelCardCatalogSource, CronDeploymentSchedulePlanner, EnvironmentAwareSessionEventDispatchRouter, EnvironmentAwareSessionEventStreamRouter, EnvironmentAwareSessionLifecycleRouter, TimerEnvironmentWorkAvailabilityWaiter, McpOAuthCredentialValidationProbe, inProcessDreamExecutionSchedulerModule, LocalTunnelProvisioner, SealedEnvironmentWorkSessionCredentialIssuer, StandardWebhookEnvironmentWorkWakeup, DeduplicatingDreamCurator, WebCryptoTunnelCertificateAuthority, WebCryptoTunnelTokenManager, WebCryptoMemoryContentDescriptor, ZipSkillPackageCompiler } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 
@@ -88,11 +88,11 @@ import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarness
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
 import { ManagedCredentialResolver, createCredentialEgressRelay, createEgressRelayPasses } from "@open-managed-agents/managed-credential-resolver";
-import { authorizeSandboxEgress, createVaultPlaceholders, issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import { authorizeSandboxEgress, createVaultPlaceholders } from "@open-managed-agents/sandbox-gateway";
 import { isSessionExecutionFenceActive, sessionExecutionLeasesFrom, type SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
-import { prepareSandboxEgress } from "@open-managed-agents/sandbox-egress";
+import { placeholderSubstitutions } from "@open-managed-agents/sandbox-port-kit";
 import { sendDirectHttps } from "@open-managed-agents/sandbox-egress/direct-https";
 import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents-adapters-http";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
@@ -105,7 +105,8 @@ import {
   nodeManagedMemoryStoreModeName,
 } from "../lib/node-managed-session-inputs.js";
 import { NodeManagedMemorySnapshotMaterializer } from "../lib/node-managed-memory-snapshots.js";
-import { synchronizeNodeManagedMemoryStores } from "../lib/node-managed-memory-stores.js";
+import { NodeSessionSandboxes, sandboxIdlePauseMs } from "../lib/node-session-sandbox.js";
+import { createNodeSessionStorage } from "../lib/node-session-storage.js";
 import { NodeSessionExecutionWorker } from "../lib/node-session-execution-worker.js";
 import { createNodeMcpProxyBinding, type NodeMcpProxyTarget } from "../lib/http-mcp-proxy.js";
 import { createNodeAccessLossRuntime } from "../lib/mcp-access-loss.js";
@@ -365,56 +366,66 @@ export async function createManagedNodeRuntime(
     disposables.add("prepared_sandbox_bases", () => preparedSandboxBases.dispose());
   }
 
-  async function synchronizeNativeMemoryMounts(
-    workspaceId: string,
-    session: Session,
-    runtimeGeneration: string,
-    executionFence: Parameters<typeof isManagedSessionExecutionFenceActive>[0],
-    memories: MemoriesApplicationPort,
-  ): Promise<void> {
-    const result = await synchronizeManagedSessionMemoryWorkspaces(
-      { find: async () => session },
-      memories,
-      {
+  // One decision for the deployment: native mounts only when the composed
+  // factory declares them; every other sandbox file-syncs Memory Stores.
+  const memoryStoreMode = nodeManagedMemoryStoreModeName(components.sandbox);
+  const managedMemoriesFor = (workspaceId: string) =>
+    managedMemoriesApplicationForWorkspace(workspaceId).port(managedAgentsPortTokens.memories);
+  const managedSessionInputs = (workspaceId: string) => new NodeManagedSessionInputPreparer({
+    sharedOutputs: sharedSessionOutputs !== undefined,
+    files: managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
+    skillVersions: managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.skillVersions),
+    repositoryCredentials: managedSessionResourceSecrets,
+    ...(config.http.matter === undefined ? {} : { repositoryBonds: matterRepositoryCredentials(config.http.matter) }),
+    memoryStores: memoryStoreMode === "native"
+      ? {
+          mode: "native",
+          snapshots: new NodeManagedMemorySnapshotMaterializer(managedMemoriesFor(workspaceId), {
+            getText: async (key) => (await memoryBlobs.getText(key))?.text ?? null,
+            put: (key, content) => memoryBlobs.put(key, content),
+          }),
+        }
+      : { mode: "file_sync", memories: managedMemoriesFor(workspaceId) },
+  });
+  // The Session sandbox is the shared core (design §0.0 rule 15); Node
+  // injects its adapter, storage, egress relay and fence here.
+  const sessionSandboxes = new NodeSessionSandboxes({
+    ...(components.sessionSandboxAdapter === undefined ? {} : { adapter: components.sessionSandboxAdapter }),
+    images: config.sandbox.images,
+    createV1: createManagedSandboxBuilder({
+      capabilities: components.sandbox.capabilities,
+      images: config.sandbox.images,
+      workdir: (sessionId) => join(config.paths.sandboxWorkdir, sessionId),
+      build: buildSandbox,
+      ...(preparedSandboxBases === undefined ? {} : { preparedBases: preparedSandboxBases }),
+    }),
+    ...(config.workspace.sandboxLeaseTtlMs === undefined ? {} : { v1LeaseTtlMs: config.workspace.sandboxLeaseTtlMs }),
+    storage: createNodeSessionStorage({
+      memoryStoreMode,
+      memories: managedMemoriesFor,
+      memoryBlobs: {
         getText: async (key) => (await memoryBlobs.getText(key))?.text ?? null,
         list: (prefix, cursor) => memoryBlobs.list(prefix, cursor),
         put: (key, content) => memoryBlobs.put(key, content),
         delete: (key) => memoryBlobs.delete(key),
       },
-      {
-        workspaceId,
-        sessionId: session.id,
-        runtimeGeneration,
-        executionFence,
-        isFenceActive: isManagedSessionExecutionFenceActive,
-      },
-    );
-    if (result.type === "fence_lost") {
-      throw new Error(
-        `Managed Memory synchronization lost the execution fence for ${session.id}`,
-      );
-    }
-    if (result.type === "not_found") {
-      throw new Error(`Managed Session ${session.id} disappeared before Memory synchronization`);
-    }
-    if (result.recoveredWipes.length > 0) {
-      throw new Error(
-        `Writable Managed Memory workspace became distrusted: ${result.recoveredWipes.join(", ")}`,
-      );
-    }
-    if (result.conflicts.length > 0) {
-      logger.warn({
-        conflicts: result.conflicts,
-        op: "main-node.managed_memory.conflicts",
-        sessionId: session.id,
-        workspaceId,
-      }, "Managed Memory synchronization kept canonical winners for conflicts");
-    }
-  }
-
-  // One decision for the deployment: native mounts only when the composed
-  // factory declares them; every other sandbox file-syncs Memory Stores.
-  const memoryStoreMode = nodeManagedMemoryStoreModeName(components.sandbox);
+      ...(sharedSessionOutputs === undefined ? {} : { sharedOutputs: sharedSessionOutputs }),
+      outputs: managedSessionOutputCollector,
+      inputs: managedSessionInputs,
+      isFenceActive: isManagedSessionExecutionFenceActive,
+      warn: (fields, message) => logger.warn(fields, message),
+    }),
+    // Vault environment_variable / cap_cli credentials reach the sandbox only
+    // as placeholders (design §0.5, §8.8): the relay substitutes them.
+    substitutions: async ({ workspaceId, session }) => session.vaultIds.length === 0 ? [] : placeholderSubstitutions(
+      await managedCredentialResolver.placeholderEnvironment({ workspaceId, sessionId: session.id, vaultIds: session.vaultIds }), "vault"),
+    relay: () => relayPasses === null || !config.http.publicBaseUrl ? null
+      : { issue: (claims) => relayPasses.issue(claims), endpoint: config.http.publicBaseUrl },
+    isFenceActive: isManagedSessionExecutionFenceActive,
+    idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
+    warn: (message, { workspaceId, session }) =>
+      logger.warn({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message),
+  });
 
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     backgroundPiSandbox: true,
@@ -484,54 +495,16 @@ export async function createManagedNodeRuntime(
       }),
     }),
     sandboxMode: ({ session }) => resolveSessionSandboxMode(session, openAIAgentsSecrets),
-    buildSandbox: createManagedSandboxBuilder({
-      capabilities: components.sandbox.capabilities,
-      images: config.sandbox.images,
-      workdir: (sessionId) => join(config.paths.sandboxWorkdir, sessionId),
-      build: buildSandbox,
-      ...(preparedSandboxBases === undefined ? {} : { preparedBases: preparedSandboxBases }),
-    }),
+    buildSandbox: async (input) => sessionSandboxes.build(input),
     ...(sharedSessionOutputs === undefined ? {} : {
       isSandboxCurrent: ({ workspaceId, session, runtimeGeneration }: { workspaceId: string; session: { id: string }; runtimeGeneration: string }) =>
         sharedSessionOutputs.isSandboxCurrent(workspaceId, session.id, runtimeGeneration),
     }),
-    prepareSandbox: async ({
-      workspaceId,
-      session,
-      environment,
-      sandbox,
-      runtimeGeneration,
-      signal,
-      executionFence,
-    }) => {
-      const memories = managedMemoriesApplicationForWorkspace(workspaceId)
-        .port(managedAgentsPortTokens.memories);
-      const preparer = new NodeManagedSessionInputPreparer({
-        sharedOutputs: sharedSessionOutputs !== undefined,
-        files: managedPlatform
-          .app({ workspaceId })
-          .port(managedAgentsPortTokens.files),
-        skillVersions: managedPlatform
-          .app({ workspaceId })
-          .port(managedAgentsPortTokens.skillVersions),
-        repositoryCredentials: managedSessionResourceSecrets,
-        ...(config.http.matter === undefined
-          ? {}
-          : { repositoryBonds: matterRepositoryCredentials(config.http.matter) }),
-        memoryStores: memoryStoreMode === "native"
-          ? {
-              mode: "native",
-              snapshots: new NodeManagedMemorySnapshotMaterializer(memories, {
-                getText: async (key) => (await memoryBlobs.getText(key))?.text ?? null,
-                put: (key, content) => memoryBlobs.put(key, content),
-              }),
-            }
-          : { mode: "file_sync", memories },
-      });
-      // Shared outputs are not a live mount: hydrate canonical files into a
-      // fresh sandbox before inputs are staged, so input mounts under the
-      // outputs directory win and the next turn can read prior outputs.
-      await sharedSessionOutputs?.restoreToSandbox(workspaceId, session.id, sandbox, runtimeGeneration);
+    prepareSandbox: async ({ workspaceId, session, environment, sandbox, runtimeGeneration, signal, executionFence }) => {
+      const sessionSandbox = sessionSandboxes.get({ workspaceId, session });
+      sessionSandbox.bind({ context: { workspaceId, session, environment }, runtimeGeneration, ...(executionFence === undefined ? {} : { executionFence }) });
+      // Attach or acquire, egress, then outputs and Memory Stores (the storage Port).
+      await sessionSandbox.open();
       // After the workspace is restored, so packages it carries count.
       await installEnvironmentPackages(sandbox, environment, {
         pipIndexUrl: config.sandbox.environment.SANDBOX_PIP_INDEX_URL,
@@ -544,10 +517,7 @@ export async function createManagedNodeRuntime(
           durationMs: result.durationMs,
         }, "Environment packages ready"),
       });
-      // Vault `environment_variable` / `cap_cli` credentials reach the
-      // sandbox only as placeholders, through refreshSandboxEnvironment below,
-      // for every harness (design §0.5, §8.8): the gateway substitutes them.
-      await preparer.prepare({
+      await managedSessionInputs(workspaceId).prepareInputs({
         workspaceId,
         session,
         sandbox,
@@ -558,52 +528,20 @@ export async function createManagedNodeRuntime(
         ...(signal === undefined ? {} : { signal }),
       });
     },
-    // Cold preparation calls this last (after repository clones); warm reuse
-    // calls it again to renew the pass and honor the current Vault bindings.
-    refreshSandboxEnvironment: async ({ workspaceId, session, sandbox, registerCleanup, executionFence }) => {
+    // Cold preparation calls this last; warm reuse calls it for each new
+    // execution: the core re-attaches egress with a pass bound to it.
+    refreshSandboxEnvironment: async ({ workspaceId, session, environment, executionFence }) => {
       if (session.vaultIds.length > 0 && (!relayPasses || !config.http.publicBaseUrl)) {
         throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
       }
-      await prepareSandboxEgress({
-        sandbox,
-        registerCleanup,
-        scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
-        placeholders: (scope) => managedCredentialResolver.placeholderEnvironment(scope),
-        relay: { endpoint: config.http.publicBaseUrl ?? "https://unavailable.invalid", pass: "" },
-        // Bound to the execution attempt (design §0.0 rule 10): the relay
-        // checks it live, so the pass dies with the attempt.
-        issuePass: () => issueSandboxRelayPass(claims => relayPasses!.issue(claims), executionFence, 86_400_000),
+      sessionSandboxes.get({ workspaceId, session }).bind({
+        context: { workspaceId, session, environment },
+        ...(executionFence === undefined ? {} : { executionFence }),
       });
     },
-    synchronizeSandbox: async ({
-      workspaceId,
-      session,
-      sandbox,
-      runtimeGeneration,
-      executionFence,
-    }) => {
-      const memories = managedMemoriesApplicationForWorkspace(workspaceId)
-        .port(managedAgentsPortTokens.memories);
-      if (memoryStoreMode === "file_sync") {
-        await synchronizeNodeManagedMemoryStores({
-          session,
-          sandbox,
-          memories,
-          authorize: () => isManagedSessionExecutionFenceActive(executionFence),
-          // The turn barrier runs after the turn's own signal may have fired;
-          // the fence, not cancellation, decides whether it may write.
-          signal: new AbortController().signal,
-        });
-      } else {
-        await synchronizeNativeMemoryMounts(workspaceId, session, runtimeGeneration, executionFence, memories);
-      }
-      await managedSessionOutputCollector.synchronize({
-        workspaceId,
-        sessionId: session.id,
-        sandbox,
-        executionFence,
-        runtimeGeneration,
-      });
+    // Execution end (design §0.1 step 7): revoke, fenced write-back, idle pause armed.
+    synchronizeSandbox: async ({ workspaceId, session }) => {
+      await sessionSandboxes.get({ workspaceId, session }).endExecution();
     },
     afterExecution: withReportedArtifactPublication(createNodeOpenAIArtifactPublisher({
       historyForWorkspace: workspaceId => new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),

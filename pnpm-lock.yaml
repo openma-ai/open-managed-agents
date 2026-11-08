@@ -825,6 +825,9 @@ importers:
       croner:
         specifier: ^9.0.0
         version: 9.1.0
+      e2b:
+        specifier: 2.63.0
+        version: 2.63.0
       nanoid:
         specifier: ^5.1.0
         version: 5.1.9
@@ -1543,6 +1546,9 @@ importers:
       '@open-managed-agents/sandbox-gateway':
         specifier: workspace:*
         version: link:../sandbox-gateway
+      '@open-managed-agents/sandbox-port-kit':
+        specifier: workspace:*
+        version: link:../sandbox-port-kit
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../scheduler

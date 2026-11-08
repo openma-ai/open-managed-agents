@@ -75,7 +75,7 @@ import type {
   SandboxPlan,
   SandboxPorts,
 } from "@open-managed-agents/sandbox";
-import { SandboxGoneError } from "@open-managed-agents/sandbox";
+import { SandboxGoneError, parseExecResult } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 
 export const SANDBOX_GENERATION_MARKER = "/tmp/.oma-warm";
@@ -166,6 +166,10 @@ export interface PortsSessionSandboxOptions<R> {
   isCurrent?(execution: SessionSandboxExecution | undefined): Promise<boolean>;
   /** Idle pause (design §0.0 rule 11). Omitted = never pauses. */
   idle?: SessionSandboxIdleTimer;
+  /** sandbox.keepAlive this often at exec boundaries (design §0.1 step 5,
+   * a provider lease); null or omitted = never (Cloudflare: the alarm
+   * calls renewActivityTimeout). */
+  keepAliveMs?: number | null;
 }
 
 interface Live<R> {
@@ -190,6 +194,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   private lost = false;
   private storageSyncedAt = 0;
   private egressAttachedAt = 0;
+  private keptAliveAt = 0;
   private egressAttachedKey: string | undefined;
   /** egress.revoke ran since the last attach: the next call attaches again. */
   private egressRevoked = false;
@@ -245,6 +250,14 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   async mountSessionOutputs(): Promise<void> {
     this.outputs = true;
     await this.attachStorage();
+  }
+
+  /** The live runtime (opened if needed), for host operations outside the
+   * executor (provider-specific file or git calls). Not counted as a call. */
+  async runtime(): Promise<R> {
+    await this.quiesce();
+    this.throwRefreshError();
+    return (await this.open()).runtime;
   }
 
   /** Opens the sandbox again (attach, else resume, else acquire) and
@@ -584,6 +597,14 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
         await ports.storage.sync({ runtime: live.runtime, scope, fence: this.fence(scope), stores: this.stores, outputs: live.plan.outputs, reason: "interval", signal });
         this.storageSyncedAt = now;
       }
+      const keepAliveMs = this.options.keepAliveMs ?? null;
+      if (keepAliveMs !== null && now - this.keptAliveAt >= keepAliveMs) {
+        if (await ports.sandbox.keepAlive(live) === "gone") {
+          this.markLost();
+          throw new SandboxGoneError("The sandbox is gone");
+        }
+        this.keptAliveAt = now;
+      }
       const renew = this.options.egressRenewMs;
       const keyChanged = this.egressKey() !== this.egressAttachedKey;
       if ((renew !== null && now - this.egressAttachedAt >= renew) || keyChanged || this.egressRevoked) {
@@ -673,6 +694,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
         await ports.storage.attach({ runtime: live.runtime, scope, fence, stores: this.stores, outputs: plan.outputs, signal });
       }
       this.storageSyncedAt = this.now();
+      this.keptAliveAt = this.now();
       if (!reused) await writeMarker(live.executor, generation);
       await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs, runStartedAt, ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }) });
     } catch (error) {
@@ -696,9 +718,8 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
 
 async function readMarker(executor: SessionSandboxExecutor): Promise<string | null> {
   try {
-    const out = await executor.exec(`cat ${SANDBOX_GENERATION_MARKER} 2>/dev/null`);
-    const match = /^exit=(-?\d+)\n([\s\S]*)$/.exec(out);
-    const value = match?.[1] === "0" ? match[2].trim() : "";
+    const result = parseExecResult(await executor.exec(`cat ${SANDBOX_GENERATION_MARKER} 2>/dev/null`));
+    const value = result.exitCode === 0 ? result.stdout.trim() : "";
     return value.length > 0 ? value : null;
   } catch {
     return null;
@@ -707,7 +728,7 @@ async function readMarker(executor: SessionSandboxExecutor): Promise<string | nu
 
 async function writeMarker(executor: SessionSandboxExecutor, generation: string): Promise<void> {
   const out = await executor.exec(`echo ${generation} > ${SANDBOX_GENERATION_MARKER}`);
-  if (!out.startsWith("exit=0")) throw new Error(`Writing ${SANDBOX_GENERATION_MARKER} failed: ${out.slice(0, 200)}`);
+  if (parseExecResult(out).exitCode !== 0) throw new Error(`Writing ${SANDBOX_GENERATION_MARKER} failed: ${out.slice(0, 200)}`);
 }
 
 const NO_EXPIRY = "9999-12-31T00:00:00.000Z";
