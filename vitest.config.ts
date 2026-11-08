@@ -236,6 +236,7 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime-sql/execution-lease", replacement: "./packages/session-runtime-sql/src/execution-lease.ts" },
       { find: "@open-managed-agents/session-runtime-sql", replacement: "./packages/session-runtime-sql/src/index.ts" },
       { find: "@open-managed-agents/sandbox-gateway-sql", replacement: "./packages/sandbox-gateway-sql/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-gateway/vault-substitution", replacement: "./packages/sandbox-gateway/src/vault-substitution.ts" },
       { find: "@open-managed-agents/sandbox-gateway", replacement: "./packages/sandbox-gateway/src/index.ts" },
       { find: "@open-managed-agents/session-realtime", replacement: "./packages/session-realtime/src/index.ts" },
       { find: "@open-managed-agents/session-realtime-memory", replacement: "./packages/session-realtime-memory/src/index.ts" },

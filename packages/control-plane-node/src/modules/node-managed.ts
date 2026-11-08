@@ -24,7 +24,6 @@ import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder
 import { createPreparedSandboxBases } from "../lib/prepared-sandbox-bases";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
-import { injectVaultEnvironment, vaultEnvironmentVariables } from "../lib/vault-environment";
 import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
 import { buildOpenAISubagentTools, nodeOpenAISubagentPolicy, openAISubagentSession } from "../openai-subagents.js";
@@ -40,7 +39,7 @@ import type { HarnessContext } from "@open-managed-agents/agent/harness/interfac
 
 import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import { buildMcpOAuthCliRoutes, buildMcpOAuthCliCallback, buildCapCliDeviceFlowRoutes, buildMcpOAuthRoutes, buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
-import { activeModelCardPricing, McpOAuthCliService, CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SessionCreateAdmissionService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
+import { activeModelCardPricing, McpOAuthCliService, CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SandboxCredentialAdmission, SessionCreateAdmissionService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { deploymentAgentSourcePort, deploymentEnvironmentSourcePort, deploymentFileSourcePort, deploymentMemoryStoreSourcePort, deploymentSchedulePlannerPort, deploymentSessionLauncherPort, deploymentVaultSourcePort } from "@open-managed-agents/app/modules/deployments";
@@ -89,7 +88,7 @@ import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarness
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
 import { ManagedCredentialResolver, createCredentialEgressRelay, createEgressRelayPasses } from "@open-managed-agents/managed-credential-resolver";
-import { authorizeSandboxEgress, issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import { authorizeSandboxEgress, createVaultPlaceholders, issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
 import { isSessionExecutionFenceActive, sessionExecutionLeasesFrom, type SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
@@ -545,21 +544,9 @@ export async function createManagedNodeRuntime(
           durationMs: result.durationMs,
         }, "Environment packages ready"),
       });
-      // Vault `environment_variable` credentials, for the commands the Agent runs.
-      // Whole-brain ACP receives only scoped service capabilities. Raw Vault
-      // environment credentials belong to the host path, never this sandbox.
-      const injected = session.agent.openma?.harness === "acp-sandbox" ? [] : await injectVaultEnvironment(
-        sandbox,
-        await vaultEnvironmentVariables(managedCredentialStore, workspaceId, session.vaultIds),
-      );
-      if (injected.length > 0) {
-        logger.info({
-          op: "main-node.vault_environment",
-          sessionId: session.id,
-          workspaceId,
-          names: injected,
-        }, "Vault environment variables set");
-      }
+      // Vault `environment_variable` / `cap_cli` credentials reach the
+      // sandbox only as placeholders, through refreshSandboxEnvironment below,
+      // for every harness (design §0.5, §8.8): the gateway substitutes them.
       await preparer.prepare({
         workspaceId,
         session,
@@ -907,8 +894,12 @@ export async function createManagedNodeRuntime(
   const managedSessionsComposition = new SqlManagedSessionsComposition({
     client: sql,
     // Same shared admission policy as Cloudflare. Self-hosted Node has no
-    // rate-limit, quota or billing adapters, so every create is admitted.
-    admission: new SessionCreateAdmissionService({ clock: { now: () => new Date() } }),
+    // rate-limit, quota or billing adapters, so every create is admitted,
+    // except Vault sandbox credentials without the forwarder gateway (400).
+    admission: new SandboxCredentialAdmission(new SessionCreateAdmissionService({ clock: { now: () => new Date() } }), {
+      substitutes: () => relayPasses !== null && config.http.publicBaseUrl?.startsWith("https://") === true,
+      credentialIds: (scope) => managedCredentialResolver.sandboxCredentialIds(scope),
+    }),
     executionOutbox: true,
     environments: nodeManagedEnvironments,
     lifecycle: managedSessionLifecycle,
@@ -1235,6 +1226,7 @@ export async function createManagedNodeRuntime(
     fetch: (request, init) => fetch(request, init),
     clock: { now: () => new Date() },
     log: { warn: (fields, message) => logger.warn(fields, message) },
+    ...(platformRootSecret ? { placeholders: createVaultPlaceholders(platformRootSecret) } : {}),
   }, capSpecs);
   const relayPasses = platformRootSecret ? createEgressRelayPasses(platformRootSecret, Date.now) : null;
   const managedCredentialEgressRoutes = buildCredentialEgressRoutes(() => {
@@ -1244,6 +1236,7 @@ export async function createManagedNodeRuntime(
       credentials: managedCredentialResolver,
       authorize: claims => authorizeSandboxEgress(managedAcpCapabilities.stores, claims),
       send: sendDirectHttps,
+      log: { warn: (fields, message) => logger.warn(fields, message) },
     });
   });
   // One managed platform graph per process. Every official application

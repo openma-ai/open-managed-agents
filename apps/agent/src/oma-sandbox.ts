@@ -27,6 +27,7 @@ import {
   EGRESS_SANDBOX_CONTROL_HEADERS,
   egressRequestHeaders,
 } from "@open-managed-agents/managed-credential-resolver";
+import { carriesVaultPlaceholder } from "@open-managed-agents/sandbox-gateway/vault-substitution";
 import {
   DirectoryBackup,
   type DirectoryBackupRecord,
@@ -190,25 +191,22 @@ export const handleCredentialEgressRequest = async (
     return new Response("credential egress unavailable", { status: 502 });
   }
   const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required || !injectable });
-
-  let upstreamReq: Request;
-  if (request.method === "GET" || request.method === "HEAD") {
-    upstreamReq = new Request(request.url, {
-      method: request.method,
-      headers: outHeaders,
-      redirect: "manual",
-    });
-  } else {
-    // Materialize body — Workers needs a known-length body to set
-    // Content-Length on the outbound request.
-    const bodyBytes = await request.arrayBuffer();
-    upstreamReq = new Request(request.url, {
-      method: request.method,
-      headers: outHeaders,
-      body: bodyBytes,
-      redirect: "manual",
-    });
+  // Materialize body — Workers needs a known-length body to set
+  // Content-Length on the outbound request.
+  const bodyBytes = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
+  // A Vault placeholder the gateway did not take (wrong host, plain HTTP, no
+  // current attempt) is refused, never sent on (design §8.4 rule 2).
+  if (carriesVaultPlaceholder(request.headers, bodyBytes)) {
+    console.warn(`[oma-sandbox] vault placeholder refused host=${url.hostname} rule=credential_host_mismatch`);
+    return new Response("Credential relay request denied: credential_host_mismatch", { status: 403 });
   }
+
+  const upstreamReq = new Request(request.url, {
+    method: request.method,
+    headers: outHeaders,
+    ...(bodyBytes === null ? {} : { body: bodyBytes }),
+    redirect: "manual",
+  });
 
   console.log(
     `[oma-sandbox] outbound passthrough host=${url.hostname} method=${request.method}`,

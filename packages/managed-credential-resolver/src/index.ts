@@ -7,7 +7,6 @@ export {
 } from "./resolver";
 export {
   bearerOf,
-  placeholderEnvironment,
   selectMcpTarget,
   selectOutboundTarget,
   type ManagedCredentialRefresh,

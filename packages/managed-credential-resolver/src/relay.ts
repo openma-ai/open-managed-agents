@@ -1,3 +1,7 @@
+import {
+  carriesVaultPlaceholder, scrubVaultValues, substituteVaultPlaceholders, substitutesOnHost,
+  type VaultSubstitutionDenyRule, type VaultSubstitutionSecret,
+} from "@open-managed-agents/sandbox-gateway/vault-substitution";
 import { egressRequestHeaders } from "./egress";
 import type { ManagedCredentialResolver } from "./resolver";
 
@@ -61,9 +65,13 @@ export function relayHeaders(inbound: Headers): Headers {
 export interface CredentialEgressScope { workspaceId: string; sessionId: string; vaultIds: readonly string[] }
 export interface CredentialEgressForward { target: string; method: string; headers: Headers; body: ArrayBuffer | null }
 export interface CredentialEgressCorePorts {
-  credentials: Pick<ManagedCredentialResolver, "outboundTarget" | "forward">;
+  /** `sandboxEgress` adds Vault placeholder substitution (design §8.4);
+   * without it only cap_cli / MCP targets are injected. */
+  credentials: Pick<ManagedCredentialResolver, "outboundTarget" | "forward"> & Partial<Pick<ManagedCredentialResolver, "sandboxEgress">>;
   /** Direct HTTPS transport. Never use the sandbox's local proxy. */
   send(request: Request): Promise<Response>;
+  /** Refused placeholders (design §8.4 rule 2): host, rule, Session; never the request. */
+  log?: { warn(fields: Record<string, unknown>, message: string): void };
 }
 /** Injection for an already authorized Session scope, independent of how the caller authenticated. */
 export interface CredentialEgressCore {
@@ -72,6 +80,8 @@ export interface CredentialEgressCore {
   forward(scope: CredentialEgressScope, input: CredentialEgressForward): Promise<Response>;
 }
 export const credentialEgressDenied = (status: number) => new Response("Credential relay request denied", { status });
+/** 403 naming the rule (design §8.4b "body 写明被哪条规则拒"). */
+export const vaultPlaceholderDenied = (rule: VaultSubstitutionDenyRule) => new Response(`Credential relay request denied: ${rule}`, { status: 403 });
 
 /** Order is part of the contract: target, Vault match, method, headers, then body. */
 function egressCore(ports: CredentialEgressCorePorts) {
@@ -82,7 +92,15 @@ function egressCore(ports: CredentialEgressCorePorts) {
       if (url.protocol !== "https:" || url.username || url.password || url.hash
         || url.pathname.startsWith(`${EGRESS_RELAY_PATH}/`)) return null;
     } catch { return null; }
-    return { url, target: await ports.credentials.outboundTarget(scope, url.hostname) };
+    const plan = ports.credentials.sandboxEgress !== undefined
+      ? await ports.credentials.sandboxEgress(scope, url.hostname)
+      : { target: await ports.credentials.outboundTarget(scope, url.hostname), substitutions: [] as VaultSubstitutionSecret[] };
+    return { url, ...plan, substitutes: plan.substitutions.some((secret) => substitutesOnHost(secret, url.hostname)) };
+  };
+  const refuse = (scope: CredentialEgressScope, host: string, rule: VaultSubstitutionDenyRule, credentialId: string | null) => {
+    ports.log?.warn({ op: "credential_egress.placeholder_refused", rule, host, credential_id: credentialId,
+      workspace_id: scope.workspaceId, session_id: scope.sessionId }, "Vault placeholder refused at egress");
+    return vaultPlaceholderDenied(rule);
   };
   const forward = async (scope: CredentialEgressScope, target: string, method: string,
     input: { headers(): Headers; body(): Promise<ArrayBuffer | null> }) => {
@@ -90,23 +108,40 @@ function egressCore(ports: CredentialEgressCorePorts) {
     if (authorized === null) return credentialEgressDenied(400);
     // A stale local interception may outlive a Vault removal. Never fall back
     // to sending the placeholder, or turn this endpoint into an open proxy.
-    if (authorized.target === null) return credentialEgressDenied(403);
+    if (authorized.target === null && !authorized.substitutes) {
+      let carries = false;
+      try { carries = carriesVaultPlaceholder(input.headers(), null); } catch { /* still 403 */ }
+      if (carries) refuse(scope, authorized.url.hostname, "credential_host_mismatch", null);
+      return credentialEgressDenied(403);
+    }
     if (!/^[A-Z]+$/u.test(method) || ["CONNECT", "TRACE"].includes(method)) return credentialEgressDenied(400);
     let inbound: Headers;
     try { inbound = relayHeaders(input.headers()); } catch { return credentialEgressDenied(400); }
-    const { url, target: credential } = authorized;
-    const body = ["GET", "HEAD"].includes(method) ? null : await input.body();
-    const send = (token: string) => ports.send(new Request(url, { method,
-      headers: egressRequestHeaders(inbound, { token, stripAuthorization: true, ...(credential.header ? { header: credential.header } : {}) }),
+    const { url, target: credential, substitutions } = authorized;
+    const substituted = substituteVaultPlaceholders({
+      host: url.hostname, headers: inbound, body: ["GET", "HEAD"].includes(method) ? null : await input.body(), secrets: substitutions,
+    });
+    if (!substituted.ok) return refuse(scope, url.hostname, substituted.rule, substituted.credentialId);
+    const { body } = substituted;
+    // Sandbox control headers are stripped (egress.ts) unless they carry a
+    // value substituted here: that is the request the Agent meant to send.
+    const outbound = (headers: Headers) => {
+      for (const name of substituted.substitutedHeaders) if (!headers.has(name)) headers.set(name, substituted.headers.get(name)!);
+      return headers;
+    };
+    const send = (token: string | null) => ports.send(new Request(url, { method,
+      headers: outbound(egressRequestHeaders(substituted.headers, token === null
+        ? { token: null, stripAuthorization: false }
+        : { token, stripAuthorization: true, ...(credential!.header ? { header: credential!.header } : {}) })),
       body, redirect: "manual",
     }));
-    const { response } = await ports.credentials.forward(scope.workspaceId, credential, send);
-    return new Response(response.body, { status: response.status, statusText: response.statusText, headers: relayHeaders(response.headers) });
+    const response = credential === null ? await send(null) : (await ports.credentials.forward(scope.workspaceId, credential, send)).response;
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers: scrubVaultValues(relayHeaders(response.headers), substitutions) });
   };
   return {
     async resolve(scope: CredentialEgressScope, target: string) {
       const authorized = await authorize(scope, target);
-      return authorized === null ? credentialEgressDenied(400) : Response.json({ inject: authorized.target !== null });
+      return authorized === null ? credentialEgressDenied(400) : Response.json({ inject: authorized.target !== null || authorized.substitutes });
     },
     forward,
   };
