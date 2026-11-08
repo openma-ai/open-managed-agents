@@ -341,6 +341,25 @@ describe("Harbor-style ACP sandbox agent preparation", () => {
     ]);
   });
 
+  it("reads the state probe through each exec port's exit-status shape", async () => {
+    const plan = prepareAcpSandboxAgent({
+      sessionId: "session_pi",
+      agent: { id: "pi-acp", command: "pi-acp" },
+    });
+    const probe = (output: string) => hasRequiredAcpSandboxAgentState({
+      async exec() { return output; },
+    }, plan);
+
+    // Cloudflare and the CF E2B executor prefix "exit=N\n" (and may append stderr).
+    await expect(probe("exit=0\npresent")).resolves.toBe(true);
+    await expect(probe("exit=0\npresent\nstderr: note")).resolves.toBe(true);
+    await expect(probe("exit=0\nmissing")).resolves.toBe(false);
+    await expect(probe("exit=1\npresent")).resolves.toBe(false);
+    // Local / e2b append "[exit ...]" only on failure.
+    await expect(probe("present")).resolves.toBe(true);
+    await expect(probe("present\n[exit exit=1]")).resolves.toBe(false);
+  });
+
   it("fails native resume closed and applies retain/delete lifecycle policy", async () => {
     const commands: string[] = [];
     const plan = prepareAcpSandboxAgent({
