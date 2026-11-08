@@ -60,6 +60,9 @@ import {
 
 export type { ManagedNodeSubagentControl } from "./node-managed-subagents.js";
 
+/** Abort reason of a turn ended by user.interrupt (worker cancel and accept). */
+const INTERRUPT_REQUESTED = "interrupt_requested";
+
 interface ManagedRunnerSubagentContext {
   subagents?: ManagedNodeSubagentControl;
   delegateToAgent?: (agentId: string, message: string) => Promise<string>;
@@ -632,7 +635,7 @@ export class DefaultNodeManagedSessionRunner
   async accept(input: NodeManagedSessionRunnerAcceptInput): Promise<void> {
     if (input.events.some((event) => event.type === "user.interrupt")) {
       const active = this.abortControllers.get(input);
-      active?.abort();
+      active?.abort(INTERRUPT_REQUESTED);
       if (active === undefined) {
         // Official CMA: interrupt against an already-idle session is a no-op
         // (including idle requires_action). interruptRequiresActionClosure
@@ -818,6 +821,8 @@ export class DefaultNodeManagedSessionRunner
     let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
+    // user.interrupt ended the turn (abort reason INTERRUPT_REQUESTED).
+    let interrupted = false;
     try {
       for (const event of input.events) {
         if (event.type !== "user.tool_confirmation") continue;
@@ -1009,21 +1014,30 @@ export class DefaultNodeManagedSessionRunner
       }
     } catch (error) {
       await recovery.close();
-      runFailed = true;
-      if (abortController.signal.reason === "lease_lost") throw error;
-      runtime.broadcastProducedEvent({
-        type: "session.error",
-        error: {
-          type: "unknown_error",
-          message: error instanceof Error ? error.message : String(error),
-          // The turn may have produced side effects (tool calls), so it is not
-          // retried automatically: CMA semantics for a dead turn are `exhausted`.
-          retryStatus: "exhausted",
-        },
-      });
-      throw new SessionRetriesExhaustedError(
-        error instanceof Error ? error.message : String(error),
-      );
+      if (abortController.signal.reason === INTERRUPT_REQUESTED) {
+        // Official CMA: user.interrupt "pauses agent execution and returns
+        // control to the user" (BetaManagedAgentsUserInterruptEvent). It is
+        // not an execution error (no session.error type covers it) and not
+        // retries_exhausted ("repeated errors exhausted the retry budget");
+        // the turn ends idle end_turn, as on Cloudflare.
+        interrupted = true;
+      } else {
+        runFailed = true;
+        if (abortController.signal.reason === "lease_lost") throw error;
+        runtime.broadcastProducedEvent({
+          type: "session.error",
+          error: {
+            type: "unknown_error",
+            message: error instanceof Error ? error.message : String(error),
+            // The turn may have produced side effects (tool calls), so it is not
+            // retried automatically: CMA semantics for a dead turn are `exhausted`.
+            retryStatus: "exhausted",
+          },
+        });
+        throw new SessionRetriesExhaustedError(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     } finally {
       let finalizationError: Error | undefined;
       const subagents = this.subagentExecutions.get(input);
@@ -1125,7 +1139,7 @@ export class DefaultNodeManagedSessionRunner
         }
       } else if (!leaseLost) {
         const failed = runFailed || finalizationError !== undefined;
-        const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
+        const parkIds = failed || interrupted ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
           runtime.pendingConfirmations,
           asWireEvents(runtime.history.getEvents()),
         );

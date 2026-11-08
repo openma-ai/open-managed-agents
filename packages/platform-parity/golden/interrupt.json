@@ -10,7 +10,6 @@
     "span.model_request_start",
     "user.interrupt",
     "span.model_request_end",
-    "session.error",
     "session.status_idle",
     "user.message",
     "session.status_running",
@@ -59,26 +58,12 @@
         "type": "agent.tool_use"
       }
     ],
-    "session.error": [
-      {
-        "error": {
-          "message": "interrupt_requested",
-          "retry_status": {
-            "type": "exhausted"
-          },
-          "type": "unknown_error"
-        },
-        "id": "<id>",
-        "processed_at": "<time>",
-        "type": "session.error"
-      }
-    ],
     "session.status_idle": [
       {
         "id": "<id>",
         "processed_at": "<time>",
         "stop_reason": {
-          "type": "retries_exhausted"
+          "type": "end_turn"
         },
         "type": "session.status_idle"
       },

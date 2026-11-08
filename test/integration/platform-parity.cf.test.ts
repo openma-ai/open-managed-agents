@@ -135,13 +135,15 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
   },
   {
     scenario: "interrupt",
-    title: "interrupt ends the turn differently",
-    paths: ["/events/session.error", "/events/session.status_idle/0/stop_reason/type"],
-    eventTypes: ["user.interrupt", "session.error"],
-    cause: "golden (Node) turns user.interrupt into session.error interrupt_requested (retry_status exhausted) and idle "
-      + "retries_exhausted (packages/control-plane-node/src/lib/node-managed-session-runner.ts:1010-1025); CF idles "
-      + "end_turn with no error (apps/agent/src/runtime/session-do.ts:2986) and lists user.interrupt after the aborted "
-      + "span.model_request_end. Here the golden is the questionable side: CMA treats an interrupt as a normal end",
+    title: "user.interrupt listed after the aborted model span",
+    paths: [],
+    eventTypes: ["user.interrupt"],
+    cause: "golden (Node) stamps user.interrupt when it is accepted (packages/control-plane-node/src/lib/"
+      + "node-session-execution-worker.ts sessionEventsAccepted) and lists it in accept order, before the aborted "
+      + "span.model_request_end; CF applies it first and appends it after the aborted turn settles "
+      + "(apps/agent/src/runtime/session-do.ts user.interrupt handler, INTERRUPT_GRACE_MS: CMA \"the interrupt can take "
+      + "longer to apply while tool calls are running\", processed_at null until applied). CF is the contract side here; "
+      + "Node needs its accepted-input stamping and listing order reworked (Session inputs, wave 2)",
   },
 ];
 
