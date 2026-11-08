@@ -46,6 +46,18 @@ export type SessionExecutionRun = (
   signal: AbortSignal,
 ) => Promise<SessionExecutionRunResult>;
 
+export interface SessionLaneDrain {
+  run: SessionExecutionRun;
+  /** Called before each claim; true limits the claim to continuations (the
+   * lane is parked in requires_action and only the client's answers may run). */
+  beforeClaim(): boolean;
+  /** Admits input that reached the lane without an execution row; true when
+   * something was admitted and the lane should claim again. */
+  admitUnclaimed(): Promise<boolean>;
+  failed(error: Error): void;
+  lost(execution: SessionExecution): void;
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -88,6 +100,27 @@ export class SessionExecutionHost {
     if (claimed.type === "empty") return { type: "empty" };
     this.dependencies.onFenceChanged?.(claimed.fence);
     return this.#runClaimed(claimed, run);
+  }
+
+  /**
+   * Runs the lane's executions one at a time until it is empty. An interrupt
+   * cancels only the running execution; queued ones survive and drain next.
+   * A failure or a lost lease stops the lane: the client decides what follows
+   * a failure, and the lease's next owner reclaims a lost one.
+   */
+  async drainLane(lane: SessionLaneDrain): Promise<void> {
+    while (true) {
+      const continuationsOnly = lane.beforeClaim();
+      const result = await this.runOne(lane.run, { continuationsOnly });
+      if (result.type === "empty") {
+        if (await lane.admitUnclaimed()) continue;
+        return;
+      }
+      if (result.type === "completed" || result.type === "cancelled") continue;
+      if (result.type === "failed") lane.failed(result.error);
+      else lane.lost(result.execution);
+      return;
+    }
   }
 
   async #runClaimed(

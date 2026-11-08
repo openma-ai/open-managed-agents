@@ -55,10 +55,12 @@ import {
   clearTurnRecoveryCount,
   TurnAborted,
   classifyTurnFailure,
-  decideTurnStop,
+  finishTurn,
   finalizeStaleTurns,
   type StaleToolUse,
   isTurnCancellationError,
+  interruptTurn,
+  type LaneStatus,
   openTurnMarker,
   settleTurnFailure,
   type RuntimeAdapter,
@@ -75,7 +77,7 @@ import {
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
-import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
+import { SessionExecutionHost, SessionSandboxRuntime, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
@@ -2099,183 +2101,28 @@ export class SessionDO extends DurableObject<Env> {
       // replacement DO sweeps it after expiry via the shared policy.
       await this._armLeaseWake();
       try {
-      while (true) {
-        this.broadcastedMessageIds.clear();
-        // Parked in requires_action: only the client's answers may run; a
-        // queued user.message waits for the paused turn to finish.
-        const awaitingClient = (this.state.pending_tool_calls?.length ?? 0) > 0;
-        const result = await host.runOne(async (execution, fence, signal) => {
-          this._executionFences.set(threadId, fence);
-          const executionHistory = this.guardHistoryForExecution(history, fence);
-          let holdQueuedOnLane = false;
-          let turnFailed = false;
-          const executionEventIds = execution.events
-            .map((e) => (e as { id?: string }).id)
-            .filter((id): id is string => typeof id === "string");
-          sdoLog("queue.drain", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            source: "outbox",
-            execution_id: execution.id,
-            event_ids: executionEventIds,
-          });
-          sdoLog("queue.claim", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            execution_id: execution.id,
-            event_ids: executionEventIds,
-          });
-          // The outbox path used to call processUserMessage directly, so it
-          // never ran runAgentTurn's beginTurn/hintTurnInFlight pair. That
-          // left no durable `sessions.turn_id` marker and relied solely on
-          // the one-shot alarm above. If that alarm was lost with the
-          // isolate, a cold alarm found no orphan row, finalized nothing,
-          // and the multiplexer deleted it — exactly the stuck
-          // status_running session from the 5d95d88 incident.
-          //
-          // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
-          // harness can issue its model request. D1 is the authority the
-          // cold-start finalizer reads; the alarm is what wakes it.
-          const turnId = `turn_${nanoid()}`;
-          // A marker that couldn't be written doesn't fail the execution: the
-          // event-log dangling-turn fallback in _finalizeStaleTurns still
-          // ends it after a reset.
-          const turnMarker = await openTurnMarker(this.runtimeAdapter, this.state.session_id, turnId, {
-            began: (id) => { this._activeTurnIds.add(id); },
-            ended: (id) => { this._activeTurnIds.delete(id); },
-          });
-          sdoLog("turn.begin", {
-            session_id: this.state.session_id,
-            thread_id: threadId,
-            turn_id: turnId,
-            execution_id: execution.id,
-            d1_marked: turnMarker.marked,
-          });
-          // Await the durable write. A fire-and-forget setAlarm can be lost
-          // if the isolate resets right after the turn starts.
-          await this._armLeaseWake("turn_start");
-          // Lane is running a new execution (held rows already absorbed on
-          // claim): drop the exhausted mark unless a pre-exhausted queued
-          // input still awaits fallback admission.
-          {
-            const at = this.state.exhausted_at_by_lane?.[threadId];
-            if (at !== undefined && !this.queue.listQueue(threadId).some((r) =>
-              r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
-              this.setExhaustedAt(threadId, undefined);
-            }
-          }
-          try {
-            const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
-            for (const rawEvent of execution.events) {
-              if (rawEvent.type === "system.message") continue;
-              if (rawEvent.type === "session.updated") {
-                // Budget resume: continue from history, no new user input.
-                if (rawEvent.resume === true) {
-                  await this.processUserMessage({
-                    type: "user.message",
-                    content: [{ type: "text", text: "" }],
-                  }, 0, false, signal, fence);
-                }
-                continue;
-              }
-              // Execution rows use the Managed Agents domain shape. The DO
-              // runtime uses the legacy wire shape, so this is the one
-              // explicit protocol projection at the host boundary.
-              const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
-              const localQueued = this.ensureLocalQueueInput(event);
-              if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
-              if (event.type === "user.message") {
-                const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
-                if (turn?.holdQueuedOnLane) {
-                  holdQueuedOnLane = true;
-                  this.setExhaustedAt(threadId, Date.now());
-                }
-              } else if (event.type === "user.tool_confirmation") {
-                await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
-              } else if (event.type === "user.custom_tool_result") {
-                const customResult = event as UserCustomToolResultEvent;
-                // Late answer for a call that is already closed (interrupt
-                // settled it, or a duplicate POST): a second tool_result for
-                // one tool_use makes the provider 400 the whole transcript.
-                if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
-                executionHistory.append(this.customToolResultTranscriptEvent(customResult));
-                await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
-              }
-            }
-            // `broadcastEvent` deliberately serializes the managed-runtime
-            // projection in a promise chain.  Drain that chain while this
-            // lease is still active; otherwise the host could settle the
-            // execution first and every fenced projection would correctly
-            // be rejected as stale.  This is the commit barrier between the
-            // harness side effects and execution settlement.
-            await this._managedProjectionChain;
-            // Node parity (runner `afterExecution`): terminal facts are
-            // committed and this attempt still holds its fence, so completed
-            // root-turn outputs become Agents API artifacts before settle.
-            if (threadId === "sthr_primary" && !signal.aborted) {
-              await this.publishAgentsApiArtifacts(fence);
-            }
-            return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
-          } catch (err) {
-            turnFailed = true;
-            throw err;
-          } finally {
-            const currentFence = this._executionFences.get(threadId);
-            if (
-              currentFence?.executionId === fence.executionId &&
-              currentFence.attemptId === fence.attemptId
-            ) {
-              this._executionFences.delete(threadId);
-            }
-            // Mirror runAgentTurn's finally: clear the D1 marker before the
-            // host settles the execution so a successful turn never looks
-            // like a cold-start orphan. Filter by turnId inside endTurn, so
-            // a finalizer that already ended this turn makes this a no-op.
-            const endTurnOk = await turnMarker.end();
-            sdoLog("turn.end", {
-              session_id: this.state.session_id,
-              thread_id: threadId,
-              turn_id: turnId,
-              execution_id: execution.id,
-              reason: signal.aborted
-                ? "aborted"
-                : turnFailed
-                  ? "error"
-                  : holdQueuedOnLane
-                    ? "held"
-                    : "completed",
-              d1_marked: turnMarker.marked,
-              end_turn_ok: endTurnOk,
-            });
-          }
-        }, { continuationsOnly: awaitingClient });
-        if (result.type === "empty") {
+        await host.drainLane({
+          beforeClaim: () => {
+            this.broadcastedMessageIds.clear();
+            // Parked in requires_action: only the client's answers may run; a
+            // queued user.message waits for the paused turn to finish.
+            return (this.state.pending_tool_calls?.length ?? 0) > 0;
+          },
+          run: (execution, fence, signal) => this.runLaneExecution(threadId, history, execution, fence, signal),
           // Direct DO callers and pre-outbox deliveries may have a queued
           // input row but no D1 admission yet. Admit it once as a
           // reconciliation step; normal main-worker traffic already has the
           // atomic D1 outbox row and takes the claim path directly.
-          if (await this.admitQueueFallback(executionStore, threadId)) continue;
-          break;
-        }
-        if (result.type === "completed") continue;
-        // An interrupt cancels only the running execution; queued ones
-        // survive and drain next (Backchat policy). After cancelSession the
-        // queue is empty and the next runOne returns "empty".
-        if (result.type === "cancelled") continue;
-        if (result.type === "failed") {
-          const errorEvent: SessionEvent = {
-            type: "session.error",
-            error: result.error.message,
-          };
-          history.append(errorEvent);
-          this.broadcastEvent(errorEvent);
-        } else {
+          admitUnclaimed: () => this.admitQueueFallback(executionStore, threadId),
+          failed: (error) => {
+            const errorEvent: SessionEvent = { type: "session.error", error: error.message };
+            history.append(errorEvent);
+            this.broadcastEvent(errorEvent);
+          },
           // A stale incarnation may still have emitted live chunks, but it
           // cannot commit a terminal event. The next alarm/request reclaims.
-          console.warn(`[drain] execution ${result.execution.id} lost its lease`);
-        }
-        break;
-      }
+          lost: (execution) => { console.warn(`[drain] execution ${execution.id} lost its lease`); },
+        });
       } finally {
         this._executionActiveLanes.delete(threadId);
       }
@@ -2408,6 +2255,160 @@ export class SessionDO extends DurableObject<Env> {
     }
     } finally {
       this._draining.delete(threadId);
+    }
+  }
+
+  /** One claimed execution on a lane: its turn marker, the inputs it carries,
+   * and the commit barrier before the host settles it. */
+  private async runLaneExecution(
+    threadId: string,
+    history: HistoryStore,
+    execution: SessionExecution,
+    fence: SessionExecutionFence,
+    signal: AbortSignal,
+  ): Promise<SessionExecutionRunResult> {
+    this._executionFences.set(threadId, fence);
+    const executionHistory = this.guardHistoryForExecution(history, fence);
+    let holdQueuedOnLane = false;
+    let turnFailed = false;
+    const executionEventIds = execution.events
+      .map((e) => (e as { id?: string }).id)
+      .filter((id): id is string => typeof id === "string");
+    sdoLog("queue.drain", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      source: "outbox",
+      execution_id: execution.id,
+      event_ids: executionEventIds,
+    });
+    sdoLog("queue.claim", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      execution_id: execution.id,
+      event_ids: executionEventIds,
+    });
+    // The outbox path used to call processUserMessage directly, so it
+    // never ran runAgentTurn's beginTurn/hintTurnInFlight pair. That
+    // left no durable `sessions.turn_id` marker and relied solely on
+    // the one-shot alarm above. If that alarm was lost with the
+    // isolate, a cold alarm found no orphan row, finalized nothing,
+    // and the multiplexer deleted it — exactly the stuck
+    // status_running session from the 5d95d88 incident.
+    //
+    // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
+    // harness can issue its model request. D1 is the authority the
+    // cold-start finalizer reads; the alarm is what wakes it.
+    const turnId = `turn_${nanoid()}`;
+    // A marker that couldn't be written doesn't fail the execution: the
+    // event-log dangling-turn fallback in _finalizeStaleTurns still
+    // ends it after a reset.
+    const turnMarker = await openTurnMarker(this.runtimeAdapter, this.state.session_id, turnId, {
+      began: (id) => { this._activeTurnIds.add(id); },
+      ended: (id) => { this._activeTurnIds.delete(id); },
+    });
+    sdoLog("turn.begin", {
+      session_id: this.state.session_id,
+      thread_id: threadId,
+      turn_id: turnId,
+      execution_id: execution.id,
+      d1_marked: turnMarker.marked,
+    });
+    // Await the durable write. A fire-and-forget setAlarm can be lost
+    // if the isolate resets right after the turn starts.
+    await this._armLeaseWake("turn_start");
+    // Lane is running a new execution (held rows already absorbed on
+    // claim): drop the exhausted mark unless a pre-exhausted queued
+    // input still awaits fallback admission.
+    {
+      const at = this.state.exhausted_at_by_lane?.[threadId];
+      if (at !== undefined && !this.queue.listQueue(threadId).some((r) =>
+        r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
+        this.setExhaustedAt(threadId, undefined);
+      }
+    }
+    try {
+      const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
+      for (const rawEvent of execution.events) {
+        if (rawEvent.type === "system.message") continue;
+        if (rawEvent.type === "session.updated") {
+          // Budget resume: continue from history, no new user input.
+          if (rawEvent.resume === true) {
+            await this.processUserMessage({
+              type: "user.message",
+              content: [{ type: "text", text: "" }],
+            }, 0, false, signal, fence);
+          }
+          continue;
+        }
+        // Execution rows use the Managed Agents domain shape. The DO
+        // runtime uses the legacy wire shape, so this is the one
+        // explicit protocol projection at the host boundary.
+        const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
+        const localQueued = this.ensureLocalQueueInput(event);
+        if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
+        if (event.type === "user.message") {
+          const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
+          if (turn?.holdQueuedOnLane) {
+            holdQueuedOnLane = true;
+            this.setExhaustedAt(threadId, Date.now());
+          }
+        } else if (event.type === "user.tool_confirmation") {
+          await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
+        } else if (event.type === "user.custom_tool_result") {
+          const customResult = event as UserCustomToolResultEvent;
+          // Late answer for a call that is already closed (interrupt
+          // settled it, or a duplicate POST): a second tool_result for
+          // one tool_use makes the provider 400 the whole transcript.
+          if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
+          executionHistory.append(this.customToolResultTranscriptEvent(customResult));
+          await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
+        }
+      }
+      // `broadcastEvent` deliberately serializes the managed-runtime
+      // projection in a promise chain.  Drain that chain while this
+      // lease is still active; otherwise the host could settle the
+      // execution first and every fenced projection would correctly
+      // be rejected as stale.  This is the commit barrier between the
+      // harness side effects and execution settlement.
+      await this._managedProjectionChain;
+      // Node parity (runner `afterExecution`): terminal facts are
+      // committed and this attempt still holds its fence, so completed
+      // root-turn outputs become Agents API artifacts before settle.
+      if (threadId === "sthr_primary" && !signal.aborted) {
+        await this.publishAgentsApiArtifacts(fence);
+      }
+      return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
+    } catch (err) {
+      turnFailed = true;
+      throw err;
+    } finally {
+      const currentFence = this._executionFences.get(threadId);
+      if (
+        currentFence?.executionId === fence.executionId &&
+        currentFence.attemptId === fence.attemptId
+      ) {
+        this._executionFences.delete(threadId);
+      }
+      // Mirror runAgentTurn's finally: clear the D1 marker before the
+      // host settles the execution so a successful turn never looks
+      // like a cold-start orphan. Filter by turnId inside endTurn, so
+      // a finalizer that already ended this turn makes this a no-op.
+      const endTurnOk = await turnMarker.end();
+      sdoLog("turn.end", {
+        session_id: this.state.session_id,
+        thread_id: threadId,
+        turn_id: turnId,
+        execution_id: execution.id,
+        reason: signal.aborted
+          ? "aborted"
+          : turnFailed
+            ? "error"
+            : holdQueuedOnLane
+              ? "held"
+              : "completed",
+        d1_marked: turnMarker.marked,
+        end_turn_ok: endTurnOk,
+      });
     }
   }
 
@@ -2888,205 +2889,83 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       if (body.type === "user.interrupt") {
-        // AMA-spec semantics for user.interrupt:
-        //   1. Abort the in-flight turn for the target thread (only that
-        //      thread — siblings keep running). If no session_thread_id
-        //      is set, defaults to primary.
-        //   2. Flush queued user.* inputs (AMA: "queued inputs are
-        //      flushed"): they are marked cancelled_at and never promote.
-        //      DELETE /pending/:event_id can also cancel one specific row.
-        //   3. Append the user.interrupt event itself + idle marker.
+        // Only this thread's turn is interrupted; siblings keep running.
         const targetThread =
           (body as unknown as { session_thread_id?: string })
             .session_thread_id ?? "sthr_primary";
-        const ctrl = this._threadAbortControllers.get(targetThread);
-        const hadActiveTurn = !!ctrl;
-        // Official CMA: "Against an already-idle session an interrupt is
-        // normally a no-op." That includes idle requires_action: accept the
-        // interrupt, leave event_ids / pending_tool_calls / stop_reason
-        // untouched, and do not call interruptPending or emit a fresh idle.
-        // (Self-hosted failed-claim re-queue is the documented exception and
-        // is not this path.)
-        {
-          let idleStop: string | undefined;
-          let lastStatus: string | undefined;
-          for (const e of history.getEvents()) {
-            if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== targetThread) continue;
-            if (e.type === "session.status_running" || e.type === "session.status_idle") {
-              lastStatus = e.type;
-              idleStop = e.type === "session.status_idle"
-                ? ((e as { stop_reason?: { type?: string } }).stop_reason?.type ?? "")
-                : undefined;
+        const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
+        const result = await interruptTurn({
+          activeTurn: () => {
+            const ctrl = this._threadAbortControllers.get(targetThread);
+            return ctrl ? {
+              abort: async () => {
+                ctrl.abort();
+                this._threadAbortControllers.delete(targetThread);
+                // Official CMA: the interrupt can take longer to apply while
+                // tool calls run. Wait on THIS turn's settlement, bounded: the
+                // lane may already be running the next queued input.
+                const settledTurn = this._turnSettled.get(ctrl);
+                if (settledTurn) {
+                  await Promise.race([settledTurn, new Promise((resolve) => setTimeout(resolve, INTERRUPT_GRACE_MS))]);
+                }
+              },
+            } : null;
+          },
+          lastStatus: () => this.laneLastStatus(history, targetThread),
+          requestDurableInterrupt: async () => {
+            const executionStore = await this.getExecutionStore();
+            if (executionStore !== null && this.state.tenant_id && this.state.session_id) {
+              await executionStore.requestInterrupt({
+                workspaceId: this.state.tenant_id,
+                sessionId: this.state.session_id,
+                laneId: targetThread,
+                requestedAt: new Date().toISOString(),
+              });
             }
-          }
-          if (!hadActiveTurn && lastStatus === "session.status_idle") {
-            const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
+          },
+          ownInterruptedIdle: () => { this._interruptIdleOwned.add(targetThread); },
+          cancelQueuedInputs: () => {
+            // Same events rows get cancelled_at (processed_at stays NULL, so
+            // they never promote). DELETE /pending/:event_id cancels one row.
+            const cancelTs = Date.now();
+            const cancelledRows = this.queue.cancelQueueForThread(targetThread, cancelTs);
+            for (const row of cancelledRows) {
+              this.broadcastEventIgnoringExecutionFence({
+                type: "system.user_message_cancelled",
+                pending_seq: row.seq,
+                event_id: row.event_id,
+                session_thread_id: row.session_thread_id,
+                cancelled_at: cancelTs,
+              } as SystemUserMessageCancelledEvent);
+            }
+            return cancelledRows.length;
+          },
+          settlePendingActions: () => this.settleInterruptedRunnerActions(history, targetThread),
+          recordInterrupt: () => {
             const interruptAt = this.processedClock.nowIso();
             if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
             interrupt.processed_at = interruptAt;
             this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
             history.append(interrupt);
+            // Claude Managed Agents: user.interrupt itself appears on the stream.
             this.broadcastEventIgnoringExecutionFence(interrupt);
-            void idleStop; // retained for readability / future budget carve-outs
-            return new Response(null, { status: 202 });
-          }
-        }
-        // The execution store is the durable interrupt authority. The local
-        // AbortController is only a latency optimization for this DO
-        // incarnation; a replacement host observes the same request through
-        // its next renew/claim and cannot resurrect the cancelled generation.
-        const executionStore = await this.getExecutionStore();
-        if (executionStore !== null && this.state.tenant_id && this.state.session_id) {
-          await executionStore.requestInterrupt({
-            workspaceId: this.state.tenant_id,
-            sessionId: this.state.session_id,
-            laneId: targetThread,
-            requestedAt: new Date().toISOString(),
-          });
-        }
-        if (ctrl) {
-          // The handler owns the interrupted turn's idle from here on.
-          this._interruptIdleOwned.add(targetThread);
-          ctrl.abort();
-          this._threadAbortControllers.delete(targetThread);
-          // Official CMA: "the interrupt can take longer to apply while tool
-          // calls are running" and processed_at stays null until applied.
-          // Give the aborted turn a short grace (Codex: cancel token, then
-          // bounded wait) to unwind its tools before we stamp the interrupt.
-          // Wait on THIS turn's settlement, not lane activity: the lane may
-          // already be running the next queued user.message.
-          const settledTurn = this._turnSettled.get(ctrl);
-          if (settledTurn) {
-            await Promise.race([settledTurn, new Promise((resolve) => setTimeout(resolve, INTERRUPT_GRACE_MS))]);
-          }
-        }
-        const cancelTs = Date.now();
-        // user.interrupt is separate from steer (cma-steer-coherent-turn.md):
-        // interrupt → idle; a following user.message starts the NEXT turn.
-        // AMA "queued inputs are flushed": cancel every active queued input
-        // on this thread by stamping cancelled_at on the SAME events rows
-        // (processed_at stays NULL, so they never promote). Cancelling one
-        // specific row is also available through DELETE /pending/:event_id.
-        const cancelledRows = this.queue.cancelQueueForThread(targetThread, cancelTs);
-        const cancelledCount = cancelledRows.length;
-        for (const row of cancelledRows) {
-          this.broadcastEventIgnoringExecutionFence({
-            type: "system.user_message_cancelled",
-            pending_seq: row.seq,
-            event_id: row.event_id,
-            session_thread_id: row.session_thread_id,
-            cancelled_at: cancelTs,
-          } as SystemUserMessageCancelledEvent);
-        }
-        const settledRequests: string[] = [];
-        if (!hadActiveTurn && (this.state.pending_tool_calls?.length ?? 0) > 0) {
-          const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
-          const pendingActions = history.getEvents().filter((event) =>
-            "id" in event && typeof event.id === "string" && pendingIds.has(event.id) &&
-            ((event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") === targetThread,
-          );
-          if (pendingActions.length > 0) {
-            const threadAgent = targetThread === "sthr_primary" ? this.state.agent_id
-              : [...this.ctx.storage.sql.exec("SELECT agent_id FROM threads WHERE id = ? LIMIT 1", targetThread)][0]?.agent_id;
-            const agent = typeof threadAgent === "string" ? await this.getAgentConfig(threadAgent) : null;
-            if (agent) {
-              try {
-                // Resolve through the registry even after DO eviction; no
-                // in-memory AbortController exists once a callback paused run.
-                const harness = resolveHarness(agent.harness || "default");
-                const settled = await harness.interruptPending?.({ agent, session_id: this.state.session_id,
-                  tenant_id: this.state.tenant_id, runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM), pendingActions });
-                settledRequests.push(...(settled ?? []).filter((id) => pendingActions.some((event) => "id" in event && event.id === id)));
-              } catch {
-                return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "Runner interrupt was not confirmed. The pending action is still available; reconnect and try again." } }),
-                  { status: 503, headers: { "content-type": "application/json" } });
-              }
-            }
-          }
-          if (settledRequests.length > 0) {
-            const settled = new Set(settledRequests);
-            this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => !settled.has(pending.toolCallId)) });
-            for (const requestId of settled) {
-              // Reuse the same error extension emitted by orphan-tool recovery.
-              const result: SessionEvent & { is_error: true } = { type: "agent.tool_result", tool_use_id: requestId,
-                content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }], is_error: true,
-                ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
-              };
-              history.append(result);
-              this.broadcastEvent(result);
-            }
-          }
-        }
-        const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
-        const interruptAt = this.processedClock.nowIso();
-        if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
-        interrupt.processed_at = interruptAt;
-        this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
-        history.append(interrupt);
-        // Claude Managed Agents: user.interrupt itself appears on the stream.
-        this.broadcastEventIgnoringExecutionFence(interrupt);
-        // Emit status_idle when interrupt actually changed thread state:
-        // either an active turn was aborted, or queued events were
-        // cancelled. Skip when both are false (no-op interrupt) — that
-        // case had been emitting a duplicate status_idle right after a
-        // natural-end one, observed 2026-05-11 sess-y5saq (seq 93 idle
-        // stop_reason=end_turn, seq 95 idle stop_reason=None).
-        // Scope: only synchronous calls of this thread's current turn that
-        // never got a result. Anything that already returned (including a
-        // future async/background handle) is untouched; OpenMA has no async
-        // tool handles today, and their lifecycle is deliberately not tied to
-        // interrupt (separate design).
-        // Close every still-open tool_use / custom_tool_use / confirmation
-        // BEFORE the idle so the turn never ends in requires_action and a
-        // late answer cannot resume it (findings.md §3/§4).
-        const closedCount = this.closeToolUsesAfterInterrupt(history, undefined, targetThread);
-        // Decide idle from durable history, not only the in-memory controller.
-        // After DO eviction / wrangler HMR / a concurrent interrupt that already
-        // deleted the controller, hadActiveTurn can be false while the last
-        // status is still running — skipping idle leaves the session stuck
-        // (race NOT_SETTLED, interrupt-v2 double_interrupt). Official CMA:
-        // interrupt ends the turn with status_idle end_turn.
-        // True no-op: already idle end_turn and nothing was closed/cancelled.
-        let lastStatusType: string | undefined;
-        let lastStop: string | undefined;
-        for (const e of history.getEvents()) {
-          if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== targetThread) continue;
-          if (e.type === "session.status_running" || e.type === "session.status_idle") {
-            lastStatusType = e.type;
-            lastStop = e.type === "session.status_idle"
-              ? ((e as { stop_reason?: { type?: string } }).stop_reason?.type ?? "")
-              : undefined;
-          }
-        }
-        const lastIsRunning = lastStatusType === "session.status_running";
-        // Official CMA: interrupt against an already-idle session is normally
-        // a no-op (handled above). This emitIdle path is for an active or
-        // still-running turn only.
-        const emitIdle =
-          closedCount > 0 ||
-          settledRequests.length > 0 ||
-          cancelledCount > 0 ||
-          hadActiveTurn ||
-          lastIsRunning;
-        if (emitIdle) {
-          // If a zombie turn's finally still runs, suppress its catch-all idle.
-          if (lastIsRunning || hadActiveTurn) this._interruptIdleOwned.add(targetThread);
-          // stop_reason is required on session.status_idle per Anthropic
-          // spec — pydantic v2 in @anthropic-ai/sdk-python rejects events
-          // without it. Anthropic's StopReason union has no `interrupted`
-          // variant, so use `end_turn` (the closest semantic — agent
-          // stopped, user can send the next message). The accompanying
-          // user.interrupt event in the log carries the actual cause.
-          const idleEvent: SessionEvent = {
-            type: "session.status_idle",
-            stop_reason: interruptedTurnStopReason(),
-            ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
-          };
-          history.append(idleEvent);
-          // Interrupt ends the turn's execution fence; broadcastEvent would
-          // drop this as stale and never project to D1 (GET /events reads D1).
-          // Force-publish lifecycle idle without a fence.
-          this.broadcastEventIgnoringExecutionFence(idleEvent);
+          },
+          closeOpenToolUses: () => this.closeToolUsesAfterInterrupt(history, undefined, targetThread),
+          emitIdle: () => {
+            const idleEvent: SessionEvent = {
+              type: "session.status_idle",
+              stop_reason: interruptedTurnStopReason(),
+              ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
+            };
+            history.append(idleEvent);
+            // The interrupt ended the turn's execution fence; broadcastEvent
+            // would drop this as stale and never project it to D1.
+            this.broadcastEventIgnoringExecutionFence(idleEvent);
+          },
+        });
+        if (result === "runner_unconfirmed") {
+          return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "Runner interrupt was not confirmed. The pending action is still available; reconnect and try again." } }),
+            { status: 503, headers: { "content-type": "application/json" } });
         }
         return new Response(null, { status: 202 });
       }
@@ -5129,6 +5008,61 @@ export class SessionDO extends DurableObject<Env> {
    * DO state still lists pending_tool_calls). budget_reached is not enforced
    * here yet (emitter/gate gap — see cma-steer-coherent-turn.md).
    */
+  /** The lane's last status event in the durable log. */
+  private laneLastStatus(history: HistoryStore, threadId: string): LaneStatus | null {
+    let last: LaneStatus | null = null;
+    for (const e of history.getEvents()) {
+      if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== threadId) continue;
+      if (e.type === "session.status_running") last = "running";
+      else if (e.type === "session.status_idle") last = "idle";
+    }
+    return last;
+  }
+
+  /**
+   * An interrupt while no turn runs settles calls parked on a runner, through
+   * the registry even after DO eviction (no AbortController survives a
+   * callback-paused run). Settled calls get the orphan-recovery error result.
+   * Returns null when the runner did not confirm.
+   */
+  private async settleInterruptedRunnerActions(history: HistoryStore, threadId: string): Promise<number | null> {
+    if ((this.state.pending_tool_calls?.length ?? 0) === 0) return 0;
+    const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
+    const pendingActions = history.getEvents().filter((event) =>
+      "id" in event && typeof event.id === "string" && pendingIds.has(event.id) &&
+      ((event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") === threadId,
+    );
+    const settledRequests: string[] = [];
+    if (pendingActions.length > 0) {
+      const threadAgent = threadId === "sthr_primary" ? this.state.agent_id
+        : [...this.ctx.storage.sql.exec("SELECT agent_id FROM threads WHERE id = ? LIMIT 1", threadId)][0]?.agent_id;
+      const agent = typeof threadAgent === "string" ? await this.getAgentConfig(threadAgent) : null;
+      if (agent) {
+        try {
+          const harness = resolveHarness(agent.harness || "default");
+          const settled = await harness.interruptPending?.({ agent, session_id: this.state.session_id,
+            tenant_id: this.state.tenant_id, runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM), pendingActions });
+          settledRequests.push(...(settled ?? []).filter((id) => pendingActions.some((event) => "id" in event && event.id === id)));
+        } catch {
+          return null;
+        }
+      }
+    }
+    if (settledRequests.length > 0) {
+      const settled = new Set(settledRequests);
+      this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => !settled.has(pending.toolCallId)) });
+      for (const requestId of settled) {
+        const result: SessionEvent & { is_error: true } = { type: "agent.tool_result", tool_use_id: requestId,
+          content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }], is_error: true,
+          ...(threadId !== "sthr_primary" ? { session_thread_id: threadId } : {}),
+        };
+        history.append(result);
+        this.broadcastEvent(result);
+      }
+    }
+    return settledRequests.length;
+  }
+
   private laneSettleOnlyReason(history: HistoryStore, threadId: string): SettleOnlyReason | null {
     const pending = this.state.pending_tool_calls ?? [];
     if (pending.length > 0) return "requires_action";
@@ -6422,35 +6356,31 @@ export class SessionDO extends DurableObject<Env> {
 
       // A pending custom tool use (no execute function) outranks always_ask confirmations.
       const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
-      let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"];
-      const stop = decideTurnStop({
+      let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"] = { type: "end_turn" };
+      const budget = ctx.budget;
+      finishTurn({
         parkedOnClient: storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0,
-        budgetReached: ctx.budget?.reached === true,
+        budgetReached: budget?.reached === true,
+      }, {
+        requiresAction: () => { stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations); },
+        budgetReached: () => {
+          // Thread idle → usage snapshot here; the session idle is emitted
+          // below. Usage source on CF: every model span in this session's log.
+          const [threadIdle, usageEvent] = budgetReachedStopEvents({
+            agentName: agent.name,
+            sessionThreadId: turnThreadId,
+            usage: sessionUsageSnapshot(sumModelSpanUsage(history.getEvents()), budget!),
+            budget: budget!.maxListCost,
+          });
+          for (const applicationEvent of [threadIdle, usageEvent]) {
+            const event = encodeRuntimeHistoryEvent(applicationEvent as never) as unknown as SessionEvent;
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          }
+          stopReason = { type: "budget_reached" } as unknown as typeof stopReason;
+        },
+        endTurn: () => { stopReason = { type: "end_turn" as const }; },
       });
-      if (stop === "requires_action") {
-        stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations);
-      } else if (stop === "budget_reached" && ctx.budget) {
-        // Official budget stop (requires_action outranks it, above):
-        // thread idle → usage snapshot → session idle (emitted below).
-        // Usage source on CF: every model span in this session's event log.
-        const [threadIdle, usageEvent] = budgetReachedStopEvents({
-          agentName: agent.name,
-          sessionThreadId: turnThreadId,
-          usage: sessionUsageSnapshot(
-            sumModelSpanUsage(history.getEvents()),
-            ctx.budget,
-          ),
-          budget: ctx.budget.maxListCost,
-        });
-        for (const applicationEvent of [threadIdle, usageEvent]) {
-          const event = encodeRuntimeHistoryEvent(applicationEvent as never) as unknown as SessionEvent;
-          history.append(event);
-          this.broadcastEvent(event, activeFence);
-        }
-        stopReason = { type: "budget_reached" } as unknown as typeof stopReason;
-      } else {
-        stopReason = { type: "end_turn" as const };
-      }
 
       const idleEvent: SessionEvent = {
         type: "session.status_idle",

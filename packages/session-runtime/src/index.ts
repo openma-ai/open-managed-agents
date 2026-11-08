@@ -22,6 +22,8 @@ export {
   type SessionExecutionHostResult,
   type SessionExecutionHostTimers,
   type SessionExecutionRun,
+  type SessionExecutionRunResult,
+  type SessionLaneDrain,
 } from "./execution-host";
 export {
   SessionStateMachine,
@@ -89,7 +91,7 @@ export {
   type RecoveryContext,
   type RecoveryDecision,
 } from "./turn-recovery";
-export { decideTurnStop, type TurnStop } from "./turn-stop";
+export { finishTurn, type TurnEndPort, type TurnStop } from "./turn-end";
 export {
   classifyTurnFailure,
   isTurnCancellationError,
@@ -102,6 +104,13 @@ export {
   type TurnFailurePlan,
 } from "./turn-failure";
 export { openTurnMarker, type TurnMarker, type TurnMarkerHooks } from "./turn-marker";
+export {
+  interruptTurn,
+  type InterruptibleTurn,
+  type LaneStatus,
+  type TurnInterruptPort,
+  type TurnInterruptResult,
+} from "./turn-interrupt";
 export {
   ORPHAN_SANDBOX_MIN_AGE_MS,
   reclaimOrphanSandboxes,

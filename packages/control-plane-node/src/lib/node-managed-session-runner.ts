@@ -1,6 +1,6 @@
 import {
   classifyTurnFailure,
-  decideTurnStop,
+  finishTurn,
   reportTurnFailure,
   settleTurnFailure,
   SessionSandboxRuntime,
@@ -1151,27 +1151,28 @@ export class DefaultNodeManagedSessionRunner
           runtime.pendingConfirmations,
           asWireEvents(runtime.history.getEvents()),
         );
-        const stop = decideTurnStop({
-          parkedOnClient: parkIds.length > 0,
-          budgetReached: !failed && budgetGate?.reached === true,
-        });
-        if (stop === "budget_reached") {
-          // Official budget stop: thread idle → usage → session idle (budget_reached).
-          // Usage source on Node: the primary runtime's meter.
-          for (const event of budgetReachedStopEvents({
-            agentName: input.session.agent.name,
-            sessionThreadId: "sthr_primary",
-            usage: runtime.usageSnapshot(),
-            budget: budgetGate!.maxListCost,
-          })) {
-            runtime.broadcastProducedEvent(event);
-          }
+        if (failed) {
+          runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason: { type: "retries_exhausted" } });
         } else {
-          runtime.broadcastProducedEvent({
-            type: "session.status_idle",
-            stopReason: failed ? { type: "retries_exhausted" }
-              : stop === "requires_action" ? { type: "requires_action", eventIds: parkIds }
-              : { type: "end_turn" },
+          finishTurn({ parkedOnClient: parkIds.length > 0, budgetReached: budgetGate?.reached === true }, {
+            requiresAction: () => {
+              runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason: { type: "requires_action", eventIds: parkIds } });
+            },
+            // Thread idle → usage → session idle (budget_reached). Usage
+            // source on Node: the primary runtime's meter.
+            budgetReached: () => {
+              for (const event of budgetReachedStopEvents({
+                agentName: input.session.agent.name,
+                sessionThreadId: "sthr_primary",
+                usage: runtime.usageSnapshot(),
+                budget: budgetGate!.maxListCost,
+              })) {
+                runtime.broadcastProducedEvent(event);
+              }
+            },
+            endTurn: () => {
+              runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason: { type: "end_turn" } });
+            },
           });
         }
       }
