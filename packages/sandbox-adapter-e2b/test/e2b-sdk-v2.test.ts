@@ -468,3 +468,24 @@ describe("E2B SDK v2 adapter", () => {
     });
   });
 });
+
+describe("an injected e2b SDK (a composition root's own install)", () => {
+  it("creates and resumes through the injected module, never the lazily imported one", async () => {
+    sdk.create.mockClear();
+    sdk.connect.mockClear();
+    const injected = {
+      Sandbox: {
+        create: vi.fn(async (template: string) => makeSdkSandbox(`injected:${template}`)),
+        connect: vi.fn(async (sandboxId: string) => makeSdkSandbox(`injected:${sandboxId}`)),
+      },
+    };
+    const factory = e2bAdapter.createE2BSandboxFactory(injected as never);
+    expect(factory.capabilities).toEqual({ allocationIsolation: true });
+    await factory({ sessionId: "session_e2b", workdir: "/tmp/unused" }, { SANDBOX_IMAGE: "tpl" });
+    await e2bAdapter.createE2BSandboxProvider(injected as never).resume({ provider: "e2b", runtimeId: "sbx_1" } as never, {} as never, {});
+    expect(injected.Sandbox.create).toHaveBeenCalledWith("tpl", expect.anything());
+    expect(injected.Sandbox.connect).toHaveBeenCalledWith("sbx_1", expect.anything());
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect(sdk.connect).not.toHaveBeenCalled();
+  });
+});

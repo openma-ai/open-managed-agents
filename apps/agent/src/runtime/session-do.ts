@@ -167,7 +167,7 @@ import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-m
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
-import type { PortsSessionSandbox } from "./session-sandbox";
+import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 import {
   loadManagedSessionResources,
   mountResources,
@@ -6437,9 +6437,9 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
 
-      // storage.sync before the Memory barrier: a copy sync publishes the
-      // sandbox's Memory edits here. A failed publish fails the step.
-      if (this.portsSandbox !== null) await this.portsSandbox.syncStorage("turn_end");
+      // Execution end before the Memory barrier: egress revoked, then a copy
+      // sync publishes the sandbox's Memory edits. A failed publish fails the step.
+      if (this.portsSandbox !== null) await this.portsSandbox.endExecution();
       // Memory mutations are part of turn completion, not an asynchronous
       // afterthought. This barrier precedes status_idle and execution settle.
       await this.synchronizeManagedMemoryStores(activeFence);

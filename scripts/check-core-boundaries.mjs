@@ -150,6 +150,37 @@ for (const sourcePath of await sourceFiles(SHARED_HARNESS_DIRECTORY)) {
   }
 }
 
+// The Session sandbox core (design §0.0 rule 15, §0.7) is one
+// implementation in packages/session-runtime over the Sandbox SDK v2
+// vocabulary only (session-runtime itself depends on sql-client, so this is
+// a file-level rule). Hosts compose it: node-managed no longer wires egress
+// or Memory sync itself, and the two host files only shrink.
+const SESSION_SANDBOX_CORE = /^packages\/session-runtime\/src\/(ports-session-sandbox|session-sandbox-[a-z-]+)\.ts$/;
+const SESSION_SANDBOX_CORE_IMPORTS = new Set([
+  "@open-managed-agents/sandbox",
+  "@open-managed-agents/runtime-resource-contract",
+]);
+for (const sourcePath of await sourceFiles("packages/session-runtime/src")) {
+  if (!SESSION_SANDBOX_CORE.test(sourcePath.split("\\").join("/"))) continue;
+  for (const specifier of importSpecifiers(await readFile(sourcePath, "utf8"))) {
+    if (!specifier.startsWith(".") && !SESSION_SANDBOX_CORE_IMPORTS.has(specifier)) {
+      violations.push(`${sourcePath}: Session sandbox core import ${specifier} (only the Sandbox SDK v2 Ports)`);
+    }
+  }
+}
+const NODE_SESSION_SANDBOX_HOST = "packages/control-plane-node/src/modules/node-managed.ts";
+if (/\b(prepareSandboxEgress|synchronizeManagedSessionMemoryWorkspaces|synchronizeNodeManagedMemoryStores)\b/.test(await readFile(NODE_SESSION_SANDBOX_HOST, "utf8"))) {
+  violations.push(`${NODE_SESSION_SANDBOX_HOST}: sandbox egress / Memory sync wired in the host (compose the Session sandbox core instead)`);
+}
+const HOST_LINE_CEILINGS = new Map([
+  ["apps/agent/src/runtime/session-do.ts", 8292],
+  [NODE_SESSION_SANDBOX_HOST, 1430],
+]);
+for (const [path, ceiling] of HOST_LINE_CEILINGS) {
+  const lines = (await readFile(path, "utf8")).split("\n").length - 1;
+  if (lines > ceiling) violations.push(`${path}: ${lines} lines, above its ratchet of ${ceiling} (move code out, then lower the ceiling)`);
+}
+
 violations.push(...await providerWorkspaceBoundaryViolations(process.cwd()));
 violations.push(...await providerPackageBoundaryViolations(process.cwd()));
 

@@ -23,6 +23,8 @@ export function createForwarderEgress<R extends object>(
 ): SandboxEgressPort<R> {
   const views = new WeakMap<R, SandboxPort>();
   const view = (runtime: R) => {
+    const own = vendor.asSandboxPort?.(runtime);
+    if (own !== undefined) return own;
     let port = views.get(runtime);
     if (port === undefined) {
       port = v1FileView(vendor, runtime);
@@ -42,7 +44,7 @@ export function createForwarderEgress<R extends object>(
     if (vendor.applyFirewall !== undefined) {
       await vendor.applyFirewall(input.runtime, compileFirewall(input.policy, {
         gateway: { hosts: [gatewayHost], ...(deps.gateway.endpoint.fixedIps === undefined ? {} : { fixedIps: deps.gateway.endpoint.fixedIps }) },
-        channels: [],
+        channels: [...(await deps.channels?.(input.scope) ?? [])],
       }));
     }
     const substitutions = input.policy?.substitutions ?? [];

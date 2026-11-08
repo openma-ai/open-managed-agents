@@ -40,6 +40,7 @@ import {
   type E2BCreateOptions,
   type E2BModule,
   type E2BSandboxLike,
+  type E2BSandboxOptions,
 } from "./e2b";
 
 /** The parts of the `e2b` module the v2 adapter calls. */
@@ -85,6 +86,10 @@ export interface E2BV2AdapterOptions {
    * createSyncStorage, which copies Memory in and out and uploads outputs at
    * turn boundaries. */
   objectStorage?: E2BObjectStorageOptions;
+  /** The runtime's s3fs bucket (v1 executor mountMemoryStore /
+   * mountSessionOutputs) for compositions whose own storage Port calls
+   * them (the Node control plane). Omitted = those calls fail. */
+  memoryBucket?: E2BSandboxOptions["memoryBucket"];
 }
 
 /** The Session scope storage calls receive (this package does not depend on
@@ -106,6 +111,20 @@ export interface E2BObjectStorageOptions {
 const SELF = "self";
 const DEFAULT_RETRY_AFTER_MS = 1_000;
 
+/** `setup` creating the platform mount points. A base template's default
+ * user cannot create directories under /mnt, so the setup runs as root
+ * (with `user: "root"` for every later call). */
+export const E2B_SANDBOX_DIRECTORIES = "mkdir -p /workspace /mnt/session/outputs /mnt/memory";
+/** `setup` for native storage: the mount points plus rclone + FUSE. */
+export const E2B_SANDBOX_SETUP = [
+  E2B_SANDBOX_DIRECTORIES,
+  "if ! command -v rclone >/dev/null 2>&1 || ! command -v fusermount3 >/dev/null 2>&1; then",
+  "  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rclone fuse3 >/dev/null;",
+  "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache rclone fuse3 >/dev/null;",
+  "  else echo 'no package manager to install rclone' >&2; exit 1; fi",
+  "fi",
+].join("\n");
+
 export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapterPort<E2BSandboxExecutor> {
   if (!Number.isSafeInteger(options.leaseMs) || options.leaseMs <= 0) {
     throw new TypeError("E2B leaseMs must be a positive integer");
@@ -116,7 +135,12 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   }
   const maxLifetimeMs: number = declared;
   const { sdk, connection } = options;
-  const executorOptions = { ...connection, ...(options.user === undefined ? {} : { user: options.user }), lifetimeMs: options.leaseMs };
+  const executorOptions = {
+    ...connection,
+    ...(options.user === undefined ? {} : { user: options.user }),
+    ...(options.memoryBucket === undefined ? {} : { memoryBucket: options.memoryBucket }),
+    lifetimeMs: options.leaseMs,
+  };
   const handleOf = (runtime: E2BSandboxExecutor): SandboxHandle => ({ provider: "e2b", runtimeId: runtime.runtimeHandle().runtimeId });
   const requireOwn = (value: { provider: string }) => {
     if (value.provider !== "e2b") throw new Error(`E2B adapter received a ${value.provider} reference`);

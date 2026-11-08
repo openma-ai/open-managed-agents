@@ -62,7 +62,7 @@ export async function clearSandboxEgress(sandbox: SandboxPort): Promise<void> {
 export async function prepareSandboxEgress(input: {
   sandbox: SandboxPort;
   scope: { workspaceId: string; sessionId: string; vaultIds: readonly string[] };
-  relay: { endpoint: string; pass: string; ca?: string };
+  relay: { endpoint: string; pass: string; ca?: string; upstreamCa?: string };
   /** Managed hosts own cleanup separately from the revoked execution view. */
   registerCleanup?(cleanup: (sandbox: SandboxPort) => Promise<void>): void;
   issuePass(): Promise<string>;
@@ -77,7 +77,9 @@ export async function prepareSandboxEgress(input: {
   };
   if (scope.vaultIds.length === 0) { await clearSandboxEgress(sandbox); return {}; }
   const placeholders = await input.placeholders(scope);
-  const binding = { ...input.relay, pass: await input.issuePass() };
+  // Vault placeholders in the env → the relay inspects every HTTPS host (local-relay.ts).
+  const inspect = Object.values(placeholders).some(value => value.startsWith("oma_vault_"));
+  const binding = { ...input.relay, pass: await input.issuePass(), ...(inspect ? { inspect } : {}) };
   if (new URL(binding.endpoint).protocol !== "https:") throw new Error("Credential relay endpoint must use HTTPS");
   if (supportsCredentialEgress(sandbox)) {
     await sandbox.prepareCredentialEgress(binding); await replace(placeholders); return {};

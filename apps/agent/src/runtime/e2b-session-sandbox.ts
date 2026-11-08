@@ -10,7 +10,7 @@
 //     execution attempt (design §0.0 rule 10; none between turns). Real
 //     credentials never enter the sandbox. The pass expires, so the shared
 //     runtime re-attaches egress after half its TTL (egressRenewMs) and when
-//     the attempt changes (egressKey);
+//     the attempt changes (execution);
 //   - storage is one deployment choice (storageConfig): both bucket parent
 //     keys configured → native rclone mounts for Memory and outputs over
 //     prefix-scoped temporary credentials (renewed by the runtime's interval
@@ -22,25 +22,22 @@
 //     sandbox before it (design §0.0 rule 11).
 
 import type {
-  EgressPolicy,
   MemoryStoreBinding,
   SandboxPlan,
   SandboxPorts,
   Substitution,
 } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope, SessionOutputBinding } from "@open-managed-agents/runtime-resource-contract";
-import { createSandboxPorts, type SandboxOutputSinkPort, type SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit";
+import { createSandboxPorts, placeholderSubstitutions, sessionEgressPolicy, type SandboxOutputSinkPort, type SandboxVendorPort, type SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
 import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-kit/object-storage";
-import { createE2BV2Adapter, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
+import { createE2BV2Adapter, E2B_SANDBOX_DIRECTORIES, E2B_SANDBOX_SETUP, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
 import { createEgressRelayPasses, EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
 import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
 import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
-import { PortsSessionSandbox, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxExecutor, type SessionSandboxState } from "./session-sandbox";
-
-export { STORAGE_SYNC_INTERVAL_MS };
+import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 export interface E2BSandboxEnv {
   E2B_API_KEY?: string;
@@ -71,36 +68,11 @@ export interface E2BSandboxEnv {
   };
 }
 
-/** Networking as stored on the Environment config. */
-export interface SessionNetworking {
-  type?: string;
-  allowed_hosts?: string[];
-  allow_package_managers?: boolean;
-}
-
 const IDLE_MS = 5 * 60_000;
 const LEASE_MS = 30 * 60_000;
 const STATE_KEY = "e2b_sandbox_state";
 /** Lifetime of a relay pass; the relay is re-attached with a new one after half. */
 export const RELAY_PASS_TTL_MS = 60 * 60_000;
-
-/** Creates the mount points; native storage also installs rclone + FUSE.
- * Runs as root right after a sandbox starts, before its firewall is applied. */
-export const E2B_SANDBOX_DIRECTORIES = "mkdir -p /workspace /mnt/session/outputs /mnt/memory";
-export const E2B_SANDBOX_SETUP = [
-  E2B_SANDBOX_DIRECTORIES,
-  "if ! command -v rclone >/dev/null 2>&1 || ! command -v fusermount3 >/dev/null 2>&1; then",
-  "  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rclone fuse3 >/dev/null;",
-  "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache rclone fuse3 >/dev/null;",
-  "  else echo 'no package manager to install rclone' >&2; exit 1; fi",
-  "fi",
-].join("\n");
-
-const PACKAGE_HOSTS = [
-  "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "*.npmjs.org",
-  "deb.debian.org", "security.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
-  "crates.io", "static.crates.io", "index.crates.io", "proxy.golang.org", "sum.golang.org", "rubygems.org",
-];
 
 type PersistedState = SessionSandboxState;
 
@@ -134,7 +106,10 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       warn: () => undefined,
       outputDurability: () => ({ durability: "best_effort" }),
       egressRenewMs: RELAY_PASS_TTL_MS / 2,
-      ...(options.fence === undefined ? {} : { egressKey: () => sandboxExecutionFenceKey(options.fence!()) }),
+      ...(options.fence === undefined ? {} : {
+        execution: () => options.fence!(),
+        isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(options.fence!()) === sandboxExecutionFenceKey(execution),
+      }),
       now: options.now,
     });
   }
@@ -268,7 +243,7 @@ export function createE2BSessionSandbox(input: {
     async plan(scope, stores) {
       return {
         from: { image: template },
-        egress: egressPolicy(scope, await input.networking(), await capCliSubstitutions(env, scope)),
+        egress: sessionEgressPolicy(scope, await input.networking(), await capCliSubstitutions(env, scope)),
         stores,
         outputs: outputsBinding(scope),
         idleMs: IDLE_MS,
@@ -301,31 +276,7 @@ export async function capCliSubstitutions(env: Pick<E2BSandboxEnv, "MAIN_MCP">, 
   if (env.MAIN_MCP === undefined) return [];
   const resolved = await env.MAIN_MCP.resolveManagedCapCliEnvironment({ tenantId: scope.workspaceId, sessionId: scope.sessionId });
   if (resolved.type !== "found") return [];
-  return Object.entries(resolved.env).map(([envName, placeholder]) => ({
-    credentialId: `cap_cli:${envName}`,
-    envName,
-    placeholder,
-    hosts: [],
-    inject: { header: true, body: false },
-  }));
-}
-
-/** Environment networking + substitutions → EgressPolicy. Unrestricted (or
- * unset) without substitutions → null. */
-export function egressPolicy(scope: RuntimeResourceScope, networking: SessionNetworking | undefined, substitutions: Substitution[] = []): EgressPolicy | null {
-  if (networking?.type !== "limited" && substitutions.length === 0) return null;
-  return {
-    scope: { workspaceId: scope.workspaceId, sessionId: scope.sessionId, generation: 1 },
-    networking: networking?.type === "limited"
-      ? {
-          type: "limited",
-          hosts: [...(networking.allowed_hosts ?? [])],
-          packageSources: networking.allow_package_managers ? [...PACKAGE_HOSTS] : [],
-          mcpHosts: [],
-        }
-      : { type: "unrestricted" },
-    substitutions,
-  };
+  return placeholderSubstitutions(resolved.env, "cap_cli");
 }
 
 /** Publishes outputs into FILES_BUCKET through the R2 binding. Replaces the

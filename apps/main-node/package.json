@@ -53,6 +53,7 @@
     "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
     "croner": "^9.0.0",
+    "e2b": "2.63.0",
     "nanoid": "^5.1.0",
     "pino": "^9.5.0",
     "pino-pretty": "^11.2.2",

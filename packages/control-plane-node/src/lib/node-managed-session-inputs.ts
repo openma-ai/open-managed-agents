@@ -256,6 +256,13 @@ export class NodeManagedSessionInputPreparer {
   ) {}
 
   async prepare(input: PrepareNodeManagedSessionInputs): Promise<void> {
+    await this.prepareStorage(input);
+    await this.prepareInputs(input);
+  }
+
+  /** Session outputs and Memory Stores: what the sandbox storage Port
+   * attaches on every open (design §0.1 step 3). */
+  async prepareStorage(input: PrepareNodeManagedSessionInputs): Promise<void> {
     if (!this.dependencies.sharedOutputs) {
       if (!supportsSessionOutputMount(input.sandbox)) {
         throw new Error(
@@ -277,6 +284,11 @@ export class NodeManagedSessionInputPreparer {
       const command = "mkdir -p /mnt/session/outputs";
       assertCommandSucceeded(command, await input.sandbox.exec(command, 30_000));
     }
+  }
+
+  /** Session init after storage (design §0.1 step 3): repositories, files
+   * and custom skills. */
+  async prepareInputs(input: PrepareNodeManagedSessionInputs): Promise<void> {
 
     const repositories = input.session.resources.filter(
       (resource) => resource.type === "github_repository",

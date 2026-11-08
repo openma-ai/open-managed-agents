@@ -26,7 +26,7 @@ import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources, memoryStoreMountTarget } from "./resource-mounter";
 import { findLatestBackup, type WorkspaceBackupHandle } from "./workspace-backups";
-import { PortsSessionSandbox } from "./session-sandbox";
+import { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 
 export interface CloudflareSessionSandboxDeps {
   env: Env;
@@ -93,9 +93,11 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     warn: deps.warn,
     outputDurability: () => sandbox.sessionOutputMountCapabilities(),
     // The outbound handler holds no expiring credential; it is rebound when
-    // the execution attempt changes.
+    // the execution attempt changes. The attempt is the Port fence (design
+    // §0.0 rule 10); the one SessionDO holds now is the current one.
     egressRenewMs: null,
-    egressKey: () => sandboxExecutionFenceKey(deps.fence?.()),
+    execution: () => deps.fence?.(),
+    isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
   });
 }
 

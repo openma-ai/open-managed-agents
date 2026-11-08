@@ -15,6 +15,7 @@ export {
 export { serveNodeControlPlane, type NodeServer, type ServeNodeControlPlaneOptions } from "./serve.js";
 
 export type { NodeComponentOverrides, NodeComponents, NodeRealtime } from "./components.js";
+export type { NodeSessionSandboxAdapter } from "./lib/node-session-sandbox.js";
 export type { NodeAuth, NodeAuthSession, NodeSignInMethods } from "./auth.js";
 export type {
   FilesBlobs,

@@ -43,3 +43,14 @@ export type {
 } from "./router";
 
 export { SessionSandboxRuntime, type SessionSandboxMode } from "./session-sandbox";
+export { PortsSessionSandbox } from "./ports-session-sandbox";
+export type {
+  PortsSessionSandboxOptions,
+  SessionSandboxExecution,
+  SessionSandboxExecutor,
+  SessionSandboxIdleTimer,
+  SessionSandboxState,
+} from "./session-sandbox-options";
+export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
+export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
+export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";

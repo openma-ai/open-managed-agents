@@ -1,13 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import { SandboxGoneError } from "@open-managed-agents/sandbox";
-import {
-  LIFETIME_REFRESH_MARGIN_MS,
-  MAX_TOOL_CALL_MS,
-  PortsSessionSandbox,
-  type SessionSandboxExecutor,
-  type SessionSandboxState,
-} from "../src/runtime/session-sandbox";
+import { PortsSessionSandbox } from "../src/ports-session-sandbox";
+import { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "../src/session-sandbox-lifetime";
+import type { SessionSandboxExecutor, SessionSandboxState } from "../src/session-sandbox-options";
 
 // Design §0.0 rule 11 / §0.1 maxLifetimeMs: the shared runtime pauses →
 // attaches in a gap between tool calls before the provider's continuous-run
