@@ -45,7 +45,14 @@ import type {
 } from "@open-managed-agents/event-log";
 import { recoverInterruptedState as runRecovery } from "./recovery";
 import {
+  asWireEvents,
+  awaitsCustomToolResult,
+  knownToolCallIds,
+  remainingAfterAnswer,
+  requiresActionStopReason,
   RuntimeAdapterImpl,
+  toolResultIds,
+  type PendingToolCall as ResolvedPendingToolCall,
   type RuntimeAdapter,
 } from "@open-managed-agents/session-runtime";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
@@ -5125,9 +5132,7 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") &&
-        (e as unknown as { id?: string }).id === toolUseId);
+      return knownToolCallIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return true;
     }
@@ -5169,12 +5174,16 @@ export class SessionDO extends DurableObject<Env> {
 
   private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
     try {
-      return history.getEvents().some((e) =>
-        e.type === "agent.tool_result" &&
-        (e as unknown as { tool_use_id?: string }).tool_use_id === toolUseId);
+      return toolResultIds(asWireEvents(history.getEvents())).has(toolUseId);
     } catch {
       return false;
     }
+  }
+
+  /** Pending calls named by their resolved tool: a call proxied through
+   * mcp_invoke awaits confirmation of its target. */
+  private resolvedPendingCalls(pending: readonly PendingToolCall[]): ResolvedPendingToolCall[] {
+    return pending.map((p) => ({ toolCallId: p.toolCallId, toolName: resolveProxiedToolCall(p.toolName, p.args).toolName }));
   }
 
   private async resumeWhenToolBatchSettled(
@@ -5183,34 +5192,12 @@ export class SessionDO extends DurableObject<Env> {
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
   ): Promise<void> {
-    const before = this.state.pending_tool_calls ?? [];
-    let resolved = new Set<string>([answeredId]);
-    if (before.length > 1) {
-      try {
-        for (const e of history.getEvents()) {
-          if (e.type === "agent.tool_result") {
-            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
-            if (id) resolved.add(id);
-          }
-        }
-      } catch { resolved = new Set([answeredId]); }
-    }
-    const remaining = before.filter((p) => !resolved.has(p.toolCallId));
+    const remaining = remainingAfterAnswer(this.state.pending_tool_calls ?? [], answeredId, () => asWireEvents(history.getEvents()));
     this.setState({ ...this.state, pending_tool_calls: remaining });
     if (remaining.length > 0) {
-      const builtin = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
-      const anyCustom = remaining.some((p) => {
-        const name = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !builtin.includes(name) && !name.startsWith("mcp_") &&
-          !name.startsWith("call_agent_") && !name.startsWith("memory_");
-      });
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
-        stop_reason: {
-          type: "requires_action",
-          action_type: anyCustom ? "custom_tool_result" : "tool_confirmation",
-          event_ids: remaining.map((p) => p.toolCallId),
-        },
+        stop_reason: requiresActionStopReason(this.resolvedPendingCalls(remaining), remaining.map((p) => p.toolCallId)),
       } as SessionEvent;
       history.append(idleEvent);
       this.broadcastEvent(idleEvent, fence);
@@ -6448,30 +6435,11 @@ export class SessionDO extends DurableObject<Env> {
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
 
-      // Check if any pending are custom tool uses (no execute function, not always_ask built-in)
-      const storedPendingCalls = this.state.pending_tool_calls;
-      const hasCustomToolPending = storedPendingCalls.some((p) => {
-        // A call proxied through mcp_invoke awaits confirmation of its target.
-        const toolName = resolveProxiedToolCall(p.toolName, p.args).toolName;
-        return !["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"].includes(toolName) &&
-          !toolName.startsWith("mcp_") &&
-          !toolName.startsWith("call_agent_") &&
-          !toolName.startsWith("memory_");
-      });
-
+      // A pending custom tool use (no execute function) outranks always_ask confirmations.
+      const storedPendingCalls = this.resolvedPendingCalls(this.state.pending_tool_calls);
       let stopReason: import("@open-managed-agents/shared").SessionStatusEvent["stop_reason"];
-      if (hasCustomToolPending) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "custom_tool_result" as const,
-          event_ids: pendingConfirmations,
-        };
-      } else if (pendingConfirmations.length > 0) {
-        stopReason = {
-          type: "requires_action" as const,
-          action_type: "tool_confirmation" as const,
-          event_ids: pendingConfirmations,
-        };
+      if (storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0) {
+        stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations);
       } else if (ctx.budget?.reached) {
         // Official budget stop (requires_action outranks it, above):
         // thread idle → usage snapshot → session idle (emitted below).

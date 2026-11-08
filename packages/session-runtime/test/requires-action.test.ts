@@ -3,10 +3,13 @@ import {
   answeredToolCallIds,
   knownToolCallIds,
   outstandingRequiresAction,
-  stillPending,
   rejectMessageForRequiresActionBatch,
+  remainingAfterAnswer,
+  requiresActionStopReason,
   REQUIRES_ACTION_USER_MESSAGE_REJECT,
-} from "../../../packages/control-plane-node/src/lib/requires-action.js";
+  stillPending,
+  toolResultIds,
+} from "../src/requires-action";
 
 describe("requires_action settle-only gate (CMA)", () => {
   const parked = [
@@ -90,5 +93,22 @@ describe("requires_action settle-only gate (CMA)", () => {
       { type: "agent.mcp_tool_use", id: "m" },
       { type: "agent.tool_result", id: "r" },
     ])].sort()).toEqual(["c", "m", "t"]);
+  });
+
+  it("classifies the stop reason by what is still pending (CF SessionDO)", () => {
+    expect(requiresActionStopReason([{ toolCallId: "a", toolName: "lookup_ticket" }, { toolCallId: "b", toolName: "bash" }], ["a", "b"]))
+      .toEqual({ type: "requires_action", action_type: "custom_tool_result", event_ids: ["a", "b"] });
+    for (const name of ["bash", "web_search", "mcp_github_call", "call_agent_x", "memory_write"]) {
+      expect(requiresActionStopReason([{ toolCallId: "b", toolName: name }], ["b"]).action_type).toBe("tool_confirmation");
+    }
+  });
+
+  it("closes a lone call by its answer and a batch by every tool result", () => {
+    const events = () => [{ type: "agent.tool_result", tool_use_id: "b" }, { type: "user.custom_tool_result", custom_tool_use_id: "c" }];
+    expect(remainingAfterAnswer([{ toolCallId: "a" }], "a", events)).toEqual([]);
+    expect(remainingAfterAnswer([{ toolCallId: "a" }, { toolCallId: "b" }, { toolCallId: "c" }], "a", events)).toEqual([{ toolCallId: "c" }]);
+    expect(remainingAfterAnswer([{ toolCallId: "a" }, { toolCallId: "b" }], "a", () => { throw new Error("history"); }))
+      .toEqual([{ toolCallId: "b" }]);
+    expect([...toolResultIds(events())]).toEqual(["b"]);
   });
 });

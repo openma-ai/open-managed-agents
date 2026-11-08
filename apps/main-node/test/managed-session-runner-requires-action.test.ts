@@ -4,7 +4,7 @@ import { createSessionClockRegistry } from "@open-managed-agents/shared";
 import type { Environment, Session, SessionEventView } from "@open-managed-agents/managed-agents-application";
 import type { NodeManagedSessionRunnerAcceptInput } from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner.js";
-import { outstandingRequiresAction } from "../../../packages/control-plane-node/src/lib/requires-action.js";
+import { outstandingRequiresAction } from "@open-managed-agents/session-runtime";
 
 const session: Session = {
   id: "session_01",

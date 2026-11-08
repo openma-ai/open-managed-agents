@@ -1,4 +1,11 @@
-import { SessionSandboxRuntime, type SessionSandboxMode } from "@open-managed-agents/session-runtime";
+import {
+  answeredToolCallIds,
+  asWireEvents,
+  outstandingRequiresAction,
+  SessionSandboxRuntime,
+  stillPending,
+  type SessionSandboxMode,
+} from "@open-managed-agents/session-runtime";
 import {
   probeSandboxLiveness,
   startSandboxHeartbeat,
@@ -104,8 +111,6 @@ export type ManagedNodeConfirmableToolUse = Extract<
 >;
 
 import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
-import { answeredToolCallIds, asWireEvents,
-  outstandingRequiresAction, stillPending } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
