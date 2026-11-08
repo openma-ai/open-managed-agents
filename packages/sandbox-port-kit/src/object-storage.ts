@@ -101,6 +101,19 @@ export function createS3OutputSink(options: {
   const base = `${options.endpoint.replace(/\/+$/u, "")}/${encodeURIComponent(options.bucket)}`;
   const objectUrl = (key: string) => `${base}/${key.split("/").map(encodeURIComponent).join("/")}`;
   return {
+    async *read(input) {
+      const prefix = normalizePrefix(options.keyPrefix(input.scope));
+      for (const key of await listKeys(send, base, prefix, input.signal)) {
+        input.signal.throwIfAborted();
+        const logicalPath = key.slice(prefix.length);
+        if (logicalPath === "" || logicalPath.endsWith("/")) continue;
+        assertLogicalPath(logicalPath);
+        const response = await send(objectUrl(key), { method: "GET", signal: input.signal });
+        if (response.status === 404) continue;
+        if (!response.ok) throw new Error(`Session output read failed (${response.status}) for ${logicalPath}`);
+        yield [logicalPath, new Uint8Array(await response.arrayBuffer())] as const;
+      }
+    },
     async publish(input) {
       const prefix = normalizePrefix(options.keyPrefix(input.scope));
       const previous = await listKeys(send, base, prefix, input.signal);
@@ -128,13 +141,13 @@ export function createS3OutputSink(options: {
   };
 }
 
-/** Every regular file under /mnt/session/outputs/, as logical paths. An
- * absent directory yields nothing; a failing listing throws. */
-export async function* readSandboxOutputs<R>(
-  vendor: Pick<SandboxVendorPort<R>, "exec" | "readFile">,
+/** Logical paths of every regular file under /mnt/session/outputs/. An
+ * absent directory lists nothing; a failing listing throws. */
+export async function listSandboxOutputs<R>(
+  vendor: Pick<SandboxVendorPort<R>, "exec">,
   runtime: R,
-  options: { maxFiles?: number; maxBytes?: number } = {},
-): AsyncGenerator<readonly [string, Uint8Array]> {
+  options: { maxFiles?: number } = {},
+): Promise<string[]> {
   const listed = await vendor.exec(
     runtime,
     `if [ -d ${SESSION_OUTPUTS_DIR} ]; then t=$(mktemp) || exit 1; if (cd ${SESSION_OUTPUTS_DIR} && find . -type f -print0) > "$t"; then base64 < "$t" | tr -d '\\n'; s=0; else s=1; fi; rm -f "$t"; exit $s; fi`,
@@ -144,17 +157,29 @@ export async function* readSandboxOutputs<R>(
     throw new Error(`Listing Session outputs failed (exit ${listed.exitCode}): ${listed.stderr.slice(0, 300)}`);
   }
   const encoded = listed.stdout.trim();
-  if (encoded === "") return;
+  if (encoded === "") return [];
   const paths = new TextDecoder().decode(Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0)))
     .split("\0").filter((item) => item.length > 0);
   if (options.maxFiles !== undefined && paths.length > options.maxFiles) {
     throw new Error(`Session output file limit exceeded (${options.maxFiles})`);
   }
-  let total = 0;
-  for (const listedPath of paths) {
+  return paths.map((listedPath) => {
     if (!listedPath.startsWith("./")) throw new Error("Session output listing escaped its root");
     const logicalPath = listedPath.slice(2);
     assertLogicalPath(logicalPath);
+    return logicalPath;
+  });
+}
+
+/** Every regular file under /mnt/session/outputs/, as logical paths. An
+ * absent directory yields nothing; a failing listing throws. */
+export async function* readSandboxOutputs<R>(
+  vendor: Pick<SandboxVendorPort<R>, "exec" | "readFile">,
+  runtime: R,
+  options: { maxFiles?: number; maxBytes?: number } = {},
+): AsyncGenerator<readonly [string, Uint8Array]> {
+  let total = 0;
+  for (const logicalPath of await listSandboxOutputs(vendor, runtime, options)) {
     const bytes = await vendor.readFile(runtime, `${SESSION_OUTPUTS_DIR}/${logicalPath}`);
     if (bytes === null) continue;
     total += bytes.byteLength;
@@ -200,7 +225,7 @@ function normalizePrefix(prefix: string): string {
   return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
 }
 
-function assertLogicalPath(path: string): void {
+export function assertLogicalPath(path: string): void {
   if (path === "" || path.includes("\0") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
     throw new Error(`Unsafe Session output path: ${JSON.stringify(path)}`);
   }

@@ -6,11 +6,16 @@
 // acquire        Sandbox.create(plan.from) with {workspaceId, sessionId} metadata
 // attach         Sandbox.connect (resumes a paused sandbox)
 // keepAlive      setTimeout(leaseMs); leaseMs must exceed plan.idleMs
+// maxLifetimeMs  required: the account plan's continuous-run cap (Hobby 1 h,
+//                Pro 24 h); plan.idleMs must stay below it
 // pause/resume   pause (full memory) / connect; the ref is the sandbox itself
 // checkpoint     createSnapshot; resume from it = Sandbox.create(snapshotId)
 // snapshotTemplate createSnapshot under a name
 // release        Sandbox.kill; discard = Sandbox.deleteSnapshot
 // list           Sandbox.list filtered by metadata
+// storage        objectStorage given: rclone FUSE mounts for Memory and
+//                outputs (native), each verified after mounting; omitted:
+//                no native storage (generic sync)
 // not found → "gone" / SandboxGoneError; 429 / 503 → RetryableSandboxError
 
 import {
@@ -26,8 +31,8 @@ import {
 } from "@open-managed-agents/sandbox";
 import type { FirewallRules } from "@open-managed-agents/sandbox-port-kit/firewall";
 import type { ObjectStoreCredentialPort } from "@open-managed-agents/sandbox-port-kit/object-storage";
-import { readSandboxOutputs, SESSION_OUTPUTS_DIR } from "@open-managed-agents/sandbox-port-kit/object-storage";
-import type { SandboxAdapterPort, SandboxStorageDepsPort, SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit/ports";
+import { SESSION_OUTPUTS_DIR } from "@open-managed-agents/sandbox-port-kit/object-storage";
+import { SandboxAssemblyError, type SandboxAdapterPort, type SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit/ports";
 import {
   E2BSandboxExecutor,
   createE2BSandbox,
@@ -59,6 +64,12 @@ export interface E2BV2AdapterOptions {
   /** Provider idle reclaim (E2B timeout), renewed by keepAlive. Must exceed
    * every plan's idleMs, or E2B pauses the sandbox before the core does. */
   leaseMs: number;
+  /** E2B's cap on continuous running for this account's plan (Hobby
+   * 3_600_000, Pro 86_400_000; pause + resume restarts it). Required and
+   * never queried from E2B: past it E2B silently truncates setTimeout and
+   * pauses the sandbox (design §0.0 rule 11). Every plan's idleMs must be
+   * below it. */
+  maxLifetimeMs: number;
   /** Sandbox user for exec and files. Default: the SDK default user. */
   user?: string;
   /** Run as root right after a sandbox starts, before its firewall is
@@ -67,9 +78,29 @@ export interface E2BV2AdapterOptions {
   /** Hosts the platform itself needs from inside the sandbox (object
    * storage, ...). Added to every allowlist. */
   channels?: string[];
-  /** Prefix-scoped credentials for Memory Store mounts. Without it, Memory
-   * Stores fall back to the generic file sync. */
-  objectStorage?: { credentials: ObjectStoreCredentialPort; ttlSeconds?: number };
+  /** Native storage: rclone FUSE mounts for Memory Stores and for
+   * /mnt/session/outputs, each over prefix-scoped temporary credentials
+   * minted from its own bucket's parent key (a parent key only reaches its
+   * own bucket). Omitted = no native storage: createSandboxPorts composes
+   * createSyncStorage, which copies Memory in and out and uploads outputs at
+   * turn boundaries. */
+  objectStorage?: E2BObjectStorageOptions;
+}
+
+/** The Session scope storage calls receive (this package does not depend on
+ * runtime-resource-contract directly). */
+type StorageScope = Parameters<SandboxStoragePort<E2BSandboxExecutor>["attach"]>[0]["scope"];
+
+export interface E2BObjectStorageOptions {
+  /** Memory bucket: Memory Store `<storeId>/` prefixes. */
+  memory: ObjectStoreCredentialPort;
+  /** Files bucket: the Session outputs prefix. */
+  outputs: ObjectStoreCredentialPort;
+  /** Key prefix of a Session's outputs in the files bucket. */
+  outputsPrefix(scope: StorageScope): string;
+  /** Lifetime of each minted credential (default 1 h). A mount is re-minted
+   * and remounted at the next attach or sync once less than half is left. */
+  ttlSeconds?: number;
 }
 
 const SELF = "self";
@@ -79,6 +110,11 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   if (!Number.isSafeInteger(options.leaseMs) || options.leaseMs <= 0) {
     throw new TypeError("E2B leaseMs must be a positive integer");
   }
+  const declared = (options as { maxLifetimeMs?: unknown }).maxLifetimeMs;
+  if (typeof declared !== "number" || !Number.isSafeInteger(declared) || declared <= 0) {
+    throw new SandboxAssemblyError("E2B maxLifetimeMs is required: a positive integer of milliseconds matching the account plan's continuous-run cap");
+  }
+  const maxLifetimeMs: number = declared;
   const { sdk, connection } = options;
   const executorOptions = { ...connection, ...(options.user === undefined ? {} : { user: options.user }), lifetimeMs: options.leaseMs };
   const handleOf = (runtime: E2BSandboxExecutor): SandboxHandle => ({ provider: "e2b", runtimeId: runtime.runtimeHandle().runtimeId });
@@ -98,6 +134,9 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
     signal.throwIfAborted();
     if (plan.idleMs >= options.leaseMs) {
       throw new Error(`E2B leaseMs (${options.leaseMs}) must exceed the plan idleMs (${plan.idleMs})`);
+    }
+    if (plan.idleMs >= maxLifetimeMs) {
+      throw new SandboxAssemblyError(`E2B maxLifetimeMs (${maxLifetimeMs}) must exceed the plan idleMs (${plan.idleMs})`);
     }
     let runtime: E2BSandboxExecutor;
     try {
@@ -128,6 +167,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
   const lifecycle: SandboxLifecyclePort<E2BSandboxExecutor> = {
     handle: "changes",
+    maxLifetimeMs,
 
     async acquire(input) {
       const from = input.plan.from;
@@ -225,6 +265,8 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   };
 
   const vendor: SandboxVendorPort<E2BSandboxExecutor> = {
+    /** Runs in /workspace, the logical root the generic implementations
+     * address relative paths from (the relay installer's .oma-egress). */
     async exec(runtime, cmd, opts) {
       let command = cmd;
       if (opts?.stdin !== undefined) {
@@ -232,7 +274,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
         await runtimeCall(() => runtime.writeFile(path, opts.stdin!));
         command = `(${cmd}) < ${path}; s=$?; rm -f ${path}; exit $s`;
       }
-      return runtimeCall(() => runtime.run(command, opts?.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }));
+      return runtimeCall(() => runtime.run(`cd /workspace 2>/dev/null; ${command}`, opts?.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }));
     },
     readFile: (runtime, path) => runtimeCall(() => runtime.readBytes(path)),
     async writeFile(runtime, path, bytes) {
@@ -248,83 +290,123 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
     lifecycle,
     vendor,
     ...(objectStorage === undefined ? {} : {
-      native: { storage: (deps: SandboxStorageDepsPort) => e2bObjectStorage(vendor, deps, objectStorage) },
+      native: { storage: () => e2bObjectStorage(vendor, objectStorage) },
     }),
   };
 }
 
-/** Memory Stores as s3fs mounts over prefix-scoped, short-lived credentials
- * (the parent key never enters the sandbox; the credentials reach s3fs only
- * through its process environment, never its command line). Outputs are
- * copied out at turn_end / before_stop through deps.outputs. */
+/** Native storage: Memory Stores and /mnt/session/outputs as rclone FUSE
+ * mounts over prefix-scoped, short-lived credentials. Parent keys never
+ * enter the sandbox; the temporary credentials reach rclone only through
+ * its process environment (RCLONE_S3_*), never its command line.
+ *
+ * The remote is rooted at the credential's prefix and runs with
+ * --s3-no-check-bucket, so nothing touches the bucket root: s3fs 1.90
+ * (Debian 12) probed `GET /<bucket>/`, which a prefix-scoped credential
+ * correctly gets 403 for, retried with SigV2 (R2: 401) and exited after
+ * daemonizing, so its exit 0 left a plain local directory. A mount process
+ * exiting 0 proves nothing: every mount is then verified (`mountpoint -q`
+ * and a listing through FUSE, which needs a working credential) and any
+ * failure fails attach (design §0.0 rule 16).
+ *
+ * Mounts are live, so sync only renews credentials (re-mint + remount once
+ * less than half the TTL is left; rclone reads them only at start), and
+ * detach unmounts everything. */
 export function e2bObjectStorage(
   vendor: SandboxVendorPort<E2BSandboxExecutor>,
-  deps: SandboxStorageDepsPort,
-  options: NonNullable<E2BV2AdapterOptions["objectStorage"]>,
+  options: E2BObjectStorageOptions,
 ): SandboxStoragePort<E2BSandboxExecutor> {
   const ttlSeconds = options.ttlSeconds ?? 3_600;
-  const mounted = new WeakMap<E2BSandboxExecutor, Map<string, { storeId: string; readOnly: boolean; expiresAt: number }>>();
+  interface Mount { identity: string; expiresAt: number; issue(): ReturnType<ObjectStoreCredentialPort["issue"]>; readOnly: boolean }
+  const mounted = new WeakMap<E2BSandboxExecutor, { owner: string; mounts: Map<string, Mount> }>();
+  const fresh = (mount: Mount) => mount.expiresAt - Date.now() > (ttlSeconds * 1_000) / 2;
   const asRoot = async (runtime: E2BSandboxExecutor, command: string, envs?: Record<string, string>) => {
     const result = await runtimeCall(() => runtime.run(command, { user: "root", timeoutMs: 60_000, ...(envs === undefined ? {} : { envs }) }));
     if (result.exitCode !== 0) throw new Error(`E2B storage command failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+  };
+  const mount = async (runtime: E2BSandboxExecutor, owner: string, target: string, entry: Mount) => {
+    const credentials = await entry.issue();
+    const remote = `:s3:${credentials.bucket}/${credentials.prefix.replace(/\/$/u, "")}`;
+    const flags = [
+      "--daemon",
+      "--s3-no-check-bucket",
+      "--allow-other",
+      "--allow-non-empty",
+      `--uid=${owner}`,
+      `--gid=${owner}`,
+      "--vfs-cache-mode=writes",
+      ...(entry.readOnly ? ["--read-only"] : []),
+    ].map(quote).join(" ");
+    await asRoot(
+      runtime,
+      `(mountpoint -q ${quote(target)} && (umount ${quote(target)} || umount -l ${quote(target)})) || true; `
+        + `mkdir -p ${quote(target)} && rclone mount ${quote(remote)} ${quote(target)} ${flags}`,
+      {
+        RCLONE_S3_PROVIDER: "Cloudflare",
+        RCLONE_S3_ENDPOINT: credentials.endpoint,
+        RCLONE_S3_REGION: "auto",
+        RCLONE_S3_ACCESS_KEY_ID: credentials.accessKeyId,
+        RCLONE_S3_SECRET_ACCESS_KEY: credentials.secretAccessKey,
+        RCLONE_S3_SESSION_TOKEN: credentials.sessionToken,
+      },
+    );
+    await verifyMount(runtime, target);
+    entry.expiresAt = credentials.expiresAt;
+  };
+  /** The mount must be a FUSE mountpoint and its prefix listable through it. */
+  const verifyMount = async (runtime: E2BSandboxExecutor, target: string) => {
+    const result = await runtimeCall(() => runtime.run(
+      `mountpoint -q ${quote(target)} || { echo 'not a mountpoint' >&2; exit 90; }; ls -A ${quote(target)} >/dev/null`,
+      { user: "root", timeoutMs: 60_000 },
+    ));
+    if (result.exitCode !== 0) {
+      throw new Error(`E2B storage mount ${target} is not usable (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+    }
   };
   return {
     async attach(input) {
       const owner = (await vendor.exec(input.runtime, "id -u")).stdout.trim();
       await asRoot(input.runtime, `mkdir -p ${SESSION_OUTPUTS_DIR} /mnt/memory && chown ${quote(owner)} ${SESSION_OUTPUTS_DIR}`);
-      const state = mounted.get(input.runtime) ?? new Map();
+      const state = mounted.get(input.runtime) ?? { owner, mounts: new Map<string, Mount>() };
       mounted.set(input.runtime, state);
+      const outputsPrefix = options.outputsPrefix(input.scope);
+      const wanted: Array<[string, Mount]> = [[SESSION_OUTPUTS_DIR, {
+        identity: `outputs:${outputsPrefix}`,
+        expiresAt: 0,
+        readOnly: false,
+        issue: () => options.outputs.issue({ prefix: outputsPrefix, access: "read_write", ttlSeconds }),
+      }]];
       for (const store of input.stores) {
-        input.signal.throwIfAborted();
         if (!/^[A-Za-z0-9._-]+$/u.test(store.storeName) || store.storeName.startsWith(".")) {
           throw new Error(`Unsafe Memory Store name: ${JSON.stringify(store.storeName)}`);
         }
-        const target = `/mnt/memory/${store.storeName}`;
-        const current = state.get(target);
-        if (current !== undefined && current.storeId === store.storeId && current.readOnly === store.readOnly
-          && current.expiresAt - Date.now() > 5 * 60_000) continue;
-        const credentials = await options.credentials.issue({
-          prefix: `${store.storeId}/`,
-          access: store.readOnly ? "read_only" : "read_write",
-          ttlSeconds,
-        });
-        const flags = [
-          `url=${credentials.endpoint}`,
-          "use_path_request_style",
-          "use_session_token",
-          "allow_other",
-          "nonempty",
-          `uid=${owner}`,
-          `gid=${owner}`,
-          ...(store.readOnly ? ["ro"] : []),
-        ].map((flag) => `-o ${quote(flag)}`).join(" ");
-        await asRoot(
-          input.runtime,
-          `(mountpoint -q ${quote(target)} && (umount ${quote(target)} || umount -l ${quote(target)})) || true; `
-            + `mkdir -p ${quote(target)} && s3fs ${quote(`${credentials.bucket}:/${credentials.prefix.replace(/\/$/u, "")}`)} ${quote(target)} ${flags}`,
-          {
-            AWS_ACCESS_KEY_ID: credentials.accessKeyId,
-            AWS_SECRET_ACCESS_KEY: credentials.secretAccessKey,
-            AWS_SESSION_TOKEN: credentials.sessionToken,
-          },
-        );
-        state.set(target, { storeId: store.storeId, readOnly: store.readOnly, expiresAt: credentials.expiresAt });
+        wanted.push([`/mnt/memory/${store.storeName}`, {
+          identity: `memory:${store.storeId}:${store.readOnly ? "ro" : "rw"}`,
+          expiresAt: 0,
+          readOnly: store.readOnly,
+          issue: () => options.memory.issue({ prefix: `${store.storeId}/`, access: store.readOnly ? "read_only" : "read_write", ttlSeconds }),
+        }]);
+      }
+      for (const [target, entry] of wanted) {
+        input.signal.throwIfAborted();
+        const current = state.mounts.get(target);
+        if (current !== undefined && current.identity === entry.identity && fresh(current)) continue;
+        await mount(input.runtime, state.owner, target, entry);
+        state.mounts.set(target, entry);
       }
     },
     async sync(input) {
-      if (input.reason === "interval" || input.reason === "checkpoint") return;
-      if (!await deps.authorize(input.fence)) throw new Error("Session output publication lost its fence");
-      await deps.outputs.publish({
-        scope: input.scope,
-        fence: input.fence,
-        files: readSandboxOutputs(vendor, input.runtime, { maxFiles: 10_000 }),
-        signal: input.signal,
-      });
+      const state = mounted.get(input.runtime);
+      if (state === undefined) return;
+      for (const [target, entry] of state.mounts) {
+        input.signal.throwIfAborted();
+        if (!fresh(entry)) await mount(input.runtime, state.owner, target, entry);
+      }
     },
     async detach(input) {
       const state = mounted.get(input.runtime);
       if (state === undefined) return;
-      for (const target of state.keys()) {
+      for (const target of state.mounts.keys()) {
         await asRoot(input.runtime, `umount ${quote(target)} || umount -l ${quote(target)} || true`);
       }
       mounted.delete(input.runtime);

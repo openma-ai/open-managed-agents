@@ -44,6 +44,7 @@ export class SandboxProtocolError extends Error {}
 // the whole OmaSandbox RPC surface the runtime calls.
 export class Sandbox extends DurableObject {
   incarnation = null;
+  marker = null;
   mounts = [];
   env = {};
 
@@ -67,14 +68,17 @@ export class Sandbox extends DurableObject {
     return { incarnation: this.incarnation, started: true, pendingMounts: [] };
   }
   async exec(command, _opts) {
+    const written = /^echo (\S+) > \/tmp\/\.oma-warm$/.exec(command);
+    if (this.incarnation !== null && written) this.marker = written[1];
     if (this.incarnation !== null && /cat \/tmp\/\.oma-warm/.test(command)) {
-      return { stdout: `${this.incarnation}\n`, stderr: "", exitCode: 0, success: true };
+      return { stdout: `${this.marker ?? this.incarnation}\n`, stderr: "", exitCode: 0, success: true };
     }
     return { stdout: "", stderr: "", exitCode: 0, success: true };
   }
   async renewActivityTimeout() {}
   async destroy() {
     this.incarnation = null;
+    this.marker = null;
   }
   async startProcess(_command, _opts) {
     return {

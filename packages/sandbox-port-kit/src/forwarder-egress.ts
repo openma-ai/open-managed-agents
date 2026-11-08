@@ -14,8 +14,8 @@ import { v1FileView } from "./sync-storage";
  * Known gaps of the reused installer (§0.2 table), not changed here: the
  * relay token is persisted in the sandbox's binding file rather than held
  * only in memory, the CA key is not on tmpfs, and the relay port is random.
- * The relay bundle is read from disk (sandbox-egress/dist/relay.cjs), so the
- * forwarder can only be installed where that file exists (Node hosts).
+ * The relay bundle is embedded in sandbox-egress, so Workers hosts install
+ * it too; the sandbox image needs `node`.
  */
 export function createForwarderEgress<R extends object>(
   vendor: SandboxVendorPort<R>,

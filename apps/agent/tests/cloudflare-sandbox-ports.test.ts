@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
-import { SandboxTemplateUnsupportedError } from "@open-managed-agents/sandbox-port-kit/ports";
-import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "../src/runtime/cloudflare-sandbox-ports";
+import { backupObjectKeys, createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "../src/runtime/cloudflare-sandbox-ports";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "work" };
 const fence = { ...scope, ownerId: "owner", generation: 3, token: "tok", expiresAt: "2030-01-01T00:00:00.000Z" };
@@ -9,6 +8,9 @@ const outputs = { bindingId: "out", mountPath: "/mnt/session/outputs" as const }
 const signal = new AbortController().signal;
 const stores = [{ storeName: "notes", storeId: "st", readOnly: true }];
 const plan = { from: { image: "img" }, egress: null, stores, outputs, idleMs: 1, labels: { workspaceId: "ws", sessionId: "sess" } };
+
+const deleted: string[][] = [];
+const backups = { async delete(keys: string | string[]) { deleted.push([keys].flat()); } } as unknown as R2Bucket;
 
 function fakeCf(opts: { restoreOk?: boolean; backup?: boolean } = {}) {
   const log: Array<[string, unknown?]> = [];
@@ -39,9 +41,10 @@ function fakeCf(opts: { restoreOk?: boolean; backup?: boolean } = {}) {
 describe("Cloudflare v2 adapter", () => {
   it("is fixed-handle, provisions mounts at start and verifies them on storage.attach", async () => {
     const cf = fakeCf();
-    const adapter = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime });
+    const adapter = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, backups });
     const { ports } = createSandboxPorts(adapter, { storage: {} as never, egress: {} as never });
     expect(ports.sandbox.handle).toBe("fixed");
+    expect(ports.sandbox.maxLifetimeMs).toBeNull();
     expect(await ports.sandbox.attach({ scope, handle: { provider: "cloudflare", runtimeId: "sess" }, signal })).toBe("gone");
     const acquired = await ports.sandbox.acquire({ scope, plan, signal });
     if (acquired === "gone") throw new Error("unexpected");
@@ -52,13 +55,45 @@ describe("Cloudflare v2 adapter", () => {
     await expect(ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores: [...stores, { storeName: "late", storeId: "l", readOnly: false }], outputs, signal }))
       .rejects.toThrow("/mnt/memory/late");
     expect(await ports.sandbox.list({ labels: {}, signal })).toEqual([]);
-    expect(await ports.sandbox.acquire({ scope, plan: { ...plan, from: { template: { provider: "cloudflare", ref: "t" } } }, signal })).toBe("gone");
-    await expect(ports.sandbox.snapshotTemplate({ ...acquired, signal })).rejects.toBeInstanceOf(SandboxTemplateUnsupportedError);
+  });
+
+  it("snapshots a template as a /workspace backup and restores it into other sandboxes (1:n)", async () => {
+    const build = fakeCf();
+    const buildAdapter = createCloudflareSandboxAdapter({ sandbox: () => build.runtime, backups });
+    const built = await buildAdapter.lifecycle.acquire({ scope, plan, signal });
+    if (built === "gone") throw new Error("unexpected");
+    const template = await buildAdapter.lifecycle.snapshotTemplate({ ...built, signal });
+    expect(template).toEqual({ provider: "cloudflare", ref: "bk1", metadata: { kind: "template", backup: JSON.stringify({ id: "bk1", dir: "/workspace", sha256: "x" }) } });
+    const sandboxes = new Map([["s1", fakeCf()], ["s2", fakeCf()], ["sess", fakeCf()]]);
+    const adapter = createCloudflareSandboxAdapter({ sandbox: (id) => sandboxes.get(id)!.runtime, backups });
+    for (const sessionId of ["s1", "s2"]) {
+      const acquired = await adapter.lifecycle.acquire({ scope: { ...scope, sessionId }, plan: { ...plan, from: { template } }, signal });
+      expect(acquired).toMatchObject({ handle: { provider: "cloudflare", runtimeId: sessionId } });
+      expect(sandboxes.get(sessionId)!.log.map(([op]) => op)).toEqual(["provision", "restore"]);
+      expect(sandboxes.get(sessionId)!.log[1]![1]).toEqual({ id: "bk1", dir: "/workspace", sha256: "x" });
+    }
+    const expired = fakeCf({ restoreOk: false });
+    const gone = await createCloudflareSandboxAdapter({ sandbox: () => expired.runtime, backups }).lifecycle.acquire({ scope, plan: { ...plan, from: { template } }, signal });
+    expect(gone).toBe("gone");
+    expect(expired.log.at(-1)).toEqual(["destroy"]);
+    await expect(adapter.lifecycle.acquire({ scope, plan: { ...plan, from: { template: { provider: "cloudflare", ref: "t" } } }, signal })).rejects.toThrow(/did not create/);
+    const empty = fakeCf({ backup: false });
+    await expect(createCloudflareSandboxAdapter({ sandbox: () => empty.runtime, backups }).lifecycle.snapshotTemplate({ runtime: empty.runtime, handle: { provider: "cloudflare", runtimeId: "sess" }, signal })).rejects.toThrow(/no archive/);
+  });
+
+  it("discard deletes backup and template objects and leaves self refs alone", async () => {
+    deleted.length = 0;
+    const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => fakeCf().runtime, backups });
+    await lifecycle.discard({ scope, ref: { provider: "cloudflare", ref: "bk1", metadata: { kind: "backup", backup: "{}" } } });
+    await lifecycle.discard({ scope, ref: { provider: "cloudflare", ref: "tp1", metadata: { kind: "template", backup: "{}" } } });
+    await lifecycle.discard({ scope, ref: { provider: "cloudflare", ref: "sess", metadata: { kind: "self" } } });
+    expect(deleted).toEqual([backupObjectKeys("bk1"), backupObjectKeys("tp1")]);
+    expect(backupObjectKeys("bk1")).toEqual(["backups/bk1.tar.zst", "backups/bk1.meta.json"]);
   });
 
   it("binds and revokes the outbound handler with the execution fence", async () => {
     const cf = fakeCf();
-    const { ports } = createSandboxPorts(createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, controlPlaneBaseUrl: "https://main.example" }), { storage: {} as never, egress: {} as never });
+    const { ports } = createSandboxPorts(createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, controlPlaneBaseUrl: "https://main.example", backups }), { storage: {} as never, egress: {} as never });
     await ports.egress.attach({ runtime: cf.runtime, scope, fence, policy: null, signal });
     expect(cf.log.at(-1)).toEqual(["outbound", { tenantId: "ws", environmentId: "env", sessionId: "sess", workId: "work", ownerId: "owner", generation: 3, fenceToken: "tok", required: true, controlPlaneBaseUrl: "https://main.example" }]);
     await ports.egress.revoke({ runtime: cf.runtime, scope, fence, reason: "lease_lost" });
@@ -67,7 +102,7 @@ describe("Cloudflare v2 adapter", () => {
 
   it("pauses as backup + destroy and resumes by provisioning and restoring", async () => {
     const cf = fakeCf();
-    const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime });
+    const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, backups });
     const acquired = await lifecycle.acquire({ scope, plan, signal });
     if (acquired === "gone") throw new Error("unexpected");
     expect(await lifecycle.keepAlive(acquired)).toBe("alive");
@@ -84,10 +119,10 @@ describe("Cloudflare v2 adapter", () => {
 
   it("reports a failed restore as gone and a missing backup as a self ref", async () => {
     const failing = fakeCf({ restoreOk: false });
-    const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => failing.runtime });
+    const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => failing.runtime, backups });
     expect(await lifecycle.resume({ scope, ref: { provider: "cloudflare", ref: "bk", metadata: { kind: "backup", backup: "{}" } }, plan, signal })).toBe("gone");
     const none = fakeCf({ backup: false });
-    const adapter = createCloudflareSandboxAdapter({ sandbox: () => none.runtime });
+    const adapter = createCloudflareSandboxAdapter({ sandbox: () => none.runtime, backups });
     expect(await adapter.lifecycle.checkpoint({ scope, runtime: none.runtime, handle: { provider: "cloudflare", runtimeId: "sess" }, signal }))
       .toEqual({ provider: "cloudflare", ref: "sess", metadata: { kind: "self" } });
     expect(await adapter.vendor.readFile(none.runtime, "/missing")).toBeNull();

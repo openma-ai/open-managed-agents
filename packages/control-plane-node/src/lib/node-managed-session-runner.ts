@@ -21,7 +21,7 @@ import type {
   SpanModelUsageView,
   ToolResultContentBlock,
 } from "@open-managed-agents/managed-agents-application";
-import { consumedListCostPico } from "@open-managed-agents/managed-agents-application";
+import { budgetReachedStopEvents, openSessionBudgetGate } from "@open-managed-agents/managed-agents-application";
 import {
   abortedError,
   abortableDelay,
@@ -39,10 +39,7 @@ import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/api-types";
-import {
-  createSessionBudgetGate,
-  type SessionBudgetGate,
-} from "@open-managed-agents/domain/sessions";
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import {
   clearNodeSessionBudgetGate,
   registerNodeSessionBudgetGate,
@@ -808,6 +805,7 @@ export class DefaultNodeManagedSessionRunner
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
       ...(input.takeSteeringInputs !== undefined && { takeSteeringInputs: input.takeSteeringInputs }),
+      usage: input.session.usage,
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
@@ -939,32 +937,24 @@ export class DefaultNodeManagedSessionRunner
           tools,
         });
         if (harnessContext.budget === undefined) {
-          const sessionBudget = input.session.budget ?? null;
-          const pricing = sessionBudget === null
-            ? null
-            : await this.dependencies.resolveModelPricing?.(context) ?? null;
-          // Domain gate; Node ListCostPicoStore persists session.usage.list_cost_pico.
-          const store = {
-            // Sessions persisted before list_cost_pico survived the runtime
-            // boundary resume from their rounded cents rather than from 0.
-            load: (): string => consumedListCostPico(input.session).toString(),
-            save: (list_cost_pico: string): void => {
-              const usage = { ...runtime.usageSnapshot(), list_cost_pico };
-              if (input.session.usage) {
-                input.session.usage.list_cost_pico = list_cost_pico;
-              } else {
-                input.session.usage = { list_cost_pico };
-              }
-              runtime.broadcastProducedEvent({ type: "session.usage", usage });
+          // Application gate opener; the Node ListCostPicoStore persists
+          // session.usage.list_cost_pico and publishes each save.
+          harnessContext.budget = await openSessionBudgetGate({
+            session: input.session,
+            pricing: async () => await this.dependencies.resolveModelPricing?.(context) ?? null,
+            store: {
+              load: (): string | null => input.session.usage?.list_cost_pico ?? null,
+              save: (list_cost_pico: string): void => {
+                const usage = { ...runtime.usageSnapshot(), list_cost_pico };
+                if (input.session.usage) {
+                  input.session.usage.list_cost_pico = list_cost_pico;
+                } else {
+                  input.session.usage = { list_cost_pico };
+                }
+                runtime.broadcastProducedEvent({ type: "session.usage", usage });
+              },
             },
-          };
-          harnessContext.budget = createSessionBudgetGate(
-            sessionBudget === null
-              ? null
-              : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
-            pricing,
-            store,
-          );
+          });
         }
         budgetGate = harnessContext.budget ?? null;
         runtime.setBudgetGate(budgetGate);
@@ -1190,19 +1180,15 @@ export class DefaultNodeManagedSessionRunner
         // Official budget stop: thread idle → usage → session idle (budget_reached).
         // requires_action parking is skipped: budget_reached outranks end_turn but
         // requires_action already short-circuits earlier when tools are pending.
-        const stopReason = { type: "budget_reached" as const };
-        runtime.broadcastProducedEvent({
-          type: "session.thread_status_idle",
+        // Usage source on Node: the primary runtime's meter.
+        for (const event of budgetReachedStopEvents({
           agentName: input.session.agent.name,
           sessionThreadId: "sthr_primary",
-          stopReason,
-        });
-        runtime.broadcastProducedEvent({
-          type: "session.usage",
           usage: runtime.usageSnapshot(),
-          budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
-        });
-        runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
+          budget: budgetGate.maxListCost,
+        })) {
+          runtime.broadcastProducedEvent(event);
+        }
       } else if (!leaseLost) {
         const failed = runFailed || finalizationError !== undefined;
         const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(

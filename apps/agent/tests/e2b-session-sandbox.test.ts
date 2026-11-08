@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
+import { SandboxGoneError } from "@open-managed-agents/sandbox";
 import {
+  capCliSubstitutions,
   createE2BSessionSandbox,
   createR2BindingOutputSink,
   E2BSessionSandbox,
   egressPolicy,
+  RELAY_PASS_TTL_MS,
+  STORAGE_SYNC_INTERVAL_MS,
+  parseMaxLifetime,
+  storageConfig,
 } from "../src/runtime/e2b-session-sandbox";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
@@ -24,6 +30,8 @@ function fakeRuntime(id: string) {
 
 function harness(saved?: { handle: { provider: string; runtimeId: string }; stores: never[]; outputs: boolean }) {
   const log: string[] = [];
+  const clock = { now: 1_000_000 };
+  let syncFails: Error | null = null;
   let stored = saved;
   let attachGone = false;
   const ports = {
@@ -39,7 +47,7 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
     },
     storage: {
       async attach({ stores }: { stores: unknown[] }) { log.push(`storage.attach:${stores.length}`); },
-      async sync({ reason }: { reason: string }) { log.push(`storage.sync:${reason}`); },
+      async sync({ reason }: { reason: string }) { log.push(`storage.sync:${reason}`); if (syncFails) throw syncFails; },
       async detach() { log.push("storage.detach"); },
     },
     egress: {
@@ -60,8 +68,9 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
       from: { image: "tmpl" }, egress: null, stores,
       outputs: { bindingId: "o", mountPath: "/mnt/session/outputs" }, idleMs: 1, labels: { workspaceId: s.workspaceId, sessionId: s.sessionId },
     }),
+    now: () => clock.now,
   });
-  return { sandbox, log, stored: () => stored, goneOnAttach: () => { attachGone = true; } };
+  return { sandbox, log, clock, stored: () => stored, goneOnAttach: () => { attachGone = true; }, failSync: (error: Error) => { syncFails = error; } };
 }
 
 describe("E2BSessionSandbox", () => {
@@ -108,23 +117,98 @@ describe("E2BSessionSandbox", () => {
   });
 });
 
-describe("createE2BSessionSandbox", () => {
-  it("names every missing deployment variable", () => {
-    expect(() => createE2BSessionSandbox({
-      env: { E2B_API_KEY: "k" },
-      storage: {} as never,
-      scope: () => scope,
-      networking: async () => undefined,
-    })).toThrow("SANDBOX_ADAPTER=e2b requires E2B_TEMPLATE, CLOUDFLARE_ACCOUNT_ID, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, MEMORY_BUCKET_NAME, FILES_BUCKET");
+describe("E2BSessionSandbox maintenance and failures", () => {
+  it("renews storage credentials and the relay pass at exec boundaries, single-flight", async () => {
+    const h = harness();
+    await h.sandbox.mountSessionOutputs();
+    h.log.length = 0;
+    await h.sandbox.exec("true");
+    expect(h.log).toEqual([]);
+    h.clock.now += STORAGE_SYNC_INTERVAL_MS;
+    await Promise.all([h.sandbox.exec("a"), h.sandbox.exec("b")]);
+    expect(h.log).toEqual(["storage.sync:interval"]);
+    h.clock.now += RELAY_PASS_TTL_MS / 2;
+    await h.sandbox.exec("true");
+    expect(h.log).toEqual(["storage.sync:interval", "storage.sync:interval", "egress.attach:open"]);
   });
 
-  it("compiles Environment networking into the egress policy", () => {
+  it("fails the call when renewal fails, and fails turn end when publishing fails", async () => {
+    const h = harness();
+    await h.sandbox.mountSessionOutputs();
+    h.failSync(new Error("R2 put failed"));
+    await expect(h.sandbox.syncStorage("turn_end")).rejects.toThrow("R2 put failed");
+    h.clock.now += STORAGE_SYNC_INTERVAL_MS;
+    await expect(h.sandbox.exec("true")).rejects.toThrow("R2 put failed");
+  });
+
+  it("reports a sandbox lost during the turn at turn end instead of skipping the publish", async () => {
+    const h = harness();
+    await h.sandbox.mountSessionOutputs();
+    (h.sandbox as unknown as { live: { runtime: { run(): Promise<never> } } }).live.runtime.run = async () => {
+      const error = new Error("gone"); error.name = "SandboxNotRunningError"; throw error;
+    };
+    await expect(h.sandbox.exec("true")).rejects.toThrow("gone");
+    await expect(h.sandbox.syncStorage("turn_end")).rejects.toBeInstanceOf(SandboxGoneError);
+    await expect(h.sandbox.syncStorage("turn_end")).resolves.toBeUndefined();
+  });
+});
+
+describe("createE2BSessionSandbox", () => {
+  const bucket = {} as R2Bucket;
+  it("names every missing deployment variable", () => {
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+      .toThrow("SANDBOX_ADAPTER=e2b requires E2B_TEMPLATE, E2B_MAX_LIFETIME_MS");
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "s2" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+      .toThrow("SANDBOX_ADAPTER=e2b native storage requires CLOUDFLARE_ACCOUNT_ID, R2_ENDPOINT, MEMORY_BUCKET_NAME, FILES_BUCKET_NAME");
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+      .toThrow("copy sync requires the MEMORY_BUCKET, FILES_BUCKET binding");
+  });
+
+  it("requires E2B_MAX_LIFETIME_MS as a positive integer above the idle window (design §0.0 rule 11)", () => {
+    const base = { E2B_API_KEY: "k", E2B_TEMPLATE: "t", MEMORY_BUCKET: bucket as never, FILES_BUCKET: bucket };
+    const build = (value?: string) => () => createE2BSessionSandbox({ env: { ...base, ...(value === undefined ? {} : { E2B_MAX_LIFETIME_MS: value }) }, storage: {} as never, scope: () => scope, networking: async () => undefined });
+    expect(build()).toThrow("SANDBOX_ADAPTER=e2b requires E2B_MAX_LIFETIME_MS");
+    for (const bad of ["abc", "0", "-5", "1.5", "1e30"]) expect(build(bad)).toThrow(/E2B_MAX_LIFETIME_MS must be a positive integer/);
+    expect(build("300000")).toThrow(/must exceed the idle pause window/);
+    expect(build("3600000")()).toBeInstanceOf(E2BSessionSandbox);
+    expect(parseMaxLifetime("86400000")).toBe(86_400_000);
+  });
+
+  it("chooses native only with both bucket keys, sync with neither, and rejects half", () => {
+    const native = { CLOUDFLARE_ACCOUNT_ID: "acct", R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com", MEMORY_BUCKET_NAME: "memory", FILES_BUCKET_NAME: "files" };
+    expect(storageConfig({ ...native, R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "t" }).kind).toBe("native");
+    expect(storageConfig({ MEMORY_BUCKET: bucket, FILES_BUCKET: bucket }).kind).toBe("sync");
+    expect(() => storageConfig({ ...native, R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", MEMORY_BUCKET: bucket, FILES_BUCKET: bucket })).toThrow(/half configured/);
+    expect(() => storageConfig({ ...native, R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "t", MEMORY_BUCKET: bucket, FILES_BUCKET: bucket })).toThrow(/half configured/);
+  });
+
+  it("native storage mints outputs credentials from the files key and Memory credentials from the memory key", async () => {
+    const config = storageConfig({
+      CLOUDFLARE_ACCOUNT_ID: "acct", R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com", MEMORY_BUCKET_NAME: "memory", FILES_BUCKET_NAME: "files",
+      R2_ACCESS_KEY_ID: "memory-key", R2_SECRET_ACCESS_KEY: "memory-secret", R2_FILES_ACCESS_KEY_ID: "files-key", R2_FILES_SECRET_ACCESS_KEY: "files-secret",
+    });
+    if (config.kind !== "native") throw new Error("unexpected");
+    const prefix = config.objectStorage.outputsPrefix(scope);
+    expect(prefix).toBe("t/ws/session-outputs/sess/");
+    const outputs = await config.objectStorage.outputs.issue({ prefix, access: "read_write", ttlSeconds: 60 });
+    const memory = await config.objectStorage.memory.issue({ prefix: "st/", access: "read_only", ttlSeconds: 60 });
+    expect([outputs.bucket, outputs.accessKeyId, outputs.prefix]).toEqual(["files", "files-key", prefix]);
+    expect([memory.bucket, memory.accessKeyId, memory.prefix]).toEqual(["memory", "memory-key", "st/"]);
+    expect(JSON.stringify([outputs, memory])).not.toMatch(/memory-secret|files-secret/u);
+  });
+
+  it("compiles Environment networking and cap_cli placeholders into the egress policy", async () => {
     expect(egressPolicy(scope, undefined)).toBeNull();
     expect(egressPolicy(scope, { type: "unrestricted" })).toBeNull();
     const limited = egressPolicy(scope, { type: "limited", allowed_hosts: ["api.github.com"], allow_package_managers: true });
     expect(limited?.networking).toMatchObject({ type: "limited", hosts: ["api.github.com"] });
     expect(limited?.networking.type === "limited" && limited.networking.packageSources).toContain("pypi.org");
     expect(limited?.substitutions).toEqual([]);
+    const substitutions = await capCliSubstitutions({ MAIN_MCP: { resolveManagedCapCliEnvironment: async () => ({ type: "found", env: { GITHUB_TOKEN: "__cap_managed__" } }) } }, scope);
+    expect(substitutions).toEqual([{ credentialId: "cap_cli:GITHUB_TOKEN", envName: "GITHUB_TOKEN", placeholder: "__cap_managed__", hosts: [], inject: { header: true, body: false } }]);
+    expect(egressPolicy(scope, undefined, substitutions)).toMatchObject({ networking: { type: "unrestricted" }, substitutions });
+    expect(await capCliSubstitutions({ MAIN_MCP: { resolveManagedCapCliEnvironment: async () => ({ type: "not_found" }) } }, scope)).toEqual([]);
+    expect(await capCliSubstitutions({}, scope)).toEqual([]);
   });
 });
 

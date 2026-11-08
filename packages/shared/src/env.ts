@@ -421,6 +421,18 @@ export interface Env {
   E2B_TEMPLATE?: string;
   /** Optional E2B-compatible domain. */
   E2B_DOMAIN?: string;
+  /** E2B continuous-run cap of the account plan in ms (Hobby 3600000, Pro
+   *  86400000). Required when SANDBOX_ADAPTER=e2b; no default. */
+  E2B_MAX_LIFETIME_MS?: string;
+  /** Files bucket parent key and bucket name for SANDBOX_ADAPTER=e2b native
+   *  output mounts (set together with R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY,
+   *  or neither for the copy sync). */
+  R2_FILES_ACCESS_KEY_ID?: string;
+  R2_FILES_SECRET_ACCESS_KEY?: string;
+  FILES_BUCKET_NAME?: string;
+  /** Public HTTPS origin of the control plane; the E2B Vault relay calls
+   *  <PUBLIC_BASE_URL>/v1/oma/egress. */
+  PUBLIC_BASE_URL?: string;
 }
 
 /**
