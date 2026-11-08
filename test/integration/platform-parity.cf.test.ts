@@ -92,18 +92,6 @@ const goldens = Object.fromEntries(
  * the Node runner). Each entry becomes a Vitest test.fails that turns red the
  * moment the platform matches the golden; delete the entry then.
  */
-const USAGE_CAUSE =
-  "golden (Node) emits session.usage after every reported model usage and fills GET /v1/sessions/:id usage "
-  + "(packages/control-plane-node/src/lib/node-managed-harness-runtime.ts:347-355); CF reportUsage only credits the "
-  + "thread ledger (apps/agent/src/runtime/session-do.ts:6227-6228 creditUsageToThread) and emits session.usage only on "
-  + "budget_reached, so CF has no session.usage event and usage {}";
-const usage = (scenario: string): KnownDifference => ({
-  scenario,
-  title: "no session.usage / session usage",
-  paths: ["/events/session.usage", "/session/usage/input_tokens", "/session/usage/output_tokens"],
-  eventTypes: ["session.usage"],
-  cause: USAGE_CAUSE,
-});
 const STUB_CAUSE =
   "sandbox double: golden runs real commands (local-subprocess); the CF double test/sandbox-stub.ts:76 returns empty "
   + "stdout for every exec and :92-93 no-op read/write, so bash renders \"exit=0\", read \"(completed with no output)\" "
@@ -117,8 +105,6 @@ const stub = (scenario: string, paths: string[]): KnownDifference => ({
 const FIRST_RESULT_TEXT = "/events/agent.tool_result/0/content/0/text";
 
 const KNOWN_DIFFERENCES: KnownDifference[] = [
-  ...["one-turn", "tool-call", "memory-read-write", "session-outputs", "subagent-call", "outcome-evaluation", "budget-usage", "requires-action", "interrupt"]
-    .map((scenario) => usage(scenario)),
   stub("tool-call", [FIRST_RESULT_TEXT]),
   stub("budget-usage", [FIRST_RESULT_TEXT]),
   stub("interrupt", [FIRST_RESULT_TEXT]),

@@ -90,10 +90,27 @@ describe("characterization: Cloudflare session usage and budget", () => {
     const { id, stub } = await createSession({ harness: SPEND_HARNESS, priced: true, budgetCents: "100" });
     const events = await turn(id, "spend", 1);
     const types = events.map((event) => event.type);
-    // The CF list-cost store only persists DO state; it does not emit a
+    // Intentional change (platform parity gate): the harness usage report and
+    // the model span with cache buckets each publish a session.usage snapshot,
+    // as on Node (shared reportSessionUsage / reportModelSpanUsage; SDK
+    // BetaManagedAgentsSessionUsageEvent "Periodic snapshot of the session's
+    // cumulative usage"). Before, CF emitted only the budget_reached one.
+    // The CF list-cost store still only persists DO state; it does not emit a
     // per-egress session.usage (Node does). Kept as is: each platform's
     // store adapter keeps its own side effects.
-    expect(types.filter((type) => type === "session.usage")).toHaveLength(1);
+    expect(types.filter((type) => type === "session.usage")).toHaveLength(3);
+    expect(events.filter((event) => event.type === "session.usage").slice(0, 2).map(strip)).toMatchObject([
+      { usage: { input_tokens: 100, output_tokens: 50, list_cost: { amount: "0", currency: "USD" } } },
+      {
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 7,
+          cache_creation: { ephemeral_5m_input_tokens: 5 },
+          list_cost: { amount: "0", currency: "USD" },
+        },
+      },
+    ]);
     expect(events.slice(-3).map(strip)).toEqual([
       { type: "session.thread_status_idle", agent_name: "Characterization", session_thread_id: "sthr_primary", stop_reason: { type: "budget_reached" } },
       {

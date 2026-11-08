@@ -8,6 +8,8 @@ import {
   MODEL_EGRESS_ACTION_REQUIRED,
   openSessionBudgetGate,
   parseModelEgressRequest,
+  reportModelSpanUsage,
+  reportSessionUsage,
   sessionTokenTotalsFromUsage,
   sessionUsageSnapshot,
   sumModelSpanUsage,
@@ -42,6 +44,30 @@ describe("session usage (application, shared by Cloudflare and Node)", () => {
     const meter = createSessionUsageMeter(memorySessionUsageStore({ threads: { t: seed }, session: { input_tokens: 100, output_tokens: 50 } }));
     meter.credit("t", { input_tokens: 100, output_tokens: 50 });
     expect(meter.thread("t")).toEqual(totals(200, 100, 7, 5));
+  });
+
+  it("a usage report credits the thread and yields its cumulative session.usage snapshot", async () => {
+    const meter = createSessionUsageMeter(memorySessionUsageStore());
+    expect(reportSessionUsage(meter, "sthr_primary", { input_tokens: 13, output_tokens: 5 }, null))
+      .toEqual({ type: "session.usage", usage: { inputTokens: 13, outputTokens: 5 } });
+    expect(reportSessionUsage(meter, "sthr_primary", { input_tokens: 11, output_tokens: 7 }, null))
+      .toEqual({ type: "session.usage", usage: { inputTokens: 24, outputTokens: 12 } });
+    // Another thread reports its own totals; the session-wide counters keep both.
+    expect(reportSessionUsage(meter, "sthr_child", { input_tokens: 2, output_tokens: 1 }, null).usage)
+      .toEqual({ inputTokens: 2, outputTokens: 1 });
+    expect(meter.session()).toEqual({ input_tokens: 26, output_tokens: 13 });
+    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: undefined }, pricing: async () => PRICING, store: memoryListCostPicoStore("1504000000000") });
+    expect(reportSessionUsage(meter, "sthr_primary", {}, gate).usage).toEqual({
+      inputTokens: 24, outputTokens: 12, listCost: { amountMinor: "150", currency: "USD" }, list_cost_pico: "1504000000000",
+    });
+  });
+
+  it("a model span reports usage only when it carries cache tokens", () => {
+    const meter = createSessionUsageMeter(memorySessionUsageStore());
+    expect(reportModelSpanUsage(meter, "t", { type: "span.model_request_end", model_usage: { input_tokens: 9, output_tokens: 1 } }, null)).toBeNull();
+    expect(reportModelSpanUsage(meter, "t", { type: "agent.message" }, null)).toBeNull();
+    expect(reportModelSpanUsage(meter, "t", { type: "span.model_request_end", model_usage: { cache_read_input_tokens: 4 } }, null))
+      .toEqual({ type: "session.usage", usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 4 } });
   });
 
   it("sums every model span in an event log (cold reads, CF budget stop)", () => {

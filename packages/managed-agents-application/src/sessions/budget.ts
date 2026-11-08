@@ -239,6 +239,45 @@ export function createSessionUsageMeter(store: SessionUsageStorePort): SessionUs
   return meter;
 }
 
+/** `session.usage` as published after a credit (BetaManagedAgentsSessionUsageEvent:
+ * "Periodic snapshot of the session's cumulative usage"). Session.usage is
+ * projected from it, so publishing it is what fills GET /v1/sessions/:id. */
+export interface SessionUsageReport {
+  type: "session.usage";
+  usage: SessionUsage;
+}
+
+function usageReport(meter: SessionUsageMeter, threadId: string, gate: SessionBudgetGate | null | undefined): SessionUsageReport {
+  return { type: "session.usage", usage: sessionUsageSnapshot(meter.thread(threadId), gate) };
+}
+
+/**
+ * Credit one harness usage report (`reportUsage`: a turn's input/output
+ * tokens) to a thread and return the `session.usage` event every platform
+ * publishes right after it: the thread's cumulative totals, plus the list
+ * cost while a budget gate is active.
+ */
+export function reportSessionUsage(
+  meter: SessionUsageMeter,
+  threadId: string,
+  delta: TokenUsage,
+  gate: SessionBudgetGate | null | undefined,
+): SessionUsageReport {
+  meter.credit(threadId, delta);
+  return usageReport(meter, threadId, gate);
+}
+
+/** Credit the cache buckets of a model span; the `session.usage` event to
+ * publish when anything was credited, else null. */
+export function reportModelSpanUsage(
+  meter: SessionUsageMeter,
+  threadId: string,
+  event: ModelSpanLike,
+  gate: SessionBudgetGate | null | undefined,
+): SessionUsageReport | null {
+  return meter.creditModelSpan(threadId, event) ? usageReport(meter, threadId, gate) : null;
+}
+
 /** In-memory store (Node execution runtime, tests). */
 export function memorySessionUsageStore(
   seed: { threads?: Record<string, SessionTokenTotals>; session?: SessionWideTokenTotals } = {},
