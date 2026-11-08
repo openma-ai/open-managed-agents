@@ -1,0 +1,14 @@
+# Open Managed Agents (OpenMA)
+
+> Open-source platform and SDK for building, deploying, and operating managed AI agents in production.
+
+## Key Links
+
+- [OpenMA Main Site](https://openma.ai/): Platform overview and capabilities.
+- [OpenMA Documentation](https://docs.openma.ai/): Developer documentation, API reference, and deployment guides.
+- [GitHub Repository](https://github.com/openma-ai/open-managed-agents): Source code, issues, and releases.
+
+## Agentic Readiness (GEO / llms.txt)
+
+- Structured following the standard /llms.txt specification for AI crawlers, RAG pipelines, and coding assistants.
+- Validated via [AccessGuard AI-Readiness Suite](https://ronanchnlps-bit.github.io/).
