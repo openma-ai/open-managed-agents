@@ -5,6 +5,9 @@
 // storage.detach → isCurrent → sandbox.pause → the new ResumeRef is recorded
 // with the handle → the old ref is discarded when it differs. A lost fence
 // exits without pausing; a sandbox the provider already stopped is left alone.
+// A timer is cancelled by the host when a window closes, so one that fires
+// on a fresh instance (no window, nothing open: the instance that armed it
+// was evicted, e.g. a Cloudflare DO alarm) means its window ran out.
 
 import type { SandboxHandle, SandboxPlan } from "@open-managed-agents/sandbox";
 import { errorText, mergeStores, type LiveSessionSandbox } from "./session-sandbox-live";
@@ -30,7 +33,11 @@ export function touchIdle<R>(state: LiveSessionSandbox<R>): void {
 export async function idlePause<R>(state: LiveSessionSandbox<R>): Promise<"paused" | "skipped"> {
   const idle = state.options.idle;
   await state.quiesce();
-  if (idle === undefined || state.idleSince === null) return "skipped";
+  if (idle === undefined) return "skipped";
+  if (state.idleSince === null) {
+    if (state.current !== null) return "skipped";
+    state.idleSince = state.now() - idle.pauseMs;
+  }
   if (state.execution() !== undefined) {
     state.idleSince = null;
     return "skipped";
