@@ -48,6 +48,13 @@ git clone https://github.com/openma-ai/open-managed-agents.git
 cd open-managed-agents
 cp .env.example .env
 
+# ./data holds the SQLite db, sandbox workdirs, and blobs, bind-mounted at
+# /app/data. The server runs as uid 1000, so that directory must be writable
+# by it. A missing ./data would be created by Docker as root:root 0755 — the
+# bundled compose handles this with a one-shot `oma-init` service, so there is
+# nothing to do here. With a hand-rolled compose file or `docker run`, do it
+# yourself: `mkdir -p data && sudo chown -R 1000:1000 data`.
+
 # Two secrets are required before first boot — both generated locally:
 #   BETTER_AUTH_SECRET   — signs Console sessions
 #   PLATFORM_ROOT_SECRET — encrypts credentials, model-card API keys, integration tokens
@@ -289,6 +296,17 @@ is invalid or names a missing file.
 
 ## Operator gotchas
 
+- **Crash loop with `SQLITE_CANTOPEN` on first boot.** The server runs as
+  uid 1000, but Docker creates a missing bind-mount source (`./data`) as
+  root:root 0755, so `better-sqlite3` cannot open `/app/data/oma.db`. The
+  process exits, `restart: unless-stopped` loops it, and the healthcheck
+  never passes — `docker compose logs oma-server` shows
+  `SqliteError: unable to open database file`. The bundled compose files run
+  a one-shot `oma-init` service before `oma-server` to `chown` the directory;
+  if you replaced or overrode their `volumes:`, run
+  `sudo chown -R 1000:1000 ./data` on the host. `oma-init` exits non-zero and
+  blocks startup when the mount cannot be chowned (NFS root squash, a
+  read-only bind), which is the signal to fix the ownership on the host.
 - **`AUTH_DISABLED=1` belongs in `.env`, not the shell.** Compose
   substitutes `${AUTH_DISABLED}` from the `.env` file at the compose
   dir — exporting it only in your shell is silently ignored.

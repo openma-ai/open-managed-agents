@@ -12,6 +12,36 @@
 # container, so kill -9 / docker stop don't lose sessions or workdirs.
 
 services:
+  # One-shot, exits before oma-server starts. Docker creates a missing
+  # bind-mount source directory as root:root 0755, but the server runs as
+  # uid 1000 (`node`) and binds ./data at /app/data — so on a fresh
+  # checkout better-sqlite3 cannot open /app/data/oma.db, the process
+  # exits with SQLITE_CANTOPEN, `restart: unless-stopped` loops it, and
+  # /health never passes. This fixes the ownership first.
+  oma-init:
+    image: openma/main-node:dev
+    container_name: oma-init
+    user: "0:0"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /app/data
+        # Fast path: already ours, skip a recursive chown on every restart.
+        if [ "$$(stat -c %u /app/data)" = "1000" ]; then
+          echo "oma-init: /app/data is already owned by uid 1000"
+          exit 0
+        fi
+        echo "oma-init: taking ownership of /app/data for uid 1000"
+        chown -R 1000:1000 /app/data
+    volumes:
+      - ./data:/app/data
+    # Runs to completion and stays stopped. It exits non-zero — blocking
+    # oma-server — only when the mount cannot be chowned (e.g. NFS with
+    # root squash); chown ./data on the host instead.
+    restart: "no"
+
   oma-server:
     build:
       context: .
@@ -62,6 +92,9 @@ services:
       MATTER_PROXY_SECRET: ${MATTER_PROXY_SECRET:-}
     volumes:
       - ./data:/app/data
+    depends_on:
+      oma-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     # Healthcheck queries /health every 30s. unhealthy after 3 misses
     # (90s grace), at which point Docker / your orchestrator can decide

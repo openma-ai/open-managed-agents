@@ -11,7 +11,11 @@ resource and recovery requirements, read the relevant sections of
 `apps/docs/src/content/docs/self-host/managed-runtime-host.mdx`.
 
 Check OS/architecture, available disk, Docker daemon and Compose version, port
-availability, and permissions on the chosen persistent directory. Compare image
+availability, and permissions on the chosen persistent directory. The container
+runs as uid 1000, so a bind-mounted `./data` must be owned by that uid; the
+bundled compose files handle it with a one-shot `oma-init` service, and a
+hand-written compose or `docker run` needs
+`mkdir -p data && chown -R 1000:1000 data` before the first start. Compare image
 Node/pnpm versions with the checked-out workspace requirements before a lengthy
 build. Do not silently change runtime versions or ignore engine checks.
 

@@ -41,6 +41,13 @@ MySQL modes better-auth's tables live in the same database (no separate
 cp .env.example .env
 $EDITOR .env  # set ANTHROPIC_API_KEY
 
+# ./data (SQLite db, sandbox workdirs, blobs) is bind-mounted at /app/data.
+# The server runs as uid 1000, so Docker would otherwise create a missing
+# ./data as root:root 0755 and the server would crash-loop with
+# SQLITE_CANTOPEN. The bundled compose runs a one-shot `oma-init` service to
+# fix the ownership; with your own compose file or `docker run`, do
+# `mkdir -p data && sudo chown -R 1000:1000 data` first.
+
 # 2. Start (first time builds the image; subsequent runs skip --build)
 docker compose -f docker-compose.yml up -d --build
 
