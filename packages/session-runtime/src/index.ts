@@ -42,22 +42,15 @@ export type {
   FileIdResolver,
 } from "./router";
 
-export {
-  SessionSandboxRuntime,
-  type SessionSandboxMode,
-  LIFETIME_REFRESH_MARGIN_MS,
-  MAX_TOOL_CALL_MS,
-  PortsSessionSandbox,
-  SANDBOX_GENERATION_MARKER,
-  STORAGE_SYNC_INTERVAL_MS,
-  SessionSandboxFenceLostError,
-  executionKey,
-  executionOfFence,
-  fenceFor,
-  runtimeFenceOf,
-  type PortsSessionSandboxOptions,
-  type SessionSandboxExecution,
-  type SessionSandboxExecutor,
-  type SessionSandboxIdleTimer,
-  type SessionSandboxState,
-} from "./session-sandbox";
+export { SessionSandboxRuntime, type SessionSandboxMode } from "./session-sandbox";
+export { PortsSessionSandbox } from "./ports-session-sandbox";
+export type {
+  PortsSessionSandboxOptions,
+  SessionSandboxExecution,
+  SessionSandboxExecutor,
+  SessionSandboxIdleTimer,
+  SessionSandboxState,
+} from "./session-sandbox-options";
+export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
+export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
+export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";

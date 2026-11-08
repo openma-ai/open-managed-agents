@@ -144,7 +144,7 @@ describe("E2BSessionSandbox maintenance and failures", () => {
   it("reports a sandbox lost during the turn at turn end instead of skipping the publish", async () => {
     const h = harness();
     await h.sandbox.mountSessionOutputs();
-    (h.sandbox as unknown as { live: { runtime: { run(): Promise<never> } } }).live.runtime.run = async () => {
+    (await h.sandbox.runtime() as unknown as { run(): Promise<never> }).run = async () => {
       const error = new Error("gone"); error.name = "SandboxNotRunningError"; throw error;
     };
     await expect(h.sandbox.exec("true")).rejects.toThrow("gone");
