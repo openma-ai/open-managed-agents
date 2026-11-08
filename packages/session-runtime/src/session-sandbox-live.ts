@@ -24,6 +24,8 @@ export class LiveSessionSandbox<R> {
   /** The open sandbox; null before the first open and after a pause, release or loss. */
   current: OpenSandbox<R> | null = null;
   opening: Promise<OpenSandbox<R>> | null = null;
+  /** A warm acquire at Session creation (session-sandbox-open warmSandbox). */
+  warming: Promise<void> | null = null;
   maintaining: Promise<void> | null = null;
   refreshing: Promise<void> | null = null;
   refreshError: unknown = null;

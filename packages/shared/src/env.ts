@@ -239,6 +239,37 @@ export interface Env {
       | { type: "not_found" }
       | { type: "fence_lost" }
     >;
+    /** ACP model / MCP channels for one execution (design §0.6), bound to its fence. */
+    issueManagedAcpExecutionChannels?(opts: {
+      tenantId: string;
+      sessionId: string;
+      executionFence: {
+        executionId: string;
+        workspaceId: string;
+        sessionId: string;
+        attemptId: string;
+        ownerId: string;
+        generation: number;
+        expiresAt: string;
+      };
+    }): Promise<{
+      mcpProxy: { gatewayBaseUrl: string; sessionsToken: string };
+      hostedInference: {
+        gatewayBaseUrl: string;
+        sessionsToken: string;
+        model: {
+          providerId: string;
+          baseUrl: string | null;
+          /** The card's upstream model id (not the handle). */
+          wireModel?: string;
+          protocolEndpoints?: readonly {
+            protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
+            proxyPathSegment: string;
+            upstreamBaseUrl: string;
+          }[];
+        };
+      };
+    }>;
     resolveManagedSkillVersion?(opts: {
       tenantId: string;
       skillId: string;

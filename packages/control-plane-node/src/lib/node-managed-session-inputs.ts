@@ -31,6 +31,7 @@ import {
   skillMountsShouldFetchBodies,
 } from "@open-managed-agents/agent/harness/assembly/skill-config";
 import { toLegacyHarnessAgentConfig } from "./node-managed-agent-codec.js";
+import { repositoryToken } from "./node-repository-egress.js";
 
 type FileSource = Pick<FilesApplicationPort, "downloadFile">;
 type SkillVersionSource = Pick<
@@ -108,6 +109,10 @@ export interface NodeManagedSessionInputPreparerDependencies {
   repositoryCredentials: Pick<SessionResourceSecretSource, "findGithubToken">;
   /** Unset: repositories without a token cannot be prepared. */
   repositoryBonds?: RepositoryBondCredentialSource;
+  /** What git authenticates with instead of the token; the egress relay
+   * substitutes it (node-repository-egress). Unset: credentialed
+   * repositories are refused, never written in plaintext. */
+  repositoryPlaceholder?(input: { workspaceId: string; sessionId: string; resourceId: string }): Promise<string>;
   memoryStores: NodeManagedMemoryStoreMode;
   /** Shared OSS collection uses provider-local outputs, not a FUSE mount. */
   sharedOutputs?: boolean;
@@ -268,7 +273,9 @@ export class NodeManagedSessionInputPreparer {
         if (downloaded.type !== "found") throw new Error(`Managed Session file ${fileId} was not found`);
         return downloaded.file.content;
       },
-      repositories: commandScopedRepositoryAccess(input.sandbox, (repository) => this.repositoryToken(input, repository)),
+      // git authenticates with a placeholder; only the egress relay holds the
+      // token (node-repository-egress). No placeholder source: refused, never plaintext.
+      repositories: commandScopedRepositoryAccess(input.sandbox, (repository) => this.repositoryPlaceholder(input, repository)),
       // Attached by the sandbox storage Port on every open (prepareStorage).
       memoryStores: { mode: "storage" },
     });
@@ -381,26 +388,19 @@ export class NodeManagedSessionInputPreparer {
     }
   }
 
-  private async repositoryToken(
+  /** What git sends for `resource`: its placeholder, once the token it
+   * stands for is known to exist (the relay substitutes it on the repository's host). */
+  private async repositoryPlaceholder(
     input: PrepareNodeManagedSessionInputs,
     resource: RepositoryMount,
   ): Promise<string | null> {
-    if (resource.credentialSource !== "bond") {
-      if (resource.id === undefined) return null;
-      return this.dependencies.repositoryCredentials.findGithubToken({
-        workspaceId: input.workspaceId,
-        sessionId: input.session.id,
-        resourceId: resource.id,
-      });
+    if (resource.id === undefined) return null;
+    const scope = { workspaceId: input.workspaceId, sessionId: input.session.id };
+    const token = await repositoryToken(this.dependencies, scope, resource as Parameters<typeof repositoryToken>[2]);
+    if (token === null) return null;
+    if (this.dependencies.repositoryPlaceholder === undefined) {
+      throw new Error("Managed Session GitHub repositories need credential egress (PLATFORM_ROOT_SECRET); the token is never written to the sandbox");
     }
-    if (this.dependencies.repositoryBonds === undefined) {
-      throw new Error(
-        `Managed Session repository ${resource.url} has no token, and this deployment has no Bonds to clone it with`,
-      );
-    }
-    return this.dependencies.repositoryBonds.repositoryToken({
-      workspaceId: input.workspaceId,
-      url: resource.url,
-    });
+    return this.dependencies.repositoryPlaceholder({ ...scope, resourceId: resource.id });
   }
 }

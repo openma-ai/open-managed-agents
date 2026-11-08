@@ -810,6 +810,8 @@ export class SessionDO extends DurableObject<Env> {
   private portsSandbox: PortsSessionSandbox<unknown> | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
+  /** The warm-up started by /init; owned here so /destroy (and tests) wait for it. */
+  private _sandboxWarm: Promise<void> = Promise.resolve();
   /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
   private readonly processedClock = createMonotonicClock();
 
@@ -2693,14 +2695,9 @@ export class SessionDO extends DurableObject<Env> {
         });
       }
 
-      // NO ctx.waitUntil(this.warmUpSandbox()) — that pattern dies on
-      // DO reset (which happens regularly under our concurrent traffic
-      // pattern). Let warmUp fire lazily on the first /event handler
-      // below, where it runs as part of the user's request and holds the
-      // DO alive for the full duration. First user
-      // message pays the cold-start cost (~1-3 min for an env that
-      // needs install + snapshot); subsequent messages restore in
-      // seconds from the persisted handle.
+      // Warm at creation (§0.0 rule 10): acquire + record only; the first execution attaches it.
+      this._sandboxWarm = this.sessionSandboxRuntime().acquire().then(() => this.portsSandbox?.warm())
+        .catch(error => logWarn({ op: "session_do.sandbox_warm", session_id: this.state.session_id, err: error }, "sandbox warm-up failed"));
 
       return new Response("ok");
     }
@@ -2712,6 +2709,7 @@ export class SessionDO extends DurableObject<Env> {
         ctrl.abort();
       }
       this._threadAbortControllers.clear();
+      await this._sandboxWarm; // a warm-up still running would record a sandbox after this destroy
       await this._primaryHarness.dispose();
       // Snapshot /workspace BEFORE we destroy the container — once destroy()
       // runs the container is gone and we can't read its filesystem.
@@ -6151,6 +6149,8 @@ export class SessionDO extends DurableObject<Env> {
         CONFIG_KV: this.env.CONFIG_KV,
         memoryStoreIds,
         environmentConfig,
+        // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
+        ...(resolvedHarnessName === "acp-sandbox" && activeFence && this.env.MAIN_MCP?.issueManagedAcpExecutionChannels ? { ANTHROPIC_API_KEY: "", ...await this.env.MAIN_MCP.issueManagedAcpExecutionChannels({ tenantId: this.state.tenant_id!, sessionId: this.state.session_id!, executionFence: activeFence }) } : {}),
         // LLM full-body logging context. default-loop wraps each model
         // call in middleware that PUTs request + response to R2 keyed
         // by the per-step span event id. The matching

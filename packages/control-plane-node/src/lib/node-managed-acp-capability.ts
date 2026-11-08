@@ -1,6 +1,6 @@
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import {
-  SealedEnvironmentWorkSessionCredentialIssuer,
+  sealedExecutionSessionsToken,
   sealedSandboxBearerCodec,
   type EnvironmentWorkSessionTokenCrypto,
 } from "@open-managed-agents/managed-agents-adapters-runtime";
@@ -8,7 +8,7 @@ import type { SessionExecution, SessionExecutionFence } from "@open-managed-agen
 import { sessionExecutionLeasesFrom } from "@open-managed-agents/session-runtime/execution-lease";
 import {
   authenticateSandboxBearer,
-  authorizeExecutionCredential,
+  issueExecutionSessionsToken,
   type SandboxBearerAuthority,
   type SandboxGatewayStores,
 } from "@open-managed-agents/sandbox-gateway";
@@ -25,9 +25,6 @@ export function createNodeManagedAcpCapabilities(dependencies: {
   findExecution(input: { workspaceId: string; executionId: string }): Promise<SessionExecution | null>;
   findSession(input: { workspaceId: string; sessionId: string }): Promise<Session | null>;
 }) {
-  const issuer = dependencies.crypto === null ? null : new SealedEnvironmentWorkSessionCredentialIssuer({
-    crypto: dependencies.crypto, now: dependencies.now, apiBaseUrl: dependencies.gatewayBaseUrl,
-  });
   const now = () => dependencies.now().getTime();
   const stores: SandboxGatewayStores = () => ({
     leases: sessionExecutionLeasesFrom((input) => dependencies.findExecution(input)),
@@ -37,16 +34,13 @@ export function createNodeManagedAcpCapabilities(dependencies: {
   return {
     stores,
     async issue(input: { workspaceId: string; session: Session; environment: Environment; executionFence?: SessionExecutionFence }) {
-      if (!issuer) throw new Error("PLATFORM_ROOT_SECRET is required for Node ACP sandbox capabilities");
+      if (!dependencies.crypto) throw new Error("PLATFORM_ROOT_SECRET is required for Node ACP sandbox capabilities");
       if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for Node ACP sandbox capabilities (must be reachable from the sandbox)");
-      const lease = await authorizeExecutionCredential(stores, input.executionFence, {
+      const sessionsToken = await issueExecutionSessionsToken(stores, input.executionFence, {
         workspaceId: input.workspaceId, sessionId: input.session.id, environmentId: input.environment.id,
         agent: { id: input.session.agent.id, version: input.session.agent.version },
-      }, now);
-      const issued = await issuer.issue({ workspaceId: input.workspaceId, session: input.session, environment: input.environment, workId: lease.executionId });
-      if (issued.type !== "issued") throw new Error(issued.message);
-      const bound = await issuer.bindToClaim({ secret: issued.secret, claimedAt: new Date(lease.claimedAtMs).toISOString(), generation: lease.generation });
-      return { gatewayBaseUrl: dependencies.gatewayBaseUrl, sessionsToken: bound.secret.sessionsToken };
+      }, sealedExecutionSessionsToken(dependencies.crypto, dependencies.now, { workspaceId: input.workspaceId, session: input.session, environmentId: input.environment.id }), now);
+      return { gatewayBaseUrl: dependencies.gatewayBaseUrl, sessionsToken };
     },
     /** The execution token only (model gateway / MCP proxy). */
     async authenticate(input: { token: string; method: string; path: string }) {

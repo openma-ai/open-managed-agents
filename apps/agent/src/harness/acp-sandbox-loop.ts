@@ -3,10 +3,7 @@ import { readAcpSandboxAgentTurnError } from "@open-managed-agents/acp-runtime/s
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import {
   PLATFORM_ROOT,
-  runWithSandboxLease,
-  SandboxLeaseLostError,
   supportsDuplexProcess,
-  supportsSandboxRuntime,
   workspaceRootOf,
 } from "@open-managed-agents/sandbox";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
@@ -39,10 +36,7 @@ import {
   type AcpSemanticRecoveryReason,
 } from "./acp-recovery";
 
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_TURN_TIMEOUT_MS = 5 * 60_000;
-const DEFAULT_SANDBOX_LEASE_TTL_MS = 90_000;
-const DEFAULT_SANDBOX_HEARTBEAT_MS = 30_000;
 interface AcpSandboxCheckpoint {
   version: 1;
   configurationSha256: string;
@@ -50,7 +44,15 @@ interface AcpSandboxCheckpoint {
 }
 
 /** Runs an ACP-compatible agent inside the session Sandbox while OpenMA keeps
- * ownership of session lifecycle, cancellation and canonical events. */
+ * ownership of session lifecycle, cancellation and canonical events.
+ *
+ * The child lives one execution (design §0.6): when the prompt returns, the
+ * child is closed, then its native state is saved, and only then does the
+ * core's idle timing start. The next execution starts a child that resumes
+ * the native ACP session (its token is issued per execution, so a resident
+ * child would hold an expired one). Keeping the sandbox up during a turn is
+ * the core's job (CF container activity, Node sandbox heartbeat), not this
+ * harness's; `idle_timeout_ms` belongs to acp-proxy only. */
 export class AcpSandboxHarness implements HarnessInterface {
   #session: AcpSession | null = null;
   #configKey: string | null = null;
@@ -113,6 +115,13 @@ export class AcpSandboxHarness implements HarnessInterface {
     const stateBinding = preparation.binding;
     const configKey = JSON.stringify({ config, stateAdapter: stateBinding.adapterId });
     await materializeAcpSandboxAgentState(runtime.sandbox, preparation);
+    if (!this.#session && this.#configKey !== null && this.#configKey !== configKey) {
+      // The previous execution's child ran another configuration: its ACP
+      // session is not this one's to resume.
+      this.#configKey = null;
+      this.#resumeAcpSessionId = null;
+      this.#checkpointLoadedForKey = null;
+    }
     if (!this.#session && this.#checkpointLoadedForKey !== configKey) {
       this.#checkpointLoadedForKey = configKey;
       this.#semanticRecoveryReason = null;
@@ -219,7 +228,6 @@ export class AcpSandboxHarness implements HarnessInterface {
                 windowMs: config.restart.window_ms,
               }
             : { mode: "on-crash", maxRestarts: 3, windowMs: 60_000 },
-          idleTimeoutMs: config.idle_timeout_ms ?? DEFAULT_IDLE_TIMEOUT_MS,
           perTurnTimeoutMs:
             config.per_turn_timeout_ms ?? DEFAULT_TURN_TIMEOUT_MS,
           ...(this.#resumeAcpSessionId
@@ -234,6 +242,12 @@ export class AcpSandboxHarness implements HarnessInterface {
         });
         this.#configKey = configKey;
         this.#preparation = preparation;
+        // The engine falls back to session/new when the agent cannot resume
+        // or load (a new id): the child lives one execution, so carry the
+        // conversation over from canonical history instead of losing it.
+        if (this.#resumeAcpSessionId && this.#session.acpSessionId !== this.#resumeAcpSessionId) {
+          this.#semanticRecoveryReason ??= "resume-unsupported";
+        }
         this.#resumeAcpSessionId = this.#session.acpSessionId || null;
         await this.#saveCheckpoint(
           runtime,
@@ -272,29 +286,14 @@ export class AcpSandboxHarness implements HarnessInterface {
           await translator.consumePromptItem(update, session.acpSessionId);
         }
       };
-      if (
-        supportsSandboxRuntime(runtime.sandbox) &&
-        runtime.sandbox.runtimeCapabilities().lease
-      ) {
-        await runWithSandboxLease(
-          runtime.sandbox,
-          {
-            ttlMs: DEFAULT_SANDBOX_LEASE_TTL_MS,
-            intervalMs: DEFAULT_SANDBOX_HEARTBEAT_MS,
-            signal: runtime.abortSignal,
-          },
-          consumePrompt,
-        );
-      } else {
-        const fallbackController = new AbortController();
-        const onAbort = () => fallbackController.abort(runtime.abortSignal?.reason);
-        if (runtime.abortSignal?.aborted) onAbort();
-        else runtime.abortSignal?.addEventListener("abort", onAbort, { once: true });
-        try {
-          await consumePrompt(fallbackController.signal);
-        } finally {
-          runtime.abortSignal?.removeEventListener("abort", onAbort);
-        }
+      const controller = new AbortController();
+      const onAbort = () => controller.abort(runtime.abortSignal?.reason);
+      if (runtime.abortSignal?.aborted) onAbort();
+      else runtime.abortSignal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        await consumePrompt(controller.signal);
+      } finally {
+        runtime.abortSignal?.removeEventListener("abort", onAbort);
       }
       // An agent may end a failed turn as a plain end_turn (pi-acp does);
       // never report that as a silent success.
@@ -305,30 +304,39 @@ export class AcpSandboxHarness implements HarnessInterface {
           : `ACP agent turn failed: ${detail}`);
       }
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
-      await captureAcpSandboxAgentState(runtime.sandbox, preparation);
       this.#semanticRecoveryReason = null;
     } catch (error) {
-      const leaseLost = error instanceof SandboxLeaseLostError;
-      const aborted = leaseLost || (runtime.abortSignal?.aborted ?? false);
-      if (leaseLost && this.#session) {
-        const fencedSession = this.#session;
-        this.#resumeAcpSessionId = fencedSession.acpSessionId || null;
-        try {
-          await fencedSession.dispose();
-          this.#session = null;
-        } catch (disposeError) {
-          // Retain the failed disposal barrier so the host's finally/dispose
-          // also rejects instead of capturing/deleting state under a live child.
-          this.#emitError(runtime, disposeError instanceof Error ? disposeError.message : String(disposeError));
-        }
-      }
-      await translator.flush(aborted ? "aborted" : "completed");
+      await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       if (!runtime.abortSignal?.aborted) {
         this.#emitError(
           runtime,
           error instanceof Error ? error.message : String(error),
         );
       }
+    } finally {
+      await this.#endExecution(runtime, preparation);
+    }
+  }
+
+  /** Execution end: close the child, then save its native state (never
+   * under a live process). The ACP session id is kept for the next resume. */
+  async #endExecution(runtime: HarnessRuntime, preparation: AcpSandboxAgentPreparation): Promise<void> {
+    const session = this.#session;
+    if (!session) return;
+    this.#resumeAcpSessionId = session.acpSessionId || this.#resumeAcpSessionId;
+    try {
+      await session.dispose();
+      this.#session = null;
+    } catch (error) {
+      // Exit not confirmed: keep the child as the barrier so the host's
+      // dispose also rejects instead of touching state under it.
+      this.#emitError(runtime, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    try {
+      await captureAcpSandboxAgentState(runtime.sandbox, preparation);
+    } catch (error) {
+      this.#emitError(runtime, error instanceof Error ? error.message : String(error));
     }
   }
 

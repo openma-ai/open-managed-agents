@@ -99,3 +99,25 @@ export {
   type TurnFailurePlan,
 } from "./turn-failure";
 export { openTurnMarker, type TurnMarker, type TurnMarkerHooks } from "./turn-marker";
+export {
+  ORPHAN_SANDBOX_MIN_AGE_MS,
+  reclaimOrphanSandboxes,
+  type OrphanSandboxSession,
+  type ReclaimOrphanSandboxesInput,
+  type ReclaimOrphanSandboxesResult,
+} from "./session-sandbox-orphans";
+export {
+  SessionTemplateCache,
+  TEMPLATE_UNUSED_TTL_MS,
+  TEMPLATE_USED_TTL_MS,
+  isTemplateGone,
+  templateExpired,
+  templateExpiry,
+  type SessionTemplateCacheOptions,
+  type TemplateBuilder,
+  type TemplateEntry,
+  type TemplateExpiry,
+  type TemplateHandle,
+  type TemplateLogger,
+  type TemplateStore,
+} from "./session-sandbox-template-cache";

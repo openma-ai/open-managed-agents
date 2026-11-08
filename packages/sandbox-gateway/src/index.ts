@@ -112,6 +112,21 @@ export async function authorizeExecutionCredential(
   return lease as SessionExecutionLease & { claimedAtMs: number; generation: number };
 }
 
+/** The execution sessions_token an in-sandbox harness (ACP) uses for the
+ * model gateway and MCP proxy (design §0.6): authorized against the live
+ * lease, then sealed by the platform (`mint`) bound to that claim. One path
+ * for Cloudflare and Node; they differ only in stores and sealing key. */
+export async function issueExecutionSessionsToken(
+  stores: SandboxGatewayStores,
+  fence: SessionExecutionAttemptRef | undefined,
+  expected: Parameters<typeof authorizeExecutionCredential>[2],
+  mint: (lease: { executionId: string; claimedAt: string; generation: number }) => Promise<string>,
+  now: () => number = Date.now,
+): Promise<string> {
+  const lease = await authorizeExecutionCredential(stores, fence, expected, now);
+  return mint({ executionId: lease.executionId, claimedAt: new Date(lease.claimedAtMs).toISOString(), generation: lease.generation });
+}
+
 export interface SandboxEgressScope { workspaceId: string; sessionId: string; vaultIds: readonly string[] }
 
 /** Vault egress (relay pass or native binding): only while the attempt is
