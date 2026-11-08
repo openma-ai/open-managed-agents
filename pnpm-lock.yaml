@@ -15377,7 +15377,7 @@ snapshots:
       jose: 6.2.2
       kysely: 0.28.16
       nanostores: 1.2.0
-      zod: 4.6.7
+      zod: 4.4.3
     optionalDependencies:
       '@cloudflare/workers-types': 5.20261106.1
 
@@ -16687,11 +16687,11 @@ snapshots:
       eventsource-parser: 3.1.1
       jose: 6.2.2
       pkce-challenge: 5.0.1
-      zod: 4.6.7
+      zod: 4.4.3
 
   '@modelcontextprotocol/core@2.0.0':
     dependencies:
-      zod: 4.6.7
+      zod: 4.4.3
 
   '@modelcontextprotocol/sdk@1.29.0(zod@3.25.76)':
     dependencies:
