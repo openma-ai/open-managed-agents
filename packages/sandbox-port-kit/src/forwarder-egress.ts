@@ -42,7 +42,7 @@ export function createForwarderEgress<R extends object>(
     if (vendor.applyFirewall !== undefined) {
       await vendor.applyFirewall(input.runtime, compileFirewall(input.policy, {
         gateway: { hosts: [gatewayHost], ...(deps.gateway.endpoint.fixedIps === undefined ? {} : { fixedIps: deps.gateway.endpoint.fixedIps }) },
-        channels: [],
+        channels: [...(await deps.channels?.(input.scope) ?? [])],
       }));
     }
     const substitutions = input.policy?.substitutions ?? [];

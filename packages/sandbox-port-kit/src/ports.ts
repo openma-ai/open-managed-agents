@@ -81,6 +81,10 @@ export interface SandboxEgressDepsPort {
   };
   /** Only for route 2 (provider substitution); without it no plaintext is available. */
   secrets?: { read(credentialId: string): Promise<{ value: string; expiresAt: number | null }> };
+  /** Platform channels of this Session (compileFirewall `channels`): hosts
+   * the platform itself needs under `limited` networking, e.g. an attached
+   * repository's host (repositoryChannels). Omitted = none. */
+  channels?(scope: RuntimeResourceScope): readonly string[] | Promise<readonly string[]>;
 }
 
 export interface EgressScope { workspaceId: string; sessionId: string; workId: string; generation: number; vaultIds: readonly string[] }

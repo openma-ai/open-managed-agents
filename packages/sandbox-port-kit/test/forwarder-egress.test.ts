@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EgressPolicy } from "@open-managed-agents/sandbox";
 import { createForwarderEgress } from "../src/forwarder-egress";
-import type { FirewallRules } from "../src/firewall";
+import { repositoryChannels, type FirewallRules } from "../src/firewall";
 import type { SandboxEgressDepsPort, SandboxVendorPort } from "../src/ports";
 
 // Characterization (#545 sandbox core move): the rules createForwarderEgress
@@ -45,5 +45,33 @@ describe("createForwarderEgress firewall today (characterization)", () => {
     expect(applied).toHaveLength(1);
     expect(applied[0]).toMatchObject({ mode: "allowlist", allowHosts: ["api.example.com"], includesGateway: false });
     expect(applied[0]!.allowHosts).not.toContain("github.com");
+  });
+});
+
+describe("platform channels (design §0.6: limited + github_repository)", () => {
+  it("adds the composition's channels, e.g. the attached repository's host, to the limited allowlist", async () => {
+    const applied: FirewallRules[] = [];
+    const resources = [
+      { type: "github_repository", url: "https://github.com/acme/app.git" },
+      { type: "github_repo", repo_url: "https://GitHub.com/acme/other" },
+      { type: "memory_store" },
+    ];
+    const channels: string[] = [];
+    const egress = createForwarderEgress(vendor(applied), {
+      ...deps,
+      channels: (input) => { channels.push(input.sessionId); return repositoryChannels(resources); },
+    });
+    await egress.attach({ runtime: {}, scope, fence, policy: limited, signal });
+    expect(channels).toEqual(["sess"]);
+    expect(applied[0]).toMatchObject({ mode: "allowlist", allowHosts: ["api.example.com", "github.com"] });
+  });
+
+  it("repositoryChannels keeps only repository URL hosts", () => {
+    expect(repositoryChannels([
+      { type: "github_repository", url: "https://github.example.com/a/b" },
+      { type: "github_repository", url: "not a url" },
+      { type: "github_repository", url: "ssh://git@github.com/a/b" },
+      { type: "file", url: "https://files.example.com/x" },
+    ])).toEqual(["github.example.com"]);
   });
 });
