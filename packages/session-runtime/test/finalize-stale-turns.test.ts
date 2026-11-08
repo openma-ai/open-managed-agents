@@ -51,6 +51,14 @@ describe("finalizeStaleTurns", () => {
     ]);
   });
 
+  it("leaves unpaired calls alone while this incarnation has live work (a running call is unpaired too)", async () => {
+    const listToolUses = vi.fn(() => [{ id: "running", type: "agent.tool_use" }]);
+    const { value, appended } = port({ listToolUses, hasLiveWork: () => true });
+    await finalizeStaleTurns(value);
+    expect(appended).toEqual([]);
+    expect(listToolUses).not.toHaveBeenCalled();
+  });
+
   it("ends a dead incarnation's turn with rescheduled then idle, even when it is seconds old", async () => {
     const { value, appended, ended } = port({ instanceStartedAt: NOW, listOrphanTurns: async () => [orphan("t", NOW - 1_000)] });
     await finalizeStaleTurns(value);
