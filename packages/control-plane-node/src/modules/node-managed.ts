@@ -485,6 +485,17 @@ export async function createManagedNodeRuntime(
           },
         };
       },
+      rubricFiles: (workspaceId) => ({
+        read: async ({ fileId }) => {
+          const download = await managedPlatform
+            .app({ workspaceId })
+            .port(managedAgentsPortTokens.files)
+            .downloadFile({ fileId });
+          return download.type === "found"
+            ? { type: "found", text: new TextDecoder().decode(download.file.content) }
+            : { type: "not_found" };
+        },
+      }),
     }),
     sandboxMode: ({ session }) => resolveSessionSandboxMode(session, openAIAgentsSecrets),
     buildSandbox: createManagedSandboxBuilder({

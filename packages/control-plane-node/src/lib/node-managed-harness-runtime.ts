@@ -414,19 +414,11 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     return structuredClone(this.applicationHistoryEvents);
   }
 
-  appendOutcomeFeedback(iteration: number, explanation: string): void {
+  /** Record the outcome grader's feedback turn (text from session-outcomes). */
+  appendOutcomeFeedback(text: string): void {
     this.history.append({
       type: "user.message",
-      content: [{
-        type: "text",
-        text: [
-          `<outcome_feedback iteration="${iteration}">`,
-          explanation || "(no explanation)",
-          "",
-          "Address the feedback and try again.",
-          "</outcome_feedback>",
-        ].join("\n"),
-      }],
+      content: [{ type: "text", text }],
     });
   }
 

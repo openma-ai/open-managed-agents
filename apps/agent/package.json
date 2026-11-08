@@ -63,6 +63,7 @@
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/session-runtime-sql": "workspace:*",
     "@open-managed-agents/session-secrets-store": "workspace:*",
+    "@open-managed-agents/session-outcomes": "workspace:*",
     "@open-managed-agents/session-wakeup": "workspace:*",
     "@open-managed-agents/session-wakeup-cloudflare": "workspace:*",
     "@open-managed-agents/sessions-store": "workspace:*",

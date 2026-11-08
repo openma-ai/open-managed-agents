@@ -228,6 +228,7 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime-sql", replacement: "./packages/session-runtime-sql/src/index.ts" },
       { find: "@open-managed-agents/session-realtime", replacement: "./packages/session-realtime/src/index.ts" },
       { find: "@open-managed-agents/session-realtime-memory", replacement: "./packages/session-realtime-memory/src/index.ts" },
+      { find: "@open-managed-agents/session-outcomes", replacement: "./packages/session-outcomes/src/index.ts" },
       { find: "@open-managed-agents/session-wakeup", replacement: "./packages/session-wakeup/src/index.ts" },
       { find: "@open-managed-agents/session-wakeup-memory", replacement: "./packages/session-wakeup-memory/src/index.ts" },
       { find: "@open-managed-agents/session-wakeup-cloudflare", replacement: "./packages/session-wakeup-cloudflare/src/index.ts" },
