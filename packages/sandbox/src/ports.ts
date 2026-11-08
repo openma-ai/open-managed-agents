@@ -406,9 +406,8 @@ export interface SandboxFactoryCapabilities {
   nativeMemoryStoreMount?: boolean;
   /** Mounts (Memory Stores, Session outputs) are fixed when the sandbox's
    * box is created by its first exec/readFile/writeFile, and a mount after
-   * that throws (LiteBox volumes). Such a sandbox cannot be warmed at
-   * Session creation: the warm-up's exec would create the box before the
-   * first execution attaches storage. */
+   * that throws (LiteBox volumes). The host mounts Session outputs right
+   * after create, before the warm-up marker or the egress step's exec. */
   mountsFixedAtCreate?: boolean;
 }
 
