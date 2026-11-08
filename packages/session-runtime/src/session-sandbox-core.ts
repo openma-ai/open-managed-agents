@@ -37,14 +37,31 @@
 // waits for it; a failed refresh fails that call, once. Layer 2 (the
 // provider pausing at the cap) is the adapter's (E2B onTimeout: pause).
 //
-// Egress follows the Session execution attempt (design §0.0 rule 10): when
-// `egressKey` changes (a new attempt, or none) egress.attach runs again at
-// the next exec boundary, so the binding carries the current attempt. The
-// gateway checks the attempt live, so a background process loses Vault
-// egress and the model gateway once its turn ends.
-// Not here yet (reported in #545): core-driven idle pause (Cloudflare: OmaSandbox idle teardown backs up and
-// stops; E2B: lease timeout), and a live fence (SessionDO is the single
-// writer of its Session).
+// The fence is the Session execution attempt (design §0.0 rule 10):
+// `execution()` is the attempt this owner runs (undefined between
+// executions). Every Port call carries it as the RuntimeResourceFence
+// (runtimeFenceOf); when it changes egress.attach runs again at the next
+// exec boundary, so the binding carries the current attempt. Without
+// `execution` the fence is SessionDO's single-writer placeholder (fenceFor).
+// `isCurrent` is the live check, made before pause and before a new
+// "changes" handle is recorded (§0.1 steps 2, 8, 9).
+//
+// Execution end and idle (§0.1 steps 7–9, §0.0 rules 11 and 16):
+//   - endExecution: egress.revoke("completed") (a failure is only a
+//     warning) → storage.sync("turn_end") → the handle is recorded → the
+//     host's idle timer is scheduled `idle.pauseMs` out. The sandbox keeps
+//     running; the next execution attaches to it.
+//   - idlePause (the timer fired): skipped when an execution runs or the
+//     window was renewed (any call or keepAlive); otherwise
+//     storage.sync("before_stop") → storage.detach → isCurrent →
+//     sandbox.pause → the new ResumeRef is recorded with the handle → the
+//     old ref is discarded when it differs.
+//   - failExecution: nothing is published; egress.revoke("failed") (a
+//     warning), release, forget the handle; the next execution resumes from
+//     the last recorded ResumeRef.
+//   - a lost fence (isCurrent false): exit without writing back or pausing;
+//     "fixed" never releases, "changes" releases only a sandbox this open
+//     acquired whose handle was not recorded yet.
 
 import type {
   Acquired,
@@ -78,11 +95,42 @@ export type SessionSandboxExecutor = Pick<SandboxExecutor, "exec" | "readFile" |
 };
 
 export interface SessionSandboxState {
-  handle: SandboxHandle;
+  /** The Session's sandbox (running or paused); absent after a failed
+   * execution released it. */
+  handle?: SandboxHandle;
   stores: MemoryStoreBinding[];
   outputs: boolean;
   /** Start (epoch ms) of the sandbox's current continuous run. */
   runStartedAt?: number;
+  /** Restore point recorded by the idle pause (design §0.1 step 8). */
+  resumeRef?: ResumeRef;
+  /** The idle pause stopped the sandbox: attaching wakes it and starts a new run. */
+  paused?: boolean;
+}
+
+/** A Session execution attempt (managed_session_executions): the one fence
+ * (design §0.0 rule 10). */
+export interface SessionSandboxExecution {
+  executionId: string;
+  attemptId: string;
+  ownerId: string;
+  generation: number;
+  /** Lease expiry (ISO); absent = not carried. */
+  expiresAt?: string;
+}
+
+/** The host's idle timer (CF: a DO alarm; Node: a process timer). */
+export interface SessionSandboxIdleTimer {
+  /** idlePauseMs (design §0.0 rule 11). */
+  pauseMs: number;
+  /** Call idlePause() once, `delayMs` from now, replacing a pending one. */
+  schedule(delayMs: number): void | Promise<void>;
+  cancel(): void | Promise<void>;
+}
+
+/** The fence lost between check and record: the new sandbox was released. */
+export class SessionSandboxFenceLostError extends Error {
+  override readonly name = "SessionSandboxFenceLostError";
 }
 
 export interface PortsSessionSandboxOptions<R> {
@@ -106,13 +154,18 @@ export interface PortsSessionSandboxOptions<R> {
   egressRenewMs: number | null;
   /** Identifies what the egress binding carries (the current execution
    * attempt); egress.attach runs again at the next exec boundary when it
-   * changes. Omitted = never. */
+   * changes. Omitted = never. Ignored when `execution` is given. */
   egressKey?(): string;
   now?(): number;
-  /** Whether this owner still holds the Session's fence (design §0.0 rule
-   * 10); checked before the lifetime refresh pauses. Default: always
-   * (SessionDO is the single writer of its Session). */
-  isCurrent?(): Promise<boolean>;
+  /** The Session execution attempt this owner runs; undefined between
+   * executions. Omitted = SessionDO's single-writer placeholder fence. */
+  execution?(): SessionSandboxExecution | undefined;
+  /** Whether `execution` (undefined = the owner between executions) still
+   * holds the Session (design §0.0 rule 10); checked before pause and
+   * before a new "changes" handle is recorded. Default: always. */
+  isCurrent?(execution: SessionSandboxExecution | undefined): Promise<boolean>;
+  /** Idle pause (design §0.0 rule 11). Omitted = never pauses. */
+  idle?: SessionSandboxIdleTimer;
 }
 
 interface Live<R> {
@@ -138,9 +191,25 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   private storageSyncedAt = 0;
   private egressAttachedAt = 0;
   private egressAttachedKey: string | undefined;
+  /** egress.revoke ran since the last attach: the next call attaches again. */
+  private egressRevoked = false;
+  /** When the idle window started (endExecution, then any activity); null = no idle pause pending. */
+  private idleSince: number | null = null;
   private markEgress(now: number): void {
     this.egressAttachedAt = now;
-    this.egressAttachedKey = this.options.egressKey?.();
+    this.egressAttachedKey = this.egressKey();
+    this.egressRevoked = false;
+  }
+  private egressKey(): string | undefined {
+    if (this.options.execution !== undefined) return executionKey(this.options.execution());
+    return this.options.egressKey?.();
+  }
+  private fence(scope: RuntimeResourceScope): RuntimeResourceFence {
+    const execution = this.options.execution?.();
+    return execution === undefined ? fenceFor(scope) : runtimeFenceOf(scope, execution);
+  }
+  private current(execution: SessionSandboxExecution | undefined): Promise<boolean> {
+    return this.options.isCurrent === undefined ? Promise.resolve(true) : this.options.isCurrent(execution);
   }
   /** sandbox.maxLifetimeMs, known once composed. */
   private maxLifetimeMs: number | null = null;
@@ -199,8 +268,118 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     if (this.live === null || (!this.outputs && this.stores.length === 0)) return;
     const { ports } = await this.compose();
     const scope = this.options.scope();
-    await ports.storage.sync({ runtime: this.live.runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: this.live.plan.outputs, reason, signal: new AbortController().signal });
+    await ports.storage.sync({ runtime: this.live.runtime, scope, fence: this.fence(scope), stores: this.stores, outputs: this.live.plan.outputs, reason, signal: new AbortController().signal });
     this.storageSyncedAt = this.now();
+  }
+
+  /** Execution end (design §0.1 step 7): egress.revoke("completed") (a
+   * failure is only a warning, step 9) → storage.sync("turn_end") → the
+   * handle is recorded → the idle pause is scheduled. The sandbox keeps
+   * running. A lost fence exits without writing back. */
+  async endExecution(): Promise<void> {
+    await this.quiesce();
+    if (!await this.current(this.options.execution?.())) {
+      this.abandon();
+      return;
+    }
+    const live = this.live;
+    if (live !== null) await this.revokeEgress(live, "completed");
+    await this.syncStorage("turn_end");
+    if (this.live !== null) await this.saveState(this.live);
+    await this.armIdle(this.options.idle?.pauseMs ?? 0);
+  }
+
+  /** The idle timer fired (design §0.1 step 8). Skipped while an execution
+   * runs; rescheduled when the window was renewed. Otherwise
+   * storage.sync("before_stop") → storage.detach → isCurrent → sandbox.pause
+   * → the new ResumeRef is recorded with the handle → the old ref is
+   * discarded when it differs. A sandbox the provider already stopped is
+   * left alone. */
+  async idlePause(): Promise<"paused" | "skipped"> {
+    const idle = this.options.idle;
+    await this.quiesce();
+    if (idle === undefined || this.idleSince === null) return "skipped";
+    if (this.options.execution?.() !== undefined) {
+      this.idleSince = null;
+      return "skipped";
+    }
+    const remaining = this.idleSince + idle.pauseMs - this.now();
+    if (remaining > 0 || this.inFlight > 0) {
+      await idle.schedule(Math.max(remaining, 1));
+      return "skipped";
+    }
+    this.idleSince = null;
+    const { ports } = await this.compose();
+    const scope = this.options.scope();
+    const signal = new AbortController().signal;
+    const saved = await this.options.state.load();
+    let target: { runtime: R; handle: SandboxHandle; outputs: SandboxPlan["outputs"] } | null = this.live === null ? null
+      : { runtime: this.live.runtime, handle: this.live.handle, outputs: this.live.plan.outputs };
+    if (target === null) {
+      if (saved?.handle === undefined || saved.paused === true) return "skipped";
+      const attached = await ports.sandbox.attach({ scope, handle: saved.handle, signal });
+      if (attached === "gone") return "skipped";
+      this.stores = mergeStores(saved.stores, this.stores);
+      this.outputs ||= saved.outputs;
+      const plan = await this.options.plan({ scope, generation: "", stores: this.stores });
+      target = { ...attached, outputs: plan.outputs };
+    }
+    if (this.outputs || this.stores.length > 0) {
+      await ports.storage.sync({ runtime: target.runtime, scope, fence: this.fence(scope), stores: this.stores, outputs: target.outputs, reason: "before_stop", signal });
+    }
+    await ports.storage.detach({ runtime: target.runtime, scope });
+    if (!await this.current(undefined)) {
+      this.abandon();
+      return "skipped";
+    }
+    this.live = null;
+    const ref = await ports.sandbox.pause({ scope, runtime: target.runtime, handle: target.handle, signal });
+    if (!await this.current(undefined)) {
+      // Not recorded, so nobody references it; discard never deletes the sandbox.
+      await ports.sandbox.discard({ scope, ref }).catch((error) => this.options.warn(`sandbox_discard_failed ref=${ref.ref} error=${errorText(error)}`));
+      return "skipped";
+    }
+    await this.options.state.save({ handle: target.handle, stores: this.stores, outputs: this.outputs, resumeRef: ref, paused: true });
+    const previous = saved?.resumeRef;
+    if (previous !== undefined && (previous.provider !== ref.provider || previous.ref !== ref.ref)) {
+      await ports.sandbox.discard({ scope, ref: previous }).catch((error) => this.options.warn(`sandbox_discard_failed ref=${previous.ref} error=${errorText(error)}`));
+    }
+    return "paused";
+  }
+
+  /** A failed execution (design §0.0 rule 16, §0.1 step 9): nothing is
+   * published. egress.revoke("failed") (a failure is only a warning),
+   * release the sandbox, forget its handle; the next execution resumes from
+   * the last recorded ResumeRef, else starts fresh. A lost fence exits
+   * without touching the sandbox. */
+  async failExecution(): Promise<void> {
+    await this.quiesce();
+    await this.disarmIdle();
+    if (!await this.current(this.options.execution?.())) {
+      this.abandon();
+      return;
+    }
+    const { ports } = await this.compose();
+    const scope = this.options.scope();
+    const live = this.live;
+    this.live = null;
+    this.lost = false;
+    this.refreshError = null;
+    if (live !== null) await this.revokeEgress(live, "failed");
+    const saved = await this.options.state.load();
+    const handle = live?.handle ?? saved?.handle;
+    if (handle !== undefined) {
+      await ports.sandbox.release({ scope, handle }).catch((error) => this.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`));
+    }
+    await this.options.state.save({ stores: this.stores, outputs: this.outputs, ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }) });
+  }
+
+  /** The fence was lost (design §0.0 rule 10): exit. Nothing is written
+   * back, paused or released; the new owner attaches the same sandbox. */
+  abandon(): void {
+    this.live = null;
+    this.idleSince = null;
+    void Promise.resolve(this.options.idle?.cancel()).catch(() => undefined);
   }
 
   /** keepAlive on the live sandbox (then the exec-boundary renewals), else
@@ -209,6 +388,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   async renewActivityTimeout(): Promise<void> {
     const { ports } = await this.compose();
     await this.quiesce();
+    this.touchIdle();
     if (this.live !== null) {
       const live = this.live;
       if (await ports.sandbox.keepAlive(live) === "gone") {
@@ -219,7 +399,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       return;
     }
     const saved = await this.options.state.load();
-    if (saved === undefined) return;
+    if (saved?.handle === undefined || saved.paused === true) return;
     const attached = await ports.sandbox.attach({ scope: this.options.scope(), handle: saved.handle, signal: new AbortController().signal });
     if (attached !== "gone") await ports.sandbox.keepAlive(attached);
   }
@@ -228,15 +408,18 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   async destroy(): Promise<void> {
     const { ports } = await this.compose();
     await this.quiesce();
+    await this.disarmIdle();
     const scope = this.options.scope();
     const live = this.live;
     this.live = null;
     if (live !== null) {
       await ports.storage.detach({ runtime: live.runtime, scope }).catch(() => undefined);
-      await ports.egress.revoke({ runtime: live.runtime, scope, fence: fenceFor(scope), reason: "completed" }).catch(() => undefined);
+      await ports.egress.revoke({ runtime: live.runtime, scope, fence: this.fence(scope), reason: "completed" }).catch(() => undefined);
     }
-    const handle = live?.handle ?? (await this.options.state.load())?.handle;
+    const saved = await this.options.state.load();
+    const handle = live?.handle ?? saved?.handle;
     if (handle !== undefined) await ports.sandbox.release({ scope, handle });
+    if (saved?.resumeRef !== undefined) await ports.sandbox.discard({ scope, ref: saved.resumeRef }).catch(() => undefined);
     await this.options.state.clear();
   }
 
@@ -251,6 +434,44 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     return (this.options.now ?? Date.now)();
   }
 
+  private async saveState(live: Live<R>): Promise<void> {
+    const saved = await this.options.state.load();
+    await this.options.state.save({
+      handle: live.handle, stores: this.stores, outputs: this.outputs, runStartedAt: live.runStartedAt,
+      ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }),
+    });
+  }
+
+  /** egress.revoke; on routes 1 / 3 / 4 a failure is only a warning
+   * (design §0.1 step 9). The next call attaches again either way. */
+  private async revokeEgress(live: Live<R>, reason: "completed" | "failed"): Promise<void> {
+    const { ports } = await this.compose();
+    const scope = this.options.scope();
+    try {
+      await ports.egress.revoke({ runtime: live.runtime, scope, fence: this.fence(scope), reason });
+    } catch (error) {
+      this.options.warn(`egress_revoke_failed reason=${reason} error=${errorText(error)}`);
+    }
+    this.egressRevoked = true;
+  }
+
+  private async armIdle(delayMs: number): Promise<void> {
+    if (this.options.idle === undefined) return;
+    this.idleSince = this.now();
+    await this.options.idle.schedule(delayMs);
+  }
+
+  private async disarmIdle(): Promise<void> {
+    if (this.idleSince === null) return;
+    this.idleSince = null;
+    await Promise.resolve(this.options.idle?.cancel()).catch(() => undefined);
+  }
+
+  /** Activity during the idle window pushes the pause out. */
+  private touchIdle(): void {
+    if (this.idleSince !== null) this.idleSince = this.now();
+  }
+
   private markLost(): void {
     this.live = null;
     if (this.outputs || this.stores.length > 0) this.lost = true;
@@ -262,10 +483,10 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     // A fresh open already attached the current stores and outputs.
     if (opened) return;
     try {
-      await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs, runStartedAt: live.runStartedAt });
+      await this.saveState(live);
       const { ports } = await this.compose();
       const scope = this.options.scope();
-      await ports.storage.attach({ runtime: live.runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: live.plan.outputs, signal: new AbortController().signal });
+      await ports.storage.attach({ runtime: live.runtime, scope, fence: this.fence(scope), stores: this.stores, outputs: live.plan.outputs, signal: new AbortController().signal });
     } catch (error) {
       await this.rollback(live);
       throw error;
@@ -275,6 +496,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   private async call<T>(operation: (executor: SessionSandboxExecutor) => Promise<T>): Promise<T> {
     await this.quiesce();
     this.throwRefreshError();
+    this.touchIdle();
     let live = await this.open();
     // Past the threshold during idle time: refresh now, in this gap.
     if (this.inFlight === 0 && this.lifetimeDue(live)) {
@@ -322,7 +544,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
    * pause). Never rejects: a failure is kept for the next call. */
   private refresh(live: Live<R>): Promise<void> {
     return this.refreshing ??= (async () => {
-      if (!await (this.options.isCurrent ?? (async () => true))()) return;
+      if (!await this.current(this.options.execution?.())) return;
       const { ports } = await this.compose();
       const scope = this.options.scope();
       const signal = new AbortController().signal;
@@ -336,9 +558,9 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       }
       const now = this.now();
       const next: Live<R> = { ...attached, executor: this.options.executor(attached.runtime), generation: live.generation, plan: live.plan, runStartedAt: now };
-      await this.options.state.save({ handle: next.handle, stores: this.stores, outputs: this.outputs, runStartedAt: now });
+      await this.saveState(next);
       if (Object.keys(this.env).length > 0) await next.executor.setEnvVars(this.env);
-      const fence = fenceFor(scope);
+      const fence = this.fence(scope);
       await ports.egress.attach({ runtime: next.runtime, scope, fence, policy: live.plan.egress, signal });
       this.markEgress(now);
       if (this.outputs || this.stores.length > 0) {
@@ -359,14 +581,14 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       const scope = this.options.scope();
       const signal = new AbortController().signal;
       if (now - this.storageSyncedAt >= STORAGE_SYNC_INTERVAL_MS && (this.outputs || this.stores.length > 0)) {
-        await ports.storage.sync({ runtime: live.runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: live.plan.outputs, reason: "interval", signal });
+        await ports.storage.sync({ runtime: live.runtime, scope, fence: this.fence(scope), stores: this.stores, outputs: live.plan.outputs, reason: "interval", signal });
         this.storageSyncedAt = now;
       }
       const renew = this.options.egressRenewMs;
-      const keyChanged = this.options.egressKey !== undefined && this.options.egressKey() !== this.egressAttachedKey;
-      if ((renew !== null && now - this.egressAttachedAt >= renew) || keyChanged) {
+      const keyChanged = this.egressKey() !== this.egressAttachedKey;
+      if ((renew !== null && now - this.egressAttachedAt >= renew) || keyChanged || this.egressRevoked) {
         const plan = await this.options.plan({ scope, generation: live.generation, stores: this.stores });
-        await ports.egress.attach({ runtime: live.runtime, scope, fence: fenceFor(scope), policy: plan.egress, signal });
+        await ports.egress.attach({ runtime: live.runtime, scope, fence: this.fence(scope), policy: plan.egress, signal });
         this.markEgress(now);
       }
     })().finally(() => { this.maintaining = null; });
@@ -390,7 +612,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     // Held by this open; released if a later step fails.
     let opened: Acquired<R> | "gone" = "gone";
     let generation = "";
-    if (saved !== undefined) {
+    if (saved?.handle !== undefined) {
       opened = await ports.sandbox.attach({ scope, handle: saved.handle, signal });
       const marker = opened === "gone" ? null : await readMarker(this.options.executor(opened.runtime));
       if (marker === null) {
@@ -404,14 +626,16 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     const reused = opened !== "gone";
     if (!reused) generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
     // An attached sandbox may have kept running: keep the recorded start
-    // (unknown = due). A resumed or new one starts a run now.
-    let runStartedAt = reused ? saved?.runStartedAt ?? 0 : 0;
+    // (unknown = due); one the idle pause stopped wakes now. A resumed or
+    // new one starts a run now.
+    let runStartedAt = reused ? (saved?.paused === true ? this.now() : saved?.runStartedAt ?? 0) : 0;
+    const execution = this.options.execution?.();
     let plan: SandboxPlan;
     try {
       plan = await this.options.plan({ scope, generation, stores: this.stores });
       this.stores = mergeStores(plan.stores, this.stores);
       if (opened === "gone") {
-        const ref = await this.options.resumeRef();
+        const ref = saved?.resumeRef ?? await this.options.resumeRef();
         if (ref !== null) {
           const started = Date.now();
           opened = await ports.sandbox.resume({ scope, ref, plan, signal });
@@ -422,8 +646,18 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
         if (opened === "gone") opened = await ports.sandbox.acquire({ scope, plan, signal });
         if (opened === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
         runStartedAt = this.now();
-        // A provider-assigned handle is recorded before the sandbox is used.
-        if (ports.sandbox.handle === "changes") await this.options.state.save({ handle: opened.handle, stores: this.stores, outputs: this.outputs, runStartedAt });
+        // A provider-assigned handle is recorded before the sandbox is used,
+        // and only while this owner holds the fence: otherwise nobody would
+        // know this sandbox, so it is released (design §0.1 step 2).
+        if (ports.sandbox.handle === "changes") {
+          if (!await this.current(execution)) {
+            await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
+            opened = "gone";
+            this.abandon();
+            throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was opened");
+          }
+          await this.options.state.save({ handle: opened.handle, stores: this.stores, outputs: this.outputs, runStartedAt, ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }) });
+        }
       }
     } catch (error) {
       if (opened !== "gone") await this.rollback(opened);
@@ -432,7 +666,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     const live: Live<R> = { ...opened, executor: this.options.executor(opened.runtime), generation, plan, runStartedAt };
     try {
       if (Object.keys(this.env).length > 0) await live.executor.setEnvVars(this.env);
-      const fence = fenceFor(scope);
+      const fence = this.fence(scope);
       await ports.egress.attach({ runtime: live.runtime, scope, fence, policy: plan.egress, signal });
       this.markEgress(this.now());
       if (this.outputs || this.stores.length > 0) {
@@ -440,7 +674,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       }
       this.storageSyncedAt = this.now();
       if (!reused) await writeMarker(live.executor, generation);
-      await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs, runStartedAt });
+      await this.options.state.save({ handle: live.handle, stores: this.stores, outputs: this.outputs, runStartedAt, ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }) });
     } catch (error) {
       await this.rollback(live);
       throw error;
@@ -454,7 +688,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     this.live = null;
     const { ports } = await this.compose();
     const scope = this.options.scope();
-    await ports.egress.revoke({ runtime: opened.runtime, scope, fence: fenceFor(scope), reason: "failed" }).catch(() => undefined);
+    await ports.egress.revoke({ runtime: opened.runtime, scope, fence: this.fence(scope), reason: "failed" }).catch(() => undefined);
     await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
     await this.options.state.clear().catch(() => undefined);
   }
@@ -476,9 +710,31 @@ async function writeMarker(executor: SessionSandboxExecutor, generation: string)
   if (!out.startsWith("exit=0")) throw new Error(`Writing ${SANDBOX_GENERATION_MARKER} failed: ${out.slice(0, 200)}`);
 }
 
+const NO_EXPIRY = "9999-12-31T00:00:00.000Z";
+
 /** SessionDO is the single writer of its Session. */
 export function fenceFor(scope: RuntimeResourceScope): RuntimeResourceFence {
-  return { ...scope, ownerId: "session-do", generation: 1, token: "session-do", expiresAt: "9999-12-31T00:00:00.000Z" };
+  return { ...scope, ownerId: "session-do", generation: 1, token: "session-do", expiresAt: NO_EXPIRY };
+}
+
+/** The Session execution attempt as the Port fence: workId = executionId,
+ * token = attemptId. executionOfFence reverses it. */
+export function runtimeFenceOf(scope: RuntimeResourceScope, execution: SessionSandboxExecution): RuntimeResourceFence {
+  return { ...scope, workId: execution.executionId, ownerId: execution.ownerId, generation: execution.generation, token: execution.attemptId, expiresAt: execution.expiresAt ?? NO_EXPIRY };
+}
+
+/** The attempt a Port fence carries; undefined for the placeholder (no attempt). */
+export function executionOfFence(fence: RuntimeResourceFence): SessionSandboxExecution | undefined {
+  if (fence.ownerId === "session-do" && fence.token === "session-do") return undefined;
+  return { executionId: fence.workId, attemptId: fence.token, ownerId: fence.ownerId, generation: fence.generation, ...(fence.expiresAt === NO_EXPIRY ? {} : { expiresAt: fence.expiresAt }) };
+}
+
+export function executionKey(execution: SessionSandboxExecution | undefined): string {
+  return execution === undefined ? "" : `${execution.executionId}/${execution.attemptId}/${execution.ownerId}/${execution.generation}`;
+}
+
+function errorText(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 200);
 }
 
 function mergeStores(base: MemoryStoreBinding[], current: MemoryStoreBinding[]): MemoryStoreBinding[] {
