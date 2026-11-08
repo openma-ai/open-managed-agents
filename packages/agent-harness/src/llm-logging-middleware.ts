@@ -20,13 +20,23 @@
 
 import type { LanguageModelMiddleware } from "ai";
 
+/** Object store the middleware writes bodies into. Hosts pass their own
+ *  bucket (CF: env.FILES_BUCKET); only `put` of a JSON string is used. */
+export interface LlmLogObjectStorePort {
+  put(
+    key: string,
+    value: string,
+    options?: { httpMetadata?: { contentType?: string } },
+  ): Promise<unknown>;
+}
+
 export interface LlmLoggingContext {
   tenant_id: string;
   session_id: string;
-  /** R2 bucket (typically env.FILES_BUCKET). When null/undefined the
+  /** Object store (typically env.FILES_BUCKET). When null/undefined the
    *  middleware is a no-op pass-through — useful for tests + when the
    *  binding is missing. */
-  r2: R2Bucket | null | undefined;
+  r2: LlmLogObjectStorePort | null | undefined;
   /** Lazy resolver for the span event id this call is paired with.
    *  default-loop mints the id in `experimental_onStepStart` BEFORE the
    *  provider call fires; the middleware reads via this closure so the

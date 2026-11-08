@@ -5,6 +5,8 @@ import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import type { FileResolver } from "./history/user-content-parts";
 import type { PiModelRuntime } from "./pi-provider";
+import type { LlmLogObjectStorePort } from "./llm-logging-middleware";
+import type { SkillCatalogKvPort } from "./skills";
 
 // SandboxPort + ProcessHandle live in @open-managed-agents/sandbox so
 // non-CF runtimes (apps/main-node, future deployments) can implement the
@@ -373,7 +375,7 @@ export interface HarnessContext {
     ANTHROPIC_MODEL?: string;
     TAVILY_API_KEY?: string;
     delegateToAgent?: (agentId: string, message: string) => Promise<string>;
-    CONFIG_KV?: KVNamespace;
+    CONFIG_KV?: SkillCatalogKvPort;
     memoryStoreIds?: string[];
     /**
      * Work-scoped HTTP gateway for ACP agents running inside a sandbox.
@@ -413,7 +415,7 @@ export interface HarnessContext {
     llmLog?: {
       tenant_id: string;
       session_id: string;
-      r2: R2Bucket | null;
+      r2: LlmLogObjectStorePort | null;
     };
   };
   runtime: HarnessRuntime;

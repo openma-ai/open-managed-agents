@@ -131,23 +131,15 @@ function isAllowedRestrictedNeutralImport(sourcePath, specifier) {
 
 // The harness (packages/agent-harness) is shared by the Cloudflare and Node
 // hosts: host capabilities reach it as Ports on HarnessContext (design §0.7
-// "harness 里的 CF 类型"). Ratchet: no Durable Object types at all, and the
-// remaining Cloudflare storage types only in their current files.
+// "harness 里的 CF 类型"). No Cloudflare binding type (Durable Object or
+// storage) may appear in it; hosts pass their bindings through structural Ports.
 const SHARED_HARNESS_DIRECTORY = "packages/agent-harness/src";
-const SHARED_HARNESS_FORBIDDEN_TYPES = /\b(DurableObjectNamespace|DurableObjectStub|DurableObjectState|DurableObjectId)\b/;
-const SHARED_HARNESS_CF_STORAGE_TYPES = /\b(KVNamespace|R2Bucket|D1Database)\b/;
-const SHARED_HARNESS_CF_STORAGE_ALLOWED = new Set([
-  join(SHARED_HARNESS_DIRECTORY, "interface.ts"),
-  join(SHARED_HARNESS_DIRECTORY, "llm-logging-middleware.ts"),
-  join(SHARED_HARNESS_DIRECTORY, "skills.ts"),
-]);
+const SHARED_HARNESS_FORBIDDEN_TYPES =
+  /\b(DurableObjectNamespace|DurableObjectStub|DurableObjectState|DurableObjectId|KVNamespace|R2Bucket|D1Database)\b/;
 for (const sourcePath of await sourceFiles(SHARED_HARNESS_DIRECTORY)) {
   const source = await readFile(sourcePath, "utf8");
   if (SHARED_HARNESS_FORBIDDEN_TYPES.test(source)) {
-    violations.push(`${sourcePath}: Durable Object type in the shared harness (inject a Port instead)`);
-  }
-  if (SHARED_HARNESS_CF_STORAGE_TYPES.test(source) && !SHARED_HARNESS_CF_STORAGE_ALLOWED.has(sourcePath)) {
-    violations.push(`${sourcePath}: Cloudflare storage type in the shared harness (inject a Port instead)`);
+    violations.push(`${sourcePath}: Cloudflare binding type in the shared harness (inject a Port instead)`);
   }
 }
 

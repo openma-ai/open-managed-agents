@@ -142,6 +142,19 @@ export function resolveSkills(skillConfigs: Array<{ skill_id: string }>): Skill[
   return skillConfigs.map(s => skillRegistry.get(s.skill_id)).filter(Boolean) as Skill[];
 }
 
+/** Key-value catalog holding Skill metadata + version manifests (CF: CONFIG_KV). */
+export interface SkillCatalogKvPort {
+  get(key: string): Promise<string | null>;
+}
+
+/** Object store holding Skill file bytes (CF: FILES_BUCKET). */
+export interface SkillFileBucketPort {
+  get(key: string): Promise<{
+    text(): Promise<string>;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  } | null>;
+}
+
 /**
  * Resolve custom skills by fetching metadata from KV and inlining SKILL.md
  * content into the system prompt. AMA-aligned: the model sees the full
@@ -153,8 +166,8 @@ export function resolveSkills(skillConfigs: Array<{ skill_id: string }>): Skill[
  */
 async function fetchCustomSkillBody(
   cfg: { skill_id: string; version?: string },
-  kv: KVNamespace,
-  filesBucket: R2Bucket | undefined,
+  kv: SkillCatalogKvPort,
+  filesBucket: SkillFileBucketPort | undefined,
   tenantId: string,
   meta: { latest_version?: string },
 ): Promise<string> {
@@ -179,8 +192,8 @@ async function fetchCustomSkillBody(
 
 export async function resolveCustomSkillMounts(
   skillConfigs: Array<{ skill_id: string; type?: string; version?: string }>,
-  kv: KVNamespace,
-  filesBucket: R2Bucket | undefined,
+  kv: SkillCatalogKvPort,
+  filesBucket: SkillFileBucketPort | undefined,
   tenantId: string,
   options: { fetchBodies?: boolean } = {},
 ): Promise<SkillMountDescriptor[]> {
@@ -223,8 +236,8 @@ export async function resolveCustomSkillMounts(
 
 export async function resolveCustomSkills(
   skillConfigs: Array<{ skill_id: string; type?: string; version?: string }>,
-  kv: KVNamespace,
-  filesBucket: R2Bucket | undefined,
+  kv: SkillCatalogKvPort,
+  filesBucket: SkillFileBucketPort | undefined,
   tenantId: string,
 ): Promise<Skill[]> {
   const mounts = await resolveCustomSkillMounts(
@@ -259,8 +272,8 @@ export async function resolveCustomSkills(
  */
 export async function getSkillFiles(
   skillConfigs: Array<{ skill_id: string; type?: string; version?: string }>,
-  kv: KVNamespace,
-  filesBucket: R2Bucket | undefined,
+  kv: SkillCatalogKvPort,
+  filesBucket: SkillFileBucketPort | undefined,
   tenantId: string,
 ): Promise<SkillFilesResult[]> {
   const customConfigs = skillConfigs.filter(

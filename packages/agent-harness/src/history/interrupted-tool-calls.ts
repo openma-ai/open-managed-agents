@@ -58,7 +58,7 @@ export function interruptRequiresActionClosure(
 //      open so the real answer pairs immediately after the assistant turn.
 //   3) trailing unanswered ids at end-of-log → synthesize.
 //   4) duplicate agent.tool_result for an already-answered id → drop.
-// See test/unit/interrupt-history-normalize.test.ts.
+// See packages/agent-harness/test/history/interrupted-tool-calls.test.ts.
 export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEvent[] {
   const laterResultAt = new Map<string, number>();
   for (let i = 0; i < events.length; i++) {
