@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   credentialCreateBodySchema,
   credentialListQuerySchema,
@@ -38,7 +37,6 @@ export function buildCredentialRoutes(
   source: ApplicationPortSource<CredentialsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.post("/:vaultId/credentials", async (c) => {
     let body: unknown;

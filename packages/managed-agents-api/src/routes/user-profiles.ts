@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { requireBeta, USER_PROFILES_BETA } from "../beta";
 import {
   enrollmentUrlResponseSchema,
   userProfileCreateBodySchema,
@@ -40,7 +39,6 @@ export function buildUserProfileRoutes(
   source: ApplicationPortSource<UserProfilesApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(USER_PROFILES_BETA));
 
   app.post("/", async (c) => {
     const body = await requestBody(c);
