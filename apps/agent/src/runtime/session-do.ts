@@ -1,6 +1,8 @@
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
+import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
+import { cloudflareSubagentThreadId, cloudflareSubagentWireEvent } from "./subagents";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 import { nanoid } from "nanoid";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
@@ -5456,71 +5458,92 @@ export class SessionDO extends DurableObject<Env> {
     const parentConfig = parentThreadId === "sthr_primary"
       ? this.state.agent_snapshot : this.threads.get(parentThreadId)?.agentConfig;
     if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
-    const subAgent = resolvePinnedSubagent(parentConfig, agentId);
+    // #545 §0.7: one orchestration for both platforms
+    // (@open-managed-agents/session-subagents). This DO supplies the thread
+    // row, the Cloudflare wire events and the child harness turn.
+    const subagents = new SessionSubagents<AgentConfig>({
+      parentThreadId,
+      parentAgentName: parentConfig.name,
+      abortSignal: parentSignal ?? new AbortController().signal,
+      resolveAgent: async (request) => {
+        const agent = resolvePinnedSubagent(parentConfig, request.agentId ?? "general");
+        return { agentId: request.agentId ?? "general", agentName: agent.name, agent };
+      },
+      // Optional generic host hook for session-thread starts (unbound → admit).
+      // A denial fails the spawn before any thread row or event is written.
+      admission: {
+        admit: async ({ agent }) => {
+          const environment = this.state.environment_id
+            ? await this.getEnvConfig(this.state.environment_id)
+            : null;
+          const decision = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
+            kind: "thread_start",
+            workspaceId: this.state.tenant_id,
+            sessionId: this.state.session_id,
+            agentId: agent.id,
+            environmentId: this.state.environment_id,
+            isLocalRuntime: agent.runtime_binding != null || environment?.config?.type === "self_hosted",
+          });
+          if (decision.type === "denied") throw new SessionAdmissionDeniedError(decision.status, decision.body);
+        },
+      },
+      threads: {
+        insert: async (thread) => {
+          // Child runtime events inherit the parent's execution fence: the
+          // child is a logical lane, not a second execution owner.
+          this._executionParentLane.set(thread.id, thread.parentThreadId);
+          // In-memory map (hot path config lookup) + persistent threads row
+          // (survives DO eviction, lets HTTP CRUD see this thread).
+          this.threads.set(thread.id, { agentId: thread.agentId, agentConfig: thread.agent });
+          this.ctx.storage.sql.exec(
+            `INSERT OR IGNORE INTO threads (id, agent_id, agent_name, parent_thread_id, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            thread.id, thread.agentId, thread.agentName, thread.parentThreadId, Date.now(),
+          );
+          return thread;
+        },
+        // Each delegate call owns its children; nothing is restored by id.
+        find: async () => null,
+      },
+      events: {
+        emit: async (event) => {
+          const wire = cloudflareSubagentWireEvent(event);
+          if (wire === null) return;
+          try {
+            parentHistory.append(wire);
+            this.broadcastEvent(wire);
+          } catch (error) {
+            // A lost parent fence deliberately rejects the terminal marker.
+            if (event.type !== "thread_idle") throw error;
+          } finally {
+            if (event.type === "thread_idle") this._executionParentLane.delete(event.threadId);
+          }
+        },
+      },
+      turns: { run: (input) => this.runSubAgentTurn(input, parentHistory, sandbox) },
+      ids: { threadId: cloudflareSubagentThreadId, messageId: () => `sevt_${generateEventId()}` },
+    });
+    return subagents.delegate({ agentId, message });
+  }
 
-    // Optional generic host hook for session-thread starts (unbound → admit).
-    // A denial fails the spawn before any thread row or event is written.
+  /** One child harness turn on the shared sandbox (session-subagents turn Port). */
+  private async runSubAgentTurn(
+    input: SubagentTurnInput<AgentConfig>,
+    parentHistory: HistoryStore,
+    sandbox: SandboxExecutor,
+  ): Promise<SubagentTurnResult> {
+    const threadId = input.thread.id;
+    const parentThreadId = input.thread.parentThreadId;
+    const subAgent = input.thread.agent;
     const subEnvironment = this.state.environment_id
       ? await this.getEnvConfig(this.state.environment_id)
       : null;
-    const threadAdmit = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
-      kind: "thread_start",
-      workspaceId: this.state.tenant_id,
-      sessionId: this.state.session_id,
-      agentId: subAgent.id,
-      environmentId: this.state.environment_id,
-      isLocalRuntime:
-        subAgent.runtime_binding != null ||
-        subEnvironment?.config?.type === "self_hosted",
-    });
-    if (threadAdmit.type === "denied") {
-      throw new SessionAdmissionDeniedError(threadAdmit.status, threadAdmit.body);
-    }
-
-    // Generate a unique thread ID. Prefix `sthr_` matches AMA spec
-    // (BetaManagedAgentsSessionThread.id is `sthr_*`); previous prefix
-    // was `thread_*` and pre-existing live sessions may still hold those
-    // in their in-memory Map — both work but new threads land on `sthr_`.
-    const threadId = `sthr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-    // Runtime events emitted by this child must inherit the parent's
-    // execution fence. The child is a logical lane, not a second execution
-    // owner; walking this map lets projection writes remain fenced even when
-    // the child event carries its own session_thread_id.
-    this._executionParentLane.set(threadId, parentThreadId);
-
-    // In-memory map (hot path config lookup) + persistent threads row
-    // (Phase 1 — survives DO eviction, lets HTTP CRUD see this thread).
-    // INSERT OR IGNORE for safety against rare ID collision.
-    this.threads.set(threadId, { agentId, agentConfig: subAgent });
-    this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO threads (id, agent_id, agent_name, parent_thread_id, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      threadId,
-      agentId,
-      subAgent.name,
-      parentThreadId,
-      Date.now(),
-    );
-
-    // Emit thread_created. Includes parent_thread_id so Console (and any
-    // other SSE consumers) can build a tree without a follow-up GET
-    // /threads round-trip. Mirrors the threads table column written
-    // above.
-    const threadCreatedEvent: SessionEvent = {
-      type: "session.thread_created",
-      session_thread_id: threadId,
-      agent_id: agentId,
-      agent_name: subAgent.name,
-      parent_thread_id: parentThreadId,
-    } as SessionEvent;
-    parentHistory.append(threadCreatedEvent);
-    this.broadcastEvent(threadCreatedEvent);
 
     // Create sub-agent's isolated history
     const subHistory = new InMemoryHistory(this.processedClock);
     const userMsg: UserMessageEvent = {
       type: "user.message",
-      content: [{ type: "text", text: message }],
+      content: [{ type: "text", text: input.message?.text ?? "" }],
     };
     subHistory.append(userMsg);
 
@@ -5538,15 +5561,12 @@ export class SessionDO extends DurableObject<Env> {
       harness = resolveHarness(resolvedHarnessName);
     }
 
-    // Bind the child to both its parent lease and its own interrupt slot.
-    // The sandbox instance is shared for filesystem continuity, but this
-    // guard makes a child-targeted interrupt stop provider calls made by the
-    // child without affecting sibling lanes.
-    const abortController = new AbortController();
+    // The child's interrupt slot is the domain turn's controller (already
+    // linked to the parent lease). The sandbox instance is shared for
+    // filesystem continuity; this guard makes a child-targeted interrupt stop
+    // provider calls made by the child without affecting sibling lanes.
+    const abortController = input.abortController;
     this._threadAbortControllers.set(threadId, abortController);
-    const abortFromParent = () => abortController.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
     const childSandbox = withSandboxExecutionGuard(sandbox, {
       signal: abortController.signal,
     });
@@ -5697,43 +5717,21 @@ export class SessionDO extends DurableObject<Env> {
       },
     };
 
-    let responseText = "";
     try {
-      // Run the sub-agent harness
       await harness.run(subCtx);
-
-      // Collect sub-agent response text from its history
-      const subEvents = subHistory.getEvents();
-      responseText = subEvents
-        .filter((e: SessionEvent) => e.type === "agent.message")
-        .map((e: SessionEvent) => {
-          const msg = e as AgentMessageEvent;
-          return msg.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-        })
-        .join("\n");
+      return {
+        agentMessages: subHistory.getEvents()
+          .filter((e: SessionEvent) => e.type === "agent.message")
+          .map((e: SessionEvent) => (e as AgentMessageEvent).content?.map((b) => b.type === "text" ? b.text : "").join("") || ""),
+      };
     } finally {
       await disposeTools(subTools);
-      // Identity-guarded delete: a nested runSubAgent on the same threadId
-      // would have replaced our slot — don't stomp on its controller.
+      // Identity-guarded delete: a nested child on the same threadId would
+      // have replaced our slot — don't stomp on its controller.
       if (this._threadAbortControllers.get(threadId) === abortController) {
         this._threadAbortControllers.delete(threadId);
       }
-      parentSignal?.removeEventListener("abort", abortFromParent);
-      try {
-        const threadIdleEvent: SessionEvent = {
-          type: "session.thread_idle",
-          session_thread_id: threadId,
-        };
-        parentHistory.append(threadIdleEvent);
-        this.broadcastEvent(threadIdleEvent);
-      } catch {
-        // A lost parent fence deliberately rejects this terminal marker.
-      } finally {
-        this._executionParentLane.delete(threadId);
-      }
     }
-
-    return responseText || "(sub-agent produced no text output)";
   }
 
   /**

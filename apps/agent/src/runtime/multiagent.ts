@@ -1,4 +1,5 @@
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
+import { selectSubagent } from "@open-managed-agents/session-subagents";
 import { resolveSkills, getSkillFilesFromManagedSource, type ManagedSkillVersionSource, type Skill, type SkillFilesResult } from "../harness/skills";
 
 export async function resolveRuntimeSkillFiles(
@@ -57,15 +58,21 @@ export function resolveThreadAgentSnapshot(parent: AgentConfig, childAgentId: st
   return resolvePinnedSubagent(parent, childAgentId);
 }
 
-/** Resolve solely from the Session snapshot, never a mutable agent registry. */
+/** Resolve solely from the Session snapshot, never a mutable agent registry.
+ * Roster rules are @open-managed-agents/session-subagents' `selectSubagent`. */
 export function resolvePinnedSubagent(parent: AgentConfig, agentId: string): AgentConfig {
   assertRuntimeAgentSnapshot(parent);
   const policy = parent.multiagent?.subagents;
-  if (policy?.type !== "enabled") throw new Error("Subagents are disabled");
-  const selected = agentId === "general"
-    ? policy.inline_agents.type === "enabled" ? parent : undefined
-    : policy.predefined_agents.find(member => member.id === agentId);
-  if (!selected) throw new Error("Subagent is not in the enabled Session roster");
+  const selection = selectSubagent(policy?.type === "enabled" ? {
+    enabled: true,
+    inlineEnabled: policy.inline_agents.type === "enabled",
+    members: policy.predefined_agents.map(member => ({ id: member.id, agent: member as AgentConfig })),
+  } : null, agentId);
+  if (selection.type === "disabled") throw new Error("Subagents are disabled");
+  if (selection.type === "not_in_roster" || selection.type === "inline_disabled") {
+    throw new Error("Subagent is not in the enabled Session roster");
+  }
+  const selected = selection.type === "inline" ? parent : selection.agent;
   const copy: AgentConfig = structuredClone(selected);
   const { multiagent: _multiagent, callable_agents: _legacy, ...agent } = copy;
   return { ...agent, enable_general_subagent: false };

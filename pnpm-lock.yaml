@@ -183,6 +183,9 @@ importers:
       '@open-managed-agents/services':
         specifier: workspace:*
         version: link:../../packages/services
+      '@open-managed-agents/session-outcomes':
+        specifier: workspace:*
+        version: link:../../packages/session-outcomes
       '@open-managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../../packages/session-runtime
@@ -195,6 +198,9 @@ importers:
       '@open-managed-agents/session-secrets-store':
         specifier: workspace:*
         version: link:../../packages/session-secrets-store
+      '@open-managed-agents/session-subagents':
+        specifier: workspace:*
+        version: link:../../packages/session-subagents
       '@open-managed-agents/session-wakeup':
         specifier: workspace:*
         version: link:../../packages/session-wakeup
@@ -1528,6 +1534,9 @@ importers:
       '@open-managed-agents/session-event-store':
         specifier: workspace:*
         version: link:../session-event-store
+      '@open-managed-agents/session-outcomes':
+        specifier: workspace:*
+        version: link:../session-outcomes
       '@open-managed-agents/session-realtime':
         specifier: workspace:*
         version: link:../session-realtime
@@ -1549,6 +1558,9 @@ importers:
       '@open-managed-agents/session-runtime-sql':
         specifier: workspace:*
         version: link:../session-runtime-sql
+      '@open-managed-agents/session-subagents':
+        specifier: workspace:*
+        version: link:../session-subagents
       '@open-managed-agents/session-thread-store-sql':
         specifier: workspace:*
         version: link:../session-thread-store-sql
@@ -4154,6 +4166,16 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
 
+  packages/session-outcomes:
+    dependencies:
+      '@open-managed-agents/eval-core':
+        specifier: workspace:*
+        version: link:../eval-core
+    devDependencies:
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
+
   packages/session-realtime:
     dependencies:
       '@open-managed-agents/domain':
@@ -4299,6 +4321,12 @@ importers:
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+
+  packages/session-subagents:
+    devDependencies:
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
 
   packages/session-thread-store:
     dependencies:
