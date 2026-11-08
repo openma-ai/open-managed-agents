@@ -2286,6 +2286,12 @@ importers:
       '@open-managed-agents/managed-agents-api':
         specifier: workspace:*
         version: link:../managed-agents-api
+      '@open-managed-agents/managed-credential-resolver':
+        specifier: workspace:*
+        version: link:../managed-credential-resolver
+      '@open-managed-agents/mcp-access-loss':
+        specifier: workspace:*
+        version: link:../mcp-access-loss
       '@open-managed-agents/memory-store':
         specifier: workspace:*
         version: link:../memory-store
@@ -2317,7 +2323,7 @@ importers:
         specifier: workspace:*
         version: link:../vaults-store
       hono:
-        specifier: ^4.7.0
+        specifier: 4.12.12
         version: 4.12.12
       nanoid:
         specifier: ^5.1.0

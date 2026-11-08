@@ -8,10 +8,6 @@ import type { Context } from "hono";
 import { WorkerEntrypoint, env as workerEnv } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
 import {
-  bindAccessLossHooks,
-  mcpRequestBodyText,
-} from "@open-managed-agents/mcp-access-loss";
-import {
   buildCfTenantDbProvider,
   servicesMiddleware,
   tenantDbMiddleware,
@@ -216,13 +212,13 @@ import integrationsRoutes from "./routes/integrations";
 import { runtimesRoutes, runtimeDaemonRoutes, authenticateRuntimeToken } from "./routes/runtimes";
 import statsRoutes from "./routes/stats";
 import inferenceProxyRoutes from "./routes/inference-proxy";
-import { createCloudflareAccessLossRuntime } from "./lib/mcp-access-loss";
-import mcpProxyRoutes, {
-  createManagedCredentialResolver,
-  resolveProxyTargetByTenant,
-  resolveOutboundCredentialByHost,
-  forwardWithRefresh,
-} from "./routes/mcp-proxy";
+import mcpProxyRoutes, { cfMcpProxyPorts } from "./routes/mcp-proxy";
+import { createManagedCredentialResolver } from "./lib/managed-credential-resolver";
+import {
+  createMcpProxyBinding,
+  forwardMcpProxyRequest,
+  type McpProxyPorts,
+} from "@open-managed-agents/http-routes/proxy";
 import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import {
   resolveGithubCredentials,
@@ -1017,12 +1013,12 @@ registerCfEvalDeps(async (env, tenantId, request) => {
   };
 });
 
-async function managedMcpSources(env: Env, workspaceId: string) {
-  const tenantDb = await buildCfTenantDbProvider(env).resolve(workspaceId);
-  return {
-    sessionSource: new SqlSessionSource(new CfD1SqlClient(tenantDb)),
-    credentialSource: createManagedCredentialResolver(env, tenantDb),
-  };
+async function mcpProxyPortsFor(env: Env, workspaceId: string): Promise<McpProxyPorts> {
+  return cfMcpProxyPorts(
+    env,
+    await buildCfTenantDbProvider(env).resolve(workspaceId),
+    await getCfServicesForTenant(env, workspaceId),
+  );
 }
 
 const managedSessionsRoutes = new Hono<{
@@ -1762,8 +1758,8 @@ async function cfExecutionFenceActive(
  * Local-runtime path (claude-agent-acp daemon) keeps using the public
  * /v1/oma/mcp-proxy/<sid>/<server> HTTP endpoint with apiKey auth — the
  * daemon doesn't have a service binding, so it has to authenticate the
- * old way. Both paths converge on the same `resolveProxyTargetByTenant` +
- * `forwardToUpstream` helpers in routes/mcp-proxy.ts.
+ * old way. Both paths run the same gateway, `@open-managed-agents/http-routes/proxy`
+ * (composed for Cloudflare in routes/mcp-proxy.ts).
  */
 export class McpProxyRpc extends WorkerEntrypoint<Env> {
   async resolveManagedSessionInputs(opts: {
@@ -2138,48 +2134,15 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     headers: Record<string, string>;
     body: string;
   }> {
-    const services = await getCfServicesForTenant(this.env, opts.tenantId);
-    const { sessionSource, credentialSource } = await managedMcpSources(
-      this.env,
-      opts.tenantId,
-    );
-    const target = await resolveProxyTargetByTenant(
-      this.env,
-      services,
-      opts.tenantId,
-      opts.sessionId,
-      opts.serverName,
-      sessionSource,
-      credentialSource,
-    );
-    if (!target) {
-      return {
-        status: 403,
-        headers: { "content-type": "application/json" },
-        body: '{"error":"forbidden"}',
-      };
-    }
-    const inboundHeaders = new Headers(opts.headers);
-    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
-    const accessLossHooks = await bindAccessLossHooks(
-      createCloudflareAccessLossRuntime(this.env, tenantDb),
-      {
-        workspaceId: opts.tenantId,
-        sessionId: opts.sessionId,
-        serverName: opts.serverName,
-        requestBody: opts.body,
-      },
-    );
-    const res = await forwardWithRefresh(
-      services,
-      opts.tenantId,
-      target,
-      opts.method,
-      inboundHeaders,
-      opts.body,
-      { sessionId: opts.sessionId, serverName: opts.serverName, callerKind: "rpc-mcp" },
-      accessLossHooks,
-    );
+    const res = await forwardMcpProxyRequest(await mcpProxyPortsFor(this.env, opts.tenantId), {
+      workspaceId: opts.tenantId,
+      sessionId: opts.sessionId,
+      serverName: opts.serverName,
+      method: opts.method,
+      headers: new Headers(opts.headers),
+      body: async () => opts.body,
+      callerKind: "rpc-mcp",
+    });
     const respHeaders: Record<string, string> = {};
     res.headers.forEach((v, k) => {
       respHeaders[k] = v;
@@ -2198,13 +2161,11 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
    *   - `x-oma-tenant`
    *   - `x-oma-session`
    *   - `x-oma-mcp-server`
-   * We resolve the vault credential by `serverName` (mirrors the legacy
-   * `mcpForward` path so inline `authorization_token` still works),
-   * strip the metadata, replace the `authorization` header with the
-   * upstream bearer, and forward to the URL the agent's transport
-   * already knew (request URL is the upstream URL). Body / response
-   * status / response headers (including rotated `Mcp-Session-Id`)
-   * stream through unchanged.
+   * The shared gateway resolves the Vault credential by `serverName`
+   * (inline `authorization_token` still works), withholds the metadata and
+   * the caller's own credentials, injects the upstream bearer, and forwards.
+   * Body / response status / response headers (including rotated
+   * `Mcp-Session-Id`) stream through unchanged.
    *
    * Vault credentials remain main-only — agent worker only sees the
    * Response. The official SDK transport handles Streamable-HTTP session
@@ -2213,84 +2174,11 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
    * preceded this dropped session ids and broke session-ful servers
    * (Notion's tools/list never returned, hanging the whole turn).
    *
-   * 401-refresh-and-retry: handled by `forwardWithRefresh` (shared with
-   * the legacy mcpForward + HTTP /v1/oma/mcp-proxy paths). When the first
-   * upstream response is 401 AND the resolved credential carries
-   * `mcp_oauth` refresh metadata (refresh_token + token_endpoint), we
-   * hit the token_endpoint, persist the rotated tokens back to D1, and
-   * retry the upstream call once with the fresh bearer. Request body
-   * is buffered up-front so the retry can replay it.
+   * A 401 from a refreshable credential is refreshed and retried once, with
+   * the request body buffered up front so the retry can replay it.
    */
   async fetch(request: Request): Promise<Response> {
-    const tenantId = request.headers.get("x-oma-tenant");
-    const sessionId = request.headers.get("x-oma-session");
-    const serverName = request.headers.get("x-oma-mcp-server");
-    if (!tenantId || !sessionId || !serverName) {
-      return new Response(
-        '{"error":"missing x-oma-tenant / x-oma-session / x-oma-mcp-server header"}',
-        { status: 400, headers: { "content-type": "application/json" } },
-      );
-    }
-    const services = await getCfServicesForTenant(this.env, tenantId);
-    const { sessionSource, credentialSource } = await managedMcpSources(
-      this.env,
-      tenantId,
-    );
-    const agentId = request.headers.get("x-oma-agent-id");
-    const agentVersion = request.headers.get("x-oma-agent-version");
-    if ((agentId === null) !== (agentVersion === null) || (agentVersion !== null && (!/^\d+$/.test(agentVersion) || Number(agentVersion) < 1))) {
-      return Response.json({ error: "forbidden" }, { status: 403 });
-    }
-    const target = await resolveProxyTargetByTenant(
-      this.env,
-      services,
-      tenantId,
-      sessionId,
-      serverName,
-      sessionSource,
-      credentialSource,
-      agentId !== null && agentVersion !== null ? { id: agentId, version: Number(agentVersion) } : undefined,
-    );
-    if (!target) {
-      return new Response('{"error":"forbidden"}', {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    // Strip routing metadata before forwarding upstream. Everything else
-    // (Mcp-Session-Id, content-type, accept, …) flows through.
-    // forwardWithRefresh injects/replaces Authorization itself.
-    const inboundHeaders = new Headers(request.headers);
-    inboundHeaders.delete("x-oma-tenant");
-    inboundHeaders.delete("x-oma-session");
-    inboundHeaders.delete("x-oma-mcp-server");
-    // Buffer body so forwardWithRefresh can replay on a 401-then-refresh
-    // retry. MCP request bodies are JSON-RPC envelopes — sub-KB in
-    // practice — so the buffering cost is negligible. Response body is
-    // unaffected and still streams back.
-    const body = ["GET", "HEAD"].includes(request.method)
-      ? null
-      : await request.arrayBuffer();
-    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(tenantId);
-    const accessLossHooks = await bindAccessLossHooks(
-      createCloudflareAccessLossRuntime(this.env, tenantDb),
-      {
-        workspaceId: tenantId,
-        sessionId,
-        serverName,
-        requestBody: mcpRequestBodyText(body),
-      },
-    );
-    return forwardWithRefresh(
-      services,
-      tenantId,
-      target,
-      request.method,
-      inboundHeaders,
-      body,
-      { sessionId, serverName, callerKind: "rpc-mcp" },
-      accessLossHooks,
-    );
+    return createMcpProxyBinding((workspaceId) => mcpProxyPortsFor(this.env, workspaceId)).fetch(request);
   }
 
   /** Native outbound adapter transport for the shared HTTPS relay core.

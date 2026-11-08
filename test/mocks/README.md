@@ -75,7 +75,7 @@ To exercise the full mcp-proxy refresh-token path through OMA against this mock:
 1. Create a vault credential with `auth.type=mcp_oauth`, pointing `mcp_server_url` at e.g. `https://oma-mock-services.hrhrngxy.workers.dev/mcp/401-once/...` and `token_endpoint` at `https://oma-mock-services.hrhrngxy.workers.dev/oauth/token`.
 2. Create an agent that references that vault credential as an MCP server.
 3. Create a session, send a user message that should result in the agent calling the MCP tool.
-4. Observe the gateway's `forwardWithRefresh` path: 401 → refresh → 200, all in SSE telemetry.
+4. Observe the gateway's `forwardMcpProxyTarget` path: 401 → refresh → 200, all in SSE telemetry.
 
 (Same flow for `/403-always` if you want to verify the 403→refresh trigger we added in this PR.)
 

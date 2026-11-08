@@ -78,9 +78,7 @@ import { execManagedSandbox, ManagedSandboxExecError } from "../lib/managed-sand
 import { buildSkillSourcesRoutes, createSourceFetcher } from "../lib/skill-sources.js";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 
-import { buildNodeHttpInferenceProxyRoutes } from "../lib/http-inference-proxy.js";
-import { buildNodeHttpMcpProxyRoutes } from "../lib/http-mcp-proxy.js";
-import { createNodeAccessLossRuntime } from "../lib/mcp-access-loss.js";
+import { createInferenceProxyRoutes, createMcpProxyRoutes } from "@open-managed-agents/http-routes/proxy";
 
 import { Disposables } from "../lifecycle.js";
 
@@ -122,8 +120,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     realtimeDescription,
     sessionRegistry,
     resolveDreamModelCredentials,
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
@@ -536,13 +534,10 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       } as unknown as import("@open-managed-agents/shared").EnvironmentConfig;
     },
   }));
-  v1.route("/oma/mcp-proxy", buildNodeHttpMcpProxyRoutes({
-    resolveTarget: resolveNodeMcpProxyTarget,
-    accessLoss: await createNodeAccessLossRuntime(sql),
-  }));
-  v1.route("/oma/inference-proxy", buildNodeHttpInferenceProxyRoutes({
-    resolveUpstream: resolveNodeInferenceUpstream,
-  }));
+  // The parent v1 middleware authenticates the caller (sandbox-gateway) and
+  // sets tenant_id; the gateways never take the workspace from the request.
+  v1.route("/oma/mcp-proxy", createMcpProxyRoutes(() => mcpProxyPorts));
+  v1.route("/oma/inference-proxy", createInferenceProxyRoutes(() => inferenceProxyPorts));
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);
   v1.route("/user_profiles", managedUserProfilesRoutes);

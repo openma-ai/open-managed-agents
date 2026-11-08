@@ -2,11 +2,8 @@
 // managed domain shape from `managed_credentials`, and refresh writes the
 // rotation back through the managed source with a revision check.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  forwardWithRefresh,
-  resolveOutboundCredentialByHost,
-  resolveProxyTargetByTenant,
-} from "../../apps/main/src/routes/mcp-proxy";
+import { forwardMcpProxyTarget, resolveMcpProxyTarget } from "@open-managed-agents/http-routes/proxy";
+import { resolveOutboundCredentialByHost } from "../../apps/main/src/lib/outbound-credential";
 import type { StoredCredential } from "@open-managed-agents/credential-store";
 import { compileVaultSubstitutions, createVaultPlaceholders } from "../../packages/sandbox-gateway/src/vault-substitution";
 import { builtinSpecs, createSpecRegistry } from "../../packages/cap/src/index";
@@ -64,6 +61,17 @@ function legacyServicesThatMustNotBeRead() {
       refreshAuth: vi.fn(async () => { throw new Error("legacy credentials write"); }),
       refreshAuthCAS: vi.fn(async () => { throw new Error("legacy credentials write"); }),
     },
+  } as never;
+}
+
+/** The shared gateway's ports for a managed Session: legacy stores refuse. */
+function gatewayPorts(source: ReturnType<typeof memorySource>["source"], vaultIds: string[] = ["vlt_a"]) {
+  const legacy = legacyServicesThatMustNotBeRead() as unknown as { sessions: unknown; credentials: unknown };
+  return {
+    sessions: { managed: managedSessions(vaultIds), legacy: legacy.sessions },
+    legacyCredentials: legacy.credentials,
+    managedCredentials: () => source,
+    log: { info: () => undefined, warn: () => undefined },
   } as never;
 }
 
@@ -131,12 +139,13 @@ describe("managed Session cap_cli egress", () => {
       managedSessions(["vlt_b"]),
       source,
     );
-    expect(target?.refresh).toMatchObject({
+    // The resolver that refreshes it is the gateway's managedCredentials
+    // port, no longer carried on the target.
+    expect(target).toMatchObject({ managed: { refresh: {
       tokenEndpoint: "https://github.com/login/oauth/access_token",
       credentialId: "c_gh",
       vaultId: "vlt_b",
-      resolver: source,
-    });
+    } } });
   });
 
   it("returns null for a CLI host with no matching managed cap_cli credential", async () => {
@@ -161,15 +170,7 @@ describe("managed Session cap_cli egress", () => {
       capRecord({ id: "c_gh", token: "gho", updatedAt: "2026-09-01T00:00:00.000Z" }),
     ]);
     expect(
-      await resolveProxyTargetByTenant(
-        {} as never,
-        legacyServicesThatMustNotBeRead(),
-        WORKSPACE,
-        SESSION,
-        "docs",
-        managedSessions(["vlt_a"]),
-        source,
-      ),
+      await resolveMcpProxyTarget(gatewayPorts(source), { workspaceId: WORKSPACE, sessionId: SESSION, serverName: "docs" }),
     ).toBeNull();
   });
 
@@ -197,14 +198,14 @@ describe("managed Session cap_cli egress", () => {
       return responses[calls.length - 1]!();
     });
 
-    const response = await forwardWithRefresh(
-      legacyServicesThatMustNotBeRead(),
-      WORKSPACE,
-      { ...target!, upstreamUrl: "https://api.github.com/user" },
-      "GET",
-      new Headers(),
-      null,
-    );
+    const response = await forwardMcpProxyTarget(gatewayPorts(source, ["vlt_b"]), {
+      workspaceId: WORKSPACE,
+      target: { ...target!, upstreamUrl: "https://api.github.com/user" },
+      method: "GET",
+      headers: new Headers(),
+      body: null,
+      audit: { callerKind: "rpc-outbound" },
+    });
 
     expect(response.status).toBe(200);
     expect(calls[1]!.url).toBe("https://github.com/login/oauth/access_token");
@@ -230,23 +231,23 @@ describe("managed Session cap_cli egress", () => {
       calls.push(input instanceof Request ? input : new Request(input, init));
       return responses[calls.length - 1]!();
     });
-    const response = await forwardWithRefresh(
-      legacyServicesThatMustNotBeRead(),
-      WORKSPACE,
-      {
-        upstreamUrl: "https://api.github.com/user",
-        upstreamToken: "gho_stale",
-        refresh: {
-          tokenEndpoint: "https://github.com/login/oauth/access_token",
-          credentialId: "c_gh",
-          vaultId: "vlt_a",
-          resolver: source,
-        },
+    const managed = {
+      upstreamUrl: "https://api.github.com/user",
+      upstreamToken: "gho_stale",
+      refresh: {
+        tokenEndpoint: "https://github.com/login/oauth/access_token",
+        credentialId: "c_gh",
+        vaultId: "vlt_a",
       },
-      "GET",
-      new Headers(),
-      null,
-    );
+    };
+    const response = await forwardMcpProxyTarget(gatewayPorts(source), {
+      workspaceId: WORKSPACE,
+      target: { upstreamUrl: managed.upstreamUrl, upstreamToken: managed.upstreamToken, managed },
+      method: "GET",
+      headers: new Headers(),
+      body: null,
+      audit: { callerKind: "rpc-outbound" },
+    });
     expect(response.status).toBe(200);
     expect(calls).toHaveLength(2);
     expect(calls[1]!.headers.get("authorization")).toBe("Bearer gho_rotated_elsewhere");

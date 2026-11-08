@@ -1,7 +1,7 @@
 // @ts-nocheck
 // E2E for cap_cli credential injection through the outbound proxy path.
 //
-// Drives `resolveOutboundCredentialByHost` (apps/main/src/routes/mcp-proxy.ts)
+// Drives `resolveOutboundCredentialByHost` (apps/main/src/lib/outbound-credential.ts)
 // against in-memory services seeded with:
 //   - a session whose vault_ids reference one vault
 //   - a cap_cli credential in that vault (cli_id="gh", token=...)
@@ -13,7 +13,7 @@
 // mcp_server_url, which is the whole point of cap_cli.
 
 import { describe, it, expect } from "vitest";
-import { resolveOutboundCredentialByHost } from "../../apps/main/src/routes/mcp-proxy";
+import { resolveOutboundCredentialByHost } from "../../apps/main/src/lib/outbound-credential";
 import { createInMemoryCredentialService } from "../../packages/credentials-store/src/test-fakes";
 import type { Services } from "../../packages/services/src/index";
 

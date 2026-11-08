@@ -61,9 +61,9 @@ Agents Work/Environment protocol. See
               ┌────────────────────▼────────────────────┐
               │   apps/main worker                       │
               │   ┌────────────────────────────────────┐ │
-              │   │ resolveProxyTargetByTenant         │ │  URL match (mcp_server)
+              │   │ resolveMcpProxyTarget              │ │  URL match (mcp_server)
               │   │ resolveOutboundCredentialByHost    │ │  hostname match
-              │   │ forwardWithRefresh                 │ │  inject + 401-refresh
+              │   │ forwardMcpProxyTarget              │ │  inject + 401-refresh
               │   └────────────────────────────────────┘ │
               │   exposes three entrypoints:             │
               │   ① HTTP /v1/oma/mcp-proxy/<sid>/<server>│
@@ -94,21 +94,22 @@ Agents Work/Environment protocol. See
 | **Cloud agent DO** (cloud-side `generateText` loop) | `(tenantId, sid, server_name)` | `env.MAIN_MCP.mcpForward(...)` via Cloudflare service-binding RPC | Binding scope IS the auth — only Workers configured with `services[].entrypoint = "McpProxyRpc"` can invoke it. No apiKey to manage |
 | **Cloudflare sandbox container** (transparent HTTPS) | The full upstream URL it wants to fetch — that's it | native outbound handler forwards requests to fenced `credentialEgress(...)`; only the control plane injects Vault tokens | runtime fence and forced interception are the authorization boundary |
 
-The gateway paths converge on the same Session/Vault resolution and
-`@open-managed-agents/vault-forward` behavior:
-- `resolveProxyTargetByTenant(env, services, tenantId, sid, serverName)` — for MCP servers, matches by URL
-- `resolveOutboundCredentialByHost(env, services, tenantId, sid, hostname)` — for arbitrary HTTPS, matches by hostname
-- `forwardWithRefresh(...)` / `@open-managed-agents/vault-forward` — fetch upstream + auto-refresh on 401 + audit log
+The MCP gateway is one implementation shared by Cloudflare and Node,
+`@open-managed-agents/http-routes/proxy`; each platform only injects its
+stores (`McpProxyPorts`):
+- `resolveMcpProxyTarget(ports, { workspaceId, sessionId, serverName })` — for MCP servers, matches by URL
+- `resolveOutboundCredentialByHost(env, services, tenantId, sid, hostname)` (`apps/main/src/lib/outbound-credential.ts`) — for arbitrary HTTPS, matches by hostname
+- `forwardMcpProxyTarget(ports, exchange)` — fetch upstream + auto-refresh on 401 + audit log
 
 ## OAuth refresh on 401
 
-For credentials of type `mcp_oauth`, `forwardWithRefresh` automatically:
+For legacy credentials of type `mcp_oauth`, `forwardMcpProxyTarget` automatically (managed v1 credentials refresh through the shared `ManagedCredentialResolver`):
 
 1. First fetch with current `access_token` → upstream returns `401`
 2. Drain the response body
 3. Re-fetch the credential row from D1 (dedup check — see "Concurrent refresh dedup" below)
 4. If D1's `access_token` matches the one we just got 401'd with: actually call `token_endpoint` with the `refresh_token`
-5. Persist rotated `{access_token, refresh_token, expires_at}` back to D1 via `services.credentials.refreshAuth` (a single canonical write — no per-session snapshot mutation)
+5. Persist rotated `{access_token, refresh_token, expires_at}` back to D1 via `credentials.refreshAuthCAS` (a single canonical compare-and-swap write — no per-session snapshot mutation)
 6. Retry the upstream call once with the fresh bearer
 
 If the refresh itself fails (refresh_token revoked, scopes removed, network error), the second upstream call returns the original 401 to the caller — no false-success masking.
@@ -117,13 +118,13 @@ If the refresh itself fails (refresh_token revoked, scopes removed, network erro
 
 When N parallel tool calls all hit their access_token's expiry in the same instant (typical at the 1h boundary mid-multi-tool conversation), all N would naively call `token_endpoint` simultaneously. For upstreams with rotating refresh_token (Linear, Notion, …) all but the first would invalidate themselves.
 
-Mitigation: before calling `token_endpoint`, `tryRefreshOauth` re-fetches the credential row from D1. If the live `access_token` has moved past the stale one we just got 401'd with, another in-flight call already refreshed — return the live token, skip the upstream roundtrip.
+Mitigation: before calling `token_endpoint`, `refreshLegacyCredential` re-fetches the credential row from D1. If the live `access_token` has moved past the stale one we just got 401'd with, another in-flight call already refreshed — return the live token, skip the upstream roundtrip.
 
 This isn't a perfect mutex — two calls re-fetching D1 BEFORE either persists will both refresh — but it cuts the race window from "every concurrent 401" to "two 401s landing in the same low single-digit ms". A perfect mutex would need a per-credential Durable Object; not built until production logs show double-refresh damage.
 
 ## Audit log
 
-Every call through `forwardWithRefresh` emits a structured log line:
+Every call through `forwardMcpProxyTarget` emits a structured log line:
 
 ```json
 {
@@ -170,9 +171,9 @@ Both `.github/workflows/deploy.yml` and `deploy-lane.yml` enforce the forward or
 
 ## Testing
 
-### Unit — `test/unit/mcp-proxy-refresh.test.ts`
+### Unit — `packages/http-routes/test/proxy/`
 
-5 vitest cases against `forwardWithRefresh` with mocked global fetch + in-memory `CredentialService`:
+`mcp-proxy-forward.test.ts` and `legacy-credential-refresh.test.ts` drive the forward and the refresh with an injected fetch + in-memory `CredentialService`, including:
 
 1. Happy path 200 → no refresh, no D1 write
 2. 401 → refresh succeeds → retry 200 + D1 update
@@ -192,7 +193,8 @@ The tool the fake MCP server exposes (`fake_echo`) returns the access_token used
 
 - [Anthropic Managed Agents architecture (Anthropic Engineering)](https://www.anthropic.com/engineering/managed-agents)
 - [Inside Claude Managed Agents (Pluto Security)](https://pluto.security/blog/inside-claude-managed-agents/)
-- `apps/main/src/routes/mcp-proxy.ts` — resolvers + forwardWithRefresh
+- `packages/http-routes/src/proxy/` — the MCP and inference gateways shared by Cloudflare and Node
+- `apps/main/src/routes/mcp-proxy.ts` — their Cloudflare composition
 - `apps/main/src/index.ts` (`McpProxyRpc`) — RPC entrypoint
 - `packages/mcp/src/http-client.ts` — official MCP v2 Streamable HTTP adapter
 - `apps/agent/src/harness/tools.ts` — Managed Agents tool projection + lifecycle

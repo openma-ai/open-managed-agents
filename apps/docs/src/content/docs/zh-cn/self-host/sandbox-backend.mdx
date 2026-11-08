@@ -274,7 +274,7 @@ HOSTED_INFERENCE_TOKEN = sessions_token
 
 `projectHostedInferenceForAcpAgent` 接着让 `@open-managed-agents/harness-inference-adapters` 写出 harness 原生的环境变量和配置文件。当前已发布的适配器：`pi`、`dsh`、`claude`、`codex`、`gemini`、`opencode`、`kimi`。文件通过 `AcpSandboxAgentStatePort.writeFile` 落盘。代理令牌从环境引用（`proxyTokenEnvVar: "HOSTED_INFERENCE_TOKEN"`），不复制进持久的原生状态允许列表。
 
-网关是 `apps/main` 与 Node 控制面（`apps/main/src/routes/inference-proxy.ts` 与 `packages/control-plane-node/src/lib/http-inference-proxy.ts`）上的 `/v1/oma/inference-proxy/:sessionId/*`，方法为 `POST` 以及其他方法。两者都经过 `sendHostedInference`（`packages/http-routes`）和 `planHostedInferenceRequest`（`packages/inference-proxy`）：
+网关是 `apps/main` 与 Node 控制面上的 `/v1/oma/inference-proxy/:sessionId/*`，方法为 `POST` 以及其他方法。两边挂的是同一个路由 `createInferenceProxyRoutes`（`packages/http-routes/src/proxy/inference-proxy-routes.ts`），各自只注入自己的存储。它经过 `sendHostedInference`（`packages/http-routes`）和 `planHostedInferenceRequest`（`packages/inference-proxy`）：
 
 - 丢弃入站的 `authorization`、`x-api-key`、`api-key`、`x-goog-api-key` 和 `proxy-authorization`；
 - 在宿主上解析该 session 的模型卡；
