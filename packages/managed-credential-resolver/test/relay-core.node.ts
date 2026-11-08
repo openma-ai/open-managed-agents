@@ -116,8 +116,9 @@ describe("credential egress relay envelope over the core", () => {
   async function relayFixture(session: { vaultIds: string[]; archivedAt: string | null } | null = { vaultIds: ["vault"], archivedAt: null }) {
     const f = fixture();
     const passes = createEgressRelayPasses("relay-core-secret", Date.now);
-    const relay = createCredentialEgressRelay({ ...f.ports, passes, findSession: async () => session });
-    const pass = await passes.issue({ workspaceId: "ws", sessionId: "session", ttlMs: 60000 });
+    const relay = createCredentialEgressRelay({ ...f.ports, passes,
+      authorize: async (claims) => session === null || session.archivedAt !== null ? null : { workspaceId: claims.workspaceId, sessionId: claims.sessionId, vaultIds: session.vaultIds } });
+    const pass = await passes.issue({ workspaceId: "ws", sessionId: "session", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60000 });
     const request = (headers: Record<string, string>, authorization = `Bearer ${pass}`) => new Request("https://control.example/forward", {
       method: "POST", headers: { authorization, "x-oma-egress-method": "POST", ...headers }, body: new Uint8Array([7, 8]),
     });

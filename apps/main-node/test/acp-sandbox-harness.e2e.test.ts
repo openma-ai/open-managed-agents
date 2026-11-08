@@ -11,12 +11,9 @@ import type {
   SessionEvent,
   UserMessageEvent,
 } from "@open-managed-agents/shared";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import type {
-  HarnessContext,
-  HarnessRuntime,
-} from "@open-managed-agents/agent/harness/interface";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
+import {
+  registerCoreHarnesses, type HarnessContext, type HarnessRuntime, resolveHarness,
+} from "@open-managed-agents/agent-harness";
 import { SessionStateMachine } from "@open-managed-agents/session-runtime";
 import type { RuntimeAdapter } from "@open-managed-agents/session-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -27,7 +24,7 @@ function withPlatform(prompt: string, text: string): string {
 }
 
 describe("ACP sandbox harness", () => {
-  it("reuses one real ACP process across turns through SessionStateMachine", async () => {
+  it("resumes the native ACP session in a new child each execution through SessionStateMachine", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-machine-"));
     const sandbox = new LocalSubprocessSandbox({ workdir });
     const events: SessionEvent[] = [];
@@ -144,7 +141,7 @@ describe("ACP sandbox harness", () => {
     );
   });
 
-  it("keeps one ACP process across turns and projects its events", async () => {
+  it("starts one child per execution, resumes the ACP session and projects its events", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-harness-"));
     const sandbox = new LocalSubprocessSandbox({ workdir });
     let leaseRenewals = 0;
@@ -197,14 +194,15 @@ describe("ACP sandbox harness", () => {
           content: [{ type: "text", text: "sandbox-acp:2:second" }],
         }),
       ]);
-      expect(leaseRenewals).toBe(2);
+      // Keep-alive during a turn is the core's (design §0.6), not the harness's.
+      expect(leaseRenewals).toBe(0);
     } finally {
       await (harness as { dispose?: () => Promise<void> }).dispose?.();
       await sandbox.destroy();
     }
   });
 
-  it.each(["shutdown", "destroy", "lease-loss", "wait-transport-error"] as const)("does not capture or delete native state when exit is unconfirmed: %s", async reason => {
+  it.each(["shutdown", "destroy", "execution-end", "wait-transport-error"] as const)("does not capture or delete native state when exit is unconfirmed: %s", async reason => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-unconfirmed-exit-"));
     const sandbox = new LocalSubprocessSandbox({ workdir });
     const spawn = sandbox.spawnDuplexProcess.bind(sandbox);
@@ -221,21 +219,23 @@ describe("ACP sandbox harness", () => {
     const harness = resolveHarness("acp-sandbox");
     const agent = { id: "unconfirmed", name: "Unconfirmed", model: "unused", system: "", tools: [], harness: "acp-sandbox", acp: { agent: { id: "claude-acp", command: process.execPath, args: ["-e", fakeAcpAgentSource], cwd: "/workspace" } }, version: 1 } as unknown as AgentConfig;
     try {
-      await harness.run(createContext(agent, runtime, "prepare native state"));
+      // The execution ends by closing the child: its exit is never confirmed,
+      // so the turn reports it and keeps the child as the barrier.
       const exec = vi.spyOn(sandbox, "exec");
       const write = vi.spyOn(sandbox, "writeFile");
-      if (reason === "lease-loss") {
-        Object.assign(sandbox, {
-          runtimeHandle: () => ({ provider: "test", runtimeId: "lease-loss" }),
-          runtimeCapabilities: () => ({ lease: true, suspend: [], checkpoint: [] }),
-          status: async () => "running", renewLease: async () => { throw new Error("lost"); },
-          suspend: async () => {}, resume: async () => {}, checkpoint: async () => {},
-        });
-        await harness.run(createContext(agent, runtime, "lose the lease"));
-        exec.mockClear(); write.mockClear();
+      const ending = harness.run(createContext(agent, runtime, "prepare native state"));
+      if (reason === "wait-transport-error") {
+        await vi.waitFor(() => expect(child).toBeDefined());
+        rejectExit(new Error("connection reset"));
       }
-      if (reason === "wait-transport-error") rejectExit(new Error("connection reset"));
-      await expect(harness.dispose?.(reason === "lease-loss" || reason === "wait-transport-error" ? "shutdown" : reason)).rejects.toThrow(/exit.*not confirmed/i);
+      await ending;
+      expect(events.filter((event) => event.type === "session.error").map((event) => (event as { error: string }).error).join("\n")).toMatch(/not confirmed|connection reset/i);
+      const captures = (calls: unknown[][]) => calls.filter(([arg]) => typeof arg === "string" && /harness-state/.test(arg) && /\b(cp|rm|tar|mv)\b/.test(arg));
+      expect(captures(exec.mock.calls)).toEqual([]);
+      exec.mockClear(); write.mockClear();
+      if (reason !== "execution-end") {
+        await expect(harness.dispose?.(reason === "wait-transport-error" ? "shutdown" : reason)).rejects.toThrow(/exit.*not confirmed|connection reset/i);
+      }
       expect(exec).not.toHaveBeenCalled();
       expect(write).not.toHaveBeenCalled();
     } finally {
@@ -306,12 +306,14 @@ describe("ACP sandbox harness", () => {
         expect.objectContaining({ content: [{ type: "text", text: "sandbox-acp:1:first" }] }),
         expect.objectContaining({ content: [{ type: "text", text: "sandbox-acp:2:second" }] }),
       ]);
-      // One long-lived child launched through the pinned package, not latest.
+      // One child per execution, each launched through the pinned package, not latest.
       expect((await readFile(host.npxLog, "utf8")).trim().split("\n")).toEqual([
         "-y @agentclientprotocol/claude-agent-acp@0.94.0",
+        "-y @agentclientprotocol/claude-agent-acp@0.94.0",
       ]);
-      // The pinned package is prefetched once at install, before the first spawn.
+      // The (idempotent) install runs before each execution's spawn.
       expect((await readFile(host.npmLog, "utf8")).trim().split("\n")).toEqual([
+        "exec --yes --package=@agentclientprotocol/claude-agent-acp@0.94.0 -- node -e 0",
         "exec --yes --package=@agentclientprotocol/claude-agent-acp@0.94.0 -- node -e 0",
       ]);
       // The claude-code native adapter still owns CLAUDE_CONFIG_DIR.
@@ -352,7 +354,7 @@ describe("ACP sandbox harness", () => {
     }
   });
 
-  it("runs the same stateful ACP harness through the E2B adapter", async () => {
+  it("runs the same stateful ACP harness through the E2B adapter, one child per execution", async () => {
     const service = new ScriptedE2BService();
     const sandbox = new E2BSandboxExecutor(service.sandbox as never, {});
     const events: SessionEvent[] = [];
@@ -433,7 +435,9 @@ describe("ACP sandbox harness", () => {
         content: [{ type: "text", text: "e2b-acp:2:second" }],
       }),
     ]);
-    expect(service.processStarts).toBe(1);
+    // One child per execution; the second resumes the ACP session.
+    expect(service.processStarts).toBe(2);
+    expect(service.lifecycle.filter((step) => step === "session/resume")).toHaveLength(1);
     expect(service.sessionNewParams?.mcpServers).toEqual([{
       type: "http",
       name: "linear",
@@ -446,7 +450,8 @@ describe("ACP sandbox harness", () => {
     expect(JSON.stringify(service.sessionNewParams)).not.toContain(
       "must-never-reach-the-sandbox",
     );
-    expect(service.leaseTtls).toEqual([90_000, 90_000]);
+    // Keep-alive during a turn is the core's (design §0.6), not the harness's.
+    expect(service.leaseTtls).toEqual([]);
     expect(JSON.parse(checkpointBeforeDestroy ?? "null")).toEqual(
       expect.objectContaining({ acpSessionId: "e2b-acp-session" }),
     );
@@ -457,7 +462,7 @@ describe("ACP sandbox harness", () => {
     expect(service.lifecycle.at(-1)).toBe("sandbox/kill");
   });
 
-  it("recovers a crashed sandbox ACP child through its native session id", async () => {
+  it("resumes the native session id in a restored sandbox after the execution's child closed", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-harness-recovery-"));
     const sandbox = new LocalSubprocessSandbox({ workdir });
     const events: SessionEvent[] = [];
@@ -490,12 +495,9 @@ describe("ACP sandbox harness", () => {
       const first = createContext(agent, runtime, "first");
       await firstHarness.onSessionInit?.(first, runtime);
       await firstHarness.run(first);
-      await expect.poll(
-        () => sandbox.exec("test -f first-child-exited && echo yes || echo no"),
-      ).toBe("yes");
-      // The marker is written immediately before process.exit(); wait for
-      // the OS exit notification to reach the placement liveness wrapper.
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The execution closed the child (design §0.6) after its native
+      // transcript was written; the harness saved it under harness-state.
+      await expect(sandbox.exec("test -d .mnt/oma/harness-state/acp/session_acp_sandbox/claude-code/v1/native/projects && echo yes || echo no")).resolves.toBe("yes");
 
       // Materialize a provider-neutral checkpoint, delete the original
       // sandbox, and restore it into a fresh runtime. This proves recovery
@@ -590,10 +592,9 @@ describe("ACP sandbox harness", () => {
       events.push(first.userMessage);
       await firstHarness.onSessionInit?.(first, runtime);
       await firstHarness.run(first);
-      await expect.poll(
-        () => sandbox.exec("test -f first-child-exited && echo yes || echo no"),
-      ).toBe("yes");
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The execution closed the child (design §0.6) after its native
+      // transcript was written; the harness saved it under harness-state.
+      await expect(sandbox.exec("test -d .mnt/oma/harness-state/acp/session_acp_sandbox/claude-code/v1/native/projects && echo yes || echo no")).resolves.toBe("yes");
 
       // Canonical events remain the recovery source of truth. A completed tool
       // is included for continuity, but its raw input must not be replayed.
@@ -906,7 +907,7 @@ class ScriptedE2BService {
                 protocolVersion: 1,
                 agentCapabilities: {
                   mcpCapabilities: { http: true },
-                  sessionCapabilities: { close: {} },
+                  sessionCapabilities: { close: {}, resume: {} },
                 },
               });
               break;
@@ -938,6 +939,10 @@ class ScriptedE2BService {
             }
             case "session/close":
               this.lifecycle.push("session/close");
+              await result({});
+              break;
+            case "session/resume":
+              this.lifecycle.push("session/resume");
               await result({});
               break;
             case "session/cancel":
@@ -1003,27 +1008,36 @@ class ScriptedE2BService {
   };
 }
 
+// The child lives one execution (design §0.6): the prompt count is kept in
+// the workspace so a resumed child continues it, as native state would.
 const fakeAcpAgentSource = String.raw`
 const fs = require("node:fs");
 const readline = require("node:readline");
 const input = readline.createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
-let promptCount = 0;
+const countFile = ".fake-acp-prompt-count";
+let promptCount = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, "utf8")) : 0;
 if (process.env.CLAUDE_CONFIG_DIR) {
   fs.writeFileSync("state-path.txt", process.env.CLAUDE_CONFIG_DIR);
+  // Claude Code's native session store (what resume needs, native-state.ts).
+  fs.mkdirSync(process.env.CLAUDE_CONFIG_DIR + "/projects", { recursive: true });
 }
 input.on("line", (line) => {
   const request = JSON.parse(line);
   const result = (value) => send({ jsonrpc: "2.0", id: request.id, result: value });
   switch (request.method) {
     case "initialize":
-      result({ protocolVersion: 1, agentCapabilities: {} });
+      result({ protocolVersion: 1, agentCapabilities: { sessionCapabilities: { resume: {} } } });
       break;
     case "session/new":
       result({ sessionId: "sandbox-acp-session" });
       break;
+    case "session/resume":
+      result({});
+      break;
     case "session/prompt": {
       promptCount += 1;
+      fs.writeFileSync(countFile, String(promptCount));
       const text = request.params.prompt.map((block) => block.text ?? "").join("");
       send({
         jsonrpc: "2.0",
@@ -1100,6 +1114,12 @@ input.on("line", (line) => {
       break;
     case "session/prompt": {
       const text = request.params.prompt.map((block) => block.text ?? "").join("");
+      // Native state is persisted before the turn completes (the child is
+      // closed as soon as the prompt returns, design §0.6).
+      if (mode === "new") {
+        fs.mkdirSync(path.dirname(nativeTranscript), { recursive: true });
+        fs.writeFileSync(nativeTranscript, JSON.stringify({ text }) + "\n");
+      }
       send({
         jsonrpc: "2.0",
         method: "session/update",
@@ -1129,14 +1149,6 @@ input.on("line", (line) => {
               cachedWriteTokens: 0,
             },
       });
-      if (mode === "new") {
-        fs.mkdirSync(path.dirname(nativeTranscript), { recursive: true });
-        fs.writeFileSync(nativeTranscript, JSON.stringify({ text }) + "\n");
-        setTimeout(() => {
-          fs.writeFileSync("first-child-exited", "yes");
-          process.exit(17);
-        }, 10);
-      }
       break;
     }
     default:

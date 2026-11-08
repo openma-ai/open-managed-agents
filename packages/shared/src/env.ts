@@ -239,6 +239,37 @@ export interface Env {
       | { type: "not_found" }
       | { type: "fence_lost" }
     >;
+    /** ACP model / MCP channels for one execution (design §0.6), bound to its fence. */
+    issueManagedAcpExecutionChannels?(opts: {
+      tenantId: string;
+      sessionId: string;
+      executionFence: {
+        executionId: string;
+        workspaceId: string;
+        sessionId: string;
+        attemptId: string;
+        ownerId: string;
+        generation: number;
+        expiresAt: string;
+      };
+    }): Promise<{
+      mcpProxy: { gatewayBaseUrl: string; sessionsToken: string };
+      hostedInference: {
+        gatewayBaseUrl: string;
+        sessionsToken: string;
+        model: {
+          providerId: string;
+          baseUrl: string | null;
+          /** The card's upstream model id (not the handle). */
+          wireModel?: string;
+          protocolEndpoints?: readonly {
+            protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
+            proxyPathSegment: string;
+            upstreamBaseUrl: string;
+          }[];
+        };
+      };
+    }>;
     resolveManagedSkillVersion?(opts: {
       tenantId: string;
       skillId: string;
@@ -302,6 +333,8 @@ export interface Env {
     credentialEgress(scope: {
       tenantId: string; sessionId: string;
       runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
+      /** Session sandbox: the execution attempt (design §0.0 rule 10). Without either fence: denied. */
+      executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
     }, action: "resolve" | "forward", request: Request): Promise<Response>;
     /**
      * Per-repo GitHub credential lookup for the network-layer proxy
@@ -322,6 +355,7 @@ export interface Env {
         generation: number;
         token: string;
       };
+      executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
     }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null>;
     /**
      * Transparent HTTP proxy for the cloud agent's MCP traffic. Agent
@@ -421,6 +455,18 @@ export interface Env {
   E2B_TEMPLATE?: string;
   /** Optional E2B-compatible domain. */
   E2B_DOMAIN?: string;
+  /** E2B continuous-run cap of the account plan in ms (Hobby 3600000, Pro
+   *  86400000). Required when SANDBOX_ADAPTER=e2b; no default. */
+  E2B_MAX_LIFETIME_MS?: string;
+  /** Files bucket parent key and bucket name for SANDBOX_ADAPTER=e2b native
+   *  output mounts (set together with R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY,
+   *  or neither for the copy sync). */
+  R2_FILES_ACCESS_KEY_ID?: string;
+  R2_FILES_SECRET_ACCESS_KEY?: string;
+  FILES_BUCKET_NAME?: string;
+  /** Public HTTPS origin of the control plane; the E2B Vault relay calls
+   *  <PUBLIC_BASE_URL>/v1/oma/egress. */
+  PUBLIC_BASE_URL?: string;
 }
 
 /**

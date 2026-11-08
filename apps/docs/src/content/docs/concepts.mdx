@@ -98,8 +98,8 @@ become cacheable again.
 The policy is replaceable without replacing the model/tool loop:
 
 ```ts
-import { PiHarness } from '@open-managed-agents/agent/harness/pi-loop';
-import type { PiCompactionPolicy } from '@open-managed-agents/agent/harness/pi-compaction';
+import { PiHarness } from '@open-managed-agents/agent-harness';
+import type { PiCompactionPolicy } from '@open-managed-agents/agent-harness';
 
 const policy: PiCompactionPolicy = {
   name: 'my-policy',
@@ -154,8 +154,8 @@ If you're reading the source, here's the rough mapping:
 | Agent / Session / etc. types | `packages/api-types` |
 | REST endpoints | `apps/main/src` |
 | Session DO + sandbox | `apps/agent/src` |
-| Harness interface | `apps/agent/src/harness/interface.ts` |
-| Built-in skills | `apps/agent/src/harness/skills.ts` |
+| Harness interface | `packages/agent-harness/src/interface.ts` |
+| Built-in skills | `packages/agent-harness/src/skills.ts` |
 | Integrations core | `packages/integrations-core` |
 | Linear / GitHub / Slack | `apps/integrations/src/routes/{linear,github,slack}` |
 

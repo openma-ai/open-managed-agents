@@ -14,14 +14,10 @@ import type {
   UserMessageEvent,
 } from "@open-managed-agents/shared";
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
-import { buildTools } from "@open-managed-agents/agent/harness/tools";
-import { PiHarness } from "@open-managed-agents/agent/harness/pi-loop";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
-import type {
-  HarnessContext,
-  HarnessRuntime,
-} from "@open-managed-agents/agent/harness/interface";
+import {
+  buildTools, PiHarness, registerCoreHarnesses, resolveHarness, type HarnessContext,
+  type HarnessRuntime,
+} from "@open-managed-agents/agent-harness";
 import type {
   Environment,
   Session,

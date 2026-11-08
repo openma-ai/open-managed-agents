@@ -62,6 +62,26 @@ export function compileFirewall(
   };
 }
 
+/** Platform channels from Session resources (design §0.6, 2026-11-08):
+ * under `limited` networking an attached github_repository is reachable
+ * like allow_mcp_servers, by its URL's host only. URLs that do not parse
+ * add nothing (the clone fails with its own error). */
+export function repositoryChannels(resources: readonly { type: string; url?: unknown; repo_url?: unknown }[]): string[] {
+  const hosts = new Set<string>();
+  for (const resource of resources) {
+    if (resource.type !== "github_repository" && resource.type !== "github_repo") continue;
+    const url = typeof resource.url === "string" ? resource.url : typeof resource.repo_url === "string" ? resource.repo_url : null;
+    if (url === null) continue;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") hosts.add(parsed.hostname.toLowerCase());
+    } catch {
+      // not a URL
+    }
+  }
+  return [...hosts].sort();
+}
+
 /** Lower-case, punycode, no trailing dot. Exact host or `*.suffix`; no
  * scheme, port, path, brackets or other wildcards. */
 export function normalizeHostPattern(pattern: string): HostPattern {

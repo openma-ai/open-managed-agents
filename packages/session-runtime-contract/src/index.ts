@@ -23,3 +23,4 @@ export type {
   InterruptedTurnStopReason,
   SessionTurnCancelReason,
 } from "./cancellation";
+export { abortableDelay, abortedError, cancellationError, isAbortError, linkAbort, untilAborted } from "./turn-abort";

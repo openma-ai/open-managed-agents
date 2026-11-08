@@ -1,76 +1,81 @@
 // Sandbox SDK v2 on E2B for the Cloudflare control plane (SANDBOX_ADAPTER=e2b).
 //
-// SessionDO keeps talking to a SandboxExecutor; this facade implements it
-// over the v2 Ports from createSandboxPorts + createE2BV2Adapter:
-//   - the sandbox is opened lazily: attach the saved handle, else acquire;
-//     the handle lives in DO storage ("changes" handle);
-//   - egress.attach runs once per open (provider firewall from the
-//     Environment networking; no Vault substitutions on this path);
-//   - Memory Stores are s3fs mounts with prefix-scoped temporary R2
-//     credentials minted here from the memory-bucket key (the key itself
-//     never enters the sandbox);
-//   - /mnt/session/outputs is copied out at turn end into FILES_BUCKET
-//     through the R2 binding (best effort, not a live mount).
-// The Cloudflare path (SANDBOX_ADAPTER unset or "cloudflare") is unchanged.
+// Composition only: createSandboxPorts + createE2BV2Adapter, handed to the
+// shared Session runtime (session-sandbox.ts):
+//   - the handle lives in DO storage ("changes" handle);
+//   - egress: the Environment networking becomes the E2B firewall, and when
+//     the Session has cap_cli Vault credentials the in-sandbox relay
+//     (packages/sandbox-egress) forwards their hosts to the control plane's
+//     HTTPS /v1/oma/egress ingress with a relay pass bound to the Session
+//     execution attempt (design §0.0 rule 10; none between turns). Real
+//     credentials never enter the sandbox. The pass expires, so the shared
+//     runtime re-attaches egress after half its TTL (egressRenewMs) and when
+//     the attempt changes (execution);
+//   - storage is one deployment choice (storageConfig): both bucket parent
+//     keys configured → native rclone mounts for Memory and outputs over
+//     prefix-scoped temporary credentials (renewed by the runtime's interval
+//     sync); neither → createSyncStorage copies Memory in and out (over the
+//     MEMORY_BUCKET projection prefixes) and uploads /mnt/session/outputs into
+//     FILES_BUCKET at turn end; exactly one → configuration error;
+//   - E2B_MAX_LIFETIME_MS (required, the account plan's continuous-run cap)
+//     becomes the adapter's maxLifetimeMs; the shared runtime refreshes the
+//     sandbox before it (design §0.0 rule 11).
 
 import type {
-  EgressPolicy,
   MemoryStoreBinding,
-  SandboxDuplexProcess,
-  SandboxDuplexProcessSpec,
-  SandboxExecutor,
-  SandboxHandle,
+  SandboxLifecyclePort,
   SandboxPlan,
   SandboxPorts,
+  Substitution,
 } from "@open-managed-agents/sandbox";
-import { SandboxGoneError } from "@open-managed-agents/sandbox";
-import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
-import { createSandboxPorts, type SandboxOutputSinkPort, type SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit";
+import type { RuntimeResourceScope, SessionOutputBinding } from "@open-managed-agents/runtime-resource-contract";
+import { createSandboxPorts, placeholderSubstitutions, sessionEgressPolicy, type SandboxOutputSinkPort, type SandboxVendorPort, type SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
 import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-kit/object-storage";
-import { createE2BV2Adapter, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
+import { createE2BV2Adapter, E2B_SANDBOX_DIRECTORIES, E2B_SANDBOX_SETUP, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
+import { createEgressRelayPasses, EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
+import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
+import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
+import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxIdleTimer, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 export interface E2BSandboxEnv {
   E2B_API_KEY?: string;
   E2B_TEMPLATE?: string;
   E2B_DOMAIN?: string;
+  /** The account plan's continuous-run cap in ms (Hobby 3600000, Pro 86400000). */
+  E2B_MAX_LIFETIME_MS?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   R2_ENDPOINT?: string;
+  /** Memory bucket parent key (native storage). */
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   MEMORY_BUCKET_NAME?: string;
+  /** Files bucket parent key (native storage). */
+  R2_FILES_ACCESS_KEY_ID?: string;
+  R2_FILES_SECRET_ACCESS_KEY?: string;
+  FILES_BUCKET_NAME?: string;
+  /** Bindings for the generic sync. */
+  MEMORY_BUCKET?: MemoryPrefixBucket;
   FILES_BUCKET?: R2Bucket;
-}
-
-/** Networking as stored on the Environment config. */
-export interface SessionNetworking {
-  type?: string;
-  allowed_hosts?: string[];
-  allow_package_managers?: boolean;
+  /** Vault egress: relay-pass key and the control plane's public HTTPS origin. */
+  PLATFORM_ROOT_SECRET?: string;
+  PUBLIC_BASE_URL?: string;
+  MAIN_MCP?: {
+    resolveManagedCapCliEnvironment(opts: { tenantId: string; sessionId: string }): Promise<
+      { type: "found"; env: Record<string, string> } | { type: "not_found" }
+    >;
+  };
 }
 
 const IDLE_MS = 5 * 60_000;
 const LEASE_MS = 30 * 60_000;
 const STATE_KEY = "e2b_sandbox_state";
+/** Lifetime of a relay pass; the relay is re-attached with a new one after half. */
+export const RELAY_PASS_TTL_MS = 60 * 60_000;
 
-/** Installs s3fs when missing, before the firewall is applied. */
-export const E2B_SANDBOX_SETUP = [
-  "mkdir -p /workspace /mnt/session/outputs /mnt/memory",
-  "if ! command -v s3fs >/dev/null 2>&1; then",
-  "  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq s3fs >/dev/null;",
-  "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache s3fs-fuse >/dev/null;",
-  "  else echo 'no package manager to install s3fs' >&2; exit 1; fi",
-  "fi",
-].join("\n");
-
-const PACKAGE_HOSTS = [
-  "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "*.npmjs.org",
-  "deb.debian.org", "security.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
-  "crates.io", "static.crates.io", "index.crates.io", "proxy.golang.org", "sum.golang.org", "rubygems.org",
-];
-
-interface PersistedState { handle: SandboxHandle; stores: MemoryStoreBinding[]; outputs: boolean }
+type PersistedState = SessionSandboxState;
 
 export interface E2BSessionSandboxOptions {
   compose(): Promise<{ ports: SandboxPorts<E2BSandboxExecutor>; vendor: SandboxVendorPort<E2BSandboxExecutor> }>;
@@ -81,139 +86,85 @@ export interface E2BSessionSandboxOptions {
   };
   scope(): RuntimeResourceScope;
   plan(scope: RuntimeResourceScope, stores: MemoryStoreBinding[]): Promise<SandboxPlan>;
+  now(): number;
+  /** The Session's current execution attempt; omitted = egress never rebinds on it. */
+  fence?(): SandboxExecutionFence | undefined;
+  /** The host's idle timer (SessionDO alarm); omitted = never paused. */
+  idle?: SessionSandboxIdleTimer;
 }
 
-/** SandboxExecutor over the v2 Ports. Exec output uses the Cloudflare
+/** The shared Session runtime on E2B. Exec output uses the Cloudflare
  * `exit=N\n<stdout>\nstderr: <stderr>` shape SessionDO's probes read. */
-export class E2BSessionSandbox implements SandboxExecutor {
-  private live: { runtime: E2BSandboxExecutor; handle: SandboxHandle } | null = null;
-  private opening: Promise<{ runtime: E2BSandboxExecutor; handle: SandboxHandle }> | null = null;
-  private composed: ReturnType<E2BSessionSandboxOptions["compose"]> | null = null;
-  private env: Record<string, string> = {};
-  private stores: MemoryStoreBinding[] = [];
-  private outputs = false;
-
-  constructor(private readonly options: E2BSessionSandboxOptions) {}
-
-  async exec(command: string, timeout?: number): Promise<string> {
-    const result = await this.call((runtime) => runtime.run(command, timeout === undefined ? {} : { timeoutMs: timeout }));
-    return `exit=${result.exitCode}\n${result.stdout}${result.stderr ? `\nstderr: ${result.stderr}` : ""}`;
+export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
+  constructor(options: E2BSessionSandboxOptions) {
+    super({
+      compose: options.compose,
+      executor: e2bExecutor,
+      state: options.state,
+      scope: options.scope,
+      plan: ({ scope, stores }) => options.plan(scope, stores),
+      // E2B paused sandboxes are found again by attach; there is no
+      // separately published restore point on this path.
+      resumeRef: async () => null,
+      warn: () => undefined,
+      outputDurability: () => ({ durability: "best_effort" }),
+      egressRenewMs: RELAY_PASS_TTL_MS / 2,
+      ...(options.idle === undefined ? {} : { idle: options.idle }),
+      ...(options.fence === undefined ? {} : {
+        execution: () => options.fence!(),
+        isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(options.fence!()) === sandboxExecutionFenceKey(execution),
+      }),
+      now: options.now,
+    });
   }
-  startProcess(command: string) { return this.call((runtime) => runtime.startProcess(command)); }
-  spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> {
-    return this.call((runtime) => runtime.spawnDuplexProcess(spec));
-  }
-  readFile(path: string) { return this.call((runtime) => runtime.readFile(path)); }
-  readFileBytes(path: string) { return this.call((runtime) => runtime.readFileBytes(path)); }
-  writeFile(path: string, content: string) { return this.call((runtime) => runtime.writeFile(path, content)); }
-  writeFileBytes(path: string, bytes: Uint8Array) { return this.call((runtime) => runtime.writeFileBytes(path, bytes)); }
+}
 
-  async setEnvVars(env: Record<string, string>): Promise<void> {
-    this.env = { ...this.env, ...env };
-    if (this.live !== null) await this.live.runtime.setEnvVars(env);
-  }
+function e2bExecutor(runtime: E2BSandboxExecutor): SessionSandboxExecutor {
+  return {
+    async exec(command, timeout) {
+      const result = await runtime.run(command, timeout === undefined ? {} : { timeoutMs: timeout });
+      return `exit=${result.exitCode}\n${result.stdout}${result.stderr ? `\nstderr: ${result.stderr}` : ""}`;
+    },
+    startProcess: (command) => runtime.startProcess(command),
+    spawnDuplexProcess: (spec) => runtime.spawnDuplexProcess(spec),
+    readFile: (path) => runtime.readFile(path),
+    writeFile: (path, content) => runtime.writeFile(path, content),
+    writeFileBytes: (path, bytes) => runtime.writeFileBytes(path, bytes),
+    setEnvVars: (env) => runtime.setEnvVars(env),
+  };
+}
 
-  async mountMemoryStore(store: MemoryStoreBinding): Promise<void> {
-    this.stores = [...this.stores.filter((item) => item.storeName !== store.storeName), store];
-    await this.attachStorage();
+/** The one storage switch: native mounts when both bucket parent keys are
+ * configured, the generic sync when neither is. A key for only one bucket
+ * would leave Memory and outputs on different paths: rejected. */
+export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStorage: E2BObjectStorageOptions } | { kind: "sync"; memory: MemoryPrefixBucket; files: R2Bucket } {
+  const memoryKey = Boolean(env.R2_ACCESS_KEY_ID || env.R2_SECRET_ACCESS_KEY);
+  const filesKey = Boolean(env.R2_FILES_ACCESS_KEY_ID || env.R2_FILES_SECRET_ACCESS_KEY);
+  if (memoryKey !== filesKey) {
+    throw new Error(
+      "SANDBOX_ADAPTER=e2b storage is half configured: native mounts need both the memory bucket key "
+        + "(R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) and the files bucket key (R2_FILES_ACCESS_KEY_ID, R2_FILES_SECRET_ACCESS_KEY); "
+        + "set both for mounts, or neither for the copy sync",
+    );
   }
-
-  sessionOutputMountCapabilities(): { durability: "best_effort" } {
-    return { durability: "best_effort" };
+  if (memoryKey) {
+    const required = ["CLOUDFLARE_ACCOUNT_ID", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MEMORY_BUCKET_NAME", "R2_FILES_ACCESS_KEY_ID", "R2_FILES_SECRET_ACCESS_KEY", "FILES_BUCKET_NAME"] as const;
+    const missing = required.filter((name) => !env[name]);
+    if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b native storage requires ${missing.join(", ")}`);
+    const parent = (bucket: string, accessKeyId: string, secretAccessKey: string) =>
+      createR2TemporaryCredentials({ accountId: env.CLOUDFLARE_ACCOUNT_ID!, endpoint: env.R2_ENDPOINT!, bucket, accessKeyId, secretAccessKey });
+    return {
+      kind: "native",
+      objectStorage: {
+        memory: parent(env.MEMORY_BUCKET_NAME!, env.R2_ACCESS_KEY_ID!, env.R2_SECRET_ACCESS_KEY!),
+        outputs: parent(env.FILES_BUCKET_NAME!, env.R2_FILES_ACCESS_KEY_ID!, env.R2_FILES_SECRET_ACCESS_KEY!),
+        outputsPrefix: (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId),
+      },
+    };
   }
-
-  async mountSessionOutputs(): Promise<void> {
-    this.outputs = true;
-    await this.attachStorage();
-  }
-
-  /** Turn end: publish /mnt/session/outputs (Memory mounts are write-through). */
-  async syncStorage(reason: "turn_end" | "before_stop"): Promise<void> {
-    if (this.live === null || !this.outputs) return;
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const plan = await this.options.plan(scope, this.stores);
-    await ports.storage.sync({ runtime: this.live.runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: plan.outputs, reason, signal: new AbortController().signal });
-  }
-
-  async renewActivityTimeout(): Promise<void> {
-    if (this.live === null) return;
-    const { ports } = await this.compose();
-    if (await ports.sandbox.keepAlive(this.live) === "gone") this.live = null;
-  }
-
-  async destroy(): Promise<void> {
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const live = this.live;
-    this.live = null;
-    if (live !== null) {
-      await ports.storage.detach({ runtime: live.runtime, scope }).catch(() => undefined);
-      await ports.egress.revoke({ runtime: live.runtime, scope, fence: fenceFor(scope), reason: "completed" }).catch(() => undefined);
-    }
-    const handle = live?.handle ?? (await this.options.state.load())?.handle;
-    if (handle !== undefined) await ports.sandbox.release({ scope, handle });
-    await this.options.state.clear();
-  }
-
-  private compose() {
-    return this.composed ??= this.options.compose();
-  }
-
-  private async attachStorage(): Promise<void> {
-    const opened = this.live === null;
-    const { runtime, handle } = await this.open();
-    // A fresh open already attached the current stores and outputs.
-    if (opened) return;
-    await this.options.state.save({ handle, stores: this.stores, outputs: this.outputs });
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const plan = await this.options.plan(scope, this.stores);
-    await ports.storage.attach({ runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: plan.outputs, signal: new AbortController().signal });
-  }
-
-  private async call<T>(operation: (runtime: E2BSandboxExecutor) => Promise<T>): Promise<T> {
-    const { runtime } = await this.open();
-    try {
-      return await operation(runtime);
-    } catch (error) {
-      const name = (error as { name?: unknown } | null)?.name;
-      if (error instanceof SandboxGoneError || name === "SandboxNotFoundError" || name === "SandboxNotRunningError") this.live = null;
-      throw error;
-    }
-  }
-
-  private open() {
-    if (this.live !== null) return Promise.resolve(this.live);
-    return this.opening ??= this.start().finally(() => { this.opening = null; });
-  }
-
-  private async start(): Promise<{ runtime: E2BSandboxExecutor; handle: SandboxHandle }> {
-    const { ports } = await this.compose();
-    const scope = this.options.scope();
-    const signal = new AbortController().signal;
-    const saved = await this.options.state.load();
-    if (saved !== undefined) {
-      this.stores = mergeStores(saved.stores, this.stores);
-      this.outputs ||= saved.outputs;
-    }
-    const plan = await this.options.plan(scope, this.stores);
-    let acquired = saved === undefined ? "gone" as const : await ports.sandbox.attach({ scope, handle: saved.handle, signal });
-    if (acquired === "gone") {
-      if (saved !== undefined) await ports.sandbox.release({ scope, handle: saved.handle }).catch(() => undefined);
-      acquired = await ports.sandbox.acquire({ scope, plan, signal });
-      if (acquired === "gone") throw new Error(`E2B template ${JSON.stringify(plan.from)} was not found`);
-    }
-    await this.options.state.save({ handle: acquired.handle, stores: this.stores, outputs: this.outputs });
-    if (Object.keys(this.env).length > 0) await acquired.runtime.setEnvVars(this.env);
-    const fence = fenceFor(scope);
-    await ports.egress.attach({ runtime: acquired.runtime, scope, fence, policy: plan.egress, signal });
-    if (this.outputs || this.stores.length > 0) {
-      await ports.storage.attach({ runtime: acquired.runtime, scope, fence, stores: this.stores, outputs: plan.outputs, signal });
-    }
-    this.live = acquired;
-    return acquired;
-  }
+  const missing = [...(env.MEMORY_BUCKET === undefined ? ["MEMORY_BUCKET"] : []), ...(env.FILES_BUCKET === undefined ? ["FILES_BUCKET"] : [])];
+  if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b copy sync requires the ${missing.join(", ")} binding`);
+  return { kind: "sync", memory: env.MEMORY_BUCKET!, files: env.FILES_BUCKET! };
 }
 
 /** Builds the facade from Worker env. Missing configuration fails here with
@@ -223,52 +174,65 @@ export function createE2BSessionSandbox(input: {
   storage: Pick<DurableObjectStorage, "get" | "put" | "delete">;
   scope(): RuntimeResourceScope;
   networking(): Promise<SessionNetworking | undefined>;
+  fence(): SandboxExecutionFence | undefined;
+  /** Schedules the idle pause (design §0.0 rule 11) `pauseMs` = IDLE_MS. */
+  idleTimer?: Omit<SessionSandboxIdleTimer, "pauseMs">;
 }): E2BSessionSandbox {
   const { env } = input;
-  const missing = (["E2B_API_KEY", "E2B_TEMPLATE", "CLOUDFLARE_ACCOUNT_ID", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MEMORY_BUCKET_NAME"] as const)
-    .filter((name) => !env[name]);
-  if (missing.length > 0 || env.FILES_BUCKET === undefined) {
-    throw new Error(`SANDBOX_ADAPTER=e2b requires ${[...missing, ...(env.FILES_BUCKET === undefined ? ["FILES_BUCKET"] : [])].join(", ")}`);
-  }
-  const files = env.FILES_BUCKET;
+  const missing = (["E2B_API_KEY", "E2B_TEMPLATE", "E2B_MAX_LIFETIME_MS"] as const).filter((name) => !env[name]);
+  if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b requires ${missing.join(", ")}`);
+  const maxLifetimeMs = parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!);
+  const storage = storageConfig(env);
   const template = env.E2B_TEMPLATE!;
+  const passes = env.PLATFORM_ROOT_SECRET ? createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now) : null;
+  const gateway = env.PUBLIC_BASE_URL;
   return new E2BSessionSandbox({
     async compose() {
-      const sdk = await import("e2b") as unknown as E2BV2Module;
+      const sdk = await loadE2BModule();
       const adapter = createE2BV2Adapter({
         sdk,
-        connection: { apiKey: env.E2B_API_KEY!, ...(env.E2B_DOMAIN ? { domain: env.E2B_DOMAIN } : {}) },
+        connection: e2bConnection(env),
         leaseMs: LEASE_MS,
+        maxLifetimeMs,
         user: "root",
-        setup: E2B_SANDBOX_SETUP,
-        channels: [new URL(env.R2_ENDPOINT!).hostname],
-        objectStorage: {
-          credentials: createR2TemporaryCredentials({
-            accountId: env.CLOUDFLARE_ACCOUNT_ID!,
-            endpoint: env.R2_ENDPOINT!,
-            bucket: env.MEMORY_BUCKET_NAME!,
-            accessKeyId: env.R2_ACCESS_KEY_ID!,
-            secretAccessKey: env.R2_SECRET_ACCESS_KEY!,
-          }),
-        },
+        ...(storage.kind === "native"
+          ? { setup: E2B_SANDBOX_SETUP, channels: [new URL(env.R2_ENDPOINT!).hostname], objectStorage: storage.objectStorage }
+          : { setup: E2B_SANDBOX_DIRECTORIES }),
       });
       const { ports } = createSandboxPorts(adapter, {
+        // Used only by the generic sync (no native storage).
         storage: {
           memories: () => {
-            throw new Error("E2B Memory Stores are s3fs mounts; the file-sync Memory API is not used");
+            if (storage.kind !== "sync") throw new Error("E2B native storage mounts Memory; the copy sync is not composed");
+            return createR2MemoryPrefixAccess(storage.memory);
           },
-          outputs: createR2BindingOutputSink(files, (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId)),
+          outputs: {
+            read: (input) => {
+              if (storage.kind !== "sync") throw new Error("E2B native storage mounts outputs; the copy sync is not composed");
+              return createR2BindingOutputSink(storage.files, (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId)).read(input);
+            },
+            publish: (publication) => {
+              if (storage.kind !== "sync") throw new Error("E2B native storage mounts outputs; the copy sync is not composed");
+              return createR2BindingOutputSink(storage.files, (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId)).publish(publication);
+            },
+          },
           // SessionDO is the single writer of its Session.
           authorize: async () => true,
         },
         egress: {
           gateway: {
-            // No Vault substitutions on this path, so the forwarder is never
-            // installed and the gateway is never contacted.
-            endpoint: { url: "https://egress.invalid/" },
-            issueToken: async () => { throw new Error("Vault egress is not available on SANDBOX_ADAPTER=e2b"); },
+            // The relay calls <endpoint>/v1/oma/egress/{resolve,forward}: the
+            // control plane's existing ingress (apps/main), which verifies the
+            // pass and the Session itself.
+            endpoint: { url: gateway ?? "https://egress-unconfigured.invalid" },
+            issueToken: async ({ attempt }) => {
+              if (passes === null || gateway === undefined) {
+                throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PLATFORM_ROOT_SECRET and PUBLIC_BASE_URL");
+              }
+              return issueSandboxRelayPass((claims) => passes.issue(claims), attempt, RELAY_PASS_TTL_MS);
+            },
             authenticate: async () => null,
-            handle: async () => new Response("Vault egress is not available on SANDBOX_ADAPTER=e2b", { status: 403 }),
+            handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),
           },
         },
       });
@@ -283,35 +247,82 @@ export function createE2BSessionSandbox(input: {
     async plan(scope, stores) {
       return {
         from: { image: template },
-        egress: egressPolicy(scope, await input.networking()),
+        egress: sessionEgressPolicy(scope, await input.networking(), await capCliSubstitutions(env, scope)),
         stores,
-        outputs: { bindingId: `outputs:${scope.sessionId}`, mountPath: "/mnt/session/outputs" },
+        outputs: outputsBinding(scope),
         idleMs: IDLE_MS,
         labels: { workspaceId: scope.workspaceId, sessionId: scope.sessionId },
       };
     },
+    now: Date.now,
+    fence: input.fence,
+    ...(input.idleTimer === undefined ? {} : { idle: { pauseMs: IDLE_MS, ...input.idleTimer } }),
   });
 }
 
-/** Environment networking → EgressPolicy. Unrestricted (or unset) → null. */
-export function egressPolicy(scope: RuntimeResourceScope, networking: SessionNetworking | undefined): EgressPolicy | null {
-  if (networking?.type !== "limited") return null;
-  return {
-    scope: { workspaceId: scope.workspaceId, sessionId: scope.sessionId, generation: 1 },
-    networking: {
-      type: "limited",
-      hosts: [...(networking.allowed_hosts ?? [])],
-      packageSources: networking.allow_package_managers ? [...PACKAGE_HOSTS] : [],
-      mcpHosts: [],
-    },
-    substitutions: [],
-  };
+/** The Session sandboxes' lifecycle alone (list / release), for the orphan
+ * reclaim (design §0.0 rule 14): the same adapter and connection Sessions
+ * acquire with, so it lists exactly their labelled sandboxes. */
+export function createE2BSandboxLifecycle(env: E2BSandboxEnv, sdk: E2BV2Module): SandboxLifecyclePort<E2BSandboxExecutor> {
+  const missing = (["E2B_API_KEY", "E2B_MAX_LIFETIME_MS"] as const).filter((name) => !env[name]);
+  if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b requires ${missing.join(", ")}`);
+  return createE2BV2Adapter({ sdk, connection: e2bConnection(env), leaseMs: LEASE_MS, maxLifetimeMs: parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!) }).lifecycle;
 }
 
-/** Publishes outputs into FILES_BUCKET through the R2 binding (the S3 key is
- * scoped to the memory bucket). Replaces the Session's previous set. */
-export function createR2BindingOutputSink(bucket: R2Bucket, keyPrefix: (scope: RuntimeResourceScope) => string): SandboxOutputSinkPort {
+/** The e2b SDK, imported only when a sandbox opens or is reclaimed. */
+export async function loadE2BModule(): Promise<E2BV2Module> {
+  return await import("e2b") as unknown as E2BV2Module;
+}
+
+function e2bConnection(env: E2BSandboxEnv) {
+  return { apiKey: env.E2B_API_KEY!, ...(env.E2B_DOMAIN ? { domain: env.E2B_DOMAIN } : {}) };
+}
+
+/** E2B_MAX_LIFETIME_MS → ms. The idle window must fit inside it (design
+ * §0.0 rule 11), checked here at assembly with the deployment's idle time. */
+export function parseMaxLifetime(value: string): number {
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error("E2B_MAX_LIFETIME_MS must be a positive integer of milliseconds (the E2B plan's continuous-run cap: Hobby 3600000, Pro 86400000)");
+  }
+  if (IDLE_MS >= ms) throw new Error(`E2B_MAX_LIFETIME_MS (${ms}) must exceed the idle pause window (${IDLE_MS} ms)`);
+  return ms;
+}
+
+/** The Session's sandbox placeholders (environment_variable and cap_cli,
+ * design §0.1), from the same main-worker RPC SessionDO uses for the
+ * placeholder env. The gateway holds the hosts and values and matches them
+ * (/resolve, /forward), so a substitution here only marks "this Session
+ * needs the forwarder" and carries its placeholder; credentialId is a
+ * label, not a Vault id. */
+export async function capCliSubstitutions(env: Pick<E2BSandboxEnv, "MAIN_MCP">, scope: RuntimeResourceScope): Promise<Substitution[]> {
+  if (env.MAIN_MCP === undefined) return [];
+  const resolved = await env.MAIN_MCP.resolveManagedCapCliEnvironment({ tenantId: scope.workspaceId, sessionId: scope.sessionId });
+  if (resolved.type !== "found") return [];
+  return placeholderSubstitutions(resolved.env, "cap_cli");
+}
+
+/** Publishes outputs into FILES_BUCKET through the R2 binding. Replaces the
+ * Session's previous set; any failed put or delete rejects. `read` returns
+ * the published set (seeds a new sandbox on the copy sync). */
+export function createR2BindingOutputSink(bucket: Pick<R2Bucket, "list" | "get" | "put" | "delete">, keyPrefix: (scope: RuntimeResourceScope) => string): SandboxOutputSinkPort {
   return {
+    async *read(input) {
+      const prefix = keyPrefix(input.scope);
+      let cursor: string | undefined;
+      do {
+        input.signal.throwIfAborted();
+        const page = await bucket.list({ prefix, ...(cursor === undefined ? {} : { cursor }) });
+        for (const object of page.objects) {
+          const logicalPath = object.key.slice(prefix.length);
+          if (logicalPath === "" || logicalPath.endsWith("/")) continue;
+          const body = await bucket.get(object.key);
+          if (body === null) continue;
+          yield [logicalPath, new Uint8Array(await body.arrayBuffer())] as const;
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor !== undefined);
+    },
     async publish(input) {
       const prefix = keyPrefix(input.scope);
       const previous = new Set<string>();
@@ -334,12 +345,6 @@ export function createR2BindingOutputSink(bucket: R2Bucket, keyPrefix: (scope: R
   };
 }
 
-function fenceFor(scope: RuntimeResourceScope): RuntimeResourceFence {
-  return { ...scope, ownerId: "session-do", generation: 1, token: "session-do", expiresAt: "9999-12-31T00:00:00.000Z" };
-}
-
-function mergeStores(saved: MemoryStoreBinding[], current: MemoryStoreBinding[]): MemoryStoreBinding[] {
-  const byName = new Map(saved.map((store) => [store.storeName, store]));
-  for (const store of current) byName.set(store.storeName, store);
-  return [...byName.values()];
+function outputsBinding(scope: RuntimeResourceScope): SessionOutputBinding {
+  return { bindingId: `outputs:${scope.sessionId}`, mountPath: "/mnt/session/outputs" };
 }

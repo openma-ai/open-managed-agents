@@ -34,8 +34,8 @@ async function initializeFrom(relativePath: string, ids?: string[]) {
     }
   }
   visit(file);
-  const { registerHarness } = await import("@open-managed-agents/agent/harness/registry");
-  const { registerCoreHarnesses } = await import("@open-managed-agents/agent/harness/builtins");
+  const { registerHarness } = await import("@open-managed-agents/agent-harness");
+  const { registerCoreHarnesses } = await import("@open-managed-agents/agent-harness");
   let registerTestHarnesses: (() => void) | undefined;
   if (statements.some((statement) => statement.startsWith("registerTestHarnesses("))) {
     const modulePath = new URL("../../../test/harnesses.ts", import.meta.url).pathname;
@@ -76,7 +76,7 @@ describe("CF test harness registration composition", () => {
   });
 
   it("does not hide a conflicting pre-existing test harness", async () => {
-    const { registerHarness, resolveHarness } = await import("@open-managed-agents/agent/harness/registry");
+    const { registerHarness, resolveHarness } = await import("@open-managed-agents/agent-harness");
     const existing = { async run() {} };
     registerHarness("multi-msg", () => existing);
     await expect(initializeFrom("test-worker.ts")).rejects.toThrow(/already registered.*multi-msg/);
@@ -92,7 +92,7 @@ describe("CF test harness registration composition", () => {
   it("preserves the features fixed reply separately from the worker echo", async () => {
     await initializeFrom("test-worker.ts");
     await initializeFrom("integration/features.test.ts");
-    const { resolveHarness } = await import("@open-managed-agents/agent/harness/registry");
+    const { resolveHarness } = await import("@open-managed-agents/agent-harness");
     for (const [id, text] of [["echo-test", "echo: hello"], ["features-echo-test", "echo reply"]]) {
       const events: unknown[] = [];
       await resolveHarness(id).run({ userMessage: { content: [{ type: "text", text: "hello" }] },
@@ -104,7 +104,7 @@ describe("CF test harness registration composition", () => {
   it("keeps multi-message behavior and rejects direct duplicate registration", async () => {
     await initializeFrom("test-worker.ts");
     await initializeFrom("integration/session-harness.test.ts");
-    const { resolveHarness, registerHarness } = await import("@open-managed-agents/agent/harness/registry");
+    const { resolveHarness, registerHarness } = await import("@open-managed-agents/agent-harness");
     const events: unknown[] = [];
     await resolveHarness("multi-msg").run({ runtime: { broadcast: (event: unknown) => events.push(event) } } as never);
     expect(events).toEqual(["msg1", "msg2", "msg3"].map((text) => ({

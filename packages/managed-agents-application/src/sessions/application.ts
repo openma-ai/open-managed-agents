@@ -329,6 +329,7 @@ export class SessionsApplicationService
       environmentId: environment.id,
       isLocalRuntime:
         environment.config.type === "self_hosted" || agent.openma?.runtimeBinding != null,
+      vaultIds: command.vaultIds ?? [],
     });
     if (admission.type !== "admitted") return admission;
 

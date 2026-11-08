@@ -926,6 +926,9 @@ export class CloudflareSandbox
     ownerId?: string;
     generation?: number;
     fenceToken?: string;
+    /** Session execution attempt (design §0.0 rule 10); absent = no Vault. */
+    executionId?: string;
+    attemptId?: string;
     required?: boolean;
     controlPlaneBaseUrl?: string;
   }): Promise<void> {
@@ -968,6 +971,8 @@ export class CloudflareSandbox
         ownerId: opts.ownerId,
         generation: opts.generation,
         fenceToken: opts.fenceToken,
+        executionId: opts.executionId,
+        attemptId: opts.attemptId,
         required: this.outboundRequired,
       });
       if (typeof sandbox.setOutboundByHost === "function") {
@@ -979,6 +984,8 @@ export class CloudflareSandbox
           ownerId: opts.ownerId,
           generation: opts.generation,
           fenceToken: opts.fenceToken,
+          executionId: opts.executionId,
+          attemptId: opts.attemptId,
           required: this.outboundRequired,
           controlPlaneOrigin: controlPlane?.origin,
         };

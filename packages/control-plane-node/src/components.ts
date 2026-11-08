@@ -15,6 +15,7 @@ import type { NodeAuth } from "./auth.js";
 import type { NodeBlobs } from "./blobs.js";
 import type { NodeConfig } from "./config.js";
 import type { EventStreamHub } from "./lib/event-stream-hub.js";
+import type { NodeSessionSandboxAdapter } from "./lib/node-session-sandbox.js";
 import type { NodeSecrets } from "./secrets.js";
 
 export interface NodeRealtime {
@@ -41,6 +42,9 @@ export interface NodeComponents {
   auth: NodeAuth | null;
   email: EmailSender | null;
   sandbox: SandboxFactory;
+  /** The provider's Sandbox SDK v2 adapter for Session sandboxes; omitted:
+   * `sandbox` through the v1 bridge. */
+  sessionSandboxAdapter?: NodeSessionSandboxAdapter;
   realtime: NodeRealtime;
   blobs: NodeBlobs;
   /** Replace individual managed-platform stores; anything omitted is SQL-backed. */

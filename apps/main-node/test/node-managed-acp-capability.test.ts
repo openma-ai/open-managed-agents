@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import type { SessionExecution, SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
+import { authenticateEnvironmentWorkSessionBearer, SealedEnvironmentWorkSessionCredentialIssuer } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { createNodeManagedAcpCapabilities } from "../../../packages/control-plane-node/src/lib/node-managed-acp-capability";
 import { createNodeSecrets } from "../../../packages/control-plane-node/src/secrets";
+import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
+import { createSqlSessionRuntimeReaders } from "@open-managed-agents/session-runtime-sql";
+import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql/coordination";
+import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
 
 function fixture() {
   let now = new Date("2026-10-23T08:00:00Z");
@@ -22,6 +27,18 @@ describe("Node execution-scoped ACP capability", () => {
     for (const path of ["/v1/oma/mcp-proxy/other/maxcompute", "/v1/oma/inference-proxy/other/v1/messages", "/v1/agents", "/v1/sessions/session/events", "/v1/environments/env/work/exec/heartbeat", "/v1/oma/sessions/session/runtime-events"]) expect(await f.capabilities.authenticate({ token, path, method: "POST" })).toBeNull();
     expect(await f.capabilities.authenticate({ token: token + "tampered", path: "/v1/oma/mcp-proxy/session/maxcompute", method: "POST" })).toBeNull();
   });
+  it("characterization: execution and Work bearers are sealed apart, so resolveBearerToken's order (execution, then Work) only picks the check", async () => {
+    const f = fixture(); const { sessionsToken: token } = await f.capabilities.issue(f.input);
+    const work = createNodeSecrets("test-only-root").cipherFor("managed.environment-work.session-token");
+    const path = "/v1/oma/mcp-proxy/session/maxcompute";
+    expect(await authenticateEnvironmentWorkSessionBearer({ token, method: "POST", path, crypto: work, now: f.deps.now })).toBeNull();
+    const issuer = new SealedEnvironmentWorkSessionCredentialIssuer({ crypto: work, now: f.deps.now });
+    const issued = await issuer.issue({ workspaceId: "tenant", session: f.session, environment: f.input.environment, workId: "work" });
+    if (issued.type !== "issued") throw new Error(issued.message);
+    const bound = await issuer.bindToClaim({ secret: issued.secret, claimedAt: f.execution.attempt!.claimedAt, generation: 2 });
+    expect(await f.capabilities.authenticate({ token: bound.secret.sessionsToken, method: "POST", path })).toBeNull();
+    expect(await authenticateEnvironmentWorkSessionBearer({ token: bound.secret.sessionsToken, method: "POST", path, crypto: work, now: f.deps.now })).toMatchObject({ workId: "work" });
+  });
   it.each(["completed", "cancelled", "generation", "claim", "lease", "archived", "malformed-lease"] as const)("revokes the bearer when %s", async reason => {
     const f = fixture(); const { sessionsToken: token } = await f.capabilities.issue(f.input);
     if (reason === "completed" || reason === "cancelled") f.execution.state = reason;
@@ -32,7 +49,11 @@ describe("Node execution-scoped ACP capability", () => {
     if (reason === "malformed-lease") f.execution.attempt!.leaseExpiresAt = "invalid";
     expect(await f.capabilities.authenticate({ token, method: "POST", path: "/v1/oma/mcp-proxy/session/maxcompute" })).toBeNull();
   });
-  it.each(["workspace", "session", "agent-version", "owner", "attempt", "generation", "expired-fence", "environment"] as const)("rejects issuing for a mismatched %s", async reason => {
+  it("issues while the lease row is live although the fence snapshot expired (design §0.0 rule 10: heartbeats renew the row only)", async () => {
+    const f = fixture(); f.fence.expiresAt = "2026-10-23T07:59:00Z";
+    expect((await f.capabilities.issue(f.input)).sessionsToken).toMatch(/^sk-ant-req-v1\./);
+  });
+  it.each(["workspace", "session", "agent-version", "owner", "attempt", "generation", "expired-lease", "environment"] as const)("rejects issuing for a mismatched %s", async reason => {
     const f = fixture();
     if (reason === "workspace") f.input.workspaceId = "other";
     if (reason === "session") f.input.session.id = "other";
@@ -40,7 +61,7 @@ describe("Node execution-scoped ACP capability", () => {
     if (reason === "owner") f.fence.ownerId = "other";
     if (reason === "attempt") f.fence.attemptId = "other";
     if (reason === "generation") f.fence.generation++;
-    if (reason === "expired-fence") f.fence.expiresAt = "2026-10-23T07:59:00Z";
+    if (reason === "expired-lease") f.advance();
     if (reason === "environment") f.input.environment.id = "other";
     await expect(f.capabilities.issue(f.input)).rejects.toThrow();
   });
@@ -62,4 +83,33 @@ describe("Node execution-scoped ACP capability", () => {
     const caps = createNodeManagedAcpCapabilities({ ...f.deps, ...(missing === "crypto" ? { crypto: null } : {}), ...(missing === "url" ? { gatewayBaseUrl: undefined } : {}) });
     await expect(caps.issue({ ...f.input, ...(missing === "fence" ? { executionFence: undefined } : {}) })).rejects.toThrow(/PLATFORM_ROOT_SECRET|PUBLIC_BASE_URL|Execution fence/);
   });
+});
+
+// The Node SandboxGatewayStore as node-managed.ts wires it: the coordinator's
+// lease and the execution-context Session read. CF runs the same suite over
+// @open-managed-agents/sandbox-gateway-sql (test/integration/sandbox-gateway-d1.test.ts).
+sandboxGatewayStoreConformance("Node managed ACP stores (better-sqlite3)", {
+  async withStore(_fixtureId, run) {
+    const sql = await createBetterSqlite3SqlClient(":memory:");
+    await ensureSessionExecutionCoordinatorSchema(sql);
+    await sql.exec(`CREATE TABLE managed_sessions (
+        workspace_id text NOT NULL, id text NOT NULL, document text NOT NULL, revision integer NOT NULL,
+        agent_id text NOT NULL, agent_version integer NOT NULL, environment_id text NOT NULL, status text NOT NULL,
+        created_at integer NOT NULL, updated_at integer NOT NULL, archived_at integer, PRIMARY KEY (workspace_id, id));
+      CREATE TABLE managed_environments (
+        workspace_id text NOT NULL, id text NOT NULL, document text NOT NULL, revision integer NOT NULL,
+        created_at integer NOT NULL, updated_at integer NOT NULL, archived_at integer, PRIMARY KEY (workspace_id, id));`);
+    const executions = new SqlSessionExecutionCoordinator(sql);
+    const readers = createSqlSessionRuntimeReaders(sql);
+    const capabilities = createNodeManagedAcpCapabilities({
+      crypto: null, now: () => new Date(),
+      findExecution: (input) => executions.find(input),
+      findSession: async (input) => (await readers.executionContext.find(input))?.session ?? null,
+    });
+    const workspaceId = "workspace_01";
+    return run({
+      workspaceId, executions, store: await capabilities.stores(workspaceId),
+      seedSession: (session) => seedSandboxGatewaySessionRows(sql, workspaceId, session),
+    });
+  },
 });

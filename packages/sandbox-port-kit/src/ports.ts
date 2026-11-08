@@ -7,9 +7,11 @@ import type {
   RuntimeResourceScope,
   SessionMemoryAccessPort,
 } from "@open-managed-agents/runtime-resource-contract";
+import type { SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 import type {
   SandboxEgressPort,
   SandboxLifecyclePort,
+  SandboxPort,
   SandboxStoragePort,
 } from "@open-managed-agents/sandbox";
 import type { FirewallRules } from "./firewall";
@@ -41,6 +43,11 @@ export interface SandboxVendorPort<R> {
    * creation do it in acquire from the Plan. Absent = no provider firewall:
    * the policy is enforced only on traffic that reaches the gateway (§0.3). */
   applyFirewall?(runtime: R, rules: FirewallRules): Promise<void>;
+  /** The runtime itself when it is a v1 SandboxPort (the v1 bridges): the
+   * shared relay installer then uses its own path mapping (a local adapter
+   * maps /workspace to a host directory). Absent = a view over the
+   * primitives above. */
+  asSandboxPort?(runtime: R): SandboxPort;
 }
 
 /** Injected by the core / composition layer. */
@@ -58,6 +65,10 @@ export interface SandboxStorageDepsPort {
 /** Receives the complete set of files under /mnt/session/outputs/ at a turn
  * boundary. Implementations replace the Session's published outputs. */
 export interface SandboxOutputSinkPort {
+  /** The Session's currently published outputs. createSyncStorage copies
+   * them into a sandbox that has not received them yet, so the next
+   * publish does not replace them with an empty directory. */
+  read(input: { scope: RuntimeResourceScope; signal: AbortSignal }): AsyncIterable<readonly [logicalPath: string, bytes: Uint8Array]>;
   publish(input: {
     scope: RuntimeResourceScope;
     fence: RuntimeResourceFence;
@@ -69,14 +80,19 @@ export interface SandboxOutputSinkPort {
 export interface SandboxEgressDepsPort {
   gateway: {
     endpoint: { url: string; fixedIps?: readonly string[] };
-    /** Short-lived token bound to one execution (#561). */
-    issueToken(input: { scope: RuntimeResourceScope; fence: RuntimeResourceFence }): Promise<string>;
+    /** Short-lived token bound to one Session execution attempt (#561);
+     * `attempt` is null when no execution is running. */
+    issueToken(input: { scope: RuntimeResourceScope; attempt: SessionExecutionAttemptRef | null }): Promise<string>;
     authenticate(id: { via: "token"; token: string } | { via: "source"; claim: SourceClaim }): Promise<EgressScope | null>;
     /** = createCredentialEgressCore: policy decision first, then credential substitution. */
     handle(scope: EgressScope, req: PlainRequest): Promise<Response>;
   };
   /** Only for route 2 (provider substitution); without it no plaintext is available. */
   secrets?: { read(credentialId: string): Promise<{ value: string; expiresAt: number | null }> };
+  /** Platform channels of this Session (compileFirewall `channels`): hosts
+   * the platform itself needs under `limited` networking, e.g. an attached
+   * repository's host (repositoryChannels). Omitted = none. */
+  channels?(scope: RuntimeResourceScope): readonly string[] | Promise<readonly string[]>;
 }
 
 export interface EgressScope { workspaceId: string; sessionId: string; workId: string; generation: number; vaultIds: readonly string[] }

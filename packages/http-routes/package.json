@@ -26,6 +26,8 @@
     "@open-managed-agents/inference-proxy": "workspace:*",
     "@open-managed-agents/integrations-core": "workspace:*",
     "@open-managed-agents/kv-store": "workspace:*",
+    "@open-managed-agents/managed-credential-resolver": "workspace:*",
+    "@open-managed-agents/mcp-access-loss": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/model-cards-store": "workspace:*",
     "@open-managed-agents/observability": "workspace:*",
@@ -36,7 +38,7 @@
     "@open-managed-agents/sql-client": "workspace:*",
     "@open-managed-agents/vault-forward": "workspace:*",
     "@open-managed-agents/vaults-store": "workspace:*",
-    "hono": "^4.7.0",
+    "hono": "4.12.12",
     "nanoid": "^5.1.0",
     "@open-managed-agents/evals-runner": "workspace:*"
   }

@@ -4,7 +4,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => vi.restoreAllMocks());
 import { createEgressRelayPasses } from "../../packages/managed-credential-resolver/src/relay";
 import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
-import { ensureRuntimeResourceFenceSchema, SqlRuntimeResourceFencePort } from "../../packages/runtime-resource-fence-sql/src/index";
+import { SqlRuntimeResourceFencePort } from "../../packages/runtime-resource-fence-sql/src/index";
+
+/** A running execution attempt for `sessionId`: Session sandbox credentials
+ * (relay pass, native egress) are bound to it (design §0.0 rule 10). */
+async function runningAttempt(sessionId: string) {
+  const executionId = `exe-${crypto.randomUUID()}`; const now = Date.now();
+  await env.MAIN_DB.prepare(`INSERT INTO managed_session_executions
+    (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json, events_fingerprint, state, attempt_id, owner_id, generation,
+     attempt_count, max_attempts, deadline_at_ms, claimed_at_ms, lease_expires_at_ms, revision)
+    VALUES ('default', ?, 'sthr_primary', ?, ?, '[]', ?, 'running', 'att', 'owner', 1, 1, 3, ?, ?, ?, 1)`)
+    .bind(sessionId, executionId, now, executionId, now + 600000, now, now + 600000).run();
+  return {
+    fence: { executionId, attemptId: "att", ownerId: "owner", generation: 1 },
+    settle: () => env.MAIN_DB.prepare("UPDATE managed_session_executions SET state='completed' WHERE workspace_id='default' AND id=?").bind(executionId).run(),
+  };
+}
 
 describe("Cloudflare production Session relay route", () => {
   it("revokes resolve, forward and MCP injection after Vault archival or deletion", async () => {
@@ -26,7 +41,8 @@ describe("Cloudflare production Session relay route", () => {
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [vault.id], agent: { mcpServers: [{ name: "docs", type: "url", url: target }] } }), Date.now(), Date.now()).run();
     const passes = createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now);
-    const pass = await passes.issue({ workspaceId: "default", sessionId: id, ttlMs: 60000 });
+    const attempt = await runningAttempt(id);
+    const pass = await passes.issue({ workspaceId: "default", sessionId: id, ...attempt.fence, ttlMs: 60000 });
     const upstreamTokens: Array<string | null> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
       const request = input instanceof Request ? input : new Request(input);
@@ -85,7 +101,7 @@ describe("Cloudflare production Session relay route", () => {
     const passes = createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now);
     try {
       const response = await exports.default.fetch(new Request("https://localhost/v1/oma/egress/forward", { method: "POST", headers: {
-        authorization: `Bearer ${await passes.issue({ workspaceId: "default", sessionId: id, ttlMs: 60000 })}`,
+        authorization: `Bearer ${await passes.issue({ workspaceId: "default", sessionId: id, ...(await runningAttempt(id)).fence, ttlMs: 60000 })}`,
         "x-oma-egress-target": target, "x-oma-egress-method": "GET",
         "x-oma-egress-headers": JSON.stringify({ [alias]: "__cap_managed__", authorization: "Bearer __cap_managed__" }),
       } }));
@@ -96,7 +112,7 @@ describe("Cloudflare production Session relay route", () => {
     }
   });
 
-  it("accepts only the Session pass, uses the current D1 Session and denies archival", async () => {
+  it("accepts only a pass bound to the current execution attempt, uses the current D1 Session and denies archival (design §0.0 rule 10)", async () => {
     const health = await exports.default.fetch(new Request("http://localhost/health"));
     expect(health.status).toBe(200);
     const id = `relay-${crypto.randomUUID()}`;
@@ -105,7 +121,9 @@ describe("Cloudflare production Session relay route", () => {
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [] }), Date.now(), Date.now()).run();
     const passes = createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now);
-    const pass = await passes.issue({ workspaceId: "default", sessionId: id, ttlMs: 60000 });
+    const attempt = await runningAttempt(id);
+    const pass = await passes.issue({ workspaceId: "default", sessionId: id, ...attempt.fence, ttlMs: 60000 });
+    const stale = await passes.issue({ workspaceId: "default", sessionId: id, ...attempt.fence, attemptId: "previous", ttlMs: 60000 });
     const call = (authorization: string) => exports.default.fetch(new Request("https://localhost/v1/oma/egress/resolve", {
       method: "POST", headers: { authorization, "x-oma-egress-target": "https://public.example/" },
     }));
@@ -114,7 +132,13 @@ describe("Cloudflare production Session relay route", () => {
       expect(response.status, await response.clone().text()).toBe(200);
       expect(await response.json()).toEqual({ inject: false });
       expect((await call("Bearer test-key")).status).toBe(401);
+      expect((await call("Bearer unfenced")).status).toBe(401);
+      expect((await call(`Bearer ${stale}`)).status).toBe(403);
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=? WHERE workspace_id='default' AND id=?").bind(Date.now(), id).run();
+      expect((await call(`Bearer ${pass}`)).status).toBe(403);
+      await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=NULL WHERE workspace_id='default' AND id=?").bind(id).run();
+      expect((await call(`Bearer ${pass}`)).status).toBe(200);
+      await attempt.settle(); // the turn ended: the pass dies with its attempt
       expect((await call(`Bearer ${pass}`)).status).toBe(403);
     } finally {
       await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
@@ -125,9 +149,9 @@ describe("Cloudflare production Session relay route", () => {
 describe("Cloudflare native credential egress RPC", () => {
   // createEgressRelayPasses imports exactly this HMAC key; the RPC must never mint one.
   const relayPassKeys = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter(([format, data]) =>
-    format === "raw" && new TextDecoder().decode(data as Uint8Array).startsWith("credential-relay.v1:")).length;
+    format === "raw" && new TextDecoder().decode(data as Uint8Array).startsWith("credential-relay.v2:")).length;
 
-  it("serves resolve and forward without a relay pass, keeping fence and Session denials", async () => {
+  it("serves resolve and forward without a relay pass, keeping fence and Session denials; no fence → denied (design §0.0 rule 10)", async () => {
     const api = async (path: string, body: unknown) => {
       const response = await exports.default.fetch(new Request(`https://localhost${path}`, { method: "POST", headers: {
         "x-api-key": "test-key", "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01",
@@ -144,7 +168,6 @@ describe("Cloudflare native credential egress RPC", () => {
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [vault.id] }), Date.now(), Date.now()).run();
     const sql = sqlClientFromD1(env.MAIN_DB);
-    await ensureRuntimeResourceFenceSchema(sql);
     const acquired = await new SqlRuntimeResourceFencePort(sql).acquire({
       scope: { workspaceId: "default", environmentId: "environment", sessionId: id, workId: "work" }, ownerId: "owner", ttlMs: 600000,
     });
@@ -159,14 +182,26 @@ describe("Cloudflare native credential egress RPC", () => {
     });
     const importKey = vi.spyOn(crypto.subtle, "importKey");
     const egress = (action: "resolve" | "forward", request: Request, fence: unknown = runtimeFence) =>
-      env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, ...(fence === undefined ? {} : { runtimeFence: fence }) }, action, request);
+      env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, ...(fence === null ? {} : { runtimeFence: fence }) }, action, request);
     const post = (url = target) => new Request(url, { method: "POST", body: new Uint8Array([0, 255, 128]), headers: {
       authorization: "Bearer __cap_managed__", "proxy-authorization": "strip", "x-client": "keep",
     } });
     try {
       expect(await (await egress("resolve", new Request(target))).json()).toEqual({ inject: true });
       expect(await (await egress("resolve", new Request("https://public.example/"))).json()).toEqual({ inject: false });
-      expect(await (await egress("resolve", new Request(target), undefined)).json()).toEqual({ inject: true });
+      // Deliberate (design §0.0 rule 10): without a fence the RPC no longer injects.
+      const noFence = await egress("resolve", new Request(target), null);
+      expect(noFence.status).toBe(403);
+      // A Session sandbox's execution attempt: injected while current, denied once it ends.
+      const attempt = await runningAttempt(id);
+      const executionEgress = (action: "resolve" | "forward", request: Request) =>
+        env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, executionFence: attempt.fence }, action, request);
+      expect(await (await executionEgress("resolve", new Request(target))).json()).toEqual({ inject: true });
+      expect((await executionEgress("resolve", new Request(target))).status).toBe(200);
+      const staleExecution = await env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, executionFence: { ...attempt.fence, attemptId: "previous" } }, "resolve", new Request(target));
+      expect(staleExecution.status).toBe(403);
+      await attempt.settle();
+      expect((await executionEgress("resolve", new Request(target))).status).toBe(403);
       const forwarded = await egress("forward", post());
       expect(forwarded.status).toBe(201);
       expect(new Uint8Array(await forwarded.arrayBuffer())).toEqual(new Uint8Array([1, 255]));
@@ -201,5 +236,23 @@ describe("Cloudflare native credential egress RPC", () => {
     } finally {
       await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
     }
+  });
+
+  it("GitHub credential lookup fails closed on a stale Environment Work fence (characterization)", async () => {
+    await exports.default.fetch(new Request("http://localhost/health"));
+    const sessionId = `relay-gh-${crypto.randomUUID()}`;
+    const acquired = await new SqlRuntimeResourceFencePort(sqlClientFromD1(env.MAIN_DB)).acquire({
+      scope: { workspaceId: "default", environmentId: "environment", sessionId, workId: "work" }, ownerId: "owner", ttlMs: 600000,
+    });
+    if (acquired.type !== "acquired") throw new Error("expected fence");
+    const { environmentId, workId, ownerId, generation, token } = acquired.fence;
+    const lookup = (fenceToken: string) => env.MAIN_MCP.lookupGithubCredential({
+      tenantId: "default", sessionId, hostname: "github.com", pathname: "/acme/app",
+      runtimeFence: { environmentId, workId, ownerId, generation, token: fenceToken },
+    });
+    await expect(lookup(token)).resolves.toBeNull();
+    // Settled here: an RPC promise handed to expect().rejects is reported as unhandled.
+    const stale = await lookup("stale-token").then(() => null, (error: Error) => error);
+    expect(stale?.message).toMatch(/stale runtime credential-egress fence/);
   });
 });

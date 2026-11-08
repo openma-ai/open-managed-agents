@@ -15,6 +15,7 @@ export {
 export { serveNodeControlPlane, type NodeServer, type ServeNodeControlPlaneOptions } from "./serve.js";
 
 export type { NodeComponentOverrides, NodeComponents, NodeRealtime } from "./components.js";
+export type { NodeSessionSandboxAdapter } from "./lib/node-session-sandbox.js";
 export type { NodeAuth, NodeAuthSession, NodeSignInMethods } from "./auth.js";
 export type {
   FilesBlobs,
@@ -54,13 +55,5 @@ export { parseAllowHosts } from "./lib/skill-sources.js";
 
 // Deployment composition: register code-owned harnesses before creating sessions.
 // The registry is process-scoped, shared by discovery and both session resolvers.
-export {
-  registerHarness,
-  setDefaultHarness,
-  getHarnessCatalog,
-  type HarnessFactory,
-  type HarnessDescriptor,
-  type HarnessCatalog,
-  type HarnessExecutionPlacement,
-} from "@open-managed-agents/agent/harness/registry";
-export type { HarnessInterface, HarnessContext } from "@open-managed-agents/agent/harness/interface";
+export { registerHarness, setDefaultHarness, getHarnessCatalog, type HarnessFactory, type HarnessDescriptor, type HarnessCatalog, type HarnessExecutionPlacement } from "@open-managed-agents/agent-harness";
+export type { HarnessInterface, HarnessContext } from "@open-managed-agents/agent-harness";

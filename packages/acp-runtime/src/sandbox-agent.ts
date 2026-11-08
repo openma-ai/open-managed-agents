@@ -2,6 +2,7 @@ import {
   MODEL_PROVIDER_SECRET_ENV_KEYS,
   projectHostedInferenceEnv,
 } from "@open-managed-agents/inference-proxy";
+import { parseExecResult } from "@open-managed-agents/sandbox";
 
 import {
   ACP_NATIVE_STATE_PROFILES,
@@ -549,7 +550,10 @@ export async function hasRequiredAcpSandboxAgentState(
       const result = await sandbox.exec(
         `if [ ${predicate} ${shellQuote(sandboxShellPath(artifact.path))} ]; then printf present; else printf missing; fi`,
       );
-      if (result.trim() !== "present") return false;
+      // Exec ports report status as a prefix (Cloudflare, CF E2B executor:
+      // "exit=N\n...") or a failure suffix ("[exit N]"); read stdout only.
+      const { exitCode, stdout } = parseExecResult(result);
+      if (exitCode !== 0 || stdout.trim() !== "present") return false;
     } catch {
       return false;
     }

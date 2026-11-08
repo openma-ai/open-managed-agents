@@ -16,6 +16,13 @@
  *   git diff --name-only ... | node scripts/ci-impact-surfaces.mjs --write-github-output
  *
  * Without paths on argv, reads newline-separated paths from stdin.
+ *
+ * Session runtime routing does not depend on the cf/node lists below: CI also
+ * runs a job when the multi-platform parity gate selects it
+ * (`scripts/check-platform-parity.mjs affected`: changed files -> owning
+ * package -> pnpm reverse dependents -> affected platforms), and the job
+ * conditions are `cf || parity_cf` / `node || parity_node`. These lists only
+ * cover the other surfaces.
  */
 
 import { writeFileSync } from "node:fs";

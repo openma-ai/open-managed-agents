@@ -19,7 +19,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
 import { Hono } from "hono";
 import { mountKimiKhaCompat } from "../kimi-kha/index.js";
-import { getHarnessCatalog } from "@open-managed-agents/agent/harness/registry";
+import { getHarnessCatalog } from "@open-managed-agents/agent-harness";
 import { OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createArtifactsHandler, createManagedSessionMapping, createResourcesHandler, createSessionsHandler } from "@open-managed-agents/openai-agents-compat";
 
@@ -45,7 +45,8 @@ import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplic
 
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 
-import { ingestEnvironmentWorkRuntimeEvents, authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { ingestEnvironmentWorkRuntimeEvents, sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { authenticateSandboxBearer } from "@open-managed-agents/sandbox-gateway";
 import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 
 import { buildOmaModelsHttpRoutes } from "@open-managed-agents/managed-agents-adapters-http";
@@ -77,9 +78,7 @@ import { execManagedSandbox, ManagedSandboxExecError } from "../lib/managed-sand
 import { buildSkillSourcesRoutes, createSourceFetcher } from "../lib/skill-sources.js";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 
-import { buildNodeHttpInferenceProxyRoutes } from "../lib/http-inference-proxy.js";
-import { buildNodeHttpMcpProxyRoutes } from "../lib/http-mcp-proxy.js";
-import { createNodeAccessLossRuntime } from "../lib/mcp-access-loss.js";
+import { createInferenceProxyRoutes, createMcpProxyRoutes } from "@open-managed-agents/http-routes/proxy";
 
 import { Disposables } from "../lifecycle.js";
 
@@ -121,8 +120,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     realtimeDescription,
     sessionRegistry,
     resolveDreamModelCredentials,
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
@@ -255,18 +254,15 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     },
     resolveBearerToken: async ({ token, method, path }) => {
       if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
-      const scoped = await managedAcpCapabilities.authenticate({ token, method, path })
-        ?? await authenticateEnvironmentWorkSessionBearer({
-        token,
-        method,
-        path,
-        crypto: managedEnvironmentWorkSessionTokenCrypto,
-        now: () => new Date(),
-        isCurrent: (claim) => isCurrentEnvironmentWorkClaim({
+      // The shared sandbox bearer check (design §0.0 rule 10): the execution
+      // token on proxy routes, then the Work token.
+      const scoped = await authenticateSandboxBearer(managedAcpCapabilities.authority({
+        codec: sealedSandboxBearerCodec(managedEnvironmentWorkSessionTokenCrypto, () => new Date()),
+        isCurrentClaim: (claim) => isCurrentEnvironmentWorkClaim({
           store: managedEnvironmentWorkStore,
           now: () => new Date(),
         }, claim),
-      });
+      }), { token, method, path });
       return scoped === null
         ? null
         : {
@@ -538,13 +534,10 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       } as unknown as import("@open-managed-agents/shared").EnvironmentConfig;
     },
   }));
-  v1.route("/oma/mcp-proxy", buildNodeHttpMcpProxyRoutes({
-    resolveTarget: resolveNodeMcpProxyTarget,
-    accessLoss: await createNodeAccessLossRuntime(sql),
-  }));
-  v1.route("/oma/inference-proxy", buildNodeHttpInferenceProxyRoutes({
-    resolveUpstream: resolveNodeInferenceUpstream,
-  }));
+  // The parent v1 middleware authenticates the caller (sandbox-gateway) and
+  // sets tenant_id; the gateways never take the workspace from the request.
+  v1.route("/oma/mcp-proxy", createMcpProxyRoutes(() => mcpProxyPorts));
+  v1.route("/oma/inference-proxy", createInferenceProxyRoutes(() => inferenceProxyPorts));
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);
   v1.route("/user_profiles", managedUserProfilesRoutes);

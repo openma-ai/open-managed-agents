@@ -11,8 +11,8 @@
 // response pump reject unobserved on any client cancel/abort — reproducible
 // with a bare ReadableStream and no OMA code — so that path cannot prove
 // anything about this route.
-import { registerCoreHarnesses } from "../../apps/agent/src/harness/builtins";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
+import { registerCoreHarnesses } from "../../packages/agent-harness/src/builtins";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { setCloudflareSandboxForTest } from "../../apps/agent/src/runtime/sandbox";
 import { env, exports } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";
@@ -32,11 +32,22 @@ const json = async <T>(response: Response): Promise<T> => {
 const workspace = new Map<string, Uint8Array>();
 const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 const ok = (stdout: string) => ({ stdout, stderr: "", exitCode: 0, success: true });
+/** Sandbox SDK 1.0 container: mounts are attached when it starts. */
+let container: { incarnation: string; mounts: string[]; marker: string } | null = null;
 
 beforeAll(async () => {
   await ensureModelCards(["claude-sonnet-4-6"]);
   setCloudflareSandboxForTest({
+    describe: async () => ({ running: container !== null, incarnation: container?.incarnation ?? null, mounts: container?.mounts ?? [] }),
+    provision: async (input: { incarnation: string; mounts: Array<{ mountPath: string }> }) => {
+      if (container !== null) return { incarnation: container.incarnation, started: false, pendingMounts: [] };
+      container = { incarnation: input.incarnation, mounts: input.mounts.map(mount => mount.mountPath), marker: input.incarnation };
+      return { incarnation: input.incarnation, started: true, pendingMounts: [] };
+    },
     exec: async (command: string) => {
+      const marker = command.match(/^echo (\S+) > \/tmp\/\.oma-warm$/);
+      if (marker && container !== null) container.marker = marker[1]!;
+      if (command.startsWith("cat /tmp/.oma-warm")) return ok(container?.marker ?? "");
       if (command.includes("find ./outputs")) {
         const paths = [...workspace.keys()].filter(path => path.startsWith("/workspace/outputs/")).sort();
         return ok(base64(new TextEncoder().encode(paths.map(path => `.${path.slice("/workspace".length)}\0`).join(""))));

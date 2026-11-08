@@ -30,9 +30,9 @@ export interface SandboxPorts<R> {
 }
 
 /**
- * Compute lifecycle. No optional methods; the only declaration is
- * {@link handle}. Anything a provider cannot do degrades as the method
- * comments say; the core does not branch on it.
+ * Compute lifecycle. No optional methods; the only declarations are
+ * {@link handle} and {@link maxLifetimeMs}. Anything a provider cannot do
+ * degrades as the method comments say; the core does not branch on it.
  *
  * Not found is an expected result, never an error: `attach`, `resume` and
  * `keepAlive` return `"gone"`. Provider throttling or busy states throw
@@ -47,6 +47,12 @@ export interface SandboxLifecyclePort<R> {
    * whether a sandbox started by a fenced-out owner is released, and whether
    * orphan reaping scans by label. */
   readonly handle: "fixed" | "changes";
+  /** Provider cap on continuous running: past it the provider stops the
+   * sandbox; a pause and resume restarts the clock (design §0.0 rule 11).
+   * From the deployer's adapter configuration (it must match the account
+   * plan), never a plan API. `null` = no cap (Cloudflare). The core uses it
+   * to pause → attach in a gap between tool calls before the cap. */
+  readonly maxLifetimeMs: number | null;
   /** Start a new sandbox from a template or image digest. Providers that can
    * only configure a firewall or mount storage at creation do it here from
    * `plan`. A template in `plan.from` that expired or was deleted → `"gone"`;

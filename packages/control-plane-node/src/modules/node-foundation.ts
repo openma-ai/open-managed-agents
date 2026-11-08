@@ -35,15 +35,12 @@ import { createSqliteModelCardService, resolveWorkspaceModelCredentials } from "
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import { generateEventId } from "@open-managed-agents/shared";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
-import { buildTools } from "@open-managed-agents/agent/harness/tools";
-import { assertRuntimeAgentSnapshot } from "@open-managed-agents/agent/runtime/multiagent";
-import { createPiModelRuntime, toAiSdkLanguageModel } from "@open-managed-agents/agent/harness/pi-provider";
-import type { PiModelConfig } from "@open-managed-agents/agent/harness/pi-provider";
+import {
+  registerCoreHarnesses, resolveHarness, buildTools, assertRuntimeAgentSnapshot,
+  createPiModelRuntime, toAiSdkLanguageModel, type PiModelConfig, composeSystemPrompt,
+  type HarnessContext,
+} from "@open-managed-agents/agent-harness";
 
-import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform-guidance";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 import { nodeToMarkdown } from "@open-managed-agents/markdown/adapters/node";
 
 import { SqlAgentPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
@@ -389,6 +386,10 @@ export async function createNodeFoundation(
   const legacySessionMcpProxy = createLegacySessionMcpProxy({
     sessions: sessionsService,
     credentials: credentialService,
+    log: {
+      info: (fields, message) => logger.info(fields, message),
+      warn: (fields, message) => logger.warn(fields, message),
+    },
   });
 
   const sessionRegistry = new SessionRegistry({

@@ -4,20 +4,26 @@ import { join } from "node:path";
 import { matchesAgentIdentity } from "../match.js";
 import { proxyUrl } from "../helpers.js";
 
+/**
+ * pi reads its model only from files under PI_CODING_AGENT_DIR (pi 0.84,
+ * docs/models.md, docs/settings.md); pi-acp 0.0.33 has no model env var.
+ * - models.json `apiKey` interpolates `$VAR` / `${VAR}`; any other string is
+ *   a literal key, so the gateway would get it as the bearer.
+ * - settings.json `defaultProvider` / `defaultModel` pick the model of a new
+ *   session (a resumed one keeps its own); an id pi does not know silently
+ *   falls back to the provider's default model, so `wireModel` must be the
+ *   upstream id. `quietStartup` stops pi-acp sending its banner as agent text.
+ */
 export const piInferenceAdapter: InferenceConfigAdapter = {
   id: "pi",
   supportedProtocols: ["openai-chat"],
   matches: (agent) => matchesAgentIdentity(agent, ["pi-acp"]),
   plan(context) {
     const { nativePath, target, proxy, endpoint } = context;
-    const modelsPath = join(
-      nativePath,
-      "home",
-      ".pi",
-      "agent",
-      "models.json",
-    );
+    const agentDir = join(nativePath, "home", ".pi", "agent");
     const baseUrl = proxyUrl(proxy, endpoint.proxyPathSegment);
+    // deepseek is a pi built-in provider: its catalog (and per-model compat)
+    // stays, only the endpoint and key change. Others get one custom model.
     const providerId = target.providerId === "deepseek"
       ? "deepseek"
       : "oma-hosted";
@@ -25,7 +31,7 @@ export const piInferenceAdapter: InferenceConfigAdapter = {
       providers: {
         [providerId]: {
           baseUrl,
-          apiKey: `{env:${proxy.proxyTokenEnvVar}}`,
+          apiKey: `$${proxy.proxyTokenEnvVar}`,
           api: "openai-completions",
           ...(providerId === "deepseek"
             ? {}
@@ -34,20 +40,24 @@ export const piInferenceAdapter: InferenceConfigAdapter = {
                 supportsDeveloperRole: false,
                 thinkingFormat: "openai",
               },
+              models: [{ id: target.wireModel }],
             }),
         },
       },
     };
+    const settings = {
+      defaultProvider: providerId,
+      defaultModel: target.wireModel,
+      quietStartup: true,
+    };
     return {
       protocol: "openai-chat",
-      env: {
-        PI_ACP_MODEL: `${providerId}/${target.wireModel}`,
-      },
+      env: {},
       unsetEnv: [],
-      files: [{
-        path: modelsPath,
-        content: `${JSON.stringify(models, null, 2)}\n`,
-      }],
+      files: [
+        { path: join(agentDir, "models.json"), content: `${JSON.stringify(models, null, 2)}\n` },
+        { path: join(agentDir, "settings.json"), content: `${JSON.stringify(settings, null, 2)}\n` },
+      ],
     };
   },
 };

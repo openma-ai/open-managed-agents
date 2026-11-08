@@ -59,7 +59,7 @@ async function fixture(cliId?: "gh" | "glab", realCli = false) {
   };
   const resolver = new ManagedCredentialResolver({ credentials, vaults: { find: async () => ({ vault: { archivedAt: null } }) }, clock: { now: () => new Date() }, log: { warn() {} }, fetch: async () => { refreshes++; return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("no", { status: 400 }); } }, createSpecRegistry(cliId && !realCli ? builtinSpecs.map(spec => spec.cli_id === cliId ? { ...spec, endpoints: ["localhost"] } : spec) : builtinSpecs));
   const passes = createEgressRelayPasses("root", () => now);
-  const relay = createCredentialEgressRelay({ passes, credentials: resolver, findSession: async () => ({ vaultIds, archivedAt }), send: request => sendDirectHttps(realCli ? new Request(`${target}${new URL(request.url).pathname}${new URL(request.url).search}`, request) : request, upstreamCA.certificatePem) });
+  const relay = createCredentialEgressRelay({ passes, credentials: resolver, authorize: async (claims) => archivedAt === null ? { workspaceId: claims.workspaceId, sessionId: claims.sessionId, vaultIds } : null, send: request => sendDirectHttps(realCli ? new Request(`${target}${new URL(request.url).pathname}${new URL(request.url).search}`, request) : request, upstreamCA.certificatePem) });
   const routes = new Hono().route("/v1/oma/egress", buildCredentialEgressRoutes(() => relay));
   const controlCA = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "control-test")));
   const control = createServer(await controlCA.leafFor("localhost"), async (incoming, outgoing) => {
@@ -75,7 +75,7 @@ async function fixture(cliId?: "gh" | "glab", realCli = false) {
   const sandbox = new LocalSubprocessSandbox({ workdir: join(dir, "sandbox-a") });
   cleanup.push(() => sandbox.destroy());
   const scope = { workspaceId: "ws", sessionId: "session", vaultIds: ["vault"] };
-  const prepare = (box = sandbox) => prepareSandboxEgress({ sandbox: box, scope, relay: { endpoint, pass: "", ca: controlCA.certificatePem }, issuePass: () => passes.issue({ workspaceId: "ws", sessionId: "session", ttlMs: 60000 }), placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
+  const prepare = (box = sandbox) => prepareSandboxEgress({ sandbox: box, scope, relay: { endpoint, pass: "", ca: controlCA.certificatePem }, issuePass: () => passes.issue({ workspaceId: "ws", sessionId: "session", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60000 }), placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
   return { dir, sandbox, target, prepare, seen, upstreamPem: upstreamCA.certificatePem, expire: () => { now += 120000; }, get refreshes() { return refreshes; }, setStatus: (value: number) => { status = value; }, failRefresh: () => { refreshOk = false; }, setVaults: (value: string[]) => { vaultIds = value; }, archive: () => { archivedAt = "now"; } };
 }
 

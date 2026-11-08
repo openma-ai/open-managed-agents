@@ -220,14 +220,17 @@ export class E2BSandboxExecutor
   }
 
   /** Structured command result. Extra `envs` reach only this process and
-   * never appear in its command line; `user` overrides the sandbox user. */
+   * never appear in its command line; `user` overrides the sandbox user.
+   * `sessionEnv: false` leaves out the Session env set with setEnvVars (Vault
+   * placeholders, the egress relay's proxy and CA variables): platform
+   * commands such as storage mounts must not run through the agent's relay. */
   async run(
     command: string,
-    opts: { envs?: Record<string, string>; timeoutMs?: number; user?: string } = {},
+    opts: { envs?: Record<string, string>; timeoutMs?: number; user?: string; sessionEnv?: false } = {},
   ): Promise<E2BCommandResult> {
     return settleCommand(this.sandbox.commands.run(command, {
       timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
-      envs: { ...this.buildCommandEnv(command), ...opts.envs },
+      envs: { ...(opts.sessionEnv === false ? {} : this.buildCommandEnv(command)), ...opts.envs },
       ...(opts.user === undefined ? this.user : { user: opts.user }),
     }) as Promise<E2BCommandResult>);
   }
@@ -918,41 +921,56 @@ function optionsFromFactory(
   };
 }
 
-export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
-  create: async (ctx, env) => createE2BSandbox(optionsFromFactory(env, ctx)),
-  resume: async (handle, _ctx, env) => {
-    if (handle.provider !== "e2b" || !handle.runtimeId) {
-      throw new Error("E2B provider received an incompatible runtime handle");
-    }
-    const options = optionsFromFactory(env);
-    const mod = await loadE2BModule();
-    const sandbox = await mod.Sandbox.connect(
-      handle.runtimeId,
-      connectionOptions(options),
-    );
-    return new E2BSandboxExecutor(sandbox, options);
-  },
-  restore: async (checkpoint, _ctx, env) => {
-    if (
-      checkpoint.provider !== "e2b"
-      || checkpoint.scope !== "portable"
-      || !checkpoint.checkpointId
-    ) {
-      throw new Error("E2B provider received an incompatible portable checkpoint");
-    }
-    const options = optionsFromFactory(env);
-    const mod = await loadE2BModule();
-    const sandbox = await mod.Sandbox.create(
-      checkpoint.checkpointId,
-      creationOptions(options),
-    );
-    return new E2BSandboxExecutor(sandbox, options);
-  },
-};
+/** The v1 provider. `module`: the SDK a composition root that depends on
+ * `e2b` itself loaded (the adapter only declares it as an optional peer, so
+ * an application's own install is the one that resolves); omitted = loaded
+ * lazily from this package. */
+export function createE2BSandboxProvider(module?: E2BModule): SandboxProviderPort<E2BSandboxExecutor> {
+  const load = () => module === undefined ? loadE2BModule() : Promise.resolve(module);
+  return {
+    create: async (ctx, env) => createE2BSandbox(optionsFromFactory(env, ctx), await load()),
+    resume: async (handle, _ctx, env) => {
+      if (handle.provider !== "e2b" || !handle.runtimeId) {
+        throw new Error("E2B provider received an incompatible runtime handle");
+      }
+      const options = optionsFromFactory(env);
+      const mod = await load();
+      const sandbox = await mod.Sandbox.connect(
+        handle.runtimeId,
+        connectionOptions(options),
+      );
+      return new E2BSandboxExecutor(sandbox, options);
+    },
+    restore: async (checkpoint, _ctx, env) => {
+      if (
+        checkpoint.provider !== "e2b"
+        || checkpoint.scope !== "portable"
+        || !checkpoint.checkpointId
+      ) {
+        throw new Error("E2B provider received an incompatible portable checkpoint");
+      }
+      const options = optionsFromFactory(env);
+      const mod = await load();
+      const sandbox = await mod.Sandbox.create(
+        checkpoint.checkpointId,
+        creationOptions(options),
+      );
+      return new E2BSandboxExecutor(sandbox, options);
+    },
+  };
+}
+
+export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = createE2BSandboxProvider();
 
 /** Each create receives a new provider-assigned id; no Session-name attach.
- * Snapshot support remains opt-in for E2B-compatible services. */
-export const sandboxFactory: SandboxFactory = Object.assign((
-  ctx: SandboxFactoryContext,
-  env: SandboxFactoryEnv,
-) => sandboxProvider.create(ctx, env), { capabilities: { allocationIsolation: true } });
+ * Snapshot support remains opt-in for E2B-compatible services. `module`:
+ * as for createE2BSandboxProvider. */
+export function createE2BSandboxFactory(module?: E2BModule): SandboxFactory {
+  const provider = module === undefined ? sandboxProvider : createE2BSandboxProvider(module);
+  return Object.assign((
+    ctx: SandboxFactoryContext,
+    env: SandboxFactoryEnv,
+  ) => provider.create(ctx, env), { capabilities: { allocationIsolation: true } });
+}
+
+export const sandboxFactory: SandboxFactory = createE2BSandboxFactory();

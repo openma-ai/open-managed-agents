@@ -5,7 +5,21 @@ import { Readable } from "node:stream";
 import type { Duplex } from "node:stream";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "./ca.js";
 import { sendDirectHttps } from "./direct-https.js";
-export interface LocalRelayConfig { endpoint: string; pass: string; ca?: string; directory: string }
+/** `inspect`: the sandbox env holds Vault placeholders (oma_vault_…), so every
+ * HTTPS host is terminated here: a request carrying one goes to the gateway
+ * (which substitutes on the credential's allowed hosts and refuses with 403
+ * elsewhere, design §8.4 rule 2); any other request goes upstream directly. */
+export interface LocalRelayConfig { endpoint: string; pass: string; ca?: string; directory: string; inspect?: boolean; /** Trust for direct upstreams instead of the public roots (fixtures only). */ upstreamCa?: string }
+const VAULT_PLACEHOLDER = /oma_vault_[A-Za-z0-9_-]{43}/u;
+const carriesPlaceholder = (headers: Headers, body: Buffer) => {
+  let found = false;
+  headers.forEach((value, name) => {
+    if (VAULT_PLACEHOLDER.test(value)) found = true;
+    const basic = name === "authorization" ? /^Basic\s+(\S+)$/iu.exec(value)?.[1] : undefined;
+    if (basic !== undefined && VAULT_PLACEHOLDER.test(Buffer.from(basic, "base64").toString("latin1"))) found = true;
+  });
+  return found || VAULT_PLACEHOLDER.test(body.toString("latin1"));
+};
 const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"];
 function headersOf(request: IncomingMessage) {
   const headers = new Headers();
@@ -34,7 +48,7 @@ export async function startLocalRelay(config: () => LocalRelayConfig) {
   const authority = await createEgressCertificateAuthority(await loadOrCreateEgressCa(config().directory));
   const sockets = new Set<Duplex>();
   const track = (socket: Duplex) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); };
-  const tunnels = new WeakMap<object, { hostname: string; port: number }>();
+  const tunnels = new WeakMap<object, { hostname: string; port: number; inject: boolean }>();
   // Never downgrade a previously credential-bearing host to direct traffic
   // after its Vault is removed. The relay returns an explicit denial instead.
   const interceptedHosts = new Set<string>();
@@ -54,14 +68,21 @@ export async function startLocalRelay(config: () => LocalRelayConfig) {
       if (!(request.url ?? "").startsWith("/") || (request.url ?? "").startsWith("//")) throw new Error("Invalid path");
       const hostname = target.hostname.includes(":") ? `[${target.hostname}]` : target.hostname;
       const url = `https://${hostname}:${target.port}${request.url}`;
-      await respond(await relay("forward", url, request.method, headersOf(request), await bytes(request)), response);
+      const headers = headersOf(request); const body = await bytes(request);
+      // Inspected (not a credential host): only placeholder-bearing requests reach the gateway.
+      if (!target.inject && !carriesPlaceholder(headers, body)) {
+        await respond(await sendDirectHttps(new Request(url, { method: request.method, headers, ...(["GET", "HEAD"].includes(request.method ?? "GET") ? {} : { body }) }), config().upstreamCa), response);
+        return;
+      }
+      await respond(await relay("forward", url, request.method, headers, body), response);
     } catch { if (!response.headersSent) response.writeHead(502).end("Credential relay unavailable"); else response.destroy(); }
   });
   const front = createServer(async (request, response) => {
     if (request.url === "/health") { response.writeHead(200).end("ready"); return; }
-    // Plain HTTP is never credential-injected.
+    // Plain HTTP is never credential-injected, and never carries a placeholder out.
     try {
       const url = new URL(request.url ?? ""); if (url.protocol !== "http:") throw new Error("Invalid HTTP URL");
+      if (config().inspect === true && carriesPlaceholder(headersOf(request), Buffer.alloc(0))) { response.writeHead(403).end("Credential relay request denied: plaintext_http"); request.resume(); return; }
       const upstream = httpRequest(url.toString(), { method: request.method, headers: Object.fromEntries(headersOf(request)), agent: false }, incoming => {
         const headers = { ...incoming.headers }; for (const name of HOP) delete headers[name];
         response.writeHead(incoming.statusCode ?? 502, headers); incoming.pipe(response);
@@ -80,7 +101,7 @@ export async function startLocalRelay(config: () => LocalRelayConfig) {
       if (!resolved.ok) { reject(client, resolved.status); return; }
       const { inject } = await resolved.json() as { inject: boolean };
       if (inject) interceptedHosts.add(hostname);
-      if (!inject && !interceptedHosts.has(hostname)) {
+      if (!inject && !interceptedHosts.has(hostname) && config().inspect !== true) {
         const upstream = connect({ host: hostname, port }); track(upstream);
         upstream.once("connect", () => { client.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head.length) upstream.write(head); upstream.pipe(client); client.pipe(upstream); });
         upstream.once("error", () => reject(client, 502)); client.once("close", () => upstream.destroy()); return;
@@ -88,7 +109,7 @@ export async function startLocalRelay(config: () => LocalRelayConfig) {
       const secureContext = createSecureContext(await authority.leafFor(hostname));
       client.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head.length) client.unshift(head);
       const tls = new TLSSocket(client as Socket, { isServer: true, secureContext, ALPNProtocols: ["http/1.1"] });
-      track(tls); tls.once("error", () => tls.destroy()); tunnels.set(tls, { hostname, port }); intercepted.emit("connection", tls);
+      track(tls); tls.once("error", () => tls.destroy()); tunnels.set(tls, { hostname, port, inject: inject || interceptedHosts.has(hostname) }); intercepted.emit("connection", tls);
     } catch { reject(client, 502); }
   });
   await new Promise<void>((resolve, reject) => { front.once("error", reject); front.listen(0, "127.0.0.1", resolve); });

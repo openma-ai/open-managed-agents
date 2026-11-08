@@ -84,6 +84,42 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  // Deliberate change (design §0.0 rule 10), replacing the characterization
+  // "a Session binding without any fence still gets Vault injection".
+  it("a Session binding without an execution attempt gets no Vault: the request goes out uninjected", async () => {
+    const relay = vi.fn();
+    globalThis.fetch = vi.fn(async () => new Response("direct", { status: 200 }));
+    const response = await handleCredentialEgressRequest(new Request("https://mcp.example.test/rpc"),
+      { MAIN_MCP: { credentialEgress: relay } }, { ...context, params: { tenantId: "tenant-1", sessionId: "session-1" } });
+    expect(response.status).toBe(200);
+    expect(relay).not.toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds Vault egress to the execution attempt; once it ends a background process keeps only ordinary egress", async () => {
+    const execution = { tenantId: "tenant-1", sessionId: "session-1", executionId: "exe-1", attemptId: "att-1", ownerId: "owner-1", generation: 3 };
+    let current = true;
+    const relay = vi.fn(async (scope, action) => {
+      expect(scope).toEqual({ tenantId: "tenant-1", sessionId: "session-1", executionFence: { executionId: "exe-1", attemptId: "att-1", ownerId: "owner-1", generation: 3 } });
+      if (!current) return new Response("Credential relay request denied", { status: 403 });
+      return action === "resolve" ? Response.json({ inject: true }) : new Response("relayed", { status: 201 });
+    });
+    globalThis.fetch = vi.fn(async (request) => {
+      // Ordinary egress as before: only the sandbox's own placeholder, never a Vault token.
+      expect(request.headers.get("authorization")).toBe("Bearer __cap_managed__");
+      return new Response("direct", { status: 200 });
+    });
+    const call = () => handleCredentialEgressRequest(new Request("https://mcp.example.test/rpc", { headers: { authorization: "Bearer __cap_managed__" } }),
+      { MAIN_MCP: { credentialEgress: relay } }, { ...context, params: execution });
+    expect((await call()).status).toBe(201);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    current = false; // the turn ended
+    const after = await call();
+    expect(after.status).toBe(200);
+    expect(await after.text()).toBe("direct");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("passes plain HTTP through without the credential relay (apt over http://)", async () => {
     const relay = vi.fn(async () => new Response("https only", { status: 400 }));
     globalThis.fetch = vi.fn(async (request: Request) => {

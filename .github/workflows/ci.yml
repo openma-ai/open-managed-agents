@@ -28,6 +28,10 @@ jobs:
       cf: ${{ steps.classify.outputs.cf }}
       node: ${{ steps.classify.outputs.node }}
       meta_only: ${{ steps.classify.outputs.meta_only }}
+      # Multi-platform parity gate (design §0.7 gate 4): platforms whose
+      # dependency graph a change reaches, from pnpm "...[<merge-base>]".
+      parity_cf: ${{ steps.parity.outputs.parity_cf }}
+      parity_node: ${{ steps.parity.outputs.parity_node }}
       console_e2e: ${{ steps.console_scope.outputs.console_e2e }}
       console_domains: ${{ steps.console_scope.outputs.console_domains }}
       console_local_specs: ${{ steps.console_scope.outputs.console_local_specs }}
@@ -38,6 +42,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -81,6 +88,23 @@ jobs:
           set -euo pipefail
           node --test scripts/ci-impact-surfaces.test.mjs
           node scripts/ci-impact-surfaces.mjs --write-github-output < /tmp/ci-changed-files.txt
+
+      # Changed files -> owning packages -> reverse dependents -> affected
+      # platforms, by pnpm's own "...[<merge-base>]" filter (no install
+      # needed; reads the workspace manifests). The merge base is explicit
+      # because pnpm 11 has no merge-base comparison (added in v12.7.0,
+      # https://pnpm.io/filtering). Root files no package owns (runner files,
+      # test/fakes the suite imports) are matched against the change list.
+      - name: Select platforms for the parity gate
+        id: parity
+        shell: bash
+        env:
+          BASE: ${{ steps.files.outputs.base }}
+        run: |
+          set -euo pipefail
+          MERGE_BASE="$(git merge-base "$BASE" HEAD)"
+          echo "parity merge base: $MERGE_BASE"
+          node scripts/check-platform-parity.mjs affected --base "$MERGE_BASE" --write-github-output < /tmp/ci-changed-files.txt
 
       # Console browser E2E is scoped by domain: the changed domain's Console
       # specs and suites for the changed layer plus its adjacent layers
@@ -151,7 +175,7 @@ jobs:
 
   cf:
     needs: changes
-    if: needs.changes.outputs.cf == 'true'
+    if: needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -184,7 +208,7 @@ jobs:
 
   node:
     needs: changes
-    if: needs.changes.outputs.node == 'true'
+    if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true'
     runs-on: ubuntu-24.04
     # Full Node suite plus browser, storage and MySQL integration; allow cleanup.
     timeout-minutes: 45

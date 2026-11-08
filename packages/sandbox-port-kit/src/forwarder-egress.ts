@@ -6,6 +6,7 @@
 import type { EgressPolicy, SandboxEgressPort, SandboxPort } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { clearSandboxEgress, prepareSandboxEgress } from "@open-managed-agents/sandbox-egress";
+import { attemptOfFence } from "@open-managed-agents/session-runtime/session-sandbox-fence";
 import { compileFirewall } from "./firewall";
 import type { SandboxEgressDepsPort, SandboxVendorPort } from "./ports";
 import { v1FileView } from "./sync-storage";
@@ -14,8 +15,8 @@ import { v1FileView } from "./sync-storage";
  * Known gaps of the reused installer (§0.2 table), not changed here: the
  * relay token is persisted in the sandbox's binding file rather than held
  * only in memory, the CA key is not on tmpfs, and the relay port is random.
- * The relay bundle is read from disk (sandbox-egress/dist/relay.cjs), so the
- * forwarder can only be installed where that file exists (Node hosts).
+ * The relay bundle is embedded in sandbox-egress, so Workers hosts install
+ * it too; the sandbox image needs `node`.
  */
 export function createForwarderEgress<R extends object>(
   vendor: SandboxVendorPort<R>,
@@ -23,6 +24,8 @@ export function createForwarderEgress<R extends object>(
 ): SandboxEgressPort<R> {
   const views = new WeakMap<R, SandboxPort>();
   const view = (runtime: R) => {
+    const own = vendor.asSandboxPort?.(runtime);
+    if (own !== undefined) return own;
     let port = views.get(runtime);
     if (port === undefined) {
       port = v1FileView(vendor, runtime);
@@ -42,7 +45,7 @@ export function createForwarderEgress<R extends object>(
     if (vendor.applyFirewall !== undefined) {
       await vendor.applyFirewall(input.runtime, compileFirewall(input.policy, {
         gateway: { hosts: [gatewayHost], ...(deps.gateway.endpoint.fixedIps === undefined ? {} : { fixedIps: deps.gateway.endpoint.fixedIps }) },
-        channels: [],
+        channels: [...(await deps.channels?.(input.scope) ?? [])],
       }));
     }
     const substitutions = input.policy?.substitutions ?? [];
@@ -59,7 +62,7 @@ export function createForwarderEgress<R extends object>(
         vaultIds: [...new Set(substitutions.map((item) => item.credentialId))],
       },
       relay: { endpoint: deps.gateway.endpoint.url, pass: "" },
-      issuePass: () => deps.gateway.issueToken({ scope: input.scope, fence: input.fence }),
+      issuePass: () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence) }),
       placeholders: async () => placeholders,
     });
     input.signal.throwIfAborted();

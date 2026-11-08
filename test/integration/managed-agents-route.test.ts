@@ -902,6 +902,12 @@ describe("Cloudflare official Managed Agents route", () => {
         force: true,
       }),
     ).resolves.toMatchObject({ id: work.id, state: "stopped" });
+    // Characterization (design §0.7): authMiddleware checks the Work bearer
+    // against the current claim, so stopping the Work revokes it end to end.
+    const revoked = await workerFetch(`http://localhost/v1/sessions/${session.id}`, {
+      headers: { Authorization: `Bearer ${sessionsToken}` },
+    });
+    expect(revoked.status).toBe(401);
     poller.abort();
     await iterator.return?.();
   }, 60_000);

@@ -258,7 +258,7 @@ advertisement with the live ports.
 | Workspace | Managed `WorkspacePersistencePort` at `/workspace` | Strategies: `durable_mount`, `retained_runtime`, `checkpoint_restore`, `ephemeral`. See the persistence page for commit points |
 | Network policy | Public `Environment.config.networking`: `unrestricted` or `limited`, with `allowed_hosts`, `allow_mcp_servers`, `allow_package_managers` | Stored on the environment and mapped into the Managed Agents networking object. Enforcement is per backend (Cloudflare outbound handler, provider allowlists, Docker network). A stored allowlist is not itself a packet filter |
 | Vault egress | `CredentialEgressPort` | Separate from the public networking object. Levels: `enforced`, `advisory`, `unsupported`. `required` accepts only `enforced` |
-| Browser | `browser` is an opt-in harness tool (`apps/agent/src/harness/tools.ts`) backed by the Workers `BROWSER` binding and `@open-managed-agents/browser-harness` | **Not a sandbox port.** A new VM backend does not gain a browser by implementing `ManagedSandboxPort`. Billing for an open page is `browser_active_seconds`, fired from the Cloudflare SessionDO |
+| Browser | `browser` is an opt-in harness tool (`packages/agent-harness/src/tools.ts`) backed by the Workers `BROWSER` binding and `@open-managed-agents/browser-harness` | **Not a sandbox port.** A new VM backend does not gain a browser by implementing `ManagedSandboxPort`. Billing for an open page is `browser_active_seconds`, fired from the Cloudflare SessionDO |
 | GPU | — | **Gap.** No field on `Environment.config`, `SandboxPort`, `ManagedSandboxPort`, or the conformance catalog |
 | Multi-session | One lease per `(workspace, environment, session, work)`. Cloudflare keys the container by session id | **Gap** for sharing one box across sessions, and **gap** for forking one box into a second session. Sub-agents share the parent box |
 | ACP resume | Files under `/workspace/.openma/…` plus ACP `session/resume` | Requires `writeFile` and `exec`. Native resume is per agent profile. An opaque adapter does not promise it |
@@ -406,8 +406,9 @@ the durable native-state allowlist.
 
 The gateway is `POST` (and other methods) on
 `/v1/oma/inference-proxy/:sessionId/*` in both `apps/main` and
-the Node control plane (`apps/main/src/routes/inference-proxy.ts` and
-`packages/control-plane-node/src/lib/http-inference-proxy.ts`). Both go through
+the Node control plane: one route, `createInferenceProxyRoutes`
+(`packages/http-routes/src/proxy/inference-proxy-routes.ts`), that each
+platform mounts with its own stores. It goes through
 `sendHostedInference` (`packages/http-routes`) and `planHostedInferenceRequest`
 (`packages/inference-proxy`), which:
 
@@ -465,7 +466,7 @@ route does not read a provider field).
 | Layer | Keys | Who reads them |
 |---|---|---|
 | Public environment | `config.type`, `config.packages`, `config.networking`, `config.dockerfile` | API validation, plus `ensureEnvironmentPackages` on both control planes for packages |
-| Public agent | `harness`, `acp.agent` (`command`, `args`, `env`, `cwd`, optional registry `id`), `acp.restart`, timeouts, `runtime_binding` for `acp-proxy` | Harness registry. `acp-sandbox` is registered in `apps/agent/src/harness/builtins.ts` |
+| Public agent | `harness`, `acp.agent` (`command`, `args`, `env`, `cwd`, optional registry `id`), `acp.restart`, timeouts, `runtime_binding` for `acp-proxy` | Harness registry. `acp-sandbox` is registered in `packages/agent-harness/src/builtins.ts` |
 | Public session | `environment_id`, `vault_ids`, file/git/memory resources | Resource materializer and egress scope. Not a backend id |
 | Node process env | `SANDBOX_PROVIDER` plus that factory's keys (`E2B_*`, `DAYTONA_*`, `BOXRUN_URL`, `SANDBOX_IMAGE`, `MEMORY_S3_*`, `FILES_S3_*`, …) | The selected `sandboxFactory` or managed preset. `readS3MemoryBucket` is the shared S3 helper |
 | Managed driver | `providerConfig: Readonly<Record<string, unknown>>` and `factoryOptions` passed to `createManagedRuntimeProviderDriver` | The adapter. The host forwards them and does not inspect SDK shapes |

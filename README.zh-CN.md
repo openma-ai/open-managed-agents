@@ -69,7 +69,7 @@ OpenMA 采用 **meta-harness** 架构，管理 Agent loop 周围的资源和生�
 
 模型循环在沙箱外运行，沙箱负责工具执行，会话历史独立于两者保存。沙箱故障不会抹掉对话，替换后的 harness 可以从持久事件重建上下文。执行资源的生命周期与 Agent loop 解耦。
 
-使用内置 Pi，或实现[宿主侧 harness 接口](apps/agent/src/harness/interface.ts)。工作区恢复需要对应的持久化配置和供应商支持；[Runtime Host 指南](apps/docs/src/content/docs/self-host/managed-runtime-host.mdx#session-brain-placement-and-scaling) 说明了执行归属与恢复机制。
+使用内置 Pi，或实现[宿主侧 harness 接口](packages/agent-harness/src/interface.ts)。工作区恢复需要对应的持久化配置和供应商支持；[Runtime Host 指南](apps/docs/src/content/docs/self-host/managed-runtime-host.mdx#session-brain-placement-and-scaling) 说明了执行归属与恢复机制。
 
 ### Harness 在沙箱内：复用成熟 Agent
 
@@ -90,7 +90,7 @@ OpenMA 采用 **meta-harness** 架构，管理 Agent loop 周围的资源和生�
 
 将仓库工具与 GitHub 组合用于 issue 调查，或将网页工具与 Slack 组合成研究助手。把同一套工具和技能复用到更多 Agent，减少为每个工作流重新接入服务的成本。凭证和权限按要求配置；沙箱内 harness 使用自身工具及适配器提供的能力。
 
-[内置工具](apps/agent/src/harness/tools.ts) · [浏览器](packages/browser-harness/) · [MCP 与 Skills](packages/sdk/README.md) · [集成](apps/docs/src/content/docs/build/integrations.mdx)
+[内置工具](packages/agent-harness/src/tools.ts) · [浏览器](packages/browser-harness/) · [MCP 与 Skills](packages/sdk/README.md) · [集成](apps/docs/src/content/docs/build/integrations.mdx)
 
 ## 随工作量扩展执行规模
 

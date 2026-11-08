@@ -5,7 +5,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
 import { CfDoStreamRepo, ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/cf-do";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 // ============================================================
 // recoverInterruptedState — DO-level integration
@@ -2174,7 +2174,7 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   it("hintTurnEnded is idempotent — double-fire from endTurn + outer finally is safe", async () => {
-    // turn-runtime.ts fires hintTurnEnded in its outer finally as a
+    // turn-lifetime.ts fires hintTurnEnded in its outer finally as a
     // safety net for endTurn throwing; adapter.endTurn ALSO fires it
     // on success. Double-fire happens on the happy path. Set.delete
     // on a missing key is a no-op (idempotent), but pin the contract.

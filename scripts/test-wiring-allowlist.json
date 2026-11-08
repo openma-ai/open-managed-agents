@@ -1,0 +1,49 @@
+{
+  "$comment": "Tests that stay out of CI on purpose, each with its reason. scripts/check-test-wiring.mjs fails on an entry that matches nothing left out, so this list only shrinks; any new entry needs its reason in the PR description. BROKEN entries are tests found failing when the gate was added: fix them, then wire them and delete the entry.",
+  "entries": [
+    {
+      "pattern": "apps/main-node/scripts/acp-deepseek-native-cache.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and a local DSH ACP binary (main-node test:e2e:acp-deepseek-cache)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/backchat-common-live.e2e.ts",
+      "reason": "live: running Backchat plus workspace and DeepSeek credentials (root test:live:backchat; its config resolver is unit-tested in CI by scripts/backchat-live-config.test.mjs)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/harness-in-sandbox/live.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and a harness Docker image (main-node test:e2e:codex-acp-docker / test:e2e:mcode-acp-docker)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/pi-acp-deepseek-docker.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and a Pi ACP Docker image (main-node test:e2e:pi-acp-docker)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/pi-acp-deepseek-sprites.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY and SPRITES_TOKEN (main-node test:e2e:pi-acp-sprites)"
+    },
+    {
+      "pattern": "apps/main-node/scripts/pi-deepseek-harness.e2e.ts",
+      "reason": "live: DEEPSEEK_API_KEY (main-node test:e2e:pi-deepseek)"
+    },
+    {
+      "pattern": "packages/managed-runtime-node/test/*.e2e.test.ts",
+      "reason": "real Docker containers; separate lane root test:integration:runtime (managed-runtime-node test:docker), not called by CI. Local run when this gate was added: docker-runtime and supervised-docker pass, official-worker-docker and supervised-acp-docker fail"
+    },
+    {
+      "pattern": "test/e2e/bridge-acp-flow.test.ts",
+      "reason": "live: production openma.dev, an authenticated oma CLI, an attached bridge daemon and locally installed ACP binaries (pnpm tsx, manual)"
+    },
+    {
+      "pattern": "test/e2e/bridge-setup-lifecycle.test.ts",
+      "reason": "live and destructive: staging credentials, installs and removes a real launchd/systemd service (OMA_E2E_BRIDGE=1, manual)"
+    },
+    {
+      "pattern": "scripts/setup-cf.test.mjs",
+      "reason": "BROKEN since 0d5c5f00: invokes scripts/setup-cf.sh --yes, which the script rejects (Unknown flag: --yes). Decide the non-interactive flag, fix, then add it to root test:self-host"
+    },
+    {
+      "pattern": "apps/console/e2e/vault-overflow.spec.ts",
+      "reason": "BROKEN: 'shared DataTable text plays while custom controls remain stationary' fails deterministically (vault-overflow.spec.ts:76, DataTable name cell not found); the other two cases pass. Fix, then add it to root test:e2e:agent-editor next to harness-catalog.spec.ts"
+    }
+  ]
+}

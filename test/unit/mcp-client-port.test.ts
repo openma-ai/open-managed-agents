@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as harnessTools from "../../apps/agent/src/harness/tools";
+import * as harnessTools from "../../packages/agent-harness/src/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
 

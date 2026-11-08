@@ -12,7 +12,7 @@ describe("Cloudflare relay response framing", () => {
   ])("preserves $method $status bodylessness without false POST length", async ({ method, status, length, metadata }) => {
     const passes = createEgressRelayPasses("response-fixture", Date.now);
     const relay = createCredentialEgressRelay({
-      passes, findSession: async () => ({ vaultIds: ["vault"], archivedAt: null }),
+      passes, authorize: async (claims) => ({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, vaultIds: ["vault"] }),
       credentials: {
         outboundTarget: async () => ({ type: "raw_bearer", token: "fixture-token" }),
         forward: async (_workspace, _target, send) => ({ response: await send("fixture-token") }),
@@ -20,7 +20,7 @@ describe("Cloudflare relay response framing", () => {
       send: async () => new Response(null, { status, headers: length === null ? {} : { "content-length": length } }),
     });
     const response = await buildCredentialEgressRoutes(() => relay).request("https://control.example/forward", { method: "POST", headers: {
-      authorization: `Bearer ${await passes.issue({ workspaceId: "workspace", sessionId: "session", ttlMs: 60000 })}`,
+      authorization: `Bearer ${await passes.issue({ workspaceId: "workspace", sessionId: "session", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60000 })}`,
       "x-oma-egress-target": "https://upstream.example/", "x-oma-egress-method": method,
     } });
     expect(response.status).toBe(status); expect(response.body).toBeNull();

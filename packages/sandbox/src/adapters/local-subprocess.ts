@@ -718,7 +718,7 @@ class BackgroundProcess implements ProcessHandle {
   async getStatus(): Promise<string> {
     if (this.exitCode === null && this.exitSignal === null) return "running";
     // Match the status vocabulary @cloudflare/sandbox uses — pollWithStrategies
-    // in apps/agent/src/harness/tools.ts checks for "completed" / "error" /
+    // in packages/agent-harness/src/tools.ts checks for "completed" / "error" /
     // "killed" exactly. Returning "exited:0" / "signaled:SIGTERM" silently
     // hangs the harness's tool-call wait loop until the watchdog fires.
     if (this.exitSignal) return "killed";

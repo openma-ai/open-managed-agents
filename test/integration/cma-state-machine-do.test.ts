@@ -7,7 +7,7 @@ import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 registerTestHarnesses();
@@ -26,7 +26,11 @@ async function createSession(harness: string) {
     agent: ((await a.json()) as any).id,
     environment_id: ((await e.json()) as any).id,
   });
-  return ((await s.json()) as any).id as string;
+  const id = ((await s.json()) as any).id as string;
+  // /init warms the sandbox in the background; let it settle so no RPC to
+  // main is still pending when the file's worker tears down.
+  await runInDurableObject(stubOf(id), (instance: any) => instance._sandboxWarm);
+  return id;
 }
 
 async function domEvents(sessionId: string): Promise<any[]> {
