@@ -44,6 +44,8 @@ import {
   TurnAborted,
   classifyTurnFailure,
   decideTurnStop,
+  finalizeStaleTurns,
+  type StaleToolUse,
   isTurnCancellationError,
   openTurnMarker,
   planTurnFailure,
@@ -3511,7 +3513,7 @@ export class SessionDO extends DurableObject<Env> {
       // queued turn inputs: include them in the list (the frontend outbox
       // reads this list), but expose seq: null until promotion stamps the
       // same row/id — canonical seq only exists once processed_at is set.
-      const query = `SELECT seq, type, data, ts, processed_at, cancelled_at FROM events WHERE seq > ? ORDER BY seq ${order} LIMIT ?`;
+      const query = `SELECT seq, type, data, ts, processed_at, cancelled_at FROM events WHERE seq > ? AND json_extract(data, '$.transcript_only') IS NULL ORDER BY seq ${order} LIMIT ?`;
       // Retry the SQL exec on transient "Durable Object storage operation
       // exceeded timeout" errors only — these surface during write-contention
       // storms (e.g. 49+ concurrent model_request_start events), and a
@@ -3799,7 +3801,7 @@ export class SessionDO extends DurableObject<Env> {
       const cursor = this.ctx.storage.sql.exec(
         `SELECT seq, type, data, ts, processed_at, cancelled_at, session_thread_id
            FROM events
-           WHERE session_thread_id = ? AND seq > ?
+           WHERE json_extract(data, '$.transcript_only') IS NULL AND session_thread_id = ? AND seq > ?
            ORDER BY seq ${order} LIMIT ?`,
         threadId, afterSeq, limit,
       );
@@ -7891,6 +7893,59 @@ export class SessionDO extends DurableObject<Env> {
    * All SQL writes; no LLM call, no harness re-run. Cheap enough to
    * call from alarm() AND first-fetch.
    */
+  private _staleToolUses(): StaleToolUse[] {
+    const uses: StaleToolUse[] = [];
+    try {
+      const cursor = this.ctx.storage.sql.exec(
+        `SELECT type, data, session_thread_id FROM events
+          WHERE type IN ('agent.tool_use','agent.custom_tool_use','agent.mcp_tool_use')`,
+      );
+      for (const row of cursor) {
+        try {
+          const d = JSON.parse(row.data as string) as { id?: string };
+          if (d.id) uses.push({ id: d.id, type: row.type as string, thread: row.session_thread_id as string | null });
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* events table missing — skip flush, do row cleanup */ }
+    return uses;
+  }
+
+  private _staleToolResultIds(): string[] {
+    const ids: string[] = [];
+    try {
+      const cursor = this.ctx.storage.sql.exec(
+        `SELECT data FROM events
+          WHERE type IN ('agent.tool_result','agent.mcp_tool_result')`,
+      );
+      for (const row of cursor) {
+        try {
+          const d = JSON.parse(row.data as string) as { tool_use_id?: string; mcp_tool_use_id?: string };
+          const id = d.tool_use_id ?? d.mcp_tool_use_id;
+          if (id) ids.push(id);
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+    return ids;
+  }
+
+  /** Scoped to turn_id IS NULL so it can never clobber a fresh beginTurn. */
+  private async _clearMarkerlessTurn(now: number): Promise<boolean> {
+    try {
+      const update = await this.runtimeAdapter.sql
+        .prepare(
+          `UPDATE sessions
+              SET status='idle', turn_id=NULL, turn_started_at=NULL, updated_at=?
+            WHERE id=? AND status='running' AND turn_id IS NULL`,
+        )
+        .bind(now, this.state.session_id)
+        .run();
+      return (update.meta?.changes ?? 0) > 0;
+    } catch (err) {
+      console.warn(`[finalize-stale] markerless row cleanup failed:`, err);
+      return false;
+    }
+  }
+
   private async _finalizeStaleTurns(): Promise<void> {
     // Single-flight: fetch() starts the cold-start pass without awaiting
     // while alarm() can run the same pass concurrently. Both would read
@@ -7909,7 +7964,6 @@ export class SessionDO extends DurableObject<Env> {
     // Ensure events table exists (alarm() runs without going through
     // fetchInner's ensureSchema). Cheap idempotent CREATE IF NOT EXISTS.
     try { this.ensureSchema(); } catch { /* schema already up-to-date */ }
-    const sql = this.ctx.storage.sql;
 
     // Let the cold-start recovery scan (started by ensureSchema) finish
     // before pairing. Otherwise it races this finalizer: it can inject a
@@ -7925,275 +7979,24 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // 1. Unpaired tool_use detection. Three flavors per the wire spec
-    //    in default-loop.ts:emitToolCallEvent:
-    //      • agent.tool_use         → result keyed by tool_use_id
-    //      • agent.custom_tool_use  → result keyed by tool_use_id
-    //      • agent.mcp_tool_use     → result keyed by mcp_tool_use_id
-    //    The pairing key for use→result is always the use's own `id`.
-    //    Wrapped in try blocks so a missing events table (very early
-    //    cold-start) doesn't short-circuit the sessions row cleanup
-    //    below — that's the contract callers depend on.
-    const usedIds = new Map<string, { type: string; thread?: string | null }>();
-    try {
-      const useCursor = sql.exec(
-        `SELECT type, data, session_thread_id FROM events
-          WHERE type IN ('agent.tool_use','agent.custom_tool_use','agent.mcp_tool_use')`,
-      );
-      for (const row of useCursor) {
-        try {
-          const d = JSON.parse(row.data as string) as { id?: string };
-          if (d.id) usedIds.set(d.id, {
-            type: row.type as string,
-            thread: row.session_thread_id as string | null,
-          });
-        } catch { /* skip malformed */ }
-      }
-    } catch { /* events table missing — skip flush, do row cleanup below */ }
-    if (usedIds.size > 0) {
-      try {
-        const resCursor = sql.exec(
-          `SELECT data FROM events
-            WHERE type IN ('agent.tool_result','agent.mcp_tool_result')`,
-        );
-        for (const row of resCursor) {
-          try {
-            const d = JSON.parse(row.data as string) as {
-              tool_use_id?: string;
-              mcp_tool_use_id?: string;
-            };
-            const id = d.tool_use_id ?? d.mcp_tool_use_id;
-            if (id) usedIds.delete(id);
-          } catch { /* skip */ }
-        }
-      } catch { /* skip */ }
-    }
-    // Calls parked on the client (custom_tool_use awaiting
-    // user.custom_tool_result, always_ask awaiting user.tool_confirmation)
-    // are unpaired BY DESIGN and survive DO restarts via persisted state.
-    // Flushing them injected a synthetic "interrupted" result next to the
-    // real one the client posts later → duplicate tool_result → provider
-    // 400 "each tool_use must have a single result" + reschedule loop.
-    for (const pending of this.state.pending_tool_calls ?? []) {
-      usedIds.delete(pending.toolCallId);
-    }
-    let flushed = 0;
-    for (const [id, meta] of usedIds) {
-      const isMcp = meta.type === "agent.mcp_tool_use";
-      const event = isMcp
-        ? {
-            type: "agent.mcp_tool_result" as const,
-            mcp_tool_use_id: id,
-            content: UNKNOWN_TOOL_RESULT_TEXT,
-            is_error: true,
-          }
-        : {
-            type: "agent.tool_result" as const,
-            tool_use_id: id,
-            content: UNKNOWN_TOOL_RESULT_TEXT,
-            is_error: true,
-          };
-      const tagged = (meta.thread
-        ? { ...event, session_thread_id: meta.thread }
-        : event) as unknown as SessionEvent;
-      try {
-        await this.runtimeAdapter.eventLog.append(tagged);
-        this.broadcastEvent(tagged);
-        flushed++;
-      } catch (err) {
-        console.warn(`[finalize-stale] failed to flush tool_use ${id}:`, err);
-      }
-    }
-
-    // 2. Force-end stale sessions rows. Skip turns currently held in
-    //    _activeTurnIds (live work in this incarnation). Order matters:
-    //    endTurn FIRST (the contract), events only on success. The
-    //    earlier shape (rescheduled → endTurn → idle) emitted a
-    //    rescheduled event even when endTurn threw, leaving Console
-    //    showing "rescheduled" with no resolution and the row still
-    //    'running'. Atomic-from-Console's-perspective: events appear
-    //    iff the row actually flipped.
-    const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
-    let ended = 0;
-    if (orphans.length > 0 || usedIds.size > 0) {
-      sdoLog("finalize.scan", {
-        session_id: this.state.session_id,
-        orphan_turns: orphans.length,
-        unpaired_tool_uses: usedIds.size,
-        pending_tool_calls: this.state.pending_tool_calls?.length ?? 0,
-      });
-    }
-    // Race window: cold-start flush is fire-and-forget from fetch();
-    // the same fetch() may concurrently route a POST /event into
-    // drainEventQueue → adapter.beginTurn (writes D1 row) →
-    // hintTurnInFlight callback (populates _activeTurnIds). If we read
-    // listOrphanTurns BETWEEN the D1 write landing and the in-memory
-    // set add, the brand-new turn looks like an orphan and we'd
-    // incorrectly emit rescheduled+idle for it (caught 2026-05-11
-    // bench scenario 08, sess-hn5kmowudx42awm0).
-    //
-    // The grace period only applies to turns that began in THIS
-    // incarnation (`turn_started_at >= _instanceStartedAt`). A turn
-    // whose marker predates this instance is from a dead incarnation by
-    // definition, even when its timestamp is only a few seconds old —
-    // exactly the mid-turn isolate-reset case. Pre-fix, the age-only
-    // check skipped such a turn; a fire-and-forget fetch() pass then
-    // never ran again and the session stayed status_running forever.
-    const FRESH_TURN_GRACE_MS = 30_000;
-    const now = Date.now();
-    let heldForFreshGrace = 0;
-    for (const o of orphans) {
-      if (this._activeTurnIds.has(o.turn_id)) {
-        sdoLog("finalize.candidate", {
-          session_id: this.state.session_id,
-          turn_id: o.turn_id,
-          decision: "skip",
-          reason: "active_turn",
-        });
-        continue;
-      }
-      const startedThisIncarnation = o.turn_started_at >= this._instanceStartedAt;
-      if (startedThisIncarnation && now - o.turn_started_at < FRESH_TURN_GRACE_MS) {
-        heldForFreshGrace++;
-        sdoLog("finalize.candidate", {
-          session_id: this.state.session_id,
-          turn_id: o.turn_id,
-          decision: "skip",
-          reason: "fresh_grace",
-          age_ms: now - o.turn_started_at,
-        });
-        continue;
-      }
-      try {
-        await this.runtimeAdapter.endTurn(this.state.session_id, o.turn_id, "idle");
-      } catch (err) {
-        console.warn(`[finalize-stale] endTurn failed for ${o.turn_id}:`, err);
-        sdoLog("finalize.candidate", {
-          session_id: this.state.session_id,
-          turn_id: o.turn_id,
-          decision: "skip",
-          reason: "end_turn_failed",
-          error: err instanceof Error ? err.message : String(err),
-        });
-        continue; // skip event emission — row is still in old state
-      }
-      ended++;
-      sdoLog("finalize.candidate", {
-        session_id: this.state.session_id,
-        turn_id: o.turn_id,
-        decision: "end",
-        reason: "orphan_turn",
-        age_ms: now - o.turn_started_at,
-      });
-      const reschedEvent = {
-        type: "session.status_rescheduled",
-        reason: "DO eviction or restart — stream lost; re-send to continue.",
-      } as unknown as SessionEvent;
-      const idleEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } } as unknown as SessionEvent;
-      // Events are best-effort post-cleanup; row is the source of truth.
-      try { await this.runtimeAdapter.eventLog.append(reschedEvent); } catch {}
-      try { this.broadcastEvent(reschedEvent); } catch {}
-      try { await this.runtimeAdapter.eventLog.append(idleEvent); } catch {}
-      try { this.broadcastEvent(idleEvent); } catch {}
-    }
-    if (heldForFreshGrace > 0) {
-      // A fetch()-driven cold-start pass is fire-and-forget; make sure a
-      // later pass exists to re-check the in-incarnation grace window. The
-      // multiplexer merges this with any heartbeat/schedule wake instead of
-      // clobbering it.
-      try {
-        await this._multiplexAlarm({
-          reason: "turn_grace_retry",
-          atMs: now + FRESH_TURN_GRACE_MS,
-        });
-      } catch { /* storage alarm unavailable — alarm() path will rearm */ }
-    }
-
-    // 3. Markerless dangling-turn fallback. The pre-fix outbox path emitted
-    //    session.status_running without writing sessions.turn_id, so a
-    //    cold alarm saw listOrphanTurns() === [] and ended nothing. The
-    //    event log is the only remaining evidence for those sessions (the
-    //    exact live incident: status_running + span.model_request_start,
-    //    all outbox rows completed). Close that shape too so a cold alarm
-    //    flips the status back to idle.
-    //
-    //    Guarded by "no live work in this incarnation" plus a 5s age and
-    //    an instance-start check: a turn that is merely starting in the
-    //    current isolate must never be mistaken for this isolate's
-    //    predecessor. D1-marked turns were already handled above.
-    let markerlessEnded = 0;
-    if (
-      // Only when no D1-marked turn was seen at all: a markerless row is
-      // one the old outbox path never stamped. If a D1 orphan existed but
-      // endTurn transiently failed, leave it to the next alarm instead of
-      // emitting a terminal idle for a row that still says running.
-      orphans.length === 0 &&
-      this._activeTurnIds.size === 0 &&
-      this._executionActiveLanes.size === 0 &&
-      this._draining.size === 0
-    ) {
-      const latest = this._latestSessionStatusEvent();
-      const startedAtMs = latest === null ? 0 : latest.ts * 1000;
-      if (
-        latest?.type === "session.status_running" &&
-        startedAtMs < this._instanceStartedAt &&
-        now - startedAtMs >= 5_000
-      ) {
-        // Best-effort row cleanup for the markerless shape. Scoped to
-        // turn_id IS NULL so it can never clobber a fresh beginTurn.
-        let rowChanged = false;
-        try {
-          const update = await this.runtimeAdapter.sql
-            .prepare(
-              `UPDATE sessions
-                  SET status='idle', turn_id=NULL, turn_started_at=NULL, updated_at=?
-                WHERE id=? AND status='running' AND turn_id IS NULL`,
-            )
-            .bind(now, this.state.session_id)
-            .run();
-          rowChanged = (update.meta?.changes ?? 0) > 0;
-        } catch (err) {
-          console.warn(`[finalize-stale] markerless row cleanup failed:`, err);
-        }
-        if (!rowChanged) {
-          // Nothing to end (a concurrent beginTurn won the race, or the
-          // row was already settled). Do not emit a terminal idle for a
-          // turn that is still live.
-          sdoLog("finalize.candidate", {
-            session_id: this.state.session_id,
-            decision: "skip",
-            reason: "markerless_row_not_running",
-            status_ts: startedAtMs,
-          });
-        } else {
-          const reschedEvent = {
-            type: "session.status_rescheduled",
-            reason: "DO eviction or restart — stream lost; re-send to continue.",
-          } as unknown as SessionEvent;
-          const idleEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } } as unknown as SessionEvent;
-          try { await this.runtimeAdapter.eventLog.append(reschedEvent); } catch {}
-          try { this.broadcastEvent(reschedEvent); } catch {}
-          try { await this.runtimeAdapter.eventLog.append(idleEvent); } catch {}
-          try { this.broadcastEvent(idleEvent); } catch {}
-          markerlessEnded = 1;
-          sdoLog("finalize.candidate", {
-            session_id: this.state.session_id,
-            decision: "end",
-            reason: "markerless_dangling_turn",
-            status_ts: startedAtMs,
-          });
-        }
-      }
-    }
-    if (flushed > 0 || ended > 0 || markerlessEnded > 0) {
-      console.log(`[finalize-stale] flushed ${flushed} tool_uses, ended ${ended + markerlessEnded} stale turns`);
-      sdoLog("finalize.done", {
-        session_id: this.state.session_id,
-        flushed_tool_uses: flushed,
-        ended_turns: ended + markerlessEnded,
-        markerless_turns: markerlessEnded,
-      });
-    }
+    await finalizeStaleTurns({
+      unknownToolResultText: UNKNOWN_TOOL_RESULT_TEXT,
+      instanceStartedAt: this._instanceStartedAt,
+      now: () => Date.now(),
+      listToolUses: () => this._staleToolUses(),
+      listToolResultIds: () => this._staleToolResultIds(),
+      parkedCallIds: () => (this.state.pending_tool_calls ?? []).map((pending) => pending.toolCallId),
+      append: async (event) => { await this.runtimeAdapter.eventLog.append(event); },
+      broadcast: (event) => this.broadcastEvent(event),
+      listOrphanTurns: () => this.runtimeAdapter.listOrphanTurns(this.state.session_id),
+      endTurn: (turnId) => this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle"),
+      isTurnActive: (turnId) => this._activeTurnIds.has(turnId),
+      hasLiveWork: () => this._activeTurnIds.size > 0 || this._executionActiveLanes.size > 0 || this._draining.size > 0,
+      latestSessionStatus: () => this._latestSessionStatusEvent(),
+      clearMarkerlessTurn: (now) => this._clearMarkerlessTurn(now),
+      scheduleGraceRetry: (atMs) => this._multiplexAlarm({ reason: "turn_grace_retry", atMs }),
+      log: (event, fields) => sdoLog(event, { session_id: this.state.session_id, ...fields }),
+    });
 
     // After flipping any stale rows to idle, kick the queue. Without this
     // queued inputs that arrived while the previous incarnation was
