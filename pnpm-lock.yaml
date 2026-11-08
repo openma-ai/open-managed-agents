@@ -177,12 +177,18 @@ importers:
       '@open-managed-agents/sandbox-adapter-e2b':
         specifier: workspace:*
         version: link:../../packages/sandbox-adapter-e2b
+      '@open-managed-agents/sandbox-gateway':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-gateway
       '@open-managed-agents/sandbox-port-kit':
         specifier: workspace:*
         version: link:../../packages/sandbox-port-kit
       '@open-managed-agents/services':
         specifier: workspace:*
         version: link:../../packages/services
+      '@open-managed-agents/session-outcomes':
+        specifier: workspace:*
+        version: link:../../packages/session-outcomes
       '@open-managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../../packages/session-runtime
@@ -195,6 +201,9 @@ importers:
       '@open-managed-agents/session-secrets-store':
         specifier: workspace:*
         version: link:../../packages/session-secrets-store
+      '@open-managed-agents/session-subagents':
+        specifier: workspace:*
+        version: link:../../packages/session-subagents
       '@open-managed-agents/session-wakeup':
         specifier: workspace:*
         version: link:../../packages/session-wakeup
@@ -659,6 +668,12 @@ importers:
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
+      '@open-managed-agents/sandbox-gateway':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-gateway
+      '@open-managed-agents/sandbox-gateway-sql':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-gateway-sql
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../../packages/scheduler
@@ -671,6 +686,9 @@ importers:
       '@open-managed-agents/session-runtime-contract':
         specifier: workspace:*
         version: link:../../packages/session-runtime-contract
+      '@open-managed-agents/session-runtime-sql':
+        specifier: workspace:*
+        version: link:../../packages/session-runtime-sql
       '@open-managed-agents/session-secrets-store':
         specifier: workspace:*
         version: link:../../packages/session-secrets-store
@@ -1522,12 +1540,18 @@ importers:
       '@open-managed-agents/sandbox-egress':
         specifier: workspace:*
         version: link:../sandbox-egress
+      '@open-managed-agents/sandbox-gateway':
+        specifier: workspace:*
+        version: link:../sandbox-gateway
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../scheduler
       '@open-managed-agents/session-event-store':
         specifier: workspace:*
         version: link:../session-event-store
+      '@open-managed-agents/session-outcomes':
+        specifier: workspace:*
+        version: link:../session-outcomes
       '@open-managed-agents/session-realtime':
         specifier: workspace:*
         version: link:../session-realtime
@@ -1549,6 +1573,9 @@ importers:
       '@open-managed-agents/session-runtime-sql':
         specifier: workspace:*
         version: link:../session-runtime-sql
+      '@open-managed-agents/session-subagents':
+        specifier: workspace:*
+        version: link:../session-subagents
       '@open-managed-agents/session-thread-store-sql':
         specifier: workspace:*
         version: link:../session-thread-store-sql
@@ -2827,6 +2854,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@open-managed-agents/sandbox-gateway':
+        specifier: workspace:*
+        version: link:../sandbox-gateway
 
   packages/managed-runtime-blaxel:
     dependencies:
@@ -3967,6 +3997,31 @@ importers:
         specifier: ^0.28.2
         version: 0.28.2
 
+  packages/sandbox-gateway:
+    dependencies:
+      '@open-managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../session-runtime
+    devDependencies:
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
+
+  packages/sandbox-gateway-sql:
+    dependencies:
+      '@open-managed-agents/managed-agents-adapters-sql':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-sql
+      '@open-managed-agents/sandbox-gateway':
+        specifier: workspace:*
+        version: link:../sandbox-gateway
+      '@open-managed-agents/session-runtime-sql':
+        specifier: workspace:*
+        version: link:../session-runtime-sql
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+
   packages/sandbox-port-kit:
     dependencies:
       '@open-managed-agents/managed-runtime-sandbox':
@@ -4156,6 +4211,16 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
 
+  packages/session-outcomes:
+    dependencies:
+      '@open-managed-agents/eval-core':
+        specifier: workspace:*
+        version: link:../eval-core
+    devDependencies:
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
+
   packages/session-realtime:
     dependencies:
       '@open-managed-agents/domain':
@@ -4248,6 +4313,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@open-managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../session-runtime
       '@open-managed-agents/session-runtime-contract':
         specifier: workspace:*
         version: link:../session-runtime-contract
@@ -4301,6 +4369,12 @@ importers:
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+
+  packages/session-subagents:
+    devDependencies:
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
 
   packages/session-thread-store:
     dependencies:

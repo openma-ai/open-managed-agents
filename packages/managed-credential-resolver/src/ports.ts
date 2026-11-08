@@ -1,4 +1,5 @@
 import type { CredentialStore } from "@open-managed-agents/credential-store";
+import type { VaultPlaceholders } from "@open-managed-agents/sandbox-gateway/vault-substitution";
 
 /**
  * Platform dependencies of the resolver. Storage and its encryption are one
@@ -16,4 +17,8 @@ export interface ManagedCredentialResolverPorts {
   log: {
     warn(fields: Record<string, unknown>, message: string): void;
   };
+  /** Per-Session sandbox placeholders (keyed by the platform root secret).
+   * Required once a Session's Vaults hold environment_variable or cap_cli
+   * credentials: without it they cannot reach a sandbox at all. */
+  placeholders?: VaultPlaceholders;
 }

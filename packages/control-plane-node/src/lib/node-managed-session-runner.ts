@@ -21,7 +21,7 @@ import type {
   SpanModelUsageView,
   ToolResultContentBlock,
 } from "@open-managed-agents/managed-agents-application";
-import { consumedListCostPico } from "@open-managed-agents/managed-agents-application";
+import { budgetReachedStopEvents, openSessionBudgetGate } from "@open-managed-agents/managed-agents-application";
 import {
   abortedError,
   abortableDelay,
@@ -39,10 +39,7 @@ import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/api-types";
-import {
-  createSessionBudgetGate,
-  type SessionBudgetGate,
-} from "@open-managed-agents/domain/sessions";
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import {
   clearNodeSessionBudgetGate,
   registerNodeSessionBudgetGate,
@@ -51,6 +48,7 @@ import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
+import { createSessionOutcomes } from "@open-managed-agents/session-outcomes";
 import {
   ManagedNodeSubagents,
   managedEventThread,
@@ -194,6 +192,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
    * warm reuse, without restaging resources or rebuilding the sandbox. */
   refreshSandboxEnvironment?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
+    /** The execution the sandbox serves; its relay pass binds to it (design §0.0 rule 10). */
+    executionFence?: SessionExecutionFence;
     /** Cleanup receives the raw, allocation-bound sandbox after refresh drains. */
     registerCleanup(cleanup: (sandbox: SandboxExecutor) => Promise<void>): void;
   }): Promise<void>;
@@ -391,7 +391,7 @@ export class DefaultNodeManagedSessionRunner
   }
 
   private async refreshSandboxEnvironment(
-    context: ManagedRunnerContext,
+    context: ManagedRunnerContext & { executionFence?: SessionExecutionFence },
     sandbox: SandboxExecutor,
     signal: AbortSignal,
   ): Promise<void> {
@@ -453,7 +453,10 @@ export class DefaultNodeManagedSessionRunner
           ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
         });
         if (signal.aborted) throw abortedError(signal);
-        await this.refreshSandboxEnvironment(context, sandbox, signal);
+        await this.refreshSandboxEnvironment({
+          ...context,
+          ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
+        }, sandbox, signal);
       },
     });
     const allocation = runtime.acquire();
@@ -808,6 +811,7 @@ export class DefaultNodeManagedSessionRunner
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
       ...(input.takeSteeringInputs !== undefined && { takeSteeringInputs: input.takeSteeringInputs }),
+      usage: input.session.usage,
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
@@ -909,12 +913,7 @@ export class DefaultNodeManagedSessionRunner
         this.subagentExecutions.set(input, subagents);
         subagentContext = {
           subagents,
-          delegateToAgent: async (agentId, message) => {
-            const child = await subagents.create({ agentId, message });
-            const result = (await subagents.wait({ threadIds: [child.threadId] })).subagents[0]!;
-            if (result.status === "failed") throw new Error(`Subagent ${child.threadId} failed`);
-            return result.output ?? "(sub-agent produced no text output)";
-          },
+          delegateToAgent: (agentId, message) => subagents.delegate({ agentId, message }),
         };
       }
       const toolsPromise = this.dependencies
@@ -939,32 +938,24 @@ export class DefaultNodeManagedSessionRunner
           tools,
         });
         if (harnessContext.budget === undefined) {
-          const sessionBudget = input.session.budget ?? null;
-          const pricing = sessionBudget === null
-            ? null
-            : await this.dependencies.resolveModelPricing?.(context) ?? null;
-          // Domain gate; Node ListCostPicoStore persists session.usage.list_cost_pico.
-          const store = {
-            // Sessions persisted before list_cost_pico survived the runtime
-            // boundary resume from their rounded cents rather than from 0.
-            load: (): string => consumedListCostPico(input.session).toString(),
-            save: (list_cost_pico: string): void => {
-              const usage = { ...runtime.usageSnapshot(), list_cost_pico };
-              if (input.session.usage) {
-                input.session.usage.list_cost_pico = list_cost_pico;
-              } else {
-                input.session.usage = { list_cost_pico };
-              }
-              runtime.broadcastProducedEvent({ type: "session.usage", usage });
+          // Application gate opener; the Node ListCostPicoStore persists
+          // session.usage.list_cost_pico and publishes each save.
+          harnessContext.budget = await openSessionBudgetGate({
+            session: input.session,
+            pricing: async () => await this.dependencies.resolveModelPricing?.(context) ?? null,
+            store: {
+              load: (): string | null => input.session.usage?.list_cost_pico ?? null,
+              save: (list_cost_pico: string): void => {
+                const usage = { ...runtime.usageSnapshot(), list_cost_pico };
+                if (input.session.usage) {
+                  input.session.usage.list_cost_pico = list_cost_pico;
+                } else {
+                  input.session.usage = { list_cost_pico };
+                }
+                runtime.broadcastProducedEvent({ type: "session.usage", usage });
+              },
             },
-          };
-          harnessContext.budget = createSessionBudgetGate(
-            sessionBudget === null
-              ? null
-              : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
-            pricing,
-            store,
-          );
+          });
         }
         budgetGate = harnessContext.budget ?? null;
         runtime.setBudgetGate(budgetGate);
@@ -1005,76 +996,9 @@ export class DefaultNodeManagedSessionRunner
       };
       if (!parkedStill) await runHarness();
       if (event.type === "user.define_outcome") {
-        const maxIterations = Math.min(
-          20,
-          Math.max(1, event.maxIterations ?? 3),
-        );
-        for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-          const evaluationHistory = runtime.getApplicationHistoryEvents();
-          const startId = runtime.broadcastProducedEvent({
-            type: "span.outcome_evaluation_start",
-            outcomeId: event.outcomeId,
-            iteration,
-          });
-          runtime.broadcastProducedEvent({
-            type: "span.outcome_evaluation_ongoing",
-            outcomeId: event.outcomeId,
-            iteration,
-          });
-          let evaluation: ManagedNodeOutcomeEvaluationResult;
-          try {
-            evaluation = await this.dependencies.outcomes.evaluate({
-              workspaceId: input.workspaceId,
-              session: input.session,
-              environment: input.environment,
-              outcome: event,
-              historyEvents: evaluationHistory,
-              iteration,
-              abortSignal: abortController.signal,
-            });
-          } catch (error) {
-            const interrupted = abortController.signal.aborted ||
-              (error instanceof Error && error.name === "AbortError");
-            evaluation = {
-              result: "failed",
-              explanation: interrupted
-                ? "outcome evaluation interrupted by user"
-                : `outcome evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
-              usage: {
-                cacheCreationInputTokens: 0,
-                cacheReadInputTokens: 0,
-                inputTokens: 0,
-                outputTokens: 0,
-              },
-            };
-            runtime.broadcastProducedEvent({
-              type: "span.outcome_evaluation_end",
-              outcomeId: event.outcomeId,
-              outcomeEvaluationStartId: startId,
-              iteration,
-              result: interrupted ? "interrupted" : "failed",
-              explanation: evaluation.explanation,
-              usage: evaluation.usage,
-            });
-            break;
-          }
-          const needsRevision = evaluation.result === "needs_revision";
-          const result = needsRevision && iteration === maxIterations - 1
-            ? "max_iterations_reached"
-            : evaluation.result;
-          runtime.broadcastProducedEvent({
-            type: "span.outcome_evaluation_end",
-            outcomeId: event.outcomeId,
-            outcomeEvaluationStartId: startId,
-            iteration,
-            result,
-            explanation: evaluation.explanation,
-            usage: evaluation.usage,
-          });
-          if (!needsRevision || result === "max_iterations_reached") break;
-          runtime.appendOutcomeFeedback(iteration, evaluation.explanation);
-          await runHarness();
-        }
+        await this.evaluateOutcome({
+          input, event, runtime, runHarness, abortSignal: abortController.signal,
+        });
       }
       // The turn's sandbox work is done. A sandbox replaced after the agent's
       // last operation took this turn's unpublished changes with it, and the
@@ -1190,19 +1114,15 @@ export class DefaultNodeManagedSessionRunner
         // Official budget stop: thread idle → usage → session idle (budget_reached).
         // requires_action parking is skipped: budget_reached outranks end_turn but
         // requires_action already short-circuits earlier when tools are pending.
-        const stopReason = { type: "budget_reached" as const };
-        runtime.broadcastProducedEvent({
-          type: "session.thread_status_idle",
+        // Usage source on Node: the primary runtime's meter.
+        for (const event of budgetReachedStopEvents({
           agentName: input.session.agent.name,
           sessionThreadId: "sthr_primary",
-          stopReason,
-        });
-        runtime.broadcastProducedEvent({
-          type: "session.usage",
           usage: runtime.usageSnapshot(),
-          budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
-        });
-        runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
+          budget: budgetGate.maxListCost,
+        })) {
+          runtime.broadcastProducedEvent(event);
+        }
       } else if (!leaseLost) {
         const failed = runFailed || finalizationError !== undefined;
         const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
@@ -1245,6 +1165,107 @@ export class DefaultNodeManagedSessionRunner
         finalWorkspace.trusted = true;
       }
     }
+  }
+
+  /** The `user.define_outcome` grader loop (#545 §0.7: one implementation in
+   * @open-managed-agents/session-outcomes). Node supplies the per-iteration
+   * evaluation Port, the persisted span events and the revision turn. The
+   * history snapshot is taken before each start span so the evaluator judges
+   * the turn, not its own spans. Node keeps no outcome state across turns. */
+  private async evaluateOutcome(turn: {
+    input: NodeManagedSessionRunnerAcceptInput;
+    event: ManagedNodeDefinedOutcome;
+    runtime: ManagedNodeHarnessRuntime;
+    runHarness(): Promise<void>;
+    abortSignal: AbortSignal;
+  }): Promise<void> {
+    const { input, event, runtime } = turn;
+    let lastStartId: string | null = null;
+    const outcomes = createSessionOutcomes<SessionEventView[]>({
+      snapshot: () => runtime.getApplicationHistoryEvents(),
+      evaluator: {
+        prepare: async ({ outcome }) => ({
+          type: "ready",
+          outcome,
+          evaluator: {
+            evaluate: async ({ iteration, abortSignal, snapshot }) => {
+              const evaluation = await this.dependencies.outcomes.evaluate({
+                workspaceId: input.workspaceId,
+                session: input.session,
+                environment: input.environment,
+                outcome: event,
+                historyEvents: snapshot ?? [],
+                iteration,
+                abortSignal,
+              });
+              return {
+                result: evaluation.result,
+                explanation: evaluation.explanation,
+                usage: {
+                  input_tokens: evaluation.usage.inputTokens,
+                  output_tokens: evaluation.usage.outputTokens,
+                  cache_creation_input_tokens: evaluation.usage.cacheCreationInputTokens,
+                  cache_read_input_tokens: evaluation.usage.cacheReadInputTokens,
+                },
+              };
+            },
+          },
+        }),
+      },
+      events: {
+        evaluationStarted: ({ outcomeId, iteration }) => {
+          lastStartId = runtime.broadcastProducedEvent({
+            type: "span.outcome_evaluation_start",
+            outcomeId,
+            iteration,
+          });
+          return { startEventId: lastStartId };
+        },
+        evaluationOngoing: ({ outcomeId, iteration }) => {
+          runtime.broadcastProducedEvent({
+            type: "span.outcome_evaluation_ongoing",
+            outcomeId,
+            iteration,
+          });
+        },
+        evaluationEnded: ({ verdict, started }) => {
+          // The Node end span requires a start link; a verdict without its
+          // own start span (crashed revision) links the last evaluation.
+          const startId = started?.startEventId ?? lastStartId;
+          if (startId === null) return;
+          runtime.broadcastProducedEvent({
+            type: "span.outcome_evaluation_end",
+            outcomeId: verdict.outcomeId,
+            outcomeEvaluationStartId: startId,
+            iteration: verdict.iteration,
+            result: verdict.result,
+            explanation: verdict.explanation,
+            usage: {
+              cacheCreationInputTokens: verdict.usage?.cache_creation_input_tokens ?? 0,
+              cacheReadInputTokens: verdict.usage?.cache_read_input_tokens ?? 0,
+              inputTokens: verdict.usage?.input_tokens ?? 0,
+              outputTokens: verdict.usage?.output_tokens ?? 0,
+            },
+          });
+        },
+      },
+      progress: { persist: () => undefined },
+      revision: {
+        revise: async ({ feedback }) => {
+          runtime.appendOutcomeFeedback(feedback);
+          await turn.runHarness();
+        },
+      },
+    });
+    await outcomes.evaluate({
+      outcome: {
+        outcomeId: event.outcomeId,
+        description: event.description,
+        rubric: event.rubric,
+        maxIterations: event.maxIterations,
+      },
+      abortSignal: turn.abortSignal,
+    });
   }
 
   /** Recovery of an execution whose terminal idle committed before its

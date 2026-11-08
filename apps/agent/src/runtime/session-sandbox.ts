@@ -37,9 +37,12 @@
 // waits for it; a failed refresh fails that call, once. Layer 2 (the
 // provider pausing at the cap) is the adapter's (E2B onTimeout: pause).
 //
-// Not here yet (reported in #545): per-execution egress.revoke at turn end
-// (a running background process keeps egress between turns, as before),
-// core-driven idle pause (Cloudflare: OmaSandbox idle teardown backs up and
+// Egress follows the Session execution attempt (design §0.0 rule 10): when
+// `egressKey` changes (a new attempt, or none) egress.attach runs again at
+// the next exec boundary, so the binding carries the current attempt. The
+// gateway checks the attempt live, so a background process loses Vault
+// egress and the model gateway once its turn ends.
+// Not here yet (reported in #545): core-driven idle pause (Cloudflare: OmaSandbox idle teardown backs up and
 // stops; E2B: lease timeout), and a live fence (SessionDO is the single
 // writer of its Session).
 
@@ -101,6 +104,10 @@ export interface PortsSessionSandboxOptions<R> {
   /** egress.attach again this often at exec boundaries (an expiring
    * credential in the egress, e.g. the E2B relay pass); null = never. */
   egressRenewMs: number | null;
+  /** Identifies what the egress binding carries (the current execution
+   * attempt); egress.attach runs again at the next exec boundary when it
+   * changes. Omitted = never. */
+  egressKey?(): string;
   now?(): number;
   /** Whether this owner still holds the Session's fence (design §0.0 rule
    * 10); checked before the lifetime refresh pauses. Default: always
@@ -130,6 +137,11 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   private lost = false;
   private storageSyncedAt = 0;
   private egressAttachedAt = 0;
+  private egressAttachedKey: string | undefined;
+  private markEgress(now: number): void {
+    this.egressAttachedAt = now;
+    this.egressAttachedKey = this.options.egressKey?.();
+  }
   /** sandbox.maxLifetimeMs, known once composed. */
   private maxLifetimeMs: number | null = null;
   /** Calls (exec, process start, file I/O) currently in flight. */
@@ -328,7 +340,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       if (Object.keys(this.env).length > 0) await next.executor.setEnvVars(this.env);
       const fence = fenceFor(scope);
       await ports.egress.attach({ runtime: next.runtime, scope, fence, policy: live.plan.egress, signal });
-      this.egressAttachedAt = now;
+      this.markEgress(now);
       if (this.outputs || this.stores.length > 0) {
         await ports.storage.attach({ runtime: next.runtime, scope, fence, stores: this.stores, outputs: live.plan.outputs, signal });
       }
@@ -351,10 +363,11 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
         this.storageSyncedAt = now;
       }
       const renew = this.options.egressRenewMs;
-      if (renew !== null && now - this.egressAttachedAt >= renew) {
+      const keyChanged = this.options.egressKey !== undefined && this.options.egressKey() !== this.egressAttachedKey;
+      if ((renew !== null && now - this.egressAttachedAt >= renew) || keyChanged) {
         const plan = await this.options.plan({ scope, generation: live.generation, stores: this.stores });
         await ports.egress.attach({ runtime: live.runtime, scope, fence: fenceFor(scope), policy: plan.egress, signal });
-        this.egressAttachedAt = now;
+        this.markEgress(now);
       }
     })().finally(() => { this.maintaining = null; });
   }
@@ -421,7 +434,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       if (Object.keys(this.env).length > 0) await live.executor.setEnvVars(this.env);
       const fence = fenceFor(scope);
       await ports.egress.attach({ runtime: live.runtime, scope, fence, policy: plan.egress, signal });
-      this.egressAttachedAt = this.now();
+      this.markEgress(this.now());
       if (this.outputs || this.stores.length > 0) {
         await ports.storage.attach({ runtime: live.runtime, scope, fence, stores: this.stores, outputs: plan.outputs, signal });
       }

@@ -138,6 +138,10 @@ import {
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
+import { authorizeSandboxEgress, type SandboxGatewayStores } from "@open-managed-agents/sandbox-gateway";
+import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
+import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
+import { createSqlSessionExecutionLeases } from "@open-managed-agents/session-runtime-sql/execution-lease";
 import {
   createCfShardPoolService,
   createCfTenantShardDirectoryService,
@@ -311,15 +315,14 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   const { createCredentialEgressRelay, createEgressRelayPasses } = await import("@open-managed-agents/managed-credential-resolver");
   return createCredentialEgressRelay({
     passes: createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now),
-    findSession: async claims => {
-      const db = await buildCfTenantDbProvider(env).resolve(claims.workspaceId);
-      return new SqlSessionSource(new CfD1SqlClient(db)).find(claims);
-    },
+    authorize: claims => authorizeSandboxEgress(cfSandboxGatewayStores(env), claims),
     credentials: {
       outboundTarget: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).outboundTarget(scope, hostname),
       forward: async (workspaceId, target, send) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(workspaceId)).forward(workspaceId, target, send),
+      sandboxEgress: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).sandboxEgress(scope, hostname),
     },
     send: request => fetch(request),
+    log: { warn: (fields, message) => logWarn(fields, message) },
   });
 }));
 
@@ -1718,34 +1721,21 @@ export default {
 // them by class_name in durable_objects.bindings + migrations.
 export { RuntimeRoom } from "./runtime-room";
 
+/** Tenant D1 behind @open-managed-agents/sandbox-gateway (design §0.7). */
+function cfSandboxGatewayStores(env: Env): SandboxGatewayStores {
+  return async (workspaceId) => createSqlSandboxGatewayStore(new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(workspaceId)));
+}
+
 /** True while `fence` still owns its running execution in tenant D1. Main
- * revalidates this before every fenced mutation requested by a SessionDO. */
+ * revalidates this before every fenced mutation requested by a SessionDO.
+ * The shared check (design §0.0 rule 10), scoped to the calling Session. */
 async function cfExecutionFenceActive(
   client: CfD1SqlClient,
   scope: { tenantId: string; sessionId: string },
   fence: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence,
 ): Promise<boolean> {
-  if (
-    fence.workspaceId !== scope.tenantId
-    || fence.sessionId !== scope.sessionId
-    || !Number.isSafeInteger(fence.generation)
-    || fence.generation < 1
-  ) return false;
-  const active = await client.prepare(
-    `SELECT 1 AS active FROM managed_session_executions
-      WHERE workspace_id = ? AND id = ? AND session_id = ?
-        AND state = 'running' AND attempt_id = ? AND owner_id = ?
-        AND generation = ? AND lease_expires_at_ms > ?`,
-  ).bind(
-    fence.workspaceId,
-    fence.executionId,
-    fence.sessionId,
-    fence.attemptId,
-    fence.ownerId,
-    fence.generation,
-    Date.now(),
-  ).first<{ active: number }>();
-  return active !== null;
+  if (fence.workspaceId !== scope.tenantId || fence.sessionId !== scope.sessionId) return false;
+  return isSessionExecutionFenceActive(createSqlSessionExecutionLeases(client), fence);
 }
 
 /**
@@ -1829,8 +1819,9 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
 
   /**
    * CLI placeholder environment (cap spec `bootstrap.env`) for a v1 managed
-   * Session's sandbox, from the session's managed `cap_cli` credentials.
-   * Placeholders only; real tokens stay here and are injected at egress.
+   * Session's sandbox, from the session's managed `environment_variable` and
+   * `cap_cli` credentials. Per-Session placeholders only; real values stay
+   * here and are substituted at egress (design §0.1, §8.4).
    * `not_found` means the session is not a managed one.
    */
   async resolveManagedCapCliEnvironment(opts: {
@@ -2308,21 +2299,36 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
   async credentialEgress(scope: {
     tenantId: string; sessionId: string;
     runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
+    executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
   }, action: "resolve" | "forward", request: Request): Promise<Response> {
     const { createCredentialEgressCore, credentialEgressDenied } = await import("@open-managed-agents/managed-credential-resolver");
     if (!this.env.PLATFORM_ROOT_SECRET) return new Response("Credential relay unavailable", { status: 503 });
-    const fence = scope.runtimeFence === undefined ? null : {
-      workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence, expiresAt: new Date(0).toISOString(),
-    };
-    const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-    if (fence !== null && !await fences.isCurrent(fence)) return new Response("Credential relay denied", { status: 403 });
     const db = await buildCfTenantDbProvider(this.env).resolve(scope.tenantId);
+    let authorize: () => Promise<{ vaultIds: readonly string[] } | null>;
+    if (scope.runtimeFence !== undefined) {
+      // ManagedRuntimeHost (environment worker) still fences with
+      // runtime_resource_fences until it moves to v2 (design §0.0 rule 10).
+      const fence = { workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence, expiresAt: new Date(0).toISOString() };
+      const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
+      if (!await fences.isCurrent(fence)) return new Response("Credential relay denied", { status: 403 });
+      authorize = async () => {
+        if (!await fences.isCurrent(fence)) return null;
+        const session = await new SqlSessionSource(new CfD1SqlClient(db)).find({ workspaceId: scope.tenantId, sessionId: scope.sessionId });
+        return session === null || session.archivedAt !== null ? null : session;
+      };
+    } else {
+      // A Session sandbox: only while its execution attempt is current. No
+      // attempt (between turns, warmup before the first turn) → no Vault.
+      const fence = scope.executionFence === undefined ? null : { workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.executionFence };
+      const stores = cfSandboxGatewayStores(this.env);
+      authorize = () => authorizeSandboxEgress(stores, fence);
+      if (await authorize() === null) return credentialEgressDenied(403);
+    }
     const body = action === "forward" && !["GET", "HEAD"].includes(request.method) ? await request.arrayBuffer() : null;
-    // Re-check after buffering, immediately before the Session lookup.
-    const session = fence !== null && !await fences.isCurrent(fence) ? null
-      : await new SqlSessionSource(new CfD1SqlClient(db)).find({ workspaceId: scope.tenantId, sessionId: scope.sessionId });
-    if (session === null || session.archivedAt !== null) return credentialEgressDenied(403);
-    const core = createCredentialEgressCore({ credentials: createManagedCredentialResolver(this.env, db), send: req => fetch(req) });
+    // Re-check after buffering, immediately before injecting.
+    const session = await authorize();
+    if (session === null) return credentialEgressDenied(403);
+    const core = createCredentialEgressCore({ credentials: createManagedCredentialResolver(this.env, db), send: req => fetch(req), log: { warn: (fields, message) => logWarn(fields, message) } });
     const egressScope = { workspaceId: scope.tenantId, sessionId: scope.sessionId, vaultIds: session.vaultIds };
     return action === "resolve"
       ? core.resolve(egressScope, request.url)
@@ -2355,7 +2361,14 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       generation: number;
       token: string;
     };
+    executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
   }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null> {
+    // A Session sandbox gets GitHub credentials only while its execution
+    // attempt is current (design §0.0 rule 10); ManagedRuntimeHost below.
+    if (opts.runtimeFence === undefined && await authorizeSandboxEgress(
+      cfSandboxGatewayStores(this.env),
+      opts.executionFence === undefined ? null : { workspaceId: opts.tenantId, sessionId: opts.sessionId, ...opts.executionFence },
+    ) === null) return null;
     const fence = opts.runtimeFence === undefined
       ? null
       : {

@@ -3,7 +3,11 @@ import type { StoredCredential } from "@open-managed-agents/credential-store";
 import type { ManagedCredentialResolverPorts } from "./ports";
 import { findActiveCredential, refreshCredential } from "./refresh";
 import {
-  placeholderEnvironment,
+  compileVaultSubstitutions,
+  vaultSandboxCredentialIds,
+  type VaultSubstitutionSecret,
+} from "@open-managed-agents/sandbox-gateway/vault-substitution";
+import {
   selectMcpTarget,
   selectOutboundTarget,
   type ManagedCredentialTarget,
@@ -87,9 +91,46 @@ export class ManagedCredentialResolver {
     return selectOutboundTarget(await this.listForSession(scope), hostname, this.registry);
   }
 
+  /** What the sandbox env gets: placeholders for environment_variable and
+   * cap_cli credentials (never their values) plus non-secret CLI bootstrap
+   * values. CF SessionDO, the CF E2B forwarder and the Node forwarder all
+   * write exactly this (design §0.1, §8.0). */
   async placeholderEnvironment(scope: ManagedSessionScope): Promise<Record<string, string>> {
-    if (scope.vaultIds.length === 0) return {};
-    return placeholderEnvironment(await this.listForSession(scope), this.registry);
+    const { secrets, env } = await this.compile(scope, await this.recordsFor(scope));
+    return { ...env, ...Object.fromEntries(secrets.map(({ substitution }) => [substitution.envName, substitution.placeholder])) };
+  }
+
+  /** Gateway view of one egress request: the cap_cli / MCP injection target
+   * for `hostname` and every substitution of the Session (to refuse a
+   * placeholder sent to a host its credential does not allow). One listing. */
+  async sandboxEgress(scope: ManagedSessionScope, hostname: string): Promise<{
+    target: ManagedCredentialTarget | null;
+    substitutions: VaultSubstitutionSecret[];
+  }> {
+    const records = await this.recordsFor(scope);
+    return {
+      target: records.length === 0 ? null : selectOutboundTarget(records, hostname, this.registry),
+      substitutions: (await this.compile(scope, records)).secrets,
+    };
+  }
+
+  /** Credentials of the Session's Vaults that only work through egress substitution. */
+  async sandboxCredentialIds(scope: Pick<ManagedSessionScope, "workspaceId" | "vaultIds">): Promise<string[]> {
+    return vaultSandboxCredentialIds(await this.recordsFor({ ...scope, sessionId: "" }));
+  }
+
+  private async recordsFor(scope: ManagedSessionScope): Promise<StoredCredential[]> {
+    return scope.vaultIds.length === 0 ? [] : this.listForSession(scope);
+  }
+
+  private async compile(scope: ManagedSessionScope, records: readonly StoredCredential[]) {
+    if (this.ports.placeholders === undefined) {
+      if (vaultSandboxCredentialIds(records).length > 0) {
+        throw new Error("Vault environment_variable and cap_cli credentials need sandbox placeholders (PLATFORM_ROOT_SECRET)");
+      }
+      return { secrets: [], env: {} };
+    }
+    return compileVaultSubstitutions({ scope, records, specs: this.registry, placeholders: this.ports.placeholders });
   }
 
   /** New token after the upstream rejected `staleToken`, or null. */

@@ -306,8 +306,8 @@ for (const backend of ["memory", "sql"] as const) {
           const h = await setup(backend, authType);
           const seen: Array<{ token: string | null; body: string; method: string }> = [];
           const relay = createCredentialEgressRelay({
-            passes: { issue: async () => "pass", verify: async () => ({ workspaceId: "ws", sessionId: "s", expiresAt: Date.now() + 60000 }) },
-            findSession: async () => ({ vaultIds: ["v"], archivedAt: null }), credentials: h.resolver,
+            passes: { issue: async () => "pass", verify: async () => ({ workspaceId: "ws", sessionId: "s", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, expiresAt: Date.now() + 60000 }) },
+            authorize: async () => ({ workspaceId: "ws", sessionId: "s", vaultIds: ["v"] }), credentials: h.resolver,
             send: async request => {
               seen.push({ token: request.headers.get("authorization"), body: await request.text(), method: request.method });
               await h.archive(kind);

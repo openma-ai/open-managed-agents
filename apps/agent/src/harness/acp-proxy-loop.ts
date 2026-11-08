@@ -4,12 +4,10 @@
  * registered local runtime.
  *
  * Per-turn flow:
- *   1. Open a WebSocket directly to the RuntimeRoom DO via the cross-script
- *      binding (env.RUNTIME_ROOM). The DO class lives in the main worker but
- *      DOs are namespace-level, so the agent worker binds the same class with
- *      `script_name: "managed-agents"` in wrangler.jsonc — no service-binding
- *      hop through main, no shared INTEGRATIONS_INTERNAL_SECRET. The DO holds
- *      the WS open and shuttles session.* messages to/from the daemon.
+ *   1. Attach to the runner through the host's RunnerRelayPort
+ *      (ctx.runnerRelay). On Cloudflare that is a WebSocket to the RuntimeRoom
+ *      DO (apps/agent/src/runtime/runtime-room-relay.ts), which shuttles
+ *      session.* messages to/from the daemon.
  *   2. Send `session.start` (idempotent on the daemon — first time spawns the
  *      ACP child, subsequent times short-circuits to session.ready).
  *   3. Send `session.prompt { text, turn_id }` with the latest user message.
@@ -27,21 +25,11 @@
  *     false / no-op.
  */
 
-import type { HarnessInterface, HarnessContext, HarnessRuntime, HarnessPendingInterruptContext } from "./interface";
+import type { HarnessInterface, HarnessContext, HarnessRuntime, HarnessPendingInterruptContext, RunnerRelayPort, RunnerRelaySocket } from "./interface";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import { AcpTranslator } from "./acp-translate";
 import { augmentAcpUserPrompt, parseSessionReadyFrame } from "./acp-proxy-delivery";
 import { generateEventId, log, logError, logWarn } from "@open-managed-agents/shared";
-
-interface AttachedWs {
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-  addEventListener(
-    event: "message" | "close" | "error",
-    listener: (event: MessageEvent | CloseEvent | Event) => void,
-  ): void;
-  removeEventListener?(event: "message" | "close" | "error", listener: (event: MessageEvent | CloseEvent | Event) => void): void;
-}
 
 export class AcpProxyHarness implements HarnessInterface {
   // Platform context is delivered via session.prompt when cwd is the project
@@ -71,9 +59,11 @@ export class AcpProxyHarness implements HarnessInterface {
     });
     if (!requests.length) return [];
     const binding = ctx.agent.runtime_binding;
-    if (!binding || !ctx.env.RUNTIME_ROOM) throw new Error("Runner interrupt is unavailable");
-    const channel = await this.#openHarnessWs(ctx.env.RUNTIME_ROOM, ctx.session_id, binding.runtime_id, ctx.tenant_id);
-    if (!channel) throw new Error("Could not connect to the runner to interrupt its pending turn");
+    if (!binding || !ctx.runnerRelay) throw new Error("Runner interrupt is unavailable");
+    const channel = await this.#openHarnessWs(ctx.runnerRelay, ctx.session_id, binding.runtime_id, ctx.tenant_id);
+    if (!channel || "unavailable" in channel) {
+      throw new Error(channel ? "Runner interrupt is unavailable" : "Could not connect to the runner to interrupt its pending turn");
+    }
     try {
       const attached = await channel.take((frame) => frame.type === "attached", 5_000);
       if (attached.daemon_online === false) throw new Error("Runner is offline; its pending turn has not been interrupted");
@@ -99,9 +89,9 @@ export class AcpProxyHarness implements HarnessInterface {
       return;
     }
 
-    const env = ctx.env as unknown as { RUNTIME_ROOM?: DurableObjectNamespace };
-    if (!env.RUNTIME_ROOM) {
-      this.#emitError(runtime, "RUNTIME_ROOM binding missing on agent worker — check wrangler.jsonc cross-script DO binding");
+    const relay = ctx.runnerRelay;
+    if (!relay) {
+      this.#emitError(runtime, "AcpProxyHarness needs a runner relay, and this host provides none");
       return;
     }
 
@@ -120,12 +110,13 @@ export class AcpProxyHarness implements HarnessInterface {
 
     const turnId = resumed?.turnId ?? generateEventId();
     const seen: Record<string, number> = Object.assign(Object.create(null), resumed?.after);
-    let channel = await this.#openHarnessWs(env.RUNTIME_ROOM, sid, binding.runtime_id, ctx.tenant_id,
+    const opened = await this.#openHarnessWs(relay, sid, binding.runtime_id, ctx.tenant_id,
       resumed?.after ? { turn_id: turnId, after: seen } : undefined);
-    if (!channel) {
-      this.#emitError(runtime, "Failed to attach to RuntimeRoom — runtime_id may be invalid or daemon offline");
+    if (!opened || "unavailable" in opened) {
+      this.#emitError(runtime, opened ? opened.unavailable : "Failed to attach to RuntimeRoom — runtime_id may be invalid or daemon offline");
       return;
     }
+    let channel: FrameInbox = opened;
 
     let ws = channel.ws;
     let recoverable = false;
@@ -154,7 +145,8 @@ export class AcpProxyHarness implements HarnessInterface {
           let delay = 250;
           for (;;) {
             await new Promise((resolve) => setTimeout(resolve, delay));
-            const replacement = await this.#openHarnessWs(env.RUNTIME_ROOM!, sid, binding.runtime_id, ctx.tenant_id, { turn_id: turnId, after: seen });
+            const reopened = await this.#openHarnessWs(relay, sid, binding.runtime_id, ctx.tenant_id, { turn_id: turnId, after: seen });
+            const replacement = reopened && !("unavailable" in reopened) ? reopened : null;
             if (replacement) {
               try {
                 const attached = await replacement.take((frame) => frame.type === "attached", 5_000);
@@ -274,44 +266,30 @@ export class AcpProxyHarness implements HarnessInterface {
   }
 
   async #openHarnessWs(
-    runtimeRoom: DurableObjectNamespace,
+    relay: RunnerRelayPort,
     sid: string,
     runtimeId: string,
     tenantId?: string,
     replay?: { turn_id: string; after: Record<string, number> },
-  ): Promise<FrameInbox | null> {
-    // Direct DO access. The DO class lives in the main worker but DOs are
-    // namespace-scoped; the cross-script binding in wrangler.jsonc lets the
-    // agent worker hold a stub without going through main as a service.
-    // Headers (`x-attach-role`, `x-session-id`) match what the now-removed
-    // /v1/oma/internal/runtime-attach-harness endpoint used to inject — DO's
-    // fetch handler already keys off them. `x-harness-tenant` is the
-    // step-2 multi-tenant addition — RuntimeRoom stashes it per-sid and
-    // uses it to inject `tenant_id` into outbound session-scoped frames so
-    // v2-aware daemons can pick the right per-tenant API key. Omitted when
-    // SessionDO didn't populate ctx.tenant_id (legacy callers / tests);
-    // RuntimeRoom tolerates absence in this step.
+  ): Promise<FrameInbox | { unavailable: string } | null> {
     try {
-      const stub = runtimeRoom.get(runtimeRoom.idFromName(runtimeId));
-      const headers: Record<string, string> = {
-        Upgrade: "websocket",
-        "x-attach-role": "harness",
-        "x-session-id": sid,
-      };
-      if (tenantId) headers["x-harness-tenant"] = tenantId;
-      if (replay) headers["x-runtime-replay"] = JSON.stringify(replay);
-      const res = await stub.fetch(
-        new Request("http://runtime-room/_attach_harness", { headers }),
-      );
-      if (res.status !== 101 || !res.webSocket) {
+      const result = await relay.attachHarness({
+        runtimeId,
+        sessionId: sid,
+        ...(tenantId ? { tenantId } : {}),
+        ...(replay ? { replay } : {}),
+      });
+      if (result.type === "unavailable") return { unavailable: result.message };
+      if (result.type === "refused") {
         logWarn(
-          { op: "acp_proxy.attach_failed", status: res.status, sid, runtime_id: runtimeId },
+          { op: "acp_proxy.attach_failed", status: result.status, sid, runtime_id: runtimeId },
           "harness WS attach didn't upgrade",
         );
         return null;
       }
-      const channel = new FrameInbox(res.webSocket as unknown as AttachedWs);
-      res.webSocket.accept();
+      // Listeners first, then accept: frames sent on accept are retained.
+      const channel = new FrameInbox(result.socket);
+      result.socket.accept();
       return channel;
     } catch (e) {
       logError({ op: "acp_proxy.attach_throw", err: String(e), sid }, "harness WS attach threw");
@@ -369,7 +347,7 @@ class FrameInbox {
     this.#wake?.();
   };
   #close = () => { this.#closed = true; this.#wake?.(); };
-  constructor(readonly ws: AttachedWs) {
+  constructor(readonly ws: RunnerRelaySocket) {
     ws.addEventListener("message", this.#message);
     ws.addEventListener("close", this.#close);
     ws.addEventListener("error", this.#close);

@@ -6,9 +6,11 @@
 //   - egress: the Environment networking becomes the E2B firewall, and when
 //     the Session has cap_cli Vault credentials the in-sandbox relay
 //     (packages/sandbox-egress) forwards their hosts to the control plane's
-//     HTTPS /v1/oma/egress ingress with a Session-scoped relay pass. Real
+//     HTTPS /v1/oma/egress ingress with a relay pass bound to the Session
+//     execution attempt (design §0.0 rule 10; none between turns). Real
 //     credentials never enter the sandbox. The pass expires, so the shared
-//     runtime re-attaches egress after half its TTL (egressRenewMs);
+//     runtime re-attaches egress after half its TTL (egressRenewMs) and when
+//     the attempt changes (egressKey);
 //   - storage is one deployment choice (storageConfig): both bucket parent
 //     keys configured → native rclone mounts for Memory and outputs over
 //     prefix-scoped temporary credentials (renewed by the runtime's interval
@@ -32,6 +34,8 @@ import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-
 import { createE2BV2Adapter, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
 import { createEgressRelayPasses, EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
+import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
 import { PortsSessionSandbox, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxExecutor, type SessionSandboxState } from "./session-sandbox";
@@ -110,6 +114,8 @@ export interface E2BSessionSandboxOptions {
   scope(): RuntimeResourceScope;
   plan(scope: RuntimeResourceScope, stores: MemoryStoreBinding[]): Promise<SandboxPlan>;
   now(): number;
+  /** The Session's current execution attempt; omitted = egress never rebinds on it. */
+  fence?(): SandboxExecutionFence | undefined;
 }
 
 /** The shared Session runtime on E2B. Exec output uses the Cloudflare
@@ -128,6 +134,7 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       warn: () => undefined,
       outputDurability: () => ({ durability: "best_effort" }),
       egressRenewMs: RELAY_PASS_TTL_MS / 2,
+      ...(options.fence === undefined ? {} : { egressKey: () => sandboxExecutionFenceKey(options.fence!()) }),
       now: options.now,
     });
   }
@@ -188,6 +195,7 @@ export function createE2BSessionSandbox(input: {
   storage: Pick<DurableObjectStorage, "get" | "put" | "delete">;
   scope(): RuntimeResourceScope;
   networking(): Promise<SessionNetworking | undefined>;
+  fence(): SandboxExecutionFence | undefined;
 }): E2BSessionSandbox {
   const { env } = input;
   const missing = (["E2B_API_KEY", "E2B_TEMPLATE", "E2B_MAX_LIFETIME_MS"] as const).filter((name) => !env[name]);
@@ -240,7 +248,9 @@ export function createE2BSessionSandbox(input: {
               if (passes === null || gateway === undefined) {
                 throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PLATFORM_ROOT_SECRET and PUBLIC_BASE_URL");
               }
-              return passes.issue({ workspaceId: scope.workspaceId, sessionId: scope.sessionId, ttlMs: RELAY_PASS_TTL_MS });
+              const current = input.fence?.();
+              return issueSandboxRelayPass((claims) => passes.issue(claims), current === undefined ? null
+                : { workspaceId: scope.workspaceId, sessionId: scope.sessionId, ...current }, RELAY_PASS_TTL_MS);
             },
             authenticate: async () => null,
             handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),
@@ -266,6 +276,7 @@ export function createE2BSessionSandbox(input: {
       };
     },
     now: Date.now,
+    fence: input.fence,
   });
 }
 
@@ -280,10 +291,12 @@ export function parseMaxLifetime(value: string): number {
   return ms;
 }
 
-/** The Session's cap_cli placeholders, from the same main-worker RPC SessionDO
- * uses for the placeholder env. The relay matches hosts at the gateway
- * (/resolve), so a substitution only marks "this Session needs the relay"
- * and carries its placeholder; credentialId is a label, not a Vault id. */
+/** The Session's sandbox placeholders (environment_variable and cap_cli,
+ * design §0.1), from the same main-worker RPC SessionDO uses for the
+ * placeholder env. The gateway holds the hosts and values and matches them
+ * (/resolve, /forward), so a substitution here only marks "this Session
+ * needs the forwarder" and carries its placeholder; credentialId is a
+ * label, not a Vault id. */
 export async function capCliSubstitutions(env: Pick<E2BSandboxEnv, "MAIN_MCP">, scope: RuntimeResourceScope): Promise<Substitution[]> {
   if (env.MAIN_MCP === undefined) return [];
   const resolved = await env.MAIN_MCP.resolveManagedCapCliEnvironment({ tenantId: scope.workspaceId, sessionId: scope.sessionId });

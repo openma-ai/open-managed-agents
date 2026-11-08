@@ -13,6 +13,9 @@ const CORE_PACKAGES = [
   "packages/openai-agents-api",
   "packages/openai-agents-compat",
   "packages/managed-agents-app",
+  "packages/session-outcomes",
+  "packages/session-subagents",
+  "packages/sandbox-gateway",
 ];
 
 const FORBIDDEN_PREFIXES = [
@@ -123,6 +126,28 @@ for (const packageDirectory of PROVIDER_NEUTRAL_PACKAGES) {
 function isAllowedRestrictedNeutralImport(sourcePath, specifier) {
   const allowedPaths = RESTRICTED_NEUTRAL_IMPORTS.get(specifier);
   return allowedPaths === undefined || allowedPaths.has(sourcePath);
+}
+
+// The harness (apps/agent/src/harness) is shared by the Cloudflare and Node
+// hosts: host capabilities reach it as Ports on HarnessContext (design §0.7
+// "harness 里的 CF 类型"). Ratchet: no Durable Object types at all, and the
+// remaining Cloudflare storage types only in their current files.
+const SHARED_HARNESS_DIRECTORY = "apps/agent/src/harness";
+const SHARED_HARNESS_FORBIDDEN_TYPES = /\b(DurableObjectNamespace|DurableObjectStub|DurableObjectState|DurableObjectId)\b/;
+const SHARED_HARNESS_CF_STORAGE_TYPES = /\b(KVNamespace|R2Bucket|D1Database)\b/;
+const SHARED_HARNESS_CF_STORAGE_ALLOWED = new Set([
+  join(SHARED_HARNESS_DIRECTORY, "interface.ts"),
+  join(SHARED_HARNESS_DIRECTORY, "llm-logging-middleware.ts"),
+  join(SHARED_HARNESS_DIRECTORY, "skills.ts"),
+]);
+for (const sourcePath of await sourceFiles(SHARED_HARNESS_DIRECTORY)) {
+  const source = await readFile(sourcePath, "utf8");
+  if (SHARED_HARNESS_FORBIDDEN_TYPES.test(source)) {
+    violations.push(`${sourcePath}: Durable Object type in the shared harness (inject a Port instead)`);
+  }
+  if (SHARED_HARNESS_CF_STORAGE_TYPES.test(source) && !SHARED_HARNESS_CF_STORAGE_ALLOWED.has(sourcePath)) {
+    violations.push(`${sourcePath}: Cloudflare storage type in the shared harness (inject a Port instead)`);
+  }
 }
 
 violations.push(...await providerWorkspaceBoundaryViolations(process.cwd()));

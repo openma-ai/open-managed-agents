@@ -27,6 +27,7 @@
     "@open-managed-agents/db-schema": "workspace:*",
     "@open-managed-agents/deployment-run-store-sql": "workspace:*",
     "@open-managed-agents/deployment-store-sql": "workspace:*",
+    "@open-managed-agents/domain": "workspace:*",
     "@open-managed-agents/dream-store-sql": "workspace:*",
     "@open-managed-agents/dreams-store": "workspace:*",
     "@open-managed-agents/email": "workspace:*",
@@ -70,13 +71,16 @@
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/sandbox-egress": "workspace:*",
+    "@open-managed-agents/sandbox-gateway": "workspace:*",
     "@open-managed-agents/scheduler": "workspace:*",
     "@open-managed-agents/session-event-store": "workspace:*",
     "@open-managed-agents/session-realtime": "workspace:*",
     "@open-managed-agents/session-realtime-memory": "workspace:*",
     "@open-managed-agents/session-resource-store": "workspace:*",
     "@open-managed-agents/session-resource-store-sql": "workspace:*",
+    "@open-managed-agents/session-outcomes": "workspace:*",
     "@open-managed-agents/session-runtime": "workspace:*",
+    "@open-managed-agents/session-subagents": "workspace:*",
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/session-runtime-sql": "workspace:*",
     "@open-managed-agents/session-thread-store-sql": "workspace:*",
@@ -97,7 +101,6 @@
     "hono": "^4.7.0",
     "nanoid": "^5.1.0",
     "tar": "7.5.22",
-    "zod": "4.3.6",
-    "@open-managed-agents/domain": "workspace:*"
+    "zod": "4.3.6"
   }
 }

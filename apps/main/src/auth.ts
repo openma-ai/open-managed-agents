@@ -3,9 +3,8 @@ import type { Env } from "@open-managed-agents/shared";
 import { logWarn, logError } from "@open-managed-agents/shared";
 import { CfKvStore } from "@open-managed-agents/kv-store";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
-import {
-  authenticateEnvironmentWorkSessionBearer,
-} from "@open-managed-agents/managed-agents-adapters-runtime";
+import { sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { authenticateSandboxBearer } from "@open-managed-agents/sandbox-gateway";
 import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-store-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
@@ -68,16 +67,14 @@ async function resolvePresentedApiCredential(
 ): Promise<ApiKeyResolution | null> {
   if (token.startsWith("sk-ant-req-v1.") && c.env.PLATFORM_ROOT_SECRET) {
     const platformRootSecret = c.env.PLATFORM_ROOT_SECRET;
-    const scoped = await authenticateEnvironmentWorkSessionBearer({
-      token,
-      method: c.req.method,
-      path: c.req.path,
-      crypto: new WebCryptoAesGcm(
+    // CF issues no execution token: only the Work bearer (ADR 0005), through
+    // the one shared check (design §0.0 rule 10).
+    const scoped = await authenticateSandboxBearer({ execution: null, work: {
+      codec: sealedSandboxBearerCodec(new WebCryptoAesGcm(
         platformRootSecret,
         "managed.environment-work.session-token",
-      ),
-      now: () => new Date(),
-      isCurrent: async (claim) => {
+      ), () => new Date()),
+      isCurrentClaim: async (claim) => {
         const tenantDb = await buildCfTenantDbProvider(c.env).resolve(
           claim.workspaceId,
         );
@@ -101,7 +98,7 @@ async function resolvePresentedApiCredential(
           claim,
         );
       },
-    });
+    } }, { token, method: c.req.method, path: c.req.path });
     if (scoped !== null) {
       return {
         tenantId: scoped.workspaceId,

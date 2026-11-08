@@ -33,8 +33,51 @@ export interface HarnessPendingInterruptContext {
   agent: AgentConfig;
   session_id: string;
   tenant_id: string;
-  env: Pick<HarnessContext["env"], "RUNTIME_ROOM">;
+  /** Host relay to the user's registered runner (see RunnerRelayPort). */
+  runnerRelay?: RunnerRelayPort;
   pendingActions: SessionEvent[];
+}
+
+/**
+ * One socket to a registered local runner, as handed to a harness by the
+ * host's relay. Frames are JSON strings. `accept()` starts delivery; the
+ * harness installs its listeners first so no early frame is lost.
+ */
+export interface RunnerRelaySocket {
+  accept(): void;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(
+    event: "message" | "close" | "error",
+    listener: (event: MessageEvent | CloseEvent | Event) => void,
+  ): void;
+  removeEventListener?(
+    event: "message" | "close" | "error",
+    listener: (event: MessageEvent | CloseEvent | Event) => void,
+  ): void;
+}
+
+export type RunnerRelayAttachResult =
+  | { type: "attached"; socket: RunnerRelaySocket }
+  /** The relay answered but did not open a socket (e.g. unknown runtime). */
+  | { type: "refused"; status: number }
+  /** This host cannot reach runners at all; `message` is shown to the user. */
+  | { type: "unavailable"; message: string };
+
+/**
+ * Port: attach a harness to the runner registered as `runtimeId` for one
+ * session. Injected by the host. Cloudflare implements it over the RuntimeRoom
+ * Durable Object (apps/agent/src/runtime/runtime-room-relay.ts); Node provides
+ * none (local runners are Cloudflare-only, docs/self-host.md).
+ */
+export interface RunnerRelayPort {
+  attachHarness(input: {
+    runtimeId: string;
+    sessionId: string;
+    tenantId?: string;
+    /** Resume one turn's output after the given per-stream sequence numbers. */
+    replay?: { turn_id: string; after: Record<string, number> };
+  }): Promise<RunnerRelayAttachResult>;
 }
 
 export interface HarnessInterface {
@@ -245,6 +288,10 @@ export interface HarnessContext {
    */
   acpSessionStartCwd?: string;
 
+  /** Host relay to the user's registered runner. Used by AcpProxyHarness;
+   *  absent on hosts without local runners. */
+  runnerRelay?: RunnerRelayPort;
+
   /** Platform-prepared tools: built from agent config, ready to pass to generateText. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tools: Record<string, any>;
@@ -354,11 +401,6 @@ export interface HarnessContext {
     environmentConfig?: { networking?: { type: string; allowed_hosts?: string[] } };
     /** Register a background task for completion notification (CC-style task_notification). */
     watchBackgroundTask?: (taskId: string, pid: string, outputFile: string, proc: ProcessHandle | null) => void;
-    /** Cross-script DO binding to RuntimeRoom (declared on main worker but
-     *  bound here via wrangler.jsonc `script_name`). AcpProxyHarness uses
-     *  this to attach to the daemon's room without going through main as
-     *  an HTTP service. */
-    RUNTIME_ROOM?: DurableObjectNamespace;
     /** LLM full-body logging context. When set, the harness wraps each
      *  model call in middleware that PUTs request + response to R2 keyed
      *  by the per-step span event id. SessionDO populates this with the

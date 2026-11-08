@@ -605,7 +605,14 @@ Attach Vaults to a Session; no proxy configuration is required. The sandbox
 owns interception, CA files, environment, process installation and health.
 Node-compatible sandboxes run the bundled `@open-managed-agents/sandbox-egress`
 entrypoint on loopback. Each sandbox generates its own CA and gets proxy/CA
-environment variables plus placeholders such as `GITHUB_TOKEN=__cap_managed__`.
+environment variables plus per-Session placeholders (`oma_vault_…`) for the
+Session's `cap_cli` and `environment_variable` credentials, never their
+values. The gateway swaps a placeholder for the real value only on that
+credential's allowed hosts (headers by default, the body only when the
+credential's `injection_location.body` is set) and refuses a placeholder sent
+anywhere else. Without `PLATFORM_ROOT_SECRET` and an HTTPS `PUBLIC_BASE_URL`
+there is no gateway, so creating a Session whose Vaults hold such credentials
+returns 400; they are never written into the sandbox in plaintext.
 Providers with native outbound interception implement the same capability
 without a local Node relay (Cloudflare uses its native handler).
 

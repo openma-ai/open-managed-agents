@@ -291,7 +291,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
           placeholders: async (scope) => scope.vaultIds.includes("vlt_a")
             ? { GITHUB_TOKEN: "__cap_managed__" } : { GITLAB_TOKEN: "__cap_managed__" },
           relay: { endpoint: "https://control.example", pass: "" },
-          issuePass: () => createEgressRelayPasses("root", () => now).issue({ workspaceId, sessionId: session.id, ttlMs: 60000 }),
+          issuePass: () => createEgressRelayPasses("root", () => now).issue({ workspaceId, sessionId: session.id, executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60000 }),
         });
       },
       outcomes: { evaluate: async () => { throw new Error("unused"); } },

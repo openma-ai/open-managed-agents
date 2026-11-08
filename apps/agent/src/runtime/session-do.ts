@@ -1,6 +1,8 @@
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
+import { SessionSubagents, type SubagentTurnInput, type SubagentTurnResult } from "@open-managed-agents/session-subagents";
+import { cloudflareSubagentThreadId, cloudflareSubagentWireEvent } from "./subagents";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 import { nanoid } from "nanoid";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
@@ -74,18 +76,24 @@ import {
   settleOnlyRejectMessage,
   type SettleOnlyReason,
 } from "@open-managed-agents/session-runtime-contract/settle-events";
-import { encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { encodeRuntimeHistoryEvent, encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlSessionExecutionContextSource } from "@open-managed-agents/session-runtime-sql/context";
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import {
-  beginModelEgress,
-  budgetReachedEvents,
-  completeModelEgress,
-  createSessionBudgetGate,
-  runtimeListCost,
-  type SessionBudgetGate,
-  type TokenUsage,
-} from "@open-managed-agents/domain/sessions";
+  activeModelCardPricing,
+  applyModelEgressRequest,
+  budgetReachedStopEvents,
+  createSessionUsageMeter,
+  MODEL_EGRESS_ACTION_REQUIRED,
+  openSessionBudgetGate,
+  parseModelEgressRequest,
+  sessionUsageSnapshot,
+  sumModelSpanUsage,
+  type SessionUsageMeter,
+} from "@open-managed-agents/managed-agents-application";
+import { sessionDoUsageStore } from "./session-usage-store";
+import { createRuntimeRoomRelay } from "./runtime-room-relay";
 import { cfWorkersAiToMarkdown } from "@open-managed-agents/markdown";
 import { isSpecEvent } from "@open-managed-agents/api-types";
 import type {
@@ -3023,7 +3031,7 @@ export class SessionDO extends DurableObject<Env> {
                 // in-memory AbortController exists once a callback paused run.
                 const harness = resolveHarness(agent.harness || "default");
                 const settled = await harness.interruptPending?.({ agent, session_id: this.state.session_id,
-                  tenant_id: this.state.tenant_id, env: { RUNTIME_ROOM: this.env.RUNTIME_ROOM }, pendingActions });
+                  tenant_id: this.state.tenant_id, runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM), pendingActions });
                 settledRequests.push(...(settled ?? []).filter((id) => pendingActions.some((event) => "id" in event && event.id === id)));
               } catch {
                 return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "Runner interrupt was not confirmed. The pending action is still available; reconnect and try again." } }),
@@ -3884,16 +3892,13 @@ export class SessionDO extends DurableObject<Env> {
       });
     }
 
-    // POST /model-egress — HTTP adapter for domain begin/completeModelEgress.
-    // Main's inference-proxy hits this so OpenSandbox shares the ONE meter.
+    // POST /model-egress — HTTP adapter for the application egress protocol
+    // (parse/applyModelEgressRequest over the domain meter). Main's
+    // inference-proxy hits this so OpenSandbox shares the ONE meter.
     if (request.method === "POST" && url.pathname === "/model-egress") {
-      const body = (await request.json().catch(() => null)) as {
-        action?: "begin" | "complete";
-        usage?: TokenUsage;
-      } | null;
-      const action = body?.action;
-      if (action !== "begin" && action !== "complete") {
-        return Response.json({ error: "action required (begin|complete)" }, { status: 400 });
+      const egress = parseModelEgressRequest(await request.json().catch(() => null));
+      if (egress === null) {
+        return Response.json({ error: MODEL_EGRESS_ACTION_REQUIRED }, { status: 400 });
       }
       let gate = this.activeBudgetGate;
       if (!gate) {
@@ -3902,24 +3907,7 @@ export class SessionDO extends DurableObject<Env> {
         );
         gate = await this.resolveBudgetGate(handle);
       }
-      if (!gate) {
-        return Response.json({ active: false, allowed: true, list_cost_pico: null });
-      }
-      if (action === "begin") {
-        const allowed = beginModelEgress(gate);
-        return Response.json({
-          active: true,
-          allowed,
-          reached: gate.reached,
-          list_cost_pico: gate.list_cost_pico,
-        });
-      }
-      completeModelEgress(gate, body?.usage ?? {});
-      return Response.json({
-        active: true,
-        reached: gate.reached,
-        list_cost_pico: gate.list_cost_pico,
-      });
+      return Response.json(applyModelEgressRequest(gate, egress));
     }
 
     // GET /file?path=... — read a file from the sandbox FS as raw bytes.
@@ -4096,6 +4084,9 @@ export class SessionDO extends DurableObject<Env> {
           const config = envId ? await this.getEnvConfig(envId) : null;
           return (config?.config as { networking?: { type?: string; allowed_hosts?: string[]; allow_package_managers?: boolean } } | undefined)?.networking;
         },
+        // Sandbox egress follows a current execution attempt of this
+        // Session; none between turns (design §0.0 rule 10).
+        fence: () => this._executionFences.values().next().value,
         warn: (message) => {
           try {
             this.persistAndBroadcastEvent({ type: "session.warning", message } as unknown as SessionEvent);
@@ -4746,24 +4737,14 @@ export class SessionDO extends DurableObject<Env> {
    * emitted exactly once per LLM step.
    */
   private maybeCreditCacheTokens(threadId: string, event: SessionEvent): void {
-    if (event.type !== "span.model_request_end") return;
-    const usage = (event as unknown as {
-      model_usage?: {
-        cache_creation_input_tokens?: number;
-        cache_read_input_tokens?: number;
-      };
-    }).model_usage;
-    if (!usage) return;
-    const cc = usage.cache_creation_input_tokens || 0;
-    const cr = usage.cache_read_input_tokens || 0;
-    if (cc === 0 && cr === 0) return;
-    this.creditUsageToThread(threadId, {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_creation_input_tokens: cc,
-      cache_read_input_tokens: cr,
-    });
+    this.usageMeter.creditModelSpan(threadId, event);
   }
+
+  /** The application usage meter over this DO's state (session-usage-store). */
+  private readonly usageMeter: SessionUsageMeter = createSessionUsageMeter(sessionDoUsageStore({
+    get: () => this.state,
+    set: (next) => this.setState(next),
+  }));
 
   /**
    * Credit token usage to a specific thread AND keep the session-wide
@@ -4785,27 +4766,7 @@ export class SessionDO extends DurableObject<Env> {
       cache_read_input_tokens?: number;
     },
   ): void {
-    const existing = this.state.thread_usage ?? {};
-    const prior = existing[threadId] ?? {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    };
-    const next = {
-      input_tokens: prior.input_tokens + (delta.input_tokens || 0),
-      output_tokens: prior.output_tokens + (delta.output_tokens || 0),
-      cache_creation_input_tokens:
-        prior.cache_creation_input_tokens + (delta.cache_creation_input_tokens || 0),
-      cache_read_input_tokens:
-        prior.cache_read_input_tokens + (delta.cache_read_input_tokens || 0),
-    };
-    this.setState({
-      ...this.state,
-      input_tokens: (this.state.input_tokens ?? 0) + (delta.input_tokens || 0),
-      output_tokens: (this.state.output_tokens ?? 0) + (delta.output_tokens || 0),
-      thread_usage: { ...existing, [threadId]: next },
-    });
+    this.usageMeter.credit(threadId, delta);
   }
 
   /**
@@ -4909,23 +4870,24 @@ export class SessionDO extends DurableObject<Env> {
         workspaceId: this.state.tenant_id,
         sessionId: this.state.session_id,
       });
-      const budget = context?.session.budget ?? null;
-      if (budget === null) return null;
-      const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
-      const card = await services.modelCards.findByModelId({ tenantId: this.state.tenant_id, modelId: handle });
-      const pricing = card && card.archived_at === null ? card.pricing ?? null : null;
-      // Domain gate; CF ListCostPicoStore persists domain property list_cost_pico.
-      const store = {
-        load: (): string | null => this.state.list_cost_pico ?? null,
-        save: (list_cost_pico: string): void => {
-          this.setState({ ...this.state, list_cost_pico });
+      if (!context) return null;
+      const tenantId = this.state.tenant_id;
+      // Application gate opener; the CF ListCostPicoStore persists the domain
+      // property list_cost_pico in DO state.
+      const gate = await openSessionBudgetGate({
+        session: context.session,
+        pricing: async () => {
+          const services = await getCfServicesForTenant(this.env, tenantId);
+          const card = await services.modelCards.findByModelId({ tenantId, modelId: handle });
+          return activeModelCardPricing(card);
         },
-      };
-      const gate = createSessionBudgetGate(
-        { amount: budget.amountMinor, currency: budget.currency },
-        pricing,
-        store,
-      );
+        store: {
+          load: (): string | null => this.state.list_cost_pico ?? null,
+          save: (list_cost_pico: string): void => {
+            this.setState({ ...this.state, list_cost_pico });
+          },
+        },
+      });
       this.activeBudgetGate = gate;
       return gate;
     } catch (err) {
@@ -4935,26 +4897,6 @@ export class SessionDO extends DurableObject<Env> {
       );
       return null;
     }
-  }
-
-  /** Session-wide usage snapshot for the budget_reached `session.usage`. */
-  private budgetUsageSnapshot(gate: SessionBudgetGate, events: readonly SessionEvent[]): Record<string, unknown> {
-    const totals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-    for (const event of events) {
-      if (event.type !== "span.model_request_end") continue;
-      const usage = (event as { model_usage?: Partial<typeof totals> }).model_usage ?? {};
-      for (const key of Object.keys(totals) as (keyof typeof totals)[]) totals[key] += usage[key] ?? 0;
-    }
-    return {
-      input_tokens: totals.input_tokens,
-      output_tokens: totals.output_tokens,
-      ...(totals.cache_read_input_tokens > 0 && { cache_read_input_tokens: totals.cache_read_input_tokens }),
-      ...(totals.cache_creation_input_tokens > 0 && {
-        cache_creation: { ephemeral_five_minute_input_tokens: totals.cache_creation_input_tokens },
-      }),
-      list_cost: runtimeListCost(BigInt(gate.list_cost_pico)),
-      list_cost_pico: gate.list_cost_pico,
-    };
   }
 
   /** The main model handle for `agent`, matching every turn path. */
@@ -5519,71 +5461,92 @@ export class SessionDO extends DurableObject<Env> {
     const parentConfig = parentThreadId === "sthr_primary"
       ? this.state.agent_snapshot : this.threads.get(parentThreadId)?.agentConfig;
     if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
-    const subAgent = resolvePinnedSubagent(parentConfig, agentId);
+    // #545 §0.7: one orchestration for both platforms
+    // (@open-managed-agents/session-subagents). This DO supplies the thread
+    // row, the Cloudflare wire events and the child harness turn.
+    const subagents = new SessionSubagents<AgentConfig>({
+      parentThreadId,
+      parentAgentName: parentConfig.name,
+      abortSignal: parentSignal ?? new AbortController().signal,
+      resolveAgent: async (request) => {
+        const agent = resolvePinnedSubagent(parentConfig, request.agentId ?? "general");
+        return { agentId: request.agentId ?? "general", agentName: agent.name, agent };
+      },
+      // Optional generic host hook for session-thread starts (unbound → admit).
+      // A denial fails the spawn before any thread row or event is written.
+      admission: {
+        admit: async ({ agent }) => {
+          const environment = this.state.environment_id
+            ? await this.getEnvConfig(this.state.environment_id)
+            : null;
+          const decision = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
+            kind: "thread_start",
+            workspaceId: this.state.tenant_id,
+            sessionId: this.state.session_id,
+            agentId: agent.id,
+            environmentId: this.state.environment_id,
+            isLocalRuntime: agent.runtime_binding != null || environment?.config?.type === "self_hosted",
+          });
+          if (decision.type === "denied") throw new SessionAdmissionDeniedError(decision.status, decision.body);
+        },
+      },
+      threads: {
+        insert: async (thread) => {
+          // Child runtime events inherit the parent's execution fence: the
+          // child is a logical lane, not a second execution owner.
+          this._executionParentLane.set(thread.id, thread.parentThreadId);
+          // In-memory map (hot path config lookup) + persistent threads row
+          // (survives DO eviction, lets HTTP CRUD see this thread).
+          this.threads.set(thread.id, { agentId: thread.agentId, agentConfig: thread.agent });
+          this.ctx.storage.sql.exec(
+            `INSERT OR IGNORE INTO threads (id, agent_id, agent_name, parent_thread_id, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            thread.id, thread.agentId, thread.agentName, thread.parentThreadId, Date.now(),
+          );
+          return thread;
+        },
+        // Each delegate call owns its children; nothing is restored by id.
+        find: async () => null,
+      },
+      events: {
+        emit: async (event) => {
+          const wire = cloudflareSubagentWireEvent(event);
+          if (wire === null) return;
+          try {
+            parentHistory.append(wire);
+            this.broadcastEvent(wire);
+          } catch (error) {
+            // A lost parent fence deliberately rejects the terminal marker.
+            if (event.type !== "thread_idle") throw error;
+          } finally {
+            if (event.type === "thread_idle") this._executionParentLane.delete(event.threadId);
+          }
+        },
+      },
+      turns: { run: (input) => this.runSubAgentTurn(input, parentHistory, sandbox) },
+      ids: { threadId: cloudflareSubagentThreadId, messageId: () => `sevt_${generateEventId()}` },
+    });
+    return subagents.delegate({ agentId, message });
+  }
 
-    // Optional generic host hook for session-thread starts (unbound → admit).
-    // A denial fails the spawn before any thread row or event is written.
+  /** One child harness turn on the shared sandbox (session-subagents turn Port). */
+  private async runSubAgentTurn(
+    input: SubagentTurnInput<AgentConfig>,
+    parentHistory: HistoryStore,
+    sandbox: SandboxExecutor,
+  ): Promise<SubagentTurnResult> {
+    const threadId = input.thread.id;
+    const parentThreadId = input.thread.parentThreadId;
+    const subAgent = input.thread.agent;
     const subEnvironment = this.state.environment_id
       ? await this.getEnvConfig(this.state.environment_id)
       : null;
-    const threadAdmit = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
-      kind: "thread_start",
-      workspaceId: this.state.tenant_id,
-      sessionId: this.state.session_id,
-      agentId: subAgent.id,
-      environmentId: this.state.environment_id,
-      isLocalRuntime:
-        subAgent.runtime_binding != null ||
-        subEnvironment?.config?.type === "self_hosted",
-    });
-    if (threadAdmit.type === "denied") {
-      throw new SessionAdmissionDeniedError(threadAdmit.status, threadAdmit.body);
-    }
-
-    // Generate a unique thread ID. Prefix `sthr_` matches AMA spec
-    // (BetaManagedAgentsSessionThread.id is `sthr_*`); previous prefix
-    // was `thread_*` and pre-existing live sessions may still hold those
-    // in their in-memory Map — both work but new threads land on `sthr_`.
-    const threadId = `sthr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-    // Runtime events emitted by this child must inherit the parent's
-    // execution fence. The child is a logical lane, not a second execution
-    // owner; walking this map lets projection writes remain fenced even when
-    // the child event carries its own session_thread_id.
-    this._executionParentLane.set(threadId, parentThreadId);
-
-    // In-memory map (hot path config lookup) + persistent threads row
-    // (Phase 1 — survives DO eviction, lets HTTP CRUD see this thread).
-    // INSERT OR IGNORE for safety against rare ID collision.
-    this.threads.set(threadId, { agentId, agentConfig: subAgent });
-    this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO threads (id, agent_id, agent_name, parent_thread_id, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      threadId,
-      agentId,
-      subAgent.name,
-      parentThreadId,
-      Date.now(),
-    );
-
-    // Emit thread_created. Includes parent_thread_id so Console (and any
-    // other SSE consumers) can build a tree without a follow-up GET
-    // /threads round-trip. Mirrors the threads table column written
-    // above.
-    const threadCreatedEvent: SessionEvent = {
-      type: "session.thread_created",
-      session_thread_id: threadId,
-      agent_id: agentId,
-      agent_name: subAgent.name,
-      parent_thread_id: parentThreadId,
-    } as SessionEvent;
-    parentHistory.append(threadCreatedEvent);
-    this.broadcastEvent(threadCreatedEvent);
 
     // Create sub-agent's isolated history
     const subHistory = new InMemoryHistory(this.processedClock);
     const userMsg: UserMessageEvent = {
       type: "user.message",
-      content: [{ type: "text", text: message }],
+      content: [{ type: "text", text: input.message?.text ?? "" }],
     };
     subHistory.append(userMsg);
 
@@ -5601,15 +5564,12 @@ export class SessionDO extends DurableObject<Env> {
       harness = resolveHarness(resolvedHarnessName);
     }
 
-    // Bind the child to both its parent lease and its own interrupt slot.
-    // The sandbox instance is shared for filesystem continuity, but this
-    // guard makes a child-targeted interrupt stop provider calls made by the
-    // child without affecting sibling lanes.
-    const abortController = new AbortController();
+    // The child's interrupt slot is the domain turn's controller (already
+    // linked to the parent lease). The sandbox instance is shared for
+    // filesystem continuity; this guard makes a child-targeted interrupt stop
+    // provider calls made by the child without affecting sibling lanes.
+    const abortController = input.abortController;
     this._threadAbortControllers.set(threadId, abortController);
-    const abortFromParent = () => abortController.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
     const childSandbox = withSandboxExecutionGuard(sandbox, {
       signal: abortController.signal,
     });
@@ -5760,43 +5720,21 @@ export class SessionDO extends DurableObject<Env> {
       },
     };
 
-    let responseText = "";
     try {
-      // Run the sub-agent harness
       await harness.run(subCtx);
-
-      // Collect sub-agent response text from its history
-      const subEvents = subHistory.getEvents();
-      responseText = subEvents
-        .filter((e: SessionEvent) => e.type === "agent.message")
-        .map((e: SessionEvent) => {
-          const msg = e as AgentMessageEvent;
-          return msg.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-        })
-        .join("\n");
+      return {
+        agentMessages: subHistory.getEvents()
+          .filter((e: SessionEvent) => e.type === "agent.message")
+          .map((e: SessionEvent) => (e as AgentMessageEvent).content?.map((b) => b.type === "text" ? b.text : "").join("") || ""),
+      };
     } finally {
       await disposeTools(subTools);
-      // Identity-guarded delete: a nested runSubAgent on the same threadId
-      // would have replaced our slot — don't stomp on its controller.
+      // Identity-guarded delete: a nested child on the same threadId would
+      // have replaced our slot — don't stomp on its controller.
       if (this._threadAbortControllers.get(threadId) === abortController) {
         this._threadAbortControllers.delete(threadId);
       }
-      parentSignal?.removeEventListener("abort", abortFromParent);
-      try {
-        const threadIdleEvent: SessionEvent = {
-          type: "session.thread_idle",
-          session_thread_id: threadId,
-        };
-        parentHistory.append(threadIdleEvent);
-        this.broadcastEvent(threadIdleEvent);
-      } catch {
-        // A lost parent fence deliberately rejects this terminal marker.
-      } finally {
-        this._executionParentLane.delete(threadId);
-      }
     }
-
-    return responseText || "(sub-agent produced no text output)";
   }
 
   /**
@@ -6226,6 +6164,10 @@ export class SessionDO extends DurableObject<Env> {
       session_id: this.state.session_id,
       tenant_id: this.state.tenant_id,
       ...(acpSessionStartCwd ? { acpSessionStartCwd } : {}),
+      // RunnerRelayPort over the cross-script RuntimeRoom DO binding, so
+      // AcpProxyHarness attaches to the user's runner directly (no HTTP hop
+      // through main). Non-acp harnesses don't read it.
+      runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM),
       tools: allTools,
       model,
       pi: piRuntime,
@@ -6247,11 +6189,6 @@ export class SessionDO extends DurableObject<Env> {
         CONFIG_KV: this.env.CONFIG_KV,
         memoryStoreIds,
         environmentConfig,
-        // Cross-script DO binding so AcpProxyHarness can attach to the
-        // user's RuntimeRoom directly (no HTTP hop through main, no
-        // shared INTEGRATIONS_INTERNAL_SECRET). Optional on the env type
-        // — non-acp harnesses don't read it.
-        RUNTIME_ROOM: this.env.RUNTIME_ROOM,
         // LLM full-body logging context. default-loop wraps each model
         // call in middleware that PUTs request + response to R2 keyed
         // by the per-step span event id. The matching
@@ -6543,15 +6480,18 @@ export class SessionDO extends DurableObject<Env> {
       } else if (ctx.budget?.reached) {
         // Official budget stop (requires_action outranks it, above):
         // thread idle → usage snapshot → session idle (emitted below).
-        const [threadIdle, usageEvent] = budgetReachedEvents({
+        // Usage source on CF: every model span in this session's event log.
+        const [threadIdle, usageEvent] = budgetReachedStopEvents({
+          agentName: agent.name,
           sessionThreadId: turnThreadId,
-          usage: this.budgetUsageSnapshot(ctx.budget, history.getEvents()),
+          usage: sessionUsageSnapshot(
+            sumModelSpanUsage(history.getEvents()),
+            ctx.budget,
+          ),
           budget: ctx.budget.maxListCost,
-        }) as unknown as SessionEvent[];
-        for (const event of [
-          { ...threadIdle, agent_name: agent.name } as unknown as SessionEvent,
-          usageEvent!,
-        ]) {
+        });
+        for (const applicationEvent of [threadIdle, usageEvent]) {
+          const event = encodeRuntimeHistoryEvent(applicationEvent as never) as unknown as SessionEvent;
           history.append(event);
           this.broadcastEvent(event, activeFence);
         }

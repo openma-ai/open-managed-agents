@@ -45,7 +45,8 @@ import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplic
 
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 
-import { ingestEnvironmentWorkRuntimeEvents, authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { ingestEnvironmentWorkRuntimeEvents, sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { authenticateSandboxBearer } from "@open-managed-agents/sandbox-gateway";
 import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 
 import { buildOmaModelsHttpRoutes } from "@open-managed-agents/managed-agents-adapters-http";
@@ -255,18 +256,15 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     },
     resolveBearerToken: async ({ token, method, path }) => {
       if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
-      const scoped = await managedAcpCapabilities.authenticate({ token, method, path })
-        ?? await authenticateEnvironmentWorkSessionBearer({
-        token,
-        method,
-        path,
-        crypto: managedEnvironmentWorkSessionTokenCrypto,
-        now: () => new Date(),
-        isCurrent: (claim) => isCurrentEnvironmentWorkClaim({
+      // The shared sandbox bearer check (design §0.0 rule 10): the execution
+      // token on proxy routes, then the Work token.
+      const scoped = await authenticateSandboxBearer(managedAcpCapabilities.authority({
+        codec: sealedSandboxBearerCodec(managedEnvironmentWorkSessionTokenCrypto, () => new Date()),
+        isCurrentClaim: (claim) => isCurrentEnvironmentWorkClaim({
           store: managedEnvironmentWorkStore,
           now: () => new Date(),
         }, claim),
-      });
+      }), { token, method, path });
       return scoped === null
         ? null
         : {

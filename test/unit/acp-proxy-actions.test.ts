@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AcpProxyHarness } from "../../apps/agent/src/harness/acp-proxy-loop";
 import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { createRuntimeRoomRelay } from "../../apps/agent/src/runtime/runtime-room-relay";
 
 class Socket {
   listeners = new Map<string, Array<(event: any) => void>>();
@@ -24,7 +25,7 @@ describe("ACP proxy runner approvals", () => {
     const context = {
       agent: { model: "test-model", runtime_binding: { runtime_id: "runner", acp_agent_id: "codex-acp" } },
       session_id: "remote", tenant_id: "team", userMessage: { type: "user.message", content: [{ type: "text", text: "go" }] },
-      env: { RUNTIME_ROOM: { idFromName: (id: string) => id, get: () => ({ fetch: async (request: Request) => {
+      runnerRelay: createRuntimeRoomRelay({ idFromName: (id: string) => id, get: () => ({ fetch: async (request: Request) => {
         attaches.push(request);
         const socket = new Socket(); sockets.push(socket);
         if (ambiguousSend && sockets.length === 1) {
@@ -44,7 +45,7 @@ describe("ACP proxy runner approvals", () => {
           if (frame.type === "session.prompt") { turnId = frame.turn_id; socket.receive(output(1, "Before ")); socket.close(); }
         };
         return { status: 101, webSocket: socket };
-      } }) } },
+      } }) } as never),
       runtime: {
         history: { getEvents: () => events }, broadcast: (event: Record<string, any>) => events.push(event), pendingConfirmations: [],
         broadcastStreamStart: async () => {}, broadcastChunk: async () => {}, broadcastStreamEnd: async () => {},
@@ -69,7 +70,7 @@ describe("ACP proxy runner approvals", () => {
     const context = {
       agent: { model: "test-model", runtime_binding: { runtime_id: "runner", acp_agent_id: "codex-acp" } },
       session_id: "remote", tenant_id: "team", userMessage: { type: "user.message", content: [{ type: "text", text: "go" }] },
-      env: { RUNTIME_ROOM: { idFromName: (id: string) => id, get: () => ({ fetch: async () => {
+      runnerRelay: createRuntimeRoomRelay({ idFromName: (id: string) => id, get: () => ({ fetch: async () => {
         const socket = new Socket(); sockets.push(socket);
         socket.onSend = (frame) => {
           if (frame.type === "session.start") socket.receive({ type: "session.ready", acp_session_id: "acp" });
@@ -86,7 +87,7 @@ describe("ACP proxy runner approvals", () => {
           }
         };
         return { status: 101, webSocket: socket };
-      } }) } },
+      } }) } as never),
       runtime: {
         history: { getEvents: () => events }, broadcast: (event: Record<string, any>) => events.push(event), pendingConfirmations: [],
         consumePendingConfirmation: clearPending,
