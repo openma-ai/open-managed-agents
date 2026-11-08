@@ -67,6 +67,9 @@ describe("createR2MemoryPrefixAccess", () => {
     ]);
     expect(await access.create({ memoryStoreId: mount, path: "/new.md", content: "n", signal })).toEqual({ type: "applied" });
     expect(objects.has(`${mount}/new.md`)).toBe(true);
+    // The projection's own marker (written by materializeManagedMemorySnapshot) is not a Memory.
+    objects.set(`${mount}/.openma-memory-store`, { text: "marker", etag: "m" });
+    expect((await access.list({ memoryStoreId: mount, projection: "basic", signal })).map((d) => d.path)).toEqual(["/new.md", "/seed.md"]);
     for (const bad of ["", "a//b", "a/../b", "./a", "a/", "/a"]) {
       await expect(access.list({ memoryStoreId: bad, projection: "basic", signal })).rejects.toThrow(/Unsafe Memory Store id/);
     }

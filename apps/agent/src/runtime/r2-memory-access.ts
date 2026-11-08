@@ -16,6 +16,9 @@ import type { SessionMemoryAccessPort, SessionMemoryDocument } from "@open-manag
 
 export type MemoryPrefixBucket = Pick<R2Bucket, "get" | "head" | "put" | "delete" | "list">;
 
+/** Written by materializeManagedMemorySnapshot into a writable projection; not a Memory. */
+const PROJECTION_MARKER = ".openma-memory-store";
+
 export function createR2MemoryPrefixAccess(bucket: MemoryPrefixBucket): SessionMemoryAccessPort {
   const keyOf = (storeId: string, path: string) => {
     const relative = path.replace(/^\/+/u, "");
@@ -41,7 +44,7 @@ export function createR2MemoryPrefixAccess(bucket: MemoryPrefixBucket): SessionM
         const page = await bucket.list({ prefix, ...(cursor === undefined ? {} : { cursor }) });
         for (const object of page.objects) {
           // s3fs keeps directory placeholders as `dir/` objects.
-          if (object.key.endsWith("/") || object.key.length === prefix.length) continue;
+          if (object.key.endsWith("/") || object.key.length === prefix.length || object.key === `${prefix}${PROJECTION_MARKER}`) continue;
           const body = await bucket.get(object.key);
           if (body === null) continue;
           const content = await body.text();
