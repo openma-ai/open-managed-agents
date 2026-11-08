@@ -406,8 +406,9 @@ the durable native-state allowlist.
 
 The gateway is `POST` (and other methods) on
 `/v1/oma/inference-proxy/:sessionId/*` in both `apps/main` and
-the Node control plane (`apps/main/src/routes/inference-proxy.ts` and
-`packages/control-plane-node/src/lib/http-inference-proxy.ts`). Both go through
+the Node control plane: one route, `createInferenceProxyRoutes`
+(`packages/http-routes/src/proxy/inference-proxy-routes.ts`), that each
+platform mounts with its own stores. It goes through
 `sendHostedInference` (`packages/http-routes`) and `planHostedInferenceRequest`
 (`packages/inference-proxy`), which:
 
