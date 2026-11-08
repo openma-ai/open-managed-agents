@@ -9,10 +9,11 @@
  * storage/binding adapters below.
  */
 
-/** Typed rejection mapped by the HTTP layer to 429 / 402. */
+/** Typed rejection mapped by the HTTP layer to 429 / 402 / 400. */
 export type SessionCreateAdmissionRejection =
   | { type: "rate_limited"; message: string; reason?: "daily_quota" }
-  | { type: "payment_required"; message: string; balanceCents: number };
+  | { type: "payment_required"; message: string; balanceCents: number }
+  | { type: "invalid_request"; message: string };
 
 export type SessionCreateAdmissionDecision =
   | { type: "admitted" }
@@ -28,6 +29,8 @@ export interface SessionCreateAdmissionInput {
    * skipped for these, matching the legacy `isLocalRuntime` behavior.
    */
   isLocalRuntime: boolean;
+  /** The Session's `vault_ids` (absent = none). */
+  vaultIds?: readonly string[];
 }
 
 /** Inbound port consumed by the Sessions application service. */
@@ -144,6 +147,39 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
     }
 
     return { type: "admitted" };
+  }
+}
+
+/**
+ * Vault `environment_variable` / `cap_cli` credentials reach a sandbox only
+ * as placeholders that egress substitutes (design §8.0, §0.7). A deployment
+ * that cannot substitute (no forwarder gateway, no vendor substitution)
+ * rejects such Sessions with 400; it never falls back to plaintext. Only
+ * cloud placement: a self-hosted / local runtime brings its own egress.
+ */
+export class SandboxCredentialAdmission implements SessionCreateAdmissionPort {
+  constructor(
+    private readonly next: SessionCreateAdmissionPort,
+    private readonly sandbox: {
+      /** The deployment substitutes placeholders at sandbox egress. */
+      substitutes(): boolean;
+      /** Credential ids in these Vaults that need substitution. */
+      credentialIds(input: { workspaceId: string; vaultIds: readonly string[] }): Promise<readonly string[]>;
+    },
+  ) {}
+
+  async admit(input: SessionCreateAdmissionInput): Promise<SessionCreateAdmissionDecision> {
+    const vaultIds = input.vaultIds ?? [];
+    if (vaultIds.length > 0 && !input.isLocalRuntime && !this.sandbox.substitutes()) {
+      const ids = await this.sandbox.credentialIds({ workspaceId: input.workspaceId, vaultIds });
+      if (ids.length > 0) {
+        return {
+          type: "invalid_request",
+          message: `This deployment does not support sandbox credentials: Vault credentials ${ids.join(", ")} need egress substitution, and are never written to a sandbox in plaintext`,
+        };
+      }
+    }
+    return this.next.admit(input);
   }
 }
 

@@ -291,10 +291,12 @@ export function parseMaxLifetime(value: string): number {
   return ms;
 }
 
-/** The Session's cap_cli placeholders, from the same main-worker RPC SessionDO
- * uses for the placeholder env. The relay matches hosts at the gateway
- * (/resolve), so a substitution only marks "this Session needs the relay"
- * and carries its placeholder; credentialId is a label, not a Vault id. */
+/** The Session's sandbox placeholders (environment_variable and cap_cli,
+ * design §0.1), from the same main-worker RPC SessionDO uses for the
+ * placeholder env. The gateway holds the hosts and values and matches them
+ * (/resolve, /forward), so a substitution here only marks "this Session
+ * needs the forwarder" and carries its placeholder; credentialId is a
+ * label, not a Vault id. */
 export async function capCliSubstitutions(env: Pick<E2BSandboxEnv, "MAIN_MCP">, scope: RuntimeResourceScope): Promise<Substitution[]> {
   if (env.MAIN_MCP === undefined) return [];
   const resolved = await env.MAIN_MCP.resolveManagedCapCliEnvironment({ tenantId: scope.workspaceId, sessionId: scope.sessionId });

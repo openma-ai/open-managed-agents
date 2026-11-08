@@ -2842,6 +2842,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@open-managed-agents/sandbox-gateway':
+        specifier: workspace:*
+        version: link:../sandbox-gateway
 
   packages/managed-runtime-blaxel:
     dependencies:

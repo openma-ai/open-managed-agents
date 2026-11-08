@@ -319,8 +319,10 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
     credentials: {
       outboundTarget: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).outboundTarget(scope, hostname),
       forward: async (workspaceId, target, send) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(workspaceId)).forward(workspaceId, target, send),
+      sandboxEgress: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).sandboxEgress(scope, hostname),
     },
     send: request => fetch(request),
+    log: { warn: (fields, message) => logWarn(fields, message) },
   });
 }));
 
@@ -1817,8 +1819,9 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
 
   /**
    * CLI placeholder environment (cap spec `bootstrap.env`) for a v1 managed
-   * Session's sandbox, from the session's managed `cap_cli` credentials.
-   * Placeholders only; real tokens stay here and are injected at egress.
+   * Session's sandbox, from the session's managed `environment_variable` and
+   * `cap_cli` credentials. Per-Session placeholders only; real values stay
+   * here and are substituted at egress (design §0.1, §8.4).
    * `not_found` means the session is not a managed one.
    */
   async resolveManagedCapCliEnvironment(opts: {
@@ -2325,7 +2328,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     // Re-check after buffering, immediately before injecting.
     const session = await authorize();
     if (session === null) return credentialEgressDenied(403);
-    const core = createCredentialEgressCore({ credentials: createManagedCredentialResolver(this.env, db), send: req => fetch(req) });
+    const core = createCredentialEgressCore({ credentials: createManagedCredentialResolver(this.env, db), send: req => fetch(req), log: { warn: (fields, message) => logWarn(fields, message) } });
     const egressScope = { workspaceId: scope.tenantId, sessionId: scope.sessionId, vaultIds: session.vaultIds };
     return action === "resolve"
       ? core.resolve(egressScope, request.url)

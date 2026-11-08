@@ -15,6 +15,7 @@ import {
 } from "@open-managed-agents/session-runtime/execution-lease";
 
 export type { SessionExecutionAttemptRef, SessionExecutionLease, SessionExecutionLeases };
+export * from "./vault-substitution";
 
 export interface SandboxGatewaySession {
   archivedAt: string | null;

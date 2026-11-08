@@ -59,6 +59,7 @@ import { sendMcpUpstream } from "@open-managed-agents/http-routes/proxy";
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
+import { createVaultPlaceholders } from "@open-managed-agents/sandbox-gateway/vault-substitution";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { SqlCredentialStore } from "@open-managed-agents/credential-store-sql";
 import { SqlVaultStore } from "@open-managed-agents/vault-store-sql";
@@ -137,6 +138,7 @@ export function createManagedCredentialResolver(
     fetch: (input, init) => fetch(input, init),
     clock: { now: () => new Date() },
     log: { warn: (fields, message) => logWarn(fields, message) },
+    placeholders: createVaultPlaceholders(env.PLATFORM_ROOT_SECRET),
   }, capRegistry);
 }
 
