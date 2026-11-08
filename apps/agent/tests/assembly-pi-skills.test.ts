@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessRuntime } from "../src/harness/interface";
-import { createPiToolAssembly } from "../src/harness/assembly/adapters/pi";
-import { SKILL_ASSEMBLY_WARNING_SOURCE } from "../src/harness/assembly/loaded-skills-state";
+import type { HarnessContext, HarnessRuntime } from "../../../packages/agent-harness/src/interface";
+import { createPiToolAssembly } from "../../../packages/agent-harness/src/assembly/adapters/pi";
+import { SKILL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-skills-state";
 
 describe("Pi assembly skill mounts", () => {
   it("uses progressive skill section instead of inlined bodies", () => {

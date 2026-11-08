@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { describe, it, expect, beforeEach } from "vitest";
-import { AcpTranslator } from "../../apps/agent/src/harness/acp-translate";
-import type { HarnessRuntime } from "../../apps/agent/src/harness/interface";
+import { AcpTranslator } from "../../packages/agent-harness/src/acp-translate";
+import type { HarnessRuntime } from "../../packages/agent-harness/src/interface";
 
 /**
  * AcpTranslator dedup behaviour for tool_call frames.

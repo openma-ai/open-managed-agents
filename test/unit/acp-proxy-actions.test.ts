@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { AcpProxyHarness } from "../../apps/agent/src/harness/acp-proxy-loop";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { AcpProxyHarness } from "../../packages/agent-harness/src/acp-proxy-loop";
+import type { HarnessContext } from "../../packages/agent-harness/src/interface";
 import { createRuntimeRoomRelay } from "../../apps/agent/src/runtime/runtime-room-relay";
 
 class Socket {

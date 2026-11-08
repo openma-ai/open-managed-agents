@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  ACP_NATIVE_STATE_PROFILES,
-  bindAcpAgentState,
-} from "../src/harness/acp-agent-state";
+import { ACP_NATIVE_STATE_PROFILES, bindAcpAgentState } from "../../../packages/agent-harness/src/acp-agent-state";
 
 describe("ACP agent-native session state", () => {
   it("covers Harbor-derived native state profiles available through ACP or an OMA overlay", () => {

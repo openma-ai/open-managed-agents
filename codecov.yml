@@ -17,9 +17,9 @@ coverage:
         threshold: 0%
         only_pulls: true
         paths:
-          - apps/agent/src/harness/web-fetch-http.ts
-          - apps/agent/src/harness/tool-http-fetch.ts
-          - apps/agent/src/harness/tools.ts
+          - packages/agent-harness/src/web-fetch-http.ts
+          - packages/agent-harness/src/tool-http-fetch.ts
+          - packages/agent-harness/src/tools.ts
 
 comment:
   layout: "reach,diff,flags,files"
@@ -35,9 +35,9 @@ component_management:
     - component_id: harness_web_http
       name: harness web HTTP (#281)
       paths:
-        - apps/agent/src/harness/web-fetch-http.ts
-        - apps/agent/src/harness/tool-http-fetch.ts
-        - apps/agent/src/harness/tools.ts
+        - packages/agent-harness/src/web-fetch-http.ts
+        - packages/agent-harness/src/tool-http-fetch.ts
+        - packages/agent-harness/src/tools.ts
       statuses:
         - type: patch
           target: 100%

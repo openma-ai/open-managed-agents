@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { DefaultHarness } from "../src/harness/default-loop";
-import { PiHarness } from "../src/harness/pi-loop";
-import { registerCoreHarnesses } from "../src/harness/builtins";
-import {
-  HarnessLease,
-  registerHarness,
-  resolveHarness,
-} from "../src/harness/registry";
+import { DefaultHarness } from "../../../packages/agent-harness/src/default-loop";
+import { PiHarness } from "../../../packages/agent-harness/src/pi-loop";
+import { registerCoreHarnesses } from "../../../packages/agent-harness/src/builtins";
+import { HarnessLease, registerHarness, resolveHarness } from "../../../packages/agent-harness/src/registry";
 
 describe("production harness composition", () => {
   it("uses Pi as the default harness and keeps AI SDK as an explicit opt-in", () => {

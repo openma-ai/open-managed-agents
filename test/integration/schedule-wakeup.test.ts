@@ -16,7 +16,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, it, expect } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
-import { buildTools } from "../../apps/agent/src/harness/tools";
+import { buildTools } from "../../packages/agent-harness/src/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 
 registerTestHarnesses();

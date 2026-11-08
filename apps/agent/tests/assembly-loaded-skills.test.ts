@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import {
-  broadcastLoadedSkillIds,
-  restoreLoadedSkillIds,
-  SKILL_ASSEMBLY_WARNING_SOURCE,
-} from "../src/harness/assembly/loaded-skills-state";
+import { broadcastLoadedSkillIds, restoreLoadedSkillIds, SKILL_ASSEMBLY_WARNING_SOURCE } from "../../../packages/agent-harness/src/assembly/loaded-skills-state";
 
 describe("loaded skills state", () => {
   it("restores skill ids from oma.skill_assembly session.warning events", () => {

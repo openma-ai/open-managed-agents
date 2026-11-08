@@ -1,9 +1,9 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import { AcpProxyHarness } from "../../apps/agent/src/harness/acp-proxy-loop";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
+import { AcpProxyHarness } from "../../packages/agent-harness/src/acp-proxy-loop";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 registerHarness("acp-proxy", () => new AcpProxyHarness());
 

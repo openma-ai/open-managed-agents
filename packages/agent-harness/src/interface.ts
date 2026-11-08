@@ -3,7 +3,7 @@ import type { ModelMessage, LanguageModel } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
-import type { FileResolver } from "../runtime/history";
+import type { FileResolver } from "./history/user-content-parts";
 import type { PiModelRuntime } from "./pi-provider";
 
 // SandboxPort + ProcessHandle live in @open-managed-agents/sandbox so
@@ -25,7 +25,7 @@ export type {
   SandboxExecutor,
   ProcessHandle,
 } from "@open-managed-agents/sandbox";
-export type { FileResolver, ResolvedFile } from "../runtime/history";
+export type { FileResolver, ResolvedFile } from "./history/user-content-parts";
 
 export type HarnessDisposeReason = "replace" | "shutdown" | "destroy";
 

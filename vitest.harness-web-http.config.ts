@@ -13,8 +13,8 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: [
-        "apps/agent/src/harness/web-fetch-http.ts",
-        "apps/agent/src/harness/tool-http-fetch.ts",
+        "packages/agent-harness/src/web-fetch-http.ts",
+        "packages/agent-harness/src/tool-http-fetch.ts",
       ],
       reporter: ["text", "json-summary", "lcov"],
       reportsDirectory: "coverage/harness-web-http",

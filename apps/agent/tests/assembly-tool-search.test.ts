@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createBm25Index, tokenizeForSearch } from "../src/harness/assembly/primitives/bm25";
-import { createToolCatalogSearch } from "../src/harness/assembly/components/tool-catalog-search";
-import { parseToolSearchQuery } from "../src/harness/assembly/primitives/tool-search-query";
-import type { ToolCatalogEntry } from "../src/harness/assembly/types";
+import { createBm25Index, tokenizeForSearch } from "../../../packages/agent-harness/src/assembly/primitives/bm25";
+import { createToolCatalogSearch } from "../../../packages/agent-harness/src/assembly/components/tool-catalog-search";
+import { parseToolSearchQuery } from "../../../packages/agent-harness/src/assembly/primitives/tool-search-query";
+import type { ToolCatalogEntry } from "../../../packages/agent-harness/src/assembly/types";
 
 const catalog: ToolCatalogEntry[] = [
   { name: "read_file", description: "Read a file from disk", serverName: "builtin" },

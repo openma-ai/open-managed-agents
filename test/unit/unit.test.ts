@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { registerHarness, resolveHarness } from "../../apps/agent/src/harness/registry";
+import { registerHarness, resolveHarness } from "../../packages/agent-harness/src/registry";
 import { registerTestHarnesses } from "../harnesses";
 
 // ============================================================
@@ -22,8 +22,8 @@ describe("Harness registry", () => {
   });
 
   it("default harness is registered", async () => {
-    const { registerCoreHarnesses } = await import("../../apps/agent/src/harness/builtins");
-    const { PiHarness } = await import("../../apps/agent/src/harness/pi-loop");
+    const { registerCoreHarnesses } = await import("../../packages/agent-harness/src/builtins");
+    const { PiHarness } = await import("../../packages/agent-harness/src/pi-loop");
     registerCoreHarnesses();
     expect(resolveHarness("default")).toBeInstanceOf(PiHarness);
   });

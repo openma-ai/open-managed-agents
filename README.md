@@ -70,7 +70,7 @@ OpenMA is a **meta-harness**: it manages the resources and lifecycle around an a
 
 Run the model loop outside the sandbox and use the sandbox to execute tools. Keep session history separate from both, so a sandbox failure does not erase the conversation and a replacement harness can rebuild context from durable events. Manage execution resources without coupling them to the lifetime of the agent loop.
 
-Use the built-in Pi harness or implement the [host-side harness interface](apps/agent/src/harness/interface.ts). Workspace restoration depends on the configured persistence and provider; the [Runtime Host guide](apps/docs/src/content/docs/self-host/managed-runtime-host.mdx#session-brain-placement-and-scaling) describes ownership and recovery.
+Use the built-in Pi harness or implement the [host-side harness interface](packages/agent-harness/src/interface.ts). Workspace restoration depends on the configured persistence and provider; the [Runtime Host guide](apps/docs/src/content/docs/self-host/managed-runtime-host.mdx#session-brain-placement-and-scaling) describes ownership and recovery.
 
 ### Harness inside the sandbox: reuse a mature agent
 
@@ -91,7 +91,7 @@ The [ACP runtime](packages/harness-runtime-acp/README.md) provides existing inte
 
 Combine repository tools with GitHub for issue investigation, or web tools with Slack for a research assistant. Reuse the same tools and skills across more agents instead of building a new integration stack for each workflow. Configure the required service credentials and permissions; in-sandbox harnesses use their native tools and adapter-provided capabilities.
 
-[Built-in tools](apps/agent/src/harness/tools.ts) · [Browser](packages/browser-harness/) · [MCP and Skills](packages/sdk/README.md) · [Integrations](apps/docs/src/content/docs/build/integrations.mdx)
+[Built-in tools](packages/agent-harness/src/tools.ts) · [Browser](packages/browser-harness/) · [MCP and Skills](packages/sdk/README.md) · [Integrations](apps/docs/src/content/docs/build/integrations.mdx)
 
 ## Scale the execution as your workloads grow
 

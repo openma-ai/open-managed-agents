@@ -2,9 +2,9 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, vi } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import { resolveSkills, registerSkill } from "../../apps/agent/src/harness/skills";
-import { SummarizeCompaction } from "../../apps/agent/src/harness/compaction";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
+import { resolveSkills, registerSkill } from "../../packages/agent-harness/src/skills";
+import { SummarizeCompaction } from "../../packages/agent-harness/src/compaction";
 import { TestSandbox, createSandbox, CloudflareSandbox } from "../../apps/agent/src/runtime/sandbox";
 import {
   createCloudflareManagedEnvironmentWorker,
@@ -12,9 +12,10 @@ import {
   createCloudflareManagedRuntimeDriver,
   createCloudflareManagedRuntimeHost,
 } from "../../apps/agent/src/runtime/managed-runtime";
-import { buildTools } from "../../apps/agent/src/harness/tools";
-import { delegationCredentials } from "../../apps/agent/src/harness/model-card-credentials";
-import { InMemoryHistory, eventsToMessages } from "../../apps/agent/src/runtime/history";
+import { buildTools } from "../../packages/agent-harness/src/tools";
+import { delegationCredentials } from "../../packages/agent-harness/src/model-card-credentials";
+import { InMemoryHistory } from "../../packages/agent-harness/src/history/in-memory-history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
 import type { AgentConfig, SessionEvent, SessionThreadCreatedEvent, SessionThreadIdleEvent, AgentThreadMessageEvent, AgentMessageEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
 

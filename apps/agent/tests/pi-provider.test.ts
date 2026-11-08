@@ -8,7 +8,7 @@ import type { LanguageModel } from "ai";
 import { generateText, stepCountIs, streamText, tool } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import * as piProviderModule from "../src/harness/pi-provider";
+import * as piProviderModule from "../../../packages/agent-harness/src/pi-provider";
 import mockServices, { type Env as MockServicesEnv } from "../../../test/mocks/mock-server/index";
 
 const { createPiModelRuntime, withPiRuntimeRequestOptions } = piProviderModule;

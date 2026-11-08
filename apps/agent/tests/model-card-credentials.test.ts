@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  bindStoredModelCardCredentials,
-  delegationCredentials,
-} from "../src/harness/model-card-credentials";
+import { bindStoredModelCardCredentials, delegationCredentials } from "../../../packages/agent-harness/src/model-card-credentials";
 
 describe("bindStoredModelCardCredentials", () => {
   it("uses only the workspace card, so an official provider card keeps the catalog endpoint", () => {

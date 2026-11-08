@@ -11,8 +11,8 @@
 // response pump reject unobserved on any client cancel/abort — reproducible
 // with a bare ReadableStream and no OMA code — so that path cannot prove
 // anything about this route.
-import { registerCoreHarnesses } from "../../apps/agent/src/harness/builtins";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
+import { registerCoreHarnesses } from "../../packages/agent-harness/src/builtins";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { setCloudflareSandboxForTest } from "../../apps/agent/src/runtime/sandbox";
 import { env, exports } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";

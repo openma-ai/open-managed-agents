@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { planSkillExposure } from "../src/harness/assembly/strategies/skill-exposure";
-import type { SkillMountDescriptor } from "../src/harness/skills";
+import { planSkillExposure } from "../../../packages/agent-harness/src/assembly/strategies/skill-exposure";
+import type { SkillMountDescriptor } from "../../../packages/agent-harness/src/skills";
 
 const model = {
   id: "test",

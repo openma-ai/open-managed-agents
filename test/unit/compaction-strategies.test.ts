@@ -1,12 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  CCStyleCompactionStrategy,
-  OpenCodeStyleCompactionStrategy,
-  SummarizeCompactionStrategy,
-  resolveCompactionStrategy,
-  stripImagesFromMessages,
-} from "../../apps/agent/src/harness/compaction";
+import { CCStyleCompactionStrategy, OpenCodeStyleCompactionStrategy, SummarizeCompactionStrategy, resolveCompactionStrategy, stripImagesFromMessages } from "../../packages/agent-harness/src/compaction";
 import type { SessionEvent } from "@open-managed-agents/shared";
 
 // This unit only exercises compaction, whose sole runtime import from `ai` is
@@ -157,7 +151,7 @@ describe("compact() — early return for short conversations", () => {
 // AND get replaced by the placeholder text, AND the surrounding text
 // blocks survive.
 
-import { eventsToMessages } from "../../apps/agent/src/runtime/history";
+import { eventsToMessages } from "../../packages/agent-harness/src/history/events-to-messages";
 
 describe("stripImagesFromMessages semantics (via eventsToMessages fixture)", () => {
   const PNG =
@@ -249,9 +243,9 @@ describe("strategy classes are distinct", () => {
 // We use a fake CompactionStrategy that returns a hand-crafted result
 // instead of mocking generateText.
 
-import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
-import type { CompactionStrategy, CompactionResult } from "../../apps/agent/src/harness/compaction";
-import type { HarnessRuntime } from "../../apps/agent/src/harness/interface";
+import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
+import type { CompactionStrategy, CompactionResult } from "../../packages/agent-harness/src/compaction";
+import type { HarnessRuntime } from "../../packages/agent-harness/src/interface";
 
 class FakeStrategy implements CompactionStrategy {
   readonly name = "fake";

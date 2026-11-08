@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createMonotonicClock } from "@open-managed-agents/shared";
-import { InMemoryHistory } from "../../apps/agent/src/runtime/history";
+import { InMemoryHistory } from "../../packages/agent-harness/src/history/in-memory-history";
 
 describe("history stamp via monotonic clock", () => {
   it("consecutive agent appends get strictly increasing processed_at", () => {

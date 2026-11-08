@@ -5,7 +5,7 @@
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { beginModelEgress, completeModelEgress } from "@open-managed-agents/domain/sessions";
 
 const SPEND_HARNESS = "characterization-usage-budget-spend";

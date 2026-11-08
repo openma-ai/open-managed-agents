@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AcpSandboxHarness } from "../src/harness/acp-sandbox-loop";
-import type { HarnessContext } from "../src/harness/interface";
+import { AcpSandboxHarness } from "../../../packages/agent-harness/src/acp-sandbox-loop";
+import type { HarnessContext } from "../../../packages/agent-harness/src/interface";
 import { captureAcpSandboxAgentState } from "../../../packages/acp-runtime/src/sandbox-agent.ts";
 
 // Lifetime of the in-sandbox ACP child (design §0.6 "harness 在沙箱内（ACP）的生命周期").

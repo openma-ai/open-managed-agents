@@ -19,7 +19,7 @@ export default defineConfig({
     testTimeout: 60_000,
     coverage: {
       provider: "v8",
-      include: ["apps/agent/src/harness/tools.ts"],
+      include: ["packages/agent-harness/src/tools.ts"],
       reporter: ["text", "json", "json-summary", "lcov"],
       reportsDirectory: "coverage/harness-tools-wiring",
     },

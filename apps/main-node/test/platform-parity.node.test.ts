@@ -9,9 +9,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
-import { DefaultHarness } from "@open-managed-agents/agent/harness/default-loop";
-import { registerHarness } from "@open-managed-agents/agent/harness/registry";
+import {
+  type HarnessContext, DefaultHarness, registerHarness,
+} from "@open-managed-agents/agent-harness";
 import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
 import { nodeDefaults } from "../src/components";

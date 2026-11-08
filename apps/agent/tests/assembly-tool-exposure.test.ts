@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { createToolExposureStrategy } from "../src/harness/assembly/strategies/exposure";
-import type { ToolAssemblyConfig } from "../src/harness/assembly/config";
+import { createToolExposureStrategy } from "../../../packages/agent-harness/src/assembly/strategies/exposure";
+import type { ToolAssemblyConfig } from "../../../packages/agent-harness/src/assembly/config";
 
 const model = {
   id: "test-model",

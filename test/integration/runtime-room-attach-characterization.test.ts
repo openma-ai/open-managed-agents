@@ -5,8 +5,8 @@
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import { AcpProxyHarness } from "../../apps/agent/src/harness/acp-proxy-loop";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
+import { AcpProxyHarness } from "../../packages/agent-harness/src/acp-proxy-loop";
 import { ensureModelCards } from "./_model-cards";
 
 try { registerHarness("acp-proxy", () => new AcpProxyHarness()); } catch { /* registered by another file in this isolate */ }

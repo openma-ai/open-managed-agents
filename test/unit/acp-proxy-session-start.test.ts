@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { AcpProxyHarness } from "../../apps/agent/src/harness/acp-proxy-loop";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { AcpProxyHarness } from "../../packages/agent-harness/src/acp-proxy-loop";
+import type { HarnessContext } from "../../packages/agent-harness/src/interface";
 import { createRuntimeRoomRelay } from "../../apps/agent/src/runtime/runtime-room-relay";
-import {
-  augmentAcpUserPrompt,
-  parseSessionReadyFrame,
-  resolveRepositoryLocalPath,
-} from "../../apps/agent/src/harness/acp-proxy-delivery";
+import { augmentAcpUserPrompt, parseSessionReadyFrame, resolveRepositoryLocalPath } from "../../packages/agent-harness/src/acp-proxy-delivery";
 
 class Socket {
   listeners = new Map<string, Array<(event: unknown) => void>>();

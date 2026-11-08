@@ -4,7 +4,7 @@ import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session } from "@open-managed-agents/managed-agents-application";
 
 import { ZipSkillPackageCompiler } from "../../../packages/managed-agents-adapters-runtime/src/skill-package-compiler.js";
-import { planSkillExposure } from "../../agent/src/harness/assembly/strategies/skill-exposure.js";
+import { planSkillExposure } from "../../../packages/agent-harness/src/assembly/strategies/skill-exposure.js";
 import { NodeManagedSessionInputPreparer } from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
 import * as nodeManagedInputs from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
 

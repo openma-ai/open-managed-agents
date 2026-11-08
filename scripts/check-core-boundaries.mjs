@@ -16,6 +16,7 @@ const CORE_PACKAGES = [
   "packages/session-outcomes",
   "packages/session-subagents",
   "packages/sandbox-gateway",
+  "packages/agent-harness",
 ];
 
 const FORBIDDEN_PREFIXES = [
@@ -128,11 +129,11 @@ function isAllowedRestrictedNeutralImport(sourcePath, specifier) {
   return allowedPaths === undefined || allowedPaths.has(sourcePath);
 }
 
-// The harness (apps/agent/src/harness) is shared by the Cloudflare and Node
+// The harness (packages/agent-harness) is shared by the Cloudflare and Node
 // hosts: host capabilities reach it as Ports on HarnessContext (design §0.7
 // "harness 里的 CF 类型"). Ratchet: no Durable Object types at all, and the
 // remaining Cloudflare storage types only in their current files.
-const SHARED_HARNESS_DIRECTORY = "apps/agent/src/harness";
+const SHARED_HARNESS_DIRECTORY = "packages/agent-harness/src";
 const SHARED_HARNESS_FORBIDDEN_TYPES = /\b(DurableObjectNamespace|DurableObjectStub|DurableObjectState|DurableObjectId)\b/;
 const SHARED_HARNESS_CF_STORAGE_TYPES = /\b(KVNamespace|R2Bucket|D1Database)\b/;
 const SHARED_HARNESS_CF_STORAGE_ALLOWED = new Set([

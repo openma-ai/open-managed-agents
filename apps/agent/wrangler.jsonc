@@ -46,7 +46,7 @@
       // any worker in the account can bind the same class via `script_name`.
       // AcpProxyHarness uses this to attach to the daemon's RuntimeRoom
       // directly, no service-binding hop through main and no shared secret —
-      // see apps/agent/src/harness/acp-proxy-loop.ts.
+      // see packages/agent-harness/src/acp-proxy-loop.ts.
       { "name": "RUNTIME_ROOM", "class_name": "RuntimeRoom", "script_name": "managed-agents" }
     ]
   },
