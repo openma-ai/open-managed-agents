@@ -473,6 +473,9 @@ export default defineConfig({
       "scripts/ci-console-e2e-scope.test.mjs",
       "scripts/ci-console-e2e-scope.test.mjs",
       "scripts/release-check.test.mjs",
+      // Test wiring gate (node:test, spawns vitest/git); run by test:architecture.
+      "scripts/test-wiring-commands.test.mjs",
+      "scripts/check-test-wiring.test.mjs",
       // Needs full git history and tags. The release-check CI job runs it;
       // workerd cannot import node:child_process from this file.
       "scripts/release-check.history.test.mjs",
