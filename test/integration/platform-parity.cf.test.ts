@@ -48,8 +48,8 @@ const leaks = installLeakCapture([
     stack: ["generateWithPi"],
   }),
   // user.interrupt aborts the in-flight turn; the abort reason rejects a
-  // promise nobody awaits (apps/agent/src/runtime/session-do.ts:2978).
-  errorSignature("apps/agent/src/runtime/session-do.ts:2978 (interrupt abort)", {
+  // promise nobody awaits (apps/agent/src/runtime/session-do.ts:2986).
+  errorSignature("apps/agent/src/runtime/session-do.ts:2986 (interrupt abort)", {
     name: "AbortError",
     message: "The operation was aborted",
     stack: ["session-do.ts"],
@@ -94,9 +94,9 @@ const goldens = Object.fromEntries(
  */
 const USAGE_CAUSE =
   "golden (Node) emits session.usage after every reported model usage and fills GET /v1/sessions/:id usage "
-  + "(packages/control-plane-node/src/lib/node-managed-harness-runtime.ts:343-351); CF reportUsage only credits the "
-  + "thread ledger (apps/agent/src/runtime/session-do.ts:6290 creditUsageToThread) and emits session.usage only on "
-  + "budget_reached (session-do.ts:4940), so CF has no session.usage event and usage {}";
+  + "(packages/control-plane-node/src/lib/node-managed-harness-runtime.ts:347-355); CF reportUsage only credits the "
+  + "thread ledger (apps/agent/src/runtime/session-do.ts:6227-6228 creditUsageToThread) and emits session.usage only on "
+  + "budget_reached, so CF has no session.usage event and usage {}";
 const usage = (scenario: string, withEvents = true): KnownDifference => ({
   scenario,
   title: "no session.usage / session usage",
@@ -150,21 +150,8 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
     title: "span.outcome_evaluation_start not in the event log",
     paths: ["/events/span.outcome_evaluation_start"],
     eventTypes: ["span.outcome_evaluation_start"],
-    cause: "golden persists span.outcome_evaluation_start (packages/control-plane-node/src/lib/node-managed-session-runner.ts:1014); "
-      + "CF only broadcasts it and never persists it (apps/agent/src/runtime/outcome-supervisor.ts:223-225), so GET events lacks it",
-  },
-  {
-    scenario: "outcome-evaluation",
-    title: "evaluator failure verdict",
-    paths: [
-      "/events/span.outcome_evaluation_end/0/result",
-      "/events/span.outcome_evaluation_end/0/explanation",
-      "/session/outcome_evaluations/0/result",
-      "/session/outcome_evaluations/0/explanation",
-    ],
-    cause: "evaluator model unreachable: golden ends the outcome \"failed\" / \"outcome evaluation failed: Connection error.\" "
-      + "(node-managed-session-runner.ts:1035-1042); CF ends it \"max_iterations_reached\" / \"llm judge exhausted retries: "
-      + "Connection error.\" (apps/agent/src/runtime/outcome-supervisor.ts:247, apps/agent/src/harness/outcome-evaluator.ts:53-70)",
+    cause: "golden persists span.outcome_evaluation_start (packages/control-plane-node/src/lib/node-managed-session-runner.ts:1218); "
+      + "CF only broadcasts it and never persists it (apps/agent/src/runtime/outcome-supervisor.ts:187, session-do.ts:6371), so GET events lacks it",
   },
   {
     scenario: "requires-action",
@@ -172,7 +159,7 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
     paths: ["/events/agent.tool_result"],
     eventTypes: ["agent.tool_result"],
     cause: "golden emits no agent.tool_result for user.custom_tool_result; CF appends and broadcasts one "
-      + "(apps/agent/src/runtime/session-do.ts:2191-2205) and emits the confirmed bash tool_result before session.status_running "
+      + "(apps/agent/src/runtime/session-do.ts:2199-2213) and emits the confirmed bash tool_result before session.status_running "
       + "(golden: after). The path also carries the sandbox double's \"exit=0\" bash text",
   },
   {
@@ -181,8 +168,8 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
     paths: ["/events/session.error", "/events/session.status_idle/0/stop_reason/type"],
     eventTypes: ["user.interrupt", "session.error"],
     cause: "golden (Node) turns user.interrupt into session.error interrupt_requested (retry_status exhausted) and idle "
-      + "retries_exhausted (packages/control-plane-node/src/lib/node-managed-session-runner.ts:1086-1100, 1214); CF idles "
-      + "end_turn with no error (apps/agent/src/runtime/session-do.ts:2976-2978) and lists user.interrupt after the aborted "
+      + "retries_exhausted (packages/control-plane-node/src/lib/node-managed-session-runner.ts:1010-1025); CF idles "
+      + "end_turn with no error (apps/agent/src/runtime/session-do.ts:2986) and lists user.interrupt after the aborted "
       + "span.model_request_end. Here the golden is the questionable side: CMA treats an interrupt as a normal end",
   },
 ];

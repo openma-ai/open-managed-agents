@@ -140,8 +140,8 @@
         "processed_at": "<time>",
         "type": "session.usage",
         "usage": {
-          "input_tokens": 13,
-          "output_tokens": 5
+          "input_tokens": 26,
+          "output_tokens": 10
         }
       },
       {
@@ -149,8 +149,8 @@
         "processed_at": "<time>",
         "type": "session.usage",
         "usage": {
-          "input_tokens": 11,
-          "output_tokens": 7
+          "input_tokens": 37,
+          "output_tokens": 17
         }
       }
     ],
@@ -269,8 +269,8 @@
     "stats": {},
     "status": "idle",
     "usage": {
-      "input_tokens": 11,
-      "output_tokens": 7
+      "input_tokens": 37,
+      "output_tokens": 17
     }
   },
   "reads": {

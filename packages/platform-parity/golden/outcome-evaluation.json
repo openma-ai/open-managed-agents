@@ -92,13 +92,13 @@
     ],
     "span.outcome_evaluation_end": [
       {
-        "explanation": "outcome evaluation failed: Connection error.",
+        "explanation": "llm judge exhausted retries: Connection error.",
         "id": "<id>",
         "iteration": 0,
         "outcome_evaluation_start_id": "<id>",
         "outcome_id": "<id>",
         "processed_at": "<time>",
-        "result": "failed",
+        "result": "max_iterations_reached",
         "type": "span.outcome_evaluation_end",
         "usage": {
           "cache_creation_input_tokens": 0,
@@ -160,10 +160,10 @@
       {
         "completed_at": "<time>",
         "description": "A fibonacci function is written",
-        "explanation": "outcome evaluation failed: Connection error.",
+        "explanation": "llm judge exhausted retries: Connection error.",
         "iteration": 0,
         "outcome_id": "<id>",
-        "result": "failed",
+        "result": "max_iterations_reached",
         "type": "outcome_evaluation"
       }
     ],
