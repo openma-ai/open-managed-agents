@@ -190,7 +190,6 @@ open-managed-agents/
 | `harness/default-loop.ts` (39 KB) | 已弃用：`harness: "ai-sdk"` 时使用的 AI SDK loop |
 | `harness/compaction.ts` (25 KB) | 上下文压缩策略（事件级粒度、摘要、滑窗） |
 | `harness/tools.ts` (51 KB) | bash / read / write / edit / glob / grep / web_fetch / web_search + 派生 mcp_*、call_agent_* |
-| `harness/browser-tools.ts` | 由 Browser Rendering 暴露的 navigate / click / extract |
 | `harness/skills.ts` | 把 skill 文件挂到 `/home/user/.skills/`，并把 prompt 拼进 system |
 | `harness/pi-provider.ts` | 通过 Pi 解析官方/自定义 provider、Model Card 元数据、effort 与 speed 请求控制 |
 | `harness/outcome-evaluator.ts` | LLM-as-judge：根据 rubric 判定 satisfied / needs_revision |
