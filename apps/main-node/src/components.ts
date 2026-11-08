@@ -19,6 +19,7 @@ import {
   type NodeComponents,
 } from "@open-managed-agents/control-plane-node";
 import type { SandboxFactory } from "@open-managed-agents/sandbox";
+import type { E2BModule } from "@open-managed-agents/sandbox-adapter-e2b";
 
 import { createBetterAuthComponent } from "./auth/node-auth.js";
 import { createFilesBlobs, createMemoryBlobs } from "./blobs.js";
@@ -119,6 +120,12 @@ export async function nodeDefaults(
 async function loadSandboxFactory(config: NodeConfig): Promise<SandboxFactory> {
   const load = async (): Promise<SandboxFactory> => {
     const selection = resolveSandboxProviderForEnvironment(config.sandbox.environment);
+    if (selection.provider === "e2b") {
+      // The adapter declares `e2b` only as an optional peer: main-node's own
+      // dependency is the install that resolves, so the SDK is injected.
+      const [adapter, sdk] = await Promise.all([import("@open-managed-agents/sandbox-adapter-e2b"), import("e2b")]);
+      return adapter.createE2BSandboxFactory(sdk as unknown as E2BModule);
+    }
     const mod = (await import(selection.modulePath)) as { sandboxFactory: SandboxFactory };
     return mod.sandboxFactory;
   };

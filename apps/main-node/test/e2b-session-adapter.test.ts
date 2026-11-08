@@ -1,6 +1,9 @@
 // SANDBOX_PROVIDER=e2b on Node: Session sandboxes run through the native
 // Sandbox SDK v2 E2B adapter, with the `e2b` SDK loaded from main-node's own
-// dependencies (src/e2b-session-adapter.ts, src/components.ts).
+// dependencies (src/e2b-session-adapter.ts, src/components.ts). The adapter
+// declares `e2b` only as an optional peer and the workspace does not
+// auto-install peers, so main-node's install is the one that must resolve,
+// for the v1 factory too.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -34,7 +37,7 @@ describe("Node E2B Session sandbox adapter", () => {
     await expect(createNodeE2BSessionAdapter({ E2B_MAX_LIFETIME_MS: "1h" })).rejects.toThrow(/positive integer/);
   });
 
-  it("nodeDefaults composes it for a standalone SANDBOX_PROVIDER=e2b deployment", async () => {
+  it("nodeDefaults composes it, and injects main-node's SDK into the v1 factory, for a standalone SANDBOX_PROVIDER=e2b deployment", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oma-node-e2b-"));
     dirs.push(dir);
     const config = loadNodeConfig({
@@ -54,6 +57,11 @@ describe("Node E2B Session sandbox adapter", () => {
     try {
       expect(config.processMode).toBe("standalone");
       expect(components.sessionSandboxAdapter?.adapter.name).toBe("e2b");
+      // Not the adapter's lazily importing default: that import resolves from
+      // packages/sandbox-adapter-e2b, where no e2b is installed.
+      const adapterModule = await import("@open-managed-agents/sandbox-adapter-e2b");
+      expect(components.sandbox).not.toBe(adapterModule.sandboxFactory);
+      expect(components.sandbox.capabilities).toEqual({ allocationIsolation: true });
     } finally {
       await components.realtime.stop?.();
       await components.database.stop?.();
