@@ -3853,6 +3853,9 @@ importers:
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@open-managed-agents/sandbox-port-kit':
+        specifier: workspace:*
+        version: link:../sandbox-port-kit
     devDependencies:
       '@types/node':
         specifier: ^26.6.6

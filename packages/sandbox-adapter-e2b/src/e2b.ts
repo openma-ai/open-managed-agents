@@ -60,8 +60,9 @@ interface E2BCommandOptions {
   onStdout?: (data: string) => void | Promise<void>;
   onStderr?: (data: string) => void | Promise<void>;
   stdin?: boolean;
+  user?: string;
 }
-interface E2BSandboxLike {
+export interface E2BSandboxLike {
   sandboxId?: string;
   commands: {
     run(
@@ -70,11 +71,13 @@ interface E2BSandboxLike {
     ): Promise<E2BCommandResult | E2BCommandHandle>;
   };
   files: {
-    read(path: string): Promise<string>;
-    write(path: string, data: string | Uint8Array): Promise<void>;
+    read(path: string, opts?: { user?: string }): Promise<string>;
+    write(path: string, data: string | Uint8Array, opts?: { user?: string }): Promise<unknown>;
     makeDir?(path: string): Promise<void>;
   };
-  kill(): Promise<void>;
+  kill(): Promise<unknown>;
+  /** Atomic replacement of the sandbox egress rules. */
+  updateNetwork?(network: { allowOut?: string[]; denyOut?: string[] }): Promise<void>;
   getInfo?(): Promise<{ state?: string }>;
   setTimeout?(timeoutMs: number): Promise<void>;
   pause?(opts?: { keepMemory?: boolean }): Promise<boolean>;
@@ -116,6 +119,9 @@ export interface E2BSandboxOptions {
   preparedBaseId?: string;
   /** Default per-command timeout in ms. */
   defaultTimeoutMs?: number;
+  /** Sandbox user for commands and file operations. Defaults to the SDK's
+   * default user. */
+  user?: string;
   /**
    * Initial sandbox lifetime in ms (E2B's sandbox `timeoutMs`). Hosts extend
    * it through `renewLease` while a turn runs (OpenMA's sandbox heartbeat).
@@ -147,8 +153,10 @@ export interface E2BSandboxOptions {
  */
 export async function createE2BSandbox(
   opts: E2BSandboxOptions = {},
+  /** An already-imported SDK (Workers bundle it statically); loaded lazily otherwise. */
+  module?: E2BModule,
 ): Promise<E2BSandboxExecutor> {
-  const mod = await loadE2BModule();
+  const mod = module ?? await loadE2BModule();
   const sb = await mod.Sandbox.create(
     opts.preparedBaseId ?? opts.templateId ?? "base",
     creationOptions(opts),
@@ -197,6 +205,7 @@ export class E2BSandboxExecutor
    *  just symlink prefixes. */
   private memoryBucketMounted = false;
   private memoryBucketConfig?: NonNullable<E2BSandboxOptions["memoryBucket"]>;
+  private readonly user: { user?: string };
 
   constructor(
     private sandbox: E2BSandboxLike,
@@ -207,6 +216,41 @@ export class E2BSandboxExecutor
       warn: (msg) => console.warn(`[e2b-sandbox] ${msg}`),
     };
     this.memoryBucketConfig = opts.memoryBucket;
+    this.user = opts.user === undefined ? {} : { user: opts.user };
+  }
+
+  /** Structured command result. Extra `envs` reach only this process and
+   * never appear in its command line; `user` overrides the sandbox user. */
+  async run(
+    command: string,
+    opts: { envs?: Record<string, string>; timeoutMs?: number; user?: string } = {},
+  ): Promise<E2BCommandResult> {
+    return settleCommand(this.sandbox.commands.run(command, {
+      timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
+      envs: { ...this.buildCommandEnv(command), ...opts.envs },
+      ...(opts.user === undefined ? this.user : { user: opts.user }),
+    }) as Promise<E2BCommandResult>);
+  }
+
+  /** Binary-safe read; `null` when the file does not exist. */
+  async readBytes(path: string): Promise<Uint8Array | null> {
+    const files = this.sandbox.files as unknown as {
+      read(path: string, opts: { format: "bytes"; user?: string }): Promise<Uint8Array>;
+    };
+    try {
+      return await files.read(path, { format: "bytes", ...this.user });
+    } catch (error) {
+      const name = (error as { name?: unknown } | null)?.name;
+      if (name === "FileNotFoundError" || name === "NotFoundError") return null;
+      throw error;
+    }
+  }
+
+  async updateNetwork(network: { allowOut: string[]; denyOut: string[] }): Promise<void> {
+    if (typeof this.sandbox.updateNetwork !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.updateNetwork");
+    }
+    await this.sandbox.updateNetwork(network);
   }
 
   runtimeHandle(): SandboxRuntimeHandle {
@@ -311,6 +355,7 @@ export class E2BSandboxExecutor
     const wrapped = this.applyEnv(command);
     const result = await settleCommand(this.sandbox.commands.run(wrapped, {
       timeoutMs: timeout ?? this.defaultTimeoutMs,
+      ...this.user,
     }) as Promise<E2BCommandResult>);
     // Match @cloudflare/sandbox's behaviour: combined stdout+stderr,
     // newline-trimmed, plus an exit-code suffix.
@@ -325,6 +370,7 @@ export class E2BSandboxExecutor
     const wrapped = this.applyEnv(command);
     const handle = (await this.sandbox.commands.run(wrapped, {
       background: true,
+      ...this.user,
     })) as E2BCommandHandle;
     if (!handle.pid) return null;
     const id = `proc_${handle.pid}_${Date.now()}`;
@@ -389,6 +435,7 @@ export class E2BSandboxExecutor
       timeoutMs: 0,
       cwd: spec.cwd,
       envs: this.buildCommandEnv(spec.command, spec.env),
+      ...this.user,
       onStdout: (data) => enqueue(stdoutController, data),
       onStderr: (data) => enqueue(stderrController, data),
     })) as E2BCommandHandle;
@@ -480,7 +527,7 @@ export class E2BSandboxExecutor
   }
 
   async readFile(path: string): Promise<string> {
-    return this.sandbox.files.read(path);
+    return this.user.user === undefined ? this.sandbox.files.read(path) : this.sandbox.files.read(path, this.user);
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
@@ -499,12 +546,14 @@ export class E2BSandboxExecutor
   }
 
   async writeFile(path: string, content: string): Promise<string> {
-    await this.sandbox.files.write(path, content);
+    if (this.user.user === undefined) await this.sandbox.files.write(path, content);
+    else await this.sandbox.files.write(path, content, this.user);
     return path;
   }
 
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
-    await this.sandbox.files.write(path, bytes);
+    if (this.user.user === undefined) await this.sandbox.files.write(path, bytes);
+    else await this.sandbox.files.write(path, bytes, this.user);
     return path;
   }
 
@@ -754,12 +803,12 @@ function readExitCode(cause: unknown): number | null {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-type E2BConnectionOptions = Pick<
+export type E2BConnectionOptions = Pick<
   E2BSandboxOptions,
   "apiKey" | "apiUrl" | "sandboxUrl" | "domain"
 >;
 
-type E2BCreateOptions = E2BConnectionOptions & {
+export type E2BCreateOptions = E2BConnectionOptions & {
   metadata?: Record<string, string>;
   timeoutMs?: number;
   lifecycle: {
@@ -768,7 +817,7 @@ type E2BCreateOptions = E2BConnectionOptions & {
   };
 };
 
-interface E2BModule {
+export interface E2BModule {
   Sandbox: {
     create(template: string, args?: E2BCreateOptions): Promise<E2BSandboxLike>;
     connect(sandboxId: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;

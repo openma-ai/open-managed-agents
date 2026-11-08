@@ -293,6 +293,7 @@ export default defineConfig({
       { find: "@open-managed-agents/sandbox-adapter-litebox", replacement: "./packages/sandbox-adapter-litebox/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-daytona", replacement: "./packages/sandbox-adapter-daytona/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-opensandbox", replacement: "./packages/sandbox-adapter-opensandbox/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-adapter-e2b/v2", replacement: "./packages/sandbox-adapter-e2b/src/v2.ts" },
       { find: "@open-managed-agents/sandbox-adapter-e2b", replacement: "./packages/sandbox-adapter-e2b/src/index.ts" },
       { find: "@open-managed-agents/sandbox-port-kit/firewall", replacement: "./packages/sandbox-port-kit/src/firewall.ts" },
       { find: "@open-managed-agents/sandbox-port-kit/object-storage", replacement: "./packages/sandbox-port-kit/src/object-storage.ts" },

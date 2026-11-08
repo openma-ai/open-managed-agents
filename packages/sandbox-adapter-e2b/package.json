@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./v2": "./src/v2.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
@@ -13,7 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@open-managed-agents/sandbox": "workspace:*"
+    "@open-managed-agents/sandbox": "workspace:*",
+    "@open-managed-agents/sandbox-port-kit": "workspace:*"
   },
   "peerDependencies": {
     "e2b": "^2.46.1"

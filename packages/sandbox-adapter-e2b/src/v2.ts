@@ -1,0 +1,392 @@
+// Native Sandbox SDK v2 adapter for E2B (design §0.1 / §0.2). Reuses the
+// v1 executor (E2BSandboxExecutor) as the runtime; the SDK module is
+// injected so Workers can bundle it statically.
+//
+// lifecycle      handle "changes" (E2B assigns sandbox ids)
+// acquire        Sandbox.create(plan.from) with {workspaceId, sessionId} metadata
+// attach         Sandbox.connect (resumes a paused sandbox)
+// keepAlive      setTimeout(leaseMs); leaseMs must exceed plan.idleMs
+// pause/resume   pause (full memory) / connect; the ref is the sandbox itself
+// checkpoint     createSnapshot; resume from it = Sandbox.create(snapshotId)
+// snapshotTemplate createSnapshot under a name
+// release        Sandbox.kill; discard = Sandbox.deleteSnapshot
+// list           Sandbox.list filtered by metadata
+// not found → "gone" / SandboxGoneError; 429 / 503 → RetryableSandboxError
+
+import {
+  RetryableSandboxError,
+  SandboxGoneError,
+  type Acquired,
+  type ResumeRef,
+  type SandboxHandle,
+  type SandboxLifecyclePort,
+  type SandboxPlan,
+  type SandboxStoragePort,
+  type TemplateRef,
+} from "@open-managed-agents/sandbox";
+import type { FirewallRules } from "@open-managed-agents/sandbox-port-kit/firewall";
+import type { ObjectStoreCredentialPort } from "@open-managed-agents/sandbox-port-kit/object-storage";
+import { readSandboxOutputs, SESSION_OUTPUTS_DIR } from "@open-managed-agents/sandbox-port-kit/object-storage";
+import type { SandboxAdapterPort, SandboxStorageDepsPort, SandboxVendorPort } from "@open-managed-agents/sandbox-port-kit/ports";
+import {
+  E2BSandboxExecutor,
+  createE2BSandbox,
+  type E2BConnectionOptions,
+  type E2BCreateOptions,
+  type E2BModule,
+  type E2BSandboxLike,
+} from "./e2b";
+
+/** The parts of the `e2b` module the v2 adapter calls. */
+export interface E2BV2Module extends E2BModule {
+  Sandbox: E2BModule["Sandbox"] & {
+    connect(sandboxId: string, args?: E2BConnectionOptions & { timeoutMs?: number }): Promise<E2BSandboxLike>;
+    kill(sandboxId: string, args?: E2BConnectionOptions): Promise<boolean>;
+    deleteSnapshot(snapshotId: string, args?: E2BConnectionOptions): Promise<boolean>;
+    list(args?: E2BConnectionOptions & {
+      query?: { metadata?: Record<string, string>; state?: Array<"running" | "paused"> };
+      limit?: number;
+    }): {
+      hasNext: boolean;
+      nextItems(): Promise<Array<{ sandboxId: string; metadata?: Record<string, string>; startedAt: Date | string }>>;
+    };
+  };
+}
+
+export interface E2BV2AdapterOptions {
+  sdk: E2BV2Module;
+  connection: E2BConnectionOptions;
+  /** Provider idle reclaim (E2B timeout), renewed by keepAlive. Must exceed
+   * every plan's idleMs, or E2B pauses the sandbox before the core does. */
+  leaseMs: number;
+  /** Sandbox user for exec and files. Default: the SDK default user. */
+  user?: string;
+  /** Run as root right after a sandbox starts, before its firewall is
+   * applied (for example installing s3fs). */
+  setup?: string;
+  /** Hosts the platform itself needs from inside the sandbox (object
+   * storage, ...). Added to every allowlist. */
+  channels?: string[];
+  /** Prefix-scoped credentials for Memory Store mounts. Without it, Memory
+   * Stores fall back to the generic file sync. */
+  objectStorage?: { credentials: ObjectStoreCredentialPort; ttlSeconds?: number };
+}
+
+const SELF = "self";
+const DEFAULT_RETRY_AFTER_MS = 1_000;
+
+export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapterPort<E2BSandboxExecutor> {
+  if (!Number.isSafeInteger(options.leaseMs) || options.leaseMs <= 0) {
+    throw new TypeError("E2B leaseMs must be a positive integer");
+  }
+  const { sdk, connection } = options;
+  const executorOptions = { ...connection, ...(options.user === undefined ? {} : { user: options.user }), lifetimeMs: options.leaseMs };
+  const handleOf = (runtime: E2BSandboxExecutor): SandboxHandle => ({ provider: "e2b", runtimeId: runtime.runtimeHandle().runtimeId });
+  const requireOwn = (value: { provider: string }) => {
+    if (value.provider !== "e2b") throw new Error(`E2B adapter received a ${value.provider} reference`);
+  };
+
+  async function prepare(runtime: E2BSandboxExecutor): Promise<void> {
+    if (options.setup === undefined) return;
+    const result = await runtime.run(options.setup, { user: "root", timeoutMs: 300_000 });
+    if (result.exitCode !== 0) {
+      throw new Error(`E2B sandbox setup failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+    }
+  }
+
+  async function start(source: string, plan: SandboxPlan, signal: AbortSignal): Promise<Acquired<E2BSandboxExecutor> | "gone"> {
+    signal.throwIfAborted();
+    if (plan.idleMs >= options.leaseMs) {
+      throw new Error(`E2B leaseMs (${options.leaseMs}) must exceed the plan idleMs (${plan.idleMs})`);
+    }
+    let runtime: E2BSandboxExecutor;
+    try {
+      runtime = await createE2BSandbox({ ...executorOptions, templateId: source, createMetadata: { ...plan.labels } }, sdk);
+    } catch (error) {
+      if (isGone(error)) return "gone";
+      throw mapError(error);
+    }
+    try {
+      await prepare(runtime);
+      return { runtime, handle: handleOf(runtime) };
+    } catch (error) {
+      await runtime.destroy();
+      throw mapError(error);
+    }
+  }
+
+  async function connect(runtimeId: string): Promise<Acquired<E2BSandboxExecutor> | "gone"> {
+    try {
+      const sandbox = await sdk.Sandbox.connect(runtimeId, { ...connection, timeoutMs: options.leaseMs });
+      const runtime = new E2BSandboxExecutor(sandbox, executorOptions);
+      return { runtime, handle: handleOf(runtime) };
+    } catch (error) {
+      if (isGone(error)) return "gone";
+      throw mapError(error);
+    }
+  }
+
+  const lifecycle: SandboxLifecyclePort<E2BSandboxExecutor> = {
+    handle: "changes",
+
+    async acquire(input) {
+      const from = input.plan.from;
+      if ("template" in from) requireOwn(from.template);
+      return start("template" in from ? from.template.ref : from.image, input.plan, input.signal);
+    },
+
+    async attach(input) {
+      requireOwn(input.handle);
+      input.signal.throwIfAborted();
+      return connect(input.handle.runtimeId);
+    },
+
+    async keepAlive(input) {
+      try {
+        await input.runtime.renewLease({ ttlMs: options.leaseMs });
+        return "alive";
+      } catch (error) {
+        if (isGone(error)) return "gone";
+        throw mapError(error);
+      }
+    },
+
+    async checkpoint(input) {
+      input.signal.throwIfAborted();
+      const checkpoint = await lifecycleCall(() => input.runtime.checkpoint({ kind: "memory" }));
+      return { provider: "e2b", ref: checkpoint.checkpointId, metadata: { kind: "snapshot", source: input.handle.runtimeId } };
+    },
+
+    async pause(input) {
+      input.signal.throwIfAborted();
+      await lifecycleCall(() => input.runtime.suspend({ kind: "memory" }));
+      return { provider: "e2b", ref: input.handle.runtimeId, metadata: { kind: SELF } };
+    },
+
+    async resume(input) {
+      requireOwn(input.ref);
+      if (input.ref.metadata?.kind === SELF) {
+        input.signal.throwIfAborted();
+        return connect(input.ref.ref);
+      }
+      return start(input.ref.ref, input.plan, input.signal);
+    },
+
+    async release(input) {
+      requireOwn(input.handle);
+      try {
+        await sdk.Sandbox.kill(input.handle.runtimeId, connection);
+      } catch (error) {
+        if (!isGone(error)) throw mapError(error);
+      }
+    },
+
+    async discard(input) {
+      requireOwn(input.ref);
+      if (input.ref.metadata?.kind === SELF) return;
+      try {
+        await sdk.Sandbox.deleteSnapshot(input.ref.ref, connection);
+      } catch (error) {
+        if (!isGone(error)) throw mapError(error);
+      }
+    },
+
+    async snapshotTemplate(input): Promise<TemplateRef> {
+      input.signal.throwIfAborted();
+      const base = await lifecycleCall(() => input.runtime.capturePreparedBase({ name: `oma-${input.handle.runtimeId}` }));
+      return { provider: "e2b", ref: base.id };
+    },
+
+    async list(input) {
+      const metadata = Object.fromEntries(Object.entries(input.labels).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+      const paginator = sdk.Sandbox.list({ ...connection, query: { metadata, state: ["running", "paused"] } });
+      const found: Awaited<ReturnType<SandboxLifecyclePort<E2BSandboxExecutor>["list"]>> = [];
+      while (paginator.hasNext) {
+        input.signal.throwIfAborted();
+        let items: Awaited<ReturnType<typeof paginator.nextItems>>;
+        try {
+          items = await paginator.nextItems();
+        } catch (error) {
+          throw mapError(error);
+        }
+        for (const item of items) {
+          const workspaceId = item.metadata?.workspaceId;
+          const sessionId = item.metadata?.sessionId;
+          if (workspaceId === undefined || sessionId === undefined) continue;
+          found.push({
+            handle: { provider: "e2b", runtimeId: item.sandboxId },
+            labels: { workspaceId, sessionId },
+            createdAt: new Date(item.startedAt).toISOString(),
+          });
+        }
+      }
+      return found;
+    },
+  };
+
+  const vendor: SandboxVendorPort<E2BSandboxExecutor> = {
+    async exec(runtime, cmd, opts) {
+      let command = cmd;
+      if (opts?.stdin !== undefined) {
+        const path = `/tmp/.oma-stdin-${crypto.randomUUID()}`;
+        await runtimeCall(() => runtime.writeFile(path, opts.stdin!));
+        command = `(${cmd}) < ${path}; s=$?; rm -f ${path}; exit $s`;
+      }
+      return runtimeCall(() => runtime.run(command, opts?.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }));
+    },
+    readFile: (runtime, path) => runtimeCall(() => runtime.readBytes(path)),
+    async writeFile(runtime, path, bytes) {
+      await runtimeCall(() => runtime.writeFileBytes(path, bytes));
+    },
+    setEnv: (runtime, env) => runtime.setEnvVars(env),
+    applyFirewall: (runtime, rules) => runtimeCall(() => runtime.updateNetwork(e2bNetwork(rules, options.channels ?? []))),
+  };
+
+  const objectStorage = options.objectStorage;
+  return {
+    name: "e2b",
+    lifecycle,
+    vendor,
+    ...(objectStorage === undefined ? {} : {
+      native: { storage: (deps: SandboxStorageDepsPort) => e2bObjectStorage(vendor, deps, objectStorage) },
+    }),
+  };
+}
+
+/** Memory Stores as s3fs mounts over prefix-scoped, short-lived credentials
+ * (the parent key never enters the sandbox; the credentials reach s3fs only
+ * through its process environment, never its command line). Outputs are
+ * copied out at turn_end / before_stop through deps.outputs. */
+export function e2bObjectStorage(
+  vendor: SandboxVendorPort<E2BSandboxExecutor>,
+  deps: SandboxStorageDepsPort,
+  options: NonNullable<E2BV2AdapterOptions["objectStorage"]>,
+): SandboxStoragePort<E2BSandboxExecutor> {
+  const ttlSeconds = options.ttlSeconds ?? 3_600;
+  const mounted = new WeakMap<E2BSandboxExecutor, Map<string, { storeId: string; readOnly: boolean; expiresAt: number }>>();
+  const asRoot = async (runtime: E2BSandboxExecutor, command: string, envs?: Record<string, string>) => {
+    const result = await runtimeCall(() => runtime.run(command, { user: "root", timeoutMs: 60_000, ...(envs === undefined ? {} : { envs }) }));
+    if (result.exitCode !== 0) throw new Error(`E2B storage command failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+  };
+  return {
+    async attach(input) {
+      const owner = (await vendor.exec(input.runtime, "id -u")).stdout.trim();
+      await asRoot(input.runtime, `mkdir -p ${SESSION_OUTPUTS_DIR} /mnt/memory && chown ${quote(owner)} ${SESSION_OUTPUTS_DIR}`);
+      const state = mounted.get(input.runtime) ?? new Map();
+      mounted.set(input.runtime, state);
+      for (const store of input.stores) {
+        input.signal.throwIfAborted();
+        if (!/^[A-Za-z0-9._-]+$/u.test(store.storeName) || store.storeName.startsWith(".")) {
+          throw new Error(`Unsafe Memory Store name: ${JSON.stringify(store.storeName)}`);
+        }
+        const target = `/mnt/memory/${store.storeName}`;
+        const current = state.get(target);
+        if (current !== undefined && current.storeId === store.storeId && current.readOnly === store.readOnly
+          && current.expiresAt - Date.now() > 5 * 60_000) continue;
+        const credentials = await options.credentials.issue({
+          prefix: `${store.storeId}/`,
+          access: store.readOnly ? "read_only" : "read_write",
+          ttlSeconds,
+        });
+        const flags = [
+          `url=${credentials.endpoint}`,
+          "use_path_request_style",
+          "use_session_token",
+          "allow_other",
+          "nonempty",
+          `uid=${owner}`,
+          `gid=${owner}`,
+          ...(store.readOnly ? ["ro"] : []),
+        ].map((flag) => `-o ${quote(flag)}`).join(" ");
+        await asRoot(
+          input.runtime,
+          `(mountpoint -q ${quote(target)} && (umount ${quote(target)} || umount -l ${quote(target)})) || true; `
+            + `mkdir -p ${quote(target)} && s3fs ${quote(`${credentials.bucket}:/${credentials.prefix.replace(/\/$/u, "")}`)} ${quote(target)} ${flags}`,
+          {
+            AWS_ACCESS_KEY_ID: credentials.accessKeyId,
+            AWS_SECRET_ACCESS_KEY: credentials.secretAccessKey,
+            AWS_SESSION_TOKEN: credentials.sessionToken,
+          },
+        );
+        state.set(target, { storeId: store.storeId, readOnly: store.readOnly, expiresAt: credentials.expiresAt });
+      }
+    },
+    async sync(input) {
+      if (input.reason === "interval" || input.reason === "checkpoint") return;
+      if (!await deps.authorize(input.fence)) throw new Error("Session output publication lost its fence");
+      await deps.outputs.publish({
+        scope: input.scope,
+        fence: input.fence,
+        files: readSandboxOutputs(vendor, input.runtime, { maxFiles: 10_000 }),
+        signal: input.signal,
+      });
+    },
+    async detach(input) {
+      const state = mounted.get(input.runtime);
+      if (state === undefined) return;
+      for (const target of state.keys()) {
+        await asRoot(input.runtime, `umount ${quote(target)} || umount -l ${quote(target)} || true`);
+      }
+      mounted.delete(input.runtime);
+    },
+  };
+}
+
+/** FirewallRules → E2B network config. allowOut wins over denyOut; denyOut
+ * takes CIDRs only (hostname denies are dropped), and loopback never leaves
+ * the VM, so it is not sent. */
+export function e2bNetwork(rules: FirewallRules, channels: readonly string[]): { allowOut: string[]; denyOut: string[] } {
+  const denyCidrs = rules.denyAlways.filter((entry) => /^\d+\.\d+\.\d+\.\d+\/\d+$/u.test(entry) && !entry.startsWith("127."));
+  if (rules.mode === "open") return { allowOut: [], denyOut: denyCidrs };
+  return {
+    allowOut: [...new Set([...rules.allowHosts, ...channels, ...rules.allowCidrs])],
+    denyOut: ["0.0.0.0/0"],
+  };
+}
+
+/** Not found: a missing sandbox, template or snapshot. */
+export function isGone(error: unknown): boolean {
+  const candidate = error as { name?: unknown; statusCode?: unknown } | null;
+  if (candidate === null || typeof candidate !== "object") return false;
+  return candidate.name === "SandboxNotFoundError" || candidate.name === "NotFoundError" || candidate.statusCode === 404;
+}
+
+/** Throttling / busy → RetryableSandboxError; anything else unchanged. */
+export function mapError(error: unknown): unknown {
+  const candidate = error as { name?: unknown; statusCode?: unknown; message?: unknown } | null;
+  if (candidate !== null && typeof candidate === "object"
+    && (candidate.name === "RateLimitError" || candidate.name === "ServiceBusyError" || candidate.statusCode === 429 || candidate.statusCode === 503)) {
+    return new RetryableSandboxError(String(candidate.message ?? "E2B is busy"), DEFAULT_RETRY_AFTER_MS, { cause: error });
+  }
+  return error;
+}
+
+/** Lifecycle calls on a live sandbox: not found → SandboxGoneError. */
+async function lifecycleCall<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (isGone(error)) throw new SandboxGoneError("E2B sandbox disappeared", { cause: error });
+    throw mapError(error);
+  }
+}
+
+/** Exec / file calls: a sandbox that stopped answering → SandboxGoneError.
+ * A missing file is not a missing sandbox and is handled by readBytes. */
+async function runtimeCall<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const name = (error as { name?: unknown } | null)?.name;
+    if (name === "SandboxNotFoundError" || name === "SandboxNotRunningError") {
+      throw new SandboxGoneError("E2B sandbox is not running", { cause: error });
+    }
+    throw mapError(error);
+  }
+}
+
+function quote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+export type { E2BCreateOptions, ResumeRef };
