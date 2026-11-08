@@ -74,36 +74,23 @@ export {
 
 export { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "./no-environment";
 
-// ADR 0014 Session sandbox port: readiness, declared persistence, legacy wrapper.
-export {
-  declarePersistenceCapabilities,
-  SandboxCapabilityMissingError,
-  SandboxNotReadyError,
-  SandboxProvisionFailedError,
-  SandboxReleasedError,
-  SandboxUnavailableError,
-  UNDECLARED_PERSISTENCE,
-} from "./session-sandbox-port";
+// Sandbox SDK v2 domain contract: the three Ports the core calls.
+export { RetryableSandboxError, SandboxGoneError } from "./sandbox-ports";
 export type {
-  DeclaredDurability,
-  SandboxPersistenceCapabilities,
-  SandboxReleaseReason,
-  SessionSandbox,
-  SessionSandboxDriver,
-  SessionSandboxState,
-  WorkspacePersistenceDeclaration,
-} from "./session-sandbox-port";
-export { openSessionSandbox, withSandboxReadinessBarrier } from "./session-sandbox";
-export type {
-  OpenSessionSandboxOptions,
-  OptionalBarrierMethod,
-  SandboxBarrierPort,
-  SandboxReadinessBarrierOptions,
-  SessionSandboxErrorEvent,
-  SessionSandboxRetryPolicy,
-} from "./session-sandbox";
-export { wrapLegacySandboxFactory } from "./legacy-session-sandbox";
-export type { LegacySandboxDriverOptions } from "./legacy-session-sandbox";
+  Acquired,
+  EgressPolicy,
+  HostPattern,
+  MemoryStoreBinding,
+  ResumeRef,
+  SandboxEgressPort,
+  SandboxHandle,
+  SandboxLifecyclePort,
+  SandboxPlan,
+  SandboxPorts,
+  SandboxStoragePort,
+  Substitution,
+  TemplateRef,
+} from "./sandbox-ports";
 export {
   createSandboxImageCatalog,
   EMPTY_SANDBOX_IMAGE_CATALOG,
