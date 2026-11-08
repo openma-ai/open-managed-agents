@@ -260,6 +260,8 @@ export interface Env {
         model: {
           providerId: string;
           baseUrl: string | null;
+          /** The card's upstream model id (not the handle). */
+          wireModel?: string;
           protocolEndpoints?: readonly {
             protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
             proxyPathSegment: string;

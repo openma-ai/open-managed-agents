@@ -24,12 +24,21 @@ vi.mock("../../../packages/acp-runtime/src/placement.ts", () => ({
   }),
 }));
 
+const wired: Array<{ model: { wireModel: string } }> = [];
+vi.mock("../../../packages/harness-inference-adapters/src/index.ts", () => ({
+  wireHostedInferenceForAcpLaunch: (input: { model: { wireModel: string }; env: Record<string, string> }) => {
+    wired.push(input);
+    return { env: input.env, files: [] };
+  },
+}));
+
 vi.mock("../../../packages/acp-runtime/src/sandbox-agent.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../packages/acp-runtime/src/sandbox-agent.ts")>();
   return {
     ...actual,
     installAcpSandboxAgent: async (_sandbox: unknown, preparation: unknown) => preparation,
     materializeAcpSandboxAgentState: async () => undefined,
+    materializeHostedInferenceConfigFiles: async () => undefined,
     captureAcpSandboxAgentState: vi.fn(async () => undefined),
     restoreAcpSandboxAgentState: async () => undefined,
     hasRequiredAcpSandboxAgentState: async () => true,
@@ -108,6 +117,20 @@ describe("acp-sandbox child lifetime", () => {
     expect(disposed).toEqual(["acp_1", "acp_2"]);
     await harness.dispose("shutdown");
     expect(disposed).toEqual(["acp_1", "acp_2"]);
+  });
+
+  it("launches with the hosted model's upstream wireModel, not the card handle", async () => {
+    wired.length = 0;
+    const s = sandbox(false);
+    const ctx = context(s.port);
+    (ctx as { env: unknown }).env = {
+      hostedInference: {
+        gatewayBaseUrl: "https://oma.example", sessionsToken: "sk-ant-req-v1.x",
+        model: { providerId: "anthropic", baseUrl: null, wireModel: "claude-sonnet-5-5" },
+      },
+    };
+    await new AcpSandboxHarness().run(ctx);
+    expect(wired.map((input) => input.model.wireModel)).toEqual(["claude-sonnet-5-5"]);
   });
 
   it("leaves keep-alive to the core: no lease renewal from the harness", async () => {

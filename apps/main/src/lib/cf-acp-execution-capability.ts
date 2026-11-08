@@ -48,7 +48,8 @@ export async function issueCfAcpExecutionChannels(env: Env, input: { tenantId: s
     mcpProxy: capability,
     hostedInference: {
       ...capability,
-      model: { providerId: card.provider, baseUrl: card.base_url ?? null, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url }) },
+      // The card's upstream model id: pi falls back silently on an unknown id (the handle).
+      model: { providerId: card.provider, baseUrl: card.base_url ?? null, wireModel: card.model, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url }) },
     },
   };
 }

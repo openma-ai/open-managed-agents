@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { authenticateSandboxBearer, issueExecutionSessionsToken } from "../../packages/sandbox-gateway/src/index";
 import { sealedExecutionSessionsToken } from "../../packages/managed-agents-adapters-runtime/src/environment-work-session-token";
 import { WebCryptoAesGcm } from "../../packages/integrations-adapters-cf/src/index";
-import { cfAcpExecutionAuthority } from "../../apps/main/src/lib/cf-acp-execution-capability";
+import { cfAcpExecutionAuthority, issueCfAcpExecutionChannels } from "../../apps/main/src/lib/cf-acp-execution-capability";
 
 // D1 is shared by the whole file: every fixture gets its own workspace.
 const runId = crypto.randomUUID();
@@ -81,5 +81,37 @@ describe("Cloudflare ACP execution sessions_token", () => {
     await expect(authenticateSandboxBearer({ execution: authority, work: null }, { token: nodeSealed, method: "POST", path: `/v1/oma/mcp-proxy/${sessionId}/server` })).resolves.toBeNull();
     await executions.settle({ fence: claimed.fence, settledAt: new Date().toISOString(), outcome: "completed" });
     await expect(open(`/v1/oma/inference-proxy/${sessionId}/v1/messages`)).resolves.toBeNull();
+  });
+});
+
+// The CF path hands acp-sandbox-loop the card's upstream model id
+// (hostedInference.model.wireModel), not the handle: pi silently falls back
+// to its default model on an id it does not know (same as Node, 3b698424).
+describe("Cloudflare ACP execution channels", () => {
+  it("carry the model card's upstream wireModel", async () => {
+    const created = await exports.default.fetch(new Request("http://localhost/v1/oma/model_cards", {
+      method: "POST", headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      body: JSON.stringify({ provider: "anthropic", model_id: `acp-handle-${runId}`, model: "claude-sonnet-5-5", api_key: "sk-ant-test-key" }),
+    }));
+    expect([201, 409]).toContain(created.status);
+    const sql = sqlClientFromD1(env.MAIN_DB);
+    const workspaceId = "default";
+    const sessionId = `acp_channels_${runId}`;
+    const environmentId = `env_${sessionId}`;
+    await seedSandboxGatewaySessionRows(sql, workspaceId, { id: sessionId, environmentId, vaultIds: [], agent: { id: "agent_01", version: 3 }, archivedAt: null });
+    const document = { id: sessionId, environmentId, vaultIds: [], resources: [], agent: { id: "agent_01", version: 3, name: "agent", model: `acp-handle-${runId}`, skills: [] } };
+    await sql.prepare("UPDATE managed_sessions SET document = ? WHERE workspace_id = ? AND id = ?").bind(JSON.stringify(document), workspaceId, sessionId).run();
+    const executions = new SqlSessionExecutionStore(sql);
+    const now = new Date().toISOString();
+    await executions.admit({ execution: { id: `exe_ch_${runId}`, workspaceId, sessionId, admittedAt: now, events: [{ id: `evt_ch_${runId}`, type: "user.message", content: [], processedAt: now }] } });
+    const claimed = await executions.claim({ workspaceId, sessionId, ownerId: "owner", attemptId: "attempt", claimedAt: now, leaseTtlMs: 60_000 });
+    if (claimed.type !== "claimed") throw new Error("expected a claim");
+    const channels = await issueCfAcpExecutionChannels(
+      { ...env, PLATFORM_ROOT_SECRET: "test-platform-root-secret-0123456789", PUBLIC_BASE_URL: "https://oma.example/" },
+      { tenantId: workspaceId, sessionId, executionFence: claimed.fence },
+    );
+    expect(channels.hostedInference.model).toMatchObject({ providerId: "anthropic", wireModel: "claude-sonnet-5-5" });
+    expect(channels.hostedInference.gatewayBaseUrl).toBe("https://oma.example");
+    expect(channels.mcpProxy.sessionsToken).toBe(channels.hostedInference.sessionsToken);
   });
 });
