@@ -45,7 +45,11 @@ describe("Node execution-scoped ACP capability", () => {
     if (reason === "malformed-lease") f.execution.attempt!.leaseExpiresAt = "invalid";
     expect(await f.capabilities.authenticate({ token, method: "POST", path: "/v1/oma/mcp-proxy/session/maxcompute" })).toBeNull();
   });
-  it.each(["workspace", "session", "agent-version", "owner", "attempt", "generation", "expired-fence", "environment"] as const)("rejects issuing for a mismatched %s", async reason => {
+  it("issues while the lease row is live although the fence snapshot expired (design §0.0 rule 10: heartbeats renew the row only)", async () => {
+    const f = fixture(); f.fence.expiresAt = "2026-10-23T07:59:00Z";
+    expect((await f.capabilities.issue(f.input)).sessionsToken).toMatch(/^sk-ant-req-v1\./);
+  });
+  it.each(["workspace", "session", "agent-version", "owner", "attempt", "generation", "expired-lease", "environment"] as const)("rejects issuing for a mismatched %s", async reason => {
     const f = fixture();
     if (reason === "workspace") f.input.workspaceId = "other";
     if (reason === "session") f.input.session.id = "other";
@@ -53,7 +57,7 @@ describe("Node execution-scoped ACP capability", () => {
     if (reason === "owner") f.fence.ownerId = "other";
     if (reason === "attempt") f.fence.attemptId = "other";
     if (reason === "generation") f.fence.generation++;
-    if (reason === "expired-fence") f.fence.expiresAt = "2026-10-23T07:59:00Z";
+    if (reason === "expired-lease") f.advance();
     if (reason === "environment") f.input.environment.id = "other";
     await expect(f.capabilities.issue(f.input)).rejects.toThrow();
   });
