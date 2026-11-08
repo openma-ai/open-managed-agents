@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import type { SessionExecution, SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
+import { authenticateEnvironmentWorkSessionBearer, SealedEnvironmentWorkSessionCredentialIssuer } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { createNodeManagedAcpCapabilities } from "../../../packages/control-plane-node/src/lib/node-managed-acp-capability";
 import { createNodeSecrets } from "../../../packages/control-plane-node/src/secrets";
 
@@ -21,6 +22,18 @@ describe("Node execution-scoped ACP capability", () => {
     for (const path of ["/v1/oma/mcp-proxy/session/maxcompute", "/v1/oma/inference-proxy/session/anthropic/v1/messages"]) expect(await f.capabilities.authenticate({ token, path, method: "POST" })).toMatchObject({ workspaceId: "tenant", sessionId: "session", generation: 2 });
     for (const path of ["/v1/oma/mcp-proxy/other/maxcompute", "/v1/oma/inference-proxy/other/v1/messages", "/v1/agents", "/v1/sessions/session/events", "/v1/environments/env/work/exec/heartbeat", "/v1/oma/sessions/session/runtime-events"]) expect(await f.capabilities.authenticate({ token, path, method: "POST" })).toBeNull();
     expect(await f.capabilities.authenticate({ token: token + "tampered", path: "/v1/oma/mcp-proxy/session/maxcompute", method: "POST" })).toBeNull();
+  });
+  it("characterization: execution and Work bearers are sealed apart, so resolveBearerToken's order (execution, then Work) only picks the check", async () => {
+    const f = fixture(); const { sessionsToken: token } = await f.capabilities.issue(f.input);
+    const work = createNodeSecrets("test-only-root").cipherFor("managed.environment-work.session-token");
+    const path = "/v1/oma/mcp-proxy/session/maxcompute";
+    expect(await authenticateEnvironmentWorkSessionBearer({ token, method: "POST", path, crypto: work, now: f.deps.now })).toBeNull();
+    const issuer = new SealedEnvironmentWorkSessionCredentialIssuer({ crypto: work, now: f.deps.now });
+    const issued = await issuer.issue({ workspaceId: "tenant", session: f.session, environment: f.input.environment, workId: "work" });
+    if (issued.type !== "issued") throw new Error(issued.message);
+    const bound = await issuer.bindToClaim({ secret: issued.secret, claimedAt: f.execution.attempt!.claimedAt, generation: 2 });
+    expect(await f.capabilities.authenticate({ token: bound.secret.sessionsToken, method: "POST", path })).toBeNull();
+    expect(await authenticateEnvironmentWorkSessionBearer({ token: bound.secret.sessionsToken, method: "POST", path, crypto: work, now: f.deps.now })).toMatchObject({ workId: "work" });
   });
   it.each(["completed", "cancelled", "generation", "claim", "lease", "archived", "malformed-lease"] as const)("revokes the bearer when %s", async reason => {
     const f = fixture(); const { sessionsToken: token } = await f.capabilities.issue(f.input);

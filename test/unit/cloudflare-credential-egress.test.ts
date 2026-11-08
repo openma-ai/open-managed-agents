@@ -84,6 +84,19 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("characterization: a Session binding without any fence still gets Vault injection", async () => {
+    const relay = vi.fn(async (scope, action) => {
+      expect(scope).toEqual({ tenantId: "tenant-1", sessionId: "session-1" });
+      return action === "resolve" ? Response.json({ inject: true }) : new Response("relayed", { status: 200 });
+    });
+    globalThis.fetch = vi.fn();
+    const response = await handleCredentialEgressRequest(new Request("https://mcp.example.test/rpc"),
+      { MAIN_MCP: { credentialEgress: relay } }, { ...context, params: { tenantId: "tenant-1", sessionId: "session-1" } });
+    expect(response.status).toBe(200);
+    expect(relay).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it("passes plain HTTP through without the credential relay (apt over http://)", async () => {
     const relay = vi.fn(async () => new Response("https only", { status: 400 }));
     globalThis.fetch = vi.fn(async (request: Request) => {
