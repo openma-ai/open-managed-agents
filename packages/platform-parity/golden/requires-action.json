@@ -1,0 +1,291 @@
+{
+  "event_types": [
+    "user.message",
+    "session.status_running",
+    "session.warning",
+    "span.model_request_start",
+    "agent.custom_tool_use",
+    "span.model_request_end",
+    "session.usage",
+    "session.status_idle",
+    "user.custom_tool_result",
+    "session.status_running",
+    "span.model_request_start",
+    "agent.tool_use",
+    "span.model_request_end",
+    "session.usage",
+    "session.status_idle",
+    "user.tool_confirmation",
+    "session.status_running",
+    "agent.tool_result",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.usage",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.custom_tool_use": [
+      {
+        "id": "parity_custom_1",
+        "input": {
+          "ticket": "PAR-1"
+        },
+        "name": "lookup_ticket",
+        "processed_at": "<time>",
+        "type": "agent.custom_tool_use"
+      }
+    ],
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "Ticket handled.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "agent.tool_result": [
+      {
+        "content": [
+          {
+            "text": "confirmed",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "is_error": false,
+        "processed_at": "<time>",
+        "tool_use_id": "parity_bash_1",
+        "type": "agent.tool_result"
+      }
+    ],
+    "agent.tool_use": [
+      {
+        "evaluated_permission": "ask",
+        "id": "parity_bash_1",
+        "input": {
+          "command": "echo confirmed"
+        },
+        "name": "bash",
+        "processed_at": "<time>",
+        "type": "agent.tool_use"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "event_ids": [
+            "parity_custom_1"
+          ],
+          "type": "requires_action"
+        },
+        "type": "session.status_idle"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "event_ids": [
+            "parity_bash_1"
+          ],
+          "type": "requires_action"
+        },
+        "type": "session.status_idle"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "session.usage": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "input_tokens": 13,
+          "output_tokens": 5
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "input_tokens": 13,
+          "output_tokens": 5
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "input_tokens": 11,
+          "output_tokens": 7
+        }
+      }
+    ],
+    "session.warning": [
+      {
+        "details": {
+          "harness": "ai-sdk",
+          "replacement": "default"
+        },
+        "id": "<id>",
+        "message": "The ai-sdk harness (AI SDK default-loop) is deprecated. Omit harness or use the default Pi agent-core loop instead.",
+        "processed_at": "<time>",
+        "source": "harness_deprecated",
+        "type": "session.warning"
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 13,
+          "output_tokens": 5
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 13,
+          "output_tokens": 5
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 11,
+          "output_tokens": 7
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "user.custom_tool_result": [
+      {
+        "content": [
+          {
+            "text": "PAR-1 is open",
+            "type": "text"
+          }
+        ],
+        "custom_tool_use_id": "parity_custom_1",
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.custom_tool_result"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Handle ticket PAR-1.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ],
+    "user.tool_confirmation": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "result": "allow",
+        "tool_use_id": "parity_bash_1",
+        "type": "user.tool_confirmation"
+      }
+    ]
+  },
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {
+      "input_tokens": 11,
+      "output_tokens": 7
+    }
+  },
+  "reads": {
+    "custom_tool_result_status": 200,
+    "message_status": 200,
+    "session_create_status": 201,
+    "tool_confirmation_status": 200
+  },
+  "models": {
+    "parity-agent": {
+      "calls": 3,
+      "unconsumed_steps": 0,
+      "aborted": 0,
+      "timed_out": 0
+    }
+  },
+  "timeouts": []
+}

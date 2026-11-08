@@ -1,0 +1,39 @@
+{
+  "event_types": [],
+  "events": {},
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {
+      "input_tokens": 24,
+      "output_tokens": 12
+    }
+  },
+  "reads": {
+    "events_list_failures": [
+      "events list 500 api_error: Application returned an invalid session event page at data.<n>: Invalid input"
+    ],
+    "message_status": 200,
+    "session_create_status": 201
+  },
+  "models": {
+    "parity-child": {
+      "calls": 1,
+      "unconsumed_steps": 0,
+      "aborted": 0,
+      "timed_out": 0
+    },
+    "parity-parent": {
+      "calls": 2,
+      "unconsumed_steps": 0,
+      "aborted": 0,
+      "timed_out": 0
+    }
+  },
+  "timeouts": [
+    "idle#1:end_turn"
+  ]
+}
