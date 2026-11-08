@@ -1,5 +1,5 @@
 // CF eval routes — wires buildEvalRoutes from @open-managed-agents/http-routes
-// against the per-request Services bundle. Same wire shape as before.
+// against the per-request Services bundle and the managed-Session eval deps.
 //
 // Route bodies live in packages/http-routes/src/evals. We re-build the
 // inner Hono sub-app per request because per-request Services resolution
@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import type { Env } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import { buildEvalRoutes } from "@open-managed-agents/http-routes";
+import { cfEvalDeps } from "../eval-runner";
 
 const app = new Hono<{
   Bindings: Env;
@@ -22,10 +23,15 @@ async function dispatch(c: import("hono").Context<{
   Variables: { tenant_id: string; services: Services };
 }>) {
   const services = c.var.services;
+  const deps = await cfEvalDeps(c.env, c.var.tenant_id, {
+    origin: new URL(c.req.url).origin,
+    waitUntil: (task) => c.executionCtx.waitUntil(task),
+  });
   const sub = buildEvalRoutes({
     evals: services.evals,
-    agents: services.agents,
-    environments: services.environments,
+    runtimeFor: () => deps.runtime,
+    benchmarksFor: () => deps.benchmarks,
+    readUpload: (_tenantId, fileId) => deps.readUpload(fileId),
   });
   // Strip the /v1/oma/evals (or /v1/oma/evals) mount prefix so the package's
   // routes (declared as `/runs`, `/runs/:id`) match.

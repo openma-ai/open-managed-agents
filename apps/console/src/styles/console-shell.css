@@ -253,7 +253,7 @@
   width: 2px;
   height: 32px;
   margin-block: auto;
-  border-radius: 999px;
+  border-radius: var(--console-radius-pill);
   background: transparent;
   content: "";
   transition: background var(--dur-quick) var(--ease-soft);
@@ -393,7 +393,7 @@
   font-size: var(--console-type-body);
   font-weight: 560;
   letter-spacing: 0;
-  line-height: 18px;
+  line-height: var(--type-line);
   text-transform: none;
 }
 

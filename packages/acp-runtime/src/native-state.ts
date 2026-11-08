@@ -349,13 +349,16 @@ export const HARBOR_NATIVE_STATE_COVERAGE: readonly HarborNativeStateCoverage[] 
 export function bindAcpAgentState(input: {
   sessionId: string;
   agent: AcpStatefulAgentSpec;
+  /** Durable root for checkpointed native state. Defaults to the protocol
+   * workspace path the Environment Work supervisor maps onto its host. */
+  stateRoot?: string;
 }): AcpAgentStateBinding {
   const profile = ACP_NATIVE_STATE_PROFILES.find((candidate) =>
     candidate.matches(input.agent)
   );
   const adapterId = profile?.id ?? "opaque";
   const rootPath =
-    `/workspace/.openma/harness-state/acp/${encodeURIComponent(input.sessionId)}`
+    `${input.stateRoot ?? "/workspace/.openma/harness-state"}/acp/${encodeURIComponent(input.sessionId)}`
     + `/${adapterId}/v1`;
   const runtimeRootPath =
     `/tmp/openma-harness-state/acp/${encodeURIComponent(input.sessionId)}`

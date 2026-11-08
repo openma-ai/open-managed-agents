@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type { ComponentType } from "react";
-import { CalendarClockIcon, LinkIcon, RepeatIcon, SearchIcon, UsersIcon } from "lucide-react";
+import { CalendarClockIcon, FlaskConicalIcon as EvalRunsIcon, LibraryIcon as BenchmarkIcon, LinkIcon, RepeatIcon, SearchIcon, UsersIcon } from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 import { useScrollFade } from "@/hooks/useScrollFade";
 
@@ -28,6 +28,8 @@ interface NavItem {
   label: string;
   icon: ComponentType<{ className?: string }>;
   end?: boolean;
+  /** A sub-path owned by another item: not active there. */
+  exclude?: string;
 }
 
 interface NavGroup {
@@ -49,7 +51,14 @@ function useNavGroups(): NavGroup[] {
         { to: "/sessions", label: t.nav.sessions, icon: SessionsIcon },
         { to: "/deployments", label: t.nav.deployments, icon: CalendarClockIcon },
         { to: "/files", label: t.nav.files, icon: FilesIcon },
-        { to: "/evals", label: t.nav.evalRuns, icon: SessionsIcon },
+      ],
+    },
+    {
+      label: t.nav.evals,
+      items: [
+        { to: "/evals/benchmarks", label: t.nav.evalBenchmarks, icon: BenchmarkIcon },
+        // Runs live at /evals and /evals/:runId; /evals/benchmarks/* belongs to the item above.
+        { to: "/evals", label: t.nav.evalRuns, icon: EvalRunsIcon, exclude: "/evals/benchmarks" },
       ],
     },
     {
@@ -116,9 +125,12 @@ export function AppSidebar() {
               </div>
             )}
             {group.items.map((item) => {
-              const active = item.end
+              const exclude = "exclude" in item ? item.exclude : undefined;
+              const excluded = exclude !== undefined
+                && (pathname === exclude || pathname.startsWith(`${exclude}/`));
+              const active = !excluded && (item.end
                 ? pathname === item.to
-                : pathname === item.to || pathname.startsWith(`${item.to}/`);
+                : pathname === item.to || pathname.startsWith(`${item.to}/`));
               return (
                 <NavLink
                   key={item.to}

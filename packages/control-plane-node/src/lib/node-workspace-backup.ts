@@ -31,7 +31,7 @@ import type {
   OrchestratorBackupHandle,
   WorkspaceBackupService,
 } from "@open-managed-agents/sandbox/orchestrator";
-import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import { workspaceRootOf, type SandboxExecutor } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
 
 const moduleLogger = getLogger("node-workspace-backup");
@@ -153,12 +153,13 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
 
   // ── helpers ──────────────────────────────────────────────────────────
 
-  /** tar the sandbox's /workspace into bytes. Best-effort: returns null on
+  /** tar the sandbox's workspace root (ADR 0016) into bytes. Best-effort: returns null on
    *  any failure (caller treats as "no backup", proceeds). */
   private async tarWorkspace(sandbox: SandboxExecutor): Promise<Uint8Array | null> {
     const tmpInside = `/tmp/oma-ws-${Buffer.from(randomBytes(6)).toString("hex")}.tar`;
+    const root = await workspaceRootOf(sandbox);
     const out = await sandbox.exec(
-      `cd /workspace 2>/dev/null && tar -cf '${tmpInside}' --exclude='./node_modules' --exclude='./.cache' --exclude='./__pycache__' --exclude='./.next' . 2>&1 || echo '[exit 1]'`,
+      `cd '${root}' 2>/dev/null && tar -cf '${tmpInside}' --exclude='./node_modules' --exclude='./.cache' --exclude='./__pycache__' --exclude='./.next' . 2>&1 || echo '[exit 1]'`,
       120_000,
     );
     if (out.includes("[exit ")) {
@@ -193,8 +194,9 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
     const tmpInside = `/tmp/oma-ws-restore-${Buffer.from(randomBytes(6)).toString("hex")}.tar`;
     try {
       await sandbox.writeFileBytes(tmpInside, tarBytes);
+      const root = await workspaceRootOf(sandbox);
       const out = await sandbox.exec(
-        `mkdir -p /workspace && tar -xf '${tmpInside}' -C /workspace 2>&1 || echo '[exit 1]'`,
+        `mkdir -p '${root}' && tar -xf '${tmpInside}' -C '${root}' 2>&1 || echo '[exit 1]'`,
         120_000,
       );
       if (out.includes("[exit ")) {

@@ -32,7 +32,7 @@
   min-height: var(--list-toolbar-h);
   flex: 0 0 var(--list-toolbar-h);
   align-items: center;
-  gap: 6px;
+  gap: var(--console-gap-sm);
   padding-block: var(--list-toolbar-pad-top) var(--list-toolbar-pad-bottom);
   padding-left: var(--list-content-inset);
   padding-right: var(--list-frame-inset);
@@ -121,8 +121,8 @@
 }
 
 .console-filter-chip-clear {
-  width: 20px;
-  flex: 0 0 20px;
+  width: var(--filter-chip-clear-w);
+  flex: 0 0 var(--filter-chip-clear-w);
   padding: 0;
   margin-right: var(--console-gap-3xs);
 }
@@ -133,7 +133,7 @@
 }
 
 .console-list-toolbar-spacer {
-  min-width: 8px;
+  min-width: var(--console-gap-lg);
   flex: 1 1 auto;
 }
 

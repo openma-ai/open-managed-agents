@@ -23,6 +23,11 @@ import {
   encodeRuntimeSessionStart,
   RuntimeEventStreamDecoder,
 } from "@open-managed-agents/managed-agents-adapters-runtime";
+import {
+  EMPTY_CF_SANDBOX_IMAGE_CATALOG,
+  resolveCfSandboxImage,
+  type CfSandboxImageCatalog,
+} from "./cf-sandbox-images";
 
 interface RuntimeFetcher {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
@@ -92,15 +97,32 @@ export class CfManagedSessionRuntimeAdapter
     SessionEventStreamPort,
     SessionThreadEventStreamPort
 {
-  constructor(private readonly fetcher: RuntimeFetcher) {}
+  constructor(
+    private readonly fetcher: RuntimeFetcher,
+    /** Operator SANDBOX_IMAGES catalog; empty when unset. Read lazily so a
+     * malformed catalog fails only the session starts that need it. */
+    private readonly sandboxImages: () => CfSandboxImageCatalog = () => EMPTY_CF_SANDBOX_IMAGE_CATALOG,
+  ) {}
 
   async sessionStarted(input: StartSessionExecution): Promise<void> {
+    // The Environment's `_oma.sandbox_image` alias is resolved here, at
+    // session start, so an alias the operator has since removed fails the
+    // start instead of silently running on the default container.
+    const alias = input.environment.openma?.sandboxImage;
+    const sandboxImage = alias === undefined ? undefined : resolveCfSandboxImage(
+      this.sandboxImages(),
+      alias,
+      input.environment.id,
+    );
     await this.send({
       workspaceId: input.workspaceId,
       path: `/sessions/${encodeURIComponent(input.sessionId)}/init`,
       init: {
         method: "PUT",
-        body: JSON.stringify(encodeRuntimeSessionStart(input)),
+        body: JSON.stringify({
+          ...encodeRuntimeSessionStart(input),
+          ...(sandboxImage !== undefined && { sandbox_image: sandboxImage }),
+        }),
       },
     });
   }

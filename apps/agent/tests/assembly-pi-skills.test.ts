@@ -51,7 +51,7 @@ describe("Pi assembly skill mounts", () => {
         skillId: "skill_demo",
         name: "Demo Skill",
         description: "A demo",
-        mountRoot: "/workspace/.openma/skills/skill_demo/latest/",
+        mountRoot: "/oma/skills/skill_demo/latest/",
         body: "SECRET_SKILL_BODY",
         source: "custom",
       }],
@@ -91,7 +91,7 @@ describe("Pi assembly skill mounts", () => {
       skillId: `skill_${i}`,
       name: `Skill ${i}`,
       description: "x".repeat(3_500),
-      mountRoot: `/workspace/.openma/skills/skill_${i}/latest/`,
+      mountRoot: `/oma/skills/skill_${i}/latest/`,
       body: `# Skill ${i}`,
       source: "custom" as const,
     }));
@@ -167,7 +167,7 @@ describe("Pi assembly skill mounts", () => {
         skillId: "skill_tool",
         name: "Tool Skill",
         description: "desc",
-        mountRoot: "/workspace/.openma/skills/skill_tool/latest/",
+        mountRoot: "/oma/skills/skill_tool/latest/",
         body: "INLINE_SKILL_BODY",
         source: "custom",
       }],
@@ -209,7 +209,7 @@ describe("Pi assembly skill mounts", () => {
       pendingConfirmations: [],
     } as unknown as HarnessRuntime;
 
-    const mountRoot = "/workspace/.openma/skills/skill_deferred/latest/";
+    const mountRoot = "/oma/skills/skill_deferred/latest/";
     const ctx = {
       agent: {
         id: "agent-test",
@@ -233,7 +233,7 @@ describe("Pi assembly skill mounts", () => {
           skillId: "skill_listed",
           name: "Listed",
           description: "short",
-          mountRoot: "/workspace/.openma/skills/skill_listed/latest/",
+          mountRoot: "/oma/skills/skill_listed/latest/",
           source: "custom",
         },
         {

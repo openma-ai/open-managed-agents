@@ -307,9 +307,16 @@ export function resolveAcpSandboxAgentAdapter(
 export function prepareAcpSandboxAgent(input: {
   sessionId: string;
   agent: AcpSandboxAgentSpec;
+  /** The sandbox's workspace root (ADR 0016); the agent's default cwd. */
+  workspaceRoot?: string;
+  /** Durable native-state root; see {@link bindAcpAgentState}. */
+  stateRoot?: string;
 }): AcpSandboxAgentPreparation {
   const { agent, install } = resolveAcpSandboxAgentSpec(input.agent);
-  const binding = bindAcpAgentState({ sessionId: input.sessionId, agent });
+  const binding = bindAcpAgentState({
+    sessionId: input.sessionId, agent,
+    ...(input.stateRoot === undefined ? {} : { stateRoot: input.stateRoot }),
+  });
   const adapter = resolveAcpSandboxAgentAdapter(agent);
   return {
     adapter,
@@ -317,7 +324,7 @@ export function prepareAcpSandboxAgent(input: {
     launch: {
       command: binding.agent.command,
       args: binding.agent.args ? [...binding.agent.args] : undefined,
-      cwd: binding.agent.cwd ?? "/workspace",
+      cwd: binding.agent.cwd ?? input.workspaceRoot ?? "/workspace",
       env: { ...(binding.agent.env ?? {}) },
     },
     lifecycle: LIFECYCLE_POLICY,

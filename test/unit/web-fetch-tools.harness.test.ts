@@ -235,7 +235,7 @@ describe("web_fetch egress (rescoped #281)", () => {
     );
     const parsed = JSON.parse(String(result));
     expect(parsed.content).toBe("short summary");
-    expect(parsed._meta.raw_at).toMatch(/^\/workspace\/\.web\//);
+    expect(parsed._meta.raw_at).toMatch(/^\/oma\/web\//);
     expect(events.some((e: any) => e.type === "aux.model_call" && e.status === "ok")).toBe(true);
   });
 
@@ -405,5 +405,35 @@ describe("web_search timeouts and wiring", () => {
     );
     const result = await failureText(tools.web_search.execute({ query: "q" }, TOOL_EXEC_OPTS));
     expect(result).toBe("Error: plain fail");
+  });
+});
+
+describe("glob / grep default directory (ADR 0016)", () => {
+  function recordingSandbox(root?: string) {
+    const commands: string[] = [];
+    const sandbox: any = {
+      exec: async (cmd: string) => {
+        commands.push(cmd);
+        return "";
+      },
+      readFile: async () => "",
+      writeFile: async () => "",
+    };
+    if (root) sandbox.resolveWorkspaceRoot = async () => root;
+    return { sandbox, commands };
+  }
+
+  it("glob searches the sandbox working directory when no path is given", async () => {
+    const { sandbox, commands } = recordingSandbox("/app");
+    const tools = await buildTools(makeAgentConfig(), sandbox);
+    await tools.glob.execute({ pattern: "*.ts" }, TOOL_EXEC_OPTS).catch(() => "");
+    expect(commands.some((c) => c.includes("cd '/app'"))).toBe(true);
+  });
+
+  it("grep falls back to the default workspace root when the sandbox resolves none", async () => {
+    const { sandbox, commands } = recordingSandbox();
+    const tools = await buildTools(makeAgentConfig(), sandbox);
+    await tools.grep.execute({ pattern: "needle" }, TOOL_EXEC_OPTS).catch(() => "");
+    expect(commands.some((c) => c.includes("/workspace"))).toBe(true);
   });
 });

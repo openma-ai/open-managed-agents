@@ -144,7 +144,11 @@ export const handleCredentialEgressRequest = async (
 
   // Native interception shares the ordinary relay application. The binding
   // returns only forwarding results/metadata, never the upstream token.
-  if (params.tenantId && params.sessionId && e.MAIN_MCP) {
+  // Vault credentials are only ever injected over HTTPS (the relay rejects
+  // any other scheme with 400), so plain HTTP (e.g. apt mirrors) skips the
+  // lookup and is forwarded below with sandbox authorization stripped.
+  const injectable = url.protocol === "https:";
+  if (injectable && params.tenantId && params.sessionId && e.MAIN_MCP) {
     try {
       const scope = { tenantId: params.tenantId, sessionId: params.sessionId,
         ...(fence === null ? {} : { runtimeFence: fence }) };
@@ -155,10 +159,10 @@ export const handleCredentialEgressRequest = async (
     } catch {
       return new Response("credential egress unavailable", { status: 502 });
     }
-  } else if (required) {
+  } else if (injectable && required) {
     return new Response("credential egress unavailable", { status: 502 });
   }
-  const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required });
+  const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required || !injectable });
 
   let upstreamReq: Request;
   if (request.method === "GET" || request.method === "HEAD") {
@@ -743,21 +747,32 @@ const githubAuthHandler = async (
 // r2OutboundPassthrough doesn't need params (purely streams the request
 // to R2 unchanged), so it stays as a direct function reference in
 // outboundByHost below.
-(OmaSandbox as unknown as {
-  outboundHandlers: Record<string, typeof injectVaultCredsHandler>;
-}).outboundHandlers = {
+const OMA_OUTBOUND_HANDLERS: Record<string, typeof injectVaultCredsHandler> = {
   inject_vault_creds: injectVaultCredsHandler,
   github_auth: githubAuthHandler,
   openma_control_plane: handleOpenmaControlPlaneRequest,
   deny_outbound: denyCredentialEgressRequest,
 };
 
-(OmaSandbox as unknown as {
-  outboundByHost: Record<string, (req: Request, env: unknown, ctx: SdkContext<OutboundContextParams>) => Promise<Response>>;
-}).outboundByHost = {
+const OMA_OUTBOUND_BY_HOST: Record<string, (req: Request, env: unknown, ctx: SdkContext<OutboundContextParams>) => Promise<Response>> = {
   "*.r2.cloudflarestorage.com": r2OutboundPassthrough,
   // github.com / api.github.com handled at runtime via
   // sandbox.setOutboundByHost("...", "github_auth", { tenantId, sessionId })
   // from session-do.ts:setOutboundContext — see comment on outboundHandlers
   // above for why the static-map shape can't carry the params we need.
 };
+
+/** Register OMA's outbound handlers on a container class. @cloudflare/containers
+ *  keys both registries by class name (`this.name`), so a subclass of
+ *  OmaSandbox does NOT inherit them: without this call its sandbox has no
+ *  `inject_vault_creds` and no R2 passthrough, setOutboundContext fails, R2
+ *  mounts fail behind `enableInternet = false` and the container exits.
+ *  Every operator container class (operator-sandboxes.ts) must call it. */
+export function withOmaOutbound<T extends abstract new (...args: never[]) => OmaSandbox>(cls: T): T {
+  const registries = cls as unknown as { outboundHandlers: typeof OMA_OUTBOUND_HANDLERS; outboundByHost: typeof OMA_OUTBOUND_BY_HOST };
+  registries.outboundHandlers = OMA_OUTBOUND_HANDLERS;
+  registries.outboundByHost = OMA_OUTBOUND_BY_HOST;
+  return cls;
+}
+
+withOmaOutbound(OmaSandbox);

@@ -18,9 +18,9 @@ export const loopStopGuidance =
 // per-session R2-backed (or host-fs-backed on Node) directory at this path.
 // Files written here are listable via GET /v1/sessions/:id/outputs and
 // downloadable by the caller. Without this hint, agents historically wrote
-// final artefacts to /workspace/ where they vanish on container recycle.
+// final artefacts to the working directory where they vanish on container recycle.
 export const sessionOutputsGuidance =
-  "Files you write under `/mnt/session/outputs/` persist after the session ends and are downloadable by the user from the session's Files panel. Use this path for final artifacts the user should keep (reports, exports, generated docs, packaged code). Files written anywhere else (e.g. `/workspace/`) are scratch — they may be lost on container recycle and are not user-accessible.";
+  "Files you write under `/mnt/session/outputs/` persist after the session ends and are downloadable by the user from the session's Files panel. Use this path for final artifacts the user should keep (reports, exports, generated docs, packaged code). Files written anywhere else (including the working directory) are scratch — they may be lost on container recycle and are not user-accessible.";
 
 export const platformGuidance =
   `${authenticatedCommandGuidance}\n\n${loopStopGuidance}\n\n${sessionOutputsGuidance}`;

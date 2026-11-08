@@ -25,13 +25,19 @@ import {
 } from "@open-managed-agents/scheduler/jobs/linear-dispatch";
 import {
   tickEvalRuns,
+  type EvalBenchmarkStore,
   type EvalRunnerContext,
   type EvalRunnerServices,
-  type SandboxFetcher,
+  type EvalSessionRuntime,
 } from "@open-managed-agents/evals-runner";
 
 export interface NodeSchedulerDeps {
   evalServices: EvalRunnerServices;
+  /** Managed-Session runtime port + dataset store per workspace. */
+  evalRuntime: {
+    runtimeFor(tenantId: string): EvalSessionRuntime;
+    benchmarksFor(tenantId: string): EvalBenchmarkStore;
+  };
   memory: MemoryStoreService;
   /** Optional integrations DB SqlClient. Pass null to skip the
    *  webhook-events retention sweep on Node. */
@@ -62,23 +68,27 @@ export function buildNodeScheduler(deps: NodeSchedulerDeps) {
 
   const scheduler = createNodeScheduler();
 
-  // Eval-tick: runs every minute by default. Node's eval runner has no
-  // SANDBOX_<env> binding to call into yet — until cloud environments
-  // land on Node, this just iterates `evals.listActive()` (empty under
-  // SQLite default) and exits. Cheap.
+  // Eval-tick: advances active eval runs on managed Sessions (one shard).
+  // Overlapping ticks are skipped: a slow tick must not run trials twice.
   const evalCtx: EvalRunnerContext = {
     forEachShard: async (fn) => [await fn(deps.evalServices)],
     getServicesForTenant: async () => deps.evalServices,
-    getSandboxBinding: async (): Promise<SandboxFetcher | null> => null,
+    runtimeFor: (tenantId) => deps.evalRuntime.runtimeFor(tenantId),
+    benchmarksFor: (tenantId) => deps.evalRuntime.benchmarksFor(tenantId),
   };
+  let evalTickRunning = false;
   scheduler.register({
     name: "eval-tick",
     cron: cron("evalTick", "* * * * *"),
     handler: async () => {
+      if (evalTickRunning) return;
+      evalTickRunning = true;
       try {
         await tickEvalRuns(evalCtx);
       } catch (err) {
         log.warn({ err, op: "scheduler.eval_tick.failed" }, "eval-tick failed");
+      } finally {
+        evalTickRunning = false;
       }
     },
   });

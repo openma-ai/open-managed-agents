@@ -171,7 +171,7 @@ describe("PiHarness", () => {
       skillId: "skill_compact",
       name: "Compact Skill",
       description: "demo",
-      mountRoot: "/workspace/.openma/skills/skill_compact/latest/",
+      mountRoot: "/oma/skills/skill_compact/latest/",
       body: "RETAINED_SKILL_BODY",
       source: "custom",
     }];
