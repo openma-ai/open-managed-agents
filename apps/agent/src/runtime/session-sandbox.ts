@@ -111,7 +111,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
 
   /** Turn end / before stop: storage.sync. Native mounts make it a no-op. */
   async syncStorage(reason: "turn_end" | "before_stop"): Promise<void> {
-    if (this.live === null || !this.outputs) return;
+    if (this.live === null || (!this.outputs && this.stores.length === 0)) return;
     const { ports } = await this.compose();
     const scope = this.options.scope();
     await ports.storage.sync({ runtime: this.live.runtime, scope, fence: fenceFor(scope), stores: this.stores, outputs: this.live.plan.outputs, reason, signal: new AbortController().signal });

@@ -6493,18 +6493,13 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
 
+      // storage.sync before the Memory barrier: a copy sync publishes the
+      // sandbox's Memory edits here. A failed publish fails the step.
+      if (this.portsSandbox !== null) await this.portsSandbox.syncStorage("turn_end");
       // Memory mutations are part of turn completion, not an asynchronous
       // afterthought. This barrier precedes status_idle and execution settle.
       await this.synchronizeManagedMemoryStores(activeFence);
       managedMemorySynchronized = true;
-      if (this.portsSandbox !== null) {
-        // storage.sync: copied outputs are published (E2B); native mounts no-op.
-        try {
-          await this.portsSandbox.syncStorage("turn_end");
-        } catch (error) {
-          logWarn({ op: "session_do.sandbox.storage_sync", session_id: this.state.session_id, err: error }, "Session outputs could not be published");
-        }
-      }
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
