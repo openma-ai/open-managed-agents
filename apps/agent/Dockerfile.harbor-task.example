@@ -1,0 +1,37 @@
+# Example: a Harbor task image as a Cloudflare sandbox container class.
+#
+# A Cloudflare container must run the @cloudflare/sandbox control server
+# (/container-server/sandbox, port 3000): the SDK talks to it for exec,
+# files, processes, backups and bucket mounts. A Harbor task image does not
+# have it, so rebuild the task image with the server layer on top. Copy this
+# file per task (wrangler builds each container class from its own file) and
+# point a wrangler.jsonc "containers" entry at it. See
+# docs/cloudflare-sandbox-images.md.
+#
+# Keep the SDK image tag in lock-step with @cloudflare/sandbox in
+# apps/agent/package.json (same rule as Dockerfile).
+FROM docker.io/cloudflare/sandbox:0.12.10 AS cf-sandbox
+
+# The Harbor task image ([environment].docker_image in task.toml). Its
+# WORKDIR is kept; declare the same path as "workdir" in SANDBOX_IMAGES.
+FROM alexgshaw/fix-git:20251031
+
+# The control server is a standalone glibc binary. For an Alpine (musl) task
+# image use the SDK's musl variant instead.
+COPY --from=cf-sandbox /container-server /container-server
+
+# Platform needs inside the container:
+# - ca-certificates: the agent worker sets interceptHttps, and the server
+#   trusts the runtime CA through the system bundle before it starts.
+# - fuse3 + s3fs: R2 bucket mounts (/mnt/memory, /mnt/session/outputs).
+# - squashfs-tools + squashfuse: workspace backup/restore.
+# Debian/Ubuntu task images; adapt the package manager otherwise.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates fuse3 s3fs squashfs-tools squashfuse \
+ && rm -rf /var/lib/apt/lists/* \
+ && (sed -i 's/#user_allow_other/user_allow_other/' /etc/fuse.conf || true) \
+ && ln -sf /proc/mounts /etc/mtab \
+ && mkdir -p /workspace
+
+EXPOSE 3000
+ENTRYPOINT ["/container-server/sandbox"]

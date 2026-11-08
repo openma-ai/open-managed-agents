@@ -19,6 +19,8 @@ registerHarness("acp-proxy", () => new AcpProxyHarness());
 // --- Export DO classes (required by wrangler) ---
 export { SessionDO } from "./runtime/session-do";
 export { OmaSandbox as Sandbox, OmaOutbound } from "./oma-sandbox";
+// Operator catalog images (SANDBOX_IMAGES): one container class per image.
+export * from "./operator-sandboxes";
 
 // Sandbox SDK 1.0 helpers — DirectoryBackup / S3Mount reach these via ctx.exports.
 export { DirectoryBackupGateway, S3Gateway } from "@cloudflare/sandbox";

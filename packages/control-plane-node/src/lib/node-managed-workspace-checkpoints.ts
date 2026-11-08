@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { Parser } from "tar";
 import type { BlobStore } from "@open-managed-agents/blob-store";
-import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import { DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootOf, type SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
@@ -14,6 +14,14 @@ import type {
 } from "@open-managed-agents/runtime-resource-contract";
 
 const KEY = "openma.workspace.blob-key.v1";
+/** Workspace root the archive was taken from (ADR 0016). Checkpoints written
+ * before the root became per-sandbox have none and were taken at /workspace. */
+const ROOT_KEY = "openma.workspace.root.v1";
+/** Optional second archive with platform harness state (ACP native sessions)
+ * kept under {@link HARNESS_STATE_ROOT}, outside the workspace. */
+const STATE_KEY = "openma.workspace.harness-state-key.v1";
+const STATE_HASH = "openma.workspace.harness-state-hash.v1";
+const HARNESS_STATE_ROOT = `${PLATFORM_ROOT}/harness-state`;
 const PREFIX = "managed-session-workspace-checkpoints";
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const SIZE_BEGIN = "__OPENMA_WS_SIZE_BEGIN__";
@@ -66,7 +74,7 @@ async function validateWorkspaceArchive(bytes: Uint8Array): Promise<void> {
           else symlinks.add(name);
         } else if (entry.type === "Link") {
           const target = normalize(entry.linkpath ?? "");
-          if (target === null || target === "" || throughSymlink(target)) fail("hardlink escapes /workspace");
+          if (target === null || target === "" || throughSymlink(target)) fail("hardlink escapes the archive root");
         }
         entry.resume();
       },
@@ -122,6 +130,34 @@ function archiveKey(candidate: { id: string; metadata?: Readonly<Record<string, 
   return key;
 }
 
+type CandidateMetadata = Readonly<Record<string, string | number | boolean | null>> | undefined;
+
+function checkpointRoot(metadata: CandidateMetadata): string {
+  const root = metadata?.[ROOT_KEY];
+  if (root === undefined) return DEFAULT_WORKSPACE_ROOT;
+  if (typeof root !== "string" || !root.startsWith("/") || root.includes("'") || root.includes("\n")) {
+    throw new Error("Workspace checkpoint has an invalid workspace root");
+  }
+  return root;
+}
+
+function assertSameRoot(metadata: CandidateMetadata, root: string): void {
+  const taken = checkpointRoot(metadata);
+  if (taken !== root) {
+    throw new Error(`Workspace checkpoint was taken at ${taken} but this sandbox's workspace root is ${root}`);
+  }
+}
+
+function stateArchive(candidate: { id: string; metadata?: CandidateMetadata }, scope: RuntimeResourceScope): { key: string; hash: string } | null {
+  const key = candidate.metadata?.[STATE_KEY];
+  const hash = candidate.metadata?.[STATE_HASH];
+  if (key === undefined && hash === undefined) return null;
+  if (key !== `${prefix(scope)}${candidate.id}.state.tar` || typeof hash !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(hash)) {
+    throw new Error("Workspace checkpoint has an invalid harness state archive");
+  }
+  return { key, hash };
+}
+
 function failed(command: string): boolean {
   // SandboxExecutor adapters append an exit marker only on nonzero exit.
   // LocalSubprocess uses `[exit exit=2]` (or `[exit signal=SIGTERM]`),
@@ -140,15 +176,24 @@ class NodeBlobWorkspacePort implements WorkspacePersistencePort {
     return { strategies: ["checkpoint_restore" as const] };
   }
 
+  private root(): Promise<string> {
+    return workspaceRootOf(this.sandbox);
+  }
+
   async materialize(input: Parameters<WorkspacePersistencePort["materialize"]>[0]): Promise<WorkspaceBinding> {
     input.signal.throwIfAborted();
     if (input.strategy !== "checkpoint_restore") throw new Error(`Node workspace does not support ${input.strategy}`);
     const bindingId = `node-ws-${randomUUID()}`;
+    const root = await this.root();
     if (input.activeCheckpoint !== null) {
       archiveKey(input.activeCheckpoint, input.scope);
+      stateArchive(input.activeCheckpoint, input.scope);
+      assertSameRoot(input.activeCheckpoint.metadata, root);
       this.active.set(bindingId, input.activeCheckpoint);
     }
-    return { bindingId, mountPath: "/workspace" };
+    // mountPath is the Environment Work protocol path; the provider directory
+    // the archive covers is the per-sandbox workspace root (ADR 0016).
+    return { bindingId, mountPath: "/workspace", metadata: { workspaceRoot: root } };
   }
 
   async attach(input: Parameters<WorkspacePersistencePort["attach"]>[0]): Promise<void> {
@@ -156,41 +201,64 @@ class NodeBlobWorkspacePort implements WorkspacePersistencePort {
     if (input.strategy !== "checkpoint_restore") throw new Error(`Node workspace does not support ${input.strategy}`);
     const candidate = this.active.get(input.binding.bindingId);
     if (candidate === undefined) return;
+    const root = await this.root();
+    assertSameRoot(candidate.metadata, root);
     const key = archiveKey(candidate, input.scope);
+    const state = stateArchive(candidate, input.scope);
+    const bytes = await this.download(key, candidate.contentHash, candidate.id, input.signal);
+    const stateBytes = state === null ? null : await this.download(state.key, state.hash, candidate.id, input.signal);
+    await this.extract(bytes, root, input.signal);
+    if (stateBytes !== null) await this.extract(stateBytes, HARNESS_STATE_ROOT, input.signal);
+  }
+
+  private async download(key: string, contentHash: string, id: string, signal: AbortSignal): Promise<Uint8Array> {
     // S3BlobStore.get may begin draining its body immediately. HEAD first so
     // an obviously oversized object is rejected before allocating its bytes.
     const metadata = await this.blobs.head(key);
-    if (metadata === null) throw new Error(`Workspace checkpoint restore failed: archive ${candidate.id} is missing`);
+    if (metadata === null) throw new Error(`Workspace checkpoint restore failed: archive ${id} is missing`);
     if (metadata.size > MAX_ARCHIVE_BYTES) throw new Error("Workspace checkpoint archive exceeds maximum size");
     const blob = await this.blobs.get(key);
-    if (blob === null) throw new Error(`Workspace checkpoint restore failed: archive ${candidate.id} is missing`);
+    if (blob === null) throw new Error(`Workspace checkpoint restore failed: archive ${id} is missing`);
     if (blob.size > MAX_ARCHIVE_BYTES) throw new Error("Workspace checkpoint archive exceeds maximum size");
-    const bytes = await readBoundedArchive(blob.body, input.signal);
-    if (digest(bytes) !== candidate.contentHash) {
-      throw new Error(`Workspace checkpoint restore failed: archive ${candidate.id} is corrupt`);
+    const bytes = await readBoundedArchive(blob.body, signal);
+    if (digest(bytes) !== contentHash) {
+      throw new Error(`Workspace checkpoint restore failed: archive ${id} is corrupt`);
     }
     await validateWorkspaceArchive(bytes);
+    return bytes;
+  }
+
+  private async extract(bytes: Uint8Array, directory: string, signal: AbortSignal): Promise<void> {
     if (!this.sandbox.writeFileBytes) throw new Error("Workspace restore requires binary sandbox writes");
     const temp = `/var/tmp/openma-workspace-restore-${randomUUID()}.tar`;
     try {
-      input.signal.throwIfAborted();
+      signal.throwIfAborted();
       await this.sandbox.writeFileBytes(temp, bytes);
-      const result = await this.sandbox.exec(`mkdir -p /workspace && tar -xf '${temp}' -C /workspace`, 120_000);
+      const result = await this.sandbox.exec(`mkdir -p '${directory}' && tar -xf '${temp}' -C '${directory}'`, 120_000);
       if (failed(result)) throw new Error(`Workspace checkpoint restore failed: ${result.slice(0, 200)}`);
-      input.signal.throwIfAborted();
+      signal.throwIfAborted();
     } finally {
       await this.sandbox.exec(`rm -f '${temp}'`, 5_000).catch(() => undefined);
     }
   }
 
-  async checkpoint(input: Parameters<WorkspacePersistencePort["checkpoint"]>[0]): Promise<WorkspaceCheckpointCandidate> {
-    input.signal.throwIfAborted();
-    if (input.strategy !== "checkpoint_restore") throw new Error(`Node workspace does not support ${input.strategy}`);
+  /** Whether `directory` exists and has at least one entry. */
+  private async present(directory: string): Promise<boolean> {
+    const probe = await this.sandbox.exec(`[ -d '${directory}' ] && [ -n "$(ls -A '${directory}')" ] && echo present || true`, 5_000);
+    return probe.includes("present");
+  }
+
+  /**
+   * tar `directory` into bytes. A failed temp-file cleanup is ignored unless
+   * `strictCleanup`: when more sandbox calls follow, a sandbox lost during
+   * cleanup must surface here instead of being touched again.
+   */
+  private async archive(directory: string, strictCleanup: boolean): Promise<Uint8Array> {
     if (!this.sandbox.readFileBytes) throw new Error("Workspace checkpoint requires binary sandbox reads");
+    let archived = false;
     const temp = `/var/tmp/openma-workspace-${randomUUID()}.tar`;
-    let bytes: Uint8Array;
     try {
-      const result = await this.sandbox.exec(`tar -C /workspace -cf '${temp}' .`, 120_000);
+      const result = await this.sandbox.exec(`tar -C '${directory}' -cf '${temp}' .`, 120_000);
       if (failed(result)) throw new Error(`Workspace checkpoint archive failed: ${result.slice(0, 200)}`);
       const sizeOutput = await this.sandbox.exec(
         `printf '${SIZE_BEGIN}'; wc -c < '${temp}'; printf '${SIZE_END}'`, 5_000,
@@ -205,24 +273,53 @@ class NodeBlobWorkspacePort implements WorkspacePersistencePort {
         throw new Error("Workspace checkpoint archive size could not be verified");
       }
       if (size > MAX_ARCHIVE_BYTES) throw new Error("Workspace checkpoint archive exceeds maximum size");
-      bytes = await this.sandbox.readFileBytes(temp);
+      const bytes = await this.sandbox.readFileBytes(temp);
       if (bytes.byteLength > MAX_ARCHIVE_BYTES || bytes.byteLength !== size) {
         throw new Error("Workspace checkpoint archive exceeds maximum size or changed during read");
       }
+      archived = true;
+      return bytes;
     } finally {
-      await this.sandbox.exec(`rm -f '${temp}'`, 5_000).catch(() => undefined);
+      const cleanup = this.sandbox.exec(`rm -f '${temp}'`, 5_000);
+      if (archived && strictCleanup) await cleanup;
+      else await cleanup.catch(() => undefined);
     }
+  }
+
+  async checkpoint(input: Parameters<WorkspacePersistencePort["checkpoint"]>[0]): Promise<WorkspaceCheckpointCandidate> {
+    input.signal.throwIfAborted();
+    if (input.strategy !== "checkpoint_restore") throw new Error(`Node workspace does not support ${input.strategy}`);
+    const root = await this.root();
+    checkpointRoot({ [ROOT_KEY]: root });
+    // Probe first so the workspace archive stays the last sandbox call when
+    // there is no harness state (the common case).
+    const hasState = await this.present(HARNESS_STATE_ROOT);
+    const bytes = await this.archive(root, hasState);
+    const stateBytes = hasState ? await this.archive(HARNESS_STATE_ROOT, false) : null;
     input.signal.throwIfAborted();
     await validateWorkspaceArchive(bytes);
+    if (stateBytes !== null) await validateWorkspaceArchive(stateBytes);
     const id = `wsc_${randomUUID()}`;
     const key = `${prefix(input.scope)}${id}.tar`;
+    const metadata: Record<string, string> = { [KEY]: key, [ROOT_KEY]: root };
+    if (stateBytes !== null) {
+      // Upload state first: the candidate only references blobs that exist.
+      const stateKey = `${prefix(input.scope)}${id}.state.tar`;
+      const storedState = await this.blobs.put(stateKey, stateBytes, {
+        precondition: { type: "ifNoneMatch", value: "*" },
+        httpMetadata: { contentType: "application/x-tar" },
+      });
+      if (storedState === null) throw new Error("Workspace checkpoint archive key already exists");
+      metadata[STATE_KEY] = stateKey;
+      metadata[STATE_HASH] = digest(stateBytes);
+    }
     const stored = await this.blobs.put(key, bytes, {
       precondition: { type: "ifNoneMatch", value: "*" },
       httpMetadata: { contentType: "application/x-tar" },
     });
     if (stored === null) throw new Error("Workspace checkpoint archive key already exists");
     input.signal.throwIfAborted();
-    return { id, contentHash: digest(bytes), revision: input.fence.generation, metadata: { [KEY]: key } };
+    return { id, contentHash: digest(bytes), revision: input.fence.generation, metadata };
   }
 
   async release(input: Parameters<WorkspacePersistencePort["release"]>[0]): Promise<void> {

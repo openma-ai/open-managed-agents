@@ -4,6 +4,7 @@ import {
   startSandboxHeartbeat,
   withSandboxExecutionGuard,
   withSandboxRecovery,
+  workspaceRootOf,
   type SandboxExecutor,
   type SandboxLiveness,
 } from "@open-managed-agents/sandbox";
@@ -531,12 +532,13 @@ export class DefaultNodeManagedSessionRunner
     // sandbox a turn has written to.
     if (acquired.workspace !== undefined) acquired.workspace.trusted = false;
     this.installSandbox(input, acquired, fingerprint);
+    const root = await workspaceRootOf(acquired.sandbox);
     if (acquired.workspace === undefined) {
-      return "Files created in /workspace before the restart are gone.";
+      return `Files created in ${root} before the restart are gone.`;
     }
     return acquired.restoredFromMs === null
-      ? "/workspace is back to its initial state; files created before the restart are gone."
-      : `/workspace is back to its state as of ${new Date(acquired.restoredFromMs).toISOString().slice(0, 19).replace("T", " ")} UTC; files created after that are gone.`;
+      ? `${root} is back to its initial state; files created before the restart are gone.`
+      : `${root} is back to its state as of ${new Date(acquired.restoredFromMs).toISOString().slice(0, 19).replace("T", " ")} UTC; files created after that are gone.`;
   }
 
   async stop(input: StopNodeManagedSessionRuntime): Promise<void> {
@@ -793,6 +795,7 @@ export class DefaultNodeManagedSessionRunner
       exec: async (...args) => { await ensureSandbox(); return guardedSandbox.exec(...args); },
       readFile: async (...args) => { await ensureSandbox(); return guardedSandbox.readFile(...args); },
       writeFile: async (...args) => { await ensureSandbox(); return guardedSandbox.writeFile(...args); },
+      resolveWorkspaceRoot: async () => { await ensureSandbox(); return workspaceRootOf(guardedSandbox); },
     } : guardedSandbox;
     const runtime = new ManagedNodeHarnessRuntime({
       initialEvents: input.initialEvents,

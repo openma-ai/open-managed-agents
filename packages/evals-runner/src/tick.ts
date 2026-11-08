@@ -1,17 +1,15 @@
-// Eval runner — advances pending/running EvalRuns toward completion.
-// Runtime-agnostic: the CF cron handler and the Node scheduler both
-// invoke `tickEvalRuns(ctx)` once per cron tick.
+// Eval runner — advances pending/running EvalRuns toward completion, once
+// per scheduler tick on both runtimes (Cloudflare cron, Node scheduler).
 //
-// State machine per run:
-//   pending → start_run() → running (creates first session for first task)
-//   running → poll all running tasks; advance idle ones to next task; mark
-//             run completed when all tasks done
-//
-// Each task = a fresh session against the run's agent_id + environment_id.
-// On bootstrap we (1) create the session, (2) write any declared setup_files
-// directly to /workspace via raw /exec (NOT through the agent), then (3)
-// send the spec's first user message and wait for idle, repeating for each
-// subsequent message.
+// Every trial is a managed Session driven through EvalSessionRuntime:
+//   - kind "harbor"   — see ./harbor.ts.
+//   - kind "messages" — the original OMA task spec: optional setup files and
+//     script in the Session sandbox, then each scripted user message in turn;
+//     once the last turn settles the trajectory is built and the eval-core
+//     verifier for spec.reward scores it. Runs created from a messages
+//     benchmark carry `concurrency` and start a new trial only while fewer
+//     than that many trials of the run are active; inline runs (no
+//     concurrency) start every trial at once, as they always did.
 
 import {
   buildTrajectory,
@@ -23,105 +21,60 @@ import {
   type RewardResult,
   type VerifierContext,
   type SessionRecord,
-  type FullStatus,
-  type AgentConfig,
 } from "@open-managed-agents/shared";
-import type { AgentStore } from "@open-managed-agents/agent-store";
-import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
-import type { EnvironmentService } from "@open-managed-agents/environments-store";
-import type { SessionService } from "@open-managed-agents/sessions-store";
+import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { EvalRunService } from "@open-managed-agents/evals-store";
 import type { KvStore } from "@open-managed-agents/kv-store";
-import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
+import type { EvalBenchmarkStore } from "./benchmarks";
+import { advanceHarborRun } from "./harbor";
+import { EvalRuntimeError, type EvalSessionRuntime } from "./runtime";
 import {
   type EvalRunRecord,
   type EvalTaskResult,
   type EvalTrialResult,
   rowToRecord,
   extractResults,
+  isTerminal,
   kvKey,
 } from "./types";
 
-/** Narrow services shape — just what the runner actually touches.
- *  Keeps the package decoupled from packages/services. CF satisfies
- *  this from buildCfServices(); Node from its own bundle. */
+/** What the runner needs per shard / tenant. */
 export interface EvalRunnerServices {
-  agents: AgentStore;
-  environments: EnvironmentService;
-  sessions: SessionService;
   evals: EvalRunService;
+  /** Trajectory storage for messages-kind trials. */
   kv: KvStore;
 }
 
-/**
- * Minimal Fetcher shape — both CF service bindings and Node test fakes
- * satisfy this. Defined here so the package doesn't depend on
- * @cloudflare/workers-types.
- */
-export interface SandboxFetcher {
-  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
-}
-
-/**
- * Runtime-supplied context for the eval-runner. CF builds this from
- * `env` (binding lookups by name); Node builds it from its services
- * + a no-op sandbox resolver until cloud environments land on Node.
- */
 export interface EvalRunnerContext {
-  /** Cross-shard fan-out. CF passes `(fn) => forEachShardServices(env, fn)`;
-   *  Node passes `(fn) => fn(services).then((r) => [r])`. */
-  forEachShard: <T>(
-    fn: (services: EvalRunnerServices) => Promise<T>,
-  ) => Promise<T[]>;
-  /** Per-tenant services accessor (cached per call). CF uses
-   *  getCfServicesForTenant; Node returns its single Services instance. */
+  /** CF: fan out over shards; Node: a single shard. */
+  forEachShard: <T>(fn: (services: EvalRunnerServices) => Promise<T>) => Promise<T[]>;
   getServicesForTenant: (tenantId: string) => Promise<EvalRunnerServices>;
-  /** Resolve the sandbox Fetcher for a (tenant, environment). Returns
-   *  null if the environment is unknown / not ready / not mapped to a
-   *  binding on this runtime. */
-  getSandboxBinding: (
-    tenantId: string,
-    environmentId: string,
-  ) => Promise<SandboxFetcher | null>;
+  runtimeFor: (tenantId: string) => EvalSessionRuntime | Promise<EvalSessionRuntime>;
+  benchmarksFor: (tenantId: string) => EvalBenchmarkStore | Promise<EvalBenchmarkStore>;
+  /** Image registry reads (Harbor WORKDIR/ENV); defaults to global fetch. */
+  fetch?: typeof fetch;
+  now?: () => number;
 }
 
-// ---------- Sandbox fetch helper ----------
-
-function fwd(
-  binding: SandboxFetcher,
-  path: string,
-  method: string = "GET",
-  body?: BodyInit | null,
-): Promise<Response> {
-  return binding.fetch(new Request(`https://sandbox${path}`, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body !== undefined ? body : undefined,
-  }));
-}
-
-// ---------- Run / task lifecycle ----------
-
-async function loadRun(
-  ctx: EvalRunnerContext,
-  tenantId: string,
-  runId: string,
-): Promise<EvalRunRecord | null> {
+async function loadRun(ctx: EvalRunnerContext, tenantId: string, runId: string): Promise<EvalRunRecord | null> {
   const services = await ctx.getServicesForTenant(tenantId);
   const row = await services.evals.get({ tenantId, runId });
-  if (!row) return null;
-  return rowToRecord(row);
+  return row ? rowToRecord(row) : null;
 }
 
 async function saveRun(ctx: EvalRunnerContext, run: EvalRunRecord): Promise<void> {
   const services = await ctx.getServicesForTenant(run.tenant_id);
-  if (run.status === "completed" || run.status === "failed") {
+  // A run cancelled while this tick worked on it stays cancelled.
+  const current = await services.evals.get({ tenantId: run.tenant_id, runId: run.id });
+  if (current === null || current.status === "cancelled") return;
+  if (isTerminal(run.status)) {
     await services.evals.markCompleted({
       tenantId: run.tenant_id,
       runId: run.id,
-      status: run.status,
+      status: run.status as "completed" | "failed" | "cancelled",
       results: extractResults(run),
-      error: run.error,
+      ...(run.score !== undefined ? { score: run.score } : {}),
+      ...(run.error !== undefined ? { error: run.error } : {}),
     });
   } else {
     await services.evals.update({
@@ -129,551 +82,328 @@ async function saveRun(ctx: EvalRunnerContext, run: EvalRunRecord): Promise<void
       runId: run.id,
       status: run.status,
       results: extractResults(run),
+      score: run.score ?? null,
       error: run.error ?? null,
     });
   }
 }
 
-async function createTaskSession(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  task: EvalTaskResult,
-): Promise<string> {
-  const t = run.tenant_id;
-  const services = await ctx.getServicesForTenant(t);
-  const agentSnapshot = await loadRuntimeAgentSnapshot(services.agents, t, run.agent_id);
-  if (!agentSnapshot) throw new Error(`agent ${run.agent_id} not found`);
-  const envRow = await services.environments.get({ tenantId: t, environmentId: run.environment_id });
-  const environmentSnapshot = envRow ? toEnvironmentConfig(envRow) : undefined;
-
-  const binding = await ctx.getSandboxBinding(t, run.environment_id);
-  if (!binding) throw new Error(`environment ${run.environment_id} not ready`);
-
-  const { session } = await services.sessions.create({
-    tenantId: t,
-    agentId: run.agent_id,
-    environmentId: run.environment_id,
-    title: `eval ${run.id} :: ${task.id}`,
-    agentSnapshot: agentSnapshot as unknown as AgentConfig,
-    environmentSnapshot,
-  });
-  const sessionId = session.id;
-
-  // Tag the session metadata so Console picks eval sessions out of the
-  // general session list (mirrors Linear / Slack metadata pattern).
-  try {
-    await services.sessions.update({
-      tenantId: t,
-      sessionId,
-      metadata: { eval: { run_id: run.id, task_id: task.id } },
-    });
-  } catch (err) {
-    logWarn(
-      { op: "eval.session.tag", session_id: sessionId, run_id: run.id, task_id: task.id, err },
-      "eval session metadata tag failed; session usable but won't show eval badge in console",
-    );
-  }
-
-  await fwd(binding, `/sessions/${sessionId}/init`, "PUT", JSON.stringify({
-    agent_id: run.agent_id,
-    environment_id: run.environment_id,
-    title: `eval ${run.id} :: ${task.id}`,
-    session_id: sessionId,
-    tenant_id: t,
-    vault_ids: [],
-  }));
-
-  return sessionId;
-}
-
-async function postUserMessage(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  sessionId: string,
-  text: string,
-): Promise<void> {
-  const binding = await ctx.getSandboxBinding(run.tenant_id, run.environment_id);
-  if (!binding) throw new Error("environment binding lost");
-  await fwd(binding, `/sessions/${sessionId}/event`, "POST", JSON.stringify({
-    type: "user.message",
-    content: [{ type: "text", text }],
-  }));
-}
-
-async function writeSetupFiles(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  sessionId: string,
-  files: ReadonlyArray<{ path: string; content: string }>,
-): Promise<void> {
-  if (files.length === 0) return;
-  const binding = await ctx.getSandboxBinding(run.tenant_id, run.environment_id);
-  if (!binding) throw new Error("environment binding lost");
-
-  for (const f of files) {
-    if (!f.path.startsWith("/")) {
-      throw new Error(`setup_files path must be absolute, got "${f.path}"`);
-    }
-    const sentinel = `OMA_SETUP_EOF_${Math.random().toString(16).slice(2, 14).toUpperCase()}`;
-    if (f.content.includes(sentinel)) {
-      throw new Error(`setup_files heredoc sentinel collision for ${f.path} (impossible — re-run)`);
-    }
-    const lastSlash = f.path.lastIndexOf("/");
-    const dir = lastSlash > 0 ? f.path.slice(0, lastSlash) : "/";
-    const command = [
-      `mkdir -p ${shellQuote(dir)}`,
-      `cat > ${shellQuote(f.path)} <<'${sentinel}'`,
-      f.content,
-      sentinel,
-    ].join("\n");
-    const res = await fwd(binding, `/sessions/${sessionId}/exec`, "POST", JSON.stringify({
-      command,
-      timeout_ms: 30_000,
-    }));
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`setup_files write failed for ${f.path}: HTTP ${res.status} ${body.slice(0, 200)}`);
-    }
-    const data = (await res.json()) as { exit_code?: number; output?: string };
-    if (data.exit_code !== 0) {
-      throw new Error(`setup_files write exit=${data.exit_code} for ${f.path}: ${(data.output ?? "").slice(0, 200)}`);
-    }
-  }
-}
+function errorText(err: unknown): string { return err instanceof Error ? err.message : String(err); }
 
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-async function runSetupScript(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  sessionId: string,
-  script: string,
-): Promise<void> {
-  const binding = await ctx.getSandboxBinding(run.tenant_id, run.environment_id);
-  if (!binding) throw new Error("environment binding lost");
-  const res = await fwd(binding, `/sessions/${sessionId}/exec`, "POST", JSON.stringify({
-    command: script,
-    timeout_ms: 30 * 60 * 1000,
-  }));
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`setup_script HTTP ${res.status}: ${body.slice(0, 200)}`);
-  }
-  const data = (await res.json()) as { exit_code?: number; output?: string };
-  if (data.exit_code !== 0) {
-    throw new Error(
-      `setup_script exit=${data.exit_code}: ${(data.output ?? "").slice(0, 4000)}`,
-    );
+// ---------- messages kind ----------
+
+async function execOrThrow(runtime: EvalSessionRuntime, sessionId: string, command: string, timeoutMs: number, label: string) {
+  const result = await runtime.exec(sessionId, command, timeoutMs);
+  if (result.exit_code !== 0) throw new Error(`${label} exit=${result.exit_code}: ${result.output.slice(0, 4000)}`);
+}
+
+async function writeSetupFiles(runtime: EvalSessionRuntime, sessionId: string, files: ReadonlyArray<{ path: string; content: string }>) {
+  for (const f of files) {
+    if (!f.path.startsWith("/")) throw new Error(`setup_files path must be absolute, got "${f.path}"`);
+    const sentinel = `OMA_SETUP_EOF_${Math.random().toString(16).slice(2, 14).toUpperCase()}`;
+    if (f.content.includes(sentinel)) throw new Error(`setup_files heredoc sentinel collision for ${f.path} (re-run)`);
+    const dir = f.path.lastIndexOf("/") > 0 ? f.path.slice(0, f.path.lastIndexOf("/")) : "/";
+    const command = [`mkdir -p ${shellQuote(dir)}`, `cat > ${shellQuote(f.path)} <<'${sentinel}'`, f.content, sentinel].join("\n");
+    await execOrThrow(runtime, sessionId, command, 30_000, `setup_files write for ${f.path}`);
   }
 }
 
-async function getSessionStatus(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  sessionId: string,
-): Promise<string | null> {
-  const binding = await ctx.getSandboxBinding(run.tenant_id, run.environment_id);
-  if (!binding) return null;
-  try {
-    const res = await fwd(binding, `/sessions/${sessionId}/status`, "GET");
-    if (!res.ok) return null;
-    const data = (await res.json()) as { status: string };
-    return data.status;
-  } catch (err) {
-    logWarn(
-      { op: "eval.fetch_session_status", session_id: sessionId, err },
-      "session status fetch failed; treating as unknown",
-    );
-    return null;
-  }
-}
-
-function buildVerifierContext(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  sessionId: string,
-): VerifierContext {
+function verifierContext(runtime: EvalSessionRuntime, sessionId: string): VerifierContext {
   return {
     sessionId,
     runExec: async (cmd, opts) => {
-      const binding = await ctx.getSandboxBinding(run.tenant_id, run.environment_id);
-      if (!binding) throw new Error("environment binding lost");
-      const res = await fwd(binding, `/sessions/${sessionId}/exec`, "POST", JSON.stringify({
-        command: cmd,
-        timeout_ms: opts?.timeoutMs ?? 600_000,
-      }));
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return { exit_code: -1, output: `HTTP ${res.status}: ${body.slice(0, 200)}` };
-      }
-      const data = (await res.json()) as { exit_code?: number; output?: string };
-      return { exit_code: data.exit_code ?? -1, output: data.output ?? "" };
+      try { return await runtime.exec(sessionId, cmd, opts?.timeoutMs ?? 600_000); }
+      catch (err) { return { exit_code: -1, output: errorText(err) }; }
     },
   };
 }
 
-async function runVerifier(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  task: EvalTaskResult,
-  trial: EvalTrialResult,
-  sessionId: string,
-  trajectory: Trajectory,
-): Promise<RewardResult> {
+async function runVerifier(runtime: EvalSessionRuntime, run: EvalRunRecord, task: EvalTaskResult, sessionId: string, trajectory: Trajectory): Promise<RewardResult> {
   const computedAt = new Date().toISOString();
-  const reward = task.spec.reward;
-
+  const reward = task.spec?.reward;
   if (!reward) {
-    return {
-      raw_rewards: { outcome: 1 },
-      final_reward: 1,
-      verifier_id: "eval-runner.trial-status.v1",
-      computed_at: computedAt,
-    };
+    return { raw_rewards: { outcome: 1 }, final_reward: 1, verifier_id: "eval-runner.trial-status.v1", computed_at: computedAt };
   }
-
-  const vctx = buildVerifierContext(ctx, run, sessionId);
   let verifier;
   try {
-    verifier = verifierForSpec(reward, vctx);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logWarn(
-      { op: "eval.verifier.spec_invalid", run_id: run.id, task_id: task.spec.id, err: msg },
-      "verifier spec rejected; recording 0 reward",
-    );
-    return {
-      raw_rewards: { spec_invalid: 0 },
-      final_reward: 0,
-      verifier_id: "verifier-spec-invalid.v1",
-      computed_at: computedAt,
-    };
+    verifier = verifierForSpec(reward, verifierContext(runtime, sessionId));
+  } catch (err) {
+    logWarn({ op: "eval.verifier.spec_invalid", run_id: run.id, task_id: task.id, err: errorText(err) }, "verifier spec rejected; recording 0 reward");
+    return { raw_rewards: { spec_invalid: 0 }, final_reward: 0, verifier_id: "verifier-spec-invalid.v1", computed_at: computedAt };
   }
-
   let score;
   try {
     score = await verifier.check(trajectory);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logWarn(
-      { op: "eval.verifier.check_threw", run_id: run.id, task_id: task.spec.id, verifier_id: verifier.id, err: msg },
-      "verifier check threw; recording 0 reward",
-    );
-    return {
-      raw_rewards: { verifier_error: 0 },
-      final_reward: 0,
-      verifier_id: verifier.id,
-      computed_at: computedAt,
-    };
+  } catch (err) {
+    logWarn({ op: "eval.verifier.check_threw", run_id: run.id, task_id: task.id, verifier_id: verifier.id, err: errorText(err) }, "verifier check threw; recording 0 reward");
+    return { raw_rewards: { verifier_error: 0 }, final_reward: 0, verifier_id: verifier.id, computed_at: computedAt };
   }
-
   const criteria = (score.metadata as { criteria?: Record<string, number> } | undefined)?.criteria;
-  const rawRewards = criteria && Object.keys(criteria).length > 0
-    ? criteria
-    : { value: score.value };
+  const rawRewards = criteria && Object.keys(criteria).length > 0 ? criteria : { value: score.value };
   const persisted: Record<string, number> = {};
-  for (const [k, v] of Object.entries(rawRewards)) {
-    if (typeof v === "number" && Number.isFinite(v)) persisted[k] = v;
-  }
-
-  return {
-    raw_rewards: persisted,
-    final_reward: score.value,
-    verifier_id: verifier.id,
-    computed_at: computedAt,
-  };
+  for (const [k, v] of Object.entries(rawRewards)) if (typeof v === "number" && Number.isFinite(v)) persisted[k] = v;
+  return { raw_rewards: persisted, final_reward: score.value, verifier_id: verifier.id, computed_at: computedAt };
 }
 
-async function synthesizeNoRunReward(reasonHint: string): Promise<RewardResult> {
-  const verifier = new NoRunVerifier(reasonHint);
+async function noRunReward(reason: string): Promise<RewardResult> {
+  const verifier = new NoRunVerifier(reason);
   const score = await verifier.check({} as Trajectory);
-  return {
-    raw_rewards: { failure: 0 },
-    final_reward: score.value,
-    verifier_id: verifier.id,
-    computed_at: new Date().toISOString(),
-  };
+  return { raw_rewards: { failure: 0 }, final_reward: score.value, verifier_id: verifier.id, computed_at: new Date().toISOString() };
 }
 
-async function buildAndStoreTrajectory(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  task: EvalTaskResult,
-  trial: EvalTrialResult,
-  sessionId: string,
-  reward: RewardResult,
-  outcomeOverride?: Trajectory["outcome"],
-): Promise<{ trajectory_id: string; final_reward: number }> {
-  const t = run.tenant_id;
-  const services = await ctx.getServicesForTenant(t);
-  const sessionRow = await services.sessions.get({ tenantId: t, sessionId });
-  if (!sessionRow) throw new Error(`session ${sessionId} not found`);
+async function buildSessionTrajectory(runtime: EvalSessionRuntime, run: EvalRunRecord, task: EvalTaskResult, trial: EvalTrialResult, sessionId: string): Promise<Trajectory> {
+  const configs = await runtime.trajectoryConfigs(run.agent_id ?? "", run.environment_id ?? "");
   const session = {
-    id: sessionRow.id,
-    agent_id: sessionRow.agent_id,
-    environment_id: sessionRow.environment_id,
-    title: sessionRow.title,
-    status: sessionRow.status,
-    created_at: sessionRow.created_at,
-    updated_at: sessionRow.updated_at ?? undefined,
-    archived_at: sessionRow.archived_at ?? undefined,
-    vault_ids: sessionRow.vault_ids ?? undefined,
-    metadata: sessionRow.metadata ?? undefined,
-    agent_snapshot: sessionRow.agent_snapshot ?? undefined,
-    environment_snapshot: sessionRow.environment_snapshot ?? undefined,
-  } as SessionRecord;
-  const binding = await ctx.getSandboxBinding(t, run.environment_id);
-  if (!binding) throw new Error("environment binding lost");
-
+    id: sessionId,
+    agent_id: run.agent_id ?? "",
+    environment_id: run.environment_id ?? "",
+    title: `eval ${run.id} · ${task.id}`,
+    status: "idle",
+    created_at: trial.started_at ?? run.created_at,
+    agent_snapshot: configs.agent,
+    environment_snapshot: configs.environment,
+  } as unknown as SessionRecord;
   const trajectory = await buildTrajectory(session, {
     fetchAllEvents: async (): Promise<StoredEvent[]> => {
-      const all: StoredEvent[] = [];
-      let afterSeq = 0;
-      while (true) {
-        const res = await fwd(binding, `/sessions/${sessionId}/events?limit=1000&order=asc&after_seq=${afterSeq}`, "GET");
-        if (!res.ok) break;
-        const body = (await res.json()) as { data?: StoredEvent[]; has_more?: boolean };
-        const batch = body.data || [];
-        all.push(...batch);
-        if (!body.has_more || batch.length === 0) break;
-        afterSeq = batch[batch.length - 1].seq ?? afterSeq;
-      }
-      return all;
+      const events = await runtime.listEvents(sessionId);
+      return events.map((event, index) => ({
+        seq: index + 1,
+        type: event.type,
+        data: JSON.stringify(encodeRuntimeHistoryEvent(event as never)),
+        ts: typeof event.processedAt === "string" ? event.processedAt : (trial.started_at ?? run.created_at),
+      }));
     },
-    fetchFullStatus: async (): Promise<FullStatus | null> => {
-      const res = await fwd(binding, `/sessions/${sessionId}/full-status`, "GET");
-      if (!res.ok) return null;
-      return (await res.json()) as FullStatus;
-    },
+    fetchFullStatus: async () => ({ status: (await runtime.status(sessionId)) ?? "terminated" }),
   });
-
-  // Trajectory v1 envelope enrichment — task_id / group_id / outcome /
-  // reward all wired BEFORE storage so the persisted trajectory is
-  // self-describing. Phase 3 (Console UI) reads these directly.
-  trajectory.task_id = task.spec.id;
+  trajectory.task_id = task.id;
   trajectory.group_id = run.id;
-  if (outcomeOverride) {
-    trajectory.outcome = outcomeOverride;
-  } else if (trial.error && /timeout/i.test(trial.error)) {
-    trajectory.outcome = "timeout";
-  }
-  trajectory.reward = reward;
-
-  // Trajectory storage goes through services.kv (CF: CONFIG_KV; Node:
-  // SqlKvStore). Same key shape both runtimes.
-  await services.kv.put(kvKey(t, "trajectory", trajectory.trajectory_id), JSON.stringify(trajectory));
-  return { trajectory_id: trajectory.trajectory_id, final_reward: reward.final_reward };
+  return trajectory;
 }
 
-async function persistFailureTrajectory(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  task: EvalTaskResult,
-  trial: EvalTrialResult,
-  sessionId: string,
-  outcome: Trajectory["outcome"],
-  reasonHint: string,
-): Promise<void> {
+async function storeTrajectory(ctx: EvalRunnerContext, run: EvalRunRecord, trajectory: Trajectory) {
+  const services = await ctx.getServicesForTenant(run.tenant_id);
+  await services.kv.put(kvKey(run.tenant_id, "trajectory", trajectory.trajectory_id), JSON.stringify(trajectory));
+}
+
+async function persistFailureTrajectory(ctx: EvalRunnerContext, runtime: EvalSessionRuntime, run: EvalRunRecord, task: EvalTaskResult, trial: EvalTrialResult, outcome: Trajectory["outcome"]) {
+  if (!trial.session_id) return;
   try {
-    const reward = await synthesizeNoRunReward(reasonHint);
-    const result = await buildAndStoreTrajectory(ctx, run, task, trial, sessionId, reward, outcome);
-    trial.trajectory_id = result.trajectory_id;
-    trial.reward = result.final_reward;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logWarn(
-      { op: "eval.failure_trajectory.skip", run_id: run.id, task_id: task.spec.id, session_id: sessionId, err: msg },
-      "could not build failure-trial trajectory; trial.failed without trajectory_id",
-    );
+    const trajectory = await buildSessionTrajectory(runtime, run, task, trial, trial.session_id);
+    trajectory.outcome = outcome;
+    trajectory.reward = await noRunReward(trial.error ?? "failure");
+    await storeTrajectory(ctx, run, trajectory);
+    trial.trajectory_id = trajectory.trajectory_id;
+    trial.reward = trajectory.reward.final_reward;
+  } catch (err) {
+    logWarn({ op: "eval.failure_trajectory.skip", run_id: run.id, task_id: task.id, session_id: trial.session_id, err: errorText(err) }, "could not build failure-trial trajectory");
   }
 }
 
-// ---------- Single-tick advance (per-trial) ----------
+async function failMessagesTrial(ctx: EvalRunnerContext, runtime: EvalSessionRuntime, run: EvalRunRecord, task: EvalTaskResult, trial: EvalTrialResult, error: string, outcome: Trajectory["outcome"], now: number) {
+  trial.status = "failed";
+  trial.phase = "done";
+  trial.error = error;
+  trial.ended_at = new Date(now).toISOString();
+  await persistFailureTrajectory(ctx, runtime, run, task, trial, outcome);
+}
 
-async function advanceTrial(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  task: EvalTaskResult,
-  trial: EvalTrialResult,
-): Promise<boolean> {
-  if (trial.status === "completed" || trial.status === "failed") return false;
+async function advanceMessagesTrial(ctx: EvalRunnerContext, runtime: EvalSessionRuntime, run: EvalRunRecord, task: EvalTaskResult, trial: EvalTrialResult, now: number): Promise<boolean> {
+  const spec = task.spec;
+  if (!spec) { trial.status = "failed"; trial.error = "task has no spec"; return true; }
 
   if (trial.status === "pending") {
-    let sessionId: string | undefined;
     try {
-      sessionId = await createTaskSession(ctx, run, task);
-      trial.session_id = sessionId;
+      if (!run.agent_id || !run.environment_id) throw new Error("messages runs need agent_id and environment_id");
+      trial.session_id = await runtime.createSession({
+        agentId: run.agent_id,
+        environmentId: run.environment_id,
+        title: `eval ${run.id} · ${task.id} #${trial.trial_index}`,
+        metadata: { oma_eval_run: run.id, oma_eval_task: task.id, oma_eval_trial: String(trial.trial_index) },
+      });
       trial.status = "running";
-      trial.started_at = new Date().toISOString();
+      trial.phase = "provisioning";
+      trial.started_at = new Date(now).toISOString();
       trial.current_message_index = 0;
-      if (task.spec.setup_files && task.spec.setup_files.length > 0) {
-        await writeSetupFiles(ctx, run, sessionId, task.spec.setup_files);
-      }
-      if (task.spec.setup_script && task.spec.setup_script.trim().length > 0) {
-        await runSetupScript(ctx, run, sessionId, task.spec.setup_script);
-      }
-      await postUserMessage(ctx, run, sessionId, task.spec.messages[0]);
-      return true;
-    } catch (err: unknown) {
+    } catch (err) {
+      if (err instanceof EvalRuntimeError && err.retryable) { trial.error = err.message; return false; }
       trial.status = "failed";
-      trial.error = err instanceof Error ? err.message : String(err);
-      trial.ended_at = new Date().toISOString();
-      if (sessionId) {
-        await persistFailureTrajectory(ctx, run, task, trial, sessionId, "failure", trial.error);
-      }
+      trial.error = errorText(err);
+      trial.ended_at = new Date(now).toISOString();
       return true;
     }
   }
+  const sessionId = trial.session_id;
+  if (!sessionId) { trial.status = "failed"; trial.error = "running trial missing session_id"; return true; }
 
-  if (!trial.session_id) {
-    trial.status = "failed";
-    trial.error = "running trial missing session_id";
+  const timeoutMs = spec.timeout_ms ?? 3_600_000;
+  if (trial.started_at && now - Date.parse(trial.started_at) > timeoutMs) {
+    if (trial.phase === "agent") await runtime.interrupt(sessionId).catch(() => undefined);
+    await failMessagesTrial(ctx, runtime, run, task, trial,
+      `trial timeout: ${Math.round((now - Date.parse(trial.started_at)) / 1000)}s exceeded budget ${Math.round(timeoutMs / 1000)}s (m_idx=${trial.current_message_index ?? 0})`, "timeout", now);
     return true;
   }
 
-  const timeoutMs = task.spec.timeout_ms ?? 3_600_000;
-  if (trial.started_at) {
-    const elapsed = Date.now() - Date.parse(trial.started_at);
-    if (elapsed > timeoutMs) {
-      trial.status = "failed";
-      trial.error = `trial timeout: ${Math.round(elapsed / 1000)}s exceeded budget ${Math.round(timeoutMs / 1000)}s (m_idx=${trial.current_message_index ?? 0})`;
-      trial.ended_at = new Date().toISOString();
-      await persistFailureTrajectory(ctx, run, task, trial, trial.session_id, "timeout", trial.error);
+  if (trial.phase === "provisioning") {
+    try {
+      const needsSandbox = (spec.setup_files?.length ?? 0) > 0 || (spec.setup_script?.trim().length ?? 0) > 0;
+      if (needsSandbox) {
+        if (!(await runtime.ensureSandbox(sessionId))) return false;
+        if (spec.setup_files?.length) await writeSetupFiles(runtime, sessionId, spec.setup_files);
+        if (spec.setup_script?.trim()) await execOrThrow(runtime, sessionId, spec.setup_script, 30 * 60 * 1000, "setup_script");
+      }
+      trial.message_event_id = await runtime.sendUserMessage(sessionId, spec.messages[0]!);
+      trial.phase = "agent";
+      return true;
+    } catch (err) {
+      await failMessagesTrial(ctx, runtime, run, task, trial, errorText(err), "failure", now);
       return true;
     }
   }
 
-  const status = await getSessionStatus(ctx, run, trial.session_id);
-  if (status !== "idle") return false;
+  if (!trial.message_event_id) { trial.status = "failed"; trial.error = "trial has no pending message"; return true; }
+  const settled = await runtime.settledAfter(sessionId, trial.message_event_id);
+  if (!settled.settled) return false;
+  // The turn ended without the agent finishing it (sandbox/model retries ran
+  // out, the Session was terminated or deleted): that is an errored trial, not
+  // an answer to grade.
+  if (settled.stopReason === "retries_exhausted" || settled.stopReason === "terminated" || settled.stopReason === "session_not_found") {
+    const why = settled.stopReason === "retries_exhausted" ? "Session gave up after retries (see its session.error events)"
+      : settled.stopReason === "terminated" ? "Session terminated before the case finished" : "Session disappeared before the case finished";
+    await failMessagesTrial(ctx, runtime, run, task, trial, `${why} (m_idx=${trial.current_message_index ?? 0})`, "failure", now);
+    return true;
+  }
 
   const nextIndex = (trial.current_message_index ?? 0) + 1;
-  if (nextIndex < task.spec.messages.length) {
+  if (nextIndex < spec.messages.length) {
     try {
-      await postUserMessage(ctx, run, trial.session_id, task.spec.messages[nextIndex]);
+      trial.message_event_id = await runtime.sendUserMessage(sessionId, spec.messages[nextIndex]!);
       trial.current_message_index = nextIndex;
-      return true;
-    } catch (err: unknown) {
-      trial.status = "failed";
-      trial.error = err instanceof Error ? err.message : String(err);
-      trial.ended_at = new Date().toISOString();
-      await persistFailureTrajectory(ctx, run, task, trial, trial.session_id, "failure", trial.error);
-      return true;
+    } catch (err) {
+      await failMessagesTrial(ctx, runtime, run, task, trial, errorText(err), "failure", now);
     }
+    return true;
   }
 
-  // All messages sent and session idle → build trajectory + run verifier.
   try {
-    const placeholder = await synthesizeNoRunReward("pre-verify placeholder");
-    const built = await buildAndStoreTrajectory(ctx, run, task, trial, trial.session_id, placeholder);
-    const t = run.tenant_id;
-    const services = await ctx.getServicesForTenant(t);
-    const stored = await services.kv.get(kvKey(t, "trajectory", built.trajectory_id));
-    if (!stored) throw new Error(`trajectory ${built.trajectory_id} disappeared after store`);
-    const trajectory = JSON.parse(stored) as Trajectory;
-    const reward = await runVerifier(ctx, run, task, trial, trial.session_id, trajectory);
-    trajectory.reward = reward;
-    await services.kv.put(
-      kvKey(t, "trajectory", built.trajectory_id),
-      JSON.stringify(trajectory),
-    );
-
-    trial.trajectory_id = built.trajectory_id;
+    const trajectory = await buildSessionTrajectory(runtime, run, task, trial, sessionId);
+    trajectory.reward = await runVerifier(runtime, run, task, sessionId, trajectory);
+    await storeTrajectory(ctx, run, trajectory);
+    trial.trajectory_id = trajectory.trajectory_id;
     trial.status = "completed";
-    trial.ended_at = new Date().toISOString();
-    trial.reward = reward.final_reward;
-    return true;
-  } catch (err: unknown) {
-    // Bounded retry: events fetch can transiently 500 under storage
-    // contention. 3 attempts × ~60s cron ≈ 3 min before giving up.
-    const msg = err instanceof Error ? err.message : String(err);
+    trial.phase = "done";
+    trial.ended_at = new Date(now).toISOString();
+    trial.reward = trajectory.reward.final_reward;
+    if (trajectory.reward.raw_rewards) trial.rewards = trajectory.reward.raw_rewards;
+  } catch (err) {
+    // Bounded retry: event reads can fail transiently under contention.
     trial.finalize_retry_count = (trial.finalize_retry_count ?? 0) + 1;
     if (trial.finalize_retry_count >= 3) {
       trial.status = "failed";
-      trial.error = `events_unavailable_during_finalize (${trial.finalize_retry_count} attempts): ${msg.slice(0, 200)}`;
-      trial.ended_at = new Date().toISOString();
+      trial.error = `events_unavailable_during_finalize (${trial.finalize_retry_count} attempts): ${errorText(err).slice(0, 200)}`;
+      trial.ended_at = new Date(now).toISOString();
     }
-    return true;
+  }
+  return true;
+}
+
+function summariseMessagesTask(task: EvalTaskResult) {
+  const completed = task.trials.filter((t) => t.status === "completed").length;
+  const failed = task.trials.filter((t) => t.status === "failed" || t.status === "cancelled").length;
+  // Same rule as harbor: a trial passes when its reward is at least 1.
+  task.trial_pass_count = task.trials.filter((t) => t.status === "completed" && (t.reward ?? 0) >= 1).length;
+  task.trial_total = task.trials.length;
+  const rewards = task.trials.filter((t) => t.status === "completed" && typeof t.reward === "number").map((t) => t.reward!);
+  if (rewards.length > 0) task.mean_reward = rewards.reduce((a, b) => a + b, 0) / rewards.length;
+  if (completed + failed === task.trials.length) {
+    if (completed === task.trials.length) task.status = "completed";
+    else { task.status = "failed"; task.error = task.trials.find((t) => t.error)?.error; }
+  } else {
+    task.status = task.trials.some((t) => t.status !== "pending") ? "running" : "pending";
   }
 }
 
-async function advanceTask(
-  ctx: EvalRunnerContext,
-  run: EvalRunRecord,
-  task: EvalTaskResult,
-): Promise<boolean> {
-  if (task.status === "completed" || task.status === "failed") return false;
-
+/**
+ * Messages run with a concurrency limit: advance active trials, then start
+ * pending ones trial-index-major (every case's first trial before any
+ * second) while fewer than `limit` trials are active.
+ */
+async function advanceLimitedMessagesRun(ctx: EvalRunnerContext, runtime: EvalSessionRuntime, run: EvalRunRecord, limit: number, now: () => number): Promise<boolean> {
   let progressed = false;
-  for (const trial of task.trials) {
-    if (trial.status === "pending" || trial.status === "running") {
-      const changed = await advanceTrial(ctx, run, task, trial);
-      if (changed) progressed = true;
+  for (const task of run.tasks) {
+    for (const trial of task.trials) {
+      if (trial.status !== "running") continue;
+      if (await advanceMessagesTrial(ctx, runtime, run, task, trial, now())) progressed = true;
     }
   }
-
-  const completed = task.trials.filter((t) => t.status === "completed").length;
-  const failed = task.trials.filter((t) => t.status === "failed").length;
-  task.trial_pass_count = completed;
-  task.trial_total = task.trials.length;
-  if (completed + failed === task.trials.length) {
-    if (completed === task.trials.length) {
-      task.status = "completed";
-    } else {
-      task.status = "failed";
-      task.error = task.trials.find((t) => t.error)?.error;
+  let active = run.tasks.reduce((sum, task) => sum + task.trials.filter((trial) => trial.status === "running").length, 0);
+  const maxTrials = Math.max(0, ...run.tasks.map((task) => task.trials.length));
+  for (let index = 0; index < maxTrials && active < limit; index++) {
+    for (const task of run.tasks) {
+      if (active >= limit) break;
+      const trial = task.trials[index];
+      if (trial === undefined || trial.status !== "pending") continue;
+      if (await advanceMessagesTrial(ctx, runtime, run, task, trial, now())) progressed = true;
+      if ((trial.status as EvalTrialResult["status"]) === "running") active++;
     }
-  } else {
-    task.status = "running";
   }
+  for (const task of run.tasks) if (!isTerminal(task.status)) summariseMessagesTask(task);
   return progressed;
 }
 
-async function advanceRun(ctx: EvalRunnerContext, run: EvalRunRecord): Promise<void> {
-  if (run.status === "completed" || run.status === "failed") return;
+// ---------- run ----------
 
+async function advanceRun(ctx: EvalRunnerContext, run: EvalRunRecord): Promise<void> {
+  if (isTerminal(run.status)) return;
+  const now = ctx.now ?? Date.now;
+  let progressed = false;
   if (run.status === "pending") {
     run.status = "running";
-    run.started_at = new Date().toISOString();
+    run.started_at = new Date(now()).toISOString();
+    progressed = true;
   }
+  const runtime = await ctx.runtimeFor(run.tenant_id);
 
-  let progressed = false;
-  for (const task of run.tasks) {
-    if (task.status !== "pending" && task.status !== "running") continue;
-    const changed = await advanceTask(ctx, run, task);
-    if (changed) progressed = true;
+  if (run.kind === "harbor") {
+    const benchmarks = await ctx.benchmarksFor(run.tenant_id);
+    if (await advanceHarborRun(run, { runtime, benchmarks, now, ...(ctx.fetch ? { fetch: ctx.fetch } : {}) })) progressed = true;
+  } else if (run.concurrency === undefined) {
+    for (const task of run.tasks) {
+      if (isTerminal(task.status)) continue;
+      for (const trial of task.trials) {
+        if (trial.status !== "pending" && trial.status !== "running") continue;
+        if (await advanceMessagesTrial(ctx, runtime, run, task, trial, now())) progressed = true;
+      }
+      summariseMessagesTask(task);
+    }
+  } else if (await advanceLimitedMessagesRun(ctx, runtime, run, run.concurrency, now)) {
+    progressed = true;
   }
 
   run.completed_count = run.tasks.filter((t) => t.status === "completed").length;
   run.failed_count = run.tasks.filter((t) => t.status === "failed").length;
-
+  const scored = run.tasks.filter((t) => typeof t.mean_reward === "number");
+  if (scored.length > 0) run.score = scored.reduce((sum, t) => sum + t.mean_reward!, 0) / scored.length;
   if (run.completed_count + run.failed_count === run.task_count) {
     run.status = run.failed_count > 0 && run.completed_count === 0 ? "failed" : "completed";
-    run.ended_at = new Date().toISOString();
+    run.ended_at = new Date(now()).toISOString();
     await saveRun(ctx, run);
     return;
   }
-
   if (progressed) await saveRun(ctx, run);
 }
 
-// ---------- Public entry point ----------
-
 /**
- * Cross-shard scan: list active eval runs on every shard via the
- * services-level fan-out abstraction, advance each one, save updated
- * state back. Called by the cron tick on both runtimes.
+ * Advance every active run on every shard. Called once per scheduler tick on
+ * both runtimes. One run's failure never stops the others.
  */
-export async function tickEvalRuns(
-  ctx: EvalRunnerContext,
-): Promise<{ advanced: number; total: number }> {
+export async function tickEvalRuns(ctx: EvalRunnerContext): Promise<{ advanced: number; total: number }> {
   let advanced = 0;
   let total = 0;
-  const perShard = await ctx.forEachShard(async (services) => {
-    const activeRows = await services.evals.listActive();
-    return activeRows;
-  });
+  const perShard = await ctx.forEachShard((services) => services.evals.listActive());
   for (const activeRows of perShard) {
     total += activeRows.length;
     for (const row of activeRows) {
@@ -681,15 +411,32 @@ export async function tickEvalRuns(
       try {
         await advanceRun(ctx, run);
         advanced++;
-      } catch (err: unknown) {
+      } catch (err) {
         run.status = "failed";
-        run.error = err instanceof Error ? err.message : String(err);
+        run.error = errorText(err);
         run.ended_at = new Date().toISOString();
-        await saveRun(ctx, run);
+        await saveRun(ctx, run).catch(() => undefined);
       }
     }
   }
   return { advanced, total };
 }
 
-export { loadRun };
+/** Interrupt and release every in-flight trial of a run (cancel). */
+export async function stopRunTrials(runtime: EvalSessionRuntime, run: EvalRunRecord, now = Date.now()): Promise<void> {
+  for (const task of run.tasks) {
+    for (const trial of task.trials) {
+      if (trial.status !== "pending" && trial.status !== "running") continue;
+      if (trial.session_id) {
+        await runtime.interrupt(trial.session_id).catch(() => undefined);
+        await runtime.releaseSandbox(trial.session_id).catch(() => undefined);
+      }
+      trial.status = "cancelled";
+      trial.phase = "done";
+      trial.ended_at = new Date(now).toISOString();
+    }
+    if (!isTerminal(task.status)) task.status = "cancelled";
+  }
+}
+
+export { loadRun, saveRun };

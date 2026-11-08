@@ -154,6 +154,7 @@ import { resolveAppendablePrompts } from "./appendable-prompts";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
+import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
 import type { PortsSessionSandbox } from "./session-sandbox";
 import {
@@ -212,6 +213,12 @@ interface SessionInitParams {
    * + fan-out to event_hooks, in order, before /init returns.
    */
   init_events?: SessionEvent[];
+  /**
+   * Operator catalog image for this session's sandbox, resolved by the main
+   * worker from SANDBOX_IMAGES (`_oma.sandbox_image` alias -> container
+   * binding + workdir). Absent: the default `SANDBOX` container.
+   */
+  sandbox_image?: CloudflareSandboxImage | null;
 }
 
 /**
@@ -242,6 +249,8 @@ type PersistedOutcomeEvaluation = OutcomeEvaluationRecord;
 interface SessionState {
   agent_id: string;
   environment_id: string;
+  /** See SessionInitParams.sandbox_image. */
+  sandbox_image?: CloudflareSandboxImage | null;
   session_id: string;
   tenant_id: string;
   title: string;
@@ -2624,6 +2633,7 @@ export class SessionDO extends DurableObject<Env> {
         vault_ids: params.vault_ids ?? [],
         agent_snapshot: params.agent_snapshot,
         environment_snapshot: params.environment_snapshot,
+        sandbox_image: params.sandbox_image ?? null,
         vault_credentials: params.vault_credentials,
         event_hooks: params.event_hooks,
         terminated_at: null,
@@ -4073,6 +4083,8 @@ export class SessionDO extends DurableObject<Env> {
         storage: this.ctx.storage,
         // Sandbox ID must be 1-63 chars; DO hex ID is 64 chars — truncate to fit
         sandboxId: this.ctx.id.toString().slice(0, 63),
+        // Operator catalog image (#545 / ADR 0016) for the Cloudflare adapter.
+        sandboxImage: this.state.sandbox_image ?? null,
         session: () => ({
           tenantId: this.state.tenant_id,
           environmentId: this.state.environment_id,

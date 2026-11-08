@@ -1,11 +1,10 @@
-// CF entry shim — builds the EvalRunnerContext from the worker `env`
-// and forwards to @open-managed-agents/evals-runner.
+// CF entry shim for OMA evals: builds the EvalRunnerContext from the worker
+// `env` and forwards to @open-managed-agents/evals-runner.
 //
-// All business logic lives in the package; this file only exists because
-// (a) the integration test test/integration/evals-route.test.ts imports
-// `tickEvalRuns(env)` by path, and (b) CF binding lookups by name
-// (`SANDBOX_*`, `SESSION_DO`) are CF-specific plumbing that doesn't
-// belong in a shared package.
+// The managed-Session ports are composed in apps/main/src/index.ts (they
+// share its per-request factories). index.ts registers a factory here at
+// module load so this file, the cron and routes/evals.ts can use it without
+// importing index.ts (which imports them: a cycle).
 
 import type { Env } from "@open-managed-agents/shared";
 import {
@@ -15,69 +14,58 @@ import {
 } from "@open-managed-agents/services";
 import {
   tickEvalRuns as tickRunsImpl,
+  type EvalBenchmarkStore,
   type EvalRunnerContext,
-  type SandboxFetcher,
+  type EvalSessionRuntime,
 } from "@open-managed-agents/evals-runner";
 
-const servicesCache = new Map<string, Services>();
-
-async function getServices(env: Env, tenantId: string): Promise<Services> {
-  let cached = servicesCache.get(tenantId);
-  if (!cached) {
-    cached = await getCfServicesForTenant(env, tenantId);
-    servicesCache.set(tenantId, cached);
-  }
-  return cached;
+export interface CfEvalDeps {
+  runtime: EvalSessionRuntime;
+  benchmarks: EvalBenchmarkStore;
+  readUpload(fileId: string): Promise<{ bytes: Uint8Array; filename?: string } | null>;
 }
 
-async function getSandboxBinding(
-  env: Env,
-  tenantId: string,
-  environmentId: string,
-): Promise<SandboxFetcher | null> {
-  const services = await getServices(env, tenantId);
-  const envRow = await services.environments.get({ tenantId, environmentId });
-  if (!envRow) return null;
-  if (envRow.status !== "ready") return null;
-  if (!envRow.sandbox_worker_name) return null;
-  const bindingName = `SANDBOX_${envRow.sandbox_worker_name.replace(/-/g, "_")}`;
-  const binding = (env as unknown as Record<string, unknown>)[bindingName] as Fetcher | undefined;
-  if (binding) return binding;
+/** The request being served, when there is one (a cron tick has none). */
+export interface CfEvalRequestScope {
+  origin: string;
+  waitUntil(task: Promise<unknown>): void;
+}
 
-  // Combined-worker test mode fallback.
-  if (env.SESSION_DO) {
-    const localFetcher: SandboxFetcher = {
-      fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-        const req = input instanceof Request ? input : new Request(input, init);
-        const url = new URL(req.url);
-        const match = url.pathname.match(/^\/sessions\/([^/]+)\/(.*)/);
-        if (!match) return Promise.resolve(new Response("Not found", { status: 404 }));
-        const [, sessionId, rest] = match;
-        const doId = env.SESSION_DO!.idFromName(sessionId);
-        const stub = env.SESSION_DO!.get(doId);
-        return stub.fetch(new Request(`http://internal/${rest}${url.search}`, {
-          method: req.method,
-          headers: req.headers,
-          body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
-        }));
-      },
-    };
-    return localFetcher;
-  }
-  return null;
+type CfEvalDepsFactory = (env: Env, tenantId: string, request?: CfEvalRequestScope) => Promise<CfEvalDeps>;
+
+let factory: CfEvalDepsFactory | null = null;
+
+export function registerCfEvalDeps(build: CfEvalDepsFactory): void {
+  factory = build;
+}
+
+export function cfEvalDeps(env: Env, tenantId: string, request?: CfEvalRequestScope): Promise<CfEvalDeps> {
+  if (factory === null) throw new Error("CF eval dependencies are not registered (apps/main/src/index.ts)");
+  return factory(env, tenantId, request);
 }
 
 export function buildCfEvalRunnerContext(env: Env): EvalRunnerContext {
+  const services = new Map<string, Promise<Services>>();
+  const deps = new Map<string, Promise<CfEvalDeps>>();
+  const servicesFor = (tenantId: string) => {
+    let pending = services.get(tenantId);
+    if (!pending) { pending = getCfServicesForTenant(env, tenantId); services.set(tenantId, pending); }
+    return pending;
+  };
+  const depsFor = (tenantId: string) => {
+    let pending = deps.get(tenantId);
+    if (!pending) { pending = cfEvalDeps(env, tenantId); deps.set(tenantId, pending); }
+    return pending;
+  };
   return {
     forEachShard: (fn) => forEachShardServices(env, (s) => fn(s)),
-    getServicesForTenant: (tenantId) => getServices(env, tenantId),
-    getSandboxBinding: (tenantId, environmentId) =>
-      getSandboxBinding(env, tenantId, environmentId),
+    getServicesForTenant: (tenantId) => servicesFor(tenantId),
+    runtimeFor: async (tenantId) => (await depsFor(tenantId)).runtime,
+    benchmarksFor: async (tenantId) => (await depsFor(tenantId)).benchmarks,
   };
 }
 
-/** Same signature as the pre-extract eval-runner — kept for the
- *  integration test that imports this path. */
+/** Kept for test/integration/evals-route.test.ts, which imports this path. */
 export async function tickEvalRuns(env: Env): Promise<{ advanced: number; total: number }> {
   return tickRunsImpl(buildCfEvalRunnerContext(env));
 }

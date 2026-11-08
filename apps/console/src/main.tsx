@@ -4,6 +4,7 @@ import {
   Navigate,
   RouterProvider,
   createBrowserRouter,
+  useParams,
   type RouteObject,
   type UIMatch,
 } from "react-router";
@@ -44,6 +45,12 @@ import { consolePlugins } from "./plugins/registry";
  * fixed labels pass a string; for dynamic labels (resource name from
  * the loader) pass a function that reads the match.
  */
+
+/** /evals/datasets/:id predates benchmarks; the ids carried over. */
+function LegacyDatasetRedirect() {
+  const { benchmarkId = "" } = useParams<{ benchmarkId: string }>();
+  return <Navigate to={`/evals/benchmarks/${encodeURIComponent(benchmarkId)}`} replace />;
+}
 
 const protectedRoutes: RouteObject[] = [
   { index: true, lazy: async () => ({ Component: (await import("./pages/Dashboard")).Dashboard }), handle: { crumb: "Dashboard" } },
@@ -98,9 +105,31 @@ const protectedRoutes: RouteObject[] = [
   { path: "files", lazy: async () => ({ Component: (await import("./pages/FilesList")).FilesList }), handle: { crumb: "Files" } },
   {
     path: "evals",
-    handle: { crumb: "Eval Runs" },
+    handle: { crumb: "Evals" },
     children: [
       { index: true, lazy: async () => ({ Component: (await import("./pages/EvalRunsList")).EvalRunsList }) },
+      {
+        path: "benchmarks",
+        handle: { crumb: "Benchmarks" },
+        children: [
+          { index: true, lazy: async () => ({ Component: (await import("./pages/EvalBenchmarksList")).EvalBenchmarksList }) },
+          {
+            path: ":benchmarkId",
+            handle: { crumb: (m: UIMatch) => (m.params.benchmarkId as string | undefined) ?? "Benchmark" },
+            children: [
+              { index: true, lazy: async () => ({ Component: (await import("./pages/EvalBenchmarkDetail")).EvalBenchmarkDetail }) },
+              {
+                path: "cases/:caseName",
+                lazy: async () => ({ Component: (await import("./pages/EvalCaseDetail")).EvalCaseDetail }),
+                handle: { crumb: (m: UIMatch) => (m.params.caseName as string | undefined) ?? "Case" },
+              },
+            ],
+          },
+        ],
+      },
+      // Pre-benchmark URLs.
+      { path: "datasets", element: <Navigate to="/evals/benchmarks" replace /> },
+      { path: "datasets/:benchmarkId", element: <LegacyDatasetRedirect /> },
       {
         path: ":id",
         lazy: async () => ({ Component: (await import("./pages/EvalRunDetail")).EvalRunDetail }),

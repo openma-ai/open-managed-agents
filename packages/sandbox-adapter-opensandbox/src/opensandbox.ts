@@ -8,6 +8,7 @@ import type {
   SandboxFactory, SandboxFactoryEnv, SandboxPort, SandboxProviderPort,
   SandboxRuntimeHandle, SandboxRuntimePort, SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
+import { DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe } from "@open-managed-agents/sandbox";
 import { spawnBridge } from "./stdio-bridge";
 
 export interface OpenSandboxOptions {
@@ -86,6 +87,15 @@ export function openSandboxVolumeIdentity(volume: Volume): string {
  * by OPENSANDBOX_VOLUMES. Volumes are fixed at Sandbox.create, so attach only
  * verifies the acquired runtime was created with the same volume identity.
  */
+/** OpenSandbox validates metadata like Kubernetes label values (<=63 chars,
+ * alphanumeric at both ends, then [A-Za-z0-9_.-]); Session ids may end in
+ * `_` or `-`. The label is informational only, so it is normalised rather
+ * than letting an unlucky id fail sandbox creation. */
+export function sessionLabel(sessionId: string): Record<string, string> {
+  const value = sessionId.replace(/[^A-Za-z0-9_.-]/gu, "-").slice(0, 63).replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/gu, "");
+  return value === "" ? {} : { "oma-session-id": value };
+}
+
 export function openSandboxDurableMount(env: SandboxFactoryEnv, mountPath: string) {
   const volume = volumesFromEnvironment(env).find(v => v.mountPath === mountPath);
   if (volume === undefined) throw new Error(`OPENSANDBOX_VOLUMES has no volume mounted at ${mountPath}`);
@@ -177,7 +187,12 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   private destroyed = false;
   readonly id: string;
 
-  constructor(private client: SdkSandbox, private readonly options: OpenSandboxOptions) {
+  constructor(
+    private client: SdkSandbox,
+    private readonly options: OpenSandboxOptions,
+    /** The image's WORKDIR, or /workspace when it declares none (ADR 0016). */
+    readonly workspaceRoot: string = DEFAULT_WORKSPACE_ROOT,
+  ) {
     this.id = client.id;
   }
 
@@ -292,6 +307,9 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     } finally { await manager.close(); }
   }
 
+  async resolveWorkspaceRoot(): Promise<string> { return this.workspaceRoot; }
+  /** Relative paths resolve against the workspace root, like `exec`. */
+  resolvePath(path: string): string { return path.startsWith("/") ? path : `${this.workspaceRoot}/${path}`; }
   async setEnvVars(env: Record<string, string>): Promise<void> { Object.assign(this.env, env); }
   registerCommandSecrets(prefix: string, values: Record<string, string>): void { this.secrets.push({ prefix, values }); }
   commandEnv(command: string, env?: Record<string, string | undefined>): Record<string, string> {
@@ -303,7 +321,7 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
 
   async run(command: string, timeout = 120_000, background = false): Promise<CommandExecution> {
     const execution = await this.call(() => this.client.commands.run(command, {
-      workingDirectory: "/workspace", background, envs: this.commandEnv(command),
+      workingDirectory: this.workspaceRoot, background, envs: this.commandEnv(command),
       ...(background ? {} : { timeoutSeconds: timeout / 1000 }),
     }, undefined, AbortSignal.timeout(timeout + 30_000)));
     // Nonzero exits can finish with an SDK error and exitCode, without a
@@ -313,8 +331,8 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
   async exec(command: string, timeout?: number): Promise<string> {
     const result = await this.run(command, timeout);
-    const stdout = result.logs.stdout.map((message) => message.text).join("");
-    const stderr = result.logs.stderr.map((message) => message.text).join("");
+    const stdout = joinOutputLines(result.logs.stdout);
+    const stderr = joinOutputLines(result.logs.stderr);
     const exitCode = result.exitCode ?? 0;
     if (result.error && !exitCode) throw new Error("OpenSandbox command failed to execute");
     const combined = (stdout + (stderr ? `${stdout && !stdout.endsWith("\n") ? "\n" : ""}${stderr}` : "")).trimEnd();
@@ -322,24 +340,24 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
-    return this.call(() => this.client.files.readBytes(normalise(path)));
+    return this.call(() => this.client.files.readBytes(this.resolvePath(path)));
   }
   async readFile(path: string): Promise<string> { return Buffer.from(await this.readFileBytes(path)).toString("utf8"); }
   async writeFile(path: string, content: string): Promise<string> { return this.writeFileBytes(path, Buffer.from(content)); }
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
-    const target = normalise(path);
+    const target = this.resolvePath(path);
     await this.call(() => this.client.files.createDirectories([{ path: target.slice(0, target.lastIndexOf("/")) || "/", mode: 755 }]));
     await this.call(() => this.client.files.writeFiles([{ path: target, data: bytes, mode: 644 }]));
     return target;
   }
   /** Writes owner-only files (dir 0700, files 0600) for data that must stay off argv. */
   async writePrivateFiles(dir: string, files: Record<string, Uint8Array>): Promise<void> {
-    const target = normalise(dir);
+    const target = this.resolvePath(dir);
     await this.call(() => this.client.files.createDirectories([{ path: target, mode: 700 }]));
     await this.call(() => this.client.files.writeFiles(Object.entries(files).map(([name, data]) => ({ path: `${target}/${name}`, data, mode: 600 }))));
   }
   async removeDirectory(dir: string): Promise<void> {
-    await this.call(() => this.client.files.deleteDirectories([normalise(dir)]));
+    await this.call(() => this.client.files.deleteDirectories([this.resolvePath(dir)]));
   }
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec) {
     return spawnBridge(this, spec, randomInt(45000, 65000));
@@ -353,7 +371,32 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
 }
 
-function normalise(path: string): string { return path.startsWith("/") ? path : `/workspace/${path}`; }
+/**
+ * execd frames command output one line per message with the line break
+ * removed, and reports an empty line as a lone "\n". Rebuild the text with
+ * the line breaks restored; a message that still carries its own trailing
+ * break is accepted too.
+ */
+export function joinOutputLines(messages: ReadonlyArray<{ text: string }>): string {
+  return messages
+    .map(({ text }) => text === "\n" ? "" : text.endsWith("\n") ? text.slice(0, -1) : text)
+    .join("\n");
+}
+
+/**
+ * Resolve the workspace root (ADR 0016): a command without an explicit cwd
+ * runs in the image's WORKDIR. Then make sure it and the platform root exist.
+ */
+async function prepareWorkspace(client: SdkSandbox): Promise<string> {
+  const probe = await client.commands.run("pwd", {});
+  if (!probe.complete || probe.exitCode) throw new Error("OpenSandbox could not resolve the working directory");
+  const workspaceRoot = workspaceRootFromProbe(joinOutputLines(probe.logs.stdout));
+  await client.files.createDirectories([
+    { path: workspaceRoot, mode: 755 },
+    { path: PLATFORM_ROOT, mode: 755 },
+  ]);
+  return workspaceRoot;
+}
 
 async function allocate(
   ctx: Parameters<SandboxProviderPort["create"]>[0], env: SandboxFactoryEnv, snapshotId?: string,
@@ -362,6 +405,13 @@ async function allocate(
   if (options.runtime === "fast" && snapshotId === undefined && !options.templateId) {
     throw new Error("OPENSANDBOX_RUNTIME=fast requires OPENSANDBOX_TEMPLATE_ID for creation");
   }
+  // A catalog image selected by the Environment overrides SANDBOX_IMAGE. Fast
+  // Sandbox creates from its template only, so it must refuse rather than
+  // silently run the template instead of the selected image.
+  if (ctx.image !== undefined && options.runtime === "fast" && snapshotId === undefined) {
+    throw new Error("OPENSANDBOX_RUNTIME=fast cannot honour a per-environment sandbox image");
+  }
+  const image = ctx.image?.reference ?? options.image;
   const sdk = await loadSdk();
   const operation = snapshotId === undefined ? "create" : "restore";
   let client: SdkSandbox;
@@ -369,7 +419,7 @@ async function allocate(
     const common = {
       connectionConfig: configuration(sdk, options),
       timeoutSeconds: options.timeoutSeconds,
-      metadata: { "oma-session-id": ctx.sessionId },
+      metadata: sessionLabel(ctx.sessionId),
       readyTimeoutSeconds: options.readyTimeoutMs / 1000,
       signal: AbortSignal.timeout(options.readyTimeoutMs),
     };
@@ -378,7 +428,7 @@ async function allocate(
       : await sdk.Sandbox.create({
         ...common,
         // The server treats image and snapshotId as mutually exclusive.
-        ...(snapshotId === undefined ? { image: options.image } : { snapshotId }),
+        ...(snapshotId === undefined ? { image } : { snapshotId }),
         // An empty resource map prevents the SDK's container defaults from
         // overriding the fixed Fast Sandbox pool profile during restore.
         resource: options.runtime === "fast" ? {} : { cpu: options.cpu, memory: options.memory },
@@ -386,13 +436,13 @@ async function allocate(
         entrypoint: ["tail", "-f", "/dev/null"],
       });
   } catch (error) { throw providerError(operation, error); }
-  const sandbox = new OpenSandbox(client, options);
+  let sandbox = new OpenSandbox(client, options);
   try {
-    await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
+    sandbox = new OpenSandbox(client, options, await prepareWorkspace(client));
     return sandbox;
   } catch (error) {
     await sandbox.destroy().catch(() => undefined);
-    throw providerError("request", error);
+    throw error instanceof Error && error.message.startsWith("Sandbox reported") ? error : providerError("request", error);
   }
 }
 
@@ -420,12 +470,12 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
       // A retained runtime suspended by this adapter is resumed in place.
       client = state === "paused" ? await sdk.Sandbox.resume(connect) : await sdk.Sandbox.connect(connect);
       if (state === "paused" && options.runtime !== "fast") await client.renew(options.timeoutSeconds);
-      await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
+      const workspaceRoot = await prepareWorkspace(client);
+      return new OpenSandbox(client, options, workspaceRoot);
     } catch (error) {
       await client?.close();
-      throw providerError("resume", error);
+      throw error instanceof Error && error.message.startsWith("Sandbox reported") ? error : providerError("resume", error);
     }
-    return new OpenSandbox(client, options);
   },
   async restore(checkpoint, ctx, env) {
     if (checkpoint.provider !== "opensandbox" || checkpoint.scope !== "portable"

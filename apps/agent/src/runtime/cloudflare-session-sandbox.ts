@@ -24,7 +24,7 @@ import type { SandboxEgressPort } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
 import { log, logWarn } from "@open-managed-agents/shared";
 import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
-import { CloudflareSandbox } from "./sandbox";
+import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources, memoryStoreMountTarget } from "./resource-mounter";
 import { findLatestBackup, type WorkspaceBackupHandle } from "./workspace-backups";
@@ -34,6 +34,8 @@ export interface CloudflareSessionSandboxDeps {
   env: Env;
   /** Sandbox Durable Object name (the SessionDO id, 1-63 chars). */
   sandboxId: string;
+  /** Operator catalog image (container binding + workdir); null = SANDBOX. */
+  sandboxImage: CloudflareSandboxImage | null;
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
   warn(message: string): void;
 }
@@ -42,7 +44,7 @@ const IDLE_MS = 5 * 60_000;
 const START_ATTEMPTS = 3;
 
 export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDeps): PortsSessionSandbox<CloudflareSandboxRuntime> {
-  const sandbox = new CloudflareSandbox(deps.env, deps.sandboxId);
+  const sandbox = new CloudflareSandbox(deps.env, deps.sandboxId, deps.sandboxImage);
   const scope = () => {
     const s = deps.session();
     return { workspaceId: s.tenantId, environmentId: s.environmentId, sessionId: s.sessionId, workId: s.sessionId };

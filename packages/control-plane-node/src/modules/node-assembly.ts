@@ -8,6 +8,7 @@ import { setDbBoundaryLogger } from "@open-managed-agents/sql-client";
 import { Disposables } from "../lifecycle.js";
 import { installDbUnhandledRejectionNet } from "../lib/db-unhandled-rejection.js";
 import { buildNodeScheduler } from "../lib/node-scheduler-jobs.js";
+import { nodeEvalDeps } from "../lib/node-eval-runtime.js";
 import { createNodeRuntime } from "./node-runtime.js";
 import { mountNodeHttp } from "./node-http.js";
 
@@ -67,7 +68,7 @@ async function buildNodeControlPlane(
   const runtime = await createNodeRuntime(components, disposables, log);
   const {
     config, processMode, logger, metrics, backendDescription, platformRootSecret, sql,
-    agentStore, environmentsService, sessionsService, evalsService, kv,
+    evalsService, kv,
     memoryService, managedSessionExecutionWorker, sharedSessionOutputs,
   } = runtime;
   setDbBoundaryLogger((record) => {
@@ -82,13 +83,8 @@ async function buildNodeControlPlane(
   // because main-node doesn't construct a LinearProvider; pass `linearSweeper`
   // when an in-process gateway lands.
   const scheduler = buildNodeScheduler({
-    evalServices: {
-      agents: agentStore,
-      environments: environmentsService,
-      sessions: sessionsService,
-      evals: evalsService,
-      kv,
-    },
+    evalServices: { evals: evalsService, kv },
+    evalRuntime: nodeEvalDeps(runtime),
     memory: memoryService,
     integrationsSql: platformRootSecret ? sql : null,
     sessionOutputGarbageCollection: sharedSessionOutputs

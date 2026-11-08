@@ -151,7 +151,11 @@ export const handleCredentialEgressRequest = async (
 
   // Native interception shares the ordinary relay application. The binding
   // returns only forwarding results/metadata, never the upstream token.
-  if (params.tenantId && params.sessionId && e.MAIN_MCP) {
+  // Vault credentials are only ever injected over HTTPS (the relay rejects
+  // any other scheme with 400), so plain HTTP (e.g. apt mirrors) skips the
+  // lookup and is forwarded below with sandbox authorization stripped.
+  const injectable = url.protocol === "https:";
+  if (injectable && params.tenantId && params.sessionId && e.MAIN_MCP) {
     try {
       const scope = { tenantId: params.tenantId, sessionId: params.sessionId,
         ...(fence === null ? {} : { runtimeFence: fence }) };
@@ -162,10 +166,10 @@ export const handleCredentialEgressRequest = async (
     } catch {
       return new Response("credential egress unavailable", { status: 502 });
     }
-  } else if (required) {
+  } else if (injectable && required) {
     return new Response("credential egress unavailable", { status: 502 });
   }
-  const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required });
+  const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required || !injectable });
 
   let upstreamReq: Request;
   if (request.method === "GET" || request.method === "HEAD") {
@@ -1531,4 +1535,13 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
       },
     };
   }
+}
+
+/** Kept for operator container classes written against #544
+ * (operator-sandboxes.ts). With Sandbox SDK 1.0 outbound interception is an
+ * instance-level OmaOutbound entrypoint bound in intercept(), so a subclass
+ * of OmaSandbox already inherits the Vault egress and R2 routes; there are
+ * no per-class static registries to copy. */
+export function withOmaOutbound<T extends abstract new (...args: never[]) => OmaSandbox>(cls: T): T {
+  return cls;
 }

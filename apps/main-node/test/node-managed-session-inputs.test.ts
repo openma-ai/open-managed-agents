@@ -107,7 +107,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         repositoryCredentials: { findGithubToken: async () => null },
         memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
       });
-      const mountRoot = `/workspace/.openma/skills/skill_inputs/${requestedVersion ?? "latest"}/${directory}/`;
+      const mountRoot = `/oma/skills/skill_inputs/${requestedVersion ?? "latest"}/${directory}/`;
       for (const incarnation of ["initial", "recreated"]) {
         const written = new Map<string, Uint8Array>();
         const sandbox = {
@@ -297,11 +297,11 @@ describe("NodeManagedSessionInputPreparer", () => {
       version: "123",
     });
     expect(writeFileBytes).toHaveBeenCalledWith(
-      "/workspace/.openma/skills/skill_inputs/latest/certification-skill/SKILL.md",
+      "/oma/skills/skill_inputs/latest/certification-skill/SKILL.md",
       expect.any(Uint8Array),
     );
     expect(writeFileBytes).toHaveBeenCalledWith(
-      "/workspace/.openma/skills/skill_inputs/latest/certification-skill/reference.txt",
+      "/oma/skills/skill_inputs/latest/certification-skill/reference.txt",
       expect.any(Uint8Array),
     );
   });

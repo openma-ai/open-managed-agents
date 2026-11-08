@@ -11,6 +11,7 @@ import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api
 import type { ToolsetConfig, CustomToolConfig, SessionEvent } from "@open-managed-agents/shared";
 import type { ToMarkdownProvider } from "@open-managed-agents/markdown";
 import type { SandboxPort, ProcessHandle } from "./interface";
+import { workspaceRootOf } from "@open-managed-agents/sandbox";
 import { nanoid } from "nanoid";
 // Browser tools depend on the runtime-agnostic BrowserHarness interface.
 // Concrete adapters (CF / Node / CDP / Disabled) live in the package and
@@ -448,7 +449,7 @@ export async function buildTools(
      *  to attribute browser_active_seconds to the tenant/session. */
     browserBillingHook?: BrowserBillingHook | null;
     /** Pre-resolved auxiliary model — when present, web_fetch summarizes
-     *  large pages and offloads raw markdown to /workspace/.web/.
+     *  large pages and offloads raw markdown to /oma/web/.
      *  Falsy (default) = no aux work; web_fetch returns raw markdown. */
     auxModel?: LanguageModel;
     /** Provider-specific request defaults for auxiliary model calls. */
@@ -541,7 +542,7 @@ export async function buildTools(
         "By default reads the entire file. Use offset (1-based line number) and limit " +
         "(number of lines) to read large text files in chunks.",
       inputSchema: z.object({
-        file_path: z.string().describe("The absolute file path to read, e.g. /workspace/index.html"),
+        file_path: z.string().describe("The absolute file path to read, e.g. /app/index.html; relative paths resolve against the working directory"),
         offset: z.number().optional().describe("1-based line number to start reading from (text only)"),
         limit: z.number().optional().describe("Number of lines to read (text only)"),
       }),
@@ -617,7 +618,7 @@ export async function buildTools(
         "Write content to a file in the sandbox. Creates parent directories automatically. " +
         "Overwrites the file if it already exists.",
       inputSchema: z.object({
-        file_path: z.string().describe("The absolute file path to write to, e.g. /workspace/index.html"),
+        file_path: z.string().describe("The absolute file path to write to, e.g. /app/index.html; relative paths resolve against the working directory"),
         content: z.string().describe("The complete file content to write"),
       }),
       execute: safe(async ({ file_path, content }) => sandbox.writeFile(file_path, content)),
@@ -667,10 +668,10 @@ export async function buildTools(
         path: z
           .string()
           .optional()
-          .describe("Directory to search in (defaults to /workspace)"),
+          .describe("Directory to search in (defaults to the working directory)"),
       }),
       execute: safe(async ({ pattern, path }) => {
-        const dir = path || "/workspace";
+        const dir = path || await workspaceRootOf(sandbox);
         // Walk dir + match glob via bash, then sort by mtime desc, take head 250
         const cmd =
           `cd ${shellQuote(dir)} 2>/dev/null && ` +
@@ -699,7 +700,7 @@ export async function buildTools(
         '"count" shows match counts per file.',
       inputSchema: z.object({
         pattern: z.string().describe("The regular expression pattern to search for in file contents"),
-        path: z.string().optional().describe("File or directory to search (defaults to /workspace)"),
+        path: z.string().optional().describe("File or directory to search (defaults to the working directory)"),
         output_mode: z
           .enum(["content", "files_with_matches", "count"])
           .optional()
@@ -716,7 +717,7 @@ export async function buildTools(
       }),
       execute: safe(async (args) => {
         const pattern = args.pattern;
-        const dir = args.path || "/workspace";
+        const dir = args.path || await workspaceRootOf(sandbox);
         const mode = args.output_mode || "files_with_matches";
         const headLimit = args.head_limit === 0 ? 0 : (args.head_limit ?? 250);
         const showLineNumbers = args["-n"] !== false && mode === "content";
@@ -808,7 +809,7 @@ export async function buildTools(
         "fall back to browser_* tools only if you need to interact (click, fill forms) " +
         "or if the page is JS-rendered (SPA) and returns empty markdown. Large pages " +
         "may be auto-summarized when an aux model is configured on the agent — the " +
-        "full raw markdown is then saved to /workspace/.web/, readable via the `read` " +
+        "full raw markdown is then saved to /oma/web/, readable via the `read` " +
         "tool when you need detail beyond the summary.",
       inputSchema: z.object({
         url: z.string().describe("URL to fetch"),
@@ -895,12 +896,12 @@ export async function buildTools(
         const SUMMARY_THRESHOLD = 5000;
         if (env?.auxModel && env?.auxModelInfo && !isRaw && markdown.length > SUMMARY_THRESHOLD) {
           const t0 = Date.now();
-          // Sandbox-side cache key: sha-256(url) → /workspace/.web/<hex>.md
+          // Sandbox-side cache key: sha-256(url) → /oma/web/<hex>.md (outside the task tree)
           const sha = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url));
           const hex = Array.from(new Uint8Array(sha)).map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
-          const rawPath = `/workspace/.web/${hex}.md`;
+          const rawPath = `/oma/web/${hex}.md`;
           try {
-            await sandbox.exec(`mkdir -p /workspace/.web`, 5000).catch(() => "");
+            await sandbox.exec(`mkdir -p /oma/web`, 5000).catch(() => "");
             await sandbox.writeFile(rawPath, markdown);
           } catch (writeErr) {
             console.warn(`[web_fetch] failed to offload raw markdown for ${url}: ${(writeErr as Error).message}`);

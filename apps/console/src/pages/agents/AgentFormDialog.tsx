@@ -581,7 +581,7 @@ export function AgentFormDialog({
           role="dialog"
           aria-modal="true"
           aria-label={isEdit ? t.agents.editAgentTitle : t.agents.newAgentTitle}
-          className="bg-bg rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col"
+          className="bg-bg rounded-lg shadow-xl w-full max-w-2xl max-h-[var(--modal-viewport-cap)] flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Template selection step — create only */}

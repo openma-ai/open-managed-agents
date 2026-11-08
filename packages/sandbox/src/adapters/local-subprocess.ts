@@ -498,6 +498,10 @@ export class LocalSubprocessSandbox
       normalised = normalised === "/mnt/session/outputs"
         ? ".mnt/session/outputs"
         : ".mnt/session/outputs/" + normalised.slice("/mnt/session/outputs/".length);
+    } else if (normalised.startsWith("/oma/") || normalised === "/oma") {
+      // Platform root (ADR 0016): harness state and agent homes. Kept under
+      // the workdir's .mnt tree so concurrent local sessions never share it.
+      normalised = normalised === "/oma" ? ".mnt/oma" : ".mnt/oma/" + normalised.slice("/oma/".length);
     } else if (normalised.startsWith("/workspace/")) normalised = normalised.slice("/workspace/".length);
     else if (normalised === "/workspace") normalised = "";
     else if (normalised.startsWith("/")) normalised = normalised.slice(1);
@@ -608,9 +612,9 @@ export class LocalSubprocessSandbox
 }
 
 /** Logical roots every real sandbox exposes; see resolvePath. */
-const SANDBOX_ROOTS = ["/workspace", "/mnt/memory", "/mnt/session/outputs"] as const;
+const SANDBOX_ROOTS = ["/workspace", "/mnt/memory", "/mnt/session/outputs", "/oma"] as const;
 const SANDBOX_ROOT_TOKEN =
-  /(^|[\s'"=:(`])(\/workspace|\/mnt\/memory|\/mnt\/session\/outputs)(?=$|[\/\s'"`;:)|&<>])/g;
+  /(^|[\s'"=:(`])(\/workspace|\/mnt\/memory|\/mnt\/session\/outputs|\/oma)(?=$|[\/\s'"`;:)|&<>])/g;
 
 function makeReadOnlyRecursive(path: string): void {
   let info;

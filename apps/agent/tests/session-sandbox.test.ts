@@ -66,6 +66,7 @@ function cfDeps(resources: Array<Record<string, unknown>> = []) {
       env,
       storage: {} as never,
       sandboxId: "do-hex-id",
+      sandboxImage: null,
       session: () => session,
       networking: async () => undefined,
       warn: (message: string) => { warnings.push(message); },

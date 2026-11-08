@@ -16,7 +16,7 @@
 //     continue to live in CONFIG_KV under `t:{tenant}:trajectory:{id}` keys
 //     (eval-runner.ts:169), referenced by id from inside the `results` blob.
 
-export type EvalRunStatus = "pending" | "running" | "completed" | "failed";
+export type EvalRunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export interface EvalRunRow {
   id: string;

@@ -4,6 +4,7 @@
 
 import type { Env } from "@open-managed-agents/shared";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
+import type { CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSessionSandbox } from "./cloudflare-session-sandbox";
 import { createE2BSessionSandbox, type SessionNetworking } from "./e2b-session-sandbox";
 import type { PortsSessionSandbox } from "./session-sandbox";
@@ -13,6 +14,8 @@ export interface SessionSandboxDeps {
   storage: Pick<DurableObjectStorage, "get" | "put" | "delete">;
   /** Sandbox Durable Object name for the Cloudflare adapter. */
   sandboxId: string;
+  /** Operator catalog image for the Cloudflare adapter; null = SANDBOX. */
+  sandboxImage: CloudflareSandboxImage | null;
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
   networking(): Promise<SessionNetworking | undefined>;
   warn(message: string): void;
