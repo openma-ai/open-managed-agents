@@ -46,6 +46,16 @@ const GUIDES: Array<{ path: string; title: string; note: string }> = [
     note: "What an AI agent platform is: orchestration, sessions, sandboxes, model routing, and durability.",
   },
   {
+    path: "/agent-as-a-service/",
+    title: "Agent as a Service",
+    note: "Agent as a service: a runtime runs your agents behind an API, with sessions, sandboxes, tools, credentials and recovery. Use OpenMA hosted or self-host it.",
+  },
+  {
+    path: "/compare/",
+    title: "Compare OpenMA vs Agent Platforms and Runtimes",
+    note: "OpenMA compared with Claude Managed Agents, OpenAI Agents API, Kimi Hosted Agents, open-source runtimes and coding agents, with links to each comparison.",
+  },
+  {
     path: "/claude-tag-alternative/",
     title: "Open-Source Claude Tag Alternative You Can Self-Host",
     note: "Build a Claude Tag-style agent on Docker or Cloudflare with Slack, MCP, private tools, durable sessions and BYOK models.",
