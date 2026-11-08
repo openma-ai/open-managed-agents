@@ -4048,6 +4048,9 @@ importers:
       '@open-managed-agents/sandbox-egress':
         specifier: workspace:*
         version: link:../sandbox-egress
+      '@open-managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../session-runtime
       aws4fetch:
         specifier: 1.0.20
         version: 1.0.20

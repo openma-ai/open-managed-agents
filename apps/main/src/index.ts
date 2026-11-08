@@ -134,7 +134,7 @@ import {
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
-import { authorizeSandboxEgress, type SandboxGatewayStores } from "@open-managed-agents/sandbox-gateway";
+import { authorizeEnvironmentWorkEgress, authorizeSandboxEgress, isEnvironmentWorkFenceCurrent, type EnvironmentWorkFenceRef, type SandboxGatewayStores } from "@open-managed-agents/sandbox-gateway";
 import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
 import { issueCfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
 import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
@@ -2200,16 +2200,13 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     const db = await buildCfTenantDbProvider(this.env).resolve(scope.tenantId);
     let authorize: () => Promise<{ vaultIds: readonly string[] } | null>;
     if (scope.runtimeFence !== undefined) {
-      // ManagedRuntimeHost (environment worker) still fences with
-      // runtime_resource_fences until it moves to v2 (design §0.0 rule 10).
-      const fence = { workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence, expiresAt: new Date(0).toISOString() };
+      // Self-hosted Environment Work has no execution attempt (ADR 0005, the
+      // exception in design §0.0 rule 10): its fence is the authority.
+      const fence: EnvironmentWorkFenceRef = { workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence };
       const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-      if (!await fences.isCurrent(fence)) return new Response("Credential relay denied", { status: 403 });
-      authorize = async () => {
-        if (!await fences.isCurrent(fence)) return null;
-        const session = await new SqlSessionSource(new CfD1SqlClient(db)).find({ workspaceId: scope.tenantId, sessionId: scope.sessionId });
-        return session === null || session.archivedAt !== null ? null : session;
-      };
+      if (!await isEnvironmentWorkFenceCurrent(fences, fence)) return new Response("Credential relay denied", { status: 403 });
+      const sessions = new SqlSessionSource(new CfD1SqlClient(db));
+      authorize = () => authorizeEnvironmentWorkEgress(fences, (input) => sessions.find(input), fence);
     } else {
       // A Session sandbox: only while its execution attempt is current. No
       // attempt (between turns, warmup before the first turn) → no Vault.
@@ -2263,22 +2260,13 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       cfSandboxGatewayStores(this.env),
       opts.executionFence === undefined ? null : { workspaceId: opts.tenantId, sessionId: opts.sessionId, ...opts.executionFence },
     ) === null) return null;
-    const fence = opts.runtimeFence === undefined
+    const fence: EnvironmentWorkFenceRef | null = opts.runtimeFence === undefined
       ? null
-      : {
-          workspaceId: opts.tenantId,
-          environmentId: opts.runtimeFence.environmentId,
-          sessionId: opts.sessionId,
-          workId: opts.runtimeFence.workId,
-          ownerId: opts.runtimeFence.ownerId,
-          generation: opts.runtimeFence.generation,
-          token: opts.runtimeFence.token,
-          expiresAt: new Date(0).toISOString(),
-        };
+      : { workspaceId: opts.tenantId, sessionId: opts.sessionId, ...opts.runtimeFence };
     const runtimeFences = fence === null
       ? null
       : new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-    if (fence !== null && !await runtimeFences!.isCurrent(fence)) {
+    if (fence !== null && !await isEnvironmentWorkFenceCurrent(runtimeFences!, fence)) {
       throw new Error("stale runtime credential-egress fence");
     }
     const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
@@ -2312,7 +2300,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
             pathname: opts.pathname,
           },
         );
-    if (fence !== null && !await runtimeFences!.isCurrent(fence)) {
+    if (fence !== null && !await isEnvironmentWorkFenceCurrent(runtimeFences!, fence)) {
       throw new Error("stale runtime credential-egress fence");
     }
     return credential;

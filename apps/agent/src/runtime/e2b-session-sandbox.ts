@@ -37,7 +37,7 @@ import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
 import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
-import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxState } from "@open-managed-agents/session-runtime";
+import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxIdleTimer, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 export interface E2BSandboxEnv {
   E2B_API_KEY?: string;
@@ -88,6 +88,8 @@ export interface E2BSessionSandboxOptions {
   now(): number;
   /** The Session's current execution attempt; omitted = egress never rebinds on it. */
   fence?(): SandboxExecutionFence | undefined;
+  /** The host's idle timer (SessionDO alarm); omitted = never paused. */
+  idle?: SessionSandboxIdleTimer;
 }
 
 /** The shared Session runtime on E2B. Exec output uses the Cloudflare
@@ -106,6 +108,7 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       warn: () => undefined,
       outputDurability: () => ({ durability: "best_effort" }),
       egressRenewMs: RELAY_PASS_TTL_MS / 2,
+      ...(options.idle === undefined ? {} : { idle: options.idle }),
       ...(options.fence === undefined ? {} : {
         execution: () => options.fence!(),
         isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(options.fence!()) === sandboxExecutionFenceKey(execution),
@@ -171,6 +174,8 @@ export function createE2BSessionSandbox(input: {
   scope(): RuntimeResourceScope;
   networking(): Promise<SessionNetworking | undefined>;
   fence(): SandboxExecutionFence | undefined;
+  /** Schedules the idle pause (design §0.0 rule 11) `pauseMs` = IDLE_MS. */
+  idleTimer?: Omit<SessionSandboxIdleTimer, "pauseMs">;
 }): E2BSessionSandbox {
   const { env } = input;
   const missing = (["E2B_API_KEY", "E2B_TEMPLATE", "E2B_MAX_LIFETIME_MS"] as const).filter((name) => !env[name]);
@@ -219,13 +224,11 @@ export function createE2BSessionSandbox(input: {
             // control plane's existing ingress (apps/main), which verifies the
             // pass and the Session itself.
             endpoint: { url: gateway ?? "https://egress-unconfigured.invalid" },
-            issueToken: async ({ scope }) => {
+            issueToken: async ({ attempt }) => {
               if (passes === null || gateway === undefined) {
                 throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PLATFORM_ROOT_SECRET and PUBLIC_BASE_URL");
               }
-              const current = input.fence?.();
-              return issueSandboxRelayPass((claims) => passes.issue(claims), current === undefined ? null
-                : { workspaceId: scope.workspaceId, sessionId: scope.sessionId, ...current }, RELAY_PASS_TTL_MS);
+              return issueSandboxRelayPass((claims) => passes.issue(claims), attempt, RELAY_PASS_TTL_MS);
             },
             authenticate: async () => null,
             handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),
@@ -252,6 +255,7 @@ export function createE2BSessionSandbox(input: {
     },
     now: Date.now,
     fence: input.fence,
+    ...(input.idleTimer === undefined ? {} : { idle: { pauseMs: IDLE_MS, ...input.idleTimer } }),
   });
 }
 

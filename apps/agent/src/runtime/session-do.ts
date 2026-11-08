@@ -182,6 +182,7 @@ import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-m
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
+import { createSandboxIdleAlarm } from "./sandbox-idle-alarm";
 import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 import { installGhCli, loadManagedSessionResources, proxiedRepositoryAccess } from "./managed-session-resources";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
@@ -4040,6 +4041,9 @@ export class SessionDO extends DurableObject<Env> {
     };
   }
 
+  /** Idle pause alarm callback (sandbox-idle-alarm.ts). */
+  async pauseIdleSandbox(): Promise<void> { this.ensureSandboxCreated(); await this.portsSandbox!.idlePause(); }
+
   /** Used inside warmup itself to avoid the wrap → warmup → wrap recursion. */
   private getRawSandbox(): SandboxExecutor {
     this.ensureSandboxCreated();
@@ -4055,12 +4059,7 @@ export class SessionDO extends DurableObject<Env> {
         sandboxId: this.ctx.id.toString().slice(0, 63),
         // Operator catalog image (#545 / ADR 0016) for the Cloudflare adapter.
         sandboxImage: this.state.sandbox_image ?? null,
-        session: () => ({
-          tenantId: this.state.tenant_id,
-          environmentId: this.state.environment_id,
-          sessionId: this.state.session_id,
-          agentId: this.state.agent_id || null,
-        }),
+        session: () => ({ tenantId: this.state.tenant_id, environmentId: this.state.environment_id, sessionId: this.state.session_id, agentId: this.state.agent_id || null }),
         networking: async () => {
           const envId = this.state.environment_id;
           const config = envId ? await this.getEnvConfig(envId) : null;
@@ -4069,11 +4068,8 @@ export class SessionDO extends DurableObject<Env> {
         // Sandbox egress follows a current execution attempt of this
         // Session; none between turns (design §0.0 rule 10).
         fence: () => this._executionFences.values().next().value,
-        warn: (message) => {
-          try {
-            this.persistAndBroadcastEvent({ type: "session.warning", message } as unknown as SessionEvent);
-          } catch {}
-        },
+        warn: (message) => { try { this.persistAndBroadcastEvent({ type: "session.warning", message } as unknown as SessionEvent); } catch {} },
+        idleTimer: createSandboxIdleAlarm(this, "pauseIdleSandbox"),
       });
       this.sandbox = this.portsSandbox;
       this.wrappedSandbox = this.wrapSandboxWithLazyWarmup(this.sandbox);
