@@ -6,6 +6,7 @@
 import type { EgressPolicy, SandboxEgressPort, SandboxPort } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { clearSandboxEgress, prepareSandboxEgress } from "@open-managed-agents/sandbox-egress";
+import { attemptOfFence } from "@open-managed-agents/session-runtime/session-sandbox-fence";
 import { compileFirewall } from "./firewall";
 import type { SandboxEgressDepsPort, SandboxVendorPort } from "./ports";
 import { v1FileView } from "./sync-storage";
@@ -61,7 +62,7 @@ export function createForwarderEgress<R extends object>(
         vaultIds: [...new Set(substitutions.map((item) => item.credentialId))],
       },
       relay: { endpoint: deps.gateway.endpoint.url, pass: "" },
-      issuePass: () => deps.gateway.issueToken({ scope: input.scope, fence: input.fence }),
+      issuePass: () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence) }),
       placeholders: async () => placeholders,
     });
     input.signal.throwIfAborted();

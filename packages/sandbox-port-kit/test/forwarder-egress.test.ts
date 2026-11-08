@@ -48,6 +48,31 @@ describe("createForwarderEgress firewall today (characterization)", () => {
   });
 });
 
+describe("relay pass binding (design §0.0 rule 10)", () => {
+  const withVault: EgressPolicy = {
+    ...limited,
+    substitutions: [{ envName: "TOKEN", placeholder: "__p__", credentialId: "vault", hosts: ["api.example.com"] }] as never,
+  };
+  const attachWith = async (attachFence: typeof fence) => {
+    const issued: unknown[] = [];
+    const egress = createForwarderEgress(vendor([]), {
+      gateway: { ...deps.gateway, issueToken: async (input) => { issued.push(input.attempt); return "pass"; } },
+    });
+    await egress.attach({ runtime: {}, scope, fence: attachFence, policy: withVault, signal }).catch(() => undefined);
+    return issued;
+  };
+
+  it("issues the pass for the execution attempt the fence carries", async () => {
+    expect(await attachWith({ ...fence, workId: "exe", ownerId: "owner", generation: 4, token: "att" })).toEqual([
+      { workspaceId: "ws", sessionId: "sess", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 4 },
+    ]);
+  });
+
+  it("issues with no attempt under the placeholder fence", async () => {
+    expect(await attachWith({ ...fence, ownerId: "session-do", token: "session-do" })).toEqual([null]);
+  });
+});
+
 describe("platform channels (design §0.6: limited + github_repository)", () => {
   it("adds the composition's channels, e.g. the attached repository's host, to the limited allowlist", async () => {
     const applied: FirewallRules[] = [];

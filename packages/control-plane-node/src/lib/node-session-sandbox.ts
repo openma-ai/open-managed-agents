@@ -274,12 +274,10 @@ export class NodeSessionSandbox implements SandboxPort {
           egress: {
             gateway: {
               endpoint: { url: options.relay()?.endpoint ?? "https://unavailable.invalid" },
-              issueToken: async ({ scope: s, fence }) => {
+              issueToken: async ({ attempt }) => {
                 const relay = options.relay();
                 if (relay === null || !nodeCredentialEgress(relay)) throw new Error(NO_CREDENTIAL_EGRESS);
-                const execution = executionOfFence(fence);
-                return issueSandboxRelayPass((claims) => relay.issue(claims), execution === undefined ? null
-                  : { workspaceId: s.workspaceId, sessionId: s.sessionId, ...execution }, NODE_RELAY_PASS_TTL_MS);
+                return issueSandboxRelayPass((claims) => relay.issue(claims), attempt, NODE_RELAY_PASS_TTL_MS);
               },
               authenticate: async () => null,
               handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),

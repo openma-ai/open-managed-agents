@@ -16,6 +16,7 @@ import {
 
 export type { SessionExecutionAttemptRef, SessionExecutionLease, SessionExecutionLeases };
 export * from "./vault-substitution";
+export * from "./environment-work-egress";
 
 export interface SandboxGatewaySession {
   archivedAt: string | null;

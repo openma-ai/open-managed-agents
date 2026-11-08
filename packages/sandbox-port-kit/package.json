@@ -18,6 +18,7 @@
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/sandbox-egress": "workspace:*",
+    "@open-managed-agents/session-runtime": "workspace:*",
     "aws4fetch": "1.0.20"
   },
   "devDependencies": {
