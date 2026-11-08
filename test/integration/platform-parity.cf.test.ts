@@ -95,7 +95,8 @@ const goldens = Object.fromEntries(
 const STUB_CAUSE =
   "sandbox double: golden runs real commands (local-subprocess); the CF double test/sandbox-stub.ts:76 returns empty "
   + "stdout for every exec and :92-93 no-op read/write, so bash renders \"exit=0\", read \"(completed with no output)\" "
-  + "(apps/agent/src/harness/tools.ts:212) and write \"ok\" — a harness difference, not product behaviour";
+  + "(apps/agent/src/harness/tools.ts:212) and write \"ok\" — a test-double difference, not product behaviour. Kept: "
+  + "workerd cannot run commands, and making the stub fake real output would only bend the double to the golden";
 const stub = (scenario: string, paths: string[]): KnownDifference => ({
   scenario,
   title: "sandbox double tool output",
@@ -115,23 +116,31 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
     title: "agent memory write not in the store",
     paths: ["/reads/memories"],
     cause: "golden lists /learned.md written by the agent; CF lists only /seed.md: without R2 FUSE credentials the memory "
-      + "store mount falls back to a local directory (apps/agent/src/runtime/sandbox.ts:463-467), so agent writes never reach the store",
+      + "store mount falls back to a local directory (apps/agent/src/runtime/sandbox.ts:463-467), so agent writes never reach the store. "
+      + "Test environment, not product behaviour: the workerd suite has no R2 FUSE credentials; kept",
   },
   {
     scenario: "session-outputs",
     title: "outputs not published",
     paths: ["/reads/outputs", "/reads/output_read/status", "/reads/output_read/body"],
     cause: "golden lists report.txt and reads it (200 \"parity report\"); CF lists [] and 404s: without R2 FUSE credentials "
-      + "mountSessionOutputs uses a local directory (apps/agent/src/runtime/sandbox.ts:540-570), so nothing is published",
+      + "mountSessionOutputs uses a local directory (apps/agent/src/runtime/sandbox.ts:540-570), so nothing is published. "
+      + "Test environment, not product behaviour: the workerd suite has no R2 FUSE credentials; kept",
   },
   {
     scenario: "requires-action",
     title: "custom tool result echoed as agent.tool_result",
     paths: ["/events/agent.tool_result"],
     eventTypes: ["agent.tool_result"],
-    cause: "golden emits no agent.tool_result for user.custom_tool_result; CF appends and broadcasts one "
-      + "(apps/agent/src/runtime/session-do.ts:2199-2213) and emits the confirmed bash tool_result before session.status_running "
-      + "(golden: after). The path also carries the sandbox double's \"exit=0\" bash text",
+    cause: "golden (Node) emits no agent.tool_result for user.custom_tool_result; CF appends and broadcasts one (SessionDO "
+      + "user.custom_tool_result branches in the execution drain and the local queue drain) and so lists the confirmed bash "
+      + "tool_result before session.status_running (golden: after). Golden is the contract side: agent.tool_result.tool_use_id "
+      + "is \"The id of the agent.tool_use event this result corresponds to\" and a custom tool's result is the client's "
+      + "user.custom_tool_result (SDK events.d.ts:370-392, 1484-1511). Not converged yet: the CF DO log is both the public "
+      + "log and the harness transcript, and the echo is the transcript's tool result for history.ts (normalizeInterruptedToolCalls, "
+      + "eventsToMessages[Async]) and SessionDO's tool_use/tool_result pairing (toolUseAlreadyAnswered, resumeWhenToolBatchSettled, "
+      + "recovery stream, finalize-stale); Node maps user.custom_tool_result to agent.tool_result only in its harness history view "
+      + "(node-managed-harness-runtime.ts toHarnessHistoryEvent). The path also carries the sandbox double's \"exit=0\" bash text",
   },
   {
     scenario: "interrupt",
