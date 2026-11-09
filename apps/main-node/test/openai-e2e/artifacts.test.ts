@@ -1,6 +1,7 @@
 import { writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS } from "@open-managed-agents/session-runtime";
 import { bootOpenAINode, type OpenAINodeProcess } from "../_helpers/openai-node-process";
 
 const fixtures: OpenAINodeProcess[] = [];
@@ -72,7 +73,9 @@ describe("Artifact publication through the Node service and official SDK", () =>
     // pending. Restart opens the same on-disk SQLite, Files and workspace.
     await f.restart();
     const restored = f.client.beta.agents.sessions;
-    await expect.poll(async () => (await restored.artifacts.list(session.id)).data.length, { timeout: 60_000 }).toBe(2);
+    // SIGKILL cannot release its lease. Recovery must wait for the shared
+    // 90s authority to expire before another attempt can publish.
+    await expect.poll(async () => (await restored.artifacts.list(session.id)).data.length, { timeout: DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS + 20_000 }).toBe(2);
     const artifacts = (await restored.artifacts.list(session.id)).data;
     expect(artifacts).toContainEqual(before[0]);
     expect(artifacts.map(a => a.path).sort()).toEqual(["/workspace/outputs/a.txt", "/workspace/outputs/b.txt"]);
@@ -87,6 +90,6 @@ describe("Artifact publication through the Node service and official SDK", () =>
     expect((await f.client.beta.agents.sessions.artifacts.list(session.id)).data).toEqual(artifacts);
     expect(f.requests).toHaveLength(2);
     console.info("ARTIFACT_CRASH_ACCEPTANCE", JSON.stringify({ session_id: session.id, artifact_ids: artifacts.map(a => a.id), turn_id: turns[0]!.id, harness_model_requests: f.requests.length }));
-  }, 150_000);
+  }, 200_000);
 
 });
