@@ -91,7 +91,7 @@ await scenario("function-RA-deferred-steer-peer-settlement-pagination", async ()
   await api(1).events.create(session.id, body);
   await completed(session.id, 1, 1);
   const settled = await items(session.id, 1);
-  assertSingleFunctionSettlement(settled, action.call_id, action.turn_id);
+  assertSingleFunctionSettlement(settled, action.call_id, action.turn_id, "42");
   assert(settled.some(row => row.type === "message" && row.role === "assistant" && JSON.stringify(row.content).includes(nonce)));
   assert(settled.some(row => row.type === "message" && row.role === "user" && JSON.stringify(row.content).includes(nonce) && row.turn_id === action.turn_id));
   await api().events.create(session.id, body);

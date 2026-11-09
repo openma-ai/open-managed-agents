@@ -58,7 +58,7 @@ describe("OpenAI Node persistence recovery E2E", () => {
     expect(hasMessage(finished, "NATIVE_TOOL_RESULT_OK")).toBe(true);
     expect(finished.filter(item => item.type === "function_call")).toEqual([expect.objectContaining({ id: call!.id, turn_id: action.turn_id, status: "completed" })]);
     expect(finished.filter(item => item.type === "function_call_output")).toHaveLength(1);
-    assertSingleFunctionSettlement(finished, action.call_id, action.turn_id);
+    assertSingleFunctionSettlement(finished, action.call_id, action.turn_id, "42");
 
     await fixture.client.beta.agents.sessions.events.create(session.id, body);
     expect((await fixture.client.beta.agents.sessions.items.list(session.id)).data).toEqual(finished);
