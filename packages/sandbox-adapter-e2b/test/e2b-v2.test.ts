@@ -30,6 +30,7 @@ function shellOver(files: Map<string, Uint8Array>) {
     if (cmd === "id -u") return ok("1000\n");
     if (cmd.includes("EGRESS_READY:")) return ok(`EGRESS_READY:${JSON.stringify({ pid: 42, port: 18080, caFile: "/workspace/.oma-egress/ca.crt", caBundleFile: "/workspace/.oma-egress/ca-bundle.crt" })}\n`);
     if (cmd.includes("EGRESS_DIR:")) return ok("EGRESS_DIR:/workspace/.oma-egress\n");
+    if (cmd.includes("echo EGRESS_DELIVERED")) return ok("EGRESS_DELIVERED\n");
     if (cmd.includes("find . -type f")) {
       const root = cmd.includes("cd /mnt/session/outputs") ? "/mnt/session/outputs" : quoted(cmd)[0]!;
       const names = [...files.keys()].filter((p) => p.startsWith(`${root}/`)).map((p) => `./${p.slice(root.length + 1)}`);
@@ -421,7 +422,9 @@ describe("E2B v2 egress (generic forwarder over the E2B vendor)", () => {
     expect(issued).toEqual(["sess"]);
     expect(fake.calls.network.at(-1)).toEqual({ allowOut: ["control.example", "pypi.org"], denyOut: ["0.0.0.0/0"] });
     expect(new TextDecoder().decode(fake.files.get("/workspace/.oma-egress/relay.cjs")).length).toBeGreaterThan(100_000);
-    const binding = JSON.parse(new TextDecoder().decode(fake.files.get("/workspace/.oma-egress/binding.next.json")));
+    const staged = [...fake.files.keys()].filter((path) => /^\/workspace\/\.oma-egress\/binding\.[0-9a-f]{24}\.next\.json$/u.test(path));
+    expect(staged).toHaveLength(1);
+    const binding = JSON.parse(new TextDecoder().decode(fake.files.get(staged[0]!)));
     expect(binding).toEqual({ endpoint: "https://control.example", sessionId: "sess", token: "oma_sbx_test", deliveryId: expect.stringMatching(/^[0-9a-f]{24}$/u) });
     // Every generic exec runs from /workspace, where the installer's relative paths live.
     expect(fake.calls.commands.filter((c) => c.cmd.includes(".oma-egress")).every((c) => c.cmd.startsWith("cd /workspace 2>/dev/null; "))).toBe(true);

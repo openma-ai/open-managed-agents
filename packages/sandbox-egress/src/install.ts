@@ -52,23 +52,30 @@ export function createSandboxCredentialEgress(options: {
  * a 401, dead) is stopped and awaited first — so its exit can never remove
  * the new relay's ready.json — then a detached relay starts with the proxy
  * and CA variables unset. It then waits, bounded, until the relay reports
- * this deliveryId and binding.json is gone; a rejected binding (bindingError
- * with the file consumed) or a timeout is a failure, never a fallback. */
+ * this deliveryId and binding.json is gone. A relay that dies with this
+ * delivery still on disk (it decided to exit, e.g. on a 401, after it looked
+ * healthy) is replaced, up to twice. A rejected binding, a newer delivery in
+ * its place, or a timeout is a failure, never a fallback; failing removes
+ * this delivery's file if it is still there, so no token is left on disk. */
 const ENSURE_RELAY = `const fs=require('fs'),http=require('http'),cp=require('child_process'),path=require('path');
 const [dir,entry,id]=process.argv.slice(1),readyFile=path.join(dir,'ready.json'),bindingFile=path.join(dir,'binding.json');
 const read=()=>{try{return JSON.parse(fs.readFileSync(readyFile,'utf8'))}catch{return null}};
 const alive=pid=>{try{process.kill(pid,0);return true}catch{return false}};
 const healthy=r=>new Promise(done=>{if(!r||r.protocol!==${RELAY_PROTOCOL}||!alive(r.pid))return done(false);const q=http.get({host:'127.0.0.1',port:r.port,path:'/health',timeout:1000},s=>{s.resume();done(s.statusCode===200)});q.on('error',()=>done(false));q.on('timeout',()=>{q.destroy();done(false)})});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-const fail=m=>{process.stdout.write('EGRESS_FAILED:'+m+String.fromCharCode(10));process.exit(1)};
-(async()=>{let r=read();
-if(!await healthy(r)){if(r&&alive(r.pid)){try{process.kill(r.pid,'SIGTERM')}catch{}const t=Date.now();while(alive(r.pid)&&Date.now()-t<3000)await sleep(50);if(alive(r.pid))try{process.kill(r.pid,'SIGKILL')}catch{}}
+const delivered=()=>{try{return JSON.parse(fs.readFileSync(bindingFile,'utf8')).deliveryId}catch{return null}};
+const fail=m=>{if(delivered()===id)try{fs.unlinkSync(bindingFile)}catch{}process.stdout.write('EGRESS_FAILED:'+m+String.fromCharCode(10));process.exit(1)};
+const start=async r=>{if(r&&alive(r.pid)){try{process.kill(r.pid,'SIGTERM')}catch{}const t=Date.now();while(alive(r.pid)&&Date.now()-t<3000)await sleep(50);if(alive(r.pid))try{process.kill(r.pid,'SIGKILL')}catch{}}
 try{fs.unlinkSync(readyFile)}catch{}
 const env={...process.env};for(const k of ['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy','NODE_USE_ENV_PROXY','NODE_EXTRA_CA_CERTS'])delete env[k];
-const log=fs.openSync(path.join(dir,'relay.log'),'a');cp.spawn(process.execPath,[entry,dir],{detached:true,stdio:['ignore',log,log],env}).unref()}
+const log=fs.openSync(path.join(dir,'relay.log'),'a');const child=cp.spawn(process.execPath,[entry,dir],{detached:true,stdio:['ignore',log,log],env});child.unref();return child.pid};
+(async()=>{let r=read();let pid=r&&r.pid;let restarts=0;
+if(!await healthy(r))pid=await start(r);
 const t=Date.now();for(;;){r=read();const consumed=!fs.existsSync(bindingFile);
 if(r&&consumed&&r.bindingId===id&&await healthy(r)){process.stdout.write('EGRESS_READY:'+JSON.stringify({pid:r.pid,port:r.port,caFile:r.caFile,caBundleFile:r.caBundleFile})+String.fromCharCode(10));process.exit(0)}
 if(r&&consumed&&r.bindingId!==id&&r.bindingError)fail(String(r.bindingError));
+if(!consumed&&delivered()!==null&&delivered()!==id)fail('superseded by a newer delivery');
+if(!consumed&&pid&&!alive(pid)){if(++restarts>2)fail('relay exited before it took the binding');pid=await start(null)}
 if(Date.now()-t>8000)fail(consumed?'relay did not report this delivery':'binding was not consumed');
 await sleep(50)}})().catch(e=>fail(e&&e.message||'error'))`;
 
@@ -125,8 +132,12 @@ export async function prepareSandboxEgress(input: {
   // once it holds the binding in memory; `deliveryId` (random, non-secret)
   // is how this installer sees that its delivery — not an older one — was taken.
   const deliveryId = [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  await sandbox.writeFile("/workspace/.oma-egress/binding.next.json", JSON.stringify({ ...binding, deliveryId }));
-  await sandbox.exec(`chmod 600 ${quote(`${directory}/binding.next.json`)} && mv ${quote(`${directory}/binding.next.json`)} ${quote(`${directory}/binding.json`)}`, 5000);
+  // A per-delivery staging name: two installers never write one file, and
+  // the last mv (atomic rename) wins. A failed hand-over removes the staging file.
+  const staging = `binding.${deliveryId}.next.json`;
+  await sandbox.writeFile(`/workspace/.oma-egress/${staging}`, JSON.stringify({ ...binding, deliveryId }));
+  const handedOver = await sandbox.exec(`chmod 600 ${quote(`${directory}/${staging}`)} && mv ${quote(`${directory}/${staging}`)} ${quote(`${directory}/binding.json`)} && echo EGRESS_DELIVERED || rm -f ${quote(`${directory}/${staging}`)}`, 5000);
+  if (!handedOver.includes("EGRESS_DELIVERED")) throw new Error("Sandbox credential relay binding could not be delivered");
   const ready = `${directory}/ready.json`;
   if (sandbox.destroy && !lifecycles.has(sandbox)) {
     const cleanup = async (target: SandboxPort) => {

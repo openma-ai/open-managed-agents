@@ -64,7 +64,7 @@ describe("sandbox credential egress installation boundary", () => {
 
   it.each(["node missing", "health check failed"])("fails explicitly instead of installing proxy env when %s", async reason => {
     const setEnvVars = vi.fn();
-    const sandbox: SandboxPort = { exec: async command => command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : reason, readFile: async () => "", writeFile: async path => path, setEnvVars };
+    const sandbox: SandboxPort = { exec: async command => command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : reason, readFile: async () => "", writeFile: async path => path, setEnvVars };
     await expect(prepareSandboxEgress(input(sandbox))).rejects.toThrow(/installation\/readiness failed/);
     expect(setEnvVars).not.toHaveBeenCalled();
   });
@@ -75,7 +75,7 @@ describe("sandbox credential egress installation boundary", () => {
     server.override = call => {
       if (!call.url.pathname.endsWith("/command")) return;
       const command = (call.body as { command: string }).command;
-      const text = command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":42,"port":32123,"caFile":"/workspace/.oma-egress/ca.crt","caBundleFile":"/workspace/.oma-egress/ca-bundle.crt"}' : "";
+      const text = command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":42,"port":32123,"caFile":"/workspace/.oma-egress/ca.crt","caBundleFile":"/workspace/.oma-egress/ca-bundle.crt"}' : "";
       return new Response(`data: ${JSON.stringify({ type: "stdout", text })}\n\ndata: {"type":"execution_complete","execution_time":1}\n\n`, { headers: { "content-type": "text/event-stream" } });
     };
     const sandbox = await sandboxProvider.create({ sessionId: "session", workdir: "/workspace" }, { OPENSANDBOX_DOMAIN: "control.test:8080", OPENSANDBOX_API_KEY: "provider-key" });
@@ -99,12 +99,13 @@ describe("sandbox credential egress installation boundary", () => {
       name: "test", labels: [], filesystem: () => ({ writeFile: async (path: string) => { writes.push(path); }, readFile: async () => "", mkdir: async () => {} }),
       execFileHTTP: async (_file: string, args: string[], options: { env?: Record<string,string> }) => {
         const command = args.at(-1)!; commands.push({ command, env: options.env ?? {} });
-        return { stdout: command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":43,"port":32124,"caFile":"/workspace/.oma-egress/ca.crt","caBundleFile":"/workspace/.oma-egress/ca-bundle.crt"}' : "", stderr: "", exitCode: 0 };
+        return { stdout: command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":43,"port":32124,"caFile":"/workspace/.oma-egress/ca.crt","caBundleFile":"/workspace/.oma-egress/ca-bundle.crt"}' : "", stderr: "", exitCode: 0 };
       }, delete: async () => {}, closeControlConnection() {},
     };
     const sandbox = new SpritesRuntime({ client: {} as never, sprite: sprite as never });
     await prepareSandboxEgress(input(sandbox)); await sandbox.exec("gh api user");
-    expect(writes).toEqual(expect.arrayContaining(["/workspace/.oma-egress/relay.cjs", "/workspace/.oma-egress/binding.next.json"]));
+    expect(writes).toContain("/workspace/.oma-egress/relay.cjs");
+    expect(writes.filter((path) => /^\/workspace\/\.oma-egress\/binding\.[0-9a-f]{24}\.next\.json$/u.test(path))).toHaveLength(1);
     expect(commands.at(-1)!.env).toMatchObject({ HTTPS_PROXY: "http://127.0.0.1:32124", GITHUB_TOKEN: "__cap_managed__" });
   });
 });

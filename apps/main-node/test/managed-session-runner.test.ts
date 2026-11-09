@@ -28,7 +28,7 @@ function allocatedDaytonaSandbox(state: {
           await state.beforeCommand?.(command);
           const stdout = command.includes("EGRESS_READY:")
             ? 'EGRESS_READY:{"pid":123,"port":4567,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}'
-            : command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : "ok";
+            : command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : "ok";
           return { exitCode: 0, result: "", artifacts: { stdout } };
         } },
         fs: {

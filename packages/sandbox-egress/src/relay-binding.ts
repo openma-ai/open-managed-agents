@@ -1,8 +1,8 @@
 // The forwarder's binding (gateway endpoint + this execution's sandbox token
 // and the Session id it is sent with) lives in the relay's memory only.
 //
-// Delivery: the installer writes binding.next.json (0600) and mv's it to
-// binding.json. The relay claims it by an atomic rename to a private name —
+// Delivery: the installer writes binding.<deliveryId>.next.json (0600) and
+// mv's it to binding.json (atomic rename: a reader sees a whole file or none). The relay claims it by an atomic rename to a private name —
 // never read-then-unlink, which could delete a newer delivery landing in
 // between — parses and validates it, swaps it in as one object, and deletes
 // the claimed file. A malformed delivery is deleted too (it may hold a token)
