@@ -26,7 +26,7 @@
 import { parseExecResult, type Acquired, type ResumeRef, type SandboxHandle, type SandboxPlan } from "@open-managed-agents/sandbox";
 import { SessionSandboxFenceLostError } from "./session-sandbox-fence";
 import { disarmIdle } from "./session-sandbox-idle-pause";
-import { mergeStores, sameHandle, SessionSandboxStateConflictError, type LiveSessionSandbox, type OpenSandbox } from "./session-sandbox-live";
+import { errorText, mergeStores, sameHandle, SessionSandboxStateConflictError, type LiveSessionSandbox, type OpenSandbox } from "./session-sandbox-live";
 import type { SessionSandboxExecutor } from "./session-sandbox-options";
 import { isSnapshotRef, recordedHandle, SessionSandboxTransitionError, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
 import { attachEgress, attachStorage } from "./session-sandbox-storage-egress";
@@ -188,8 +188,11 @@ async function startNew<R>(
   };
   // A pause in place is gone with the sandbox; one that is a snapshot is the
   // latest snapshot (or older than the host's), tried below.
-  if (record.phase === "paused" && !isSnapshotRef(record.pauseRef)) {
-    const resumed = await tryResume(record.pauseRef);
+  if ("pauseRef" in record && record.pauseRef !== undefined && !isSnapshotRef(record.pauseRef)) {
+    const resumed = await tryResume(record.pauseRef).catch((error) => {
+      state.options.warn(`workspace_restore_failed ref=${record.pauseRef!.ref} error=${errorText(error)}`);
+      return "gone" as const;
+    });
     if (resumed !== "gone") return { opened: resumed, restored: false, publish: (handle, at) => ({ type: "resume", handle, at }) };
   }
   const snapshot = (await state.options.resumeRef()) ?? (record.latestSnapshot.status === "taken" ? record.latestSnapshot.ref : null);
@@ -253,13 +256,10 @@ async function warm<R>(state: LiveSessionSandbox<R>): Promise<void> {
 }
 
 async function readMarker(executor: SessionSandboxExecutor): Promise<string | null> {
-  try {
-    const result = parseExecResult(await executor.exec(`cat ${SANDBOX_GENERATION_MARKER} 2>/dev/null`));
-    const value = result.exitCode === 0 ? result.stdout.trim() : "";
-    return value.length > 0 ? value : null;
-  } catch {
-    return null;
-  }
+  // A transport/exec exception is not evidence that the container is gone.
+  const result = parseExecResult(await executor.exec(`cat ${SANDBOX_GENERATION_MARKER} 2>/dev/null`));
+  const value = result.exitCode === 0 ? result.stdout.trim() : "";
+  return value.length > 0 ? value : null;
 }
 
 async function writeMarker(executor: SessionSandboxExecutor, generation: string): Promise<void> {

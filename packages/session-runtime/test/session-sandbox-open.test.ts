@@ -4,7 +4,7 @@ import { PortsSessionSandbox } from "../src/ports-session-sandbox";
 import { SessionSandboxFenceLostError } from "../src/session-sandbox-fence";
 import { SandboxRestoreError } from "../src/session-sandbox-open";
 import type { SessionSandboxExecutor } from "../src/session-sandbox-options";
-import { initialSandboxState, type SessionSandboxState } from "../src/session-sandbox-state";
+import { initialSandboxState, transition, type SessionSandboxState } from "../src/session-sandbox-state";
 import { attempt, fakeSessionSandbox, runningRecord } from "./fake-session-sandbox-ports";
 
 // Opening the Session's sandbox (research/sandbox-sdk-v2-design.md §0.1
@@ -33,6 +33,20 @@ describe("Session sandbox recovery order (design §0.0b A.4)", () => {
     await h.sandbox.exec("x");
     expect(h.log).toEqual(["attach:r0", "egress.attach", "exec:x"]);
     expect(h.sandbox.restoredFromSnapshot()).toBe(false);
+  });
+
+  it("probe loss preserves the pause point and tries it before the snapshot even when resume throws", async () => {
+    const h = fakeSessionSandbox({ saved: transition(paused(), { type: "lose" }), resumable: ["snap-0"], resumeFails: ["pause-r0"] });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["resume:pause-r0", "resume:snap-0", "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(true);
+  });
+
+  it("a transient marker read error does not release a resumable sandbox", async () => {
+    const h = fakeSessionSandbox({ saved: paused(), markerError: new Error("transient exec failure") });
+    await expect(h.sandbox.exec("x")).rejects.toThrow("transient exec failure");
+    expect(h.log).toEqual(["attach:r0"]);
+    expect(h.stored()).toEqual(paused());
   });
 
   it("handle gone: the pause point is resumed", async () => {

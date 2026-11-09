@@ -23,6 +23,8 @@ export function fakeSessionSandbox(opts: {
   saved?: SessionSandboxState;
   revokeFails?: boolean;
   attachGone?: boolean;
+  markerError?: Error;
+  resumeFails?: string[];
   /** Runs inside egress.attach (after it is logged): gate it, or issue a real token. */
   egressAttach?: (fence: unknown) => Promise<void>;
   /** The adapter takes snapshots (checkpoint:snap-N); tool-call-gap snapshots every SNAPSHOT_EVERY_MS. */
@@ -47,7 +49,10 @@ export function fakeSessionSandbox(opts: {
     async exec(command: string) {
       const written = /^echo (\S+) > /.exec(command);
       if (written) { marker = written[1]!; return "exit=0\n"; }
-      if (command.startsWith("cat ")) return marker === null ? "exit=1\n" : `exit=0\n${marker}\n`;
+      if (command.startsWith("cat ")) {
+        if (opts.markerError) throw opts.markerError;
+        return marker === null ? "exit=1\n" : `exit=0\n${marker}\n`;
+      }
       log.push(`exec:${command}`);
       return "exit=0\n";
     },
@@ -68,6 +73,7 @@ export function fakeSessionSandbox(opts: {
       },
       async resume({ ref }: { ref: { ref: string } }) {
         log.push(`resume:${ref.ref}`);
+        if (opts.resumeFails?.includes(ref.ref)) throw new Error("resume failed");
         return opts.resumable?.includes(ref.ref) === true ? { runtime: {}, handle: { provider: "fake", runtimeId: `from-${ref.ref}` } } : "gone";
       },
       async acquire() {

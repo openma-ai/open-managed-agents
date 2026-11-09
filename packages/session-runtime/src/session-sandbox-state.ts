@@ -38,9 +38,9 @@ export type LatestSnapshot =
 
 export type SandboxPhase =
   | { phase: "none" }
-  | { phase: "running"; handle: SandboxHandle; runStartedAt: number }
+  | { phase: "running"; handle: SandboxHandle; runStartedAt: number; pauseRef?: ResumeRef }
   | { phase: "paused"; handle: SandboxHandle; pauseRef: ResumeRef }
-  | { phase: "lost" }
+  | { phase: "lost"; pauseRef?: ResumeRef }
   | { phase: "released" };
 
 export type SandboxPhaseName = SandboxPhase["phase"];
@@ -100,7 +100,7 @@ const restored: Rule<{ handle: SandboxHandle; at: number; ref: SnapshotRef }> = 
   ({ phase: "running", handle: action.handle, runStartedAt: action.at, latestSnapshot: { status: "taken", ref: action.ref } });
 const started: Rule<{ handle: SandboxHandle; at: number }> = (state, action) =>
   ({ phase: "running", handle: action.handle, runStartedAt: action.at, latestSnapshot: state.latestSnapshot });
-const lost: Rule<unknown> = (state) => ({ phase: "lost", latestSnapshot: state.latestSnapshot });
+const lost: Rule<unknown> = (state) => ({ phase: "lost", latestSnapshot: state.latestSnapshot, ...("pauseRef" in state && state.pauseRef !== undefined ? { pauseRef: state.pauseRef } : {}) });
 const released: Rule<unknown> = () => ({ phase: "released", latestSnapshot: { status: "none" } });
 
 /** action × phase → next record. A missing entry is an illegal transition; a
@@ -119,7 +119,7 @@ export const SANDBOX_TRANSITIONS: Rules = {
       latestSnapshot: isSnapshotRef(action.pauseRef) ? { status: "taken", ref: action.pauseRef } : state.latestSnapshot,
     },
   },
-  resume: { paused: started },
+  resume: { paused: started, lost: started },
   restoreFromSnapshot: { none: restored, running: restored, paused: restored, lost: restored },
   publishSnapshot: {
     running: (state, action) => state.phase !== "running" ? null
