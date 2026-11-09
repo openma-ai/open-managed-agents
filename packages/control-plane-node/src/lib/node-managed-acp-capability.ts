@@ -34,8 +34,8 @@ export function createNodeManagedAcpCapabilities(dependencies: {
   return {
     stores,
     async issue(input: { workspaceId: string; session: Session; environment: Environment; executionFence?: SessionExecutionFence }) {
-      if (!dependencies.crypto) throw new Error("PLATFORM_ROOT_SECRET is required for Node ACP sandbox capabilities");
-      if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for Node ACP sandbox capabilities (must be reachable from the sandbox)");
+      if (!dependencies.crypto) throw new Error("PLATFORM_ROOT_SECRET is required for ACP sandbox model and MCP channels");
+      if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)");
       const sessionsToken = await issueExecutionSessionsToken(stores, input.executionFence, {
         workspaceId: input.workspaceId, sessionId: input.session.id, environmentId: input.environment.id,
         agent: { id: input.session.agent.id, version: input.session.agent.version },

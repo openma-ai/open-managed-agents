@@ -248,6 +248,18 @@ export const interrupt: ParityScenario = {
   },
 };
 
+export const contextBuildFailure: ParityScenario = {
+  name: "context-build-failure",
+  covers: "构建上下文失败: an ACP sandbox turn whose model channel cannot be issued (no PUBLIC_BASE_URL) settles session.error exhausted, then idle",
+  async run(context) {
+    await simpleSession(context, {}, {
+      _oma: { harness: "acp-sandbox", acp: { agent: { command: "parity-acp-agent" } } },
+    });
+    await context.message("Start.");
+    await context.waitIdle(1);
+  },
+};
+
 /** The scenario set every platform runner executes (order = report order). */
 export const PARITY_SCENARIOS: ParityScenario[] = [
   oneTurn,
@@ -259,4 +271,5 @@ export const PARITY_SCENARIOS: ParityScenario[] = [
   budgetUsage,
   requiresAction,
   interrupt,
+  contextBuildFailure,
 ];

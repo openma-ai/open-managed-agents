@@ -46,6 +46,9 @@ beforeAll(async () => {
   controlPlane = await createNodeControlPlane(await nodeDefaults(loadNodeConfig({
     NODE_ENV: "test",
     AUTH_DISABLED: "1",
+    // As the CF suite: with the root secret set, the ACP context-build
+    // scenario fails on the missing PUBLIC_BASE_URL on both platforms.
+    PLATFORM_ROOT_SECRET: "test-platform-root-secret-padded-to-thirtytwo",
     OPENMA_TEST_SANDBOX_PROVIDER: "local-subprocess",
     MEMORY_QUEUE: "disabled",
     DATABASE_PATH: join(dir, "oma.db"),
