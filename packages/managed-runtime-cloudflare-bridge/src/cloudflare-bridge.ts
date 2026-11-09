@@ -414,27 +414,56 @@ export class CloudflareBridgeRuntime
       if (!result.ok) throw await responseError(result);
       return result;
     };
-    const cleanupFailedStart = async (failure: unknown): Promise<never> => {
+    // Bound cleanup independently of response disposal and of transports that
+    // ignore AbortSignal. The identity is durable before a remote kill can hang.
+    const cleanupStep = async <T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const killed = await requestProcess("/signal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal: "SIGKILL" }) });
-        const result = await killed.json() as { exit_code?: unknown };
-        if (!Number.isSafeInteger(result.exit_code)) throw new Error("Process exit was not confirmed");
-      } catch (cleanupFailure) {
-        const identity = { provider: providerName, runtimeId: this.#runtimeId, processId: createdProcess.id, state: "cleanup_unconfirmed" };
-        let recorded = false;
-        try {
-          recorded = await this.#store.put(this.#prefix + "/processes/" + encodeURIComponent(this.#runtimeId) + "/" + encodeURIComponent(String(createdProcess.id)) + ".json", JSON.stringify(identity)) !== null;
-        } catch { /* The thrown identity still lets the lifecycle owner recover. */ }
-        await deleteSession();
-        throw Object.assign(new Error("Cloudflare Bridge process cleanup unconfirmed"), { ...identity, recorded, cause: failure, cleanupFailure });
+        return await Promise.race([
+          Promise.resolve().then(() => run(controller.signal)),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              controller.abort();
+              reject(new Error("Cloudflare Bridge process cleanup timed out"));
+            }, 5_000);
+          }),
+        ]);
+      } finally { clearTimeout(timer); }
+    };
+    const cleanupFailedStart = async (failure: unknown): Promise<never> => {
+      const identity = { provider: providerName, runtimeId: this.#runtimeId, processId: createdProcess.id, state: "cleanup_unconfirmed" };
+      const key = this.#prefix + "/processes/" + encodeURIComponent(this.#runtimeId) + "/" + encodeURIComponent(String(createdProcess.id)) + ".json";
+      let recorded = false;
+      let storageFailure: unknown;
+      try {
+        recorded = await cleanupStep(async () => await this.#store.put(key, JSON.stringify(identity)) !== null);
+        if (!recorded) storageFailure = new Error("Process cleanup identity was not stored");
+      } catch (error) { storageFailure = error; }
+      let cleanupFailure: unknown;
+      try {
+        await cleanupStep(async signal => {
+          const killed = await requestProcess("/signal", { method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ signal: "SIGKILL" }) });
+          const result = await killed.json() as { exit_code?: unknown };
+          if (!Number.isSafeInteger(result.exit_code)) throw new Error("Process exit was not confirmed");
+        });
+      } catch (error) { cleanupFailure = error; }
+      if (cleanupFailure === undefined && recorded) {
+        // A failed delete leaves a conservative, recoverable identity, not a
+        // lost process. Never remove the identity before real exit confirmation.
+        try { await cleanupStep(async () => this.#store.delete(key)); }
+        catch (error) { storageFailure = error; }
       }
-      await deleteSession();
+      await cleanupStep(async () => deleteSession()).catch(() => undefined);
+      if (cleanupFailure !== undefined || storageFailure !== undefined) {
+        throw Object.assign(new Error("Cloudflare Bridge process cleanup unconfirmed"), { ...identity, recorded, cleanupConfirmed: cleanupFailure === undefined, cause: failure, cleanupFailure, storageFailure });
+      }
       throw failure;
     };
     try { response = await requestProcess("/events"); }
     catch (error) { return cleanupFailedStart(error); }
     if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
-      await response.body?.cancel().catch(() => undefined);
+      void response.body?.cancel().catch(() => undefined);
       return cleanupFailedStart(new Error("Cloudflare Bridge process did not return an SSE stream"));
     }
     const exited = (async () => {

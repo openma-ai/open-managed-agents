@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
 import { CloudflareBridgeRuntime } from "../src/cloudflare-bridge";
 
@@ -76,6 +76,92 @@ it.each(["http", "not-sse"])("kills allocated process if events connection fails
  await expect(runtime.spawnDuplexProcess({command:"sleep",args:["120"]})).rejects.toThrow();
  expect(running).toBe(false);
 });
+it("does not wait for a non-SSE body cancellation before killing the process", async () => {
+ let killed = false;
+ let releaseCancel!: () => void;
+ const cancellation = new Promise<void>(resolve => { releaseCancel = resolve; });
+ const runtime = new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:new InMemoryBlobStore(),fetch:async input => {
+   if(String(input).endsWith("/process")) return Response.json({id:"pending-cancel"});
+   if(String(input).endsWith("/events")) return new Response(new ReadableStream({cancel:()=>cancellation}),{headers:{"content-type":"text/plain"}});
+   if(String(input).endsWith("/signal")){killed=true;return Response.json({exit_code:137});}
+   return new Response(null,{status:204});
+ }});
+ const settled = runtime.spawnDuplexProcess({command:"sleep"}).catch(error=>error);
+ try { await vi.waitFor(()=>expect(killed).toBe(true),{timeout:100}); }
+ finally { releaseCancel(); }
+ await expect(settled).resolves.toBeInstanceOf(Error);
+});
+
+it.each(["request", "body"])("records cleanup identity before waiting for a hanging signal %s and bounds confirmation", async hang => {
+ vi.useFakeTimers();
+ const store = new InMemoryBlobStore();
+ const path = "cloudflare-bridge-workspaces/processes/sandbox/pending.json";
+ let entered = false;
+ let persistedBeforeSignal = false;
+ let signal: AbortSignal | null | undefined;
+ const runtime = new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:store,fetch:async(input,init)=>{
+   if(String(input).endsWith("/process"))return Response.json({id:"pending"});
+   if(String(input).endsWith("/events"))return new Response("not-sse");
+   if(String(input).endsWith("/signal")){
+     entered = true; signal=init?.signal;
+     persistedBeforeSignal = await store.get(path) !== null;
+     return hang === "request" ? new Promise<Response>(()=>{}) : new Response(new ReadableStream({pull:()=>new Promise(()=>{})}),{headers:{"content-type":"application/json"}});
+   }
+   return new Response(null,{status:204});
+ }});
+ let result: unknown;
+ const spawning=runtime.spawnDuplexProcess({command:"sleep"}).catch(error=>{result=error;});
+ try {
+   await vi.advanceTimersByTimeAsync(1);
+   expect(entered).toBe(true);
+   expect(persistedBeforeSignal).toBe(true);
+   await vi.advanceTimersByTimeAsync(60_000);
+   expect(result).toMatchObject({runtimeId:"sandbox",processId:"pending",recorded:true});
+   expect(signal?.aborted).toBe(true);
+   const record=await store.get(path);
+   expect(JSON.parse(await record!.text())).toMatchObject({state:"cleanup_unconfirmed"});
+   await spawning;
+ } finally { vi.useRealTimers(); }
+});
+
+it("removes the pending cleanup identity only after confirmed exit", async () => {
+ const store=new InMemoryBlobStore();
+ const path="cloudflare-bridge-workspaces/processes/sandbox/confirmed.json";
+ let recordedAtSignal=false;
+ const runtime=new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:store,fetch:async input=>{
+   if(String(input).endsWith("/process"))return Response.json({id:"confirmed"});
+   if(String(input).endsWith("/signal")){recordedAtSignal=await store.get(path)!==null;return Response.json({exit_code:137});}
+   return new Response("unavailable",{status:503});
+ }});
+ await expect(runtime.spawnDuplexProcess({command:"sleep"})).rejects.toThrow();
+ expect(recordedAtSignal).toBe(true);
+ expect(await store.get(path)).toBeNull();
+});
+
+it.each(["throws", "hangs", "refuses"])("exposes process identity and still attempts bounded cleanup when storage %s", async mode => {
+ vi.useFakeTimers();
+ const store=new InMemoryBlobStore();
+ store.put=async()=>{
+   if(mode==="throws")throw new Error("store unavailable");
+   if(mode==="hangs")return new Promise(()=>{});
+   return null;
+ };
+ let killed=false;
+ const runtime=new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:store,fetch:async input=>{
+   if(String(input).endsWith("/process"))return Response.json({id:"recoverable"});
+   if(String(input).endsWith("/signal")){killed=true;return new Promise(()=>{});}
+   return new Response("unavailable",{status:503});
+ }});
+ let result: unknown;
+ const spawning=runtime.spawnDuplexProcess({command:"sleep"}).catch(error=>{result=error;});
+ try {
+   await vi.advanceTimersByTimeAsync(60_000);
+   expect(killed).toBe(true);
+   expect(result).toMatchObject({runtimeId:"sandbox",processId:"recoverable",recorded:false});
+   await spawning;
+ } finally { vi.useRealTimers(); }
+});
+
 it("retains recoverable process identity when events and cleanup both fail", async () => {
  const store=new InMemoryBlobStore();
  const runtime=new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:store,fetch:async(input)=>String(input).endsWith("/process")?Response.json({id:"unconfirmed"}):new Response("unavailable",{status:503})});
