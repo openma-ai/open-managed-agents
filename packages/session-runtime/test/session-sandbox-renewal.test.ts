@@ -19,6 +19,15 @@ describe("Session sandbox exec-boundary renewals", () => {
     expect(await process.confirmSandboxGone!()).toBe(true);
   });
 
+  it("never confirms loss for a newer execution attempt", async () => {
+    const h=fakeSessionSandbox({keepAliveGone:true});
+    const process=await h.sandbox.spawnDuplexProcess({command:"acp"});
+    h.setExecution({...attempt,attemptId:"replacement",generation:4});
+    const before=h.log.length;
+    expect(await process.confirmSandboxGone!()).toBe(false);
+    expect(h.log.slice(before)).toEqual([]);
+  });
+
   it("keepAlive renews the provider lease every keepAliveMs, only at exec boundaries", async () => {
     const h = fakeSessionSandbox({ keepAliveMs: 60_000 });
     await h.sandbox.exec("first");
