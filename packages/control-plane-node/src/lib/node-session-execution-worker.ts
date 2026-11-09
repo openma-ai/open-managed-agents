@@ -9,6 +9,7 @@ import type {
   SessionExecutionFence,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
+  SessionExecutionLostError,
   errorHoldsQueuedOnLane,
   sessionExecutionEventBatches,
   sessionExecutionEvents,
@@ -389,6 +390,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       });
       if (active.cancelled) outcome = "cancelled";
     } catch (error) {
+      if (error instanceof SessionExecutionLostError && !active.cancelled) return;
       outcome = active.cancelled ? "cancelled" : "failed";
       failure = errorMessage(error);
       holdQueuedOnLane = errorHoldsQueuedOnLane(error);
