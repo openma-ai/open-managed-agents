@@ -15,6 +15,8 @@ export function fakeSessionSandbox(opts: {
   saved?: SessionSandboxState;
   revokeFails?: boolean;
   attachGone?: boolean;
+  /** Runs inside egress.attach (after it is logged): gate it, or issue a real token. */
+  egressAttach?: (fence: unknown) => Promise<void>;
 } = {}) {
   const log: string[] = [];
   const fences: unknown[] = [];
@@ -61,7 +63,7 @@ export function fakeSessionSandbox(opts: {
       async detach() { log.push("storage.detach"); },
     },
     egress: {
-      async attach({ fence }: { fence: unknown }) { log.push("egress.attach"); fences.push(fence); },
+      async attach({ fence }: { fence: unknown }) { log.push("egress.attach"); fences.push(fence); await opts.egressAttach?.(fence); },
       async update() {},
       async revoke({ reason }: { reason: string }) {
         log.push(`egress.revoke:${reason}`);
