@@ -13,12 +13,13 @@ import { runtimeOrphanId } from "@open-managed-agents/runtime-resource-contract"
 
 export interface MemoryEnvironmentWorkClaimOptions {
   now?: () => Date;
-  /** Work heartbeat TTL reported as the claim's informational expiry. */
+  /** Work heartbeat TTL, measured from claim time. */
   ttlMs?: number;
 }
 
 interface WorkClaimRecord {
   generation: number;
+  claimAt: number;
   token: string;
   /** claimed: starting/active; stopping: stop requested, claim kept; lost: force-stopped or expired. */
   state: "claimed" | "stopping" | "lost";
@@ -79,6 +80,7 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
     token ??= `work-token-${generation}`;
     this.#records.set(key, {
       generation,
+      claimAt: this.#now().getTime(),
       token,
       state: "claimed",
       publication: record?.publication ?? null,
@@ -104,7 +106,7 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
     if (!this.#holds(record, claim) || record!.state !== "claimed") return { type: "lost" };
     return {
       type: "current",
-      expiresAt: new Date(this.#now().getTime() + this.#ttlMs).toISOString(),
+      expiresAt: new Date(record!.claimAt + this.#ttlMs).toISOString(),
       publication: record!.publication === null ? null : structuredClone(record!.publication),
     };
   }
@@ -153,6 +155,7 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
 
   #holds(record: WorkClaimRecord | undefined, claim: EnvironmentWorkClaim): boolean {
     return record !== undefined
+      && record.claimAt + this.#ttlMs > this.#now().getTime()
       && record.state !== "lost"
       && record.generation === claim.generation
       && record.token === claim.token;

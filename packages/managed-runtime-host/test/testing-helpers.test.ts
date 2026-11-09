@@ -60,6 +60,19 @@ describe("managed runtime deterministic test Ports", () => {
     await expect(claims.isCurrent(reclaimed)).resolves.toBe(false);
   });
 
+  it("keeps the original expiry across reads and expires exactly at its TTL", async () => {
+    let now = 1_000;
+    const claims = new MemoryEnvironmentWorkClaimPort({ now: () => new Date(now), ttlMs: 1_000 });
+    const claim = claims.claim(scope);
+    now += 999;
+    await expect(claims.open(claim)).resolves.toMatchObject({ expiresAt: new Date(2_000).toISOString() });
+    now += 1;
+    await expect(claims.isCurrent(claim)).resolves.toBe(false);
+    await expect(claims.open(claim)).resolves.toEqual({ type: "lost" });
+    await expect(claims.publish({ claim, workspaceCandidate: { id: "stale", contentHash: "stale" }, outputCandidate: null }))
+      .resolves.toEqual({ type: "lost" });
+  });
+
   it("handles metadata-free orphans, string failures, stable sorting, and missing updates", async () => {
     const orphans = new MemoryRuntimeOrphanPort();
     await orphans.enqueue({

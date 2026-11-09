@@ -27,8 +27,8 @@ const session = {
 };
 
 /** The authority store, seen only through these operations. */
-function ownership() {
-  const claims = new MemoryEnvironmentWorkClaimPort();
+function ownership(options: ConstructorParameters<typeof MemoryEnvironmentWorkClaimPort>[0] = {}) {
+  const claims = new MemoryEnvironmentWorkClaimPort(options);
   // Worker A's poll claimed the Work; the host runs under that claim.
   const { generation, token } = claims.claim(scope);
   return {
@@ -149,6 +149,31 @@ describe("self-hosted ownership races (characterization)", () => {
     expect(dependencies.workspace.checkpoint).not.toHaveBeenCalled();
     expect(owner.published()).toBe("workspace-b");
     expect(dependencies.sandbox.terminate).toHaveBeenCalledWith(expect.objectContaining({ reason: "lease_lost" }));
+  });
+
+  it("aborts the host on natural claim expiry without an explicit loss", async () => {
+    let now = 1_000;
+    const owner = ownership({ now: () => new Date(now), ttlMs: 30_000 });
+    const scheduler = manualScheduler();
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => { started = resolve; });
+    const dependencies = fixture(owner, {
+      scheduler,
+      harnessDriver: {
+        run: vi.fn(async (input: { signal: AbortSignal }) => {
+          started();
+          await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
+          return { type: "aborted" };
+        }),
+      },
+    });
+    const result = createManagedRuntimeHost(dependencies).run({ scope, profile, ...owner.runInput });
+    await running;
+    now += 30_000;
+    scheduler.tick();
+    await expect(result).resolves.toEqual({ type: "lease_lost" });
+    expect(owner.published()).toBeNull();
+    expect(dependencies.workspace.checkpoint).not.toHaveBeenCalled();
   });
 
   it("race 3: after another owner takes over, the stale sandbox's Session-input mutations are refused", async () => {
