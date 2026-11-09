@@ -20,6 +20,23 @@ describe("Session sandbox snapshots (design §0.0b A.2)", () => {
     expect(h.stored()).toMatchObject({ phase: "running", latestSnapshot: { status: "taken", ref: { ref: "snap-1" } } });
   });
 
+  it("heartbeats snapshot a long ACP execution without another facade call, at the configured interval", async () => {
+    const h = fakeSessionSandbox({ snapshots: true });
+    await h.sandbox.spawnDuplexProcess({ command: "acp-agent" });
+    h.advance(SNAPSHOT_EVERY_MS);
+    await Promise.all([h.sandbox.renewActivityTimeout(), h.sandbox.renewActivityTimeout()]);
+    expect(checkpoints(h.log)).toEqual(["checkpoint:snap-1"]);
+    await h.sandbox.renewActivityTimeout();
+    expect(checkpoints(h.log)).toHaveLength(1);
+    h.advance(SNAPSHOT_EVERY_MS);
+    await h.sandbox.renewActivityTimeout();
+    expect(checkpoints(h.log)).toEqual(["checkpoint:snap-1", "checkpoint:snap-2"]);
+    h.setExecution(undefined);
+    h.advance(SNAPSHOT_EVERY_MS);
+    await h.sandbox.renewActivityTimeout();
+    expect(checkpoints(h.log)).toHaveLength(2);
+  });
+
   it("reads do not change the sandbox: nothing is snapshotted", async () => {
     const h = fakeSessionSandbox({ snapshots: true });
     await h.sandbox.readFile("/a");

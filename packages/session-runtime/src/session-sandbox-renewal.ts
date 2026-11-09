@@ -21,6 +21,7 @@
 import { SandboxGoneError } from "@open-managed-agents/sandbox";
 import type { LiveSessionSandbox, OpenSandbox } from "./session-sandbox-live";
 import { attachEgress } from "./session-sandbox-storage-egress";
+import { snapshotDue, snapshotInGap } from "./session-sandbox-snapshot";
 
 /** Interval write-back at exec boundaries (design §0.1 step 5, default 15 s). */
 export const STORAGE_SYNC_INTERVAL_MS = 15_000;
@@ -62,6 +63,9 @@ export async function renewActivityTimeout<R>(state: LiveSessionSandbox<R>): Pro
     return;
   }
   await renewAtExecBoundary(state, open);
+  // ACP changes the sandbox through its duplex process, without facade calls.
+  // Share the gap single-flight and configurable interval; never snapshot idle.
+  if (state.current === open && state.execution() !== undefined && state.refreshing === null && snapshotDue(state)) await snapshotInGap(state, open);
 }
 
 /** sandbox.keepAlive inside an execution only; between executions the
