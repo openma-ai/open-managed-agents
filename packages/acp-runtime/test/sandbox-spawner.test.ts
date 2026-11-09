@@ -76,7 +76,9 @@ describe("SandboxSpawner stdout", () => {
     let rejectExit!:(error:Error)=>void;
     child.process.exited=new Promise((_r,reject)=>{rejectExit=reject;});
     child.process.confirmSandboxGone=async()=>{await new Promise(r=>setTimeout(r,20));return true;};
-    child.process.stdin=new WritableStream({write(){rejectExit(new Error("observation lost"));}});
+    let output!: ReadableStreamDefaultController<Uint8Array>;
+    child.process.stdout=new ReadableStream({start(controller){output=controller;}});
+    child.process.stdin=new WritableStream({write(){rejectExit(new Error("observation lost"));output.error(new Error("transport closed before confirmation"));}});
     const start=createAcpRuntime({type:"sandbox",sandbox:{spawnDuplexProcess:async()=>child.process}}).start({agent});
     await expect(start).rejects.toMatchObject({name:"SandboxGoneError"});
   });

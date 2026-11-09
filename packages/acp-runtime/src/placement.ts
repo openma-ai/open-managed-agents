@@ -9,7 +9,7 @@ import type {
 } from "@openma/common/acp-runtime";
 
 import { AcpRuntimeImpl } from "./runtime.js";
-import { SandboxSpawner, sandboxAcpTransportError } from "./spawners/sandbox.js";
+import { SandboxSpawner, sandboxAcpTransportError, awaitSandboxAcpTransportError } from "./spawners/sandbox.js";
 
 /** Runtime placement is a composition decision, not a second ACP runtime.
  * Both branches construct the same AcpRuntimeImpl and therefore share ACP
@@ -87,7 +87,7 @@ class PlacementAcpRuntime implements AcpRuntime {
     });
     let session: AcpSession;
     try { session = await runtime.start(engineOptions); }
-    catch (error) { throw (child && sandboxAcpTransportError(child)) ?? error; }
+    catch (error) { throw (child && await awaitSandboxAcpTransportError(child)) ?? error; }
     if (!child) {
       await session.dispose().catch(() => undefined);
       throw new Error("ACP runtime initialized without a child process");
@@ -245,7 +245,7 @@ async function* supervisedPrompt(
       } catch (error) {
         escalated = error instanceof AcpPromptCancellationTimeoutError;
         void next.catch(() => undefined);
-        throw sandboxAcpTransportError(child) ?? error;
+        throw await awaitSandboxAcpTransportError(child) ?? error;
       }
       if (item.done) {
         completed = true;

@@ -25,6 +25,11 @@ export class SandboxAcpTransportError extends Error {
     super(`ACP transport failed: ${channel} drain was not confirmed after process exit; output may be incomplete. Restart the agent and inspect the sandbox transport.`);
   }
 }
+const lossChecks = new WeakMap<ChildHandle, Promise<void>>();
+export async function awaitSandboxAcpTransportError(child: ChildHandle): Promise<SandboxAcpTransportError | SandboxGoneError | undefined> {
+  await lossChecks.get(child);
+  return transportErrors.get(child);
+}
 const transportErrors = new WeakMap<ChildHandle, SandboxAcpTransportError | SandboxGoneError>();
 export function sandboxAcpTransportError(child: ChildHandle): SandboxAcpTransportError | SandboxGoneError | undefined {
   return transportErrors.get(child);
@@ -60,7 +65,10 @@ function toChildHandle(
 ): ChildHandle {
   const stops: Array<(error: Error) => void> = [];
   const observedExit = process.exited.catch(async error => {
-    const gone = await process.confirmSandboxGone?.().catch(() => false);
+    let gone = false;
+    const check = (async () => { gone = await process.confirmSandboxGone?.().catch(() => false) ?? false; })();
+    lossChecks.set(handle, check);
+    await check;
     if (!gone) throw error;
     const lost = new SandboxGoneError("Provider confirmed the ACP sandbox is gone");
     transportErrors.set(handle, lost);
