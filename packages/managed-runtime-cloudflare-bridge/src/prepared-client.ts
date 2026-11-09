@@ -4,7 +4,13 @@ import { CloudflareBridgeRuntime, type CloudflareBridgeProviderOptions } from ".
 /** Transport only for the prepared bridge protocol. Not advertised by the
  * ordinary provider: deployment requires separately reviewed server support
  * and an execution-scoped trusted egress binder before Session use. */
-export function createCloudflareBridgePreparedClient(options: CloudflareBridgeProviderOptions) {
+export interface CloudflareBridgePreparedClientOptions extends CloudflareBridgeProviderOptions {
+  /** Operator-trusted container.images.sandbox provenance, never a response-derived value. */
+  expectedImage: string;
+}
+
+export function createCloudflareBridgePreparedClient(options: CloudflareBridgePreparedClientOptions) {
+  if (!/^.+@sha256:[a-f0-9]{64}$/.test(options.expectedImage)) throw new Error("Prepared bridge requires an expected digest-pinned image");
   const fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const base = options.baseUrl.replace(/\/+$/g, "") + "/v1/sandbox";
   const request = async (suffix: string, method: string, body: unknown) => {
@@ -38,7 +44,7 @@ export function createCloudflareBridgePreparedClient(options: CloudflareBridgePr
     async snapshotEnvironment(runtime: CloudflareBridgeRuntime, name: string): Promise<EnvironmentSnapshotRef> {
       const response = await request(path(runtime) + "/environment-snapshot", "POST", { name });
       const result = await response.json() as { ref?: unknown; id?: unknown; size?: unknown; image?: unknown };
-      if (typeof result.ref !== "string" || !result.ref || typeof result.id !== "string" || !result.id || typeof result.size !== "number" || !Number.isSafeInteger(result.size) || result.size < 0 || result.image !== "sandbox") throw new Error("Prepared bridge returned an invalid native snapshot");
+      if (typeof result.ref !== "string" || !result.ref || typeof result.id !== "string" || !result.id || typeof result.size !== "number" || !Number.isSafeInteger(result.size) || result.size < 0 || result.image !== options.expectedImage) throw new Error("Prepared bridge returned an invalid native snapshot");
       return { adapter: "cloudflare-sandbox-bridge", ref: result.ref };
     },
     async restoreEnvironment(input: { workspaceId: string; snapshot: EnvironmentSnapshotRef; bindSessionEgress?: (runtime: CloudflareBridgeRuntime) => Promise<void> }): Promise<CloudflareBridgeRuntime> {
