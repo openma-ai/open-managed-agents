@@ -97,6 +97,27 @@ function manualTimers() {
 }
 
 describe("SessionExecutionHost", () => {
+  it.each([false, true])("retries a renew outage until actual lease expiry (expired: %s)", async expired => {
+    const timers = manualTimers();
+    let outage = true;
+    let currentMs = Date.parse(now);
+    const proof = fence();
+    const persistence = store({ renew: async () => {
+      if (outage) throw new Error("storage offline");
+      return { type: "renewed", fence: proof, interruptRequestedAt: null };
+    } });
+    const host = new SessionExecutionHost({ store: persistence, scope: { workspaceId: "workspace_01", sessionId: "session_01" },
+      ownerId: "owner_01", clock: { now: () => new Date(currentMs) }, ids: { nextAttemptId: () => "attempt_01" }, timers: timers.timers });
+    const result = await host.runOne(async (_execution, _fence, signal) => {
+      currentMs = Date.parse(proof.expiresAt) - 1;
+      await timers.tick();
+      expect(signal.aborted).toBe(false);
+      if (expired) { currentMs += 1; await timers.tick(); expect(signal.aborted).toBe(true); }
+      outage = false;
+    });
+    expect(result.type).toBe(expired ? "lost" : "completed");
+    expect(persistence.settle).toHaveBeenCalledTimes(expired ? 0 : 1);
+  });
   it("claims only its configured lane, proves ownership before commit, and settles", async () => {
     const persistence = store();
     const host = new SessionExecutionHost({

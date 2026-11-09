@@ -133,6 +133,8 @@ export class SessionExecutionHost {
   ): Promise<SessionExecutionHostResult> {
     const lease = new ExecutionLeaseController({
       fence: claimed.fence,
+      now: () => this.dependencies.clock.now().getTime(),
+      leaseExpiresAt: fence => Date.parse(fence.expiresAt),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       ...(this.dependencies.timers === undefined
         ? {}
@@ -159,7 +161,7 @@ export class SessionExecutionHost {
               : { reason: new Error("session execution interrupted") }),
           };
         } catch (error) {
-          return { type: "lost" as const, reason: asError(error) };
+          return { type: "retry" as const, error: asError(error) };
         }
       },
       onFenceChanged: this.dependencies.onFenceChanged,
