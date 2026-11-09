@@ -56,15 +56,19 @@ describe("main-node MySQL snapshot migrations", () => {
     expect(sql.statements.some((statement) => /sandbox_token_hashes/u.test(statement))).toBe(true);
   });
 
-  it("adds the Work-claim restore pointer and sandbox token columns without dropping the retired fence table", async () => {
+  it("copies the Work-claim restore pointer before dropping the retired fence table", async () => {
     const sql = new MigrationSqlClient(sandboxTokenHashesSnapshot, ["tenant_id", "created_at", "id"]);
+    sql.legacyTables.set("runtime_resource_fences", 1);
     await migrateNodeMysqlSchema(sql, migrations);
     expect(sql.snapshotId).toBe(currentSnapshot);
     expect(sql.statements.some((statement) =>
       /ALTER TABLE `managed_environment_work` ADD COLUMN `runtime_publication_json` TEXT/u.test(statement))).toBe(true);
     expect(sql.statements.some((statement) =>
       /ALTER TABLE `managed_environment_work` ADD COLUMN `sandbox_token_hashes` TEXT/u.test(statement))).toBe(true);
-    expect(sql.statements.some((statement) => /DROP/u.test(statement))).toBe(false);
+    const copy = sql.statements.findIndex((statement) => /UPDATE managed_environment_work/u.test(statement));
+    const drop = sql.statements.findIndex((statement) => /DROP TABLE IF EXISTS .*runtime_resource_fences/u.test(statement));
+    expect(copy).toBeGreaterThan(-1);
+    expect(drop).toBeGreaterThan(copy);
   });
 
   it.each([invitationsSnapshot, currentSnapshot])(
@@ -127,7 +131,7 @@ class MigrationSqlClient implements SqlClient {
 
   async exec(sql: string): Promise<void> {
     this.statements.push(sql);
-    if (/\bDROP\s+TABLE\b/i.test(sql)) {
+    if (/\bDROP\s+TABLE\b/i.test(sql) && !sql.includes("runtime_resource_fences")) {
       throw new Error("DROP command denied to migration user");
     }
     const created = /CREATE TABLE IF NOT EXISTS `([a-z_]+)`/.exec(sql);

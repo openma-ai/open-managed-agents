@@ -82,9 +82,7 @@ const sandboxTokenHashesMigration = {
 } as const;
 
 /** Runtime Host restore pointer and the claim's sandbox token hashes on the
- * Work row (ADR 0005). SQLite/PG drop
- * runtime_resource_fences here; MySQL retains the unused table, as it does
- * for retired tables, so the upgrade never needs DROP permission. */
+ * Work row (ADR 0005). Preserve legacy publications before retiring the fence. */
 const workClaimPublicationMigration = {
   fromSnapshot: sandboxTokenHashesMigration.toSnapshot,
   toSnapshot: "6f23cfa4-a1c3-4c7a-8efa-040a495a1191",
@@ -206,6 +204,22 @@ export async function migrateNodeMysqlSchema(
         if (installed.snapshot_id === workClaimPublicationMigration.fromSnapshot) {
           await ensureMysqlNullableColumn(sql, "managed_environment_work", "runtime_publication_json", "TEXT");
           await ensureMysqlNullableColumn(sql, "managed_environment_work", "sandbox_token_hashes", "TEXT");
+          const fenceTable = await sql.prepare(
+            "SELECT 1 AS present FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+          ).bind("runtime_resource_fences").first();
+          if (fenceTable !== null) {
+            await sql.exec(`UPDATE managed_environment_work AS work
+              JOIN runtime_resource_fences AS fence
+                ON fence.workspace_id = work.workspace_id
+               AND fence.environment_id = work.environment_id
+               AND fence.session_id = work.session_id
+               AND fence.work_id = work.id
+              SET work.runtime_publication_json = JSON_SET(fence.publication_json,
+                '$.generation', fence.publication_generation, '$.revision', fence.revision)
+              WHERE fence.publication_json IS NOT NULL
+                AND work.runtime_publication_json IS NULL`);
+          }
+          await sql.exec("DROP TABLE IF EXISTS runtime_resource_fences");
           installed = { snapshot_id: workClaimPublicationMigration.toSnapshot };
           continue;
         }
