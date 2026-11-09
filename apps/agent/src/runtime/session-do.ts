@@ -7834,7 +7834,6 @@ export class SessionDO extends DurableObject<Env> {
     return ids;
   }
 
-  /** Scoped to turn_id IS NULL so it can never clobber a fresh beginTurn. */
   private async _clearMarkerlessTurn(now: number): Promise<boolean> {
     try {
       const update = await this.runtimeAdapter.sql
@@ -7900,6 +7899,7 @@ export class SessionDO extends DurableObject<Env> {
       hasLiveWork: () => this._activeTurnIds.size > 0 || this._executionActiveLanes.size > 0 || this._draining.size > 0,
       latestSessionStatus: () => this._latestSessionStatusEvent(),
       clearMarkerlessTurn: (now) => this._clearMarkerlessTurn(now),
+      executions: async () => ({ store: await this.getExecutionStore(), workspaceId: this.state.tenant_id, sessionId: this.state.session_id }),
       scheduleGraceRetry: (atMs) => this._multiplexAlarm({ reason: "turn_grace_retry", atMs }),
       log: (event, fields) => sdoLog(event, { session_id: this.state.session_id, ...fields }),
     });

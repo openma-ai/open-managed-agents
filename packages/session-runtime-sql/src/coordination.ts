@@ -1388,6 +1388,23 @@ export class SqlSessionExecutionStore
   }
 
 
+  /** The Session's most recently settled execution: what a recovery pass
+   * reads when the owner that ran it is gone and left no terminal event. */
+  async latestSettled(input: {
+    workspaceId: string;
+    sessionId: string;
+  }): Promise<SessionExecution | null> {
+    const row = await this.sql.prepare(`
+      SELECT ${columns()}
+        FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ?
+         AND settled_at_ms IS NOT NULL
+       ORDER BY settled_at_ms DESC, id DESC
+       LIMIT 1
+    `).bind(input.workspaceId, input.sessionId).first<ExecutionRow>();
+    return row === null ? null : toExecution(row);
+  }
+
   /** Durable work the lease policy can see: queued and running executions. */
   async listActive(input: {
     workspaceId: string;
