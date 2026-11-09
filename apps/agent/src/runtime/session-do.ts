@@ -1,4 +1,6 @@
 import { TurnInvocation } from "./turn-invocation";
+import { publishAgentsApiArtifacts } from "./artifact-publication";
+import { readSandboxFileBytes } from "./sandbox-output";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -4245,39 +4247,8 @@ export class SessionDO extends DurableObject<Env> {
     }
   }
 
-  /** Agents API artifact publication for an execution whose terminal just
-   * committed. Main owns the sealed Session mapping, Files and the fence
-   * check (shared publisher, idempotent by path + content); this DO only
-   * serves its sandbox outputs. A copy failure is reported and never turns
-   * the completed execution into a failure. */
   private async publishAgentsApiArtifacts(executionFence: SessionExecutionFence): Promise<void> {
-    const binding = this.env.MAIN_MCP;
-    const tenantId = this.state.tenant_id;
-    const sessionId = this.state.session_id;
-    if (binding?.publishManagedSessionArtifacts === undefined || !tenantId || !sessionId) return;
-    try {
-      await binding.publishManagedSessionArtifacts({
-        tenantId,
-        sessionId,
-        executionFence,
-        outputManifest: async () => sandboxStdout(
-          await this.getOrCreateSandbox(),
-          "cd /workspace && if test -d ./outputs; then find ./outputs -type f -print0 | base64 -w0; fi",
-          30_000,
-        ),
-        readOutput: async (path: string) => readSandboxFileBytes(await this.getOrCreateSandbox(), path, 60_000),
-      });
-    } catch (error) {
-      logWarn(
-        {
-          op: "session_do.openai_agents.artifact_publication_failed",
-          session_id: sessionId,
-          execution_id: executionFence.executionId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        "Completed Session output could not be published as an Agents API artifact",
-      );
-    }
+    await publishAgentsApiArtifacts(this.env.MAIN_MCP, this.state, executionFence, () => this.getOrCreateSandbox());
   }
 
   /** Commit writable canonical Memory mounts before the public idle boundary.
@@ -7857,17 +7828,3 @@ function countAgentEvents(events: readonly SessionEvent[]): number {
   return events.filter((event) => event.type.startsWith("agent.")).length;
 }
 
-/** Stdout of a CF sandbox command (`exit=N\n<stdout>`); throws on failure. */
-async function sandboxStdout(sandbox: SandboxExecutor, command: string, timeoutMs: number): Promise<string> {
-  const out = await sandbox.exec(command, timeoutMs);
-  const match = out.match(/^exit=(\d+)\n([\s\S]*)$/);
-  if (!match || match[1] !== "0") throw new Error(out.slice(0, 300));
-  return match[2]!;
-}
-
-/** Binary-safe file read: SandboxExecutor.readFile is UTF-8 only, so the
- * sandbox base64-encodes and this side decodes. */
-async function readSandboxFileBytes(sandbox: SandboxExecutor, path: string, timeoutMs: number): Promise<Uint8Array> {
-  const encoded = (await sandboxStdout(sandbox, `base64 -w0 -- '${path.replace(/'/g, "'\\''")}' 2>&1`, timeoutMs)).trim();
-  return Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-}
