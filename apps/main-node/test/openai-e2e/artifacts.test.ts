@@ -1,4 +1,5 @@
 import { writeFile, stat } from "node:fs/promises";
+import Database from "better-sqlite3";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS } from "@open-managed-agents/session-runtime";
@@ -69,10 +70,41 @@ describe("Artifact publication through the Node service and official SDK", () =>
     const turns = (await api.turns.list(session.id)).data;
     expect(turns).toEqual([expect.objectContaining({ status: "completed" })]);
     expect(f.requests).toHaveLength(2);
+    const execution = () => {
+      const db = new Database(join(f.directory, "oma.db"), { readonly: true });
+      try {
+        return db.prepare("SELECT id,state,attempt_id,generation,owner_id,lease_expires_at_ms FROM managed_session_executions WHERE session_id = ? ORDER BY admitted_at_ms DESC LIMIT 1").get(session.id) as {
+          id: string; state: string; attempt_id: string; generation: number; owner_id: string; lease_expires_at_ms: number;
+        };
+      } finally { db.close(); }
+    };
+    const original = execution();
+    expect(original).toMatchObject({ state: "running", generation: 1 });
     // A real SIGKILL ends the server while its second publication read is
     // pending. Restart opens the same on-disk SQLite, Files and workspace.
     await f.restart();
     const restored = f.client.beta.agents.sessions;
+    const observations: Array<{ at: number; generation: number; attempt_id: string; state: string }> = [];
+    let firstTakeoverAt: number | undefined;
+    await expect.poll(() => {
+      const row = execution();
+      const at = Date.now();
+      observations.push({ at, generation: row.generation, attempt_id: row.attempt_id, state: row.state });
+      // Keep samples outside assertion retry semantics: an early takeover
+      // must remain a failure even if a later sample reaches generation 2.
+      if (row.generation > original.generation) firstTakeoverAt ??= at;
+      return row.generation;
+    }, { timeout: DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS + 20_000, interval: 500 }).toBe(2);
+    console.info("ARTIFACT_LEASE_OBSERVATIONS", JSON.stringify({ original, firstTakeoverAt, observations }));
+    const beforeExpiry = observations.filter(row => row.at < original.lease_expires_at_ms);
+    expect(beforeExpiry.length).toBeGreaterThan(0);
+    for (const row of beforeExpiry) {
+      expect(row.attempt_id).toBe(original.attempt_id);
+      expect(row.generation).toBe(original.generation);
+    }
+    expect(firstTakeoverAt).toBeGreaterThanOrEqual(original.lease_expires_at_ms);
+    expect(execution().attempt_id).not.toBe(original.attempt_id);
+    await writeFile(join(f.directory, "publication-lease-observations.json"), JSON.stringify({ original, firstTakeoverAt, observations }));
     // SIGKILL cannot release its lease. Recovery must wait for the shared
     // 90s authority to expire before another attempt can publish.
     await expect.poll(async () => (await restored.artifacts.list(session.id)).data.length, { timeout: DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS + 20_000 }).toBe(2);
