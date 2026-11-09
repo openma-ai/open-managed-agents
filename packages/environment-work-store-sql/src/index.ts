@@ -290,6 +290,8 @@ export class SqlEnvironmentWorkStore
         `UPDATE managed_environment_work
             SET claim_at = ?, claim_worker_id = ?,
                 claim_generation = claim_generation + 1,
+                -- A claim's sandbox tokens never outlive it (ADR 0005).
+                sandbox_token_hashes = NULL,
                 heartbeat_ttl_seconds = ?,
                 state = 'queued',
                 revision = revision + 1

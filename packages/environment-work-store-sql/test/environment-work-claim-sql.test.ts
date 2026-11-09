@@ -28,6 +28,7 @@ CREATE TABLE managed_environment_work (
   revision integer NOT NULL,
   state text NOT NULL,
   created_at integer NOT NULL,
+  sandbox_token_hashes text,
   runtime_publication_json text,
   PRIMARY KEY (workspace_id, id)
 );
