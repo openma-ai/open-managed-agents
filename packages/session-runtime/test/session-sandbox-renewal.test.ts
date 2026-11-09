@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SandboxGoneError } from "@open-managed-agents/sandbox";
-import { fakeSessionSandbox } from "./fake-session-sandbox-ports";
+import { attempt, fakeSessionSandbox } from "./fake-session-sandbox-ports";
 
 // Renewals at exec boundaries (research/sandbox-sdk-v2-design.md §0.1 step 5).
 
@@ -12,6 +12,13 @@ describe("Session sandbox exec-boundary renewals", () => {
     expect(await process.confirmSandboxGone!()).toBe(gone);
     expect(h.log.slice(before)).toEqual(["keepAlive"]);
   });
+  it("keeps confirmation bound to durable attempt identity when the host refreshes its fence object", async () => {
+    const h=fakeSessionSandbox({keepAliveGone:true});
+    const process=await h.sandbox.spawnDuplexProcess({command:"acp"});
+    h.setExecution({...attempt});
+    expect(await process.confirmSandboxGone!()).toBe(true);
+  });
+
   it("keepAlive renews the provider lease every keepAliveMs, only at exec boundaries", async () => {
     const h = fakeSessionSandbox({ keepAliveMs: 60_000 });
     await h.sandbox.exec("first");
