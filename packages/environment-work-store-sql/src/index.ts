@@ -13,6 +13,13 @@ import type {
   ReplaceEnvironmentWorkRecordResult,
   StoredEnvironmentWork,
 } from "@open-managed-agents/environment-work-store";
+
+export {
+  SqlEnvironmentWorkClaimPort,
+  type EnvironmentWorkDatabase,
+  type SqlEnvironmentWorkClaimOptions,
+} from "./work-claim";
+
 export interface EnvironmentWorkSecretCipher {
   seal(input: { plaintext: string }): Promise<{ ciphertext: string }>;
   open(input: { ciphertext: string }): Promise<{ plaintext: string }>;

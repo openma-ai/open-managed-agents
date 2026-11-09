@@ -2071,6 +2071,9 @@ importers:
       '@open-managed-agents/environment-work-store':
         specifier: workspace:*
         version: link:../environment-work-store
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
