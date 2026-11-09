@@ -20,6 +20,7 @@ export interface MemoryEnvironmentWorkClaimOptions {
 interface WorkClaimRecord {
   generation: number;
   claimAt: number;
+  stoppedAt: number | null;
   token: string;
   /** claimed: starting/active; stopping: draining; stopped: execution revoked; lost: expired/replaced. */
   state: "claimed" | "stopping" | "stopped" | "lost";
@@ -81,6 +82,7 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
     this.#records.set(key, {
       generation,
       claimAt: this.#now().getTime(),
+      stoppedAt: null,
       token,
       state: "claimed",
       publication: record?.publication ?? null,
@@ -98,7 +100,10 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
   /** Force stop revokes execution, retaining only the final publication generation. */
   stop(scope: RuntimeResourceScope): void {
     const record = this.#records.get(scopeKey(scope));
-    if (record !== undefined) record.state = "stopped";
+    if (record !== undefined && record.state !== "stopped") {
+      record.state = "stopped";
+      record.stoppedAt = this.#now().getTime();
+    }
   }
 
   /** An expired or otherwise lost lease: no claim is current. */
@@ -131,7 +136,9 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
     const record = this.#records.get(scopeKey(input.claim));
     if (!this.#holds(record, input.claim)
       && !(input.final === true && record?.state === "stopped"
-        && record.generation === input.claim.generation)) return { type: "lost" };
+        && record.generation === input.claim.generation
+        && record.stoppedAt !== null
+        && record.stoppedAt <= record.claimAt + this.#ttlMs)) return { type: "lost" };
     const previous = record!.publication;
     if (
       previous !== null &&

@@ -73,6 +73,23 @@ describe("managed runtime deterministic test Ports", () => {
       .resolves.toEqual({ type: "lost" });
   });
 
+  it.each([999, 1_000, 1_001])("allows final drain only when stopped within the lease (elapsed=%s)", async (elapsed) => {
+    let now = 1_000;
+    const claims = new MemoryEnvironmentWorkClaimPort({ now: () => new Date(now), ttlMs: 1_000 });
+    const claim = claims.claim(scope);
+    now += elapsed;
+    claims.stop(scope);
+    now += 10_000;
+    const publication = { claim, final: true, workspaceCandidate: { id: "final", contentHash: "final" }, outputCandidate: null };
+    await expect(claims.publish(publication)).resolves.toEqual(
+      elapsed <= 1_000 ? { type: "published", revision: 1 } : { type: "lost" },
+    );
+    await expect(claims.open(claim)).resolves.toEqual({ type: "lost" });
+    await expect(claims.isCurrent(claim)).resolves.toBe(false);
+    claims.claim(scope);
+    await expect(claims.publish(publication)).resolves.toEqual({ type: "lost" });
+  });
+
   it("handles metadata-free orphans, string failures, stable sorting, and missing updates", async () => {
     const orphans = new MemoryRuntimeOrphanPort();
     await orphans.enqueue({

@@ -27,6 +27,20 @@ function record(id: string, createdAt: string, sessionId = `session_${id}`): Env
 }
 
 describe("MemoryEnvironmentWorkStore", () => {
+  it("keeps stopped claim history internal and never exposes it through reads", async () => {
+    const store = new MemoryEnvironmentWorkStore();
+    const initial = record("work_01", "2026-08-26T09:00:00.000Z");
+    const location = { workspaceId: "workspace_a", environmentId: "env_01", workId: "work_01" };
+    const inserted = await store.insert({ workspaceId: location.workspaceId, record: { ...initial,
+      claim: { claimedAt: initial.work.createdAt, workerId: "worker", generation: 1 },
+    } });
+    const result = await store.replace({ ...location, expectedRevision: inserted.revision,
+      next: { ...inserted, claim: null, work: { ...inserted.work, state: "stopped", stoppedAt: "2026-08-26T09:00:01.000Z" } },
+    });
+    expect(result.type === "replaced" && result.record.claim).toBeNull();
+    expect((await store.find(location))!.claim).toBeNull();
+    expect((await store.list({ ...location, limit: 10 }))[0].claim).toBeNull();
+  });
   it("lets a reserved worker acknowledge only its current claim before Session access", async () => {
     const store = new MemoryEnvironmentWorkStore();
     const initial = record("work_01", "2026-08-26T09:00:00.000Z", "session_01");

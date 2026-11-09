@@ -36,7 +36,8 @@ function cloneRecord(record: EnvironmentWorkRecord): EnvironmentWorkRecord {
 }
 
 function cloneStored(record: StoredEnvironmentWork): StoredEnvironmentWork {
-  return { ...cloneRecord(record), revision: record.revision };
+  const cloned = cloneRecord(record);
+  return { ...cloned, claim: record.work.state === "stopped" ? null : cloned.claim, revision: record.revision };
 }
 
 function descending(left: StoredEnvironmentWork, right: StoredEnvironmentWork): number {
@@ -146,6 +147,8 @@ export class MemoryEnvironmentWorkStore implements EnvironmentWorkStore {
     }
     const record = {
       ...cloneRecord(input.next),
+      // Keep lease history for the stopped generation, without exposing a live claim.
+      claim: input.next.work.state === "stopped" ? input.next.claim ?? current.claim : input.next.claim,
       claimGeneration: input.next.claim?.generation ?? current.claimGeneration,
       revision: current.revision + 1,
     };

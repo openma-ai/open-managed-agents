@@ -21,6 +21,8 @@ export interface SqlEnvironmentWorkClaimOptions {
 
 interface ClaimRow {
   claim_at: number | string;
+  state: string;
+  document: string;
   heartbeat_ttl_seconds: number | string;
   runtime_publication_json: string | null;
 }
@@ -179,12 +181,14 @@ export class SqlEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
         `UPDATE managed_environment_work
             SET runtime_publication_json = ?
           WHERE ${condition}
+            AND state = ? AND document = ? AND claim_at = ? AND heartbeat_ttl_seconds = ?
             AND ${row.runtime_publication_json === null
               ? "runtime_publication_json IS NULL"
               : "runtime_publication_json = ?"}`,
       ).bind(
         next,
         ...parameters,
+        row.state, row.document, row.claim_at, row.heartbeat_ttl_seconds,
         ...(row.runtime_publication_json === null ? [] : [row.runtime_publication_json]),
       ).run();
       if (result.meta.changes === 1) return { type: "published", revision };
@@ -229,10 +233,20 @@ export class SqlEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
     if (!Number.isSafeInteger(claim.generation) || claim.generation < 1) return null;
     const sql = await this.#client(claim.workspaceId);
     const [condition, parameters] = this.#claimCondition(claim, states, final);
-    return sql.prepare(
-      `SELECT claim_at, heartbeat_ttl_seconds, runtime_publication_json
+    const row = await sql.prepare(
+      `SELECT claim_at, heartbeat_ttl_seconds, runtime_publication_json, state, document
          FROM managed_environment_work
         WHERE ${condition}`,
     ).bind(...parameters).first<ClaimRow>();
+    if (row !== null && row.state === "stopped") {
+      // stoppedAt already lives in the Work document on every SQL dialect.
+      // Pin that document and the lease columns in the publication CAS above.
+      const stoppedAt = (JSON.parse(row.document) as { stoppedAt?: string | null }).stoppedAt;
+      if (row.claim_at === null || stoppedAt == null
+        || !(Date.parse(stoppedAt) <= Number(row.claim_at) + Number(row.heartbeat_ttl_seconds) * 1_000)) {
+        return null;
+      }
+    }
+    return row;
   }
 }
