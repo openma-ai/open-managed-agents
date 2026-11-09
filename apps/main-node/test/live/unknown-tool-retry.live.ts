@@ -56,7 +56,7 @@ try{
   await save("fault",{sid,pid,at:new Date().toISOString(),count:await count(token)});
   const recovered=await wait(()=>events(sid!,peer),rows=>rows.some(row=>row.type==="session.status_idle"&&row.stop_reason?.type==="requires_action"));
   const warning=recovered.find(row=>row.type==="session.warning"&&row.source==="tool_outcome_unknown");assert(warning);
-  const details=warning.details, retryId=details.retry_request_id, originalId=details.tool_use_id;
+  const details=warning.details, retryId=details.retryRequestId??details.retry_request_id, originalId=details.toolUseId??details.tool_use_id;
   assert.equal(details.outcome,"dispatched_unknown");assert.equal(retryId,"retry:"+originalId);
   const original=recovered.find(row=>row.id===originalId), retry=recovered.find(row=>row.id===retryId);
   assert(original&&retry);assert.deepEqual(retry.input,original.input);assert.equal(original.input.command,command);

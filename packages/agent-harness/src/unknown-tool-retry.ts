@@ -20,7 +20,9 @@ export function requestUnknownToolRetry(runtime: HarnessRuntime, toolUseId: stri
         details:{outcome:"dispatched_unknown",tool_use_id:toolUseId,retry_request_id:id}};
       runtime.broadcast(warning);
     }
-    runtime.broadcast({...original,id,input:structuredClone(original.input),...(original.type === "agent.tool_use" ? {evaluated_permission:"ask" as const}: {})});
+    runtime.broadcast(original.type === "agent.tool_use"
+      ? {type:original.type,id,name:original.name,input:structuredClone(original.input),evaluated_permission:"ask",...(typeof threadId === "string" ? {session_thread_id:threadId}:{})}
+      : {type:original.type,id,name:original.name,mcp_server_name:original.mcp_server_name,input:structuredClone(original.input),...(typeof threadId === "string" ? {session_thread_id:threadId}:{})});
   }
   runtime.pendingConfirmations = [...new Set([...(runtime.pendingConfirmations ?? []),id])];
   return id;

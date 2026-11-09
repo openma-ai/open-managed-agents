@@ -28,6 +28,12 @@ it("does not connect a native proxy while an unknown retry waits for authorizati
   expect(connects).toBe(0);
   expect(runtime.pendingConfirmations).toEqual(["retry:effect"]);
 });
+it("does not copy the original event timestamp onto a new retry authorization", () => {
+  const events=[{id:"effect",type:"agent.tool_use",name:"bash",input:{command:"effect"},processed_at:"2026-01-01T00:00:00Z"}];
+  const runtime={history:{getEvents:()=>events},broadcast:(event:unknown)=>events.push(event as never)} as unknown as HarnessRuntime;
+  requestUnknownToolRetry(runtime,"effect");
+  expect(events.find(event=>event.id==="retry:effect")).not.toHaveProperty("processed_at");
+});
 it("freezes retry input independently of the original input object", () => {
   const input={command:"effect",nested:{value:1}};
   const events=[{id:"effect",type:"agent.tool_use",name:"bash",input}];
