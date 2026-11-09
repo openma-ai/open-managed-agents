@@ -9,6 +9,7 @@ const started: Array<Record<string, unknown>> = [];
 const disposed: string[] = [];
 const prompts: string[] = [];
 let alive = true;
+let failPrompt = false;
 
 vi.mock("../../acp-runtime/src/placement.ts", () => ({
   createAcpRuntime: () => ({
@@ -18,7 +19,7 @@ vi.mock("../../acp-runtime/src/placement.ts", () => ({
       return {
         acpSessionId: id,
         isAlive: () => alive,
-        async *prompt(text: string) { prompts.push(text); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; },
+        async *prompt(text: string) { prompts.push(text); if (failPrompt) throw new Error("first turn failed"); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; },
         async dispose() { disposed.push(id); },
       };
     },
@@ -132,7 +133,21 @@ describe("acp-sandbox child lifetime", () => {
     expect(recovered.runtime.history.getEvents()).not.toContainEqual(expect.objectContaining({source: "oma.acp_context", details: expect.objectContaining({state: "native"})}));
     expect(recovered.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type: "session.error", error: expect.stringContaining("no usable conversation")}));
   });
-  beforeEach(() => { started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
+  it("retains started identity after a failed first prompt without publishing a success checkpoint", async () => {
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.runtime.broadcast({type:"user.message",content:[{type:"text",text:"original canonical request"}]});
+    failPrompt = true;
+    await new AcpSandboxHarness().run(ctx);
+    expect(s.files.size).toBe(0);
+    expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({source:"oma.acp_context", details:expect.objectContaining({state:"started",acp_session_id:"acp_1"})}));
+    failPrompt = false;
+    const recovered = context(s.port);
+    recovered.acpRecoveryHistory = ctx.runtime.history.getEvents();
+    await new AcpSandboxHarness().run(recovered);
+    expect(prompts.at(-1)).toContain("original canonical request");
+    expect(recovered.runtime.history.getEvents()).toContainEqual(expect.objectContaining({source:"oma.acp_context",details:expect.objectContaining({state:"rebuilt"})}));
+  });
+  beforeEach(() => { failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
 
   it("ignores idle_timeout_ms: it belongs to acp-proxy", async () => {
     const s = sandbox(false);

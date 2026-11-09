@@ -243,6 +243,12 @@ export class AcpSandboxHarness implements HarnessInterface {
           this.#semanticRecoveryReason ??= "resume-unsupported";
         }
         this.#resumeAcpSessionId = this.#session.acpSessionId || null;
+        // Startup identity is not a successful context checkpoint. Persist it
+        // before prompting so a failed first execution cannot look like none.
+        if (this.#session.acpSessionId) {
+          this.#contextState = {state:"started", acp_session_id:this.#session.acpSessionId, checkpoint_fingerprint:"", configuration_sha256:await configurationDigest(configKey)};
+          runtime.broadcast({type:"session.warning", source:"oma.acp_context", message:"ACP session started; context checkpoint is not yet committed.", details:{...this.#contextState}});
+        }
       }
 
       const session = this.#session;

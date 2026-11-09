@@ -1,6 +1,7 @@
 /** Event-sourced harness context. The event log, not sandbox files, owns existence. */
 export type HarnessContextState =
   | { state: "none" }
+  | { state: "started"; acp_session_id: string; checkpoint_fingerprint: string; configuration_sha256: string }
   | { state: "native"; acp_session_id: string; checkpoint_fingerprint: string }
   | { state: "rebuilt"; from: "canonical_history"; reason: string; acp_session_id: string; checkpoint_fingerprint: string };
 
@@ -21,6 +22,7 @@ export function harnessContextFromEvents(events: readonly { type: string; source
     if (event.type !== "session.warning" || event.source !== "oma.acp_context") continue;
     const d = event.details;
     if (!d || typeof d.acp_session_id !== "string" || !d.acp_session_id || typeof d.checkpoint_fingerprint !== "string") continue;
+    if (d.state === "started" && typeof d.configuration_sha256 === "string") return {state:"started", acp_session_id:d.acp_session_id, checkpoint_fingerprint:d.checkpoint_fingerprint, configuration_sha256:d.configuration_sha256};
     if (d.state === "native") return { state: "native", acp_session_id: d.acp_session_id, checkpoint_fingerprint: d.checkpoint_fingerprint };
     if (d.state === "rebuilt" && d.from === "canonical_history" && typeof d.reason === "string") return { state: "rebuilt", from: "canonical_history", reason: d.reason, acp_session_id: d.acp_session_id, checkpoint_fingerprint: d.checkpoint_fingerprint };
   }
