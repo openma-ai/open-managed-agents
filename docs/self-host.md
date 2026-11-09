@@ -41,6 +41,19 @@ MySQL modes better-auth's tables live in the same database (no separate
 cp .env.example .env
 $EDITOR .env  # set ANTHROPIC_API_KEY
 
+# Also required: PUBLIC_BASE_URL, the origin you open in the browser, no
+# trailing slash. On a plain-HTTP port that is http://<host>:8787. Leave it
+# unset and better-auth marks the session cookie Secure, which browsers drop
+# over http — sign-in returns 200 and then redirects back to /login.
+#   PUBLIC_BASE_URL=http://localhost:8787
+
+# ./data (SQLite db, sandbox workdirs, blobs) is bind-mounted at /app/data.
+# The server runs as uid 1000, so Docker would otherwise create a missing
+# ./data as root:root 0755 and the server would crash-loop with
+# SQLITE_CANTOPEN. The bundled compose runs a one-shot `oma-init` service to
+# fix the ownership; with your own compose file or `docker run`, do
+# `mkdir -p data && sudo chown -R 1000:1000 data` first.
+
 # 2. Start (first time builds the image; subsequent runs skip --build)
 docker compose -f docker-compose.yml up -d --build
 
@@ -88,6 +101,33 @@ ANTHROPIC_API_KEY=sk-... pnpm --filter @open-managed-agents/main-node start
 
 State lives at `./data/` (sqlite db + per-session sandbox workdirs).
 Wipe + restart for a clean slate.
+
+## Common failure modes
+
+- **Container restarts forever, `/health` never passes, `docker compose logs
+  oma-server` shows `SqliteError: unable to open database file`
+  (`SQLITE_CANTOPEN`).** `./data` is bind-mounted at `/app/data` and the server
+  runs as uid 1000, but Docker creates a missing source directory as
+  root:root 0755. The bundled compose files run a one-shot `oma-init` service
+  first, `chown`ing it to uid 1000. A hand-written compose file or `docker run`
+  needs `mkdir -p data && sudo chown -R 1000:1000 data`.
+- **Sign-in succeeds, then the Console returns to `/login`.** Session cookies
+  are issued with `Secure` whenever `PUBLIC_BASE_URL` is unset, and browsers
+  drop those on a plain-HTTP origin. Set `PUBLIC_BASE_URL=http://<host>:<port>`
+  and `docker compose up -d --force-recreate oma-server`. Verify with
+  `curl -s -D - -o /dev/null -X POST localhost:8787/auth/sign-in/email -H
+  'content-type: application/json' -d '{"email":…,"password":…}' | grep -i
+  set-cookie`: a `__Secure-` prefix plus `Secure` means it is still broken.
+
+- **The server will not start: `SANDBOX_PROVIDER=… requires the "…" SDK`.**
+  Provider SDKs are optional peers of the adapter packages
+  (`autoInstallPeers: false`), so neither a plain `pnpm install` nor the Docker
+  image installs one. Name them in `SANDBOX_PROVIDERS` and rebuild —
+  `e2b`, `@daytonaio/sdk`, `@boxlite-ai/boxlite`, `@alibaba-group/opensandbox` —
+  or use `boxrun`, which is an HTTP client and needs none. Before this startup
+  check existed the server booted anyway and every session turn failed three
+  times with `E2B sandbox provider failed to load 'e2b' SDK` and ended in
+  `retries_exhausted`, which reads as "the agent never answers".
 
 ## Postgres backend
 

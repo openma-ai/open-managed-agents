@@ -49,6 +49,7 @@ import { nodeToMarkdown } from "@open-managed-agents/markdown/adapters/node";
 import { SqlAgentPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
 
 import { resolveFeishuAgentTools } from "../lib/feishu-agent-tools.js";
+import { authCookieWarning } from "../auth-cookie-warning.js";
 import { createLegacySessionMcpProxy } from "../lib/legacy-session-mcp-proxy.js";
 
 import { NodeWorkspaceBackupService } from "../lib/node-workspace-backup.js";
@@ -99,6 +100,14 @@ export async function createNodeFoundation(
   setRootLogger(logger);
   log.current = logger;
   logger.info({ op: "main-node.config", config: redactNodeConfig(config) }, "effective configuration");
+
+  // Auth without a public base URL silently breaks every browser sign-in on a
+  // plain-HTTP origin (see auth-cookie-warning.ts).
+  const authCookie = authCookieWarning({
+    authDisabled: config.auth.disabled,
+    publicBaseUrl: config.http.publicBaseUrl,
+  });
+  if (authCookie) logger.warn({ op: "main-node.auth.public_base_url_missing" }, authCookie);
 
   const metrics: NodeMetricsHandle = await createNodeMetricsRecorder();
   const tracer: NodeTracerHandle = await createNodeTracer({
