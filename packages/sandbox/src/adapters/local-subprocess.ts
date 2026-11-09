@@ -143,6 +143,9 @@ export class LocalSubprocessSandbox
     };
     mkdirSync(this.workdir, { recursive: true });
     this.relayPort = this.allocateRelayPort();
+    // Acquisition may never reach egress (e.g. rejected runtime settings).
+    // Observe rejection now, but preserve it for egressRelayPort to fail closed.
+    void this.relayPort.catch(() => undefined);
   }
 
   egressRelayPort(): Promise<number> { return this.relayPort; }
@@ -472,7 +475,8 @@ export class LocalSubprocessSandbox
   }
 
   async destroy(): Promise<void> {
-    await this.relayPort;
+    // Port allocation is not a prerequisite for releasing owned processes.
+    await this.relayPort.catch(() => undefined);
     await Promise.all(
       [...this.duplexProcesses].map((proc) =>
         proc.kill("SIGKILL").catch(() => undefined)
