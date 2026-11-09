@@ -268,6 +268,9 @@ export const handleOpenmaControlPlaneRequest = async (
   // its Session and its scope on every request.
   const sandboxToken = authorization.startsWith("Bearer oma_sbx_") || authorization.startsWith("Basic ");
   const workToken = typeof params.workId === "string" && params.workId.length > 0 && authorization.startsWith("Bearer sk-ant-req-v1.");
+  if (url.origin === expectedOrigin && workToken && /^\/v1\/oma\/(?:mcp-proxy|inference-proxy)\//u.test(url.pathname)) {
+    return new Response("sandbox gateway requires a sandbox token", { status: 401 });
+  }
   if (
     url.origin !== expectedOrigin
     || !(sandboxToken || workToken)

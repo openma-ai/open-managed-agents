@@ -287,32 +287,7 @@ function authorized(claims: EnvironmentWorkSessionTokenClaims, method: string, p
     && parts[4] === "runtime-events"
   ) return verb === "POST";
 
-  // An in-sandbox harness must never receive an upstream MCP credential.
-  // It connects to OpenMA's HTTP MCP gateway with the already-scoped Work
-  // bearer instead.  The gateway path is deliberately part of the same
-  // claim: reclaiming the Work rotates `sessions_token`, and `isCurrent`
-  // fences the old sandbox before the gateway resolves any Vault material.
-  if (
-    parts.length === 5
-    && parts[0] === "v1"
-    && parts[1] === "oma"
-    && parts[2] === "mcp-proxy"
-    && parts[3] === claims.sessionId
-    && parts[4]!.length > 0
-  ) {
-    return verb === "GET" || verb === "POST" || verb === "DELETE";
-  }
-
-  if (
-    parts.length >= 5
-    && parts[0] === "v1"
-    && parts[1] === "oma"
-    && parts[2] === "inference-proxy"
-    && parts[3] === claims.sessionId
-    && parts[4]!.length > 0
-  ) {
-    return verb === "GET" || verb === "POST" || verb === "DELETE" || verb === "PATCH";
-  }
+  // Model and MCP gateways require oma_sbx_; the Work bearer is protocol-only.
 
   if (parts[0] === "v1" && parts[1] === "skills" && verb === "GET") {
     const skill = claims.skills.find((candidate) => candidate.skillId === parts[2]);

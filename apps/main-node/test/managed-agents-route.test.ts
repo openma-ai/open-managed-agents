@@ -975,6 +975,10 @@ describe("main-node official Managed Agents route", () => {
     await expect(
       sessionClient.beta.memoryStores.memories.list(unrelatedMemoryStore.id),
     ).rejects.toMatchObject({ status: 401 });
+    for (const path of [`/v1/oma/mcp-proxy/${session.id}/server`, `/v1/oma/inference-proxy/${session.id}/v1/messages`]) {
+      const denied = await fetch(`${baseURL}${path}`, { method: "POST", headers: { Authorization: `Bearer ${sessionsToken}`, "content-type": "application/json" }, body: "{}" });
+      expect(denied.status, path).toBe(401);
+    }
     const unrelated = await fetch(`${baseURL}/v1/agents`, {
       headers: { Authorization: `Bearer ${sessionsToken}` },
     });

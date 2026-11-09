@@ -202,7 +202,7 @@ describe("Cloudflare credential egress handler", () => {
 
   it("passes the Work capability only to the bound OpenMA origin", async () => {
     globalThis.fetch = vi.fn(async (request: Request) => {
-      expect(request.headers.get("authorization")).toBe("Bearer sk-ant-req-v1.current");
+      expect(request.headers.get("authorization")).toBe("Bearer oma_sbx_current");
       expect(request.headers.has("cookie")).toBe(false);
       expect(request.redirect).toBe("manual");
       return new Response("ok");
@@ -211,7 +211,7 @@ describe("Cloudflare credential egress handler", () => {
       new Request("https://api.openma.test/v1/oma/mcp-proxy/session-1/linear", {
         method: "POST",
         headers: {
-          authorization: "Bearer sk-ant-req-v1.current",
+          authorization: "Bearer oma_sbx_current",
           cookie: "console-session=must-not-leak",
         },
         body: "{}",
@@ -228,6 +228,13 @@ describe("Cloudflare credential egress handler", () => {
 
     expect(response.status).toBe(200);
     expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each(["mcp-proxy/session-1/linear", "inference-proxy/session-1/v1/messages"])("refuses a Work bearer on the %s sandbox gateway", async (path) => {
+    globalThis.fetch = vi.fn(async () => new Response("unexpected"));
+    const response = await handleOpenmaControlPlaneRequest(new Request(`https://api.openma.test/v1/oma/${path}`, { headers: { authorization: "Bearer sk-ant-req-v1.current" } }), {}, { ...context, params: { ...context.params, controlPlaneOrigin: "https://api.openma.test" } });
+    expect(response.status).toBe(401);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("lets the scoped Work client reach every attached resource API family", async () => {
