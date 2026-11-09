@@ -160,7 +160,7 @@ import {
 import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
-import { ensureEnvironmentPackages } from "@open-managed-agents/sandbox";
+import { ensureEnvironmentPackages, environmentCommandPath } from "@open-managed-agents/sandbox";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory } from "./sqlite-history";
@@ -4170,6 +4170,10 @@ export class SessionDO extends DurableObject<Env> {
           }
         }
       }
+
+      // Same PATH as Node (environmentCommandPath): installed tools, then the
+      // image PATH that bash -l's /etc/profile would otherwise drop.
+      await sandbox.setEnvVars?.({ PATH: await environmentCommandPath({ exec: (cmd: string, timeout?: number) => sandbox.exec(cmd, timeout) }) });
 
       // Mount FILES_BUCKET at /mnt/session/outputs/ so any file the agent
       // writes there immediately appears via the caller-facing
