@@ -839,6 +839,9 @@ export function createManagedRuntimeHost(
           return { type: "lease_lost" };
         }
         outputPublished = true;
+        // Publication is durable, but cannot restore a lost sandbox lease.
+        // Preserve its failure while releasing (not aborting) published outputs.
+        controller.signal.throwIfAborted();
         retainedRuntimePublished = plan.workspaceStrategy === "retained_runtime";
         cleanupReason = "completed";
         return { type: "completed", revision: published.revision };

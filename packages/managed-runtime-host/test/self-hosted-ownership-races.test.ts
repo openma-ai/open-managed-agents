@@ -191,6 +191,68 @@ describe("self-hosted ownership races (characterization)", () => {
     if (abort) expect(publish).not.toHaveBeenCalled();
   });
 
+  it.each(["throw", "lost", "timeout", "cancel"] as const)(
+    "preserves lease loss during final publish (%s)", async (failure) => {
+      const owner = ownership();
+      const scheduler = manualScheduler();
+      const controller = new AbortController();
+      let finishPublish!: () => void;
+      let hostSignal!: AbortSignal;
+      const publishGate = new Promise<void>((resolve) => { finishPublish = resolve; });
+      const dependencies = fixture(owner, {
+        scheduler,
+        heartbeatIntervalMs: 10,
+        sandbox: {
+          heartbeat: vi.fn(async () => {
+            if (failure === "throw") throw new Error("provider unavailable");
+            if (failure === "timeout") return await new Promise<never>(() => {});
+            return { type: "lost" };
+          }),
+        },
+        outputs: {
+          capabilities: vi.fn(async () => ({ strategies: [{ strategy: "final_collect", durability: "durable" }] })),
+          prepare: vi.fn(async () => ({ bindingId: "outputs", mountPath: "/outputs" })),
+          collect: vi.fn(async () => []),
+          finalize: vi.fn(async () => ({ id: "output-a", contentHash: "sha256:out" })),
+        },
+        harnessDriver: { run: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+          hostSignal = signal;
+          return { type: "completed" };
+        }) },
+      });
+      const originalPublish = owner.dependencies.claims.publish.bind(owner.dependencies.claims);
+      const publish = vi.spyOn(owner.dependencies.claims, "publish").mockImplementation(async (input) => {
+        await publishGate;
+        return originalPublish(input);
+      });
+      const running = createManagedRuntimeHost(dependencies).run({
+        scope, profile: { ...profile, outputs: { requirement: "durable" } },
+        ...owner.runInput, signal: controller.signal,
+      });
+      await vi.waitFor(() => expect(publish).toHaveBeenCalled());
+      if (failure === "cancel") controller.abort();
+      else scheduler.tick();
+      // Wait for the actual host abort, not just the heartbeat invocation.
+      await vi.waitFor(() => expect(hostSignal.aborted).toBe(true));
+      expect(hostSignal.reason.message).toMatch(failure === "lost"
+        ? /Sandbox lease lost/
+        : failure === "cancel" ? /cancelled/ : /Runtime heartbeat failed/);
+      finishPublish();
+      const result = await running;
+      expect(owner.published()).toBe("workspace-a");
+      expect(owner.dependencies.claims.inspect(scope)?.publication?.outputCandidate?.id).toBe("output-a");
+      expect(dependencies.sandbox.terminate).toHaveBeenCalledWith(expect.objectContaining({ reason: "lease_lost" }));
+      // Published output must be released, never rolled back on sandbox loss.
+      expect(dependencies.outputs.release).toHaveBeenCalled();
+      expect(dependencies.outputs.abort).not.toHaveBeenCalled();
+      const count = dependencies.sandbox.heartbeat.mock.calls.length;
+      scheduler.tick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(dependencies.sandbox.heartbeat).toHaveBeenCalledTimes(count);
+      expect(result).toEqual({ type: "lease_lost" });
+    },
+  );
+
   it("race 1: a stale owner's publication is lost and the new owner's pointer stays", async () => {
     const owner = ownership();
     const dependencies = fixture(owner, {
