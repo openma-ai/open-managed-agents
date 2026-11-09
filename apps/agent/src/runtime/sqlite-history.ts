@@ -38,7 +38,8 @@ export class SqliteHistory implements HistoryStore {
 
   /** Reconcile committed facts without re-enqueueing consumed inputs or changing
    * local seq identities. Canonical order is a projection, never a fence. */
-  reconcileCanonicalEvents(events: SessionEvent[]): SessionEvent[] {
+  async reconcileCanonicalEvents(events: SessionEvent[]): Promise<SessionEvent[]> {
+    await this.repo.indexLegacySpillIds();
     const added: SessionEvent[] = [];
     for (const [order, event] of events.entries()) {
       if (!event.id) continue;

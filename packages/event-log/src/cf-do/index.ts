@@ -100,6 +100,7 @@ export class CfDoEventLog implements EventLogRepo {
       "INSERT INTO events (type, data, processed_at, session_thread_id) VALUES (?, ?, ?, ?)",
       event.type,
       JSON.stringify({
+        id: event.id,
         type: event.type,
         _spilled: { r2_key: r2Key, original_bytes: fullData.length },
       }),
@@ -116,17 +117,23 @@ export class CfDoEventLog implements EventLogRepo {
    * Async helper that resolves `_spilled` references back to full events
    * by reading from R2. Sync `getEvents()` returns rows verbatim — call
    * this after if you need full payloads. Missing R2 objects (race or
-   * lost) come back with `_spill_lost: true` instead of throwing.
+   * lost) come back with `_spill_lost: true` instead of throwing. Strict
+   * identity indexing rejects missing/invalid objects before reconciliation.
    */
-  async resolveSpilledEvents(events: SessionEvent[]): Promise<SessionEvent[]> {
-    if (!this.r2) return events;
+  async resolveSpilledEvents(events: SessionEvent[], strict = false): Promise<SessionEvent[]> {
+    if (!this.r2 && !strict) return events;
     return Promise.all(
       events.map(async (e) => {
         const meta = (e as unknown as { _spilled?: { r2_key: string; original_bytes: number } })._spilled;
-        if (!meta || !this.r2) return e;
+        if (!meta) return e;
+        if (!this.r2) {
+          if (strict) throw new Error("Cannot index legacy spill without R2");
+          return e;
+        }
         try {
           const obj = await this.r2.get(meta.r2_key);
           if (!obj) {
+            if (strict) throw new Error("Legacy spill object is missing");
             return {
               ...e,
               _spill_lost: true,
@@ -134,8 +141,11 @@ export class CfDoEventLog implements EventLogRepo {
             } as unknown as SessionEvent;
           }
           const text = await obj.text();
-          return JSON.parse(text) as SessionEvent;
+          const resolved = JSON.parse(text) as SessionEvent;
+          if (strict && (typeof resolved?.id !== "string" || resolved.id.length === 0 || resolved.type !== e.type)) throw new Error("Legacy spill has no valid event identity");
+          return resolved;
         } catch (err) {
+          if (strict) throw err;
           const msg = err instanceof Error ? err.message : String(err);
           return {
             ...e,
@@ -145,6 +155,17 @@ export class CfDoEventLog implements EventLogRepo {
         }
       }),
     );
+  }
+
+  /** Upgrade old reference envelopes in place before ID-based reconciliation.
+   * Resolve every unknown identity before inserting anything: unavailable R2
+   * is not evidence that a canonical fact is absent. Keep seq and spill keys. */
+  async indexLegacySpillIds(): Promise<void> {
+    const rows = this.sql.exec("SELECT seq, data FROM events WHERE json_extract(data, '$._spilled') IS NOT NULL AND json_extract(data, '$.id') IS NULL").toArray();
+    const resolved = await this.resolveSpilledEvents(rows.map(row => JSON.parse(row.data as string)), true);
+    for (const [index, row] of rows.entries()) {
+      this.sql.exec("UPDATE events SET data = json_set(data, '$.id', ?) WHERE seq = ? AND data = ?", resolved[index]!.id!, row.seq, row.data);
+    }
   }
 
   getEvents(afterSeq?: number): SessionEvent[] {

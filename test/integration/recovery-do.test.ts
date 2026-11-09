@@ -26,6 +26,52 @@ import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 registerTestHarnesses();
 
 describe("canonical continuation reconciliation", () => {
+  it.each([false, true])("keeps spill identity, canonical middle order and one broadcast (legacy: %s)", async legacy => {
+    const { backfillStaleTurnEvents } = await import("../../apps/agent/src/runtime/stale-turn-settlement");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName("spill_" + crypto.randomUUID()));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const objects = new Map(), puts: string[] = [], reads: string[] = [], sent: string[] = [];
+      const r2 = { put: async (key, text) => { puts.push(key); objects.set(key, text); }, get: async key => { reads.push(key); const text = objects.get(key); return text === undefined ? null : { text: async () => text }; } };
+      const history = new SqliteHistory(state.storage.sql, r2, "t/tenant/sessions/spill");
+      const before = { id: "before", type: "agent.message", content: [{ type: "text", text: "BEFORE" }] };
+      const large = { id: "large", type: "agent.tool_result", tool_use_id: "tool", content: "x".repeat(510_000), processed_at: "2026-01-01T00:00:00Z" };
+      const after = { id: "after", type: "agent.message", content: [{ type: "text", text: "AFTER" }] };
+      history.append(before); history.append(after);
+      if (legacy) {
+        objects.set("t/tenant/sessions/spill/events/legacy", JSON.stringify(large));
+        state.storage.sql.exec("INSERT INTO events(type,data,processed_at,session_thread_id) VALUES (?,?,1,?)", large.type, JSON.stringify({ type: large.type, _spilled: { r2_key: "t/tenant/sessions/spill/events/legacy", original_bytes: 510_000 } }), "sthr_primary");
+      }
+      const input = { binding: { managedSessionCanonicalEvents: async () => [before, large, after] }, workspaceId: "tenant", sessionId: "spill", history, sockets: () => [{ send: data => sent.push(data) }] };
+      await backfillStaleTurnEvents(input); await backfillStaleTurnEvents(input); await backfillStaleTurnEvents(input);
+      expect(history.getEvents().map(e => e.id)).toEqual(["before", "large", "after"]);
+      expect((await history.resolveSpilledEvents(history.getEvents()))[1].content).toHaveLength(510_000);
+      expect(state.storage.sql.exec("SELECT canonical_order FROM events WHERE json_extract(data, '$.id') = 'large'").toArray()).toEqual([{ canonical_order: 1 }]);
+      expect(sent.map(text => JSON.parse(text).id)).toEqual(legacy ? [] : ["large"]);
+      expect(puts).toHaveLength(legacy ? 0 : 1);
+      expect(reads.every(key => key.startsWith("t/tenant/sessions/spill/events/"))).toBe(true);
+    });
+  });
+  it.each(["throw", "missing", "invalid"])("fails closed on legacy R2 %s then retries without duplicates", async mode => {
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName("spill_failure_" + crypto.randomUUID()));
+    await runInDurableObject(stub, async (_instance, state) => {
+      let unavailable = true;
+      const event = { id: "legacy", type: "agent.tool_result", tool_use_id: "tool", content: "x".repeat(510_000) };
+      const r2 = { put: async () => { throw new Error("must not create a duplicate spill"); }, get: async () => {
+        if (unavailable && mode === "throw") throw new Error("R2 unavailable");
+        if (unavailable && mode === "missing") return null;
+        return { text: async () => unavailable ? "{}" : JSON.stringify(event) };
+      } };
+      const history = new SqliteHistory(state.storage.sql, r2, "t/tenant/sessions/failure");
+      state.storage.sql.exec("INSERT INTO events(type,data,processed_at) VALUES (?,?,1)", event.type, JSON.stringify({ type: event.type, _spilled: { r2_key: "t/tenant/sessions/failure/events/legacy", original_bytes: 510_000 } }));
+      await expect(Promise.resolve().then(() => history.reconcileCanonicalEvents([{ id: "new-small", type: "agent.message", content: [] }, event]))).rejects.toThrow();
+      expect(state.storage.sql.exec("SELECT seq FROM events").toArray()).toHaveLength(1);
+      unavailable = false;
+      expect(await history.reconcileCanonicalEvents([event])).toEqual([]);
+      expect(await history.reconcileCanonicalEvents([event])).toEqual([]);
+      expect(history.getEvents().map(e => e.id)).toEqual(["legacy"]);
+    });
+  });
+
   it("promotes canonical consumed inputs and preserves source order across a middle gap", async () => {
     await api("/health");
     const sessionId = await newSessionDirect("canonical_order");
