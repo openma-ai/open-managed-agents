@@ -434,6 +434,8 @@ export interface SqlSessionExecutionStoreOptions {
    */
   sweepIntervalMs?: number;
   onError?(error: unknown, op: string): void;
+  /** Retry public settlement of failed executions still leaving a running Session. */
+  onFailedExecution?(execution: SessionExecution): Promise<void>;
 }
 
 export interface SweepExpiredOptions {
@@ -1458,7 +1460,7 @@ export class SqlSessionExecutionStore
             now, now,
           ).all<ExecutionRow>();
           const rows = selected.results ?? [];
-          if (rows.length === 0) return;
+          if (rows.length === 0) break;
           let changed = 0;
           for (const row of rows) {
             const lease = toLeaseRecord(row);
@@ -1483,10 +1485,29 @@ export class SqlSessionExecutionStore
               options.onDecision?.(decision);
             }
           }
-          if (rows.length < 100) return;
-          if (changed === 0) return;
+          if (rows.length < 100) break;
+          if (changed === 0) break;
         }
       });
+      if (this.options.onFailedExecution) {
+        // Persisted failed rows remain candidates after projection failure or
+        // process death. Never settle over a newer/active execution.
+        const pending = await this.sql.prepare(`
+          SELECT ${columns()}
+            FROM managed_session_executions
+           WHERE state = 'failed'
+             AND EXISTS (SELECT 1 FROM managed_sessions s
+               WHERE s.workspace_id = managed_session_executions.workspace_id
+                 AND s.id = managed_session_executions.session_id AND s.status = 'running')
+             AND NOT EXISTS (SELECT 1 FROM managed_session_executions newer
+               WHERE newer.workspace_id = managed_session_executions.workspace_id
+                 AND newer.session_id = managed_session_executions.session_id
+                 AND (newer.state IN ('queued', 'running')
+                   OR newer.settled_at_ms > managed_session_executions.settled_at_ms))
+           ORDER BY settled_at_ms ASC LIMIT 100
+        `).all<ExecutionRow>();
+        for (const row of pending.results ?? []) await this.options.onFailedExecution(toExecution(row));
+      }
     } catch (error) {
       if (this.options.onError === undefined) throw error;
       this.options.onError(error, "session_execution.sweep_expired");

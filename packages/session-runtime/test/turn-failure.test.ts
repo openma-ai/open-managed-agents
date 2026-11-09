@@ -6,9 +6,28 @@ import {
   reportTurnFailure,
   runTurnAttempts,
   settleTurnFailure,
+  settleDeadExecutionFailure,
   type PlanTurnFailureInput,
   type TurnFailurePlan,
 } from "../src/turn-failure";
+
+it.each(["session.error", "session.status_idle"])("durably retries dead execution settlement after %s fails", async failType => {
+  const events: Array<{ id?: string; type: string }> = [];
+  let fail = true;
+  const port = {
+    hasEvent: async (id: string) => events.some(e => e.id === id),
+    append: async (event: { id?: string; type: string }) => {
+      if (fail && event.type === failType) { fail = false; throw new Error("disk"); }
+      events.push(event);
+    },
+    broadcast: () => {},
+  };
+  const failure = { executionId: "dead", attempt: 2, message: "expired" };
+  await expect(settleDeadExecutionFailure(failure, port)).rejects.toThrow("disk");
+  await settleDeadExecutionFailure(failure, port);
+  await settleDeadExecutionFailure(failure, port);
+  expect(events.map(e => e.type)).toEqual(["session.error", "session.status_idle"]);
+});
 
 const base: PlanTurnFailureInput = {
   cancelled: false,

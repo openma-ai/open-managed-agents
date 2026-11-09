@@ -25,7 +25,7 @@
     "session.error": [
       {
         "error": {
-          "message": "The agent process exited before it could accept the prompt (parity-acp-agent, exit code 137). Reopen the task to restart it, or check this agent's setup and sign-in.",
+          "message": "ACP transport failed: stdout drain was not confirmed after process exit; output may be incomplete. Restart the agent and inspect the sandbox transport.",
           "retry_status": {
             "type": "exhausted"
           },

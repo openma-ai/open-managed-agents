@@ -138,6 +138,23 @@ describe("SqlSessionExecutionCoordinator", () => {
     expect(normal.type === "claimed" && normal.execution.id).toBe("queued_msg");
   });
 
+  it("retries failed-session projection on later sweeps even after the execution is failed", async () => {
+    let failures = 0;
+    let succeed = false;
+    const recovering = new SqlSessionExecutionCoordinator(sql, {
+      onFailedExecution: async () => { failures++; if (!succeed) throw new Error("projection offline"); },
+    });
+    await sql.exec("CREATE TABLE IF NOT EXISTS managed_sessions (workspace_id TEXT, id TEXT, status TEXT)");
+    await sql.prepare("INSERT INTO managed_sessions (workspace_id, id, status) VALUES (?, ?, 'running')").bind("workspace_01", "session_01").run();
+    await recovering.admit({ ...admitted("dead", "session_01", at(1)), policy: { maxAttempts: 1, timeoutMs: 60_000 } });
+    await recovering.claim({ ownerId: "gone", attemptId: "a", claimedAt: at(2), leaseTtlMs: 1_000 });
+    await expect(recovering.sweepExpired(Date.parse(at(5)))).rejects.toThrow("projection offline");
+    expect((await recovering.find({ workspaceId: "workspace_01", executionId: "dead" }))?.state).toBe("failed");
+    succeed = true;
+    await recovering.sweepExpired(Date.parse(at(6)));
+    expect(failures).toBe(2);
+  });
+
   it("claims a default-mode Session without preparing the optional checkpoint-only lock table", async () => {
     await sql.exec("DROP TABLE managed_session_claim_locks");
     await coordinator.admit(admitted("no-lock", "session_01", at(1)));

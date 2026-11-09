@@ -7818,7 +7818,7 @@ export class SessionDO extends DurableObject<Env> {
       parkedCallIds: () => (this.state.pending_tool_calls ?? []).map((pending) => pending.toolCallId),
       append: async (event) => { await this.runtimeAdapter.eventLog.append(event); },
       broadcast: (event) => this.broadcastEvent(event),
-      hasEvent: (id) => this.runtimeAdapter.eventLog.getEvents().some(event => event.id === id),
+      hasEvent: (id) => this.ctx.storage.sql.exec("SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", id).toArray().length > 0,
       listOrphanTurns: () => this.runtimeAdapter.listOrphanTurns(this.state.session_id),
       endTurn: (turnId) => this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle"),
       isTurnActive: (turnId) => this._activeTurnIds.has(turnId),

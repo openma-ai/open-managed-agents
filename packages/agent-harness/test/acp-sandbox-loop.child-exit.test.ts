@@ -53,6 +53,6 @@ describe("AcpSandboxHarness when the ACP child exits mid-turn", () => {
   });
 
   it("ends the turn with the same session.error when only the exit is reported (Cloudflare RPC stdio)", async () => {
-    expect(await runTurn(false)).toEqual([EXIT_ERROR]);
+    expect(await runTurn(false)).toEqual([{ type: "session.error", error: "ACP transport failed: stdout drain was not confirmed after process exit; output may be incomplete. Restart the agent and inspect the sandbox transport." }]);
   }, 10_000);
 });

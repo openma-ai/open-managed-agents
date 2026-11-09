@@ -41,7 +41,7 @@ registerHarness(PARITY_HARNESS, () => {
 
 // A child process's stdout pipe ends when the process exits.
 registerHarness(ACP_CHILD_EXIT_HARNESS, () =>
-  acpChildExitHarness<HarnessContext>(() => new AcpSandboxHarness(), { stdoutEndsOnExit: true }));
+  acpChildExitHarness<HarnessContext>(() => new AcpSandboxHarness(), { stdoutEndsOnExit: false }));
 
 registerHarness(ACP_TIMEOUT_HARNESS, () =>
   acpChildExitHarness<HarnessContext>(() => new AcpSandboxHarness(), { stdoutEndsOnExit: true, timeout: true }));

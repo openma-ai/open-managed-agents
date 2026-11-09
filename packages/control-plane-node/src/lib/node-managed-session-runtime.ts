@@ -40,6 +40,8 @@ import type {
   SessionRealtimeHub,
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
+import { settleDeadExecutionFailure } from "@open-managed-agents/session-runtime";
+import type { SessionExecution } from "@open-managed-agents/session-runtime-contract/coordination";
 import { randomUUID } from "node:crypto";
 import {
   abortableDelay,
@@ -673,6 +675,23 @@ export class DefaultNodeManagedSessionRuntimeDriver
       writer,
     });
     return subscription;
+  }
+
+  /** Dead-owner recovery uses the same business settlement as CF. The SQL
+   * projection owns CAS + event-id uniqueness; publish only after durability. */
+  async finalizeDeadExecution(execution: SessionExecution): Promise<void> {
+    await settleDeadExecutionFailure({
+      executionId: execution.id, attempt: execution.attemptCount,
+      message: execution.failure ?? "execution failed",
+    }, {
+      // The projection's event-id collision path is the indexed keep-first CAS.
+      hasEvent: () => false,
+      append: event => this.enqueueOutput(execution.workspaceId, execution.sessionId, {
+        ...event, session_thread_id: execution.laneId,
+        processed_at: this.nextEventStamp(execution),
+      }),
+      broadcast: () => {}, // enqueueOutput publishes only a successful projection.
+    });
   }
 
   private async handleOutput(

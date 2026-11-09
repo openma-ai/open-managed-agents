@@ -18,6 +18,17 @@ export class SandboxAcpUnsupportedError extends Error {
   }
 }
 
+export class SandboxAcpTransportError extends Error {
+  override readonly name = "SandboxAcpTransportError";
+  constructor(readonly channel: "stdout" | "stderr") {
+    super(`ACP transport failed: ${channel} drain was not confirmed after process exit; output may be incomplete. Restart the agent and inspect the sandbox transport.`);
+  }
+}
+const transportErrors = new WeakMap<ChildHandle, SandboxAcpTransportError>();
+export function sandboxAcpTransportError(child: ChildHandle): SandboxAcpTransportError | undefined {
+  return transportErrors.get(child);
+}
+
 /** Silence allowed on a pending output read after exit (not a total drain
  * deadline). Backpressure and already-buffered bytes never start this clock. */
 export const STDOUT_DRAIN_AFTER_EXIT_MS = 2_000;
@@ -46,29 +57,35 @@ function toChildHandle(
   process: SandboxDuplexProcess,
   onDiagnosticLine?: (line: string) => void,
 ): ChildHandle {
-  let stderr = endingWithProcess(process.stderr, process.exited);
+  let handle: ChildHandle;
+  const onTransportError = (error: SandboxAcpTransportError) => { if (error.channel === "stdout") transportErrors.set(handle, error); };
+  let stderr = endingWithProcess(process.stderr, process.exited, "stderr", onTransportError);
   if (onDiagnosticLine !== undefined) {
     const branches = stderr.tee();
     stderr = branches[0];
     void consumeDiagnosticLines(branches[1], onDiagnosticLine).catch(() => undefined);
   }
-  return {
+  handle = {
     stdin: inputEndingWithProcess(process.stdin, process.exited),
-    stdout: endingWithProcess(process.stdout, process.exited),
+    stdout: endingWithProcess(process.stdout, process.exited, "stdout", onTransportError),
     stderr,
     exited: process.exited,
     kill: (signal) => process.kill(signal),
   };
+  return handle;
 }
 
 /** Exit is not transport EOF. Read only on demand, preserving backpressure.
  * A bridge that never sends EOF is cancelled only after a pending source read
  * has seen no bytes for the quiet period following exit. Every delivered chunk
  * clears that timer; slow consumers may drain arbitrarily long. Packets arriving
- * after a full quiet period cannot be distinguished from a dead bridge. */
+ * after a full quiet period cannot be distinguished from a dead bridge, so
+ * expiry is an explicit transport error, never evidence of normal EOF. */
 function endingWithProcess(
   source: ReadableStream<Uint8Array>,
   exited: Promise<unknown>,
+  channel: "stdout" | "stderr",
+  onTransportError: (error: SandboxAcpTransportError) => void,
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
   let ended = false;
@@ -84,7 +101,9 @@ function endingWithProcess(
     timer = setTimeout(() => {
       if (ended || pending === undefined) return;
       ended = true;
-      pending.close();
+      const error = new SandboxAcpTransportError(channel);
+      onTransportError(error);
+      pending.error(error);
       pending = undefined;
       void reader.cancel().catch(() => undefined);
     }, STDOUT_DRAIN_AFTER_EXIT_MS);
@@ -141,7 +160,7 @@ function inputEndingWithProcess(
     write(chunk) {
       return Promise.race([writer.write(chunk), stopped.then(() => { throw error; })]);
     },
-    close: () => writer.close(),
+    close: () => Promise.race([writer.close(), stopped.then(() => { throw error; })]),
     abort: reason => writer.abort(reason),
   });
 }
@@ -162,9 +181,9 @@ async function consumeDiagnosticLines(
       buffered = lines.pop() ?? "";
       for (const line of lines) onLine(line);
     }
+  } finally {
     buffered += decoder.decode();
     if (buffered.length > 0) onLine(buffered);
-  } finally {
     reader.releaseLock();
   }
 }

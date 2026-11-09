@@ -6,7 +6,7 @@
 import type { SessionExecution } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { OrphanTurn, TurnId } from "./ports";
-import { reportTurnFailure } from "./turn-failure";
+import { settleDeadExecutionFailure } from "./turn-failure";
 
 export interface StaleToolUse {
   id: string;
@@ -253,27 +253,7 @@ export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<
       // durable evidence: the sweep settled it failed when the owner died.
       const failure = rowChanged ? null : await deadExecutionFailure(await port.executions(), startedAtMs);
       if (failure !== null) {
-        // Reuse the Node failure decision and ordering. Stable execution/attempt
-        // event ids survive a host restart between error and idle. A failed
-        // append aborts this pass: the running status remains the retry anchor.
-        const events: SessionEvent[] = [];
-        reportTurnFailure({ type: "exhausted" },
-          `The agent runtime stopped during the turn (${failure.message}). Send a new message to continue.`,
-          {
-            sessionError: (message, retryStatus) => { events.push({
-              type: "session.error",
-              error: { type: "unknown_error", message, retry_status: { type: retryStatus } },
-            } as unknown as SessionEvent); },
-            rescheduled: () => { throw new Error("Dead executions cannot be retried"); },
-          });
-        events.push({ type: "session.status_idle", stop_reason: { type: "retries_exhausted" } } as unknown as SessionEvent);
-        for (const event of events) {
-          const id = `stale:${failure.executionId}:${failure.attempt}:${event.type}`;
-          if (port.hasEvent(id)) continue;
-          Object.assign(event, { id });
-          await port.append(event);
-          port.broadcast(event);
-        }
+        await settleDeadExecutionFailure(failure, port);
         markerlessEnded = 1;
         port.log("finalize.candidate", {
           decision: "end",

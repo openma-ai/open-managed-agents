@@ -51,6 +51,30 @@ function openStdoutProcess(dieOn: "initialize" | "session/prompt") {
 const agent = { command: "open-stdout-agent", cwd: "/workspace" };
 
 describe("SandboxSpawner stdout", () => {
+  it("reports uncertain transport drain instead of EOF before a tail delayed beyond the quiet window", async () => {
+    const child = openStdoutProcess("session/prompt");
+    const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);
+    const reader = handle.stdout.getReader();
+    child.die();
+    const result = reader.read().then(value => ({ value }), error => ({ error }));
+    await new Promise(resolve => setTimeout(resolve, 2_200));
+    try { child.send({ late: "tail" }); } catch { /* cancelled transport */ }
+    expect(await result).toMatchObject({ error: { name: "SandboxAcpTransportError", message: expect.stringContaining("stdout drain was not confirmed") } });
+  }, 5_000);
+
+  it("rejects both close and closed when the underlying stdin close never completes", async () => {
+    const child = openStdoutProcess("session/prompt");
+    let started!: () => void;
+    const closing = new Promise<void>(resolve => { started = resolve; });
+    child.process.stdin = new WritableStream({ close() { started(); return new Promise<void>(() => {}); } });
+    const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);
+    const writer = handle.stdin.getWriter();
+    const closeResult = expect(writer.close()).rejects.toThrow("stdin is closed");
+    const closedResult = expect(writer.closed).rejects.toThrow("stdin is closed");
+    await closing;
+    child.die();
+    await Promise.all([closeResult, closedResult]);
+  }, 3_000);
   it("restarts the idle drain window for delayed tail packets", async () => {
     const child = openStdoutProcess("session/prompt");
     const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);
@@ -64,7 +88,7 @@ describe("SandboxSpawner stdout", () => {
     await new Promise(resolve => setTimeout(resolve, 1_200));
     child.send({ tail: 2 });
     expect(decoder.decode((await second).value)).toContain('"tail":2');
-    expect((await reader.read()).done).toBe(true);
+    await expect(reader.read()).rejects.toMatchObject({ name: "SandboxAcpTransportError" });
   }, 10_000);
 
   it.each(["zero", "signal", "crash", "dispose", "rejected"])("terminates all bridge stdio and flushes diagnostics after %s", async mode => {
@@ -82,7 +106,7 @@ describe("SandboxSpawner stdout", () => {
     const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => process }).spawn({ ...agent, onDiagnosticLine: line => diagnostics.push(line) });
     const writer = handle.stdin.getWriter();
     const stopped = writer.closed.catch(() => undefined);
-    const stdout = handle.stdout.getReader().read();
+    const stdout = expect(handle.stdout.getReader().read()).rejects.toMatchObject({ name: "SandboxAcpTransportError" });
     const stderr = handle.stderr.getReader();
     expect(decoder.decode((await stderr.read()).value)).toBe("last diagnostic");
     if (mode === "rejected") reject(new Error("bridge disconnected"));
@@ -91,8 +115,8 @@ describe("SandboxSpawner stdout", () => {
     await stopped;
     expect(aborted).toBe(true);
     await expect(writer.write(encoder.encode("late"))).rejects.toThrow();
-    expect((await stdout).done).toBe(true);
-    expect((await stderr.read()).done).toBe(true);
+    await stdout;
+    await expect(stderr.read()).rejects.toMatchObject({ name: "SandboxAcpTransportError" });
     expect(diagnostics).toEqual(["last diagnostic"]);
   }, 8_000);
 
@@ -159,7 +183,8 @@ describe("SandboxSpawner stdout", () => {
     }
     expect(received).toEqual(["chunk0", "chunk1", "chunk2", "chunk3", "chunk4"]);
     expect(cancelled).toBe(false);
-    expect((await reader.read()).done).toBe(true);
+    if (closed) expect((await reader.read()).done).toBe(true);
+    else await expect(reader.read()).rejects.toMatchObject({ name: "SandboxAcpTransportError" });
   }, 12_000);
   it("delivers what the process wrote, then ends after the exit drain window", async () => {
     const child = openStdoutProcess("session/prompt");
@@ -169,7 +194,7 @@ describe("SandboxSpawner stdout", () => {
     child.die();
     const started = Date.now();
     expect(decoder.decode((await reader.read()).value)).toBe('{"written":"before exit"}\n');
-    expect(await reader.read()).toEqual({ done: true, value: undefined });
+    await expect(reader.read()).rejects.toMatchObject({ name: "SandboxAcpTransportError" });
     expect(Date.now() - started).toBeGreaterThanOrEqual(STDOUT_DRAIN_AFTER_EXIT_MS - 50);
   }, 10_000);
 
@@ -199,7 +224,7 @@ describe("SandboxSpawner stdout", () => {
     const session = await runtime.start({ agent });
     const consume = async () => { for await (const _ of session.prompt("hello")) { /* drain */ } };
     await expect(consume()).rejects.toThrow(
-      "The agent process exited before it could accept the prompt (open-stdout-agent, exit code 137).",
+      "stdout drain was not confirmed",
     );
     expect(session.isAlive()).toBe(false);
     await session.dispose();

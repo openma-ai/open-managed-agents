@@ -92,6 +92,28 @@ interface DriverConstructor {
 }
 
 describe("DefaultNodeManagedSessionRuntimeDriver", () => {
+  it.each(["session.error", "session.status_idle"])("recovers a dead execution exactly once after %s projection failure", async failType => {
+    const persisted: Array<{ id: string; type: string }> = [];
+    const published: string[] = [];
+    let fail = true;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine: { start: async () => {}, stop: async () => {}, accept: async () => {}, archiveThread: async () => {} },
+      realtime: { publish: frame => { published.push(frame.frame.event.type); }, attach: () => () => {}, closeSession: () => {} } as SessionRealtimeHub,
+      projectionFor: () => ({ recordSessionRuntimeEvents: async input => {
+        const event = input.events[0];
+        if (fail && event.type === failType) { fail = false; throw new Error("projection offline"); }
+        if (persisted.some(e => e.id === event.id)) return { type: "event_id_collision", eventIds: [event.id] } as never;
+        persisted.push(event);
+        return { type: "recorded", session };
+      } }),
+    });
+    const execution = { id: "dead", attemptCount: 1, failure: "lease expired", workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" } as import("@open-managed-agents/session-runtime-contract/coordination").SessionExecution;
+    await expect(driver.finalizeDeadExecution(execution)).rejects.toThrow("projection offline");
+    await driver.finalizeDeadExecution(execution);
+    await driver.finalizeDeadExecution(execution);
+    expect(persisted.map(e => e.type)).toEqual(["session.error", "session.status_idle"]);
+    expect(published).toEqual(["session.error", "session.status_idle"]);
+  });
   function startFailureDriver(
     start: (input: runtimeModule.StartNodeManagedSessionRuntime) => Promise<void>,
     accepted: string[] = [],

@@ -154,3 +154,33 @@ const CANCELLATION_ERROR_NAMES = new Set([
 export function isTurnCancellationError(error: unknown): boolean {
   return error instanceof Error && CANCELLATION_ERROR_NAMES.has(error.name);
 }
+
+/** The single durable dead-owner settlement used by CF recovery and Node's
+ * lease sweep. Hosts provide indexed existence checks and durable output.
+ * A failed append stops before idle, leaving a durable retry anchor. */
+export async function settleDeadExecutionFailure(
+  failure: { executionId: string; attempt: number; message: string },
+  port: {
+    hasEvent(id: string): boolean | Promise<boolean>;
+    append(event: import("@open-managed-agents/shared").SessionEvent): Promise<void>;
+    broadcast(event: import("@open-managed-agents/shared").SessionEvent): void;
+  },
+): Promise<void> {
+  const events: import("@open-managed-agents/shared").SessionEvent[] = [];
+  reportTurnFailure({ type: "exhausted" },
+    `The agent runtime stopped during the turn (${failure.message}). Send a new message to continue.`, {
+      sessionError: (message, retryStatus) => { events.push({
+        type: "session.error",
+        error: { type: "unknown_error", message, retry_status: { type: retryStatus } },
+      } as never); },
+      rescheduled: () => { throw new Error("Dead executions cannot be retried"); },
+    });
+  events.push({ type: "session.status_idle", stop_reason: { type: "retries_exhausted" } } as never);
+  for (const event of events) {
+    const id = `stale:${failure.executionId}:${failure.attempt}:${event.type}`;
+    if (await port.hasEvent(id)) continue;
+    Object.assign(event, { id });
+    await port.append(event);
+    port.broadcast(event);
+  }
+}
