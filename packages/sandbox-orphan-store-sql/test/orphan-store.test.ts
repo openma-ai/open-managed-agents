@@ -57,7 +57,9 @@ describe("SqlRuntimeOrphanPort", () => {
       sandbox: {
         provider: "docker",
         runtimeId: "container_orphan",
-        metadata: { region: "local", zones: ["a", "b"] },
+        // Provider JSON read back from storage can carry nested values beyond
+        // the declared lease metadata type; serialization must stay stable.
+        metadata: { region: "local", zones: ["a", "b"] } as unknown as Record<string, string>,
       },
       reason: "lease_lost" as const,
       error: new Error("docker unavailable"),
