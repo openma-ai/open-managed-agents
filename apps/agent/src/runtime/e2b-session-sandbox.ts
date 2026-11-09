@@ -188,7 +188,15 @@ export function createE2BSessionSandbox(input: {
   const maxLifetimeMs = parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!);
   const storage = storageConfig(env);
   const template = env.E2B_TEMPLATE!;
-  const gateway = env.PUBLIC_BASE_URL;
+  const relayEndpoint = () => {
+    let endpoint: URL;
+    try { endpoint = new URL(env.PUBLIC_BASE_URL ?? ""); }
+    catch { throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires a real HTTPS PUBLIC_BASE_URL"); }
+    if (endpoint.protocol !== "https:" || endpoint.hostname === "invalid" || endpoint.hostname.endsWith(".invalid")) {
+      throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires a real HTTPS PUBLIC_BASE_URL");
+    }
+    return endpoint.href;
+  };
   return new E2BSessionSandbox({
     async compose() {
       const sdk = await loadE2BModule();
@@ -227,7 +235,7 @@ export function createE2BSessionSandbox(input: {
             // The relay calls <endpoint>/v1/oma/egress/{resolve,forward}: the
             // control plane's existing ingress (apps/main), which verifies the
             // token, its scope and the Session itself.
-            endpoint: { url: gateway ?? "https://egress-unconfigured.invalid" },
+            endpoint: { get url() { return relayEndpoint(); } },
             issueToken: async ({ attempt, sandbox }) => {
               // Warm-up (no attempt): a value the gateway always refuses.
               if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
@@ -247,9 +255,12 @@ export function createE2BSessionSandbox(input: {
     },
     scope: input.scope,
     async plan(scope, stores) {
+      const substitutions = await capCliSubstitutions(env, scope);
+      // Refuse a broken relay before acquire/setup/firewall/proxy side effects.
+      if (substitutions.length > 0) relayEndpoint();
       return {
         from: { image: template },
-        egress: sessionEgressPolicy(scope, await input.networking(), await capCliSubstitutions(env, scope)),
+        egress: sessionEgressPolicy(scope, await input.networking(), substitutions),
         stores,
         outputs: outputsBinding(scope),
         idleMs: IDLE_MS,

@@ -34,7 +34,6 @@ export function createForwarderEgress<R extends object>(
     }
     return port;
   };
-  const gatewayHost = new URL(deps.gateway.endpoint.url).hostname;
   const configure = async (input: {
     runtime: R;
     scope: RuntimeResourceScope;
@@ -43,13 +42,14 @@ export function createForwarderEgress<R extends object>(
     signal: AbortSignal;
   }) => {
     input.signal.throwIfAborted();
+    const substitutions = input.policy?.substitutions ?? [];
+    const gatewayHosts = substitutions.length === 0 ? [] : [new URL(deps.gateway.endpoint.url).hostname];
     if (vendor.applyFirewall !== undefined) {
       await vendor.applyFirewall(input.runtime, compileFirewall(input.policy, {
-        gateway: { hosts: [gatewayHost], ...(deps.gateway.endpoint.fixedIps === undefined ? {} : { fixedIps: deps.gateway.endpoint.fixedIps }) },
+        gateway: { hosts: gatewayHosts, ...(deps.gateway.endpoint.fixedIps === undefined ? {} : { fixedIps: deps.gateway.endpoint.fixedIps }) },
         channels: [...(await deps.channels?.(input.scope) ?? [])],
       }));
     }
-    const substitutions = input.policy?.substitutions ?? [];
     if (substitutions.length === 0) {
       await clearSandboxEgress(view(input.runtime));
       return;
