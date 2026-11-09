@@ -25,6 +25,76 @@ import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 registerTestHarnesses();
 
+describe("canonical continuation reconciliation", () => {
+  it("promotes canonical consumed inputs and preserves source order across a middle gap", async () => {
+    await api("/health");
+    const sessionId = await newSessionDirect("canonical_order");
+    const now = Date.now(), stamp = new Date(now).toISOString();
+    await env.AUTH_DB.prepare("INSERT INTO managed_sessions (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at) VALUES (?,?,?,1,?,1,?,?,?,?)")
+      .bind("default", sessionId, "{}", "agent_test", "env_test", "idle", now, now).run();
+    const canonical = [
+      { id: "consumed", type: "user.message", content: [{ type: "text", text: "CONSUMED_INPUT" }], processedAt: stamp },
+      { id: "use", type: "agent.tool_use", name: "bash", input: {}, processedAt: stamp },
+      { id: "result", type: "agent.tool_result", toolUseId: "use", content: [{ type: "text", text: "REAL_RESULT" }], processedAt: stamp },
+      { id: "next", type: "user.message", content: [{ type: "text", text: "NEXT_INPUT" }], processedAt: stamp },
+    ];
+    for (const [i, event] of canonical.entries()) await env.AUTH_DB.prepare("INSERT INTO managed_session_events (workspace_id,session_id,thread_id,id,type,document,processed_at) VALUES (?,?,?,?,?,?,?)")
+      .bind("default", sessionId, "sthr_primary", event.id, event.type, JSON.stringify({ ...event, source_position: { revision: i + 2, index: 0 } }), now).run();
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      state.storage.sql.exec("INSERT INTO events(type,data,processed_at,session_thread_id) VALUES (?,?,NULL,?)", "user.message", JSON.stringify({ id: "consumed", type: "user.message", content: [{ type: "text", text: "CONSUMED_INPUT" }] }), "sthr_primary");
+      history.append({ id: "use", type: "agent.tool_use", name: "bash", input: {} });
+      history.append({ id: "next", type: "user.message", content: [{ type: "text", text: "NEXT_INPUT" }] });
+    });
+    await stub.fetch(new Request("http://do/events"));
+    await stub.fetch(new Request("http://do/events"));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      expect(history.getEvents().map(e => e.id)).toEqual(["consumed", "use", "result", "next"]);
+      const text = JSON.stringify(history.getMessages());
+      expect(text).toContain("CONSUMED_INPUT");
+      expect(text).toContain("REAL_RESULT");
+      expect(text).not.toContain("interrupted");
+      expect(state.storage.sql.exec("SELECT seq FROM events WHERE processed_at IS NULL").toArray()).toHaveLength(0);
+    });
+  });
+  it("restores committed ordinary facts after local loss/reset without promoting queued or cancelled inputs", async () => {
+    await api("/health");
+    const sessionId = await newSessionDirect("canonical_gap");
+    const now = Date.now(), stamp = new Date(now).toISOString();
+    await env.AUTH_DB.prepare("INSERT INTO managed_sessions (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at) VALUES (?,?,?,1,?,1,?,?,?,?)")
+      .bind("default", sessionId, "{}", "agent_test", "env_test", "idle", now, now).run();
+    const events = [
+      { id: "canonical-use", type: "agent.tool_use", name: "bash", input: { command: "already executed" }, processedAt: stamp },
+      { id: "canonical-result", type: "agent.tool_result", toolUseId: "canonical-use", content: [{ type: "text", text: "DONE_ONCE" }], processedAt: stamp },
+      { id: "future", type: "user.message", content: [{ type: "text", text: "MUST_NOT_RUN" }], processedAt: null },
+      { id: "cancelled", type: "user.message", content: [{ type: "text", text: "CANCELLED_MUST_NOT_RUN" }], processedAt: null },
+    ];
+    for (const [i, event] of events.entries()) await env.AUTH_DB.prepare("INSERT INTO managed_session_events (workspace_id,session_id,thread_id,id,type,document,processed_at) VALUES (?,?,?,?,?,?,?)")
+      .bind("default", sessionId, "sthr_primary", event.id, event.type, JSON.stringify({ ...event, source_position: { revision: i + 2, index: 0 } }), now).run();
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ id: "future", type: "user.message", content: [{ type: "text", text: "MUST_NOT_RUN" }] });
+      state.storage.sql.exec("DELETE FROM events");
+      instance.initialized = false;
+    });
+    await stub.fetch(new Request("http://do/events"));
+    await stub.fetch(new Request("http://do/events"));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      const events = history.getEvents();
+      expect(events.filter(e => e.id === "canonical-result")).toHaveLength(1);
+      const messages = JSON.stringify(history.getMessages());
+      expect(messages).toContain("DONE_ONCE");
+      expect(messages).not.toContain("MUST_NOT_RUN");
+      expect(messages).not.toContain("CANCELLED_MUST_NOT_RUN");
+    });
+  });
+});
+
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 function api(path: string, init?: RequestInit) {
   return exports.default.fetch(new Request(`http://localhost${path}`, init));

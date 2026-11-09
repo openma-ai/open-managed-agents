@@ -6,12 +6,19 @@ describe("CF stale turn settlement infrastructure", () => {
   it("backfills canonical events after a crash even when a newer execution owns the Session", async () => {
     const event = { id: "stale:old:1:session.status_idle", type: "session.status_idle", processedAt: "2026-01-01T00:00:00Z" };
     const local: any[] = [], sent: string[] = [];
-    const input = { binding: { managedSessionStaleEvents: async () => [event] } as never,
-      workspaceId: "w", sessionId: "s", hasEvent: (id: string) => local.some(e => e.id === id),
-      append: (e: any) => { local.push(e); }, sockets: () => [{ send: (data: string) => sent.push(data) } as WebSocket] };
+    const input = { binding: { managedSessionCanonicalEvents: async () => [event] } as never,
+      workspaceId: "w", sessionId: "s", history: { reconcileCanonicalEvents: (events: any[]) => { const added = events.filter(e => !local.some(row => row.id === e.id)); local.push(...added); return added; } }, sockets: () => [{ send: (data: string) => sent.push(data) } as WebSocket] };
     await backfillStaleTurnEvents(input);
     await backfillStaleTurnEvents(input);
     expect(local).toEqual([event]); expect(sent.map(data => JSON.parse(data))).toEqual([event]);
+  });
+  it("reconciles ordinary canonical facts missing locally after reset, not only stale settlements", async () => {
+    const event = { id: "tool-completed", type: "agent.tool_result", tool_use_id: "tool", content: "already done", processed_at: "2026-01-01T00:00:00Z" };
+    const local: unknown[] = [];
+    const input = { binding: { managedSessionCanonicalEvents: async () => [event] } as never,
+      workspaceId: "w", sessionId: "s", history: { reconcileCanonicalEvents: (events: any[]) => { local.push(...events); return events; } }, sockets: () => [] };
+    await backfillStaleTurnEvents(input);
+    expect(local).toEqual([event]);
   });
   it("persists and broadcasts nothing when atomic projection rejects a superseded attempt", async () => {
     const local: unknown[] = [], sent: string[] = [];

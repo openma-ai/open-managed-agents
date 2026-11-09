@@ -31,13 +31,11 @@ export async function appendStaleTurnEvent(
  * recovery and history reads, even when there is no failed candidate left. */
 export async function backfillStaleTurnEvents(input: {
   binding: Env["MAIN_MCP"]; workspaceId: string; sessionId: string;
-  hasEvent(id: string): boolean; append(event: SessionEvent): void; sockets(): WebSocket[];
+  history: { reconcileCanonicalEvents(events: SessionEvent[]): SessionEvent[] }; sockets(): WebSocket[];
 }): Promise<void> {
-  if (!input.binding?.managedSessionStaleEvents) return;
-  const events = await input.binding.managedSessionStaleEvents({ workspaceId: input.workspaceId, sessionId: input.sessionId });
-  for (const event of events) {
-    if (!event.id?.startsWith("stale:") || input.hasEvent(event.id)) continue;
-    input.append(event);
+  if (!input.binding?.managedSessionCanonicalEvents) return;
+  const events = await input.binding.managedSessionCanonicalEvents({ workspaceId: input.workspaceId, sessionId: input.sessionId });
+  for (const event of input.history.reconcileCanonicalEvents(events)) {
     const data = JSON.stringify(event);
     for (const socket of input.sockets()) { try { socket.send(data); } catch { /* closed */ } }
   }

@@ -12,6 +12,7 @@ import type {
   ContentBlock,
   UserMessageEvent,
 } from "@open-managed-agents/shared";
+import { isRuntimeHistoryEventVisible } from "@open-managed-agents/session-runtime-contract/history";
 import { normalizeInterruptedToolCalls } from "./interrupted-tool-calls";
 import { pickPreservedTail, TAIL_MAX_TOKENS, TAIL_MIN_MESSAGES, TAIL_MIN_TOKENS } from "./preserved-tail";
 import { userContentToParts, userContentToPartsAsync, type FileResolver, type ResolvedFile } from "./user-content-parts";
@@ -49,7 +50,7 @@ import { userContentToParts, userContentToPartsAsync, type FileResolver, type Re
  * required.
  */
 export function eventsToMessages(inputEvents: SessionEvent[]): ModelMessage[] {
-  const events = normalizeInterruptedToolCalls(inputEvents);
+  const events = normalizeInterruptedToolCalls(inputEvents.filter(isRuntimeHistoryEventVisible));
   // Pre-pass: gather toolName for every toolCallId emitted by ANY tool_use
   // event. Resolves the cross-window lookup problem.
   const toolNameById = new Map<string, string>();
@@ -145,7 +146,7 @@ export async function eventsToMessagesAsync(
   resolver?: FileResolver,
 ): Promise<ModelMessage[]> {
   if (!resolver) return eventsToMessages(events);
-  events = normalizeInterruptedToolCalls(events);
+  events = normalizeInterruptedToolCalls(events.filter(isRuntimeHistoryEventVisible));
 
   // Pre-pass: gather toolName for every toolCallId emitted by ANY tool_use
   // event. Resolves the cross-window lookup problem.
@@ -267,15 +268,12 @@ function buildMessages(
     // Only user.* events are ever cancelled today; the guard is
     // type-agnostic so future cancellation kinds (e.g. partial
     // assistant message rollback) inherit the same behavior.
-    if ((event as unknown as { cancelled_at_ms?: number }).cancelled_at_ms != null) {
+    if (!isRuntimeHistoryEventVisible(event)) {
       continue;
     }
     // Queued turn inputs live in the same events table with processed_at
     // NULL (single-table queue). They are listed/replayed for the outbox,
     // but are not part of the model context until drain promotes them.
-    if ((event as unknown as { _queued?: boolean })._queued === true) {
-      continue;
-    }
     switch (event.type) {
       case "user.message": {
         flushAssistant();
@@ -388,15 +386,12 @@ async function buildMessagesAsync(
 
   for (let i = fromIdx; i < toIdx; i++) {
     const event = events[i];
-    if ((event as unknown as { cancelled_at_ms?: number }).cancelled_at_ms != null) {
+    if (!isRuntimeHistoryEventVisible(event)) {
       continue;
     }
     // Queued turn inputs live in the same events table with processed_at
     // NULL (single-table queue). They are listed/replayed for the outbox,
     // but are not part of the model context until drain promotes them.
-    if ((event as unknown as { _queued?: boolean })._queued === true) {
-      continue;
-    }
     switch (event.type) {
       case "user.message": {
         flushAssistant();

@@ -1,9 +1,10 @@
-import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
+import { isRuntimeHistoryEventVisible, UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 export const INTERRUPTED_EXECUTION_TOOL_RESULT = UNKNOWN_TOOL_RESULT_TEXT;
 type Event = { type: string; id?: string; [key: string]: unknown };
 /** Pure canonical-history rule, used before either platform resumes a harness. */
 export function executionContinuationEvents(history: readonly Event[], input: { executionId: string; attempt: number; laneId: string }): Event[] {
   if (input.attempt < 2) return [];
+  history = history.filter(isRuntimeHistoryEventVisible);
   const uses = new Map<string, Event>(), resolved = new Set<string>(), ids = new Set(history.map(e => e.id));
   for (const event of history) {
     if ((event.session_thread_id ?? event.sessionThreadId ?? "sthr_primary") !== input.laneId) continue;

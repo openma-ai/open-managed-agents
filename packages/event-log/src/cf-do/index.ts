@@ -155,11 +155,11 @@ export class CfDoEventLog implements EventLogRepo {
     const cursor =
       afterSeq !== undefined
         ? this.sql.exec(
-            "SELECT seq, type, data, ts, processed_at, cancelled_at, session_thread_id FROM events WHERE seq > ? ORDER BY seq",
+            "SELECT seq, type, data, ts, processed_at, cancelled_at, session_thread_id FROM events WHERE seq > ? ORDER BY canonical_order IS NULL, canonical_order, seq",
             afterSeq,
           )
         : this.sql.exec(
-            "SELECT seq, type, data, ts, processed_at, cancelled_at, session_thread_id FROM events ORDER BY seq",
+            "SELECT seq, type, data, ts, processed_at, cancelled_at, session_thread_id FROM events ORDER BY canonical_order IS NULL, canonical_order, seq",
           );
     const out: SessionEvent[] = [];
     for (const row of cursor) {
@@ -534,6 +534,7 @@ export function ensureSchema(sql: SqlStorage): void {
     // Backfill: legacy events all belong to the primary thread.
     sql.exec(`UPDATE events SET session_thread_id = 'sthr_primary' WHERE session_thread_id IS NULL`);
   }
+  if (!cols.has("canonical_order")) sql.exec(`ALTER TABLE events ADD COLUMN canonical_order INTEGER`);
   if (!cols.has("enqueued_at")) {
     sql.exec(`ALTER TABLE events ADD COLUMN enqueued_at INTEGER`);
   }

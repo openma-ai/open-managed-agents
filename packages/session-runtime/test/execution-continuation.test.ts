@@ -1,5 +1,15 @@
 import { expect, it } from "vitest";
 import { executionContinuationEvents } from "../src/execution-continuation";
+it("ignores queued and cancelled calls and results before pairing unfinished tools", () => {
+  const history = [
+    { id: "queued", type: "agent.tool_use", _queued: true },
+    { id: "cancelled", type: "agent.tool_use", cancelled_at_ms: 1 },
+    { id: "live", type: "agent.tool_use" },
+    { type: "agent.tool_result", tool_use_id: "live", _queued: true },
+  ];
+  expect(executionContinuationEvents(history, { executionId: "e", attempt: 2, laneId: "sthr_primary" }).map(e => e.id))
+    .toEqual(["resume:e:live", "resume:e:2"]);
+});
 it("never interrupts tools owned by another lane", () => {
   const history = [
     { id: "primary", type: "agent.tool_use" },

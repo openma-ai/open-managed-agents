@@ -2076,11 +2076,16 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     return { type: "published" };
   }
 
-  async managedSessionStaleEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("@open-managed-agents/shared").SessionEvent[]> {
+  async managedSessionCanonicalEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("@open-managed-agents/shared").SessionEvent[]> {
     const db = await buildCfTenantDbProvider(this.env).resolve(opts.workspaceId);
-    const { decodeSessionEventDocument } = await import("@open-managed-agents/session-runtime-contract/history");
-    const rows = await db.prepare("SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ? AND id LIKE 'stale:%' ORDER BY processed_at, id").bind(opts.workspaceId, opts.sessionId).all<{ document: string }>();
-    return rows.results.map(row => decodeSessionEventDocument(row.document).event as unknown as import("@open-managed-agents/shared").SessionEvent);
+    const history = await new SqlSessionRuntimeHistorySource(new CfD1SqlClient(db)).load(opts);
+    if (history === null) return [];
+    const { encodeRuntimeHistoryEvent } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+    // Only consumed facts are runtime context. Unconsumed/cancelled queue
+    // inputs remain in the canonical outbox and are never promoted by recovery.
+    return (history.orderedEvents?.map(row => row.event) ?? history.events)
+      .filter(event => event.processedAt != null)
+      .map(event => encodeRuntimeHistoryEvent(event) as import("@open-managed-agents/shared").SessionEvent);
   }
 
   async managedSessionEventProduced(opts: {

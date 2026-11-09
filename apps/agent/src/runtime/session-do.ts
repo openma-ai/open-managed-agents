@@ -926,7 +926,7 @@ export class SessionDO extends DurableObject<Env> {
     // paths race: the scan injects a placeholder for the same tool_use
     // the finalizer is about to abort (or vice versa), producing either
     // a non-is_error result or two results.
-    this._recoveryPromise = this.recoverInterruptedState();
+    this._recoveryPromise = backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() }).then(() => this.recoverInterruptedState());
     // Cold start is the PRIMARY recovery path (Cloudflare Agents SDK:
     // first request / onStart). It runs the exact same shared lease/sweep
     // hook as the persisted alarm fallback, so a dead incarnation's
@@ -2316,7 +2316,7 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
     try {
-      for (const event of executionContinuationEvents(history.getEvents() as never, { executionId: execution.id, attempt: execution.attemptCount, laneId: threadId })) { executionHistory.append(event as never); this.broadcastEvent(event as never); }
+      await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() }); for (const event of executionContinuationEvents(history.getEvents() as never, { executionId: execution.id, attempt: execution.attemptCount, laneId: threadId })) { executionHistory.append(event as never); this.broadcastEvent(event as never); }
       const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
       const turnInput = classifyTurnInput(execution.events);
       // user.interrupt is applied on receipt (POST /event), never as an execution.
@@ -3307,7 +3307,7 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     // GET /events — reconcile committed recovery facts before reading local history.
-    if (request.method === "GET" && url.pathname === "/events") { await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, hasEvent: id => this.ctx.storage.sql.exec("SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", id).toArray().length > 0, append: e => this.runtimeAdapter.eventLog.append(e), sockets: () => this.ctx.getWebSockets() });
+    if (request.method === "GET" && url.pathname === "/events") { await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() });
       const limitParam = url.searchParams.get("limit");
       let limit = limitParam ? parseInt(limitParam, 10) : 100;
       if (isNaN(limit) || limit < 1) limit = 100;
@@ -7800,7 +7800,7 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, hasEvent: id => this.ctx.storage.sql.exec("SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", id).toArray().length > 0, append: e => this.runtimeAdapter.eventLog.append(e), sockets: () => this.ctx.getWebSockets() }); await finalizeStaleTurns({
+    await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, history: this.openHistory(), sockets: () => this.ctx.getWebSockets() }); await finalizeStaleTurns({
       unknownToolResultText: UNKNOWN_TOOL_RESULT_TEXT,
       instanceStartedAt: this._instanceStartedAt,
       now: () => Date.now(),

@@ -74,6 +74,13 @@ export function decodeSessionEventDocument(document: string): {
   };
 }
 
+/** The existing event-log visibility rule for all model/recovery projections.
+ * Raw CF history includes queued/cancelled rows for UI reconciliation. */
+export function isRuntimeHistoryEventVisible(event: object): boolean {
+  const row = event as { _queued?: boolean; cancelled_at_ms?: number };
+  return row._queued !== true && row.cancelled_at_ms == null;
+}
+
 /** Model-facing result for a dispatched tool whose completion cannot be confirmed.
  * Keep the ordinary tool-result envelope; unknown is not a success or a retry instruction. */
 export const UNKNOWN_TOOL_RESULT_TEXT = "interrupted: the execution was lost before this tool finished; it was not re-run automatically";

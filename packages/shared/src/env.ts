@@ -309,7 +309,7 @@ export interface Env {
       outputManifest: () => Promise<string>;
       readOutput: (path: string) => Promise<Uint8Array>;
     }): Promise<{ type: "published" } | { type: "not_found" }>;
-    managedSessionStaleEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("./index").SessionEvent[]>;
+    managedSessionCanonicalEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("./index").SessionEvent[]>;
     managedSessionEventProduced(opts: {
       workspaceId: string;
       sessionId: string;
