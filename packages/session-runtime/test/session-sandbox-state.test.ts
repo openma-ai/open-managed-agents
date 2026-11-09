@@ -92,7 +92,11 @@ describe("Session sandbox transitions: every legal one", () => {
     it(`${from} × ${action}`, () => {
       const next = transition(inPhase[from](snapshot ?? none), actions[action]);
       const dropped = droppedSnapshots(inPhase[from](snapshot ?? none), next);
-      expect(next).toEqual({ ...to, ...shared, version: 8, ...(dropped.length > 0 ? { pendingDiscards: dropped } : {}) });
+      const restarted = JSON.parse(JSON.stringify({ ...inPhase[from](snapshot ?? none), lifecycleRevision: 17 })) as SessionSandboxState;
+      const advanced = transition(restarted, actions[action]);
+      expect(advanced.lifecycleRevision).toBe(["retireHandle", "handleReleased", "queueDiscard", "discarded"].includes(action) ? 17 : 18);
+      expect(advanced.version).toBe(8);
+      expect(next).toEqual({ ...to, ...shared, version: 8, ...(["retireHandle", "handleReleased", "queueDiscard", "discarded"].includes(action) ? {} : { lifecycleRevision: 1 }), ...(dropped.length > 0 ? { pendingDiscards: dropped } : {}) });
     });
   }
 });

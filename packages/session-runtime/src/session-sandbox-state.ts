@@ -56,6 +56,9 @@ export type SessionSandboxState = SandboxPhase & {
   stores: MemoryStoreBinding[];
   outputs: boolean;
   version: number;
+  /** Monotonic lifecycle witness in this same CAS record. Missing legacy
+   * records cannot prove metadata-only advancement. */
+  lifecycleRevision?: number;
 };
 
 export type SandboxAction =
@@ -150,7 +153,14 @@ export function transition(state: SessionSandboxState, action: SandboxAction): S
   // can win; every subsequent publication must retain the tombstone.
   if (action.type === "retireHandle" && refers(recordedHandle(state), action.handle)) throw new SessionSandboxTransitionError(state.phase, action.type);
   if (retired.some(entry => refers(recordedHandle(next as SessionSandboxState), entry.handle))) throw new SessionSandboxTransitionError(state.phase, action.type);
-  const result: SessionSandboxState = { ...next, stores: state.stores, outputs: state.outputs, version: state.version + 1 };
+  const metadataOnly = action.type === "retireHandle" || action.type === "handleReleased"
+    || action.type === "queueDiscard" || action.type === "discarded";
+  const lifecycleRevision = metadataOnly ? state.lifecycleRevision : (state.lifecycleRevision ?? 0) + 1;
+  const result: SessionSandboxState = { ...next, stores: state.stores, outputs: state.outputs, version: state.version + 1,
+    ...(lifecycleRevision === undefined ? {} : { lifecycleRevision }) };
+  // Metadata cannot synthesize a witness for a legacy record: doing so would
+  // let missing historical lifecycle writes look like an unchanged revision.
+  if (lifecycleRevision === undefined) delete result.lifecycleRevision;
   if (retired.length > 0) result.retiredHandles = retired;
   if (action.type === "retireHandle" && !retired.some(entry => refers(entry.handle, action.handle))) result.retiredHandles = [...retired, { handle: action.handle, released: false }];
   if (action.type === "handleReleased") result.retiredHandles = retired.map(entry => refers(entry.handle, action.handle) ? { ...entry, released: true } : entry);

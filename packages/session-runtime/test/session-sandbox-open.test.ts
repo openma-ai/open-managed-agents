@@ -188,7 +188,7 @@ describe("PortsSessionSandbox", () => {
     // "changes": the new handle is written before use; the failure revokes,
     // the lose transition forgets it (compare-and-set), then it is released.
     expect(h.log).toEqual(["acquire:1", "save:r1", "egress.attach", "egress.revoke:failed", "save:lost", "save:lost", "release:r1", "save:lost"]);
-    expect(h.saved()).toEqual({ phase: "lost", latestSnapshot: { status: "none" }, stores: [], outputs: false, version: 4, retiredHandles: [{ handle: { provider: "p", runtimeId: "r1" }, released: true }] });
+    expect(h.saved()).toEqual({ phase: "lost", latestSnapshot: { status: "none" }, stores: [], outputs: false, version: 4, lifecycleRevision: 2, retiredHandles: [{ handle: { provider: "p", runtimeId: "r1" }, released: true }] });
     fail = false;
     expect(await h.sandbox.exec("true")).toBe("exit=0\n");
     expect(h.log.slice(8)).toEqual(["acquire:2", "save:r2", "egress.attach", "save:r2"]);

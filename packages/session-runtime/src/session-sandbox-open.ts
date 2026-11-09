@@ -216,7 +216,8 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
       // advance, never a same-handle lifecycle writer or an arbitrary version.
       const { version: oldVersion, retiredHandles: oldRetired, ...oldLifecycle } = record;
       const { version: freshVersion, retiredHandles: freshRetired, ...freshLifecycle } = fresh;
-      if (freshVersion > oldVersion && JSON.stringify(oldRetired) !== JSON.stringify(freshRetired)
+      if (record.lifecycleRevision !== undefined && fresh.lifecycleRevision === record.lifecycleRevision
+        && freshVersion > oldVersion && JSON.stringify(oldRetired) !== JSON.stringify(freshRetired)
         && JSON.stringify(oldLifecycle) === JSON.stringify(freshLifecycle) && await state.isCurrent(execution)) {
         published = await state.apply(fresh, publish(open.handle, runStartedAt));
       }
