@@ -89,18 +89,22 @@ export async function nodeDefaults(
   const auth = overrides.auth !== undefined
     ? overrides.auth
     : config.auth.disabled ? null : await createBetterAuthComponent({ config, database, email });
-  const sandbox = overrides.sandbox ?? await loadSandboxFactory(config);
-  const sessionSandboxAdapter = overrides.sessionSandboxAdapter
-    ?? (overrides.sandbox === undefined ? await loadSessionSandboxAdapter(config) : undefined);
-  const sessionSandboxProvider = overrides.sessionSandboxProvider
-    ?? (overrides.sandbox === undefined && sessionSandboxAdapter === undefined ? await loadSessionSandboxProvider(config) : undefined);
-  const realtime = overrides.realtime ?? await createNodeRealtime(config.realtime, database, {
-    ...(config.database.kind === "postgres" && { postgresDsn: config.database.url }),
-  });
   const blobs = overrides.blobs ?? {
     memory: await createMemoryBlobs(config.blobs.memory),
     files: createFilesBlobs(config.blobs.files),
   };
+  const bridge = overrides.sandbox === undefined && config.processMode === "standalone"
+    && resolveSandboxProviderForEnvironment(config.sandbox.environment).provider === "cloudflare-bridge"
+    ? await createBridgeComposition(config, blobs.files.store) : undefined;
+  const sandbox = overrides.sandbox ?? bridge?.factory ?? await loadSandboxFactory(config);
+  const sessionSandboxAdapter = overrides.sessionSandboxAdapter
+    ?? (overrides.sandbox === undefined ? await loadSessionSandboxAdapter(config) : undefined);
+  const sessionSandboxProvider = overrides.sessionSandboxProvider
+    ?? bridge?.sessionProvider
+    ?? (overrides.sandbox === undefined && sessionSandboxAdapter === undefined ? await loadSessionSandboxProvider(config) : undefined);
+  const realtime = overrides.realtime ?? await createNodeRealtime(config.realtime, database, {
+    ...(config.database.kind === "postgres" && { postgresDsn: config.database.url }),
+  });
   return {
     config,
     database,
@@ -114,6 +118,26 @@ export async function nodeDefaults(
     blobs,
     ...(overrides.stores !== undefined && { stores: overrides.stores }),
   };
+}
+
+/** Fixed deployment image and shared checkpoint storage are composition,
+ * not Session business rules or a second transport implementation. */
+async function createBridgeComposition(config: NodeConfig, checkpointStore: import("@open-managed-agents/blob-store/ports").BlobStore) {
+  const env = config.sandbox.environment;
+  const baseUrl = env.CLOUDFLARE_SANDBOX_BRIDGE_URL;
+  const apiKey = env.CLOUDFLARE_SANDBOX_BRIDGE_KEY;
+  const image = env.CLOUDFLARE_SANDBOX_BRIDGE_IMAGE;
+  if (!baseUrl || !apiKey || !image) throw new TypeError("Cloudflare Bridge requires CLOUDFLARE_SANDBOX_BRIDGE_URL, CLOUDFLARE_SANDBOX_BRIDGE_KEY and CLOUDFLARE_SANDBOX_BRIDGE_IMAGE");
+  const url = new URL(baseUrl);
+  if (url.protocol !== "https:" || url.username || url.password) throw new TypeError("Cloudflare Bridge URL requires HTTPS without credentials");
+  const { createCloudflareBridgeProvider } = await import("@open-managed-agents/managed-runtime-cloudflare-bridge");
+  const provider = createCloudflareBridgeProvider({ baseUrl, apiKey, checkpointStore });
+  const factory: SandboxFactory = async (context, environment) => {
+    const requested = context.image?.reference ?? environment.SANDBOX_IMAGE;
+    if (requested !== undefined && requested !== image) throw new TypeError("Cloudflare Bridge cannot override its fixed deployment image");
+    return provider.create(context, environment);
+  };
+  return { factory, sessionProvider: { name: "cloudflare-sandbox-bridge", provider } };
 }
 
 /**

@@ -38,6 +38,7 @@
     "@open-managed-agents/event-log": "workspace:*",
     "@open-managed-agents/managed-agents-adapters-http": "workspace:*",
     "@open-managed-agents/managed-runtime-sprites": "workspace:*",
+    "@open-managed-agents/managed-runtime-cloudflare-bridge": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/node-database": "workspace:*",
     "@open-managed-agents/node-database-mysql": "workspace:*",

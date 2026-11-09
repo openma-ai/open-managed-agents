@@ -61,6 +61,28 @@ describe("nodeDefaults", () => {
     await components.database.stop?.();
   });
 
+  it("composes the Bridge factory and persistent Session provider from one configuration", async () => {
+    const config = testConfig({
+      OPENMA_TEST_SANDBOX_PROVIDER: undefined, SANDBOX_PROVIDER: "cloudflare-bridge",
+      CLOUDFLARE_SANDBOX_BRIDGE_URL: "https://bridge.example.test",
+      CLOUDFLARE_SANDBOX_BRIDGE_KEY: "bridge-key",
+      CLOUDFLARE_SANDBOX_BRIDGE_IMAGE: "registry.example/runtime@sha256:fixed",
+    });
+    const components = await nodeDefaults(config);
+    try {
+      expect(components.sessionSandboxProvider?.name).toBe("cloudflare-sandbox-bridge");
+      // A fixed-image Bridge must reject an incompatible Environment before
+      // remote allocation. Do not silently substitute its deployment image.
+      await expect(components.sandbox({
+        sessionId: "session", workdir: "/workspace",
+        image: { alias: "other", reference: "other-image" },
+      }, {})).rejects.toThrow("fixed deployment image");
+      const provider = components.sessionSandboxProvider!.provider;
+      const attached = await provider.resume({ provider: "cloudflare-sandbox-bridge", runtimeId: "existing" }, { sessionId: "session", workdir: "/workspace" }, {});
+      expect(attached.runtimeHandle()).toEqual({ provider: "cloudflare-sandbox-bridge", runtimeId: "existing" });
+    } finally { await components.database.stop?.(); }
+  });
+
   it("keeps a component the caller already chose instead of building its own", async () => {
     const realtime = { hub: new InProcessEventStreamHub(), replicaSync: null, description: "mine" };
     const components = await nodeDefaults(testConfig(), { realtime, email: null });

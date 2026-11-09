@@ -780,6 +780,9 @@ importers:
       '@open-managed-agents/managed-agents-adapters-http':
         specifier: workspace:*
         version: link:../../packages/managed-agents-adapters-http
+      '@open-managed-agents/managed-runtime-cloudflare-bridge':
+        specifier: workspace:*
+        version: link:../../packages/managed-runtime-cloudflare-bridge
       '@open-managed-agents/managed-runtime-sprites':
         specifier: workspace:*
         version: link:../../packages/managed-runtime-sprites
