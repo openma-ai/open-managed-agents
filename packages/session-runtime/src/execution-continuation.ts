@@ -6,6 +6,7 @@ export function executionContinuationEvents(history: readonly Event[], input: { 
   if (input.attempt < 2) return [];
   const uses = new Map<string, Event>(), resolved = new Set<string>(), ids = new Set(history.map(e => e.id));
   for (const event of history) {
+    if ((event.session_thread_id ?? event.sessionThreadId ?? "sthr_primary") !== input.laneId) continue;
     if ((event.type === "agent.tool_use" || event.type === "agent.mcp_tool_use") && event.id) uses.set(event.id, event);
     const resultId = event.tool_use_id ?? event.toolUseId ?? event.mcp_tool_use_id ?? event.mcpToolUseId;
     if (typeof resultId === "string") resolved.add(resultId);

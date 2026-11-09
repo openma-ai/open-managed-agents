@@ -1,5 +1,16 @@
 import { expect, it } from "vitest";
 import { executionContinuationEvents } from "../src/execution-continuation";
+it("never interrupts tools owned by another lane", () => {
+  const history = [
+    { id: "primary", type: "agent.tool_use" },
+    { id: "other", type: "agent.mcp_tool_use", session_thread_id: "sthr_other" },
+    { id: "mine", type: "agent.tool_use", session_thread_id: "sthr_mine" },
+  ];
+  const events = executionContinuationEvents(history, { executionId: "e", attempt: 2, laneId: "sthr_mine" });
+  expect(events.map(event => event.id)).toEqual(["resume:e:mine", "resume:e:2"]);
+  const primary = executionContinuationEvents(history, { executionId: "p", attempt: 2, laneId: "sthr_primary" });
+  expect(primary.map(event => event.id)).toEqual(["resume:p:primary", "resume:p:2"]);
+});
 it("closes only unfinished tools and visibly resumes once per attempt", () => {
   const history = [{ id: "done", type: "agent.tool_use" }, { type: "agent.tool_result", tool_use_id: "done" }, { id: "lost", type: "agent.tool_use" }];
   const events = executionContinuationEvents(history, { executionId: "e", attempt: 2, laneId: "sthr_primary" });
