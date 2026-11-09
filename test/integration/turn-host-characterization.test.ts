@@ -6,7 +6,6 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
-import { TurnInvocation } from "../../apps/agent/src/runtime/turn-invocation";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
@@ -59,43 +58,83 @@ const lifecycle = (seen: any[]) => seen
   .filter((e) => e.type === "user.interrupt" || e.type === "session.status_running" || e.type === "session.status_idle")
   .map((e) => e.type === "session.status_idle" ? `idle:${e.stop_reason?.type}` : e.type);
 
-const cancelled = new Set<string>();
-registerHarness("deadline-revision", () => ({
-  async run(ctx) {
-    if (!ctx.userMessage.content[0].text.includes("<outcome_feedback")) {
-      ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "first attempt" }] });
-      return;
-    }
-    await awaitDeadline(ctx, "revision");
-  },
-}));
-registerHarness("deadline-child", () => ({ async run(ctx) { await awaitDeadline(ctx, "child"); } }));
-registerHarness("deadline-parent", () => ({ async run(ctx) {
-  await ctx.env.delegateToAgent(ctx.agent.multiagent.subagents.predefined_agents[0].id, "work");
-} }));
-async function awaitDeadline(ctx, label) {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("test work was not cancelled")), 4000);
-    const abort = () => { clearTimeout(timer); cancelled.add(label); resolve(); };
-    if (ctx.runtime.abortSignal.aborted) abort();
-    else ctx.runtime.abortSignal.addEventListener("abort", abort, { once: true });
-  });
-}
-async function shortenInvocation(id) {
-  await runInDurableObject(stubOf(id), (instance: any) => {
-    const alarm = instance.runAlarm.bind(instance);
-    instance.alarm = async () => {
-      const invocation = instance._turnInvocation = new TurnInvocation(1500);
-      try { await alarm(); } finally { invocation.close(); instance._turnInvocation = null; }
+describe("characterization: SessionDO interrupt and lane drain", () => {
+  it("interrupting a running turn ends it once with idle end_turn", async () => {
+    const id = await createSession("hang-until-abort");
+    await send(id, message("hang"));
+    await until(id, (e) => e.some((x) => x.type === "agent.message"));
+    expect((await send(id, { type: "user.interrupt" })).status).toBeLessThan(300);
+    const seen = await until(id, (e) => e.some((x) => x.type === "session.status_idle"));
+    await new Promise((r) => setTimeout(r, 500));
+    expect(lifecycle(await events(id))).toEqual(["session.status_running", "user.interrupt", "idle:end_turn"]);
+    expect(seen.filter((e) => e.type === "session.error")).toEqual([]);
+  }, 30_000);
+
+  it("a second interrupt on the now idle session is recorded and changes nothing else", async () => {
+    const id = await createSession("hang-until-abort");
+    await send(id, message("finish"));
+    await until(id, (e) => e.some((x) => x.type === "session.status_idle"));
+    await send(id, { type: "user.interrupt" });
+    await until(id, (e) => e.some((x) => x.type === "user.interrupt"));
+    expect(lifecycle(await events(id))).toEqual(["session.status_running", "idle:end_turn", "user.interrupt"]);
+  }, 30_000);
+
+  it("a message queued before an interrupt still runs as the next turn", async () => {
+    const id = await createSession("hang-until-abort");
+    texts.length = 0;
+    await send(id, message("hang"));
+    await until(id, (e) => e.some((x) => x.type === "agent.message"));
+    await send(id, message("finish"));
+    await send(id, { type: "user.interrupt" });
+    await until(id, (e) => e.filter((x) => x.type === "session.status_idle").length >= 2);
+    expect(texts).toEqual(["hang", "finish"]);
+    expect(lifecycle(await events(id))).toEqual([
+      "session.status_running", "user.interrupt", "idle:end_turn",
+      "session.status_running", "idle:end_turn",
+    ]);
+  }, 30_000);
+
+  it("drains queued messages one turn at a time, in order", async () => {
+    const id = await createSession("record-order");
+    texts.length = 0;
+    for (const text of ["one", "two", "three"]) await send(id, message(text));
+    await until(id, (e) => e.filter((x) => x.type === "session.status_idle").length >= 3);
+    expect(texts).toEqual(["one", "two", "three"]);
+    expect(lifecycle(await events(id))).toEqual([
+      "session.status_running", "idle:end_turn",
+      "session.status_running", "idle:end_turn",
+      "session.status_running", "idle:end_turn",
+    ]);
+  }, 30_000);
+});
+
+
+it("starts accepted input without waiting for an alarm invocation", async () => {
+  const id = await createSession("record-order");
+  await runInDurableObject(stubOf(id), instance => { instance.alarm = async () => {}; });
+  await send(id, message("detached drain"));
+  const seen = await until(id, events => events.some(event => event.type === "session.status_idle"));
+  expect(seen.filter(event => event.type === "session.status_idle").map(event => event.stop_reason.type)).toEqual(["end_turn"]);
+  expect(seen.filter(event => event.type === "session.error")).toEqual([]);
+}, 20000);
+
+it("keeps normal cleanup attached to the execution fence without an alarm model timer", async () => {
+  const id = await createSession("record-order");
+  const order = [];
+  await runInDurableObject(stubOf(id), instance => {
+    instance.alarm = async () => {};
+    instance.synchronizeManagedMemoryStores = async fence => {
+      order.push("sync");
+      await new Promise(resolve => setTimeout(resolve, 550));
+      expect(fence).toBeDefined();
     };
   });
-}
-
-registerHarness("deadline-backoff", () => ({ async run() { throw new Error("temporary outage"); } }));
-registerHarness("deadline-race", () => ({ async run(ctx) {
-  await awaitDeadline(ctx, "race");
-  if (ctx.userMessage.content[0].text === "reject") throw new Error("late harness rejection");
-} }));
+  await send(id, message("cleanup"));
+  const seen = await until(id, events => events.some(event => event.type === "session.status_idle"));
+  expect(order).toEqual(["sync"]);
+  expect(seen.filter(event => event.type === "session.error")).toEqual([]);
+  expect(seen.filter(event => event.type === "session.status_idle").map(event => event.stop_reason.type)).toEqual(["end_turn"]);
+}, 20000);
 
 const settledExecutionLong = id => settledExecution(id, 800);
 async function settledExecution(id, polls = 150) {
@@ -107,53 +146,11 @@ async function settledExecution(id, polls = 150) {
   throw new Error("execution did not settle");
 }
 
-// From Sol's workerd counterexample: cleanup succeeds after the invocation has expired.
-it.each(["memory", "dispose", "resolve", "reject"])("keeps public and durable outcomes consistent when %s crosses the model deadline", async kind => {
-  const id = await createSession(["resolve", "reject"].includes(kind) ? "deadline-race" : "record-order");
-  await runInDurableObject(stubOf(id), instance => {
-    const alarm = instance.runAlarm.bind(instance);
-    if (kind === "memory") instance.synchronizeManagedMemoryStores = async () => { await new Promise(r => setTimeout(r, 550)); };
-    instance.alarm = async () => {
-      const invocation = instance._turnInvocation = new TurnInvocation(300, 1800);
-      if (kind === "dispose") {
-        const cleanup = invocation.cleanup.bind(invocation);
-        let calls = 0;
-        invocation.cleanup = work => cleanup(async () => { const value = await work(); if (++calls === 3) await new Promise(r => setTimeout(r, 550)); return value; });
-      }
-      try { await alarm(); } finally { invocation.close(); instance._turnInvocation = null; }
-    };
-  });
-  await send(id, message(kind));
-  const settled = await settledExecution(id);
-  const seen = await events(id);
-  const terminal = seen.filter(e => e.type === "session.error" || e.type === "session.status_idle");
-  const modelExpired = ["resolve", "reject"].includes(kind);
-  expect(terminal.map(e => e.type)).toEqual(modelExpired ? ["session.error", "session.status_idle"] : ["session.status_idle"]);
-  expect(terminal.at(-1).stop_reason.type).toBe(modelExpired ? "retries_exhausted" : "end_turn");
-  expect(settled).toHaveLength(1);
-  expect(settled[0].state).toBe(modelExpired ? "failed" : "completed");
-  if (modelExpired) expect(settled[0].failure).toContain("invocation_deadline");
-  else expect(settled[0].failure).toBeNull();
-}, 30_000);
-describe("characterization: SessionDO interrupt and lane drain", () => {
-  it("reports a deadline during retry backoff before idle, never silent cancellation", async () => {
-    const id = await createSession("deadline-backoff");
-    await shortenInvocation(id);
-    await send(id, message("start"));
-    const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
-    expect(seen.filter(e => e.type === "session.error").map(e => e.error.retry_status?.type ?? e.error.retry_status)).toEqual(["retrying", "exhausted"]);
-    expect(JSON.stringify(seen.findLast(e => e.type === "session.error"))).toContain("invocation_deadline");
-    expect(seen.at(-1).type).toBe("session.status_idle");
-    expect(seen.at(-1).stop_reason.type).toBe("retries_exhausted");
-    const settled = await settledExecution(id);
-    expect(settled.length).toBeGreaterThan(0);
-    expect(settled.every(e => e.state === "failed")).toBe(true);
-  }, 30_000);
+
   it("renews the same attempt through successful cleanup and releases only after publication", async () => {
     const id = await createSession("record-order");
     const observation = { before: null, after: null, order: [] };
     await runInDurableObject(stubOf(id), instance => {
-      const alarm = instance.runAlarm.bind(instance);
       instance.synchronizeManagedMemoryStores = async fence => {
         observation.order.push("sync");
         observation.before = await env.MAIN_DB.prepare("SELECT attempt_id,generation,lease_expires_at_ms FROM managed_session_executions WHERE session_id=?").bind(id).first();
@@ -163,10 +160,6 @@ describe("characterization: SessionDO interrupt and lane drain", () => {
       instance.publishAgentsApiArtifacts = async () => { observation.order.push("publish"); };
       const prepare = instance.doWarmUpSandbox.bind(instance);
       instance.doWarmUpSandbox = async () => { await prepare(); instance.portsSandbox = { endExecution: async () => { observation.order.push("release"); } }; };
-      instance.alarm = async () => {
-        const invocation = instance._turnInvocation = new TurnInvocation(300, 35_000);
-        try { await alarm(); } finally { invocation.close(); instance._turnInvocation = null; }
-      };
     });
     await send(id, message("start"));
     const settled = await settledExecutionLong(id);
@@ -220,131 +213,3 @@ describe("characterization: SessionDO interrupt and lane drain", () => {
       expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["retries_exhausted"]);
     }
   }, 30_000);
-  it("bounds a hung cleanup RPC and still reports error before idle", async () => {
-    const id = await createSession("record-order");
-    await runInDurableObject(stubOf(id), instance => {
-      const alarm = instance.runAlarm.bind(instance);
-      instance.synchronizeManagedMemoryStores = () => instance._turnInvocation.cleanup(() => new Promise(() => {}));
-      instance.alarm = async () => {
-        const invocation = instance._turnInvocation = new TurnInvocation(1000, 100);
-        try { await alarm(); } finally { invocation.close(); instance._turnInvocation = null; }
-      };
-    });
-    await send(id, message("start"));
-    const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
-    expect(seen.filter(e => e.type === "session.error").some(e => JSON.stringify(e).includes("cleanup_deadline"))).toBe(true);
-    expect(seen.at(-1).stop_reason.type).toBe("retries_exhausted");
-    const settled = await settledExecution(id);
-    expect(settled[0].state).toBe("failed");
-    expect(seen.filter(e => e.type === "session.error")).toHaveLength(1);
-    expect((await events(id)).filter(e => e.type === "session.status_idle")).toHaveLength(1);
-  }, 30_000);
-  it.each(["revision", "child", "judge", "tool"])("cancels %s with the invocation and reports deadline before idle", async (kind) => {
-    cancelled.delete(kind);
-    let extra = kind === "tool" ? { tools: [{ type: "agent_toolset_20260401", default_config: { enabled: true } }] } : {};
-    if (kind === "child") {
-      const child = await (await post("/v1/oma/agents", { name: "deadline-child", model: "claude-sonnet-4-6", _oma: { harness: "deadline-child" } })).json();
-      extra = { multiagent: { type: "multiagent_20261001", advisor: { type: "disabled" }, workflows: { type: "disabled" }, subagents: { type: "enabled", inline_agents: { type: "disabled" }, predefined_agents: [{ type: "agent", id: child.id, version: child.version }] } } };
-    }
-    const id = await createSession(kind === "child" ? "deadline-parent" : kind === "judge" ? "deadline-judge" : kind === "tool" ? "deadline-tool" : "deadline-revision", extra);
-    await shortenInvocation(id);
-    if (kind === "judge") await runInDurableObject(stubOf(id), instance => instance.setState({ ...instance.state, outcome: { outcome_id: "deadline-judge", description: "deadline-judge", rubric: { type: "text", content: "deadline-judge" }, max_iterations: 3 } }));
-    if (kind === "revision") await runInDurableObject(stubOf(id), instance => instance.setState({ ...instance.state, outcome: { outcome_id: "deadline-outcome", description: "write file", verifier: { type: "verifiable", scorer: "fileWritten", opts: { path: "/workspace/missing.txt" } }, max_iterations: 3 } }));
-    await send(id, message("start"));
-    const seen = await until(id, e => e.some(x => x.type === "session.status_idle" && (x.session_thread_id ?? "sthr_primary") === "sthr_primary"));
-    expect(cancelled.has(kind), "work must observe abort, not time out independently").toBe(true);
-    const endings = seen.filter(e => e.type === "session.error" || (e.type === "session.status_idle" && (e.session_thread_id ?? "sthr_primary") === "sthr_primary"));
-    expect(endings.map(e => e.type)).toEqual(["session.error", "session.status_idle"]);
-    expect(JSON.stringify(endings[0])).toContain("wall-time budget");
-    expect(endings[1].stop_reason.type).toBe("retries_exhausted");
-  }, 30_000);
-
-  it("keeps the alarm open until its turn finishes and errors before its wall-time budget", async () => {
-    const id = await createSession("hang-until-abort");
-    // Replace the infrastructure budget only; exercise the real alarm, drain,
-    // harness and public error settlement without waiting thirteen minutes.
-    await runInDurableObject(stubOf(id), (instance: any) => {
-      const alarm = instance.runAlarm.bind(instance);
-      instance.alarm = async () => {
-        const invocation = instance._turnInvocation = new TurnInvocation(1000);
-        try { await alarm(); }
-        finally { invocation.close(); instance._turnInvocation = null; }
-      };
-    });
-    await send(id, message("hang"));
-    const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
-    expect(seen.some(e => e.type === "session.error" && JSON.stringify(e).includes("wall-time budget"))).toBe(true);
-    expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["retries_exhausted"]);
-    await send(id, message("finish"));
-    const second = await until(id, e => e.filter(x => x.type === "session.status_idle").length === 2);
-    expect(second.filter(e => e.type === "session.status_idle").at(-1).stop_reason.type).toBe("end_turn");
-  }, 30_000);
-
-  it("interrupting a running turn ends it once with idle end_turn", async () => {
-    const id = await createSession("hang-until-abort");
-    await send(id, message("hang"));
-    await until(id, (e) => e.some((x) => x.type === "agent.message"));
-    expect((await send(id, { type: "user.interrupt" })).status).toBeLessThan(300);
-    const seen = await until(id, (e) => e.some((x) => x.type === "session.status_idle"));
-    await new Promise((r) => setTimeout(r, 500));
-    expect(lifecycle(await events(id))).toEqual(["session.status_running", "user.interrupt", "idle:end_turn"]);
-    expect(seen.filter((e) => e.type === "session.error")).toEqual([]);
-  }, 30_000);
-
-  it("a second interrupt on the now idle session is recorded and changes nothing else", async () => {
-    const id = await createSession("hang-until-abort");
-    await send(id, message("finish"));
-    await until(id, (e) => e.some((x) => x.type === "session.status_idle"));
-    await send(id, { type: "user.interrupt" });
-    await until(id, (e) => e.some((x) => x.type === "user.interrupt"));
-    expect(lifecycle(await events(id))).toEqual(["session.status_running", "idle:end_turn", "user.interrupt"]);
-  }, 30_000);
-
-  it("a message queued before an interrupt still runs as the next turn", async () => {
-    const id = await createSession("hang-until-abort");
-    texts.length = 0;
-    await send(id, message("hang"));
-    await until(id, (e) => e.some((x) => x.type === "agent.message"));
-    await send(id, message("finish"));
-    await send(id, { type: "user.interrupt" });
-    await until(id, (e) => e.filter((x) => x.type === "session.status_idle").length >= 2);
-    expect(texts).toEqual(["hang", "finish"]);
-    expect(lifecycle(await events(id))).toEqual([
-      "session.status_running", "user.interrupt", "idle:end_turn",
-      "session.status_running", "idle:end_turn",
-    ]);
-  }, 30_000);
-
-  it("drains queued messages one turn at a time, in order", async () => {
-    const id = await createSession("record-order");
-    texts.length = 0;
-    for (const text of ["one", "two", "three"]) await send(id, message(text));
-    await until(id, (e) => e.filter((x) => x.type === "session.status_idle").length >= 3);
-    expect(texts).toEqual(["one", "two", "three"]);
-    expect(lifecycle(await events(id))).toEqual([
-      "session.status_running", "idle:end_turn",
-      "session.status_running", "idle:end_turn",
-      "session.status_running", "idle:end_turn",
-    ]);
-  }, 30_000);
-});
-
-// The harness and judge share this model object; replace only judge model I/O.
-registerHarness("deadline-judge", () => ({ async run(ctx) {
-  ctx.model.doGenerate = async options => {
-    await awaitDeadline({ runtime: { abortSignal: options.abortSignal } }, "judge");
-    return { content: [{ type: "text", text: JSON.stringify({ result: "satisfied", explanation: "done" }) }], finishReason: { unified: "stop", raw: "end_turn" }, usage: { inputTokens: { total: 0 }, outputTokens: { total: 0 } }, warnings: [] };
-  };
-  ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "first attempt" }] });
-} }));
-
-registerHarness("deadline-tool", () => ({ async run(ctx) {
-  await ctx.tools.web_fetch.execute({ url: "https://deadline-tool.example.com/" }, { toolCallId: "deadline-tool", messages: [], abortSignal: ctx.runtime.abortSignal });
-} }));
-const originalFetch = globalThis.fetch;
-beforeAll(() => vi.stubGlobal("fetch", async (input, init) => {
-  if (!String(input).includes("deadline-tool.example.com")) return originalFetch(input, init);
-  await awaitDeadline({ runtime: { abortSignal: init.signal } }, "tool");
-  return new Response("cancelled", { headers: { "content-type": "text/plain" } });
-}));
-afterAll(() => vi.unstubAllGlobals());

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  TurnDeadlineError,
   classifyTurnFailure,
   isTurnCancellationError,
   planTurnFailure,
@@ -175,28 +174,6 @@ describe("runTurnAttempts", () => {
     const a = attempts([blip], { abort });
     expect(await a.result).toEqual({ type: "cancelled", error: blip });
     expect(a.runs()).toBe(1);
-  });
-
-  it.each(["backoff", "aborted-work", "resolved-work"])("reports a typed deadline during %s instead of silently cancelling", async (phase) => {
-    const deadline = new AbortController();
-    const log: string[] = [];
-    const error = new TurnDeadlineError("invocation_deadline");
-    const timer = setTimeout(() => deadline.abort(error), 30);
-    try {
-      const result = await runTurnAttempts({
-        run: async () => {
-          if (phase !== "backoff") await new Promise<void>(resolve => deadline.signal.addEventListener("abort", () => resolve(), { once: true }));
-          if (phase === "aborted-work") throw Object.assign(new Error("aborted"), { name: "AbortError" });
-          if (phase !== "resolved-work") throw new Error("temporary outage");
-        },
-        agentEventCount: () => 0, isCancelled: () => false, classify: () => "transient",
-        retry: { attempts: 3, delayMs: () => 1000 }, signal: deadline.signal,
-        events: { sessionError: (_message, status) => log.push(status), rescheduled: () => log.push("rescheduled") },
-        describe: error => error.message,
-      });
-      expect(result).toEqual({ type: "deadline", reason: "invocation_deadline", error });
-      expect(log).toEqual(phase === "backoff" ? ["retrying", "rescheduled", "exhausted"] : ["exhausted"]);
-    } finally { clearTimeout(timer); }
   });
 
   it("rethrows a value that is not an Error", async () => {

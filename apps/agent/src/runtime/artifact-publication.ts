@@ -2,7 +2,8 @@ import type { Env } from "@open-managed-agents/shared";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { sandboxStdout, readSandboxFileBytes } from "./sandbox-output";
 
-/** Publication is part of fenced cleanup: failure must reach the turn owner. */
+/** After terminal persistence, publish with the current execution fence.
+ * The owner reports copy failures independently of the completed model turn. */
 export async function publishAgentsApiArtifacts(
   binding: Env["MAIN_MCP"],
   state: { tenant_id?: string | null; session_id?: string | null },

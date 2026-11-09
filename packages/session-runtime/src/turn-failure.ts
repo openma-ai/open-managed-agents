@@ -13,16 +13,6 @@ import {
 } from "@open-managed-agents/shared";
 import { abortableDelay } from "@open-managed-agents/session-runtime-contract";
 
-/** Distinct from user cancellation; hosts can later hand off this outcome.
- * Current hosts report exhausted and end idle, never silently complete. */
-export type TurnDeadlineReason = "invocation_deadline" | "cleanup_deadline";
-export class TurnDeadlineError extends Error {
-  readonly name = "TurnDeadlineError";
-  constructor(readonly reason: TurnDeadlineReason, message = "Turn exceeded its wall-time budget") {
-    super(`[${reason}] ${message}`);
-  }
-}
-
 export type TurnFailureClass =
   /** Worth another attempt while the budget lasts. */
   | "transient"
@@ -115,7 +105,6 @@ export async function settleTurnFailure(
 
 export type TurnAttemptsResult =
   | { type: "completed" }
-  | { type: "deadline"; reason: TurnDeadlineReason; error: TurnDeadlineError }
   | { type: "cancelled" | "exhausted" | "terminal"; error: Error };
 
 /** Runs a harness attempt under the shared retry policy. Every failure is
@@ -134,16 +123,9 @@ export async function runTurnAttempts(input: {
   for (let attempt = 1; ; attempt += 1) {
     const agentEventsBefore = input.agentEventCount();
     try {
-      if (input.signal.reason instanceof TurnDeadlineError) throw input.signal.reason;
       await input.run();
-      if (input.signal.reason instanceof TurnDeadlineError) throw input.signal.reason;
       return { type: "completed" };
     } catch (error) {
-      const deadline = input.signal.reason instanceof TurnDeadlineError ? input.signal.reason : error;
-      if (deadline instanceof TurnDeadlineError) {
-        reportTurnFailure({ type: "exhausted" }, input.describe(deadline), input.events);
-        return { type: "deadline", reason: deadline.reason, error: deadline };
-      }
       if (!(error instanceof Error)) throw error;
       const plan = await settleTurnFailure({
         cancelled: input.isCancelled(error),
@@ -157,11 +139,6 @@ export async function runTurnAttempts(input: {
         wait: (ms) => abortableDelay(ms, input.signal),
       });
       if (plan.type !== "retry") return { type: plan.type, error };
-      if (input.signal.reason instanceof TurnDeadlineError) {
-        const error = input.signal.reason;
-        reportTurnFailure({ type: "exhausted" }, input.describe(error), input.events);
-        return { type: "deadline", reason: error.reason, error };
-      }
       if (input.signal.aborted) return { type: "cancelled", error };
     }
   }

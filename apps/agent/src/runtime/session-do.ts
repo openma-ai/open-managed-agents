@@ -1,4 +1,3 @@
-import { TurnInvocation } from "./turn-invocation";
 import { publishAgentsApiArtifacts } from "./artifact-publication";
 import { readSandboxFileBytes } from "./sandbox-output";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
@@ -656,7 +655,7 @@ export class SessionDO extends DurableObject<Env> {
           try {
             await this.schedule(5, "recoverEventQueue" as keyof this);
           } catch {}
-          await this._armLeaseWake("wakeup");
+          void this.drainEventQueue();
         },
       },
       clock: { now: () => new Date() },
@@ -881,7 +880,6 @@ export class SessionDO extends DurableObject<Env> {
    * the same execution twice.
    */
   private _recoveryRun: Promise<void> | null = null;
-  private _turnInvocation: TurnInvocation | null = null;
   private readonly _reportedTurnErrors = new WeakSet<Error>();
   /** Consecutive failed recovery passes. */
   private _recoveryFailures = 0;
@@ -1043,7 +1041,7 @@ export class SessionDO extends DurableObject<Env> {
     } else {
       await this._finalizeStaleTurns();
     }
-    if (reason === "alarm") await this.recoverExecutionQueue();
+    await this.recoverExecutionQueue();
     this._recoveryFailures = 0;
     this._recoveryRetryAtMs = null;
     sdoLog("recovery.done", {
@@ -2053,8 +2051,6 @@ export class SessionDO extends DurableObject<Env> {
     // Sync re-entry mutex per thread — two callers for the same thread
     // can't both reach the SQL pending lookup before either marks a
     // row as processed.
-    if (this._turnInvocation === null) { await this._armLeaseWake("deferred_drain"); return; }
-    if (this._turnInvocation.signal.aborted) return;
     if (this._draining.has(threadId)) return;
     if (this.deriveStatus() === "terminated") return;
     this._draining.add(threadId);
@@ -2359,7 +2355,12 @@ export class SessionDO extends DurableObject<Env> {
       // be rejected as stale.  This is the commit barrier between the
       // harness side effects and execution settlement.
       await this._managedProjectionChain;
+      if (threadId === "sthr_primary" && !signal.aborted) {
+        try { await this.publishAgentsApiArtifacts(fence); }
+        catch (error) { logWarn({ op: "session_do.openai_agents.artifact_publication_failed", session_id: this.state.session_id, execution_id: fence.executionId, err: this.describeError(error) }, "Completed Session output could not be published as an Agents API artifact"); }
+      }
       signal.throwIfAborted();
+      if (this.portsSandbox !== null) await this.portsSandbox.endExecution();
       return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
     } catch (err) {
       turnFailed = true;
@@ -2643,7 +2644,9 @@ export class SessionDO extends DurableObject<Env> {
           reason: "bootstrap_execution",
           atMs: Date.now() + ENQUEUE_WAKE_DELAY_MS,
         });
-
+        void this.recoverExecutionQueue().catch(error => {
+          console.error("[session_do] bootstrap execution wakeup failed", error);
+        });
       }
 
       // Warm at creation (§0.0 rule 10): acquire + record only; the first execution attaches it.
@@ -2854,8 +2857,8 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        // Only the alarm owns turn execution; enqueue never starts background work.
-        if (enqueued) await this._armLeaseWake("enqueue");
+        // Start detached work after durable admission; schedule/alarm remains the recovery safety net.
+        if (enqueued) void this.drainEventQueue(umThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2924,7 +2927,7 @@ export class SessionDO extends DurableObject<Env> {
         }
         // Queued inputs survive the interrupt (same as Node): the next one
         // starts the lane's next turn.
-        await this._armLeaseWake("interrupt_queue");
+        void this.drainEventQueue(targetThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2933,7 +2936,7 @@ export class SessionDO extends DurableObject<Env> {
         // event and its continuation execution are already in D1 (store
         // append + outbox); just wake the primary lane to claim it.
         if ((body as unknown as { resume?: boolean }).resume === true) {
-          await this._armLeaseWake("budget_resume");
+          void this.drainEventQueue("sthr_primary");
         }
         return new Response(null, { status: 202 });
       }
@@ -2954,7 +2957,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        if (enqueued) await this._armLeaseWake("answer_enqueue");
+        if (enqueued) void this.drainEventQueue(tcThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2984,7 +2987,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        if (enqueued) await this._armLeaseWake("answer_enqueue");
+        if (enqueued) void this.drainEventQueue(ctrThread);
         return new Response(null, { status: 202 });
       }
 
@@ -4273,12 +4276,12 @@ export class SessionDO extends DurableObject<Env> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const result = await this._turnInvocation!.cleanup(() => binding.synchronizeManagedMemorySnapshots({
+        const result = await binding.synchronizeManagedMemorySnapshots({
           tenantId,
           sessionId,
           runtimeGeneration,
           executionFence,
-        }));
+        });
         if (result.type === "fence_lost") {
           const error = new Error("Managed Memory synchronization lost its execution fence");
           error.name = "ExecutionFenceLostError";
@@ -4389,6 +4392,7 @@ export class SessionDO extends DurableObject<Env> {
     const eventDocument = JSON.stringify(event);
     this._managedProjectionChain = this._managedProjectionChain
       .then(async () => {
+        if (executionFence && !this.isExecutionFenceCurrent(executionFence)) return;
         const result = await binding.managedSessionEventProduced({
           workspaceId,
           sessionId,
@@ -5724,10 +5728,8 @@ export class SessionDO extends DurableObject<Env> {
     this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
     const unlinkParentAbort = linkAbort(parentSignal, abortController);
-    // One execution signal for tools, delegation, harness and outcome; cleanup retains the parent fence.
-    const modelAbort = new AbortController();
-    const unlinkModelAbort = linkAbort(this._turnInvocation!.signal, modelAbort);
-    const effectiveAbortSignal = AbortSignal.any([abortController.signal, modelAbort.signal]);
+    // The parent execution signal covers tools, delegation, harness and outcome.
+    const effectiveAbortSignal = abortController.signal;
     sandbox = this.bindSandboxToExecution(
       sandbox,
       effectiveAbortSignal,
@@ -6138,12 +6140,12 @@ export class SessionDO extends DurableObject<Env> {
 
       const runHarness = async (userMessage = ctx.userMessage) => {
         const attempts = await runTurnAttempts({
-          run: () => this._turnInvocation!.run(() => harness.run({ ...ctx, userMessage })),
+          run: () => harness.run({ ...ctx, userMessage }),
           agentEventCount: () => countAgentEvents(history.getEvents()),
           // A lost execution fence is a cancellation too: the replacement owner
           // runs the turn, so this one must neither retry nor report.
           isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
-          classify: (error, produced) => this._turnInvocation?.signal.aborted ? "turn_dead" : classifyTurnFailure(error, produced),
+          classify: classifyTurnFailure,
           retry: TURN_RETRY,
           signal: effectiveAbortSignal,
           events: failureEvents,
@@ -6296,17 +6298,12 @@ export class SessionDO extends DurableObject<Env> {
         });
       }
 
-      this._turnInvocation!.signal.throwIfAborted();
-      // Model work ended on time. Keep the parent fence/heartbeat through cleanup,
-      // but do not let the model timer cancel successful bounded publication.
-      unlinkModelAbort();
       abortController.signal.throwIfAborted();
       // Memory mutations are part of turn completion, not an asynchronous
       // afterthought. This barrier precedes status_idle and execution settle.
-      await this._turnInvocation!.cleanup(() => this.synchronizeManagedMemoryStores(activeFence));
+      await this.synchronizeManagedMemoryStores(activeFence);
       managedMemorySynchronized = true;
       abortController.signal.throwIfAborted();
-      if (turnThreadId === "sthr_primary" && activeFence) await this._turnInvocation!.cleanup(() => this.publishAgentsApiArtifacts(activeFence));
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
@@ -6374,7 +6371,7 @@ export class SessionDO extends DurableObject<Env> {
         stop_reason: { type: "retries_exhausted" },
       };
     } finally {
-      try { await this._turnInvocation!.cleanup(() => disposeTools(allTools)); }
+      try { await disposeTools(allTools); }
       catch (error) {
         terminalError ??= error instanceof Error ? error : new Error(String(error));
         reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
@@ -6384,7 +6381,7 @@ export class SessionDO extends DurableObject<Env> {
         try {
           // Error/cancel rescue pass. Reconciliation is idempotent, so a
           // partially committed prior attempt is safe to retry here.
-          await this._turnInvocation!.cleanup(() => this.synchronizeManagedMemoryStores(activeFence));
+          await this.synchronizeManagedMemoryStores(activeFence);
           managedMemorySynchronized = true;
         } catch (error) {
           if (!(error instanceof Error && error.name === "ExecutionFenceLostError")) {
@@ -6398,7 +6395,7 @@ export class SessionDO extends DurableObject<Env> {
       }
       try {
         abortController.signal.throwIfAborted();
-        if (!terminalError && this.portsSandbox !== null) await this._turnInvocation!.cleanup(() => this.portsSandbox!.endExecution());
+        if (!activeFence && !terminalError && this.portsSandbox !== null) await this.portsSandbox.endExecution();
       } catch (error) {
         if (!abortController.signal.aborted && !isTurnCancellationError(error)) {
           terminalError ??= error instanceof Error ? error : new Error(String(error));
@@ -6406,14 +6403,7 @@ export class SessionDO extends DurableObject<Env> {
           completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
         }
       }
-      unlinkModelAbort();
       if (terminalError && terminalReported) this._reportedTurnErrors.add(terminalError);
-      if (this._threadAbortControllers.get(turnThreadId) === abortController) {
-        this._threadAbortControllers.delete(turnThreadId);
-      }
-      this._turnSettled.delete(abortController);
-      resolveTurnSettled();
-      unlinkParentAbort();
       // Interrupt owns its idle; a lost fence cannot append through guarded history.
       const interruptOwnsIdle = abortController.signal.aborted &&
         this._interruptIdleOwned.delete(turnThreadId);
@@ -6427,6 +6417,12 @@ export class SessionDO extends DurableObject<Env> {
           console.warn(`[processUserMessage] catch-all idle emit failed:`, err);
         }
       }
+      if (this._threadAbortControllers.get(turnThreadId) === abortController) {
+        this._threadAbortControllers.delete(turnThreadId);
+      }
+      this._turnSettled.delete(abortController);
+      resolveTurnSettled();
+      unlinkParentAbort();
     }
     if (terminalError) throw Object.assign(terminalError, { holdQueuedOnLane: true });
     return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
@@ -7542,12 +7538,6 @@ export class SessionDO extends DurableObject<Env> {
    * (orphan-fiber recovery), then re-arms the next alarm.
    */
   async alarm(): Promise<void> {
-    const invocation = this._turnInvocation = new TurnInvocation();
-    try { await this.runAlarm(); }
-    finally { invocation.close(); this._turnInvocation = null; }
-  }
-
-  private async runAlarm(): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1000);
     const due = this.ctx.storage.sql
       .exec<{
