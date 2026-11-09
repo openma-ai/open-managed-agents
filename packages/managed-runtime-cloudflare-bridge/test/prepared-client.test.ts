@@ -58,3 +58,22 @@ it("rejects alias configuration and mismatched snapshot provenance instead of tr
     await expect(client.snapshotEnvironment(runtime, "prepared")).rejects.toThrow("invalid native snapshot");
   }
 });
+
+it("binds restored Session public firewall to claimed workspace and runtime without credential fields", async () => {
+  const calls: any[] = [];
+  const client = bridge.createCloudflareBridgePreparedClient({ expectedImage: "image@sha256:" + "a".repeat(64), baseUrl: "https://bridge.test", apiKey: "key", checkpointStore: new InMemoryBlobStore(),
+    fetch: async (url, init) => { calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)), auth: new Headers(init?.headers).get("authorization") }); return Response.json({ id: "restored" }); } });
+  const runtime = await client.restoreEnvironment({ workspaceId: "w", snapshot: { adapter: "cloudflare-sandbox-bridge", ref: "owner:token" }, bindSessionEgress: async runtime => {
+    await (client as any).applySessionFirewall(runtime, { workspaceId: "w", rules: firewall });
+  } });
+  expect(runtime.runtimeHandle().runtimeId).toBe("restored");
+  expect(calls.at(-1)).toEqual({ url: "https://bridge.test/v1/sandbox/restored/firewall", method: "PUT", auth: "Bearer key", body: { workspace_id: "w", runtime_id: "restored", rules: firewall } });
+});
+
+it.each([{ ...firewall, mode: "open" }, { ...firewall, allowCidrs: ["0.0.0.0/0"] }])("rejects unsupported Session firewall before allocation can escape deny-all", async rules => {
+  let calls = 0;
+  const client = bridge.createCloudflareBridgePreparedClient({ expectedImage: "image@sha256:" + "a".repeat(64), baseUrl: "https://bridge.test", apiKey: "key", checkpointStore: new InMemoryBlobStore(), fetch: async () => { calls++; return Response.json({ id: "restored" }); } });
+  const runtime = new bridge.CloudflareBridgeRuntime({ baseUrl: "https://bridge.test", apiKey: "key", runtimeId: "restored", checkpointStore: new InMemoryBlobStore() });
+  await expect((client as any).applySessionFirewall(runtime, { workspaceId: "w", rules })).rejects.toThrow("public allowlist");
+  expect(calls).toBe(0);
+});

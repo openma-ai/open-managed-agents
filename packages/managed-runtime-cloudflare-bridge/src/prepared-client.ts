@@ -41,6 +41,17 @@ export function createCloudflareBridgePreparedClient(options: CloudflareBridgePr
     async applyBuildFirewall(runtime: CloudflareBridgeRuntime, firewall: unknown): Promise<void> {
       await request(path(runtime) + "/firewall", "PUT", firewall);
     },
+    /** The server supports public host allowlists only, not open/CIDR egress
+     * or execution-token authorization. Keep credential relay wiring separate. */
+    async applySessionFirewall(runtime: CloudflareBridgeRuntime, input: {
+      workspaceId: string;
+      rules: { mode: string; allowHosts: readonly string[]; allowCidrs: readonly string[]; denyAlways: readonly string[]; includesGateway: boolean };
+    }): Promise<void> {
+      if (!input.workspaceId || input.rules.mode !== "allowlist" || input.rules.allowCidrs.length !== 0) throw new Error("Prepared Session firewall requires a public allowlist without CIDRs");
+      await request(path(runtime) + "/firewall", "PUT", {
+        workspace_id: input.workspaceId, runtime_id: runtime.runtimeHandle().runtimeId, rules: input.rules,
+      });
+    },
     async snapshotEnvironment(runtime: CloudflareBridgeRuntime, name: string): Promise<EnvironmentSnapshotRef> {
       const response = await request(path(runtime) + "/environment-snapshot", "POST", { name });
       const result = await response.json() as { ref?: unknown; id?: unknown; size?: unknown; image?: unknown };
