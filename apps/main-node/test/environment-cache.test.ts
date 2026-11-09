@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import BetterSqlite3 from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { SqlKvStore } from "../../../packages/kv-store/src/adapters/sql";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import type { SandboxLifecyclePort, SandboxPlan, SandboxPort } from "@open-managed-agents/sandbox";
 import {
@@ -40,6 +43,25 @@ function lifecycle(snapshots = true) {
 const environment: EnvironmentCacheSetup["environment"] = { id: "env_1", config: { type: "cloud", packages: { pip: ["pandas"] } } };
 const scope = (sessionId: string) => ({ workspaceId: "ws_1", environmentId: "env_1", sessionId, workId: sessionId });
 const plan = (image: string) => ({ from: { image }, egress: null, stores: [], outputs: {}, idleMs: 1, labels: { workspaceId: "ws_1", sessionId: "s" } }) as unknown as SandboxPlan;
+
+describe("persistent environment cache CAS", () => {
+  it("two independent SQL stores have one winner for insert, replace and delete", async () => {
+    const sqlite = new BetterSqlite3(":memory:");
+    try {
+      sqlite.exec("CREATE TABLE kv_entries (tenant_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires_at INTEGER, PRIMARY KEY (tenant_id, key))");
+      const db = drizzle(sqlite);
+      const a = new SqlKvStore({ db, tenantId: "ws" });
+      const b = new SqlKvStore({ db, tenantId: "ws" });
+      expect(await Promise.all([a.compareAndSwap("k", null, "snap1"), b.compareAndSwap("k", null, "snap2")])).toEqual([true, false]);
+      expect(await Promise.all([a.compareAndSwap("k", "snap1", "snap3"), b.compareAndSwap("k", "snap1", "snap4")])).toEqual([true, false]);
+      expect(await b.compareAndSwap("k", "snap1", null)).toBe(false);
+      expect(await a.get("k")).toBe("snap3");
+      expect(await a.compareAndSwap("k", "snap3", null)).toBe(true);
+      expect(await a.get("k")).toBeNull();
+      expect(await new SqlKvStore({ db, tenantId: "other" }).compareAndSwap("k", null, "other")).toBe(true);
+    } finally { sqlite.close(); }
+  });
+});
 
 describe("environmentCacheAcpInstall", () => {
   it("pins ACP installs and refuses an unpinned one", () => {

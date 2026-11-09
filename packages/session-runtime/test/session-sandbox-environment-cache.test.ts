@@ -33,6 +33,7 @@ function harness(options: {
   noSnapshots?: boolean;
   data?: Map<string, string>;
   publishFails?: () => boolean;
+  readFails?: () => boolean;
   buildTimeoutMs?: number;
 } = {}) {
   const stores = new Map<string, Map<string, string>>();
@@ -73,7 +74,7 @@ function harness(options: {
     lifecycle,
     storeFor: (id) => {
       const map = storeOf(id);
-      return { compareAndSwap: async (k, expected, value) => { if (value && JSON.parse(value).state === "ready" && options.publishFails?.()) throw new Error("store put unavailable"); if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); return true; }, get: async (k) => map.get(k) ?? null, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
+      return { compareAndSwap: async (k, expected, value) => { if (value && JSON.parse(value).state === "ready" && options.publishFails?.()) throw new Error("store put unavailable"); if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); return true; }, get: async (k) => { if (options.readFails?.()) throw new Error("store unavailable"); return map.get(k) ?? null; }, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
     },
     restrictEgress: async () => { setups.push("restricted"); await options.restrictEgress?.(); },
     setup: async (_runtime, setup) => { setups.push(setup); await options.setup?.(); },
@@ -288,6 +289,16 @@ describe("EnvironmentCache", () => {
     expect(JSON.parse(h.data.get(h.storeKey)!).state).toBe("ready");
   });
 
+  it("a late unpublished snapshot still attempts provider deletion during a store outage", async () => {
+    let finish!: (ref: EnvironmentSnapshotRef) => void;
+    let down = false;
+    const h = harness({ buildTimeoutMs: 1, readFails: () => down, snapshot: () => new Promise(resolve => { finish = resolve; }) });
+    await h.session("s1"); down = true;
+    finish({ adapter: "fake", ref: "late-outage" });
+    for (let i = 0; i < 80; i++) await Promise.resolve();
+    expect(h.deleted).toEqual(["late-outage"]);
+  });
+
   it("a snapshot returned after the deadline retains a failed delete for retry", async () => {
     let finish!: (ref: EnvironmentSnapshotRef) => void;
     const h = harness({ buildTimeoutMs: 1, snapshot: () => new Promise(resolve => { finish = resolve; }), deleteSnapshot: async () => { throw new Error("in use"); } });
@@ -296,6 +307,35 @@ describe("EnvironmentCache", () => {
     for (let i = 0; i < 80; i++) await Promise.resolve();
     expect(h.data.has(h.storeKey)).toBe(true);
     expect(JSON.parse(h.data.get(h.storeKey)!)).toMatchObject({ state: "retired", retired: [{ ref: "late" }] });
+  });
+
+  it("gone preserves the discarded ref when its provider delete is refused", async () => {
+    let gone = false;
+    const h = harness({ acquire: from => gone && "environmentSnapshot" in from ? "gone" : undefined, deleteSnapshot: async () => { throw new Error("in use"); } });
+    await h.session("s1");
+    const old = JSON.parse(h.data.get(h.storeKey)!).snapshot;
+    gone = true;
+    await h.session("s2");
+    expect(JSON.parse(h.data.get(h.storeKey)!).retired).toEqual([old]);
+  });
+
+  it("a cross-instance loser retains refused deletion with the winner and retries", async () => {
+    const data = new Map<string, string>();
+    let finish1!: (ref: EnvironmentSnapshotRef) => void;
+    let finish2!: (ref: EnvironmentSnapshotRef) => void;
+    let inUse = true;
+    const a = harness({ data, snapshot: () => new Promise(resolve => { finish1 = resolve; }) });
+    const b = harness({ data, snapshot: () => new Promise(resolve => { finish2 = resolve; }), deleteSnapshot: async () => { if (inUse) throw new Error("in use"); } });
+    await a.acquire("s1"); await b.acquire("s2");
+    a.cache.prepared(scopeOf("s1")); b.cache.prepared(scopeOf("s2"));
+    for (let i = 0; i < 50 && (!finish1 || !finish2); i++) await Promise.resolve();
+    finish1({ adapter: "fake", ref: "winner" }); await a.cache.idle();
+    finish2({ adapter: "fake", ref: "loser" }); await b.cache.idle();
+    expect(JSON.parse(data.get(a.storeKey)!)).toMatchObject({ snapshot: { ref: "winner" }, retired: [{ ref: "loser" }] });
+    inUse = false;
+    await b.session("s3");
+    expect(JSON.parse(data.get(a.storeKey)!).retired).toBeUndefined();
+    expect(b.deleted).toEqual(["loser", "loser"]);
   });
 
   it("two cache instances sharing a store publish one winner and delete the loser", async () => {

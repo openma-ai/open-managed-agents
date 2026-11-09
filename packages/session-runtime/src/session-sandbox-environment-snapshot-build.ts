@@ -97,11 +97,14 @@ export async function buildEnvironmentSnapshot<R, Q>(
 
   let builder: Acquired<R> | undefined;
   let unpublished: EnvironmentSnapshotRef | undefined;
-  const cleanup = async (snapshot: EnvironmentSnapshotRef) => {
+  const cleanup = async (snapshot: EnvironmentSnapshotRef, publicationUncertain = false) => {
     try {
-      // A failed response to CAS may mean it committed: never delete a winner.
-      const raw = await input.store.get(input.storeKey);
-      if (raw !== null && (JSON.parse(raw) as EnvironmentCacheEntry).snapshot?.ref === snapshot.ref) return;
+      // Only a failed CAS response can mean a committed winner. A late result
+      // or explicit CAS loser was never published: deletion needs no DB read.
+      if (publicationUncertain) {
+        const raw = await input.store.get(input.storeKey);
+        if (raw !== null && (JSON.parse(raw) as EnvironmentCacheEntry).snapshot?.ref === snapshot.ref) return;
+      }
       await context.cleanup(input.store, input.storeKey, snapshot, fields);
     } catch (error) {
       // Provider and DB cannot transact atomically. The E2B provider snapshot
@@ -160,7 +163,7 @@ export async function buildEnvironmentSnapshot<R, Q>(
     logger.info({ ...fields, path: "build_ok", snapshotRef: snapshot.ref, durationMs: context.now() - startMs }, "Environment snapshot built");
     return { outcome: "built" };
   } catch (error) {
-    if (unpublished !== undefined) await cleanup(unpublished);
+    if (unpublished !== undefined) await cleanup(unpublished, true);
     const text = context.errorText(error);
     if (error instanceof BuildAborted) {
       logger.warn({ ...fields, path: "build_failed", reason: "shutdown", error: text, durationMs: context.now() - startMs }, "Environment snapshot build aborted by shutdown");

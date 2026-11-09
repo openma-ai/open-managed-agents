@@ -2,6 +2,7 @@
 // (session-runtime EnvironmentCache) over the Cloudflare adapter, with a fake
 // Sandbox Durable Object per id.
 import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
 import type { EnvironmentCacheStore, EnvironmentCacheWarning } from "@open-managed-agents/session-runtime";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "../src/runtime/cloudflare-sandbox-ports";
 import {
@@ -187,6 +188,20 @@ describe("Cloudflare environment cache", () => {
     await s.cache.acquire({ scope: scopeOf("s9"), plan: planOf("s9"), signal });
     await Promise.all(s.background);
     expect(s.log).toEqual(["start:s9:image:mounts=/mnt/session/outputs"]);
+  });
+
+  it("two independent D1 stores atomically publish, replace and remove one winner", async () => {
+    const db = (env as { MAIN_DB: D1Database }).MAIN_DB;
+    await db.exec("CREATE TABLE IF NOT EXISTS kv_entries (tenant_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires_at INTEGER, PRIMARY KEY (tenant_id, key))");
+    const workspace = "cas-" + crypto.randomUUID();
+    const a = d1EnvironmentCacheStore(db, workspace);
+    const b = d1EnvironmentCacheStore(db, workspace);
+    expect(await Promise.all([a.compareAndSwap("k", null, "snap1"), b.compareAndSwap("k", null, "snap2")])).toEqual([true, false]);
+    expect(await Promise.all([a.compareAndSwap("k", "snap1", "snap3"), b.compareAndSwap("k", "snap1", "snap4")])).toEqual([true, false]);
+    expect(await b.compareAndSwap("k", "snap1", null)).toBe(false);
+    expect(await a.get("k")).toBe("snap3");
+    expect(await a.compareAndSwap("k", "snap3", null)).toBe(true);
+    expect(await a.get("k")).toBeNull();
   });
 
   it("stores records in the tenant D1 kv_entries, scoped to the workspace", async () => {
