@@ -152,6 +152,70 @@ it("does not dispatch a cancelled queue input", async () => {
   expect(result).toEqual([]);
 }, 15000);
 
+// Regression: a short outer wait must not leave sweep/renew owning the whole
+// recovery pass. Exercise real alarm/recovery/dispatch; only the external phase
+// and maintenance timer are controlled. No model/tool deadline is shortened.
+it.each([
+  ["_sweepExpiredLeases", "resolve"], ["_sweepExpiredLeases", "reject"],
+  ["_applyPolicyLeaseRenewals", "resolve"], ["_applyPolicyLeaseRenewals", "reject"],
+])("a pending %s isolates later alarms and releases on %s", async (phase, outcome) => {
+  const id = await createSession("hang-until-abort");
+  const observed = await runInDurableObject(stubOf(id), async (instance, state) => {
+    await instance._runRecovery("alarm");
+    let release;
+    let reject;
+    let calls = 0;
+    let renewals = 0;
+    const pending = new Promise((resolve, fail) => { release = resolve; reject = fail; });
+    const original = instance[phase].bind(instance);
+    const renew = instance._applyPolicyLeaseRenewals.bind(instance);
+    instance._applyPolicyLeaseRenewals = async now => { renewals++; await renew(now); };
+    instance[phase] = async now => {
+      calls++;
+      expect(await state.storage.getAlarm(), "backstop is persisted before external phase").not.toBeNull();
+      if (calls === 1) await pending; else await original(now);
+    };
+    const timeout = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...args) => timeout(fn, ms === 10_000 ? 20 : ms, ...args);
+    const enqueue = text => instance.queue.enqueueQueueInput({ id: crypto.randomUUID(), type: "user.message", content: [{ type: "text", text }] });
+    try {
+      await instance.alarm();
+      expect(await state.storage.getAlarm(), "pending maintenance retains a durable wake without queue rows").not.toBeNull();
+      enqueue("hang"); // Arrives after the first bounded wait, while RPC is pending.
+      await instance.alarm();
+      await new Promise(resolve => timeout(resolve, 100));
+      await instance.alarm(); // Must not re-enter RPC or acquire another lane owner.
+      const seen = new SqliteHistory(state.storage.sql, null).getEvents();
+      const snapshot = {
+        calls, renewals, running: seen.filter(e => e.type === "session.status_running").length,
+        wake: await state.storage.getAlarm(),
+      };
+      if (outcome === "reject") reject(new Error("late maintenance RPC failure"));
+      else release();
+      await new Promise(resolve => timeout(resolve, 100));
+      snapshot.failures = instance._recoveryFailures;
+      snapshot.retryAt = instance._recoveryRetryAtMs;
+      instance._recoveryRetryAtMs = Date.now() - 1;
+      await instance.alarm();
+      snapshot.releasedCalls = calls;
+      snapshot.errors = new SqliteHistory(state.storage.sql, null).getEvents().filter(e => e.type === "session.error").length;
+      return snapshot;
+    } finally {
+      release();
+      globalThis.setTimeout = timeout;
+      for (const controller of instance._threadAbortControllers.values()) controller.abort();
+    }
+  });
+  expect(observed.calls).toBe(1);
+  if (phase === "_sweepExpiredLeases") expect(observed.renewals).toBeGreaterThanOrEqual(2);
+  expect(observed.running).toBe(1);
+  expect(observed.wake).not.toBeNull();
+  expect(observed.failures).toBe(outcome === "reject" ? 1 : 0);
+  if (outcome === "reject") expect(observed.retryAt).not.toBeNull();
+  expect(observed.releasedCalls).toBe(2);
+  expect(observed.errors).toBe(0);
+}, 20000);
+
 it("late schedule maintenance owns deletion and cannot be delivered twice", async () => {
   const id = await createSession("record-order");
   const result = await runInDurableObject(stubOf(id), async (instance, state) => {

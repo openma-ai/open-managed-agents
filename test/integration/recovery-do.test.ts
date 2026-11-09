@@ -1914,8 +1914,8 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   it("alarm() with no inflight turn calls deleteAlarm (no leaked heartbeat)", async () => {
-    // Negative case — proves the heartbeat is conditional on
-    // _hasInflightTurn(), not unconditional.
+    // Heartbeat-first recovery may arm a temporary backstop, but a
+    // completed idle pass must clear it rather than leak periodic wakes.
     const sessionId = await newSessionDirect("no_heartbeat_when_idle");
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
 
@@ -1946,8 +1946,9 @@ describe("SessionDO recovery — DO-level", () => {
     await runDurableObjectAlarm(stub);
     await new Promise((r) => setTimeout(r, 50));
     spyArmed = false;
-    // No setAlarm — nothing to keep alive.
-    expect(setAlarmInside.length).toBe(0);
+    // Backstop precedes external maintenance, then quiescence clears it.
+    expect(setAlarmInside.length).toBeGreaterThan(0);
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBeNull();
     // deleteAlarm DID fire — _scheduleNextAlarm cleared the slot
     // because nothing's scheduled and no heartbeat needed.
     expect(deleteCallsInside).toBeGreaterThan(0);

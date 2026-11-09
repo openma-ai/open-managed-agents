@@ -968,36 +968,38 @@ export class SessionDO extends DurableObject<Env> {
     const start = new Promise<void>((resolve) => { release = resolve; });
     const run = start
       .then(() => this._runRecoveryInner(reason))
-      .catch(async (err) => {
-        this._recoveryFailures += 1;
-        const backoffMs = Math.min(
-          RECOVERY_BACKOFF_BASE_MS * 2 ** (this._recoveryFailures - 1),
-          RECOVERY_BACKOFF_MAX_MS,
-        );
-        this._recoveryRetryAtMs = this.processedClock.nowMs() + backoffMs;
-        sdoLog("recovery.failed", {
-          session_id: this._state?.session_id,
-          reason,
-          attempt: this._recoveryFailures,
-          backoff_ms: backoffMs,
-          retry_at_ms: this._recoveryRetryAtMs,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        // Retain the wake through the single alarm slot. Never rethrow into
-        // the request/alarm caller: the next wake retries the same hook.
-        try {
-          await this._multiplexAlarm({
-            reason: "recovery_retry",
-            atMs: this._recoveryRetryAtMs,
-          });
-        } catch { /* the persisted schedule/lease wake still covers us */ }
-      })
+      .catch((err) => this._recordRecoveryFailure(reason, err))
       .finally(() => {
         if (this._recoveryRun === run) this._recoveryRun = null;
       });
     this._recoveryRun = run;
     release();
     return run;
+  }
+
+  private async _recordRecoveryFailure(reason: string, err: unknown): Promise<void> {
+    this._recoveryFailures += 1;
+    const backoffMs = Math.min(
+      RECOVERY_BACKOFF_BASE_MS * 2 ** (this._recoveryFailures - 1),
+      RECOVERY_BACKOFF_MAX_MS,
+    );
+    this._recoveryRetryAtMs = this.processedClock.nowMs() + backoffMs;
+    sdoLog("recovery.failed", {
+      session_id: this._state?.session_id,
+      reason,
+      attempt: this._recoveryFailures,
+      backoff_ms: backoffMs,
+      retry_at_ms: this._recoveryRetryAtMs,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    // Retain the wake through the single alarm slot. Never rethrow into
+    // the request/alarm caller: the next wake retries the same hook.
+    try {
+      await this.runAlarmMaintenance("recovery_retry", () => this._multiplexAlarm({
+        reason: "recovery_retry",
+        atMs: this._recoveryRetryAtMs ?? undefined,
+      }));
+    } catch { /* the persisted schedule/lease wake still covers us */ }
   }
 
   private async _runRecoveryInner(reason: "cold_start" | "alarm"): Promise<void> {
@@ -1011,23 +1013,17 @@ export class SessionDO extends DurableObject<Env> {
         reason,
         retry_at_ms: this._recoveryRetryAtMs,
       });
-      await this._multiplexAlarm({ reason: "recovery_backoff" });
+      await this.runAlarmMaintenance("recovery_rearm", () => this._multiplexAlarm({ reason: "recovery_backoff" }));
       return;
     }
     // alarm() can reach here before any fetch() warmed the in-memory schema.
     this.ensureSchema();
+    await this._multiplexAlarm({ reason: "recovery_start", backstop: true });
     // Join a request-level cold-start finalizer that is already in flight.
     // Without this the fetch()/onStart pass can finish and clear its
     // single-flight guard before this hook reaches finalization, causing a
     // second pass over the same orphans.
     const inFlightFinalize = this._finalizePromise;
-    if (this._recoveryPromise !== null) {
-      try {
-        await this._recoveryPromise;
-      } catch (err) {
-        console.warn(`[recovery] cold-start stream scan failed:`, err);
-      }
-    }
     sdoLog("recovery.start", {
       session_id: this._state?.session_id,
       reason,
@@ -1035,22 +1031,30 @@ export class SessionDO extends DurableObject<Env> {
     // The shared lease/sweep hook: expired owners are requeued (input
     // provably unapplied) or finalized-interrupted (applied work / unpaired
     // tool call) from canonical-stream evidence, then live leases renew.
-    await this._sweepExpiredLeases(nowMs);
-    await this._applyPolicyLeaseRenewals(nowMs);
-    // Finalize dangling turns, then drain/claim whatever the policy exposes.
-    if (inFlightFinalize !== null) {
-      await inFlightFinalize;
-    } else {
-      await this._finalizeStaleTurns();
-    }
+    // Bound each phase's wait, retaining its RPC singleflight until settlement.
+    // An unavailable sweep/renew must not hold unrelated lease or queue work.
+    const failures = this._recoveryFailures;
+    const phase = (key: string, work: () => Promise<void>) =>
+      this.runAlarmMaintenance(key, work, err => this._recordRecoveryFailure(reason, err));
+    await phase("recovery_sweep", async () => {
+      if (this._recoveryPromise) {
+        try { await this._recoveryPromise; }
+        catch (err) { console.warn(`[recovery] cold-start stream scan failed:`, err); }
+      }
+      await this._sweepExpiredLeases(nowMs);
+    });
+    await phase("recovery_renew", () => this._applyPolicyLeaseRenewals(nowMs));
+    await phase("recovery_finalize", () => inFlightFinalize ?? this._finalizeStaleTurns());
     await this.recoverExecutionQueue();
-    this._recoveryFailures = 0;
-    this._recoveryRetryAtMs = null;
+    if (this._recoveryFailures === failures && !["recovery_sweep", "recovery_renew", "recovery_finalize"].some(key => this._maintenanceRuns.has(key))) {
+      this._recoveryFailures = 0;
+      this._recoveryRetryAtMs = null;
+    }
     sdoLog("recovery.done", {
       session_id: this._state?.session_id,
       reason,
     });
-    await this._multiplexAlarm({ reason: `recovery_${reason}` });
+    await this.runAlarmMaintenance("recovery_rearm", () => this._multiplexAlarm({ reason: `recovery_${reason}` }));
   }
 
   /**
@@ -1062,10 +1066,15 @@ export class SessionDO extends DurableObject<Env> {
    * running work or any queue row is still present.
    */
   private async _multiplexAlarm(
-    hint: { reason?: string; atMs?: number } = {},
+    hint: { reason?: string; atMs?: number; backstop?: boolean } = {},
   ): Promise<void> {
     try {
       const nowMs = this.processedClock.nowMs();
+      if (hint.backstop) {
+        const current = await this.ctx.storage.getAlarm();
+        await this.ctx.storage.setAlarm(Math.min(current ?? Infinity, nowMs + KEEP_ALIVE_INTERVAL_MS));
+        return; // Storage-only heartbeat before any failable external maintenance.
+      }
       const scheduleNextMs = this._nextScheduleWakeMs(nowMs);
       const queuedInputs = this._localQueuedInputs();
       let executions: ExecutionLeaseRecord[] = [];
@@ -1102,7 +1111,8 @@ export class SessionDO extends DurableObject<Env> {
         policy.actions.some((action) => action.type === "requeue");
       const hasBlocked = policy.blockedQueuedRows > 0;
       const hasRunning =
-        executions.some((e) => e.state === "running") || activeTurns.length > 0 || this._dispatchedLanes.size > 0;
+        executions.some((e) => e.state === "running") || activeTurns.length > 0 || this._dispatchedLanes.size > 0 ||
+        ["recovery_sweep", "recovery_renew", "recovery_finalize"].some(key => this._maintenanceRuns.has(key));
       const hasSchedule = scheduleNextMs !== null;
       // Hard invariant: queued or running work always keeps a wake armed.
       // Blocked/held rows still keep the slot, but only at a slow safety net.
@@ -2054,11 +2064,12 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   private readonly _maintenanceRuns = new Map<string, Promise<void>>();
-  private async runAlarmMaintenance(key: string, work: () => Promise<void>): Promise<void> {
+  private async runAlarmMaintenance(key: string, work: () => Promise<void>, onError?: (error: unknown) => Promise<void>): Promise<void> {
     let run = this._maintenanceRuns.get(key);
     if (!run) {
-      run = Promise.resolve().then(work).catch(error => {
-        console.error("[session_do] alarm maintenance failed", { key, error });
+      run = Promise.resolve().then(work).catch(async error => {
+        if (onError) await onError(error);
+        else console.error("[session_do] alarm maintenance failed", { key, error });
       }).finally(() => { this._maintenanceRuns.delete(key); });
       this._maintenanceRuns.set(key, run);
     }
@@ -7656,7 +7667,7 @@ export class SessionDO extends DurableObject<Env> {
     // request / ensureSchema) calls this exact same hook, so the lease sweep,
     // renewal, stale-turn finalization, and queue re-drive are identical no
     // matter what woke the DO.
-    await this.runAlarmMaintenance("recovery", () => this._runRecovery("alarm"));
+    await this._runRecovery("alarm");
 
     // Container keepalive: while there's at least one background_tasks row,
     // ping the sandbox container to reset its sleepAfter timer. Means
