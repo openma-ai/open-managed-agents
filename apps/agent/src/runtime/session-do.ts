@@ -1,3 +1,4 @@
+import { waitForAlarmMaintenance } from "./alarm-maintenance";
 import { publishAgentsApiArtifacts } from "./artifact-publication";
 import { readSandboxFileBytes } from "./sandbox-output";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
@@ -655,7 +656,7 @@ export class SessionDO extends DurableObject<Env> {
           try {
             await this.schedule(5, "recoverEventQueue" as keyof this);
           } catch {}
-          void this.drainEventQueue();
+          await this.dispatchEventQueue();
         },
       },
       clock: { now: () => new Date() },
@@ -1000,6 +1001,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   private async _runRecoveryInner(reason: "cold_start" | "alarm"): Promise<void> {
+    this._recoveryDispatchedLanes.clear();
     const nowMs = this.processedClock.nowMs();
     if (this._recoveryRetryAtMs !== null && nowMs < this._recoveryRetryAtMs) {
       // Backing off: do not re-run (and re-fail) the hook before the horizon.
@@ -1100,7 +1102,7 @@ export class SessionDO extends DurableObject<Env> {
         policy.actions.some((action) => action.type === "requeue");
       const hasBlocked = policy.blockedQueuedRows > 0;
       const hasRunning =
-        executions.some((e) => e.state === "running") || activeTurns.length > 0;
+        executions.some((e) => e.state === "running") || activeTurns.length > 0 || this._dispatchedLanes.size > 0;
       const hasSchedule = scheduleNextMs !== null;
       // Hard invariant: queued or running work always keeps a wake armed.
       // Blocked/held rows still keep the slot, but only at a slow safety net.
@@ -1464,10 +1466,14 @@ export class SessionDO extends DurableObject<Env> {
    * thread that's already draining returns immediately.
    */
   async recoverEventQueue(): Promise<void> {
+    await this.runAlarmMaintenance("event_queue", () => this.recoverEventQueueInner());
+  }
+
+  private async recoverEventQueueInner(): Promise<void> {
     this.ensureSchema();
     // Single-table queue: active queued inputs are events rows with
     // processed_at IS NULL. Cancelled rows are excluded.
-    const threads = this.queue.threadsWithQueueInputs();
+    const threads = [...new Set(this._localQueuedInputs().filter(input => !input.heldAfterExhausted && !input.blocked).map(input => input.laneId))];
     if (threads.length === 0) {
       // Nothing pending anywhere. Do not invoke drainEventQueue just to
       // discover an empty queue: the central execution path arms a lease
@@ -1475,7 +1481,7 @@ export class SessionDO extends DurableObject<Env> {
       // session (and makes alarm() look like it has live work).
       return;
     }
-    await Promise.all(threads.map((t) => this.drainEventQueue(t)));
+    await Promise.all(threads.map((t) => this.dispatchEventQueue(t)));
   }
 
   /**
@@ -1725,7 +1731,7 @@ export class SessionDO extends DurableObject<Env> {
     );
 
     if (decision.continue) {
-      await this.drainEventQueue();
+      await this.dispatchEventQueue();
     }
   }
 
@@ -2045,6 +2051,54 @@ export class SessionDO extends DurableObject<Env> {
       else if ('type' in input) out.push(encodeRuntimeSessionEvent(input as never) as SessionEvent);
     }
     return out;
+  }
+
+  private readonly _maintenanceRuns = new Map<string, Promise<void>>();
+  private async runAlarmMaintenance(key: string, work: () => Promise<void>): Promise<void> {
+    let run = this._maintenanceRuns.get(key);
+    if (!run) {
+      run = Promise.resolve().then(work).catch(error => {
+        console.error("[session_do] alarm maintenance failed", { key, error });
+      }).finally(() => { this._maintenanceRuns.delete(key); });
+      this._maintenanceRuns.set(key, run);
+    }
+    try { await waitForAlarmMaintenance(run); }
+    catch (error) { console.warn("[session_do] alarm maintenance still pending", { key, error }); }
+  }
+
+  private readonly _dispatchedLanes = new Set<string>();
+  private readonly _recoveryDispatchedLanes = new Set<string>();
+
+  /** Short platform dispatch; never return the long drain promise to an alarm. */
+  private async dispatchEventQueue(threadId = "sthr_primary"): Promise<void> {
+    if (this._dispatchedLanes.has(threadId) || this._draining.has(threadId)) return;
+    if (this._recoveryRun && this._recoveryDispatchedLanes.has(threadId)) return;
+    if (this._recoveryRun) this._recoveryDispatchedLanes.add(threadId);
+    this._dispatchedLanes.add(threadId);
+    try {
+      // Persist before starting claim/model/tool work, including synchronous failures.
+      const safety = await this.schedule(5, "recoverEventQueue");
+      void Promise.resolve().then(async () => {
+        const before = this._queueProgressToken([], this._localQueuedInputs());
+        await this.drainEventQueue(threadId);
+        const after = this._queueProgressToken([], this._localQueuedInputs());
+        if (before !== after) this._resetQueueDrainBackoff();
+        else this._recordQueueDrainNoProgress({ queued: this.queue.listQueue(threadId).length, blocked: 0, running: 0 });
+      })
+        .catch(error => {
+          this._recordQueueDrainNoProgress({ queued: this.queue.listQueue(threadId).length, blocked: 0, running: 0 });
+          console.error("[session_do] detached lane failed", { threadId, error });
+        })
+        .finally(async () => {
+          this._dispatchedLanes.delete(threadId);
+          this.ctx.storage.sql.exec("DELETE FROM cf_agents_schedules WHERE id = ?", safety.id);
+          try { await this._multiplexAlarm({ reason: "lane_settled" }); }
+          catch (error) { console.error("[session_do] settlement wake failed", error); }
+        });
+    } catch (error) {
+      this._dispatchedLanes.delete(threadId);
+      throw error;
+    }
   }
 
   private async drainEventQueue(threadId: string = "sthr_primary"): Promise<void> {
@@ -2858,7 +2912,7 @@ export class SessionDO extends DurableObject<Env> {
           } catch {}
         }
         // Start detached work after durable admission; schedule/alarm remains the recovery safety net.
-        if (enqueued) void this.drainEventQueue(umThread);
+        if (enqueued) await this.dispatchEventQueue(umThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2927,7 +2981,7 @@ export class SessionDO extends DurableObject<Env> {
         }
         // Queued inputs survive the interrupt (same as Node): the next one
         // starts the lane's next turn.
-        void this.drainEventQueue(targetThread);
+        await this.dispatchEventQueue(targetThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2936,7 +2990,7 @@ export class SessionDO extends DurableObject<Env> {
         // event and its continuation execution are already in D1 (store
         // append + outbox); just wake the primary lane to claim it.
         if ((body as unknown as { resume?: boolean }).resume === true) {
-          void this.drainEventQueue("sthr_primary");
+          await this.dispatchEventQueue("sthr_primary");
         }
         return new Response(null, { status: 202 });
       }
@@ -2957,7 +3011,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        if (enqueued) void this.drainEventQueue(tcThread);
+        if (enqueued) await this.dispatchEventQueue(tcThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2987,7 +3041,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        if (enqueued) void this.drainEventQueue(ctrThread);
+        if (enqueued) await this.dispatchEventQueue(ctrThread);
         return new Response(null, { status: 202 });
       }
 
@@ -5201,7 +5255,7 @@ export class SessionDO extends DurableObject<Env> {
             this._broadcastPendingFrame(notifEvent, "sthr_primary");
           }
           this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
-          await this.drainEventQueue();
+          await this.dispatchEventQueue();
           continue;
         }
 
@@ -5247,7 +5301,7 @@ export class SessionDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
 
         // Re-trigger harness
-        await this.drainEventQueue();
+        await this.dispatchEventQueue();
       } catch (err) {
         anyPending = true;
         logWarn(
@@ -7462,6 +7516,10 @@ export class SessionDO extends DurableObject<Env> {
    * inside SessionExecutionStorePort.
    */
   private async recoverExecutionQueue(): Promise<void> {
+    await this.runAlarmMaintenance("execution_queue", () => this.recoverExecutionQueueInner());
+  }
+
+  private async recoverExecutionQueueInner(): Promise<void> {
     // alarm() can reach this before any fetch()/init has warmed the in-memory
     // schema. Without this, drainEventQueue later dereferences a null queue
     // repo and the cold-started lane is never re-driven.
@@ -7500,36 +7558,9 @@ export class SessionDO extends DurableObject<Env> {
       return;
     }
     const laneIds = [...lanes];
-    const before = this._queueProgressToken(executions, queuedInputs);
-    sdoLog("recover.execution_queue", {
-      session_id: this.state.session_id,
-      lanes: laneIds.length,
-      lane_ids: laneIds,
-      blocked: policy.blockedQueuedRows,
-    });
-    await Promise.all(laneIds.map((lane) => this.drainEventQueue(lane)));
-
-    let afterExecutions: ExecutionLeaseRecord[];
-    try {
-      afterExecutions = await this._executionLeaseRecords();
-    } catch {
-      // Unknown post-drain state: do not manufacture a backoff from a read
-      // failure. The next alarm/recovery read will decide.
-      this._resetQueueDrainBackoff();
-      return;
-    }
-    const afterInputs = this._localQueuedInputs();
-    const after = this._queueProgressToken(afterExecutions, afterInputs);
-    if (after !== before) {
-      // A row drained, an execution was claimed/settled, or a turn started.
-      this._resetQueueDrainBackoff();
-      return;
-    }
-    this._recordQueueDrainNoProgress({
-      queued: queuedInputs.length + executions.filter((e) => e.state === "queued").length,
-      blocked: policy.blockedQueuedRows,
-      running: executions.filter((e) => e.state === "running").length,
-    });
+    sdoLog("recover.execution_queue", { session_id: this.state.session_id, lane_ids: laneIds });
+    await Promise.all(laneIds.map(lane => this.dispatchEventQueue(lane)));
+    // Pending dispatch is not failure; only its settled progress updates backoff.
   }
 
   /**
@@ -7558,6 +7589,9 @@ export class SessionDO extends DurableObject<Env> {
       due_schedules: due.length,
       reason: due.length > 0 ? "schedule" : "lease_or_queue",
     });
+    if (due.length || this._dispatchedLanes.size || this._localQueuedInputs().length) {
+      await this.runAlarmMaintenance("prearm", () => this._multiplexAlarm({ reason: "alarm_start" }));
+    }
     for (const row of due) {
       // Skip interval rows whose previous execution is still running unless
       // it's been hung past the timeout (then forcibly reset).
@@ -7589,14 +7623,12 @@ export class SessionDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`DELETE FROM cf_agents_schedules WHERE id = ?`, row.id);
         continue;
       }
-      try {
-        await (callback as (p: unknown, r: unknown) => Promise<unknown>).call(this, parsedPayload, row);
-      } catch (err) {
-        console.error(`[schedule] callback "${row.callback}" (${row.id}) threw:`, err);
-        // Don't crash the alarm — log and continue. cf-agents has retry options
-        // but we don't use them in any current callsite.
-      }
-
+      await this.runAlarmMaintenance(`schedule:${row.id}`, async () => {
+        try {
+          await (callback as (p: unknown, r: unknown) => Promise<unknown>).call(this, parsedPayload, row);
+        } catch (err) {
+          console.error(`[schedule] callback "${row.callback}" (${row.id}) threw:`, err);
+        } finally {
       // Reschedule cron / interval, delete one-shots
       if (row.type === "cron" && row.cron) {
         try {
@@ -7616,13 +7648,15 @@ export class SessionDO extends DurableObject<Env> {
       } else {
         this.ctx.storage.sql.exec(`DELETE FROM cf_agents_schedules WHERE id = ?`, row.id);
       }
+        }
+      });
     }
 
     // The persisted alarm is the FALLBACK recovery path. Cold start (first
     // request / ensureSchema) calls this exact same hook, so the lease sweep,
     // renewal, stale-turn finalization, and queue re-drive are identical no
     // matter what woke the DO.
-    await this._runRecovery("alarm");
+    await this.runAlarmMaintenance("recovery", () => this._runRecovery("alarm"));
 
     // Container keepalive: while there's at least one background_tasks row,
     // ping the sandbox container to reset its sleepAfter timer. Means
@@ -7633,16 +7667,18 @@ export class SessionDO extends DurableObject<Env> {
         .exec("SELECT 1 FROM background_tasks LIMIT 1")
         .toArray();
       if (rows.length > 0) {
+        await this.runAlarmMaintenance("container_keepalive", async () => {
         const sb = await this.getOrCreateSandbox();
         if (typeof (sb as { renewActivityTimeout?: () => Promise<void> }).renewActivityTimeout === "function") {
           await (sb as { renewActivityTimeout: () => Promise<void> }).renewActivityTimeout();
         }
+        });
       }
     } catch {
       // background_tasks table missing or container down — alarm continues
     }
 
-    await this._multiplexAlarm({ reason: "alarm" });
+    await this.runAlarmMaintenance("rearm", () => this._multiplexAlarm({ reason: "alarm" }));
   }
 
   // ── Stale-turn finalization ──────────────────────────────────────────
