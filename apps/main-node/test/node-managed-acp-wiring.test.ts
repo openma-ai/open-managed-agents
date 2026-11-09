@@ -178,7 +178,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       expect(events.filter(event => event.type === "session.error")).toEqual([]);
       const launch = JSON.parse(await readFile(join(root, "workspace", "launch.json"), "utf8"));
       expect(launch.base).toBe(`${base}/v1/oma/inference-proxy/${session.id}/anthropic`);
-      expect(launch.token).toMatch(/^sk-ant-req-v1\./);
+      expect(launch.token).toMatch(/^oma_sbx_[0-9A-Za-z]{49}$/); // opaque sandbox token (#561)
       // The Vault environment_variable reaches the ACP sandbox only as its
       // per-Session placeholder, like every other harness (design §0.5).
       expect(launch.key).toBeUndefined(); expect(launch.maxcompute).toMatch(/^oma_vault_[A-Za-z0-9_-]{43}$/u);

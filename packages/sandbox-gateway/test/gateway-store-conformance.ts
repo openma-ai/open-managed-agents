@@ -4,7 +4,6 @@ import type {
   SessionExecutionStorePort,
 } from "@open-managed-agents/session-runtime-contract";
 import {
-  authorizeExecutionCredential,
   authorizeSandboxEgress,
   type SandboxGatewayStore,
 } from "../src/index";
@@ -37,14 +36,14 @@ interface SeedSql {
 
 /** Writes the managed_sessions and managed_environments rows a SQL-backed
  * SandboxGatewayStore reads (CF tenant D1, Node SQL). */
-export async function seedSandboxGatewaySessionRows(sql: SeedSql, workspaceId: string, session: SandboxGatewaySessionSeed): Promise<void> {
+export async function seedSandboxGatewaySessionRows(sql: SeedSql, workspaceId: string, session: SandboxGatewaySessionSeed & { document?: Record<string, unknown> }): Promise<void> {
   const createdAt = Date.UTC(2026, 10, 8);
   const archivedAt = session.archivedAt === null ? null : Date.parse(session.archivedAt);
   await sql.prepare(
     `INSERT INTO managed_environments (workspace_id, id, document, revision, created_at, updated_at, archived_at)
      VALUES (?, ?, ?, 1, ?, ?, NULL)`,
   ).bind(workspaceId, session.environmentId, JSON.stringify({ id: session.environmentId, name: "env", config: { type: "cloud" } }), createdAt, createdAt).run();
-  const document = { id: session.id, environmentId: session.environmentId, vaultIds: session.vaultIds, agent: { ...session.agent, name: "agent" } };
+  const document = { id: session.id, environmentId: session.environmentId, vaultIds: session.vaultIds, agent: { ...session.agent, name: "agent" }, ...session.document };
   await sql.prepare(
     `INSERT INTO managed_sessions (workspace_id, id, document, revision, agent_id, agent_version, environment_id, status, created_at, updated_at, archived_at)
      VALUES (?, ?, ?, 1, ?, ?, ?, 'idle', ?, ?, ?)`,
@@ -118,23 +117,5 @@ export function sandboxGatewayStoreConformance(adapterName: string, harness: San
         await expect(authorizeSandboxEgress(() => fixture.store, fence, clock(2))).resolves.toBeNull();
       }));
 
-    it("binds an execution credential to the live lease and rejects a mismatched Session", () =>
-      harness.withStore("credential", async (fixture) => {
-        const stores = () => fixture.store;
-        const id = sessionId(fixture, "session");
-        await fixture.seedSession(session(id));
-        const fence = await runningAttempt(fixture, id, "attempt_1", 1);
-        const expected = { workspaceId: fixture.workspaceId, sessionId: id, environmentId: `env_${id}`, agent: { id: "agent_01", version: 3 } };
-        await expect(authorizeExecutionCredential(stores, fence, expected, clock(2))).resolves.toMatchObject({
-          executionId: fence.executionId, attemptId: "attempt_1", generation: 1, claimedAtMs: Date.parse(at(1)),
-        });
-        await expect(authorizeExecutionCredential(stores, fence, { ...expected, environmentId: "env_other" }, clock(2)))
-          .rejects.toThrow(/requires the Session environment/);
-        await expect(authorizeExecutionCredential(stores, fence, { ...expected, agent: { id: "agent_01", version: 4 } }, clock(2)))
-          .rejects.toThrow(/requires the pinned Session agent/);
-        await expect(authorizeExecutionCredential(stores, fence, expected, clock(31))).rejects.toThrow(/fence is stale/);
-        await expect(authorizeExecutionCredential(stores, { ...fence, sessionId: sessionId(fixture, "missing") }, { ...expected, sessionId: sessionId(fixture, "missing") }, clock(2)))
-          .rejects.toThrow(/was not found/);
-      }));
   });
 }

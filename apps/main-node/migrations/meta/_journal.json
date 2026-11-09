@@ -225,6 +225,13 @@
       "when": 1794168376558,
       "tag": "0031_runtime_resource_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794189209187,
+      "tag": "0032_sandbox_token_hashes",
+      "breakpoints": true
     }
   ]
 }

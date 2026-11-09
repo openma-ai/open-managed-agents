@@ -4,7 +4,7 @@ import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator
 import { createManagedSandboxBuilder } from "../../../packages/control-plane-node/src/lib/node-managed-sandbox-builder.js";
 import { withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
 import { prepareSandboxEgress } from "../../../packages/sandbox-egress/src/install";
-import { createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
+import { generateSandboxToken } from "../../../packages/sandbox-gateway/src/index";
 import type { SandboxExecutor, SandboxLiveness } from "@open-managed-agents/sandbox";
 import type { WorkspacePersistencePort } from "@open-managed-agents/runtime-resource-contract";
 import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner.js";
@@ -28,7 +28,7 @@ function allocatedDaytonaSandbox(state: {
           await state.beforeCommand?.(command);
           const stdout = command.includes("EGRESS_READY:")
             ? 'EGRESS_READY:{"pid":123,"port":4567,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}'
-            : command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : "ok";
+            : command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : "ok";
           return { exitCode: 0, result: "", artifacts: { stdout } };
         } },
         fs: {
@@ -277,7 +277,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       readFile: async () => "",
       destroy: async () => {},
       writeFile: async (path: string) => path,
-      prepareCredentialEgress: async (binding: { pass: string }) => { boundPass = binding.pass; },
+      prepareCredentialEgress: async (binding: { token: string }) => { boundPass = binding.token; },
       clearCredentialEgress: async () => { boundPass = undefined; },
       setEnvVars: async (values: Record<string, string>) => { Object.assign(env, values); },
     };
@@ -290,8 +290,8 @@ describe("DefaultNodeManagedSessionRunner", () => {
           scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
           placeholders: async (scope) => scope.vaultIds.includes("vlt_a")
             ? { GITHUB_TOKEN: "__cap_managed__" } : { GITLAB_TOKEN: "__cap_managed__" },
-          relay: { endpoint: "https://control.example", pass: "" },
-          issuePass: () => createEgressRelayPasses("root", () => now).issue({ workspaceId, sessionId: session.id, executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60000 }),
+          relay: { endpoint: "https://control.example" },
+          issueToken: async () => generateSandboxToken(),
         });
       },
       outcomes: { evaluate: async () => { throw new Error("unused"); } },
@@ -640,7 +640,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       try {
         await prepareSandboxEgress({
           sandbox, scope: { workspaceId: "workspace_01", sessionId: session.id, vaultIds: ["vault_test"] },
-          relay: { endpoint: "https://example.test", pass: "" }, issuePass: async () => "fake-pass",
+          relay: { endpoint: "https://example.test" }, issueToken: async () => "fake-token",
           placeholders: async () => { resolving.resolve(); return lookup.promise; },
         });
       } catch (error) { refreshError = error; throw error; }
@@ -723,7 +723,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       if (failRefresh) throw new Error("refresh failure");
       await prepareSandboxEgress({
         sandbox, registerCleanup, scope: { workspaceId: "workspace_01", sessionId: session.id, vaultIds: ["vault_test"] },
-        relay: { endpoint: "https://example.test", pass: "" }, issuePass: async () => "fake-pass",
+        relay: { endpoint: "https://example.test" }, issueToken: async () => "fake-token",
         placeholders: async () => ({ TOKEN: "placeholder" }),
       });
     });

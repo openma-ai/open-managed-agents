@@ -303,7 +303,10 @@ export const handleOpenmaControlPlaneRequest = async (
   const authorization = request.headers.get("authorization") ?? "";
   if (
     url.origin !== expectedOrigin
-    || !authorization.startsWith("Bearer sk-ant-req-v1.")
+    // Sealed Work token (ADR 0005; also the pre-#561 execution token during
+    // the deploy transition), or the sandbox token as Bearer / Basic. The
+    // main API checks it, its Session and its scope on every request.
+    || !(authorization.startsWith("Bearer sk-ant-req-v1.") || authorization.startsWith("Bearer oma_sbx_") || authorization.startsWith("Basic "))
     || !isAllowedWorkCapabilityPath(url.pathname, params)
   ) {
     return new Response("control-plane egress denied", { status: 403 });

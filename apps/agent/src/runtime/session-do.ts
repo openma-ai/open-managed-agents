@@ -3921,13 +3921,13 @@ export class SessionDO extends DurableObject<Env> {
         // Operator catalog image (#545 / ADR 0016) for the Cloudflare adapter.
         sandboxImage: this.state.sandbox_image ?? null,
         session: () => ({ tenantId: this.state.tenant_id, environmentId: this.state.environment_id, sessionId: this.state.session_id, agentId: this.state.agent_id || null }),
+        harness: () => this.state.agent_snapshot?.harness ?? null, // sandbox token scope (#561)
         networking: async () => {
           const envId = this.state.environment_id;
           const config = envId ? await this.getEnvConfig(envId) : null;
           return (config?.config as { networking?: { type?: string; allowed_hosts?: string[]; allow_package_managers?: boolean } } | undefined)?.networking;
         },
-        // Sandbox egress follows a current execution attempt of this
-        // Session; none between turns (design §0.0 rule 10).
+        // Sandbox egress follows a current execution attempt of this Session; none between turns (design §0.0 rule 10).
         fence: () => this._executionFences.values().next().value,
         warn: (message) => { try { this.persistAndBroadcastEvent(sessionSandboxWarningEvent(message)); } catch {} },
         idleTimer: createSandboxIdleAlarm(this, "pauseIdleSandbox"),

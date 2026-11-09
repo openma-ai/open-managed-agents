@@ -7,7 +7,6 @@ import {
   createE2BSessionSandbox,
   createR2BindingOutputSink,
   E2BSessionSandbox,
-  RELAY_PASS_TTL_MS,
   parseMaxLifetime,
   storageConfig,
 } from "../src/runtime/e2b-session-sandbox";
@@ -137,7 +136,7 @@ describe("E2BSessionSandbox idle pause (design §0.0 rule 11)", () => {
 });
 
 describe("E2BSessionSandbox maintenance and failures", () => {
-  it("renews storage credentials and the relay pass at exec boundaries, single-flight", async () => {
+  it("renews storage credentials at exec boundaries, single-flight; the sandbox token is never renewed on a timer (it dies with its attempt)", async () => {
     const h = harness();
     await h.sandbox.mountSessionOutputs();
     h.log.length = 0;
@@ -146,9 +145,9 @@ describe("E2BSessionSandbox maintenance and failures", () => {
     h.clock.now += STORAGE_SYNC_INTERVAL_MS;
     await Promise.all([h.sandbox.exec("a"), h.sandbox.exec("b")]);
     expect(h.log).toEqual(["storage.sync:interval"]);
-    h.clock.now += RELAY_PASS_TTL_MS / 2;
+    h.clock.now += 24 * 60 * 60_000; // any length of time: no egress re-attach
     await h.sandbox.exec("true");
-    expect(h.log).toEqual(["storage.sync:interval", "storage.sync:interval", "egress.attach:open"]);
+    expect(h.log.filter((entry) => entry.startsWith("egress."))).toEqual([]);
   });
 
   it("fails the call when renewal fails, and fails turn end when publishing fails", async () => {
@@ -175,11 +174,11 @@ describe("E2BSessionSandbox maintenance and failures", () => {
 describe("createE2BSessionSandbox", () => {
   const bucket = {} as R2Bucket;
   it("names every missing deployment variable", () => {
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null }))
       .toThrow("SANDBOX_ADAPTER=e2b requires E2B_TEMPLATE, E2B_MAX_LIFETIME_MS");
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "s2" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "s2" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null }))
       .toThrow("SANDBOX_ADAPTER=e2b native storage requires CLOUDFLARE_ACCOUNT_ID, R2_ENDPOINT, MEMORY_BUCKET_NAME, FILES_BUCKET_NAME");
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000" }, storage: {} as never, scope: () => scope, networking: async () => undefined }))
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null }))
       .toThrow("copy sync requires the MEMORY_BUCKET, FILES_BUCKET binding");
   });
 

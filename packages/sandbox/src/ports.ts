@@ -219,7 +219,9 @@ export function supportsSessionOutputMount(
 
 export interface SandboxCredentialEgressBinding {
   endpoint: string;
-  pass: string;
+  /** The Session id sent with the token (Basic username / SOCKS5 user). */
+  sessionId: string;
+  token: string;
 }
 /** Native interception or a sandbox-resident relay implement the same capability. */
 export interface SandboxCredentialEgressPort {

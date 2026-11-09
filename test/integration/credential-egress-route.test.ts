@@ -2,7 +2,15 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => vi.restoreAllMocks());
-import { createEgressRelayPasses } from "../../packages/managed-credential-resolver/src/relay";
+import { sandboxBasicCredential } from "../../packages/sandbox-gateway/src/index";
+
+const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+/** The pre-#561 HMAC relay pass, signed the way the removed issuer did (deploy transition only). */
+async function legacyPass(claims: Record<string, unknown>) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`credential-relay.v2:${env.PLATFORM_ROOT_SECRET}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const payload = b64url(new TextEncoder().encode(JSON.stringify(claims)));
+  return `${payload}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))}`;
+}
 import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
 import { SqlRuntimeResourceFencePort } from "../../packages/runtime-resource-fence-sql/src/index";
 
@@ -15,8 +23,11 @@ async function runningAttempt(sessionId: string) {
      attempt_count, max_attempts, deadline_at_ms, claimed_at_ms, lease_expires_at_ms, revision)
     VALUES ('default', ?, 'sthr_primary', ?, ?, '[]', ?, 'running', 'att', 'owner', 1, 1, 3, ?, ?, ?, 1)`)
     .bind(sessionId, executionId, now, executionId, now + 600000, now, now + 600000).run();
+  const fence = { executionId, attemptId: "att", ownerId: "owner", generation: 1 };
   return {
-    fence: { executionId, attemptId: "att", ownerId: "owner", generation: 1 },
+    fence,
+    /** Issued through the main worker RPC the E2B SessionDO uses; `harness` fixes the scope. */
+    token: (harness: string | null = null) => env.MAIN_MCP.issueSandboxEgressToken({ tenantId: "default", sessionId, attempt: { workspaceId: "default", sessionId, ...fence }, harness }),
     settle: () => env.MAIN_DB.prepare("UPDATE managed_session_executions SET state='completed' WHERE workspace_id='default' AND id=?").bind(executionId).run(),
   };
 }
@@ -40,9 +51,8 @@ describe("Cloudflare production Session relay route", () => {
       (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [vault.id], agent: { mcpServers: [{ name: "docs", type: "url", url: target }] } }), Date.now(), Date.now()).run();
-    const passes = createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now);
     const attempt = await runningAttempt(id);
-    const pass = await passes.issue({ workspaceId: "default", sessionId: id, ...attempt.fence, ttlMs: 60000 });
+    const authorization = sandboxBasicCredential(id, await attempt.token());
     const upstreamTokens: Array<string | null> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
       const request = input instanceof Request ? input : new Request(input);
@@ -50,7 +60,7 @@ describe("Cloudflare production Session relay route", () => {
       return new Response("ok");
     });
     const relay = (action: string) => exports.default.fetch(new Request(`https://localhost/v1/oma/egress/${action}`, {
-      method: "POST", headers: { authorization: `Bearer ${pass}`, "x-oma-egress-target": target, "x-oma-egress-method": "GET" },
+      method: "POST", headers: { authorization, "x-oma-egress-target": target, "x-oma-egress-method": "GET" },
     }));
     const mcp = () => exports.default.fetch(new Request(`https://localhost/v1/oma/mcp-proxy/${id}/docs`, {
       method: "POST", headers: { "x-api-key": "test-key", "content-type": "application/json" }, body: "{}",
@@ -98,10 +108,9 @@ describe("Cloudflare production Session relay route", () => {
       const request = input instanceof Request ? input : new Request(input);
       expect(request.url).toBe(target); seen.push(request.headers); return new Response("ok");
     });
-    const passes = createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now);
     try {
       const response = await exports.default.fetch(new Request("https://localhost/v1/oma/egress/forward", { method: "POST", headers: {
-        authorization: `Bearer ${await passes.issue({ workspaceId: "default", sessionId: id, ...(await runningAttempt(id)).fence, ttlMs: 60000 })}`,
+        authorization: sandboxBasicCredential(id, await (await runningAttempt(id)).token()),
         "x-oma-egress-target": target, "x-oma-egress-method": "GET",
         "x-oma-egress-headers": JSON.stringify({ [alias]: "__cap_managed__", authorization: "Bearer __cap_managed__" }),
       } }));
@@ -112,7 +121,7 @@ describe("Cloudflare production Session relay route", () => {
     }
   });
 
-  it("accepts only a pass bound to the current execution attempt, uses the current D1 Session and denies archival (design §0.0 rule 10)", async () => {
+  it("accepts only a sandbox token of the current execution attempt, uses the current D1 Session and refuses archival (design §0.0 rule 10, #561)", async () => {
     const health = await exports.default.fetch(new Request("http://localhost/health"));
     expect(health.status).toBe(200);
     const id = `relay-${crypto.randomUUID()}`;
@@ -120,28 +129,73 @@ describe("Cloudflare production Session relay route", () => {
       (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [] }), Date.now(), Date.now()).run();
-    const passes = createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now);
     const attempt = await runningAttempt(id);
-    const pass = await passes.issue({ workspaceId: "default", sessionId: id, ...attempt.fence, ttlMs: 60000 });
-    const stale = await passes.issue({ workspaceId: "default", sessionId: id, ...attempt.fence, attemptId: "previous", ttlMs: 60000 });
+    const token = await attempt.token();
+    const valid = sandboxBasicCredential(id, token);
+    const legacy = await legacyPass({ workspaceId: "default", sessionId: id, ...attempt.fence, expiresAt: Date.now() + 60_000 });
+    const staleLegacy = await legacyPass({ workspaceId: "default", sessionId: id, ...attempt.fence, attemptId: "previous", expiresAt: Date.now() + 60_000 });
     const call = (authorization: string) => exports.default.fetch(new Request("https://localhost/v1/oma/egress/resolve", {
       method: "POST", headers: { authorization, "x-oma-egress-target": "https://public.example/" },
     }));
     try {
-      const response = await call(`Bearer ${pass}`);
+      const response = await call(valid);
       expect(response.status, await response.clone().text()).toBe(200);
       expect(await response.json()).toEqual({ inject: false });
       expect((await call("Bearer test-key")).status).toBe(401);
       expect((await call("Bearer unfenced")).status).toBe(401);
-      expect((await call(`Bearer ${stale}`)).status).toBe(403);
+      expect((await call(`Bearer ${token}`)).status).toBe(401); // token without its Session id
+      expect((await call(sandboxBasicCredential(`${id}-other`, token))).status).toBe(401);
+      // Deploy transition: a pre-#561 pass verifies only for the running attempt.
+      expect((await call(`Bearer ${legacy}`)).status).toBe(200);
+      expect((await call(`Bearer ${staleLegacy}`)).status).toBe(401); // was 403: a definite rejection is now 401 (the forwarder exits on it)
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=? WHERE workspace_id='default' AND id=?").bind(Date.now(), id).run();
-      expect((await call(`Bearer ${pass}`)).status).toBe(403);
+      expect((await call(valid)).status).toBe(401);
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=NULL WHERE workspace_id='default' AND id=?").bind(id).run();
-      expect((await call(`Bearer ${pass}`)).status).toBe(200);
-      await attempt.settle(); // the turn ended: the pass dies with its attempt
-      expect((await call(`Bearer ${pass}`)).status).toBe(403);
+      expect((await call(valid)).status).toBe(200);
+      await attempt.settle(); // the turn ended: the token dies with its attempt
+      expect((await call(valid)).status).toBe(401);
     } finally {
       await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
+    }
+  });
+
+  it("scope: a forwarder token of an outside harness passes egress and is refused (401) on the model gateway, MCP gateway and sandbox API; an acp-sandbox one passes", async () => {
+    await exports.default.fetch(new Request("http://localhost/health"));
+    const seed = async (name: string) => {
+      const id = `scope-${name}-${crypto.randomUUID()}`;
+      await env.MAIN_DB.prepare(`INSERT INTO managed_sessions
+        (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
+        VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
+        .bind(id, JSON.stringify({ vaultIds: [], resources: [{ type: "file", fileId: "file_scope" }], agent: { id: "agent", version: 1, skills: [] } }), Date.now(), Date.now()).run();
+      return { id, attempt: await runningAttempt(id) };
+    };
+    const outside = await seed("egress"); const inside = await seed("all");
+    const egressToken = await outside.attempt.token(null);
+    const allToken = await inside.attempt.token("acp-sandbox");
+    // A re-sign keeps the attempt's scope (caught here: workerd reports a rejected RPC promise as unhandled otherwise).
+    const mismatch = await outside.attempt.token("acp-sandbox").then(() => null, (error: Error) => error.message);
+    expect(mismatch).toMatch(/scope/);
+    const resolve = (id: string, token: string) => exports.default.fetch(new Request("https://localhost/v1/oma/egress/resolve", {
+      method: "POST", headers: { authorization: sandboxBasicCredential(id, token), "x-oma-egress-target": "https://public.example/" },
+    }));
+    const api = (path: string, authorization: string) => exports.default.fetch(new Request(`https://localhost${path}`, {
+      method: path.startsWith("/v1/files") ? "GET" : "POST", headers: { authorization, "content-type": "application/json" }, ...(path.startsWith("/v1/files") ? {} : { body: "{}" }),
+    }));
+    try {
+      expect((await resolve(outside.id, egressToken)).status).toBe(200);
+      expect((await resolve(inside.id, allToken)).status).toBe(200);
+      for (const [id, token, expected] of [[outside.id, egressToken, 401], [inside.id, allToken, "not401"]] as const) {
+        for (const response of [
+          await api(`/v1/oma/inference-proxy/${id}/anthropic/v1/messages`, `Bearer ${token}`),
+          await api(`/v1/oma/mcp-proxy/${id}/docs`, `Bearer ${token}`),
+          await api("/v1/files/file_scope", sandboxBasicCredential(id, token)),
+        ]) {
+          if (expected === 401) expect(response.status).toBe(401);
+          else expect(response.status).not.toBe(401);
+        }
+      }
+    } finally {
+      for (const id of [outside.id, inside.id]) await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
     }
   });
 });

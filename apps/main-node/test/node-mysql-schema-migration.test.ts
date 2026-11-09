@@ -13,7 +13,8 @@ import type {
 const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
 const invitationsSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
 const heldAfterExhaustedSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
-const currentSnapshot = "a569ec0b-0d55-4c2a-bd30-401b50191e4b";
+const runtimeResourceTablesSnapshot = "a569ec0b-0d55-4c2a-bd30-401b50191e4b";
+const currentSnapshot = "b328314c-2463-496b-9428-8396e54e5a8c";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
@@ -44,6 +45,13 @@ describe("main-node MySQL snapshot migrations", () => {
     await migrateNodeMysqlSchema(sql, migrations);
     expect(sql.snapshotId).toBe(currentSnapshot);
     expect(sql.createdTables).toEqual(expect.arrayContaining(["runtime_resource_fences", "runtime_resource_orphans"]));
+  });
+
+  it("adds the sandbox token hashes column to the runtime resource tables snapshot (#561)", async () => {
+    const sql = new MigrationSqlClient(runtimeResourceTablesSnapshot, ["tenant_id", "created_at", "id"]);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.statements.some((statement) => /sandbox_token_hashes/u.test(statement))).toBe(true);
   });
 
   it.each([invitationsSnapshot, currentSnapshot])(
@@ -88,6 +96,7 @@ class MigrationSqlClient implements SqlClient {
   createdAttributionIndex = false;
   readonly createdTables: string[] = [];
   readonly legacyTables = new Map<string, number>();
+  readonly statements: string[] = [];
 
   constructor(
     public snapshotId: string,
@@ -95,6 +104,7 @@ class MigrationSqlClient implements SqlClient {
   ) {}
 
   prepare(sql: string): SqlStatement {
+    this.statements.push(sql);
     return new MigrationStatement(this, sql);
   }
 
@@ -103,6 +113,7 @@ class MigrationSqlClient implements SqlClient {
   }
 
   async exec(sql: string): Promise<void> {
+    this.statements.push(sql);
     if (/\bDROP\s+TABLE\b/i.test(sql)) {
       throw new Error("DROP command denied to migration user");
     }

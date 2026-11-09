@@ -18,6 +18,8 @@ export interface SessionSandboxDeps {
   /** Operator catalog image for the Cloudflare adapter; null = SANDBOX. */
   sandboxImage: CloudflareSandboxImage | null;
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
+  /** The Session agent's harness name (sandbox token scope, #561). */
+  harness(): string | null;
   networking(): Promise<SessionNetworking | undefined>;
   /** The Session's current execution attempt (design §0.0 rule 10). */
   fence(): SandboxExecutionFence | undefined;
@@ -33,7 +35,7 @@ export function createSessionSandbox(adapter: string | undefined, deps: SessionS
     return createCloudflareSessionSandbox(deps) as PortsSessionSandbox<unknown>;
   }
   if (name === "e2b") {
-    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
+    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, harness: deps.harness, idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
   }
   throw new Error(`Unknown SANDBOX_ADAPTER: ${name}`);
 }

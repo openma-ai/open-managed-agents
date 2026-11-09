@@ -61,8 +61,8 @@ export function createForwarderEgress<R extends object>(
         sessionId: input.scope.sessionId,
         vaultIds: [...new Set(substitutions.map((item) => item.credentialId))],
       },
-      relay: { endpoint: deps.gateway.endpoint.url, pass: "" },
-      issuePass: () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence) }),
+      relay: { endpoint: deps.gateway.endpoint.url },
+      issueToken: () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence) }),
       placeholders: async () => placeholders,
     });
     input.signal.throwIfAborted();
