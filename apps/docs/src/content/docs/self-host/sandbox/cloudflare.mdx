@@ -70,6 +70,13 @@ BlobStore for portable `/workspace` tar archives, plus
 | Process checkpoints | none | none |
 | Credential egress | **`enforced` / `live`, http+https** | `unsupported`/`snapshot` default |
 
+Outbound credential binding on `cloudflare` is per container, not per process.
+A background process left over from an earlier turn of the same session can use
+the credentials while a later turn runs. Once the execution settles, its
+requests are rejected with 403. Everything inside one session's sandbox is one
+trust boundary, so don't run code in it that the session shouldn't be able to
+act as.
+
 <Aside type="note">
   The bridge driver keeps OpenMA as the Work and fencing authority while the
   Node side talks to the Bridge over an HTTP channel (`argv`-style SSE

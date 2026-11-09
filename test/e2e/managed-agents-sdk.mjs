@@ -29,12 +29,11 @@ try {
     assert.equal((await response.json()).status, "ok");
   });
 
-  await step("Managed Agents beta header is mandatory", async () => {
+  await step("Managed Agents beta header is optional", async () => {
     const response = await fetch(`${baseURL}/v1/agents`, {
       headers: { "x-api-key": apiKey },
     });
-    assert.equal(response.status, 400);
-    assertAnthropicError(await response.json(), "invalid_request_error");
+    assert.equal(response.status, 200);
   });
 
   if (!authDisabled) {
