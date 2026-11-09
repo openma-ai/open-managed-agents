@@ -1,3 +1,5 @@
+import type { McpToolSelectionConfig } from "@open-managed-agents/mcp";
+
 // The Session a sandbox proxy request names (design §0.7, MCP and model
 // gateway routes). A v1 managed Session is looked up first, then the legacy
 // `/v1/oma` row; an archived or missing Session is not found. Both gateways
@@ -11,6 +13,13 @@ export interface ProxyMcpServerRecord {
   authorization_token?: string;
 }
 
+interface ManagedToolSelection {
+  type: string;
+  mcpServerName?: string;
+  defaultConfig?: { enabled?: boolean } | null;
+  configs?: readonly { name: string; enabled?: boolean }[] | null;
+}
+
 type ProxyModelRecord = string | { id: string };
 
 /** The v1 managed Session fields the gateways read. */
@@ -22,6 +31,7 @@ export interface ManagedProxySessionRecord {
     version?: number;
     model?: ProxyModelRecord;
     mcpServers?: readonly ProxyMcpServerRecord[];
+    tools?: readonly ManagedToolSelection[];
     multiagent?: {
       subagents:
         | { type: "disabled" }
@@ -32,6 +42,7 @@ export interface ManagedProxySessionRecord {
               id?: string;
               version?: number;
               mcpServers?: readonly ProxyMcpServerRecord[];
+              tools?: readonly ManagedToolSelection[];
             }>;
           };
     } | null;
@@ -47,6 +58,7 @@ export interface LegacyProxySessionRecord {
     version?: number;
     model?: ProxyModelRecord;
     mcp_servers?: readonly ProxyMcpServerRecord[];
+    tools?: McpToolSelectionConfig["tools"];
     multiagent?: {
       subagents:
         | { type: "disabled" }
@@ -56,6 +68,7 @@ export interface LegacyProxySessionRecord {
               id?: string;
               version?: number;
               mcp_servers?: readonly ProxyMcpServerRecord[];
+              tools?: McpToolSelectionConfig["tools"];
             }>;
           };
     } | null;
@@ -86,6 +99,7 @@ export interface ProxyAgent {
   /** Model card handle (`card.model_id`). */
   model?: string;
   mcpServers: ProxyMcpServer[];
+  toolSelection: McpToolSelectionConfig;
 }
 
 export interface ProxySession {
@@ -134,11 +148,11 @@ function fromManaged(record: ManagedProxySessionRecord): ProxySession {
   return {
     kind: "managed",
     vaultIds: record.vaultIds,
-    root: proxyAgent(agent?.id, agent?.version, agent?.model, agent?.mcpServers),
+    root: proxyAgent(agent?.id, agent?.version, agent?.model, agent?.mcpServers, managedToolSelection(agent?.tools)),
     members: subagents?.type === "enabled"
       ? subagents.predefinedAgents
         .filter((member) => member.type === "agent")
-        .map((member) => proxyAgent(member.id, member.version, undefined, member.mcpServers))
+        .map((member) => proxyAgent(member.id, member.version, undefined, member.mcpServers, managedToolSelection(member.tools)))
       : [],
   };
 }
@@ -149,9 +163,9 @@ function fromLegacy(record: LegacyProxySessionRecord): ProxySession {
   return {
     kind: "legacy",
     vaultIds: record.vault_ids ?? [],
-    root: proxyAgent(agent?.id, agent?.version, agent?.model, agent?.mcp_servers),
+    root: proxyAgent(agent?.id, agent?.version, agent?.model, agent?.mcp_servers, agent?.tools),
     members: subagents?.type === "enabled"
-      ? subagents.predefined_agents.map((member) => proxyAgent(member.id, member.version, undefined, member.mcp_servers))
+      ? subagents.predefined_agents.map((member) => proxyAgent(member.id, member.version, undefined, member.mcp_servers, member.tools))
       : [],
   };
 }
@@ -161,15 +175,26 @@ function proxyAgent(
   version: number | undefined,
   model: ProxyModelRecord | undefined,
   servers: readonly ProxyMcpServerRecord[] | undefined,
+  tools: McpToolSelectionConfig["tools"] | undefined,
 ): ProxyAgent {
   return {
     ...(id !== undefined && { id }),
     ...(version !== undefined && { version }),
     ...(model !== undefined && { model: typeof model === "string" ? model : model.id }),
+    toolSelection: { tools: tools ?? [] },
     mcpServers: (servers ?? []).map((server) => ({
       name: server.name,
       url: typeof server.url === "string" && server.url.length > 0 ? server.url : null,
       authorizationToken: server.authorization_token || server.authorizationToken || null,
     })),
   };
+}
+
+function managedToolSelection(tools: readonly ManagedToolSelection[] | undefined): McpToolSelectionConfig["tools"] {
+  return (tools ?? []).map(tool => ({
+    type: tool.type,
+    ...(tool.mcpServerName !== undefined && { mcp_server_name: tool.mcpServerName }),
+    ...(tool.defaultConfig != null && { default_config: tool.defaultConfig }),
+    ...(tool.configs != null && { configs: tool.configs }),
+  }));
 }

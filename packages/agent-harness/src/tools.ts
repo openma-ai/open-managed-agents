@@ -1,3 +1,4 @@
+import { isMcpToolEnabled } from "@open-managed-agents/mcp";
 import { dynamicTool, generateText, jsonSchema, tool } from "ai";
 import { z } from "zod";
 import { anthropic } from "@ai-sdk/anthropic";
@@ -349,22 +350,6 @@ export function getToolPermission(agentConfig: AgentConfig, toolName: string): s
     if (ts.default_config?.permission_policy?.type) return ts.default_config.permission_policy.type;
   }
   return "always_allow";
-}
-
-function isMcpToolEnabled(
-  agentConfig: AgentConfig,
-  serverName: string,
-  remoteToolName: string,
-): boolean {
-  const toolset = agentConfig.tools.find((tool) => {
-    if (tool.type !== "mcp_toolset") return false;
-    return (tool as ToolsetConfig & { mcp_server_name?: string }).mcp_server_name === serverName;
-  });
-  if (!toolset) return true;
-
-  const ts = toolset as ToolsetConfig;
-  const configured = ts.configs?.find((candidate) => candidate.name === remoteToolName);
-  return configured?.enabled ?? ts.default_config?.enabled ?? true;
 }
 
 function getEnabledTools(tools: AgentConfig["tools"]): Set<string> {

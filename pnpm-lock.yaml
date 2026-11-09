@@ -2373,6 +2373,9 @@ importers:
       '@open-managed-agents/managed-credential-resolver':
         specifier: workspace:*
         version: link:../managed-credential-resolver
+      '@open-managed-agents/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@open-managed-agents/mcp-access-loss':
         specifier: workspace:*
         version: link:../mcp-access-loss

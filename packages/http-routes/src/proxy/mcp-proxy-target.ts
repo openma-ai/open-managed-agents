@@ -1,10 +1,11 @@
+import type { McpToolSelectionConfig } from "@open-managed-agents/mcp";
 import type { ManagedCredentialTarget } from "@open-managed-agents/managed-credential-resolver";
 import type { LegacyCredentialRefresh } from "./legacy-credential-refresh";
 import type { McpProxyPorts } from "./mcp-proxy-ports";
 import { findProxySession, selectProxyAgent, type ProxyAgentIdentity } from "./proxy-session";
 
 /** Where one MCP request goes and which credential rides with it. */
-export type McpProxyTarget = AnonymousMcpTarget | BearerMcpTarget | ManagedMcpTarget;
+export type McpProxyTarget = (AnonymousMcpTarget | BearerMcpTarget | ManagedMcpTarget) & { toolSelection?: McpToolSelectionConfig };
 
 /** No Vaults attached and no inline token: sent without a bearer (#527). */
 export interface AnonymousMcpTarget {
@@ -47,25 +48,32 @@ export async function resolveMcpProxyTarget(
 ): Promise<McpProxyTarget | null> {
   const session = await findProxySession(ports.sessions, request);
   if (session === null) return null;
-  const server = selectProxyAgent(session, request.agent)?.mcpServers
+  const agent = selectProxyAgent(session, request.agent);
+  if (agent === undefined) return null;
+  const server = agent.mcpServers
     .find((candidate) => candidate.name === request.serverName);
   if (server === undefined || server.url === null) return null;
-  if (server.authorizationToken !== null) {
-    return { upstreamUrl: server.url, upstreamToken: server.authorizationToken };
-  }
-  if (session.vaultIds.length === 0) return { upstreamUrl: server.url, upstreamToken: null };
-  const scope = { workspaceId: request.workspaceId, sessionId: request.sessionId, vaultIds: session.vaultIds };
-  if (session.kind === "managed") {
-    const managed = await ports.managedCredentials().mcpTarget(scope, server.url);
-    return managed === null
-      ? null
-      : { upstreamUrl: managed.upstreamUrl, upstreamToken: managed.upstreamToken, managed };
-  }
-  const grouped = await ports.legacyCredentials.listByVaults({
-    tenantId: request.workspaceId,
-    vaultIds: [...session.vaultIds],
-  });
-  return legacyVaultTarget(grouped, server.url);
+  const upstreamUrl = server.url;
+  const credentialsForServer = async (): Promise<McpProxyTarget | null> => {
+    if (server.authorizationToken !== null) {
+      return { upstreamUrl, upstreamToken: server.authorizationToken };
+    }
+    if (session.vaultIds.length === 0) return { upstreamUrl, upstreamToken: null };
+    const scope = { workspaceId: request.workspaceId, sessionId: request.sessionId, vaultIds: session.vaultIds };
+    if (session.kind === "managed") {
+      const managed = await ports.managedCredentials().mcpTarget(scope, upstreamUrl);
+      return managed === null
+        ? null
+        : { upstreamUrl: managed.upstreamUrl, upstreamToken: managed.upstreamToken, managed };
+    }
+    const grouped = await ports.legacyCredentials.listByVaults({
+      tenantId: request.workspaceId,
+      vaultIds: [...session.vaultIds],
+    });
+    return legacyVaultTarget(grouped, upstreamUrl);
+  };
+  const target = await credentialsForServer();
+  return target === null ? null : { ...target, toolSelection: agent.toolSelection };
 }
 
 interface LegacyAuthFields {

@@ -27,6 +27,7 @@
     "@open-managed-agents/integrations-core": "workspace:*",
     "@open-managed-agents/kv-store": "workspace:*",
     "@open-managed-agents/managed-credential-resolver": "workspace:*",
+    "@open-managed-agents/mcp": "workspace:*",
     "@open-managed-agents/mcp-access-loss": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/model-cards-store": "workspace:*",

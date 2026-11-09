@@ -34,7 +34,7 @@ describe("resolveMcpProxyTarget", () => {
         mcpServers: [docs({ url: "https://child.test/mcp", authorizationToken: "child-token" })] }] } },
     }) });
     expect(await resolveMcpProxyTarget(p as never, { ...request, agent: { id: "child", version: 7 } }))
-      .toEqual({ upstreamUrl: "https://child.test/mcp", upstreamToken: "child-token" });
+      .toEqual({ toolSelection: { tools: [] }, upstreamUrl: "https://child.test/mcp", upstreamToken: "child-token" });
     expect(await resolveMcpProxyTarget(p as never, { ...request, agent: { id: "child", version: 8 } })).toBeNull();
   });
 
@@ -43,7 +43,7 @@ describe("resolveMcpProxyTarget", () => {
       ports({ managed: managed(["vlt_1"], [docs({ authorizationToken: "inline" })]) }),
       ports({ legacy: legacy(["vlt_1"], [docs({ authorization_token: "inline" })]) }),
     ]) {
-      expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ upstreamUrl: SERVER, upstreamToken: "inline" });
+      expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ toolSelection: { tools: [] }, upstreamUrl: SERVER, upstreamToken: "inline" });
       expect(p.managedCredentials).not.toHaveBeenCalled();
       expect(p.legacyCredentials.listByVaults).not.toHaveBeenCalled();
     }
@@ -53,7 +53,7 @@ describe("resolveMcpProxyTarget", () => {
   // attached there is no credential to inject or withhold.
   it("sends anonymously when no Vault is attached, without building the managed resolver", async () => {
     for (const p of [ports({ managed: managed([], [docs()]) }), ports({ legacy: legacy([], [docs()]) })]) {
-      expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ upstreamUrl: SERVER, upstreamToken: null });
+      expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ toolSelection: { tools: [] }, upstreamUrl: SERVER, upstreamToken: null });
       expect(p.managedCredentials).not.toHaveBeenCalled();
       expect(p.legacyCredentials.listByVaults).not.toHaveBeenCalled();
     }
@@ -62,7 +62,7 @@ describe("resolveMcpProxyTarget", () => {
   it("resolves a managed Session's credential through the shared resolver only", async () => {
     const selected = { upstreamUrl: SERVER, upstreamToken: "vault-token", refresh: { credentialId: "c", vaultId: "vlt_1", tokenEndpoint: "https://auth.test/token" } };
     const p = ports({ managed: managed(["vlt_1"], [docs()]), mcpTarget: async () => selected });
-    expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ upstreamUrl: SERVER, upstreamToken: "vault-token", managed: selected });
+    expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ toolSelection: { tools: [] }, upstreamUrl: SERVER, upstreamToken: "vault-token", managed: selected });
     expect(p.resolver.mcpTarget).toHaveBeenCalledWith({ workspaceId: "ws", sessionId: "sess", vaultIds: ["vlt_1"] }, SERVER);
     expect(p.legacyCredentials.listByVaults).not.toHaveBeenCalled();
     expect(await resolveMcpProxyTarget(ports({ managed: managed(["vlt_1"], [docs()]) }) as never, request)).toBeNull();
@@ -82,7 +82,7 @@ describe("resolveMcpProxyTarget", () => {
         { vault_id: "vlt_2", credentials: [{ id: "later", auth: { type: "static_bearer", mcp_server_url: SERVER, bearer_token: "later" } }] },
       ],
     });
-    expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ upstreamUrl: SERVER, upstreamToken: "camel-token" });
+    expect(await resolveMcpProxyTarget(p as never, request)).toEqual({ toolSelection: { tools: [] }, upstreamUrl: SERVER, upstreamToken: "camel-token" });
     expect(p.legacyCredentials.listByVaults).toHaveBeenCalledWith({ tenantId: "ws", vaultIds: ["vlt_1", "vlt_2"] });
     expect(p.managedCredentials).not.toHaveBeenCalled();
   });
@@ -96,6 +96,7 @@ describe("resolveMcpProxyTarget", () => {
       } }] }],
     });
     expect(await resolveMcpProxyTarget(p as never, request)).toEqual({
+      toolSelection: { tools: [] },
       upstreamUrl: SERVER,
       upstreamToken: "access",
       refresh: {

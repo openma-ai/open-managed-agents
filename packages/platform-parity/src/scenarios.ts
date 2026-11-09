@@ -248,8 +248,26 @@ export const interrupt: ParityScenario = {
   },
 };
 
+export const mcpToolSelection: ParityScenario = {
+  name: "mcp-tool-selection",
+  covers: "MCP disabled calls are refused at the shared gateway without contacting the upstream",
+  async run(context) {
+    const agent = await context.agent("mcp-selection", {
+      mcp_servers: [{ name: "public", type: "url", url: "https://must-not-contact.invalid/mcp" }],
+      tools: [{ type: "mcp_toolset", mcp_server_name: "public", default_config: { enabled: false } }],
+    });
+    const sessionId = await context.session(agent);
+    const response = await context.request("POST", "/v1/oma/mcp-proxy/" + sessionId + "/public", {
+      jsonrpc: "2.0", id: 568, method: "tools/call", params: { name: "hidden", arguments: {} },
+    });
+    if (response.body?.error?.code !== -32601) throw new Error("disabled MCP call was not refused");
+    context.record("disabled_call", response);
+  },
+};
+
 /** The scenario set every platform runner executes (order = report order). */
 export const PARITY_SCENARIOS: ParityScenario[] = [
+  mcpToolSelection,
   oneTurn,
   toolCall,
   memoryReadWrite,

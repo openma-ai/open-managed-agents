@@ -249,3 +249,123 @@ describe("forwardMcpProxyRequest", () => {
     expect(body).not.toHaveBeenCalled();
   });
 });
+
+
+describe("MCP tool selection (#568)", () => {
+  const tools = [{ type: "mcp_toolset", mcp_server_name: "public", default_config: { enabled: false },
+    configs: [{ name: "echo", enabled: true, permission_policy: { type: "always_ask" } }] }];
+  const rpc = (method: string, id = 1, name = "echo") => ({ jsonrpc: "2.0", id, method, params: { name } });
+  function binding(fetch: typeof globalThis.fetch, configured = tools, legacy = false) {
+    return createMcpProxyBinding(() => ports({ fetch,
+      ...(legacy ? { legacy: { ...legacySession([server("public")]), agent_snapshot: {
+        ...legacySession([server("public")]).agent_snapshot, tools: configured,
+      } } } : { managed: managedSession([server("public")], [], { tools: configured.map(t => ({
+        type: t.type, mcpServerName: t.mcp_server_name, defaultConfig: t.default_config, configs: t.configs,
+      })) }) }),
+    }));
+  }
+  const send = (b: ReturnType<typeof createMcpProxyBinding>, body: unknown) => b.fetch(new Request(SERVER, {
+    method: "POST", headers: routing("session", "public"), body: JSON.stringify(body),
+  }));
+
+  it.each([false, true])("filters JSON lists and preserves pagination (legacy=%s)", async legacy => {
+    const fetch = upstream(() => Response.json({ jsonrpc: "2.0", id: 1,
+      result: { tools: [{ name: "hidden" }, { name: "echo" }], nextCursor: "page-2" } }));
+    const response = await send(binding(fetch, tools, legacy), rpc("tools/list"));
+    expect(await response.json()).toEqual({ jsonrpc: "2.0", id: 1,
+      result: { tools: [{ name: "echo" }], nextCursor: "page-2" } });
+  });
+  it("filters SSE list responses", async () => {
+    const fetch = upstream(() => new Response(`event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"hidden"},{"name":"echo"}],"nextCursor":"next"}}
+
+`,
+      { headers: { "content-type": "text/event-stream" } }));
+    const response = await send(binding(fetch), rpc("tools/list"));
+    const text = await response.text();
+    expect(text).not.toContain("hidden");
+    expect(text).toContain('"name":"echo"');
+    expect(text).toContain('"nextCursor":"next"');
+  });
+  it("rejects disabled calls before sending anything upstream", async () => {
+    const fetch = upstream();
+    const response = await send(binding(fetch), rpc("tools/call", 7, "hidden"));
+    expect(await response.json()).toMatchObject({ jsonrpc: "2.0", id: 7, error: { code: -32601 } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("forwards enabled calls without interpreting the response", async () => {
+    const fetch = upstream(() => new Response("enabled"));
+    expect(await (await send(binding(fetch), rpc("tools/call"))).text()).toBe("enabled");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("passes through without a matching toolset", async () => {
+    const fetch = upstream(() => new Response("unchanged"));
+    expect(await (await send(binding(fetch, []), rpc("tools/list"))).text()).toBe("unchanged");
+  });
+  it("removes disabled calls from a mixed batch and filters only list responses", async () => {
+    const fetch = upstream(async request => {
+      const body = await request.json() as any[];
+      expect(body.map(r => r.id)).toEqual([1, 3]);
+      return Response.json([{ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "hidden" }, { name: "echo" }] } },
+        { jsonrpc: "2.0", id: 3, result: { content: [{ type: "text", text: "ok" }] } }]);
+    });
+    const response = await send(binding(fetch), [rpc("tools/list"), rpc("tools/call", 2, "hidden"), rpc("tools/call", 3)]);
+    const result = await response.json() as any[];
+    expect(result).toHaveLength(3);
+    expect(result.find(r => r.id === 1).result.tools).toEqual([{ name: "echo" }]);
+    expect(result.find(r => r.id === 2).error.code).toBe(-32601);
+    expect(result.find(r => r.id === 3).result.content[0].text).toBe("ok");
+  });
+  it("refuses an unresolved agent snapshot", async () => {
+    const fetch = upstream();
+    const b = createMcpProxyBinding(() => ports({ managed: { archivedAt: null, vaultIds: [] }, fetch }));
+    expect((await send(b, rpc("tools/list"))).status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("MCP filtered stream lifecycle", () => {
+  const configured = { tools: [{ type: "mcp_toolset", mcpServerName: "public", defaultConfig: { enabled: false }, configs: [{ name: "echo", enabled: true }] }] };
+  it("forwards non-tool streams without waiting for EOF", async () => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("live")); }, cancel });
+    const b = createMcpProxyBinding(() => ports({ managed: managedSession([server("public")], [], configured),
+      fetch: upstream(() => new Response(stream, { headers: { "content-type": "text/event-stream" } })) }));
+    const response = await b.fetch(new Request(SERVER, { method: "POST", headers: routing("session", "public"), body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "resources/list" }) }));
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("live");
+    await reader.cancel();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+  it("filters split SSE events before EOF and propagates cancellation", async () => {
+    let canceled!: () => void;
+    const cancellation = new Promise<void>(resolve => { canceled = resolve; });
+    const stream = new ReadableStream({ start(c) {
+      for (const text of ['id: 4\r\nevent: message\r\ndata: {"jsonrpc":"2.0",', '"id":1,"result":{"tools":[{"name":"hidden"},{"name":"echo"}]}}\r\n\r\n']) c.enqueue(new TextEncoder().encode(text));
+    }, cancel() { canceled(); } });
+    const b = createMcpProxyBinding(() => ports({ managed: managedSession([server("public")], [], configured),
+      fetch: upstream(() => new Response(stream, { headers: { "content-type": "text/event-stream" } })) }));
+    const response = await b.fetch(new Request(SERVER, { method: "POST", headers: routing("session", "public"), body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }));
+    const reader = response.body!.getReader();
+    const text = new TextDecoder().decode((await reader.read()).value);
+    expect(text).not.toContain("hidden");
+    expect(text).toContain('"name":"echo"');
+    expect(text).toContain("id: 4");
+    await reader.cancel();
+    await cancellation;
+  });
+});
+
+
+it("returns a disabled batch call's error when the forwarded notification has no response", async () => {
+  const fetch = upstream(() => new Response(null, { status: 202 }));
+  const b = createMcpProxyBinding(() => ports({ fetch, managed: managedSession([server("public")], [], {
+    tools: [{ type: "mcp_toolset", mcpServerName: "public", defaultConfig: { enabled: false } }],
+  }) }));
+  const response = await b.fetch(new Request(SERVER, { method: "POST", headers: routing("session", "public"), body: JSON.stringify([
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "hidden" } },
+  ]) }));
+  expect(await response.json()).toEqual([{ jsonrpc: "2.0", id: 2, error: { code: -32601, message: "MCP tool is not enabled: hidden" } }]);
+});
