@@ -2,7 +2,6 @@ import {
   classifyTurnFailure,
   classifyTurnInput,
   finishTurn,
-  interruptTurn,
   planRequiresActionAnswers,
   reportTurnFailure,
   runTurnAttempts,
@@ -660,7 +659,11 @@ export class DefaultNodeManagedSessionRunner
   async accept(input: NodeManagedSessionRunnerAcceptInput): Promise<void> {
     const turnInput = classifyTurnInput(input.events);
     if (turnInput.type === "interrupt") {
-      await this.interrupt(input);
+      // Only the running turn is the runner's: it is aborted and emits its own
+      // idle end_turn. The interrupt row and fencing are the execution
+      // worker's, and the store keeps queued inputs. With no turn here the
+      // lane is idle (including idle requires_action), so nothing changes.
+      this.abortControllers.get(input)?.abort(INTERRUPT_REQUESTED);
       return;
     }
     const event = turnInput.trigger;
@@ -1141,25 +1144,6 @@ export class DefaultNodeManagedSessionRunner
         finalWorkspace.trusted = true;
       }
     }
-  }
-
-  /** The running turn is aborted and emits its own idle; everything durable
-   * (the interrupt row, fencing) is the execution worker's. Without a turn in
-   * this process the lane is idle, so the interrupt changes nothing. */
-  private async interrupt(input: { workspaceId: string; sessionId: string }): Promise<void> {
-    await interruptTurn({
-      activeTurn: () => {
-        const active = this.abortControllers.get(input);
-        return active === undefined ? null : { abort: async () => { active.abort(INTERRUPT_REQUESTED); } };
-      },
-      lastStatus: () => "idle",
-      requestDurableInterrupt: async () => undefined,
-      ownInterruptedIdle: () => undefined,
-      settlePendingActions: async () => 0,
-      recordInterrupt: () => undefined,
-      closeOpenToolUses: () => 0,
-      emitIdle: () => undefined,
-    });
   }
 
   /** The `user.define_outcome` grader loop (#545 §0.7: one implementation in
