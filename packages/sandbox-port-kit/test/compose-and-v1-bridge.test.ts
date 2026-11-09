@@ -8,7 +8,7 @@ import type {
   SandboxStoragePort,
 } from "@open-managed-agents/sandbox";
 import { createSandboxPorts } from "../src/create-sandbox-ports";
-import { SandboxAssemblyError, SandboxTemplateUnsupportedError, type SandboxPortDeps, type SandboxVendorPort } from "../src/ports";
+import { SandboxAssemblyError, type SandboxPortDeps, type SandboxVendorPort } from "../src/ports";
 import { createSyncStorage, OUTPUTS_SEEDED_MARKER } from "../src/sync-storage";
 import { fromV1SandboxProvider, v1Vendor } from "../src/v1-bridge";
 
@@ -190,14 +190,13 @@ describe("fromV1SandboxProvider", () => {
     expect(() => fromV1SandboxProvider({ ...base, provider, leaseTtlMs: 0 })).toThrow(SandboxAssemblyError);
   });
 
-  it("acquires from a template as a prepared base and declares changing handles", async () => {
-    const contexts: Array<{ preparedBase?: unknown }> = [];
-    const adapter = bridge(new Map(), fakeRuntime("new"), contexts);
+  it("acquires from the image, declares changing handles and no environment snapshots", async () => {
+    const adapter = bridge(new Map(), fakeRuntime("new"));
     expect(adapter.lifecycle.handle).toBe("changes");
     expect(adapter.lifecycle.maxLifetimeMs).toBeNull();
-    const acquired = await adapter.lifecycle.acquire({ scope, plan: { ...plan, from: { template: { provider: "v1", ref: "base-1" } } }, signal });
+    expect(adapter.lifecycle.snapshotEnvironment).toBeUndefined();
+    const acquired = await adapter.lifecycle.acquire({ scope, plan, signal });
     expect(acquired).toMatchObject({ handle: { provider: "v1", runtimeId: "new" } });
-    expect(contexts[0]!.preparedBase).toEqual({ provider: "v1", id: "base-1" });
   });
 
   it("reports a missing or stopped runtime as gone on attach", async () => {
@@ -227,7 +226,6 @@ describe("fromV1SandboxProvider", () => {
     const handle = { provider: "v1", runtimeId: "r2" };
     expect(await adapter.lifecycle.pause({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", metadata: { kind: "self" } });
     expect(await adapter.lifecycle.checkpoint({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", metadata: { kind: "self" } });
-    await expect(adapter.lifecycle.snapshotTemplate({ runtime, handle, signal })).rejects.toThrow(SandboxTemplateUnsupportedError);
   });
 
   it("restores a portable checkpoint into a new runtime and releases idempotently", async () => {

@@ -30,7 +30,6 @@ import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
-import { rejectPreparedBase } from "@open-managed-agents/sandbox";
 
 const moduleLogger = getLogger("litebox-sandbox");
 
@@ -361,7 +360,6 @@ async function removeBestEffort(path: string, recursive = false): Promise<void> 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
 export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
-  rejectPreparedBase("litebox", ctx.preparedBase);
   return new LiteBoxSandbox({
     // An Environment-selected catalog image overrides the process default.
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,

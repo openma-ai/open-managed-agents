@@ -10,7 +10,9 @@
 //                Pro 24 h); plan.idleMs must stay below it
 // pause/resume   pause (full memory) / connect; the ref is the sandbox itself
 // checkpoint     createSnapshot; resume from it = Sandbox.create(snapshotId)
-// snapshotTemplate createSnapshot under a name
+// snapshotEnvironment createSnapshot({ mode: "filesystem" }) → { adapter: "e2b",
+//                ref: snapshotId }; acquire from it = Sandbox.create(ref);
+//                deleteEnvironmentSnapshot = Sandbox.deleteSnapshot
 // release        Sandbox.kill; discard = Sandbox.deleteSnapshot
 // list           Sandbox.list filtered by metadata
 // storage        objectStorage given: rclone FUSE mounts for Memory and
@@ -27,7 +29,7 @@ import {
   type SandboxLifecyclePort,
   type SandboxPlan,
   type SandboxStoragePort,
-  type TemplateRef,
+  type EnvironmentSnapshotRef,
 } from "@open-managed-agents/sandbox";
 import type { FirewallRules } from "@open-managed-agents/sandbox-port-kit/firewall";
 import type { ObjectStoreCredentialPort } from "@open-managed-agents/sandbox-port-kit/object-storage";
@@ -145,6 +147,9 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   const requireOwn = (value: { provider: string }) => {
     if (value.provider !== "e2b") throw new Error(`E2B adapter received a ${value.provider} reference`);
   };
+  const requireOwnSnapshot = (value: EnvironmentSnapshotRef) => {
+    if (value.adapter !== "e2b") throw new Error(`E2B adapter received an environment snapshot of adapter ${value.adapter}`);
+  };
 
   async function prepare(runtime: E2BSandboxExecutor): Promise<void> {
     if (options.setup === undefined) return;
@@ -195,8 +200,8 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
     async acquire(input) {
       const from = input.plan.from;
-      if ("template" in from) requireOwn(from.template);
-      return start("template" in from ? from.template.ref : from.image, input.plan, input.signal);
+      if ("environmentSnapshot" in from) requireOwnSnapshot(from.environmentSnapshot);
+      return start("environmentSnapshot" in from ? from.environmentSnapshot.ref : from.image, input.plan, input.signal);
     },
 
     async attach(input) {
@@ -255,10 +260,19 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
       }
     },
 
-    async snapshotTemplate(input): Promise<TemplateRef> {
+    async snapshotEnvironment(input): Promise<EnvironmentSnapshotRef> {
       input.signal.throwIfAborted();
-      const base = await lifecycleCall(() => input.runtime.capturePreparedBase({ name: `oma-${input.handle.runtimeId}` }));
-      return { provider: "e2b", ref: base.id };
+      const snapshotId = await lifecycleCall(() => input.runtime.snapshotEnvironment({ name: `oma-env-${input.handle.runtimeId}` }));
+      return { adapter: "e2b", ref: snapshotId };
+    },
+
+    async deleteEnvironmentSnapshot(input) {
+      requireOwnSnapshot(input.ref);
+      try {
+        await sdk.Sandbox.deleteSnapshot(input.ref.ref, connection);
+      } catch (error) {
+        if (!isGone(error)) throw mapError(error);
+      }
     },
 
     async list(input) {

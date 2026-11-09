@@ -161,6 +161,17 @@ for (const sourcePath of await sourceFiles("packages/session-runtime/src")) {
     }
   }
 }
+// The Session runtime is provider-free as a whole: adapters are composed by
+// hosts, and an environment snapshot's ref is opaque here.
+const sessionRuntimePackage = JSON.parse(await readFile("packages/session-runtime/package.json", "utf8"));
+for (const dependency of Object.keys({ ...sessionRuntimePackage.dependencies, ...sessionRuntimePackage.optionalDependencies, ...sessionRuntimePackage.peerDependencies })) {
+  if (isProviderSpecific(dependency)) violations.push(`packages/session-runtime/package.json: provider dependency ${dependency}`);
+}
+for (const sourcePath of await sourceFiles("packages/session-runtime/src")) {
+  for (const specifier of importSpecifiers(await readFile(sourcePath, "utf8"))) {
+    if (isProviderSpecific(specifier)) violations.push(`${sourcePath}: provider import ${specifier}`);
+  }
+}
 const NODE_SESSION_SANDBOX_HOST = "packages/control-plane-node/src/modules/node-managed.ts";
 if (/\b(prepareSandboxEgress|synchronizeManagedSessionMemoryWorkspaces|synchronizeNodeManagedMemoryStores)\b/.test(await readFile(NODE_SESSION_SANDBOX_HOST, "utf8"))) {
   violations.push(`${NODE_SESSION_SANDBOX_HOST}: sandbox egress / Memory sync wired in the host (compose the Session sandbox core instead)`);

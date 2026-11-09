@@ -69,6 +69,7 @@ export type {
   PortsSessionSandboxOptions,
   SessionSandboxExecution,
   SessionSandboxExecutor,
+  SessionEnvironmentCache,
   SessionSandboxIdleTimer,
   SessionSandboxState,
 } from "./session-sandbox-options";
@@ -119,18 +120,18 @@ export {
   type ReclaimOrphanSandboxesResult,
 } from "./session-sandbox-orphans";
 export {
-  SessionTemplateCache,
-  TEMPLATE_UNUSED_TTL_MS,
-  TEMPLATE_USED_TTL_MS,
-  isTemplateGone,
-  templateExpired,
-  templateExpiry,
-  type SessionTemplateCacheOptions,
-  type TemplateBuilder,
-  type TemplateEntry,
-  type TemplateExpiry,
-  type TemplateHandle,
-  type TemplateLogger,
-  type TemplateStore,
-} from "./session-sandbox-template-cache";
+  EnvironmentCache,
+  EnvironmentSnapshotAdapterMismatchError,
+  ENVIRONMENT_CACHE_UNUSED_TTL_MS,
+  ENVIRONMENT_CACHE_USED_TTL_MS,
+  environmentCacheExpiry,
+  environmentSnapshotExpired,
+  type EnvironmentCacheAcquire,
+  type EnvironmentCacheEntry,
+  type EnvironmentCacheExpiry,
+  type EnvironmentCacheLogger,
+  type EnvironmentCacheOptions,
+  type EnvironmentCacheStore,
+  type EnvironmentCacheWarning,
+} from "./session-sandbox-environment-cache";
 export { finalizeStaleTurns, type StaleToolUse, type StaleTurnFinalizerPort } from "./finalize-stale-turns";

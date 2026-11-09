@@ -82,7 +82,7 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
           ? `workspace_restore_failed backup_id=${ref.ref} elapsed_ms=${Date.now() - started} error=gone`
           : `workspace_restored backup_id=${ref.ref} elapsed_ms=${Date.now() - started}`);
       }
-      if (opened === "gone") opened = await ports.sandbox.acquire({ scope, plan, signal });
+      if (opened === "gone") opened = await (state.options.environmentCache?.acquire({ scope, plan, signal }) ?? ports.sandbox.acquire({ scope, plan, signal }));
       if (opened === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
       runStartedAt = state.now();
       // A provider-assigned handle is recorded before the sandbox is used,
@@ -139,7 +139,7 @@ async function warm<R>(state: LiveSessionSandbox<R>): Promise<void> {
   if (!await state.isCurrent(state.execution())) return;
   const generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const plan = await state.options.plan({ scope, generation, stores: state.stores });
-  const acquired = await ports.sandbox.acquire({ scope, plan, signal });
+  const acquired = await (state.options.environmentCache?.acquire({ scope, plan, signal }) ?? ports.sandbox.acquire({ scope, plan, signal }));
   if (acquired === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
   try {
     if (ports.sandbox.handle === "changes" && !await state.isCurrent(state.execution())) {

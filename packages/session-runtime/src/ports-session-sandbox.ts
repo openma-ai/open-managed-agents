@@ -78,6 +78,8 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   /** Session creation: acquire the sandbox and record its handle, without
    * an egress token or storage; the first execution attaches it. */
   warm(): Promise<void> { return warmSandbox(this.state); }
+  /** The Environment setup succeeded on this sandbox (environment cache). */
+  environmentPrepared(): void { this.state.options.environmentCache?.prepared(this.state.scope()); }
   /** Turn end / before stop write-back (session-sandbox-storage-egress). */
   syncStorage(reason: "turn_end" | "before_stop"): Promise<void> { return syncStorage(this.state, reason); }
   /** Execution end: the sandbox keeps running until the idle pause. */

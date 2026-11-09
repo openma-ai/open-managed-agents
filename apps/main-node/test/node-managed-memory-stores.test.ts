@@ -127,7 +127,7 @@ describe("Node control plane Memory Store mode", () => {
   it("follows the composed sandbox factory capability, file sync by default", () => {
     expect(nodeManagedMemoryStoreModeName({})).toBe("file_sync");
     expect(nodeManagedMemoryStoreModeName({ capabilities: {} })).toBe("file_sync");
-    expect(nodeManagedMemoryStoreModeName({ capabilities: { preparedBase: true } })).toBe("file_sync");
+    expect(nodeManagedMemoryStoreModeName({ capabilities: { allocationIsolation: true } })).toBe("file_sync");
     expect(nodeManagedMemoryStoreModeName({ capabilities: { nativeMemoryStoreMount: true } })).toBe("native");
   });
 

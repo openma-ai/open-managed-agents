@@ -6,8 +6,8 @@ import {
   type ResumeRef,
   type SandboxHandle,
   type SandboxLifecyclePort,
+  type EnvironmentSnapshotRef,
   type SandboxPlan,
-  type TemplateRef,
 } from "../src/index";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "work" };
@@ -43,9 +43,9 @@ function inMemoryLifecycle(): SandboxLifecyclePort<Box> & { boxes: Map<string, B
     boxes,
     snapshots,
     async acquire({ plan }) {
-      if ("template" in plan.from) {
-        const template = snapshots.get(plan.from.template.ref);
-        return template === undefined ? "gone" : start(template);
+      if ("environmentSnapshot" in plan.from) {
+        const files = snapshots.get(plan.from.environmentSnapshot.ref);
+        return files === undefined ? "gone" : start(files);
       }
       return start(new Map());
     },
@@ -87,11 +87,14 @@ function inMemoryLifecycle(): SandboxLifecyclePort<Box> & { boxes: Map<string, B
       if (ref.metadata?.kind === "self") return;
       snapshots.delete(ref.ref);
     },
-    async snapshotTemplate({ handle }) {
+    async snapshotEnvironment({ handle }) {
       const box = live(handle);
-      const ref = `tpl-${++next}`;
+      const ref = `env-${++next}`;
       snapshots.set(ref, new Map(box.files));
-      return { provider: "memory", ref } satisfies TemplateRef;
+      return { adapter: "memory", ref } satisfies EnvironmentSnapshotRef;
+    },
+    async deleteEnvironmentSnapshot({ ref }) {
+      snapshots.delete(ref.ref);
     },
     async list() {
       return [...boxes.values()]
@@ -153,19 +156,19 @@ describe("SandboxLifecyclePort contract", () => {
     expect(await port.list({ labels: { sessionId: "sess" }, signal })).toEqual([]);
   });
 
-  it("acquires from a template and returns \"gone\" once it was discarded", async () => {
+  it("acquires from an environment snapshot (1:n) and returns \"gone\" once it was deleted", async () => {
     const port = inMemoryLifecycle();
     const builder = await obtain(port, null, null);
     builder.runtime.files.set("/usr/lib/tool", "installed");
-    const template = await port.snapshotTemplate({ runtime: builder.runtime, handle: builder.handle, signal });
-    const fromTemplate = { ...plan, from: { template } };
-    const first = await port.acquire({ scope, plan: fromTemplate, signal });
-    const second = await port.acquire({ scope, plan: fromTemplate, signal });
+    const environmentSnapshot = await port.snapshotEnvironment!({ runtime: builder.runtime, handle: builder.handle, signal });
+    const fromSnapshot = { ...plan, from: { environmentSnapshot } };
+    const first = await port.acquire({ scope, plan: fromSnapshot, signal });
+    const second = await port.acquire({ scope, plan: fromSnapshot, signal });
     expect(first).not.toBe("gone");
     expect(second).not.toBe("gone");
     expect((first as Acquired<Box>).runtime.files.get("/usr/lib/tool")).toBe("installed");
-    await port.discard({ scope, ref: template });
-    expect(await port.acquire({ scope, plan: fromTemplate, signal })).toBe("gone");
+    await port.deleteEnvironmentSnapshot!({ ref: environmentSnapshot });
+    expect(await port.acquire({ scope, plan: fromSnapshot, signal })).toBe("gone");
   });
 
   it("throws typed errors for a vanished sandbox and for throttling", async () => {

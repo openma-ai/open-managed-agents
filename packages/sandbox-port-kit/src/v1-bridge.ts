@@ -3,7 +3,7 @@
 // either degrades as the §0.1 method comments allow or fails composition
 // with a typed error.
 
-import { parseExecResult, supportsPreparedBase, supportsSandboxRuntime } from "@open-managed-agents/sandbox";
+import { parseExecResult, supportsSandboxRuntime } from "@open-managed-agents/sandbox";
 import type {
   Acquired,
   ResumeRef,
@@ -16,10 +16,9 @@ import type {
   SandboxPort,
   SandboxProviderPort,
   SandboxRuntimePort,
-  TemplateRef,
 } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
-import { SandboxAssemblyError, SandboxTemplateUnsupportedError, type SandboxAdapterPort, type SandboxVendorPort } from "./ports";
+import { SandboxAssemblyError, type SandboxAdapterPort, type SandboxVendorPort } from "./ports";
 
 type V1Runtime = SandboxPort & SandboxRuntimePort;
 
@@ -124,15 +123,11 @@ export function fromV1SandboxProvider<R extends V1Runtime>(
     /** v1 declares no continuous-run cap. */
     maxLifetimeMs: null,
 
-    /** v1 create cannot report an expired template apart from other
-     * failures, so it never returns "gone": a failed create throws. */
+    /** v1 cannot snapshot an environment, so plans only carry images; a
+     * failed create throws, it never returns "gone". */
     async acquire(input) {
       input.signal.throwIfAborted();
       const context = options.context(input.scope, input.plan);
-      if ("template" in input.plan.from) {
-        requireOwn(input.plan.from.template, "template");
-        context.preparedBase = { provider: options.name, id: input.plan.from.template.ref };
-      }
       const runtime = await options.provider.create(context, options.env);
       try {
         if (!await ready(runtime, input.signal)) throw new Error(`${options.name}: runtime stopped before it became ready`);
@@ -208,18 +203,8 @@ export function fromV1SandboxProvider<R extends V1Runtime>(
       await runtime.destroy?.();
     },
 
-    /** v1 has no API to delete a checkpoint or a prepared base: no-op, refs
-     * wait for provider expiry. */
+    /** v1 has no API to delete a checkpoint: no-op, refs wait for provider expiry. */
     async discard() {},
-
-    async snapshotTemplate(input): Promise<TemplateRef> {
-      input.signal.throwIfAborted();
-      if (!supportsPreparedBase(input.runtime)) {
-        throw new SandboxTemplateUnsupportedError(`${options.name}: provider cannot capture a prepared base`);
-      }
-      const base = await input.runtime.capturePreparedBase({ name: `oma-template-${input.handle.runtimeId}` });
-      return { provider: base.provider, ref: base.id };
-    },
 
     list: (input) => list(input),
   };
@@ -287,11 +272,6 @@ export function fromV1SandboxFactory<R extends SandboxPort>(options: V1SandboxFa
       await runtime?.destroy?.();
     },
     async discard() {},
-    async snapshotTemplate(input): Promise<TemplateRef> {
-      if (!supportsPreparedBase(input.runtime)) throw new SandboxTemplateUnsupportedError(`${options.name}: provider cannot capture a prepared base`);
-      const base = await input.runtime.capturePreparedBase({ name: `oma-template-${input.handle.runtimeId}` });
-      return { provider: base.provider, ref: base.id };
-    },
     async list() { return []; },
   };
   return { name: options.name, lifecycle, vendor: v1Vendor<R>(options.name) };

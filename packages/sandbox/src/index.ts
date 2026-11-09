@@ -9,9 +9,7 @@ export type {
   SandboxCheckpointKind,
   SandboxCheckpointScope,
   SandboxPort,
-  SandboxPreparedBaseHandle,
   SandboxFactoryCapabilities,
-  SandboxPreparedBasePort,
   SandboxExecutor,
   SandboxFactory,
   SandboxFactoryContext,
@@ -28,9 +26,7 @@ export type {
 export {
   supportsDuplexProcess,
   supportsManagedWorkspaceLifecycle,
-  supportsPreparedBase,
   withSandboxFactoryCapabilities,
-  rejectPreparedBase,
   supportsSandboxRuntime,
   supportsSessionOutputMount,
   supportsWorkspaceBackup,
@@ -79,6 +75,7 @@ export { RetryableSandboxError, SandboxGoneError } from "./sandbox-ports";
 export type {
   Acquired,
   EgressPolicy,
+  EnvironmentSnapshotRef,
   HostPattern,
   MemoryStoreBinding,
   ResumeRef,
@@ -89,7 +86,6 @@ export type {
   SandboxPorts,
   SandboxStoragePort,
   Substitution,
-  TemplateRef,
 } from "./sandbox-ports";
 export {
   createSandboxImageCatalog,

@@ -18,7 +18,7 @@
 // only on traffic the outbound handler sees; revoke reuses the handler's
 // deny binding.
 
-import type { ResumeRef, SandboxHandle, SandboxLifecyclePort, SandboxPlan, TemplateRef } from "@open-managed-agents/sandbox";
+import type { ResumeRef, SandboxHandle, SandboxLifecyclePort, SandboxPlan } from "@open-managed-agents/sandbox";
 import { parseExecResult } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { SandboxAdapterPort } from "@open-managed-agents/sandbox-port-kit/ports";
@@ -68,21 +68,12 @@ export function createCloudflareSandboxAdapter(input: {
     /** Containers have no continuous-run cap. */
     maxLifetimeMs: null,
 
-    /** From the deployment image, or from a template: provision, then
-     * restore its /workspace backup. An expired or deleted template → "gone". */
+    /** From the deployment image. Containers cannot snapshot an
+     * environment (no snapshotEnvironment), so plans never carry one. */
     async acquire(input) {
       input.signal.throwIfAborted();
-      const acquired = await provision(input.scope, input.plan);
-      if (!("template" in input.plan.from)) return acquired;
-      const raw = input.plan.from.template.metadata?.backup;
-      if (input.plan.from.template.provider !== "cloudflare" || typeof raw !== "string") {
-        await acquired.runtime.destroy();
-        throw new Error("Cloudflare adapter received a template it did not create");
-      }
-      const restored = await acquired.runtime.restoreWorkspaceBackup(JSON.parse(raw));
-      if (restored.ok) return acquired;
-      await acquired.runtime.destroy();
-      return "gone";
+      if ("environmentSnapshot" in input.plan.from) throw new Error("The Cloudflare container adapter cannot start from an environment snapshot");
+      return provision(input.scope, input.plan);
     },
 
     /** A stopped container would restart without its mounts: report gone so
@@ -127,22 +118,13 @@ export function createCloudflareSandboxAdapter(input: {
       await sandboxFor(input.handle.runtimeId).destroy();
     },
 
-    /** Backups and templates: delete their objects (deleting a missing key
-     * succeeds). A ref to the sandbox itself is a no-op. */
+    /** Backups: delete their objects (deleting a missing key succeeds). A
+     * ref to the sandbox itself is a no-op. */
     async discard(input) {
-      const kind = input.ref.metadata?.kind;
-      if (input.ref.provider !== "cloudflare" || (kind !== "backup" && kind !== "template")) return;
+      if (input.ref.provider !== "cloudflare" || input.ref.metadata?.kind !== "backup") return;
       await backups.delete(backupObjectKeys(input.ref.ref));
     },
 
-    /** A /workspace backup of the build sandbox. Restores into any sandbox of
-     * the deployment (1:n); it does not capture the rootfs. */
-    async snapshotTemplate(input): Promise<TemplateRef> {
-      input.signal.throwIfAborted();
-      const backup = await input.runtime.createWorkspaceBackup({ name: "template", ttlSec: BACKUP_TTL_SEC });
-      if (backup === null) throw new Error("Cloudflare template backup produced no archive");
-      return { provider: "cloudflare", ref: backup.id, metadata: { kind: "template", backup: JSON.stringify(backup) } };
-    },
 
     /** Fixed handles: a rebuild reuses the DO name, so there are no orphans. */
     async list() {

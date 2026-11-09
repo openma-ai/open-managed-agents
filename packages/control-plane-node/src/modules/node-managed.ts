@@ -21,7 +21,7 @@ import { resolveProtocolEndpointsFromModelCard } from "@open-managed-agents/infe
 import { resolveManagedSubagentSession } from "../lib/node-managed-subagents.js";
 import { installEnvironmentPackages } from "../lib/environment-packages";
 import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder";
-import { createPreparedSandboxBases } from "../lib/prepared-sandbox-bases";
+import { createNodeEnvironmentCache } from "../lib/environment-cache";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
 import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
@@ -240,13 +240,11 @@ export async function createManagedNodeRuntime(
       })
     : undefined;
   await workspaceCheckpoints?.ensureSchema();
-  const preparedSandboxBases = createPreparedSandboxBases(config.sandbox, components.sandbox, {
+  const environmentCache = createNodeEnvironmentCache(config.sandbox, components.sessionSandboxAdapter?.adapter, {
     kvFor: (workspaceId) => new SqlKvStore({ db: foundation.drizzleDb, tenantId: workspaceId }),
-    createBuilderSandbox: (sessionId, scope) =>
-      foundation.buildPreparedBaseSandbox(sessionId, join(config.paths.sandboxWorkdir, sessionId), scope),
     logger,
   });
-  if (preparedSandboxBases !== undefined) disposables.add("prepared_sandbox_bases", () => preparedSandboxBases.dispose());
+  if (environmentCache !== undefined) disposables.add("environment_cache", () => environmentCache.dispose());
 
   // One decision for the deployment: native mounts only when the composed
   // factory declares them; every other sandbox file-syncs Memory Stores.
@@ -278,8 +276,8 @@ export async function createManagedNodeRuntime(
       images: config.sandbox.images,
       workdir: (sessionId) => join(config.paths.sandboxWorkdir, sessionId),
       build: buildSandbox,
-      ...(preparedSandboxBases === undefined ? {} : { preparedBases: preparedSandboxBases }),
     }),
+    ...(environmentCache === undefined ? {} : { environmentCache }),
     ...(config.workspace.sandboxLeaseTtlMs === undefined ? {} : { v1LeaseTtlMs: config.workspace.sandboxLeaseTtlMs }),
     storage: createNodeSessionStorage({
       memoryStoreMode,
@@ -381,6 +379,7 @@ export async function createManagedNodeRuntime(
       isSandboxCurrent: ({ workspaceId, session, runtimeGeneration }: { workspaceId: string; session: { id: string }; runtimeGeneration: string }) =>
         sharedSessionOutputs.isSandboxCurrent(workspaceId, session.id, runtimeGeneration),
     }),
+    takeSandboxWarnings: ({ workspaceId, session }) => sessionSandboxes.takeWarnings(workspaceId, session.id),
     prepareSandbox: async ({ workspaceId, session, environment, sandbox, runtimeGeneration, signal, executionFence }) => {
       const sessionSandbox = sessionSandboxes.get({ workspaceId, session });
       sessionSandbox.bind({ context: { workspaceId, session, environment }, runtimeGeneration, ...(executionFence === undefined ? {} : { executionFence }) });
@@ -398,6 +397,7 @@ export async function createManagedNodeRuntime(
           durationMs: result.durationMs,
         }, "Environment packages ready"),
       });
+      sessionSandbox.environmentPrepared();
       await managedSessionInputs(workspaceId).prepareInputs({
         workspaceId,
         session,

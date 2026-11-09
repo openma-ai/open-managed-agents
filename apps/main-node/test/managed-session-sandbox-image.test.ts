@@ -93,8 +93,8 @@ function runnerWithFactory() {
 }
 
 describe("managed session sandbox image selection", () => {
-  it("preserves E2B allocation isolation through prepared-base wrapping and honors an explicit opt-out", async () => {
-    const wrapped = withSandboxFactoryCapabilities(e2bFactory, { preparedBase: true });
+  it("preserves E2B allocation isolation through capability wrapping and honors an explicit opt-out", async () => {
+    const wrapped = withSandboxFactoryCapabilities(e2bFactory, { nativeMemoryStoreMount: true });
     let builds = 0;
     const builder = (capabilities: typeof wrapped.capabilities) => createManagedSandboxBuilder({
       capabilities, workdir: () => "/workspace", build: async () => { builds++; return {} as SandboxExecutor; },
@@ -102,11 +102,11 @@ describe("managed session sandbox image selection", () => {
     const input = { workspaceId: "workspace", session, environment: environmentWith(), allocationId: "runtime_a" };
     await builder(wrapped.capabilities)(input);
     expect(builds).toBe(1);
-    expect(wrapped.capabilities?.preparedBase).toBe(true);
+    expect(wrapped.capabilities?.nativeMemoryStoreMount).toBe(true);
     const disabled = withSandboxFactoryCapabilities(wrapped, { allocationIsolation: false });
     await expect(builder(disabled.capabilities)(input)).rejects.toThrow(/isolat/i);
     expect(builds).toBe(1);
-    expect(disabled.capabilities?.preparedBase).toBe(true);
+    expect(disabled.capabilities?.nativeMemoryStoreMount).toBe(true);
   });
 
   it("refuses an isolated allocation before calling a factory without the capability", async () => {
