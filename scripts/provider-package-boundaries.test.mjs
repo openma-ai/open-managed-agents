@@ -280,6 +280,16 @@ test("Cloudflare sandbox SDK, container runtime, and deployment image stay lock-
     "custom container must copy sandbox-shim from the matching Cloudflare runtime",
   );
 
+  // sandbox-shim always passes `-o compat_dir` to s3fs (Sandbox SDK 1.0.3); the
+  // option exists from s3fs 1.92. Debian bookworm ships s3fs 1.90, so S3Mount
+  // fails there with "unknown option 'compat_dir'". trixie ships 1.95.
+  assert.match(
+    imageDockerfile,
+    /^FROM docker\.io\/node:\d+-trixie-slim$/m,
+    "custom container base must ship s3fs >= 1.92 (Debian trixie) for sandbox-shim's compat_dir",
+  );
+  assert.match(imageDockerfile, /\bs3fs\b/, "custom container must install s3fs for S3Mount");
+
   const contentHash = createHash("sha256").update(imageDockerfile).digest("hex");
   assert.match(
     deploymentDockerfile,

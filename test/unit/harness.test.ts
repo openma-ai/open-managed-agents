@@ -861,6 +861,9 @@ describe("Sandbox lifecycle", () => {
       R2_ENDPOINT: "https://example.r2.cloudflarestorage.com",
       R2_ACCESS_KEY_ID: "access",
       R2_SECRET_ACCESS_KEY: "secret",
+      FILES_BUCKET_NAME: "files",
+      R2_FILES_ACCESS_KEY_ID: "files-access",
+      R2_FILES_SECRET_ACCESS_KEY: "files-secret",
     } as any, "test-session-id") as any;
     sandbox.sandboxPromise = Promise.resolve({
       unmountBucket: async () => {},
