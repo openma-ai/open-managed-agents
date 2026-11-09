@@ -48,8 +48,8 @@ try{
 
  // Real-model failures use a protocol proxy, not a mock model or product hook.
  for(const fault of ['first','partial']){
-   const faultAgent=await api('POST','/v1/agents',{name:'context-failure-'+kind+'-'+fault,model:modelHandle,system:'Remember user conversation exactly. Never write conversation or passphrases to disk.',tools:[{type:'agent_toolset_20260401'}],_oma:{harness:'acp-sandbox',acp:{agent:{id:kind==='pi'?'pi-acp':'claude-acp',command:'/bin/bash',args:['-c','export PATH=/workspace/.npm-global/bin:/usr/local/bin:/usr/bin:/bin; export PI_ACP_PI_COMMAND=/workspace/.npm-global/bin/pi; exec /workspace/.npm-global/bin/node /workspace/acp-context-fault-bridge.mjs '+fault+' /workspace/.fault-'+fault+' /workspace/.npm-global/bin/node /workspace/.npm-global/lib/node_modules/'+(kind==='pi'?'pi-acp':'@agentclientprotocol/claude-agent-acp')+'/dist/index.js'],cwd:'/workspace'},per_turn_timeout_ms:180000}}});
-  const setup=await api('POST','/v1/environments',{name:'context-fault-'+kind,config:{type:'cloud',networking:{type:'unrestricted'},packages:{npm:['node@24.22.2',...(kind==='pi'?['@earendil-works/pi-coding-agent@0.84.4','pi-acp@0.0.33']:['@agentclientprotocol/claude-agent-acp@0.94.0'])]}}});
+   const faultAgent=await api('POST','/v1/agents',{name:'context-failure-'+kind+'-'+fault,model:modelHandle,system:'Remember user conversation exactly. Never write conversation or passphrases to disk.',tools:[{type:'agent_toolset_20260401'}],_oma:{harness:'acp-sandbox',acp:{agent:{id:kind==='pi'?'pi-acp':'claude-acp',command:'/bin/bash',args:['-c','export PATH=/workspace/.npm-global/bin:/usr/local/bin:/usr/bin:/bin; export PI_ACP_PI_COMMAND=/workspace/.npm-global/bin/pi; exec /workspace/.npm-global/bin/node /workspace/acp-context-fault-bridge.mjs '+fault+' /workspace/.fault-'+fault+(kind==='pi'?' /workspace/.npm-global/bin/node /workspace/.npm-global/lib/node_modules/pi-acp/dist/index.js':' /workspace/.npm-global/bin/npx --yes @agentclientprotocol/claude-agent-acp@0.94.0')],cwd:'/workspace'},per_turn_timeout_ms:180000}}});
+  const setup=await api('POST','/v1/environments',{name:'context-fault-'+kind,config:{type:'cloud',networking:{type:'unrestricted'},packages:{npm:['node@24.22.2',...(kind==='pi'?['@earendil-works/pi-coding-agent@0.84.4','pi-acp@0.0.33']:[])]}}});
   const form=new FormData();form.set('file',new Blob([readFileSync(W+'/scripts/acp-context-fault-bridge.mjs')],{type:'text/javascript'}),'acp-context-fault-bridge.mjs');
   const uploaded=await fetch(base+'/v1/files',{method:'POST',headers:{'x-api-key':key},body:form});
   if(!uploaded.ok)throw Error('fault bridge upload '+uploaded.status);
@@ -60,7 +60,9 @@ try{
    await api('POST','/v1/sessions/'+fsid+'/resources',{type:'file',file_id:bridgeFile.id,mount_path:'/workspace/acp-context-fault-bridge.mjs'});
    const original='original-request-'+randomBytes(5).toString('hex');
    const ev=await turn(fsid,'Memorize '+original+'. Reply with it, do not use tools or files.',kind+'-'+fault+'-failed',true);
-   result.checks.push({case:fault+'-failure-visible',ok:ev.some(x=>x.type==='session.error')&&!context(ev).some(x=>x.details?.state==='native')});
+   const injected=ev.some(x=>x.type==='session.error'&&JSON.stringify(x.error).includes('certification '+(fault==='first'?'first prompt':'partial output')+' failure'))&&context(ev).some(x=>x.details?.state==='started')&&ev.some(x=>x.type==='span.model_request_end'&&x.is_error===true)&&!context(ev).some(x=>x.details?.state==='native')&&(fault!=='partial'||text(ev).length>0);
+   result.checks.push({case:fault+'-failure-visible',ok:injected});
+   if(!injected)throw Error('Fault fixture did not reach the expected ACP '+fault+' injection; setup/transport errors are not certification evidence');
    const recovery=await turn(fsid,'What exact original-request token did I ask you to memorize? Reply only it. Do not use tools or files.',kind+'-'+fault+'-recovered');
    result.checks.push({case:fault+'-failure-rebuild-recall',ok:text(recovery).includes(original)&&context(recovery).some(x=>x.details?.state==='rebuilt')});
   }finally{await api('POST','/v1/sessions/'+fsid+'/archive',{});}
