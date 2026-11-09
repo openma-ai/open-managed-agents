@@ -10,7 +10,7 @@ import type {
 import { createSandboxPorts } from "../src/create-sandbox-ports";
 import { SandboxAssemblyError, type SandboxPortDeps, type SandboxVendorPort } from "../src/ports";
 import { createSyncStorage, OUTPUTS_SEEDED_MARKER } from "../src/sync-storage";
-import { v1Vendor } from "../src/v1-bridge";
+import { fromV1SandboxProvider, v1Vendor } from "../src/v1-bridge";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "work" };
 const fence = { ...scope, ownerId: "owner", generation: 1, token: "t", expiresAt: "2030-01-01T00:00:00.000Z" };
