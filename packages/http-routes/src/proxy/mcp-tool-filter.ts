@@ -7,6 +7,8 @@ const object = (value: unknown): value is Rpc => typeof value === "object" && va
 /** Only tool methods are inspected. Other exchanges retain their original stream. */
 export function selectMcpToolRequest(body: ReplayableBody, config: McpToolSelectionConfig, server: string) {
   const enabled = (name: string) => isMcpToolEnabled(config, server, name);
+  // GET replay has no request ids: treat every list-shaped result as a list.
+  const replay = body === null;
   const listIds = new Set<unknown>();
   const errors: Rpc[] = [];
   let batch = false;
@@ -36,7 +38,7 @@ export function selectMcpToolRequest(body: ReplayableBody, config: McpToolSelect
     : Response.json(batch ? errors : errors[0]);
   const filter = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(filter);
-    if (!object(value) || !listIds.has(value.id) || !object(value.result) || !Array.isArray(value.result.tools)) return value;
+    if (!object(value) || (!replay && !listIds.has(value.id)) || !object(value.result) || !Array.isArray(value.result.tools)) return value;
     return { ...value, result: { ...value.result,
       // Keep nextCursor even for an empty page: clients must be able to continue.
       tools: value.result.tools.filter(tool => object(tool) && typeof tool.name === "string" && enabled(tool.name)),
@@ -47,7 +49,7 @@ export function selectMcpToolRequest(body: ReplayableBody, config: McpToolSelect
     response: empty ? localResponse() : undefined,
     async filterResponse(response: Response): Promise<Response> {
       if (errors.length > 0 && response.ok && (response.status === 202 || response.body === null)) return localResponse();
-      if ((listIds.size === 0 && errors.length === 0) || !response.ok || response.body === null) return response;
+      if ((!replay && listIds.size === 0 && errors.length === 0) || !response.ok || response.body === null) return response;
       const headers = new Headers(response.headers);
       for (const name of ["content-length", "content-encoding", "transfer-encoding"]) headers.delete(name);
       if (headers.get("content-type")?.includes("text/event-stream")) {
@@ -59,8 +61,10 @@ export function selectMcpToolRequest(body: ReplayableBody, config: McpToolSelect
           const data = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).replace(/^ /, "")).join("\n");
           if (!data) return event;
           const value: unknown = JSON.parse(data);
+          const filtered = filter(value);
+          if (filtered === value) return event;
           const metadata = lines.filter(line => !line.startsWith("data:"));
-          return [...metadata, "data: " + JSON.stringify(filter(value))].join("\n");
+          return [...metadata, "data: " + JSON.stringify(filtered)].join("\n");
         };
         const stream = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new TransformStream<string, string>({
           start(controller) {

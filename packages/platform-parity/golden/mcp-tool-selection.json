@@ -21,7 +21,25 @@
       },
       "status": 200
     },
-    "session_create_status": 201
+    "filtered_list": {
+      "body": {
+        "id": 567,
+        "jsonrpc": "2.0",
+        "result": {
+          "nextCursor": "page-2",
+          "tools": [
+            {
+              "name": "echo"
+            }
+          ]
+        }
+      },
+      "status": 200
+    },
+    "session_create_status": 201,
+    "upstream_methods": [
+      "tools/list"
+    ]
   },
   "models": {},
   "timeouts": []

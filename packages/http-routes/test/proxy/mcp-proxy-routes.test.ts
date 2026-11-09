@@ -338,6 +338,22 @@ describe("MCP filtered stream lifecycle", () => {
     await reader.cancel();
     expect(cancel).toHaveBeenCalledOnce();
   });
+  it("filters replayed lists on a bodyless GET while preserving non-tool events", async () => {
+    const notification = 'id: 8\r\nevent: message\r\ndata: { "jsonrpc": "2.0", "method": "notifications/progress", "params": {"progress":1} }';
+    const replay = 'id: 9\nevent: message\ndata: {"jsonrpc":"2.0","id":77,"result":{"tools":[{"name":"hidden"},{"name":"echo"}],"nextCursor":"page-2"}}';
+    const fetch = upstream(request => {
+      expect(request.method).toBe("GET");
+      expect(request.headers.get("last-event-id")).toBe("7");
+      return new Response(notification + "\n\n" + replay + "\n\n", { headers: { "content-type": "text/event-stream" } });
+    });
+    const b = createMcpProxyBinding(() => ports({ managed: managedSession([server("public")], [], configured), fetch }));
+    const response = await b.fetch(new Request(SERVER, { headers: { ...routing("session", "public"), "last-event-id": "7" } }));
+    const text = await response.text();
+    expect(text).not.toContain("hidden");
+    expect(text).toContain('"tools":[{"name":"echo"}]');
+    expect(text).toContain('"nextCursor":"page-2"');
+    expect(text).toContain(notification);
+  });
   it("filters split SSE events before EOF and propagates cancellation", async () => {
     let canceled!: () => void;
     const cancellation = new Promise<void>(resolve => { canceled = resolve; });
