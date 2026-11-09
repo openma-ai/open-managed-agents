@@ -29,6 +29,15 @@ export interface EnvironmentCacheEntry {
   snapshot: EnvironmentSnapshotRef;
   createdAtMs: number;
   lastUsedAtMs?: number;
+  /** Expired or replaced snapshots whose delete failed (a provider may refuse
+   * while sandboxes started from them still exist); retried, never dropped. */
+  retired?: EnvironmentSnapshotRef[];
+}
+
+/** A record with no usable snapshot, kept only for its retired ones. */
+export interface EnvironmentCacheRetiredRecord {
+  state: "retired";
+  retired: EnvironmentSnapshotRef[];
 }
 
 export interface EnvironmentSnapshotBuildContext<R, Q> {
@@ -45,6 +54,8 @@ export interface EnvironmentSnapshotBuildContext<R, Q> {
   aborts: Map<string, () => void>;
   /** Build sandboxes still being acquired (dispose() waits for them, bounded). */
   steps: Set<Promise<unknown>>;
+  /** The record's retired snapshots now, after a delete attempt; the build carries the survivors. */
+  retired(store: EnvironmentCacheStore, storeKey: string): Promise<EnvironmentSnapshotRef[]>;
 }
 
 export type EnvironmentSnapshotBuildOutcome =
@@ -116,7 +127,10 @@ export async function buildEnvironmentSnapshot<R, Q>(
   void steps.catch(() => undefined);
   try {
     const snapshot = await Promise.race([steps, abortedPromise]);
-    await input.store.put(input.storeKey, JSON.stringify({ state: "ready", snapshot, createdAtMs: context.now() } satisfies EnvironmentCacheEntry));
+    const retired = await context.retired(input.store, input.storeKey);
+    await input.store.put(input.storeKey, JSON.stringify({
+      state: "ready", snapshot, createdAtMs: context.now(), ...(retired.length === 0 ? {} : { retired }),
+    } satisfies EnvironmentCacheEntry));
     logger.info({ ...fields, path: "build_ok", snapshotRef: snapshot.ref, durationMs: context.now() - startMs }, "Environment snapshot built");
     return { outcome: "built" };
   } catch (error) {

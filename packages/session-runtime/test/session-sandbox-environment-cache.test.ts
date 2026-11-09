@@ -312,6 +312,36 @@ describe("EnvironmentCache", () => {
     expect(h.warnings).toEqual([]);
   });
 
+  it("a refused delete (snapshot still in use) is retried, never orphaned", async () => {
+    let inUse = true;
+    const h = harness({ deleteSnapshot: async () => { if (inUse) throw new Error("400: cannot delete template because there are running sandboxes using it"); } });
+    await h.session("s1");
+    const first = JSON.parse(h.data.get(h.storeKey)!).snapshot.ref;
+    h.advance(7 * DAY);
+    await h.acquire("s2");
+    expect(JSON.parse(h.data.get(h.storeKey)!)).toEqual({ state: "retired", retired: [{ adapter: "fake", ref: first }] });
+    h.cache.prepared(scopeOf("s2"));
+    await h.cache.idle();
+    const rebuilt = JSON.parse(h.data.get(h.storeKey)!);
+    expect(rebuilt.retired).toEqual([{ adapter: "fake", ref: first }]);
+    expect(h.deleted.filter((r) => r === first).length).toBe(2);
+    inUse = false;
+    await h.session("s3");
+    const after = JSON.parse(h.data.get(h.storeKey)!);
+    expect(after.retired).toBeUndefined();
+    expect(after.snapshot.ref).toBe(rebuilt.snapshot.ref);
+    expect(h.deleted.filter((r) => r === first).length).toBe(3);
+  });
+
+  it("a retired-only record is a miss that keeps its retired refs through the rebuild", async () => {
+    const h = harness({ deleteSnapshot: async () => { throw new Error("in use"); } });
+    h.data.set(h.storeKey, JSON.stringify({ state: "retired", retired: [{ adapter: "fake", ref: "old" }, { adapter: "other", ref: "not-ours" }] }));
+    await h.session("s1");
+    expect(h.sessionFroms()).toEqual([FROM_IMAGE]);
+    expect(h.warnings).toEqual([]);
+    expect(JSON.parse(h.data.get(h.storeKey)!)).toMatchObject({ state: "ready", retired: [{ adapter: "fake", ref: "old" }] });
+  });
+
   it("a record of another adapter is an error, not a miss", async () => {
     const h = harness();
     h.data.set(h.storeKey, JSON.stringify({ state: "ready", snapshot: { adapter: "other", ref: "x" }, createdAtMs: 0 }));
