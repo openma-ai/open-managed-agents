@@ -211,8 +211,11 @@ The bundled forwarder listens on the fixed loopback address `127.0.0.1:18080`
 environment variables use that address, so background processes reconnect
 after a relay restart and use the current attempt binding. An occupied port
 fails installation with the port number; it never selects a random alternative.
-Local-subprocess sandboxes share the host network, so only one such relay
-can run there at once; use isolated sandboxes for concurrent credential egress.
+Local-subprocess sandboxes share the host network. At acquisition each
+allocates a loopback port and persists it in its sandbox state
+(`.oma-relay-port`). Relay restarts reuse that port. Occupancy is an error,
+not a reason to allocate another port. This per-sandbox exception was selected
+by the coordinating agent; it is not a user-selected global-port change.
 
 No compatibility path: the pre-#561 HMAC relay passes and sealed
 `sk-ant-req-v1.` execution `sessions_token`s are neither issued nor

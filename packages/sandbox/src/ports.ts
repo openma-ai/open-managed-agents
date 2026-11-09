@@ -258,6 +258,8 @@ export async function workspaceRootOf(sandbox: Pick<SandboxPort, "resolveWorkspa
 }
 
 export interface SandboxPort {
+  /** Stable loopback relay port for runtimes sharing a host network. */
+  egressRelayPort?(): Promise<number>;
   exec(command: string, timeout?: number): Promise<string>;
   /**
    * Absolute directory the agent works in, resolved once when the sandbox

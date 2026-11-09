@@ -32,7 +32,7 @@ const deliveryId = (n: number | string) => String(n).padStart(24, "0");
 /** The installer's hand-over without its wait: stage (0600) and a real `mv`. */
 async function deliver(f: LocalRelayFixture, token: string, id: string) {
   const staging = join(f.egressDir, `binding.${id}.next.json`);
-  await writeFile(staging, JSON.stringify({ ...f.relayConfig, sessionId: "session", token, deliveryId: id }), { mode: 0o600 });
+  await writeFile(staging, JSON.stringify({ ...f.relayConfig, port: await f.sandbox.egressRelayPort(), sessionId: "session", token, deliveryId: id }), { mode: 0o600 });
   await run("mv", [staging, join(f.egressDir, "binding.json")]);
 }
 const consumed = async (f: LocalRelayFixture, id: string) => {
@@ -61,7 +61,7 @@ const s=http.createServer((q,r)=>{if(mode==='exiting'){r.writeHead(503);r.end('e
 const exit=mode==='exit-after-health'&&q.url==='/health'&&pending();if(exit)fs.writeFileSync(path.join(dir,'fake-answered-with-delivery-pending'),'1');
 r.writeHead(200);r.end('ready',()=>{if(exit)process.exit(0)})});
 process.on('SIGTERM',()=>{fs.writeFileSync(path.join(dir,'fake-sigterm'),pending()?'pending':'none');process.exit(0)});
-s.listen(18080,'127.0.0.1',()=>{fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({...JSON.parse(template),pid:process.pid,port:s.address().port}))});`;
+s.listen(JSON.parse(template).port,'127.0.0.1',()=>{fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({...JSON.parse(template),pid:process.pid,port:s.address().port}))});`;
 async function fakeRelay(f: LocalRelayFixture, mode: "exit-after-health" | "exiting" | "never-consumes", template: Ready) {
   const child = spawn(process.execPath, ["-e", FAKE_RELAY, f.egressDir, mode, JSON.stringify(template)], { stdio: "ignore", detached: true });
   cleanup.push(async () => { try { process.kill(child.pid!, "SIGKILL"); } catch {} });
@@ -71,11 +71,12 @@ async function fakeRelay(f: LocalRelayFixture, mode: "exit-after-health" | "exit
 
 describe("sandbox relay delivery races (real processes)", () => {
   it("an occupied loopback relay port fails explicitly and never selects another port", async () => {
-    const blocker = createServer();
-    await new Promise<void>((resolve) => blocker.listen(18080, "127.0.0.1", resolve));
-    cleanup.push(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
     const f = await localRelayFixture(cleanup);
-    await expect(f.prepare()).rejects.toThrow(/18080.*in use/);
+    const port = await f.sandbox.egressRelayPort();
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(port, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
+    await expect(f.prepare()).rejects.toThrow(new RegExp(`${port}.*in use`));
     expect(await f.sandbox.exec('printf %s "$HTTPS_PROXY"')).toBe("");
   }, 30_000);
 
@@ -111,7 +112,7 @@ describe("sandbox relay delivery races (real processes)", () => {
     expect(await load).toContain("LOAD_DONE");
     const codes = (await readFile(join(f.workdir, ".load-codes"), "utf8")).trim().split("\n");
     expect(codes.length).toBeGreaterThan(20);
-    expect(new Set(codes)).toEqual(new Set(["200"])); // a half or unreadable binding would be 401 / 502
+    expect(new Set(codes)).toEqual(new Set(["200"])); // same sandbox, same token
     expect(await curl(f)).toBe("200");
     expect(f.tokens.seenTokens.at(-1)).toBe(tokens.at(-1));
     await noTokenOnDisk(f, [...f.issued, ...tokens]);

@@ -116,7 +116,8 @@ export async function prepareSandboxEgress(input: {
   const placeholders = await input.placeholders(scope);
   // Vault placeholders in the env → the relay inspects every HTTPS host (local-relay.ts).
   const inspect = Object.values(placeholders).some(value => value.startsWith("oma_vault_"));
-  const binding = { ...input.relay, sessionId: scope.sessionId, token: await input.issueToken(), ...(inspect ? { inspect } : {}) };
+  const port = await sandbox.egressRelayPort?.() ?? SANDBOX_RELAY_PORT;
+  const binding = { ...input.relay, ...(port === SANDBOX_RELAY_PORT ? {} : { port }), sessionId: scope.sessionId, token: await input.issueToken(), ...(inspect ? { inspect } : {}) };
   if (new URL(binding.endpoint).protocol !== "https:") throw new Error("Credential relay endpoint must use HTTPS");
   if (supportsCredentialEgress(sandbox)) {
     await sandbox.prepareCredentialEgress(binding); await replace(placeholders); return {};
@@ -163,8 +164,8 @@ export async function prepareSandboxEgress(input: {
   if (!matched) throw new Error("Sandbox credential relay installation/readiness failed");
   const state = JSON.parse(matched[1]!) as { pid: number; port: number; caFile: string; caBundleFile: string; restarts?: number };
   if (!Number.isSafeInteger(state.pid) || !Number.isSafeInteger(state.port)) throw new Error("Invalid sandbox relay readiness");
-  if (state.port !== SANDBOX_RELAY_PORT) throw new Error(`Sandbox relay must listen on port ${SANDBOX_RELAY_PORT}, got ${state.port}`);
-  const proxy = `http://127.0.0.1:${SANDBOX_RELAY_PORT}`;
+  if (state.port !== port) throw new Error(`Sandbox relay must listen on port ${port}, got ${state.port}`);
+  const proxy = `http://127.0.0.1:${port}`;
   await replace({ ...placeholders, HTTPS_PROXY: proxy, https_proxy: proxy, HTTP_PROXY: proxy, http_proxy: proxy,
     NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1", NODE_USE_ENV_PROXY: "1",
     NODE_EXTRA_CA_CERTS: state.caFile, SSL_CERT_FILE: state.caBundleFile, REQUESTS_CA_BUNDLE: state.caBundleFile,

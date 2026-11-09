@@ -21,6 +21,7 @@ describe("sandbox credential egress installation boundary", () => {
     raw.writeFile = (path, content) => write(path, path.endsWith("/relay.cjs")
       ? `const fs=require('fs'),http=require('http'),path=require('path');const dir=process.argv[2];const b=path.join(dir,'binding.json');let id=null;const take=()=>{try{id=JSON.parse(fs.readFileSync(b,'utf8')).deliveryId;fs.unlinkSync(b)}catch{}};take();const s=http.createServer((q,r)=>r.end('ok'));const pub=()=>fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({pid:process.pid,port:s.address().port,protocol:4,bindingId:id,bindingError:null,caFile:path.join(dir,'ca.crt'),caBundleFile:path.join(dir,'ca-bundle.crt')}));s.listen(18080,'127.0.0.1',()=>{pub();setInterval(()=>{if(fs.existsSync(b)){take();pub()}},50)});process.on('SIGTERM',()=>s.close(()=>process.exit(0)));`
       : content);
+    raw.egressRelayPort = async () => 18080;
     let pid = 0; let fail = false;
     const runner = new DefaultNodeManagedSessionRunner({
       buildSandbox: async () => raw, probeSandbox: async () => "alive",

@@ -13,6 +13,20 @@ const fixture = (cliId?: "gh" | "glab", realCli = false) => localRelayFixture(cl
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 describe("sandbox-owned local credential relay", () => {
+  it("two local Sessions run relays concurrently, and each restart retains its allocated proxy port", async () => {
+    const a = await fixture(); const b = await fixture();
+    const [one, two] = await Promise.all([a.prepare(), b.prepare()]);
+    expect(one.port).not.toBe(two.port);
+    for (const f of [a, b]) expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/concurrent'`)).toBe("200");
+    await clearSandboxEgress(a.sandbox);
+    const reattached = new LocalSubprocessSandbox({ workdir: a.workdir });
+    cleanup.push(() => reattached.destroy());
+    expect(await reattached.egressRelayPort()).toBe(one.port);
+    const again = await a.prepare();
+    expect(again.port).toBe(one.port);
+    expect(await b.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${b.target}/still'`)).toBe("200");
+  });
+
   it("runs a real CLI via localhost and ordinary HTTPS relay with placeholders only in the client", async () => {
     const f = await fixture(); await f.prepare();
     const output = await f.sandbox.exec(`printf '%s\\n' "$GITHUB_TOKEN"; curl -sS --noproxy '' -H "Authorization: Bearer $GITHUB_TOKEN" '${f.target}/a%2Fb?q=one%20two' | od -An -tu1`);
@@ -143,8 +157,14 @@ describe("sandbox-owned local credential relay", () => {
   it("a malformed delivery never replaces the working binding and is reported; the installer fails", async () => {
     const f = await fixture(); const ready = await f.prepare();
     await f.sandbox.exec(`printf '%s' '{"endpoint":"http://plain"}' > .oma-egress/binding.json && chmod 600 .oma-egress/binding.json`);
-    for (let i = 0; i < 50 && (await f.sandbox.exec("test -e .oma-egress/binding.json && echo PRESENT || echo GONE")).includes("PRESENT"); i++) await new Promise((resolve) => setTimeout(resolve, 50));
-    const state = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json")) as { bindingError: string | null; pid: number };
+    // Deletion precedes the readiness write; wait for the externally visible
+    // rejection, not merely the file disappearing between those two steps.
+    let state!: { bindingError: string | null; pid: number };
+    for (let i = 0; i < 50; i++) {
+      state = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json"));
+      if (state.bindingError !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     expect(state.bindingError).toMatch(/binding rejected/);
     expect(state.pid).toBe(ready.pid);
     expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/still'`)).toContain("200");

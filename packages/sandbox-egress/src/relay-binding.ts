@@ -12,6 +12,8 @@ import { existsSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export interface RelayBinding {
+  /** Fixed for this sandbox; isolated networks use the default 18080. */
+  port?: number;
   endpoint: string;
   /** Sent as the Basic username (the token carries no Session data). */
   sessionId: string;
@@ -35,6 +37,7 @@ export function parseRelayBindingDelivery(text: string, directory: string): { bi
   if (!nonEmpty(parsed.sessionId) || parsed.sessionId.includes(":")) throw new Error("sessionId is invalid");
   if (!nonEmpty(parsed.token)) throw new Error("token is missing");
   if (!nonEmpty(parsed.deliveryId)) throw new Error("deliveryId is missing");
+  if (parsed.port !== undefined && (!Number.isSafeInteger(parsed.port) || parsed.port < 1 || parsed.port > 65535)) throw new Error("relay port is invalid");
   const { deliveryId, ...binding } = parsed as RelayBindingDelivery;
   return { binding: { ...binding, directory }, deliveryId };
 }

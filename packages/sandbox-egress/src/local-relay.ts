@@ -47,6 +47,7 @@ async function respond(response: Response, output: ServerResponse) {
 }
 /** Runs inside one sandbox. It never receives a Vault token or root secret. */
 export async function startLocalRelay(config: () => LocalRelayConfig, state: { exiting(): boolean } = { exiting: () => false }) {
+  const relayPort = config().port ?? SANDBOX_RELAY_PORT;
   const authority = await createEgressCertificateAuthority(await loadOrCreateEgressCa(config().directory));
   const sockets = new Set<Duplex>();
   const track = (socket: Duplex) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); };
@@ -116,9 +117,9 @@ export async function startLocalRelay(config: () => LocalRelayConfig, state: { e
   });
   await new Promise<void>((resolve, reject) => {
     front.once("error", (error: NodeJS.ErrnoException) => reject(new Error(
-      `Sandbox relay port ${SANDBOX_RELAY_PORT} ${error.code === "EADDRINUSE" ? "is in use" : "could not be bound"}`, { cause: error },
+      `Sandbox relay port ${relayPort} ${error.code === "EADDRINUSE" ? "is in use" : "could not be bound"}`, { cause: error },
     )));
-    front.listen(SANDBOX_RELAY_PORT, "127.0.0.1", resolve);
+    front.listen(relayPort, "127.0.0.1", resolve);
   });
   return { port: (front.address() as { port: number }).port, certificatePem: authority.certificatePem,
     async close() { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => front.close(() => resolve())); intercepted.close(); },
