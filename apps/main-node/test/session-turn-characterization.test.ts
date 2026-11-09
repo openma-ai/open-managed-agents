@@ -64,6 +64,18 @@ describe("characterization: one Node turn", () => {
     expect(summary.at(-1)).toBe("idle:retries_exhausted");
   });
 
+  it("uses the whole retry budget on a side-effect-free failure", async () => {
+    const { runs, summary, result } = await turn(async () => { throw new Error("boom"); });
+    expect(runs).toBe(3);
+    expect(summary).toEqual([
+      "session.status_running",
+      "error:retrying", "session.status_rescheduled",
+      "error:retrying", "session.status_rescheduled",
+      "error:exhausted", "idle:retries_exhausted",
+    ]);
+    expect((result as { holdQueuedOnLane?: boolean }).holdQueuedOnLane).toBe(true);
+  });
+
   it("does not retry after an agent event", async () => {
     const { runs, summary } = await turn(async ({ runtime }) => {
       runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "partial" }] });
