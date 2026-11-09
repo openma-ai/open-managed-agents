@@ -43,7 +43,7 @@ try{
  const boxes=await sessionSandboxes(sid),id=boxes[0]?.sandboxId;if(!id)throw Error('no box');
  if(mode==='snapshot'){await Sandbox.kill(id,{apiKey:e2bSecret});}
  else {const box=await Sandbox.connect(id,{apiKey:e2bSecret});await box.commands.run(mode==='native-deleted'?"rm -rf /oma/harness-state/acp/"+sid+"/*/v1/native":"for f in /oma/harness-state/acp/"+sid+"/*/v1/*.json; do printf '{broken' > \"$f\"; done",{user:'root'});}
- const ev=await turn(sid,'Recall the exact original passphrase. Reply only that passphrase; do not use tools.',kind+'-'+mode);result.checks.push({case:mode,ok:text(ev).includes(phrase)&&(mode==='snapshot'?!context(ev).some(x=>x.details?.state==='rebuilt'):context(ev).some(x=>x.details?.state==='rebuilt')),rebuilt:context(ev).some(x=>x.details?.state==='rebuilt')});
+ const ev=await turn(sid,'Recall the exact original passphrase. Reply only that passphrase; do not use tools.',kind+'-'+mode);result.checks.push({case:mode,ok:text(ev).includes(phrase)&&(mode==='native-deleted'?context(ev).some(x=>x.details?.state==='rebuilt'):!context(ev).some(x=>x.details?.state==='rebuilt')),rebuilt:context(ev).some(x=>x.details?.state==='rebuilt')});
  }
 
  // Real-model failures use a protocol proxy, not a mock model or product hook.
