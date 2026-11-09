@@ -67,6 +67,23 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
 }
 
 describe("Managed Node native subagents", () => {
+  it("propagates the child's actual budget short circuit to its external idle event", async () => {
+    const {createSessionBudgetGate,memoryListCostPicoStore,beginModelEgress}=await import("../../../packages/agent-harness/src/budget");
+    const gate=createSessionBudgetGate({amount:"1",currency:"USD"},{version:1,currency:"USD",input_per_mtok:"1",output_per_mtok:"1"},memoryListCostPicoStore("10000000000"));
+    let childId="",modelRequests=0;
+    const f=fixture(async({session:active,subagents})=>{
+      if(active.agent.name==="Parent"){
+        subagents!.setBudgetGate!(gate);
+        childId=(await subagents!.create({name:"Worker",message:"Work"})).threadId;
+        await subagents!.wait({threadIds:[childId]});
+      } else { if(beginModelEgress(gate))modelRequests++; }
+    });
+    await f.run();
+    expect(modelRequests).toBe(0);
+    expect(f.frames.filter(frame=>frame.type==="session.thread_status_idle"&&frame.session_thread_id===childId)).toEqual([
+      expect.objectContaining({stop_reason:{type:"budget_reached"}}),
+    ]);
+  });
   it("executes an inline-only native session through the production policy and resolver", async () => {
     const f = fixture(async ({ session: active, runtime, subagents, sandbox }) => {
       if (active.agent.name === "Parent") {

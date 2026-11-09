@@ -100,7 +100,7 @@ export type SubagentEvent<Agent> =
       type: "thread_idle";
       threadId: string;
       agentName: string;
-      stopReason: "end_turn" | "retries_exhausted";
+      stopReason: "end_turn" | "retries_exhausted" | "budget_reached";
       interrupted: boolean;
     }
   | { type: "thread_error"; threadId: string; message: string }
@@ -121,6 +121,8 @@ export interface SubagentTurnInput<Agent> {
 }
 
 export interface SubagentTurnResult {
+  /** Actual child stop, not inferred from the parent's final state. */
+  stopReason?: "end_turn" | "budget_reached";
   /** Text of each agent message the turn produced, in order. */
   agentMessages: string[];
 }
@@ -401,6 +403,7 @@ export class SessionSubagents<Agent> implements SubagentControl {
       child.state = { threadId: child.thread.id, status: "running" };
       const abortFromParent = () => controller.abort(parent.reason);
       parent.addEventListener("abort", abortFromParent, { once: true });
+      let stopReason: "end_turn" | "budget_reached" = "end_turn";
       try {
         const message = child.pending[0];
         if (message !== undefined) {
@@ -422,6 +425,7 @@ export class SessionSubagents<Agent> implements SubagentControl {
           abortSignal: controller.signal,
           abortController: controller,
         });
+        stopReason = result.stopReason ?? "end_turn";
         const last = result.agentMessages.at(-1);
         if (last !== undefined) child.output = last;
         for (const text of result.agentMessages) {
@@ -444,7 +448,7 @@ export class SessionSubagents<Agent> implements SubagentControl {
           type: "thread_idle",
           threadId: child.thread.id,
           agentName: child.thread.agentName,
-          stopReason: child.state.status === "failed" ? "retries_exhausted" : "end_turn",
+          stopReason: child.state.status === "failed" ? "retries_exhausted" : controller.signal.aborted ? "end_turn" : stopReason,
           interrupted: controller.signal.aborted,
         });
         child.controller = undefined;

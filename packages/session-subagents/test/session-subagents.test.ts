@@ -8,6 +8,7 @@ import {
   type SubagentFact,
   type SubagentThread,
   type SubagentTurnInput,
+  type SubagentTurnResult,
 } from "../src/index.js";
 
 type Agent = { name: string; system: string };
@@ -15,6 +16,7 @@ type Turn = (input: SubagentTurnInput<Agent>) => Promise<string[]>;
 
 function fixture(options: {
   turn?: Turn;
+  result?: SubagentTurnResult;
   facts?: SubagentFact[];
   threads?: Map<string, SubagentThread<Agent>>;
   max?: number;
@@ -45,6 +47,7 @@ function fixture(options: {
     turns: {
       async run(input) {
         turns.push(input);
+        if (options.result) return options.result;
         return { agentMessages: await (options.turn ?? (async () => ["done"]))(input) };
       },
     },
@@ -57,6 +60,12 @@ function fixture(options: {
 const types = (events: SubagentEvent<Agent>[]) => events.map((event) => event.type);
 
 describe("SessionSubagents", () => {
+  it("reports the child budget stop instead of a synthetic successful end_turn", async () => {
+    const f=fixture({result:{agentMessages:[],stopReason:"budget_reached"} as SubagentTurnResult});
+    const child=await f.subagents.create({name:"Worker",message:"Work"});
+    await f.subagents.wait({threadIds:[child.threadId]});
+    expect(f.events.at(-1)).toMatchObject({type:"thread_idle",stopReason:"budget_reached",interrupted:false});
+  });
   it("delegates to a child and returns its last agent message", async () => {
     const f = fixture({ turn: async () => ["thinking", "final answer"] });
     await expect(f.subagents.delegate({ agentId: "worker", message: "Find it" })).resolves.toBe("final answer");

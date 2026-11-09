@@ -20,6 +20,7 @@ import {
   type SubagentFact,
   type SubagentState,
   type SubagentThread,
+  type SubagentTurnResult,
 } from "@open-managed-agents/session-subagents";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
@@ -279,7 +280,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     }, threadId);
   }
 
-  private async runTurn(thread: SubagentThread<Session>, abortSignal: AbortSignal): Promise<{ agentMessages: string[] }> {
+  private async runTurn(thread: SubagentThread<Session>, abortSignal: AbortSignal): Promise<SubagentTurnResult> {
     const session = thread.agent;
     const log = this.threadLog(thread.id);
     const before = log.length;
@@ -299,7 +300,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     finally { await runtime.drain(); }
     // Frames are committed in order; wait for this turn's before reading them.
     await this.outputChain;
-    return { agentMessages: log.slice(before).flatMap((event) => {
+    return { stopReason: this.budgetGate?.reached === true ? "budget_reached" : "end_turn", agentMessages: log.slice(before).flatMap((event) => {
       const text = agentMessageText(event);
       return text === null ? [] : [text];
     }) };
