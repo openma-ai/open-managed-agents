@@ -100,7 +100,7 @@ it("rejects an unsupported changed registry without dispatching another installa
   await f.run(); expect(f.commands).toHaveLength(2);
 });
 
-it("actual Node runner parks install uncertainty, survives owner replacement, and consumes duplicate confirmation only once", async () => {
+it.each(["warning", "pre-warning"])("actual Node runner recovers %s install uncertainty across owner replacement without duplicate confirmation effects", async crash => {
   const { DefaultNodeManagedSessionRunner } = await import("../../../packages/control-plane-node/src/lib/node-managed-session-runner");
   const { decodeRuntimeEvent } = await import("@open-managed-agents/managed-agents-adapters-runtime");
   const f = fixture(); const history: any[] = [], frames: any[] = []; let sequence = 0;
@@ -128,6 +128,10 @@ it("actual Node runner parks install uncertainty, survives owner replacement, an
   const retry = frames.find(e => e.type === "agent.tool_use" && e.id.startsWith("retry:"));
   expect(retry).toBeDefined();
   expect(frames).toContainEqual(expect.objectContaining({ type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: [retry.id] } }));
+  if (crash === "pre-warning") {
+    const original = history.find(e => e.type === "agent.tool_use" && e.name === "acp_install" && !e.id.startsWith("retry:"));
+    history.splice(history.indexOf(original) + 1);
+  }
   send = await newOwner(); await send([msg("ordinary")]); expect(f.commands).toHaveLength(1);
   f.succeed();
   const allow = (id: string) => ({ id, type: "user.tool_confirmation", toolUseId: retry.id, result: "allow", processedAt: "2026-11-01T00:00:00Z" });
@@ -136,4 +140,15 @@ it("actual Node runner parks install uncertainty, survives owner replacement, an
   await send([allow("allow3")]); await send([msg("later")]);
   expect(f.commands).toHaveLength(2);
   expect(frames.filter(e => e.type === "agent.tool_result" && e.tool_use_id === retry.id)).toHaveLength(1);
+});
+
+it("orphan canonical install without result or warning is conservatively parked and repaired", async () => {
+  const f = fixture(); await f.run();
+  const original = f.events.find(e => e.type === "agent.tool_use" && !e.id.startsWith("retry:"));
+  f.events.splice(f.events.indexOf(original) + 1); f.runtime.pendingConfirmations = [];
+  await f.run(); await f.run();
+  expect(f.commands).toHaveLength(1);
+  expect(f.events.filter(e => e.type === "agent.tool_result" && e.tool_use_id === original.id)).toHaveLength(1);
+  expect(f.events).toContainEqual(expect.objectContaining({ type: "session.warning", source: "tool_outcome_unknown", details: expect.objectContaining({ tool_use_id: original.id, outcome: "dispatched_unknown" }) }));
+  expect(f.runtime.pendingConfirmations).toEqual(["retry:" + original.id]);
 });

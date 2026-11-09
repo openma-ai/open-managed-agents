@@ -19,6 +19,15 @@ export async function installAcpAgentWithHistory(runtime: HarnessRuntime, prepar
         && typeof event.id === "string" && !event.id.startsWith("retry:")
         && input?.registry === registry && input.command === command && input.timeout === timeout;
     });
+    // A durable pre-dispatch use without a result is an uncertain attempt,
+    // even if the owner died before its catch could publish the warning.
+    // Never infer that a missing completion means the exec was not sent.
+    if (typeof original?.id === "string" && !events.some(event => event.type === "agent.tool_result" && event.tool_use_id === original.id)) {
+      requestUnknownToolRetry(runtime, original.id);
+      runtime.broadcast({ type: "agent.tool_result", tool_use_id: original.id, is_error: true,
+        content: "Installation outcome unknown after interrupted execution; explicit authorization is required for another attempt." });
+      throw Object.assign(new Error("ACP installation outcome is unknown"), { outcome: "dispatched_unknown" });
+    }
     const details = (event: Record<string, unknown>) => event.details as Record<string, unknown> | undefined;
     if (typeof original?.id === "string" && events.some(event => event.type === "session.warning" && event.source === "tool_outcome_unknown" && details(event)?.tool_use_id === original.id)) {
       let id: string = original.id;
