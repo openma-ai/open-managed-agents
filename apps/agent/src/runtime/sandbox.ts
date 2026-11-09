@@ -523,13 +523,21 @@ export class CloudflareSandbox
     const prefix = `/${sessionOutputsPrefix(opts.tenantId, opts.sessionId)}`;
     const fuse = this.fuseR2ConfigOrNull();
     if (fuse) {
+      // An R2 key reaches only its own bucket: outputs need the files bucket
+      // and its key (the memory key is AccessDenied there, which the shim
+      // reports as "cannot verify the new FUSE connection").
+      const missing = (["FILES_BUCKET_NAME", "R2_FILES_ACCESS_KEY_ID", "R2_FILES_SECRET_ACCESS_KEY"] as const)
+        .filter((name) => !this.env[name]);
+      if (missing.length > 0) {
+        throw new Error(`Session outputs mount requires ${missing.join(", ")} (the files bucket and its R2 key)`);
+      }
       return {
-        bucket: "managed-agents-files",
+        bucket: this.env.FILES_BUCKET_NAME!,
         mountPath,
         options: {
           endpoint: fuse.endpoint,
           provider: "r2",
-          credentials: fuse.credentials,
+          credentials: { accessKeyId: this.env.R2_FILES_ACCESS_KEY_ID!, secretAccessKey: this.env.R2_FILES_SECRET_ACCESS_KEY! },
           prefix,
           readOnly: false,
         },
