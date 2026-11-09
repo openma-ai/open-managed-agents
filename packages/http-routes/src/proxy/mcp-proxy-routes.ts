@@ -1,3 +1,4 @@
+import { selectMcpToolRequest } from "./mcp-tool-filter";
 import { Hono, type Context, type Env } from "hono";
 import { bindAccessLossHooks, mcpRequestBodyText } from "@open-managed-agents/mcp-access-loss";
 import { bufferRequestBody, type ReplayableBody } from "./forward";
@@ -26,19 +27,25 @@ export async function forwardMcpProxyRequest(
   const target = await resolveMcpProxyTarget(ports, request);
   if (target === null) return Response.json({ error: "forbidden" }, { status: 403 });
   const body = await request.body();
+  const toolset = target.toolSelection?.tools.find(tool => tool.type === "mcp_toolset" && tool.mcp_server_name === request.serverName);
+  const selection = target.toolSelection !== undefined && toolset !== undefined
+    && (toolset.default_config?.enabled === false || toolset.configs?.some(tool => tool.enabled === false))
+    ? selectMcpToolRequest(body, target.toolSelection, request.serverName) : undefined;
+  if (selection?.response !== undefined) return selection.response;
   const scope = { workspaceId: request.workspaceId, sessionId: request.sessionId, serverName: request.serverName };
   const hooks = ports.accessLoss === undefined
     ? undefined
     : await bindAccessLossHooks(ports.accessLoss, { ...scope, requestBody: mcpRequestBodyText(body) });
-  return forwardMcpProxyTarget(ports, {
+  const response = await forwardMcpProxyTarget(ports, {
     workspaceId: request.workspaceId,
     target,
     method: request.method,
     headers: request.headers,
-    body,
+    body: selection?.body ?? body,
     audit: { sessionId: request.sessionId, serverName: request.serverName, callerKind: request.callerKind },
     ...(hooks !== undefined && { onFinal: (result) => hooks.onFinal(result) }),
   });
+  return selection === undefined ? response : selection.filterResponse(response);
 }
 
 /**

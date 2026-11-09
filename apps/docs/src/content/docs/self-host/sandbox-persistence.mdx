@@ -284,7 +284,7 @@ raw completed-tool inputs are omitted. A `session.warning` with source
 | Codex | `CODEX_HOME` | `sessions/` | native + ACP load |
 | Gemini CLI | `GEMINI_CLI_HOME` | `.gemini/tmp/` | native + ACP load |
 | OpenCode | `XDG_DATA_HOME`, `XDG_STATE_HOME` | OpenCode session data/state stores used by the current native resume path | native + ACP load |
-| Pi / pi-acp | `PI_CODING_AGENT_DIR`, isolated `HOME` | Pi `sessions/` plus pi-acp `session-map.json` | native + ACP load |
+| Pi / pi-acp | `PI_CODING_AGENT_DIR`, isolated `HOME` | Pi `sessions/` (native IDs; no adapter map) | native + ACP resume/load |
 | MiniMax Code | `MINIMAX_DATA_DIR` | `v2/sessions/` plus both v2 SQLite indexes | native + ACP load |
 | GitHub Copilot CLI | isolated `HOME` | `session-state/` plus `session-store.db` family | native + ACP load |
 | Cortex Code | isolated `HOME` | `.snowflake/cortex/conversations/` | native + ACP load |

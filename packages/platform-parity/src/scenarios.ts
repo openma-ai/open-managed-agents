@@ -248,8 +248,47 @@ export const interrupt: ParityScenario = {
   },
 };
 
+export const mcpToolSelection: ParityScenario = {
+  name: "mcp-tool-selection",
+  covers: "MCP lists hide disabled tools and disabled calls never contact the upstream",
+  async run(context) {
+    const originalFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).hostname !== "parity-mcp.example.test") return originalFetch(input, init);
+      const rpc = await request.json() as { id: number; method: string };
+      seen.push(rpc.method);
+      return Response.json({ jsonrpc: "2.0", id: rpc.id, result: {
+        tools: [{ name: "echo" }, { name: "hidden" }], nextCursor: "page-2",
+      } });
+    };
+    try {
+      const agent = await context.agent("mcp-selection", {
+        mcp_servers: [{ name: "public", type: "url", url: "https://parity-mcp.example.test/mcp" }],
+        tools: [{ type: "mcp_toolset", mcp_server_name: "public", default_config: { enabled: false }, configs: [{ name: "echo", enabled: true }] }],
+      });
+      const sessionId = await context.session(agent);
+      const path = "/v1/oma/mcp-proxy/" + sessionId + "/public";
+      const list = await context.request("POST", path, { jsonrpc: "2.0", id: 567, method: "tools/list" });
+      if (JSON.stringify(list.body?.result?.tools) !== '[{"name":"echo"}]') throw new Error("MCP list was not filtered");
+      context.record("filtered_list", list);
+      const response = await context.request("POST", path, {
+        jsonrpc: "2.0", id: 568, method: "tools/call", params: { name: "hidden", arguments: {} },
+      });
+      if (response.body?.error?.code !== -32601) throw new Error("disabled MCP call was not refused");
+      context.record("disabled_call", response);
+      if (seen.join(",") !== "tools/list") throw new Error("disabled call reached upstream");
+      context.record("upstream_methods", seen);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  },
+};
+
 /** The scenario set every platform runner executes (order = report order). */
 export const PARITY_SCENARIOS: ParityScenario[] = [
+  mcpToolSelection,
   oneTurn,
   toolCall,
   memoryReadWrite,

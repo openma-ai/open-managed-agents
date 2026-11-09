@@ -12,7 +12,6 @@
     "./known-agents": "./src/known-agents.ts",
     "./native-state": "./src/native-state.ts",
     "./sandbox-agent": "./src/sandbox-agent.ts",
-    "./sandbox-agent-turn-error": "./src/sandbox-agent-turn-error.ts",
     "./registry-pins": "./src/acp-registry-pins.ts",
     "./inference-config": "./src/inference/index.ts",
     "./skill-cache": "./src/skill-cache.ts",

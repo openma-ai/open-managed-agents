@@ -32,7 +32,7 @@ describe("findProxySession", () => {
     expect(await findProxySession(s as never, scope)).toEqual({
       kind: "managed",
       vaultIds: ["vlt_1"],
-      root: { id: "agent", version: 2, model: "card", mcpServers: [{ name: "docs", url: "https://docs.test/mcp", authorizationToken: "inline" }] },
+      root: { toolSelection: { tools: [] }, id: "agent", version: 2, model: "card", mcpServers: [{ name: "docs", url: "https://docs.test/mcp", authorizationToken: "inline" }] },
       members: [],
     });
     expect(s.managed.find).toHaveBeenCalledWith(scope);
@@ -45,6 +45,7 @@ describe("findProxySession", () => {
       kind: "legacy",
       vaultIds: [],
       root: {
+        toolSelection: { tools: [] },
         id: "agent", version: 1, model: "card",
         mcpServers: [
           { name: "docs", url: "https://docs.test/mcp", authorizationToken: "legacy-inline" },

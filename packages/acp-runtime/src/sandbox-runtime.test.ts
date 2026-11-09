@@ -20,6 +20,18 @@ afterEach(async () => {
 });
 
 describe("sandbox ACP runtime", () => {
+  it.each([undefined, false])("refuses HTTP MCP without declared http support (%s)", async http => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-acp-http-capability-"));
+    temporaryDirectories.push(workdir);
+    const runtime = createAcpRuntime({ type: "local", spawner: new NodeSpawner() });
+    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: ' + JSON.stringify(http === undefined ? {} : { mcpCapabilities: { http } }));
+    const started: Array<Awaited<ReturnType<typeof runtime.start>>> = [];
+    try {
+      await expect(runtime.start({ agent: { command: process.execPath, args: ["-e", source], cwd: workdir },
+        mcpServers: [{ type: "http", name: "public", url: "https://proxy.example/mcp", headers: [] }],
+      }).then(value => { started.push(value); return value; })).rejects.toThrow(/mcpCapabilities.http/);
+    } finally { await Promise.all(started.map(session => session.dispose())); }
+  });
   it("runs the shared ACP session loop over a sandbox duplex process", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-sandbox-"));
     temporaryDirectories.push(workdir);
@@ -75,6 +87,19 @@ describe("sandbox ACP runtime", () => {
     expect(sandboxResult).toEqual(localResult);
   });
 
+  it("runs HTTP MCP only when initialize declares support", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-acp-http-supported-"));
+    temporaryDirectories.push(workdir);
+    const runtime = createAcpRuntime({ type: "sandbox", sandbox: new LocalSubprocessSandbox({ workdir }) });
+    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: { mcpCapabilities: { http: true } }');
+    const mcpServers = [{ type: "http" as const, name: "public", url: "https://proxy.example/mcp", headers: [] }];
+    const session = await runtime.start({ agent: { command: process.execPath, args: ["-e", source], cwd: "/workspace" }, mcpServers });
+    try {
+      const updates = [];
+      for await (const update of session.prompt("report mcp")) updates.push(update);
+      expect(updates).toContainEqual({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(mcpServers) } });
+    } finally { await session.dispose(); }
+  });
   it("sends the standard MCP stdio transport unchanged in session/new", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-mcp-stdio-"));
     temporaryDirectories.push(workdir);

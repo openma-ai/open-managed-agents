@@ -3,11 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AcpSandboxHarness } from "../src/acp-sandbox-loop";
 import type { HarnessContext } from "../src/interface";
 
-// e2e 42d7c785 (session_hLxyQiRfRNX8Gc2KS7wh8): pi's model call failed and
-// pi-acp answered session/prompt with a plain end_turn, so the turn ended
-// with no output, 0 tokens and no error. This fake ACP agent does the same;
-// the sandbox's exec serves pi's session JSONL, where pi 0.84 records the
-// failure on the assistant message (stopReason "error" + errorMessage).
+// @openma/pi-acp reports failed turns as ACP errors, not silent end_turn.
 function silentPiSandbox(transcript: string) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -34,7 +30,10 @@ function silentPiSandbox(transcript: string) {
               const result = (value: unknown) => send({ jsonrpc: "2.0", id: request.id, result: value });
               if (request.method === "initialize") result({ protocolVersion: 1, agentCapabilities: {} });
               else if (request.method === "session/new") result({ sessionId: "pi-session" });
-              else if (request.method === "session/prompt") result({ stopReason: "end_turn" });
+              else if (request.method === "session/prompt") {
+                if (transcript) send({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: '401: {"message":"Unauthorized"}' } });
+                else result({ stopReason: "end_turn" });
+              }
               else if (request.id !== undefined) send({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } });
             }
           },
@@ -62,7 +61,7 @@ async function runTurn(transcript: string) {
   const harness = new AcpSandboxHarness();
   try {
     await harness.run({
-      agent: { model: "deepseek-flash", acp: { agent: { id: "pi-acp", command: "pi-acp", cwd: "/workspace" } } },
+      agent: { model: "deepseek-flash", acp: { agent: { id: "pi-acp", command: "openma-pi-acp", cwd: "/workspace" } } },
       session_id: "session_silent",
       userMessage: { type: "user.message", content: [{ type: "text", text: "hello" }] },
       systemPrompt: "",
@@ -82,9 +81,9 @@ const piTranscript = [
 ].map((entry) => JSON.stringify(entry)).join("\n");
 
 describe("AcpSandboxHarness turn without output", () => {
-  it("surfaces the error pi recorded but pi-acp swallowed", async () => {
+  it("surfaces the adapter protocol error", async () => {
     expect(await runTurn(piTranscript)).toEqual([
-      { type: "session.error", error: 'ACP agent turn failed: 401: {"message":"Unauthorized"}' },
+      { type: "session.error", error: '401: {"message":"Unauthorized"}' },
     ]);
   });
 

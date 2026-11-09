@@ -269,6 +269,36 @@ describe("Harbor-style ACP sandbox agent preparation", () => {
     }
   });
 
+  it("restores the session map from a frozen legacy pi-acp checkpoint", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-legacy-pi-"));
+    const plan = prepareAcpSandboxAgent({
+      sessionId: "legacy_pi_" + Date.now(),
+      agent: { id: "pi-acp", command: "/usr/local/bin/pi-acp" },
+      stateRoot: workdir,
+    });
+    const map = '{"sessions":{"old-acp-id":"native-session"}}';
+    const checkpointMap = join(plan.binding.checkpointNativePath, "home/.pi/pi-acp/session-map.json");
+    const runtimeMap = join(plan.binding.nativePath, "home/.pi/pi-acp/session-map.json");
+    const sandbox = {
+      writeFile,
+      async exec(command: string) { return (await execFileAsync("/bin/sh", ["-c", command])).stdout; },
+    };
+    try {
+      await mkdir(dirname(checkpointMap), { recursive: true });
+      await writeFile(checkpointMap, map);
+      await mkdir(join(plan.binding.checkpointNativePath, "home/.pi/agent/sessions"), { recursive: true });
+      await writeFile(join(plan.binding.rootPath, "acp-session.json"), '{"version":1,"acpSessionId":"old-acp-id"}');
+      await restoreAcpSandboxAgentState(sandbox, plan);
+      await expect(readFile(runtimeMap, "utf8")).resolves.toBe(map);
+      expect(plan.binding.sessionArtifacts).toContainEqual(expect.objectContaining({
+        runtimePath: runtimeMap, kind: "file", requiredForResume: true,
+      }));
+    } finally {
+      await rm(plan.binding.nativePath, { recursive: true, force: true });
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps an ACP-only adapter explicit instead of claiming native resume", () => {
     const plan = prepareAcpSandboxAgent({
       sessionId: "session/aider",

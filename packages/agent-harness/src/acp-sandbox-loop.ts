@@ -1,5 +1,4 @@
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
-import { readAcpSandboxAgentTurnError } from "@open-managed-agents/acp-runtime/sandbox-agent-turn-error";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import {
   PLATFORM_ROOT,
@@ -295,13 +294,10 @@ export class AcpSandboxHarness implements HarnessInterface {
       } finally {
         runtime.abortSignal?.removeEventListener("abort", onAbort);
       }
-      // An agent may end a failed turn as a plain end_turn (pi-acp does);
-      // never report that as a silent success.
+      // Empty output is not a successful turn. Adapter failures arrive as ACP
+      // errors; do not inspect private transcripts to support obsolete adapters.
       if (!translator.producedOutput && !runtime.abortSignal?.aborted) {
-        const detail = await readAcpSandboxAgentTurnError(runtime.sandbox, preparation).catch(() => null);
-        throw new Error(detail === null
-          ? "ACP agent ended the turn without any output; check its model configuration"
-          : `ACP agent turn failed: ${detail}`);
+        throw new Error("ACP agent ended the turn without any output; check its model configuration");
       }
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       this.#semanticRecoveryReason = null;

@@ -5,8 +5,8 @@ import { matchesAgentIdentity } from "../match.js";
 import { proxyUrl } from "../helpers.js";
 
 /**
- * pi reads its model only from files under PI_CODING_AGENT_DIR (pi 0.84,
- * docs/models.md, docs/settings.md); pi-acp 0.0.33 has no model env var.
+ * @openma/pi-acp 0.1.8 uses Pi 1.5 ModelRuntime, reading models.json and
+ * settings.json under PI_CODING_AGENT_DIR (or its --agent-dir override).
  * - models.json `apiKey` interpolates `$VAR` / `${VAR}`; any other string is
  *   a literal key, so the gateway would get it as the bearer.
  * - settings.json `defaultProvider` / `defaultModel` pick the model of a new
@@ -17,7 +17,7 @@ import { proxyUrl } from "../helpers.js";
 export const piInferenceAdapter: InferenceConfigAdapter = {
   id: "pi",
   supportedProtocols: ["openai-chat"],
-  matches: (agent) => matchesAgentIdentity(agent, ["pi-acp"]),
+  matches: (agent) => matchesAgentIdentity(agent, ["pi-acp", "openma-pi-acp"]),
   plan(context) {
     const { nativePath, target, proxy, endpoint } = context;
     const agentDir = join(nativePath, "home", ".pi", "agent");
