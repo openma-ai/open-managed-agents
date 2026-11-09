@@ -9,6 +9,7 @@ import { randomUUID, createHash } from "node:crypto";
 import OpenAI from "openai";
 import type { SessionCreateParamsNonStreaming } from "openai/resources/beta/agents/sessions/sessions";
 import { assertSingleFunctionSettlement, assertUniqueIds } from "../_helpers/openai-acceptance";
+import { structuralEvidence } from "./evidence";
 
 if (process.env.OMA_LIVE_LLM !== "1") throw new Error("Explicit OMA_LIVE_LLM=1 required; this suite spends real model tokens");
 const bases = (process.env.OMA_LIVE_BASE_URLS ?? "").split(",").filter(Boolean);
@@ -26,7 +27,7 @@ const root = resolve(output);
 await mkdir(root, { recursive: true });
 const secrets = [key, process.env.MINIMAX_API_KEY, process.env.E2B_API_KEY].filter((x): x is string => Boolean(x));
 const redact = (text: string) => secrets.reduce((s, secret) => s.split(secret).join("<redacted>"), text);
-async function save(name: string, data: unknown) { await writeFile(resolve(root, name + ".json"), redact(JSON.stringify(data, null, 2))); }
+async function save(name: string, data: unknown) { await writeFile(resolve(root, name + ".json"), redact(JSON.stringify(structuralEvidence(data), null, 2))); }
 const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const diff = execFileSync("git", ["diff", "HEAD"], { encoding: "utf8" });
 const sourceSha256 = createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex");
@@ -41,8 +42,8 @@ await save("model-readback", { model_id: card.model_id, model: card.model, provi
 let sequence = 0;
 const clients = bases.map(base => new OpenAI({ apiKey: key, baseURL: base.replace(/[/]$/, "") + "/openai/v1", maxRetries: 0, timeout, fetch: async (url, init) => {
   const response = await fetch(url, init);
-  const record: Record<string, unknown> = { at: new Date().toISOString(), url: String(url), method: init?.method, body: init?.body, status: response.status };
-  if (!response.headers.get("content-type")?.includes("text/event-stream")) record.response = await response.clone().text();
+  const record = { at: new Date().toISOString(), method: init?.method, httpStatus: response.status };
+  // No request bodies, headers, credentials, URLs, or raw upstream responses.
   await save("http-" + (++sequence), record);
   return response;
 } }));
@@ -61,19 +62,20 @@ async function completed(id: string, count: number, replica = 0) { return wait((
 async function create(input: SessionCreateParamsNonStreaming) { const session = await api().create(input); owned.push(session.id); await save("owned-sessions", owned); return session; }
 async function scenario(name: string, run: () => Promise<void>) {
   try { await run(); results.push({ scenario: name, status: "PASS" }); }
-  catch (error) { results.push({ scenario: name, status: "FAIL", error: redact(String(error instanceof Error ? error.stack : error)) }); }
+  catch (error) { results.push({ scenario: name, status: "FAIL", error: error instanceof Error ? error.name + ":" + (error.stack?.match(/openai-real-model[.]live[.]ts:[0-9]+:[0-9]+/)?.[0] ?? "unknown") : "UnknownError" }); }
   await save("results", results);
 }
 
 await scenario("function-RA-deferred-steer-peer-settlement-pagination", async () => {
-  const nonce = "LIVE_" + randomUUID();
-  const session = await create({ agent: { model, instructions: "Follow tool instructions exactly. Never invent tool results.", tools: [{ type: "function", name: "lookup", description: "Return a value for key answer", parameters: { type: "object", properties: { key: { type: "string", enum: ["answer"] } }, required: ["key"], additionalProperties: false } }] }, environment: { type: "none" }, input: "Call lookup exactly once with key answer. Wait for its result before answering." });
+  const nonce = "STEER_" + randomUUID();
+  const toolAnswer = "RESULT_" + randomUUID();
+  const session = await create({ agent: { model, instructions: "Call lookup exactly once. After its result arrives, quote the EXACT returned value verbatim in your final reply, even when a subsequent instruction adds a suffix. Never invent or normalize the value.", tools: [{ type: "function", name: "lookup", description: "Return a value for key answer", parameters: { type: "object", properties: { key: { type: "string", enum: ["answer"] } }, required: ["key"], additionalProperties: false } }] }, environment: { type: "none" }, input: "Call lookup exactly once with key answer. Wait for its result before answering." });
   const waiting = await wait(() => api(1).retrieve(session.id), value => value.status === "requires_action");
   assert.equal(waiting.required_actions.length, 1);
   const action = waiting.required_actions[0]!; assert.equal(action.type, "function_call");
   if (action.type !== "function_call") throw new Error("Expected function action");
   assert.equal(action.name, "lookup"); assert.deepEqual(action.arguments, { key: "answer" });
-  await api(1).events.create(session.id, { events: [message("After the pending lookup settles, reply exactly " + nonce + ". Do not call any more tools.")] });
+  await api(1).events.create(session.id, { events: [message("After the pending lookup settles, reply with its exact returned value followed by " + nonce + ". Do not call any more tools.")] });
   const deferred = await api().retrieve(session.id);
   assert.equal(deferred.status, "requires_action"); assert.deepEqual(deferred.required_actions, waiting.required_actions);
   if (restartScript) {
@@ -87,16 +89,51 @@ await scenario("function-RA-deferred-steer-peer-settlement-pagination", async ()
     assert.deepEqual(await items(session.id, 1), beforeItems);
     assert.deepEqual(await turns(session.id, 1), beforeTurns);
   }
-  const body = { events: [{ type: "agent.session.input.tool_result" as const, turn_id: action.turn_id, call_id: action.call_id, success: true as const, output: "42" }], "Idempotency-Key": randomUUID() };
+  const body = { events: [{ type: "agent.session.input.tool_result" as const, turn_id: action.turn_id, call_id: action.call_id, success: true as const, output: toolAnswer }], "Idempotency-Key": randomUUID() };
   await api(1).events.create(session.id, body);
   await completed(session.id, 1, 1);
   const settled = await items(session.id, 1);
-  assertSingleFunctionSettlement(settled, action.call_id, action.turn_id, "42");
-  assert(settled.some(row => row.type === "message" && row.role === "assistant" && JSON.stringify(row.content).includes(nonce)));
-  assert(settled.some(row => row.type === "message" && row.role === "user" && JSON.stringify(row.content).includes(nonce) && row.turn_id === action.turn_id));
+  assertSingleFunctionSettlement(settled, action.call_id, action.turn_id, toolAnswer);
   await api().events.create(session.id, body);
   assert.deepEqual(await items(session.id), settled);
   assert.equal((await api(1).retrieve(session.id)).required_actions.length, 0);
+  const duplicates = await Promise.allSettled([0, 1].map(replica => api(replica).events.create(session.id, { ...body, "Idempotency-Key": randomUUID() })));
+  for (const duplicate of duplicates) { assert.equal(duplicate.status, "rejected"); if (duplicate.status === "rejected") assert.equal(duplicate.reason.status, 409); }
+  assert.deepEqual(await items(session.id, 1), settled);
+  assert.equal((await turns(session.id)).length, 1);
+  assert(settled.some(row => row.type === "message" && row.role === "assistant" && JSON.stringify(row.content).includes(toolAnswer)), "assistant consumed unpredictable tool result");
+  assert(settled.some(row => row.type === "message" && row.role === "assistant" && JSON.stringify(row.content).includes(nonce)));
+  assert(settled.some(row => row.type === "message" && row.role === "user" && JSON.stringify(row.content).includes(nonce) && row.turn_id === action.turn_id));
+});
+
+await scenario("partial-RA-two-real-function-calls", async () => {
+  const session = await create({ agent: { model, instructions: "Call lookup for keys left and right in the SAME response, exactly two parallel function calls before any answer. Wait for both results, then report both exact values.", tools: [{ type: "function", name: "lookup", description: "Look up one requested key", parameters: { type: "object", properties: { key: { type: "string", enum: ["left", "right"] } }, required: ["key"], additionalProperties: false } }] }, environment: { type: "none" }, input: "Look up left and right now using two parallel calls. Do not guess values." });
+  const waiting = await wait(() => api(1).retrieve(session.id), value => value.status === "requires_action");
+  assert.equal(waiting.required_actions.length, 2, "real model must produce two pending calls");
+  const actions = waiting.required_actions;
+  assert(actions.every(action => action.type === "function_call"));
+  assert.equal(new Set(actions.map(action => action.turn_id)).size, 1);
+  const first = actions[0]!, second = actions[1]!;
+  const left = "VALUE_A_" + randomUUID(), right = "VALUE_B_" + randomUUID();
+  const settle = (action: typeof first, output: string) => ({ events: [{ type: "agent.session.input.tool_result" as const, turn_id: action.turn_id, call_id: action.call_id, success: true as const, output }], "Idempotency-Key": randomUUID() });
+  await api().events.create(session.id, settle(first, left));
+  const partial = await api(1).retrieve(session.id);
+  assert.equal(partial.status, "requires_action");
+  assert.deepEqual(partial.required_actions, [second]);
+  const parkedItems = await items(session.id, 1), parkedTurns = await turns(session.id, 1);
+  assertSingleFunctionSettlement(parkedItems, first.call_id, first.turn_id, left);
+  assert.equal(parkedTurns.length, 1); assert.equal(parkedTurns[0].id, first.turn_id);
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  assert.deepEqual((await api().retrieve(session.id)).required_actions, [second]);
+  assert.deepEqual(await items(session.id), parkedItems, "partial result cannot advance model output");
+  assert.deepEqual(await turns(session.id), parkedTurns);
+  await api(1).events.create(session.id, settle(second, right));
+  await completed(session.id, 1);
+  const finished = await items(session.id);
+  assertSingleFunctionSettlement(finished, first.call_id, first.turn_id, left);
+  assertSingleFunctionSettlement(finished, second.call_id, second.turn_id, right);
+  const answer = finished.filter(row => row.type === "message" && row.role === "assistant").map(row => JSON.stringify(row.content)).join(" ");
+  assert(answer.includes(left) && answer.includes(right));
 });
 
 await scenario("SSE-disconnect-Items-Turns-multiround-peer-history", async () => {
@@ -143,7 +180,7 @@ await scenario("real-subagent-root-child-history-isolation", async () => {
   const rootToken = "ROOT_" + randomUUID();
   const session = await create({ agent: { model, instructions: "Follow the requested delegation using the subagent tools; wait for completion before answering.", multi_agent: { enabled: true, max_concurrent_subagents: 1 } }, environment: { type: "none" }, input: "Create one subagent whose task is to reply exactly " + childToken + ". Wait for it to complete, then close it and reply exactly " + rootToken + ". Do not include the child token in your final answer." });
   await wait(() => turns(session.id, 1), rows => rows.some(row => row.subagent_id === null && row.status === "completed"));
-  const children = [];
+  const children: Array<{ id: string; status: string }> = [];
   for await (const row of api(1).subagents.list(session.id, { limit: 1 })) children.push(row);
   assert.equal(children.length, 1);
   assert.equal(children[0]!.status, "closed");
@@ -156,7 +193,24 @@ await scenario("real-subagent-root-child-history-isolation", async () => {
   await save(session.id + "-child-items", childItems);
   assert(childItems.some(row => row.type === "message" && row.role === "assistant" && JSON.stringify(row.content).includes(childToken)));
   assert(rootItems.some(row => row.type === "message" && row.role === "assistant" && JSON.stringify(row.content).includes(rootToken)));
-  assert(!childItems.some(row => row.type === "message" && row.role === "assistant" && JSON.stringify(row.content).includes(rootToken)));
+  const allTurns = await turns(session.id, 1);
+  const childTurnIds = new Set(allTurns.filter(row => row.subagent_id === children[0]!.id).map(row => row.id));
+  const rootTurnIds = new Set(allTurns.filter(row => row.subagent_id === null).map(row => row.id));
+  assert(childTurnIds.size > 0 && rootTurnIds.size > 0);
+  const childAssistant = childItems.filter(row => row.type === "message" && row.role === "assistant");
+  assert(childAssistant.every(row => childTurnIds.has(row.turn_id)));
+  assert(rootItems.every(row => rootTurnIds.has(row.turn_id)));
+  const rootIds = new Set(rootItems.map(row => row.id));
+  assert(childAssistant.every(row => !rootIds.has(row.id)), "child assistant items cannot leak into root history");
+  const creation = rootItems.find(row => row.type === "create_subagent_call")!;
+  const waiting = rootItems.find(row => row.type === "wait_for_subagents_call")!;
+  const closing = rootItems.find(row => row.type === "close_subagent_call")!;
+  assert.equal(closing.status, "completed");
+  assert.equal(closing.recipient_agent_id, children[0]!.id);
+  assert(waiting.recipient_agent_ids.includes(children[0]!.id));
+  assert.equal(waiting.sender_agent_id, creation.agent_id);
+  assert.equal(closing.sender_agent_id, creation.agent_id);
+  assert.equal(waiting.turn_id, creation.turn_id); assert.equal(closing.turn_id, creation.turn_id);
 });
 
 results.push(restartScript
@@ -168,5 +222,5 @@ for (const id of owned) {
   catch (error) { results.push({ scenario: "cleanup:" + id, status: "FAIL", error: redact(String(error)) }); }
 }
 await save("results", results);
-console.log(JSON.stringify({ head, results, evidence: root }, null, 2));
+console.log(JSON.stringify(structuralEvidence({ head, results }), null, 2));
 if (results.some(row => row.status === "FAIL")) process.exitCode = 1;
