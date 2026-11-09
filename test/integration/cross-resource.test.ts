@@ -604,13 +604,14 @@ describe("Cross-entity lifecycle", () => {
     const session = (await sRes.json()) as any;
 
     // Post event
+    const inputId = `sevt_${crypto.randomUUID()}`;
     const evtRes = await post(`/v1/oma/sessions/${session.id}/events`, {
-      events: [{ type: "user.message", content: [{ type: "text", text: "trigger flow" }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text: "trigger flow" }] }],
     });
     expect(evtRes.status).toBe(202);
 
     // Wait for the accepted input and its durable execution to finish.
-    await waitForSessionExecution(session.id);
+    await waitForSessionExecution(session.id, [inputId]);
 
     // Verify events
     const events = await collectReplayedEvents(session.id, 100);

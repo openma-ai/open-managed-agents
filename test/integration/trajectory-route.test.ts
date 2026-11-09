@@ -51,14 +51,15 @@ async function setup() {
 }
 
 async function postMessageAndWait(sessionId: string, text: string): Promise<void> {
+  const inputId = `sevt_${crypto.randomUUID()}`;
   await api(`/v1/oma/sessions/${sessionId}/events`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
-      events: [{ type: "user.message", content: [{ type: "text", text }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text }] }],
     }),
   });
-  await waitForSessionExecution(sessionId);
+  await waitForSessionExecution(sessionId, [inputId]);
 }
 
 async function getTrajectory(sessionId: string): Promise<Response> {

@@ -561,11 +561,12 @@ describe("Session harness status flow", () => {
     });
     const session = (await s.json()) as any;
 
+    const inputId = `sevt_${crypto.randomUUID()}`;
     await post(`/v1/oma/sessions/${session.id}/events`, {
-      events: [{ type: "user.message", content: [{ type: "text", text: "go" }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text: "go" }] }],
     });
 
-    await waitForSessionExecution(session.id);
+    await waitForSessionExecution(session.id, [inputId]);
 
     // Check events include status events
     const doId = env.SESSION_DO!.idFromName(session.id);
@@ -595,10 +596,11 @@ describe("Session harness status flow", () => {
     });
     const session = (await s.json()) as any;
 
+    const inputId = `sevt_${crypto.randomUUID()}`;
     await post(`/v1/oma/sessions/${session.id}/events`, {
-      events: [{ type: "user.message", content: [{ type: "text", text: "test" }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text: "test" }] }],
     });
-    await waitForSessionExecution(session.id);
+    await waitForSessionExecution(session.id, [inputId]);
 
     const doId = env.SESSION_DO!.idFromName(session.id);
     const stub = env.SESSION_DO!.get(doId);

@@ -74,10 +74,12 @@ async function events(sessionId: string): Promise<any[]> {
 }
 
 async function sendMessage(sessionId: string, text: string) {
+  const inputId = `sevt_${crypto.randomUUID()}`;
   const res = await post(`/v1/oma/sessions/${sessionId}/events`, {
-    events: [{ type: "user.message", content: [{ type: "text", text }] }],
+    events: [{ id: inputId, type: "user.message", content: [{ type: "text", text }] }],
   });
   expect([200, 202]).toContain(res.status);
+  return inputId;
 }
 
 describe("characterization: Cloudflare subagent delegation", () => {
@@ -98,8 +100,8 @@ describe("characterization: Cloudflare subagent delegation", () => {
     const environment = await createEnvironment();
     const session = await json(await post("/v1/oma/sessions", { agent: parent.id, environment_id: environment.id }));
 
-    await sendMessage(session.id, "delegate please");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "delegate please");
+    await waitForIdle(session.id, [inputId]);
     const log = await events(session.id);
 
     const parentTexts = log
@@ -160,8 +162,8 @@ describe("characterization: Cloudflare outcome evaluation", () => {
   it("evaluates after the turn and records a satisfied verdict", async () => {
     const session = await outcomeSession("charz-outcome-writer");
     await defineOutcome(session.id, 3);
-    await sendMessage(session.id, "go");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "go");
+    await waitForIdle(session.id, [inputId]);
     const log = await events(session.id);
 
     const ends = log.filter((event) => event.type === "span.outcome_evaluation_end");
@@ -179,8 +181,8 @@ describe("characterization: Cloudflare outcome evaluation", () => {
   it("feeds a needs_revision verdict back as a user turn and re-evaluates", async () => {
     const session = await outcomeSession("charz-outcome-reviser");
     await defineOutcome(session.id, 3);
-    await sendMessage(session.id, "go");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "go");
+    await waitForIdle(session.id, [inputId]);
     const log = await events(session.id);
 
     const ends = log.filter((event) => event.type === "span.outcome_evaluation_end");
@@ -199,8 +201,8 @@ describe("characterization: Cloudflare outcome evaluation", () => {
   it("stops at max_iterations with max_iterations_reached", async () => {
     const session = await outcomeSession("charz-sub-child");
     await defineOutcome(session.id, 2);
-    await sendMessage(session.id, "go");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "go");
+    await waitForIdle(session.id, [inputId]);
     const ends = (await events(session.id)).filter((event) => event.type === "span.outcome_evaluation_end");
     expect(ends.map((event) => [event.result, event.iteration])).toEqual([
       ["needs_revision", 0],
