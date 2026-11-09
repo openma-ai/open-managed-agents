@@ -74,7 +74,7 @@ if(!await healthy(r))pid=await start(r);
 const t=Date.now();for(;;){r=read();const consumed=!fs.existsSync(bindingFile);
 if(r&&consumed&&r.bindingId===id&&await healthy(r)){process.stdout.write('EGRESS_READY:'+JSON.stringify({pid:r.pid,port:r.port,caFile:r.caFile,caBundleFile:r.caBundleFile,restarts})+String.fromCharCode(10));process.exit(0)}
 if(r&&consumed&&r.bindingId!==id&&r.bindingError)fail(String(r.bindingError));
-if(!consumed&&delivered()!==null&&delivered()!==id)fail('superseded by a newer delivery');
+const onDisk=delivered();if(!consumed&&onDisk!==null&&onDisk!==id)fail('superseded by a newer delivery');
 if(!consumed&&pid&&!alive(pid)){if(++restarts>2)fail('relay exited before it took the binding');pid=await start(null)}
 if(Date.now()-t>8000)fail(consumed?'relay did not report this delivery':'binding was not consumed');
 await sleep(50)}})().catch(e=>fail(e&&e.message||'error'))`;
