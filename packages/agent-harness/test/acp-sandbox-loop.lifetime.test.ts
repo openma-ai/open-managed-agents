@@ -13,6 +13,7 @@ let failPrompt = false;
 let gonePrompt = false;
 let terminalError = false;
 let resumeSame = false;
+let duringPrompt: (() => Promise<void> | void) | undefined;
 
 vi.mock("../../acp-runtime/src/placement.ts", () => ({
   createAcpRuntime: () => ({
@@ -22,7 +23,7 @@ vi.mock("../../acp-runtime/src/placement.ts", () => ({
       return {
         acpSessionId: id,
         isAlive: () => alive,
-        async *prompt(text: string) { prompts.push(text); if (gonePrompt) { const {SandboxGoneError}=await import("@open-managed-agents/sandbox"); throw new SandboxGoneError("confirmed gone"); } if (failPrompt) throw new Error("first turn failed"); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; if (terminalError) yield {type:"promptError",error:"provider disconnected"}; },
+        async *prompt(text: string) { prompts.push(text); await duringPrompt?.(); if (gonePrompt) { const {SandboxGoneError}=await import("@open-managed-agents/sandbox"); throw new SandboxGoneError("confirmed gone"); } if (failPrompt) throw new Error("first turn failed"); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; if (terminalError) yield {type:"promptError",error:"provider disconnected"}; },
         async dispose() { disposed.push(id); },
       };
     },
@@ -101,6 +102,58 @@ function context(port: unknown, acp: Record<string, unknown> = {}): HarnessConte
 }
 
 describe("acp-sandbox child lifetime", () => {
+  it.each(["terminal", "throw"])("stops before translating post-refusal output (%s), without a success checkpoint", async failure => {
+    const { createSessionBudgetGate, memoryListCostPicoStore, modelEgress } = await import("../src/budget");
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.budget = createSessionBudgetGate({ amount: "1", currency: "USD" }, { version: 1, currency: "USD", input_per_mtok: "1000000", output_per_mtok: "1000000" }, memoryListCostPicoStore());
+    const chunks: string[] = [];
+    ctx.runtime.broadcastChunk = async (_id, text) => { chunks.push(text); };
+    duringPrompt = async () => {
+      const meter = modelEgress(ctx.budget)!;
+      expect(meter.begin()).toBe(true);
+      meter.complete({ input_tokens: 1 });
+      expect(meter.begin()).toBe(false);
+      const callbacks = started.at(-1)!.clientCallbacks as { requestPermission: (request: unknown) => Promise<unknown> };
+      await expect(callbacks.requestPermission({ options: [{ optionId: "allow", kind: "allow_once" }] })).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+      if (failure === "throw") throw new Error("gateway request refused");
+      terminalError = true;
+    };
+    await new AcpSandboxHarness().run(ctx);
+    expect(ctx.budget!.reached).toBe(true);
+    expect(chunks).toEqual([]);
+    expect(ctx.runtime.history.getEvents().filter(e => e.type === "session.error" || e.type === "agent.message")).toEqual([]);
+    expect(s.files.size).toBe(0);
+    expect(disposed).toEqual(["acp_1"]);
+  });
+  it("preserves canonical output from before a later request refusal", async () => {
+    const { createSessionBudgetGate, memoryListCostPicoStore, modelEgress } = await import("../src/budget");
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.budget = createSessionBudgetGate({ amount: "1", currency: "USD" }, { version: 1, currency: "USD", input_per_mtok: "1000000", output_per_mtok: "1000000" }, memoryListCostPicoStore());
+    ctx.runtime.broadcastChunk = async () => { modelEgress(ctx.budget)!.complete({ input_tokens: 1 }); expect(modelEgress(ctx.budget)!.begin()).toBe(false); };
+    terminalError = true;
+    await new AcpSandboxHarness().run(ctx);
+    expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"agent.message",content:[{type:"text",text:"ok"}]}));
+    expect(ctx.runtime.history.getEvents().filter(e => e.type === "session.error")).toEqual([]);
+    expect(s.files.size).toBe(0);
+  });
+  it("preserves the successful final reply when completed usage reaches the cap without a refusal", async () => {
+    const { createSessionBudgetGate, memoryListCostPicoStore, modelEgress } = await import("../src/budget");
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.budget = createSessionBudgetGate({ amount: "1", currency: "USD" }, { version: 1, currency: "USD", input_per_mtok: "1000000", output_per_mtok: "1000000" }, memoryListCostPicoStore());
+    duringPrompt = () => { modelEgress(ctx.budget)!.complete({ input_tokens: 1 }); };
+    await new AcpSandboxHarness().run(ctx);
+    expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"agent.message",content:[{type:"text",text:"ok"}]}));
+    expect(ctx.runtime.history.getEvents().filter(e => e.type === "session.error")).toEqual([]);
+    expect(s.files.size).toBe(1);
+  });
+  it("does not classify an arbitrary provider error as budget refusal after charging reaches the cap", async () => {
+    const { createSessionBudgetGate, memoryListCostPicoStore, modelEgress } = await import("../src/budget");
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.budget = createSessionBudgetGate({ amount: "1", currency: "USD" }, { version: 1, currency: "USD", input_per_mtok: "1000000", output_per_mtok: "1000000" }, memoryListCostPicoStore());
+    duringPrompt = () => { modelEgress(ctx.budget)!.complete({ input_tokens: 1 }); terminalError = true; };
+    await new AcpSandboxHarness().run(ctx);
+    expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"session.error",error:"provider disconnected"}));
+  });
   it("returns through the existing budget terminal path before install, child launch or model span at the cap", async () => {
     const { createSessionBudgetGate, memoryListCostPicoStore } = await import("../src/budget");
     const s = sandbox(false), ctx = context(s.port);
@@ -220,7 +273,7 @@ describe("acp-sandbox child lifetime", () => {
     expect(started.at(-1)).not.toHaveProperty("resumeAcpSessionId");
     expect(prompts.at(-1)).toContain("valid consumed history");
   });
-  beforeEach(() => { gonePrompt=false; resumeSame = false; terminalError = false; failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
+  beforeEach(() => { prompts.length = 0; duringPrompt = undefined; gonePrompt=false; resumeSame = false; terminalError = false; failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
 
   it("ignores idle_timeout_ms: it belongs to acp-proxy", async () => {
     const s = sandbox(false);

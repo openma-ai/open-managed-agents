@@ -245,7 +245,9 @@ export class AcpSandboxHarness implements HarnessInterface {
           // Without this callback ACP cancels every permission request, so
           // the agent could not run any tool that asks (e.g. Claude's Bash).
           clientCallbacks: {
-            requestPermission: async (params) => answerAcpPermission(ctx.agent, params),
+            requestPermission: async (params) => ctx.budget?.refused
+              ? { outcome: { outcome: "cancelled" as const } }
+              : answerAcpPermission(ctx.agent, params),
           },
         });
         this.#configKey = configKey;
@@ -275,6 +277,9 @@ export class AcpSandboxHarness implements HarnessInterface {
         : turnText;
       const consumePrompt = async (abortSignal: AbortSignal) => {
         for await (const update of session.prompt(promptText, { abortSignal })) {
+          // Only the trusted egress refusal is a budget stop. Completed usage
+          // reaching the cap must not discard a successful final response.
+          if (ctx.budget?.refused) return;
           await translator.consumePromptItem(update, session.acpSessionId);
         }
       };
@@ -286,6 +291,10 @@ export class AcpSandboxHarness implements HarnessInterface {
         await consumePrompt(controller.signal);
       } finally {
         runtime.abortSignal?.removeEventListener("abort", onAbort);
+      }
+      if (ctx.budget?.refused) {
+        await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
+        return;
       }
       if (translator.promptError !== null) throw new Error(translator.promptError);
       // Empty output is not a successful turn. Adapter failures arrive as ACP
@@ -310,6 +319,10 @@ export class AcpSandboxHarness implements HarnessInterface {
       if (error instanceof SandboxGoneError) {
         this.#session = null; this.#runtime = null; this.#preparation = null;
         throw new SessionExecutionLostError("sandbox_gone");
+      }
+      if (ctx.budget?.refused) {
+        await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
+        return;
       }
       if (!runtime.abortSignal?.aborted) await translator.consume({type:"promptError",error:error instanceof Error ? error.message : String(error)});
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed", error instanceof Error ? error.message : String(error));

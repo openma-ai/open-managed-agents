@@ -26,6 +26,11 @@ describe("domain SessionBudgetGate", () => {
     expect(fast.list_cost_pico).toBe("3000000000000");
     expect(store.load()).toBe("3000000000000");
     expect(expensive.reached).toBe(true);
+    expect(expensive.refused).not.toBe(true);
+    expect(modelEgress(expensive)!.begin()).toBe(false);
+    expect(expensive.refused).toBe(true);
+    expect(parent.refused).toBe(true);
+    expect(fast.refused).not.toBe(true);
     expect(fast.reached).toBe(false);
     expect(modelEgress(fast)!.begin()).toBe(false);
     expect(fast.reached).toBe(true);

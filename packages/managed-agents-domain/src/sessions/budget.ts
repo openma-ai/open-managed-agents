@@ -99,8 +99,10 @@ export interface SessionBudgetGate {
   pricing: ListPricing;
   /** Exact consumed list cost in picodollars (integer string). */
   list_cost_pico: string;
-  /** Set when egress refused a model call at the cap. */
+  /** Set when completed usage reaches the cap or egress refuses a call. */
   reached: boolean;
+  /** Ephemeral stop signal: this gate actually refused a model request. */
+  refused?: boolean;
 }
 
 export function createSessionBudgetGate(
@@ -127,11 +129,14 @@ const GATE_STORES = new WeakMap<SessionBudgetGate, ListCostPicoStore>();
 /** A turn observes its own stop while charging the same session counter/store. */
 export function turnSessionBudgetGate(gate: SessionBudgetGate): SessionBudgetGate {
   let reached = false;
+  let refused = false;
   const turn: SessionBudgetGate = {
     maxListCost: gate.maxListCost,
     pricing: gate.pricing,
     get list_cost_pico() { return gate.list_cost_pico; },
     set list_cost_pico(value) { gate.list_cost_pico = value; },
+    get refused() { return refused; },
+    set refused(value) { refused = value === true; if (value) gate.refused = true; },
     get reached() { return reached; },
     set reached(value) { reached = value; if (value) gate.reached = true; },
   };
@@ -185,6 +190,7 @@ export function beginModelEgress(gate: SessionBudgetGate | null | undefined): bo
   if (!gate) return true;
   if (!gateExhausted(gate)) return true;
   gate.reached = true;
+  gate.refused = true;
   return false;
 }
 
