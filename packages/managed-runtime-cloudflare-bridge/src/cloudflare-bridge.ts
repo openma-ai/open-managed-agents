@@ -75,6 +75,12 @@ function safePrefix(value: string | undefined): string {
   return normalized;
 }
 
+const maxPlatformStateBytes = 1024 * 1024;
+function platformStateRoute(path: string): string | null {
+  if (!/^\/oma\/harness-state\/acp\/[A-Za-z0-9_-]+\/[a-z0-9-]+\/v1\/(?:session-binding|acp-session)\.json$/.test(path)) return null;
+  return "/platform-state/file?path=" + encodeURIComponent(path);
+}
+
 function safeWorkspacePath(path: string): string {
   const normalized = path.replace(/\/{2,}/g, "/");
   if (!normalized.startsWith("/workspace/")) {
@@ -595,6 +601,14 @@ export class CloudflareBridgeRuntime
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
+    const platformRoute = platformStateRoute(path);
+    if (platformRoute !== null) {
+      const response = await this.#request(platformRoute);
+      if (!response.ok) throw await responseError(response);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > maxPlatformStateBytes) throw new Error("Cloudflare Bridge platform state exceeds 1 MiB");
+      return bytes;
+    }
     if (path.startsWith("/mnt/")) {
       const result = await this.#execute(
         ["base64", "-w", "0", safeOutputPath(path)],
@@ -617,6 +631,15 @@ export class CloudflareBridgeRuntime
   }
 
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
+    const platformRoute = platformStateRoute(path);
+    if (platformRoute !== null) {
+      if (bytes.byteLength > maxPlatformStateBytes) throw new Error("Cloudflare Bridge platform state exceeds 1 MiB");
+      const response = await this.#request(platformRoute, {
+        method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes,
+      });
+      if (!response.ok) throw await responseError(response);
+      return path;
+    }
     if (path.startsWith("/mnt/")) {
       safeOutputPath(path);
       // The official file route is workspace-only. Keep the same narrow
