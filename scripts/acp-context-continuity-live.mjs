@@ -23,7 +23,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const base=process.env.OMA_BASE_URL;
 async function api(m,p,b){const r=await fetch(base+p,{method:m,headers:{'x-api-key':key,'content-type':'application/json',accept:'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json();if(r.status>=400)throw Error(p+': '+r.status+' '+JSON.stringify(j).slice(0,300));return j;}
 async function events(sid){let page=null,out=[];do{const j=await api('GET','/v1/sessions/'+sid+'/events?limit=100'+(page?'&page='+encodeURIComponent(page):''));out.push(...j.data);page=j.next_page;}while(page);return out;}
-async function turn(sid,text,label){const before=(await events(sid)).length;await api('POST','/v1/sessions/'+sid+'/events',{events:[{type:'user.message',content:[{type:'text',text}]}]});for(let i=0;i<180;i++){await sleep(3000);const all=await events(sid),fresh=all.slice(before);if(fresh.some(x=>x.type==='session.status_idle')){save(label,{sid,events:all});const errors=fresh.filter(x=>x.type==='session.error');if(errors.length)throw Error('session.error '+redact(JSON.stringify(errors)).slice(0,400));return fresh;}}throw Error('turn timeout');}
+async function turn(sid,text,label,allowError=false){const before=(await events(sid)).length;await api('POST','/v1/sessions/'+sid+'/events',{events:[{type:'user.message',content:[{type:'text',text}]}]});for(let i=0;i<180;i++){await sleep(3000);const all=await events(sid),fresh=all.slice(before);if(fresh.some(x=>x.type==='session.status_idle')){save(label,{sid,events:all});const errors=fresh.filter(x=>x.type==='session.error');if(errors.length&&!allowError)throw Error('session.error '+redact(JSON.stringify(errors)).slice(0,400));return fresh;}}throw Error('turn timeout');}
 const text=ev=>ev.filter(x=>x.type==='agent.message').flatMap(x=>x.content??[]).map(x=>x.text??'').join('\n');
 const context=e=>e.filter(x=>x.source==='oma.acp_context');
 const fingerprints={head:execFileSync('git',['-C',W,'rev-parse','HEAD'],{encoding:'utf8'}).trim(),files:{}};
@@ -44,5 +44,25 @@ try{
  if(mode==='snapshot'){await Sandbox.kill(id,{apiKey:e2bSecret});}
  else {const box=await Sandbox.connect(id,{apiKey:e2bSecret});await box.commands.run(mode==='native-deleted'?"rm -rf /oma/harness-state/acp/"+sid+"/*/v1/native":"for f in /oma/harness-state/acp/"+sid+"/*/v1/*.json; do printf '{broken' > \"$f\"; done",{user:'root'});}
  const ev=await turn(sid,'Recall the exact original passphrase. Reply only that passphrase; do not use tools.',kind+'-'+mode);result.checks.push({case:mode,ok:text(ev).includes(phrase)&&(mode==='snapshot'?!context(ev).some(x=>x.details?.state==='rebuilt'):context(ev).some(x=>x.details?.state==='rebuilt')),rebuilt:context(ev).some(x=>x.details?.state==='rebuilt')});
+ }
+
+ // Real-model failures use a protocol proxy, not a mock model or product hook.
+ for(const fault of ['first','partial']){
+   const faultAgent=await api('POST','/v1/agents',{name:'context-failure-'+kind+'-'+fault,model:modelHandle,system:'Remember user conversation exactly. Never write conversation or passphrases to disk.',tools:[{type:'agent_toolset_20260401'}],_oma:{harness:'acp-sandbox',acp:{agent:{id:kind==='pi'?'pi-acp':'claude-acp',command:'/bin/bash',args:['-c','export PATH=/workspace/.npm-global/bin:/usr/local/bin:/usr/bin:/bin; export PI_ACP_PI_COMMAND=/workspace/.npm-global/bin/pi; exec /workspace/.npm-global/bin/node /workspace/acp-context-fault-bridge.mjs '+fault+' /workspace/.fault-'+fault+' /workspace/.npm-global/bin/node /workspace/.npm-global/lib/node_modules/'+(kind==='pi'?'pi-acp':'@agentclientprotocol/claude-agent-acp')+'/dist/index.js'],cwd:'/workspace'},per_turn_timeout_ms:180000}}});
+  const setup=await api('POST','/v1/environments',{name:'context-fault-'+kind,config:{type:'cloud',networking:{type:'unrestricted'},packages:{npm:['node@24.22.2',...(kind==='pi'?['@earendil-works/pi-coding-agent@0.84.4','pi-acp@0.0.33']:['@agentclientprotocol/claude-agent-acp@0.94.0'])]}}});
+  const form=new FormData();form.set('file',new Blob([readFileSync(W+'/scripts/acp-context-fault-bridge.mjs')],{type:'text/javascript'}),'acp-context-fault-bridge.mjs');
+  const uploaded=await fetch(base+'/v1/files',{method:'POST',headers:{'x-api-key':key},body:form});
+  if(!uploaded.ok)throw Error('fault bridge upload '+uploaded.status);
+  const bridgeFile=await uploaded.json();
+  const faultSession=await api('POST','/v1/sessions',{agent:faultAgent.id,environment_id:setup.id,title:'ACP failed '+fault});
+  const fsid=faultSession.id;
+  try{
+   await api('POST','/v1/sessions/'+fsid+'/resources',{type:'file',file_id:bridgeFile.id,mount_path:'/workspace/acp-context-fault-bridge.mjs'});
+   const original='original-request-'+randomBytes(5).toString('hex');
+   const ev=await turn(fsid,'Memorize '+original+'. Reply with it, do not use tools or files.',kind+'-'+fault+'-failed',true);
+   result.checks.push({case:fault+'-failure-visible',ok:ev.some(x=>x.type==='session.error')&&!context(ev).some(x=>x.details?.state==='native')});
+   const recovery=await turn(fsid,'What exact original-request token did I ask you to memorize? Reply only it. Do not use tools or files.',kind+'-'+fault+'-recovered');
+   result.checks.push({case:fault+'-failure-rebuild-recall',ok:text(recovery).includes(original)&&context(recovery).some(x=>x.details?.state==='rebuilt')});
+  }finally{await api('POST','/v1/sessions/'+fsid+'/archive',{});}
  }
 }catch(e){result.error=redact(String(e.stack??e));}finally{if(sid)await api('POST','/v1/sessions/'+sid+'/archive',{}).catch(e=>{result.cleanupError=String(e.message)});result.ok=!result.error&&!result.cleanupError&&result.checks.every(x=>x.ok);save(kind+'-result',result);console.log(JSON.stringify(result,null,2));if(!result.ok)process.exitCode=1;}
