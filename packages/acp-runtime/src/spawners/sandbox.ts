@@ -64,7 +64,7 @@ function toChildHandle(
   onDiagnosticLine?: (line: string) => void,
 ): ChildHandle {
   const stops: Array<(error: Error) => void> = [];
-  const observedExit = process.exited.catch(async error => {
+  const confirmGone = async (error: unknown) => {
     let gone = false;
     const check = (async () => { gone = await process.confirmSandboxGone?.().catch(() => false) ?? false; })();
     lossChecks.set(handle, check);
@@ -74,7 +74,8 @@ function toChildHandle(
     transportErrors.set(handle, lost);
     for (const stop of stops) stop(lost);
     throw lost;
-  });
+  };
+  const observedExit = process.exited.catch(confirmGone);
   void observedExit.catch(() => undefined);
   const observation = {
     event: "acp.process_exit_stdio", clock: "unix_ms", byteTiming: "consumer_read", observationWindowMs: STDOUT_DRAIN_AFTER_EXIT_MS * 2, processId: crypto.randomUUID(), exitAtMs: null as number | null,
@@ -119,7 +120,12 @@ function toChildHandle(
     stdout: endingWithProcess(process.stdout, observedExit, "stdout", onTransportError, observe, stops),
     stderr,
     exited: observedExit,
-    kill: (signal) => process.kill(signal),
+    kill: async (signal) => {
+      try { await process.kill(signal); } catch (error) { await confirmGone(error); }
+      await confirmGone(new Error("ACP child exit observation remains unconfirmed")).catch(error => {
+        if (error instanceof SandboxGoneError) throw error;
+      });
+    },
   };
   return handle;
 }

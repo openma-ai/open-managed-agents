@@ -168,6 +168,8 @@ async function supervisedDispose(
   markDead();
   const stopped = Promise.all([child.kill("SIGKILL"), child.exited]);
   if (!await finishesWithin(stopped, 2_000)) {
+    const confirmed = await awaitSandboxAcpTransportError(child);
+    if (confirmed instanceof SandboxGoneError) throw confirmed;
     throw new Error("ACP child exit was not confirmed within 2000ms after SIGKILL; native state must not be captured or deleted");
   }
 }

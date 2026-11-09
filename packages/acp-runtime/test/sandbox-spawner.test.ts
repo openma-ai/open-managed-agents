@@ -83,6 +83,15 @@ describe("SandboxSpawner stdout", () => {
     await expect(start).rejects.toMatchObject({name:"SandboxGoneError"});
   });
 
+  it("releases dispose only when the provider confirms gone even with a pending exit observation", async () => {
+    const child=openStdoutProcess("session/prompt");
+    child.process.exited=new Promise(()=>{});
+    child.process.kill=async()=>{};
+    child.process.confirmSandboxGone=async()=>true;
+    const session=await createAcpRuntime({type:"sandbox",sandbox:{spawnDuplexProcess:async()=>child.process}},{cancelGraceMs:0}).start({agent});
+    await expect(session.dispose()).rejects.toMatchObject({name:"SandboxGoneError"});
+  },5000);
+
   it("does not keep Node alive for the exit observation window", async () => {
     const timer = vi.spyOn(globalThis, "setTimeout");
     const child = openStdoutProcess("session/prompt");
