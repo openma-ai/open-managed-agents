@@ -1,4 +1,4 @@
-import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
+import { turnSessionBudgetGate, type SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import { randomUUID } from "node:crypto";
 import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-agents/sandbox";
 import type {
@@ -295,12 +295,20 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
           ...(typeof type === "string" && type.startsWith("session.thread_status_") && { agent_name: session.agent.name }) }, thread.id);
       },
     });
-    if (this.budgetGate !== null) runtime.setBudgetGate(this.budgetGate);
-    try { await this.input.run({ session, runtime, sandbox }); }
-    finally { await runtime.drain(); }
+    if (this.budgetGate !== null) runtime.setBudgetGate(turnSessionBudgetGate(this.budgetGate));
+    let stopReason: "end_turn" | "budget_reached" = "end_turn";
+    try {
+      await this.input.run({ session, runtime, sandbox });
+      // Capture this turn before output draining lets siblings advance. An
+      // explicit terminal frame is authoritative, not a later session flag.
+      const terminal = runtime.history.getEvents().findLast(event => event.type === "session.status_idle");
+      stopReason = terminal?.type === "session.status_idle"
+        ? (terminal.stop_reason?.type === "budget_reached" ? "budget_reached" : "end_turn")
+        : runtime.turnBudgetReached ? "budget_reached" : "end_turn";
+    } finally { await runtime.drain(); }
     // Frames are committed in order; wait for this turn's before reading them.
     await this.outputChain;
-    return { stopReason: this.budgetGate?.reached === true ? "budget_reached" : "end_turn", agentMessages: log.slice(before).flatMap((event) => {
+    return { stopReason, agentMessages: log.slice(before).flatMap((event) => {
       const text = agentMessageText(event);
       return text === null ? [] : [text];
     }) };

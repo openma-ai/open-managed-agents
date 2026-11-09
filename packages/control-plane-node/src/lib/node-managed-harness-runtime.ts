@@ -331,6 +331,9 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   }
 
   private budgetGate: SessionBudgetGate | null = null;
+  /** This runtime's egress observation, never inferred after sibling drain. */
+  get turnBudgetReached(): boolean { return this.budgetGate?.reached === true; }
+  get turnBudgetGate(): SessionBudgetGate | null { return this.budgetGate; }
 
   /** Bind the execution's budget gate so usage snapshots carry list_cost. */
   setBudgetGate(gate: SessionBudgetGate | null): void {

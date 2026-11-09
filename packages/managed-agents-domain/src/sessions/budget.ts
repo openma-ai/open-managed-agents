@@ -124,6 +124,22 @@ export function createSessionBudgetGate(
 
 const GATE_STORES = new WeakMap<SessionBudgetGate, ListCostPicoStore>();
 
+/** A turn observes its own stop while charging the same session counter/store. */
+export function turnSessionBudgetGate(gate: SessionBudgetGate): SessionBudgetGate {
+  let reached = false;
+  const turn: SessionBudgetGate = {
+    maxListCost: gate.maxListCost,
+    pricing: gate.pricing,
+    get list_cost_pico() { return gate.list_cost_pico; },
+    set list_cost_pico(value) { gate.list_cost_pico = value; },
+    get reached() { return reached; },
+    set reached(value) { reached = value; if (value) gate.reached = true; },
+  };
+  const store = GATE_STORES.get(gate);
+  if (store !== undefined) GATE_STORES.set(turn, store);
+  return turn;
+}
+
 function storeOf(gate: SessionBudgetGate): ListCostPicoStore | undefined {
   return GATE_STORES.get(gate);
 }

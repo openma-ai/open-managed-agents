@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createSessionBudgetGate,
+  turnSessionBudgetGate,
   gateExhausted,
   memoryListCostPicoStore,
   modelEgress,
@@ -16,6 +17,19 @@ const pricing: ListPricing = {
 };
 
 describe("domain SessionBudgetGate", () => {
+  it("shares charges and persistence without attributing a sibling stop to a completed turn", () => {
+    const store = memoryListCostPicoStore();
+    const parent = createSessionBudgetGate({amount:"1",currency:"USD"}, pricing, store)!;
+    const fast = turnSessionBudgetGate(parent), expensive = turnSessionBudgetGate(parent);
+    modelEgress(expensive)!.complete({input_tokens:1_000_000});
+    expect(parent.list_cost_pico).toBe("3000000000000");
+    expect(fast.list_cost_pico).toBe("3000000000000");
+    expect(store.load()).toBe("3000000000000");
+    expect(expensive.reached).toBe(true);
+    expect(fast.reached).toBe(false);
+    expect(modelEgress(fast)!.begin()).toBe(false);
+    expect(fast.reached).toBe(true);
+  });
   it("prices one request exactly", () => {
     const pico = requestListCostPico(
       { input_tokens: 1e6, output_tokens: 1e6, cache_read_input_tokens: 1e6, cache_creation_input_tokens: 1e6 },

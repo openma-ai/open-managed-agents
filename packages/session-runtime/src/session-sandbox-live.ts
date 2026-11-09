@@ -74,6 +74,8 @@ export class LiveSessionSandbox<R> {
   /** Calls (exec, process start, file I/O) currently in flight. */
   inFlight = 0;
   private releasing: Promise<SessionSandboxState> | null = null;
+  private readonly releaseInflight = new Map<string, Promise<SessionSandboxState>>();
+  private releaseCursor = 0;
   private composed: Promise<{ ports: SandboxPorts<R> }> | null = null;
 
   constructor(readonly options: PortsSessionSandboxOptions<R>) {}
@@ -244,32 +246,56 @@ export class LiveSessionSandbox<R> {
   }
 
   private async releasePending(record: SessionSandboxState, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {
+    const pending = (record.retiredHandles ?? []).filter(entry => !entry.released);
+    if (pending.length === 0) return record;
+    // Advance even on permanent failure. A hung item never monopolizes later ticks.
+    const entry = pending[this.releaseCursor++ % pending.length]!;
+    const key = JSON.stringify(entry.handle);
+    let operation = this.releaseInflight.get(key);
+    if (operation === undefined) {
+      const deadline = this.now() + 1_000;
+      operation = this.releaseEntry(record, entry.handle, execution, deadline);
+      this.releaseInflight.set(key, operation);
+      void operation.finally(() => { if (this.releaseInflight.get(key) === operation) this.releaseInflight.delete(key); });
+    }
+    // Deadline bounds caller waiting, NOT the real provider/DB operation.
+    // The map retains that operation until it truly settles (no assumed abort).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([operation, new Promise<SessionSandboxState>(resolve => {
+        timer = setTimeout(() => resolve(record), 1_000);
+      })]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  }
+
+  private async releaseEntry(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined, deadline: number): Promise<SessionSandboxState> {
     let saved = record;
-    const { ports } = await this.compose();
-    // One bounded vendor attempt per maintenance tick; no new scheduler.
-    for (const entry of (record.retiredHandles ?? []).filter(entry => !entry.released).slice(0, 1)) {
-      if (entry.released) continue;
-      if (!await this.isCurrent(execution)) { this.abandon(); return saved; }
-      try {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          await Promise.race([
-            ports.sandbox.release({ scope: this.scope(), handle: entry.handle }),
-            new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("release deadline exceeded")), 1_000); }),
-          ]);
-        } finally { if (timer !== undefined) clearTimeout(timer); }
-      } catch (error) {
-        this.options.warn(`sandbox_release_failed runtime=${entry.handle.runtimeId} error=${errorText(error)}`);
-        continue;
-      }
-      // Acknowledge on a fresh version; all lifecycle writes preserve claims.
+    try {
+      const { ports } = await this.compose();
+      if (this.now() >= deadline || !await this.isCurrent(execution)) return saved;
+      if (this.now() >= deadline) return saved;
+      await ports.sandbox.release({ scope: this.scope(), handle });
       for (let attempt = 0; attempt < 3; attempt++) {
-        if (!await this.isCurrent(execution)) { this.abandon(); return saved; }
+        if (this.now() >= deadline || !await this.isCurrent(execution)) return saved;
         const current = await this.load();
-        if (!await this.isCurrent(execution)) { this.abandon(); return saved; }
-        const next = transition(current, { type: "handleReleased", handle: entry.handle });
-        if (await this.options.state.save(next, current.version)) { saved = next; break; }
+        // A timed-out read cannot initiate a late write. An already submitted
+        // CAS may finish late, but cannot overwrite any newer lifecycle version.
+        if (this.now() >= deadline || !await this.isCurrent(execution)) return saved;
+        if (this.now() >= deadline) return saved;
+        const next = transition(current, { type: "handleReleased", handle });
+        if (await this.options.state.save(next, current.version)) {
+          saved = next;
+          // The ack changes no running runtime. Keep an already armed idle
+          // timer valid, without extending its original absolute deadline.
+          if (this.idleSince !== null && this.idleVersion === current.version && this.options.idle !== undefined) {
+            this.idleVersion = next.version;
+            await this.options.idle.schedule(Math.max(0, this.idleSince + this.options.idle.pauseMs - this.now()), next.version);
+          }
+          break;
+        }
       }
+    } catch (error) {
+      this.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
     }
     return saved;
   }

@@ -71,12 +71,12 @@ describe("Managed Node native subagents", () => {
     const {createSessionBudgetGate,memoryListCostPicoStore,beginModelEgress}=await import("../../../packages/agent-harness/src/budget");
     const gate=createSessionBudgetGate({amount:"1",currency:"USD"},{version:1,currency:"USD",input_per_mtok:"1",output_per_mtok:"1"},memoryListCostPicoStore("10000000000"));
     let childId="",modelRequests=0;
-    const f=fixture(async({session:active,subagents})=>{
+    const f=fixture(async({session:active,subagents,runtime})=>{
       if(active.agent.name==="Parent"){
         subagents!.setBudgetGate!(gate);
         childId=(await subagents!.create({name:"Worker",message:"Work"})).threadId;
         await subagents!.wait({threadIds:[childId]});
-      } else { if(beginModelEgress(gate))modelRequests++; }
+      } else { if(beginModelEgress(runtime.turnBudgetGate))modelRequests++; }
     });
     await f.run();
     expect(modelRequests).toBe(0);

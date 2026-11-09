@@ -35,8 +35,10 @@ export async function endExecution<R>(state: LiveSessionSandbox<R>): Promise<voi
   }
   // Old allocation cleanup is maintenance, never part of publishing/using
   // this turn's runtime. Bounded and single-flight, with pending kept durably.
-  await state.retryReleases(await state.load());
   await armIdle(state, state.options.idle?.pauseMs ?? 0);
+  // Maintenance owns its bounded wait; its initial DB read is inside it too.
+  void state.load().then(record => state.retryReleases(record)).catch(error =>
+    state.options.warn(`sandbox_release_failed error=${errorText(error)}`));
 }
 
 export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<void> {

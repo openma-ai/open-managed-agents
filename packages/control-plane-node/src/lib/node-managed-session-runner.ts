@@ -889,8 +889,7 @@ export class DefaultNodeManagedSessionRunner
               });
               // One session egress meter: child model calls are gated and
               // recorded by the same gate instance as the parent's.
-              harnessContext.budget = budgetGate;
-              childRuntime.setBudgetGate(budgetGate);
+              harnessContext.budget = childRuntime.turnBudgetGate;
               await this.dependencies.buildHarness().run(harnessContext);
             } finally {
               if (childTools !== undefined) await this.dependencies.disposeTools?.(childTools);
