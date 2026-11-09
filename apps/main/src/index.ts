@@ -136,7 +136,7 @@ import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
 import { authenticateSandboxEgress, authorizeEnvironmentWorkEgress, authorizeSandboxEgress, isEnvironmentWorkFenceCurrent, issueSandboxToken, legacyRelayPassCheck, sandboxHarnessPlacement, sandboxTokenScopeFor, type EnvironmentWorkFenceRef, type SandboxGatewayStores, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
-import { issueCfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
+import { cfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
 import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
 import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
 import { createSqlSessionExecutionLeases } from "@open-managed-agents/session-runtime-sql/execution-lease";
@@ -2010,15 +2010,17 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     );
   }
 
-  /** ACP model / MCP channels for one SessionDO execution (design §0.6). */
-  async issueManagedAcpExecutionChannels(opts: Parameters<typeof issueCfAcpExecutionChannels>[1]) {
-    return issueCfAcpExecutionChannels(this.env, opts);
+  /** ACP model / MCP channels for one SessionDO execution (design §0.6),
+   * over that execution's sandbox token. */
+  async managedAcpExecutionChannels(opts: Parameters<typeof cfAcpExecutionChannels>[1]) {
+    return cfAcpExecutionChannels(this.env, opts);
   }
 
-  /** A sandbox token for the in-sandbox egress forwarder (#561) of the
-   * SessionDO's current execution attempt. `harness` is the agent's harness
-   * name: it fixes the scope (sandboxHarnessPlacement). */
-  async issueSandboxEgressToken(opts: { tenantId: string; sessionId: string; attempt: SessionExecutionAttemptRef; harness: string | null }): Promise<string> {
+  /** A sandbox token (#561) for the SessionDO's current execution attempt,
+   * appended to the attempt. SessionDO asks once per attempt and shares it
+   * (attemptSandboxTokens); a relay re-delivery asks again. `harness` is the
+   * agent's harness name: it fixes the scope (sandboxHarnessPlacement). */
+  async issueSandboxToken(opts: { tenantId: string; sessionId: string; attempt: SessionExecutionAttemptRef; harness: string | null }): Promise<string> {
     if (opts.attempt.workspaceId !== opts.tenantId || opts.attempt.sessionId !== opts.sessionId) {
       throw new Error("Sandbox token fence does not name this Session");
     }

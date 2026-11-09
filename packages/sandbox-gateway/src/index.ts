@@ -10,6 +10,7 @@ export * from "./environment-work-egress";
 export * from "./sandbox-token";
 export * from "./sandbox-token-store";
 export * from "./sandbox-token-authority";
+export * from "./attempt-sandbox-token";
 export * from "./sandbox-token-scope";
 export * from "./sandbox-token-routes";
 export * from "./sandbox-token-request";

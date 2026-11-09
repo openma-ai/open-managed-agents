@@ -8,6 +8,7 @@ import type { CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSessionSandbox, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { createE2BSessionSandbox } from "./e2b-session-sandbox";
 import type { SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
+import { relaySandboxToken } from "./session-sandbox-token";
 import type { PortsSessionSandbox, SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
 
 export interface SessionSandboxDeps {
@@ -35,7 +36,7 @@ export function createSessionSandbox(adapter: string | undefined, deps: SessionS
     return createCloudflareSessionSandbox(deps) as PortsSessionSandbox<unknown>;
   }
   if (name === "e2b") {
-    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, harness: deps.harness, idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
+    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, relayToken: (attempt) => relaySandboxToken(deps.env, attempt, deps.harness()), idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
   }
   throw new Error(`Unknown SANDBOX_ADAPTER: ${name}`);
 }

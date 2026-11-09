@@ -7,8 +7,9 @@
 //     the Session has cap_cli Vault credentials the in-sandbox relay
 //     (packages/sandbox-egress) forwards their hosts to the control plane's
 //     HTTPS /v1/oma/egress ingress with a sandbox token (#561) bound to the
-//     Session execution attempt (design §0.0 rule 10; none between turns),
-//     issued by the main worker (MAIN_MCP.issueSandboxEgressToken). Real
+//     Session execution attempt (design §0.0 rule 10; none between turns):
+//     SessionDO's relayToken, the attempt's one token (shared with an
+//     in-sandbox harness) on the first delivery, a re-sign after. Real
 //     credentials never enter the sandbox. The token does not expire on its
 //     own (it dies with the attempt), so egress is re-attached only when the
 //     attempt changes (execution) or after a revoke;
@@ -35,7 +36,7 @@ import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-
 import { createE2BV2Adapter, E2B_SANDBOX_DIRECTORIES, E2B_SANDBOX_SETUP, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
 import { EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
-import { UNFENCED_SANDBOX_TOKEN } from "@open-managed-agents/sandbox-gateway";
+import { UNFENCED_SANDBOX_TOKEN, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
@@ -66,11 +67,6 @@ export interface E2BSandboxEnv {
     resolveManagedCapCliEnvironment(opts: { tenantId: string; sessionId: string }): Promise<
       { type: "found"; env: Record<string, string> } | { type: "not_found" }
     >;
-    issueSandboxEgressToken?(opts: {
-      tenantId: string; sessionId: string;
-      attempt: { workspaceId: string; sessionId: string; executionId: string; attemptId: string; ownerId: string; generation: number };
-      harness: string | null;
-    }): Promise<string>;
   };
 }
 
@@ -179,9 +175,9 @@ export function createE2BSessionSandbox(input: {
   scope(): RuntimeResourceScope;
   networking(): Promise<SessionNetworking | undefined>;
   fence(): SandboxExecutionFence | undefined;
-  /** The agent's harness name: where the harness runs fixes the sandbox
-   * token's scope (sandboxHarnessPlacement, decided by the main worker). */
-  harness(): string | null;
+  /** The sandbox token for one relay delivery of `attempt` (SessionDO's
+   * attemptSandboxTokens over the main worker's issueSandboxToken). */
+  relayToken(attempt: SessionExecutionAttemptRef): Promise<string>;
   /** Schedules the idle pause (design §0.0 rule 11) `pauseMs` = IDLE_MS. */
   idleTimer?: Omit<SessionSandboxIdleTimer, "pauseMs">;
 }): E2BSessionSandbox {
@@ -231,14 +227,11 @@ export function createE2BSessionSandbox(input: {
             // control plane's existing ingress (apps/main), which verifies the
             // token, its scope and the Session itself.
             endpoint: { url: gateway ?? "https://egress-unconfigured.invalid" },
-            issueToken: async ({ scope, attempt }) => {
-              const issue = env.MAIN_MCP?.issueSandboxEgressToken;
-              if (issue === undefined || gateway === undefined) {
-                throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PUBLIC_BASE_URL and the MAIN_MCP binding");
-              }
+            issueToken: async ({ attempt }) => {
+              if (gateway === undefined) throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PUBLIC_BASE_URL");
               // Warm-up (no attempt): a value the gateway always refuses.
               if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
-              return issue.call(env.MAIN_MCP, { tenantId: scope.workspaceId, sessionId: scope.sessionId, attempt, harness: input.harness() });
+              return input.relayToken(attempt);
             },
             authenticate: async () => null,
             handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),

@@ -13,13 +13,13 @@ import { createSqlSandboxGatewayStore } from "../../packages/sandbox-gateway-sql
 import { sessionExecutionLeasesConformance } from "../../packages/session-runtime/test/execution-lease-conformance";
 import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from "../../packages/sandbox-gateway/test/gateway-store-conformance";
 import { describe, expect, it } from "vitest";
-import { authenticateSandboxBearer, authenticateSandboxToken } from "../../packages/sandbox-gateway/src/index";
+import { attemptSandboxTokens, authenticateSandboxBearer, authenticateSandboxToken } from "../../packages/sandbox-gateway/src/index";
 import { createSqlSandboxTokenStore } from "../../packages/sandbox-gateway-sql/src/index";
 import { gatedSql, sandboxTokenStoreConformance, type SandboxTokenStoreTestHarness } from "../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
 import { sandboxTokenRaceConformance } from "../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
 import { sealedExecutionSessionsToken } from "../../packages/managed-agents-adapters-runtime/src/environment-work-session-token";
 import { WebCryptoAesGcm } from "../../packages/integrations-adapters-cf/src/index";
-import { cfAcpExecutionAuthority, issueCfAcpExecutionChannels } from "../../apps/main/src/lib/cf-acp-execution-capability";
+import { cfAcpExecutionAuthority, cfAcpExecutionChannels } from "../../apps/main/src/lib/cf-acp-execution-capability";
 import { cfSandboxTokenStore, cfTenantDatabases } from "../../apps/main/src/lib/cf-sandbox-token-store";
 
 // D1 is shared by the whole file: every fixture gets its own workspace.
@@ -128,33 +128,72 @@ describe("characterization (transition): Cloudflare pre-#561 execution sessions_
 // (hostedInference.model.wireModel), not the handle: pi silently falls back
 // to its default model on an id it does not know (same as Node, 3b698424).
 describe("Cloudflare ACP execution channels", () => {
-  it("carry the model card's upstream wireModel", async () => {
-    const created = await exports.default.fetch(new Request("http://localhost/v1/oma/model_cards", {
+  let card: Promise<Response> | undefined;
+  /** An acp-sandbox Session with a model card and a claimed attempt. */
+  async function acpAttempt(tag: string) {
+    card ??= exports.default.fetch(new Request("http://localhost/v1/oma/model_cards", {
       method: "POST", headers: { "x-api-key": "test-key", "content-type": "application/json" },
       body: JSON.stringify({ provider: "anthropic", model_id: `acp-handle-${runId}`, model: "claude-sonnet-5-5", api_key: "sk-ant-test-key" }),
     }));
-    expect([201, 409]).toContain(created.status);
+    expect([201, 409]).toContain((await card).status);
     const sql = sqlClientFromD1(env.MAIN_DB);
     const workspaceId = "default";
-    const sessionId = `acp_channels_${runId}`;
+    const sessionId = `acp_${tag}_${runId}`;
     const environmentId = `env_${sessionId}`;
     await seedSandboxGatewaySessionRows(sql, workspaceId, { id: sessionId, environmentId, vaultIds: [], agent: { id: "agent_01", version: 3 }, archivedAt: null });
     const document = { id: sessionId, environmentId, vaultIds: [], resources: [], agent: { id: "agent_01", version: 3, name: "agent", model: `acp-handle-${runId}`, skills: [] } };
     await sql.prepare("UPDATE managed_sessions SET document = ? WHERE workspace_id = ? AND id = ?").bind(JSON.stringify(document), workspaceId, sessionId).run();
     const executions = new SqlSessionExecutionStore(sql);
     const now = new Date().toISOString();
-    await executions.admit({ execution: { id: `exe_ch_${runId}`, workspaceId, sessionId, admittedAt: now, events: [{ id: `evt_ch_${runId}`, type: "user.message", content: [], processedAt: now }] } });
+    await executions.admit({ execution: { id: `exe_${tag}_${runId}`, workspaceId, sessionId, admittedAt: now, events: [{ id: `evt_${tag}_${runId}`, type: "user.message", content: [], processedAt: now }] } });
     const claimed = await executions.claim({ workspaceId, sessionId, ownerId: "owner", attemptId: "attempt", claimedAt: now, leaseTtlMs: 60_000 });
     if (claimed.type !== "claimed") throw new Error("expected a claim");
-    const channels = await issueCfAcpExecutionChannels(
-      { ...env, PLATFORM_ROOT_SECRET: "test-platform-root-secret-0123456789", PUBLIC_BASE_URL: "https://oma.example/" },
-      { tenantId: workspaceId, sessionId, executionFence: claimed.fence },
-    );
+    const hashes = async () => JSON.parse((await sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE workspace_id = ? AND id = ?")
+      .bind(workspaceId, claimed.fence.executionId).first<{ sandbox_token_hashes: string }>())!.sandbox_token_hashes) as unknown[];
+    return { workspaceId, sessionId, fence: claimed.fence, hashes, env: { ...env, PLATFORM_ROOT_SECRET: "test-platform-root-secret-0123456789", PUBLIC_BASE_URL: "https://oma.example/" } };
+  }
+
+  /** The main worker RPC SessionDO asks (MAIN_MCP.issueSandboxToken). */
+  const issue = (a: Awaited<ReturnType<typeof acpAttempt>>) => () =>
+    env.MAIN_MCP.issueSandboxToken({ tenantId: a.workspaceId, sessionId: a.sessionId, attempt: a.fence, harness: "acp-sandbox" });
+
+  it("carry the model card's upstream wireModel", async () => {
+    const a = await acpAttempt("ch");
+    const channels = await cfAcpExecutionChannels(a.env, { tenantId: a.workspaceId, sessionId: a.sessionId, sessionsToken: await issue(a)() });
     expect(channels.hostedInference.model).toMatchObject({ providerId: "anthropic", wireModel: "claude-sonnet-5-5" });
     expect(channels.hostedInference.gatewayBaseUrl).toBe("https://oma.example");
     expect(channels.mcpProxy.sessionsToken).toBe(channels.hostedInference.sessionsToken);
     // The in-sandbox ACP harness gets the one sandbox token, scope all.
     expect(channels.mcpProxy.sessionsToken).toMatch(/^oma_sbx_[0-9A-Za-z]{49}$/u);
-    expect((await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId, token: channels.mcpProxy.sessionsToken, channel: "api" })).type).toBe("accepted");
+    expect((await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: a.sessionId, token: channels.mcpProxy.sessionsToken, channel: "api" })).type).toBe("accepted");
+  });
+
+  // One execution, one token (design §0.0 rule 10), as SessionDO composes
+  // it: the E2B egress relay and the ACP harness channels of one attempt.
+  it("acp-sandbox: the relay and the harness channels of one attempt share one token, one hash", async () => {
+    const a = await acpAttempt("one");
+    const tokens = attemptSandboxTokens();
+    const relay = await tokens.relayDelivery(a.fence, issue(a));
+    const channels = await cfAcpExecutionChannels(a.env, { tenantId: a.workspaceId, sessionId: a.sessionId, sessionsToken: await tokens.token(a.fence, issue(a)) });
+    expect(await a.hashes()).toHaveLength(1);
+    expect(channels.hostedInference.sessionsToken).toBe(relay);
+  });
+
+  it("a relay re-delivery in the same attempt re-signs: appended, the earlier token stays valid", async () => {
+    const a = await acpAttempt("redeliver");
+    const tokens = attemptSandboxTokens();
+    const shared = await tokens.token(a.fence, issue(a));
+    expect(await tokens.relayDelivery(a.fence, issue(a))).toBe(shared);
+    const redelivered = await tokens.relayDelivery(a.fence, issue(a));
+    expect(redelivered).not.toBe(shared);
+    expect(await a.hashes()).toHaveLength(2);
+    for (const token of [shared, redelivered]) {
+      expect((await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: a.sessionId, token, channel: "api" })).type).toBe("accepted");
+    }
+  });
+
+  it("refuse a token that does not open the Session's API channels", async () => {
+    const a = await acpAttempt("refuse");
+    await expect(cfAcpExecutionChannels(a.env, { tenantId: a.workspaceId, sessionId: a.sessionId, sessionsToken: "oma_sbx_not-a-token" })).rejects.toThrow(/current sandbox token/);
   });
 });

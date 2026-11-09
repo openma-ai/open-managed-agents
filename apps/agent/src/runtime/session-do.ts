@@ -168,6 +168,7 @@ import type { CloudflareSandboxImage } from "./sandbox";
 import { createSessionSandbox } from "./session-sandbox-adapters";
 import { createSandboxIdleAlarm } from "./sandbox-idle-alarm";
 import type { PortsSessionSandbox } from "@open-managed-agents/session-runtime";
+import { acpSandboxExecutionEnv } from "./session-sandbox-token";
 import { installGhCli, loadManagedSessionResources, proxiedRepositoryAccess } from "./managed-session-resources";
 import { createSandboxWarmupFailureEvent } from "./warmup-failure-event";
 import {
@@ -6082,8 +6083,7 @@ export class SessionDO extends DurableObject<Env> {
         CONFIG_KV: this.env.CONFIG_KV,
         memoryStoreIds,
         environmentConfig,
-        // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
-        ...(resolvedHarnessName === "acp-sandbox" && activeFence && this.env.MAIN_MCP?.issueManagedAcpExecutionChannels ? { ANTHROPIC_API_KEY: "", ...await this.env.MAIN_MCP.issueManagedAcpExecutionChannels({ tenantId: this.state.tenant_id!, sessionId: this.state.session_id!, executionFence: activeFence }) } : {}),
+        ...(resolvedHarnessName === "acp-sandbox" && activeFence ? await acpSandboxExecutionEnv(this.env, activeFence, resolvedHarnessName) : {}), // ACP in the sandbox: model / MCP channels (design §0.6)
         // LLM full-body logging context. default-loop wraps each model
         // call in middleware that PUTs request + response to R2 keyed
         // by the per-step span event id. The matching

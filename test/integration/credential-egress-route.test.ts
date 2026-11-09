@@ -27,7 +27,7 @@ async function runningAttempt(sessionId: string) {
   return {
     fence,
     /** Issued through the main worker RPC the E2B SessionDO uses; `harness` fixes the scope. */
-    token: (harness: string | null = null) => env.MAIN_MCP.issueSandboxEgressToken({ tenantId: "default", sessionId, attempt: { workspaceId: "default", sessionId, ...fence }, harness }),
+    token: (harness: string | null = null) => env.MAIN_MCP.issueSandboxToken({ tenantId: "default", sessionId, attempt: { workspaceId: "default", sessionId, ...fence }, harness }),
     settle: () => env.MAIN_DB.prepare("UPDATE managed_session_executions SET state='completed' WHERE workspace_id='default' AND id=?").bind(executionId).run(),
   };
 }

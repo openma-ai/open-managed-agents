@@ -81,6 +81,35 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
     await expect(f.capabilities.issue({ ...f.input, environment: { id: "other" } as Environment })).rejects.toThrow(/Session environment/);
   });
 
+  // One execution, one token (design §0.0 rule 10): the in-sandbox harness
+  // (model / MCP channels) and the egress relay of one attempt hold the same
+  // string, and the attempt row holds one hash, whichever asks first.
+  for (const order of ["harness first", "relay first"] as const) {
+    it(`acp-sandbox: one attempt holds one token hash, shared by the harness and the relay (${order})`, async () => {
+      const f = await fixture("acp-sandbox");
+      const harness = () => f.capabilities.issue(f.input).then((channels) => channels.sessionsToken);
+      const relay = () => f.capabilities.issueEgress(f.fence, "acp-sandbox");
+      const [first, second] = order === "harness first" ? [await harness(), await relay()] : [await relay(), await harness()];
+      const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE workspace_id = ? AND id = ?")
+        .bind("tenant", f.fence.executionId).first<{ sandbox_token_hashes: string }>();
+      expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+      expect(second).toBe(first);
+    });
+  }
+
+  it("a relay re-delivery in the same attempt re-signs: appended, every token of the attempt stays valid", async () => {
+    const f = await fixture("acp-sandbox");
+    const { sessionsToken: harness } = await f.capabilities.issue(f.input);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox")).toBe(harness);
+    const redelivered = await f.capabilities.issueEgress(f.fence, "acp-sandbox");
+    expect(redelivered).not.toBe(harness);
+    for (const token of [harness, redelivered]) {
+      expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${token}` })).type).toBe("accepted");
+    }
+    // The harness channels of the attempt now get the re-signed one.
+    expect((await f.capabilities.issue(f.input)).sessionsToken).toBe(redelivered);
+  });
+
   it("dies with the attempt", async () => {
     const f = await fixture();
     const { sessionsToken: token } = await f.capabilities.issue(f.input);

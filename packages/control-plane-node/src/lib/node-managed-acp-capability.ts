@@ -6,6 +6,7 @@ import {
 import type { SessionExecution, SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
 import { sessionExecutionLeasesFrom } from "@open-managed-agents/session-runtime/execution-lease";
 import {
+  attemptSandboxTokens,
   issueSandboxToken,
   sandboxHarnessPlacement,
   sandboxTokenAuthDecision,
@@ -18,7 +19,7 @@ import {
 import { createSqlSandboxTokenStore } from "@open-managed-agents/sandbox-gateway-sql";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 
-/** The sandbox token (#561) on Node: issued per execution attempt into the
+/** The sandbox token (#561) on Node: issued once per execution attempt into the
  * attempt row and checked by the shared @open-managed-agents/sandbox-gateway
  * code (design §0.0 rule 10) on every request, one database read, no cache.
  * The scope follows where the harness runs (sandboxHarnessPlacement). */
@@ -42,6 +43,8 @@ export function createNodeManagedAcpCapabilities(dependencies: {
   });
   // DEPLOY TRANSITION ONLY — remove in the next release with sandbox-bearer's `execution` branch.
   const execution = dependencies.crypto === null ? null : { codec: sealedSandboxBearerCodec(dependencies.crypto, dependencies.now), stores };
+  // One token per attempt, shared by the harness channels and the relay.
+  const attemptTokens = attemptSandboxTokens();
   return {
     stores,
     tokens,
@@ -52,17 +55,19 @@ export function createNodeManagedAcpCapabilities(dependencies: {
       if (fence !== undefined && (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.session.id)) {
         throw new Error("Sandbox token fence does not name this Session");
       }
-      const sessionsToken = await issueSandboxToken(tokens, fence, {
+      if (fence === undefined) throw new Error("Sandbox token requires a current Session Execution fence");
+      const sessionsToken = await attemptTokens.token(fence, () => issueSandboxToken(tokens, fence, {
         scope: sandboxTokenScopeFor(sandboxHarnessPlacement(input.session.agent.openma?.harness)),
         expected: { environmentId: input.environment.id, agent: { id: input.session.agent.id, version: input.session.agent.version } },
         now,
-      });
+      }));
       return { gatewayBaseUrl: dependencies.gatewayBaseUrl, sessionsToken };
     },
-    /** A token for the in-sandbox egress forwarder of `attempt`; `harness`
-     * is the Session agent's harness name (scope all / egress). */
+    /** The token for one delivery to the in-sandbox egress forwarder of
+     * `attempt` (the harness's on the first, a re-sign after); `harness` is
+     * the Session agent's harness name (scope all / egress). */
     async issueEgress(attempt: SessionExecutionAttemptRef, harness: string | null | undefined) {
-      return issueSandboxToken(tokens, attempt, { scope: sandboxTokenScopeFor(sandboxHarnessPlacement(harness)), now });
+      return attemptTokens.relayDelivery(attempt, () => issueSandboxToken(tokens, attempt, { scope: sandboxTokenScopeFor(sandboxHarnessPlacement(harness)), now }));
     },
     /** authMiddleware: the sandbox token on the model gateway, MCP gateway and sandbox API. */
     authenticateToken(request: { headers: Headers; method: string; path: string }) {
