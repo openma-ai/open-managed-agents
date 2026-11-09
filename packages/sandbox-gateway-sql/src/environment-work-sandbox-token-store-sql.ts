@@ -13,7 +13,7 @@
 
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { SandboxTokenAttempt, SandboxTokenStore, SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
-import { entries, serialize, sessionOf, type SessionRow } from "./sandbox-token-store-sql";
+import { entries, replacementTokenHashes, sessionOf, type SessionRow } from "./sandbox-token-store-sql";
 
 const REPLACE_RETRIES = 8;
 const ATTEMPT_PREFIX = "environment-work-claim:";
@@ -115,7 +115,7 @@ export function createSqlEnvironmentWorkSandboxTokenStore(sql: SqlClient): Sandb
         const result = await sql.prepare(
           `UPDATE managed_environment_work SET sandbox_token_hashes = ?
             WHERE ${held} AND COALESCE(sandbox_token_hashes, '') = ?`,
-        ).bind(serialize([{ hash: tokenSha256, scope }]), ...heldParameters, current.sandbox_token_hashes ?? "").run();
+        ).bind(replacementTokenHashes(tokenSha256, scope), ...heldParameters, current.sandbox_token_hashes ?? "").run();
         if (result.meta.changes === 1) return "replaced";
       }
       throw new Error("Sandbox token replacement kept conflicting");

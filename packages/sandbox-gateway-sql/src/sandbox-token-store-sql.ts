@@ -61,6 +61,11 @@ export const entries = (raw: string | null): TokenEntry[] => {
 
 export const serialize = (list: readonly TokenEntry[]) => JSON.stringify(list.map((entry) => ({ h: entry.hash, s: entry.scope })));
 
+/** Sole rotation-timing policy for execution and Work stores. The replacement
+ * commits with no old hash: immediate revoke. Any future grace policy belongs
+ * here (including its persisted expiry), never in provider/delivery call sites. */
+export const replacementTokenHashes = (hash: string, scope: string) => serialize([{ hash, scope }]);
+
 export function createSqlSandboxTokenStore(sql: SqlClient): SandboxTokenStore {
   return {
     // One statement: Session row + the running attempt holding the hash.
@@ -117,7 +122,7 @@ export function createSqlSandboxTokenStore(sql: SqlClient): SandboxTokenStore {
             WHERE workspace_id = ? AND id = ? AND session_id = ? AND state = 'running'
               AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?
               AND COALESCE(sandbox_token_hashes, '') = ?`,
-        ).bind(serialize([{ hash: tokenSha256, scope }]), fence.workspaceId, fence.executionId, fence.sessionId,
+        ).bind(replacementTokenHashes(tokenSha256, scope), fence.workspaceId, fence.executionId, fence.sessionId,
           fence.attemptId, fence.ownerId, fence.generation, nowMs, current.sandbox_token_hashes ?? "").run();
         if (result.meta.changes === 1) return "replaced";
       }
