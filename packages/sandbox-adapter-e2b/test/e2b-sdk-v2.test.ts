@@ -155,6 +155,29 @@ describe("E2B SDK v2 adapter", () => {
     await expect(adapter.exec("ls /missing")).resolves.toBe("partial\nls: no such file\n[exit 1]");
   });
 
+  it("resolves relative repository work in the declared workspace, not the SDK home", async () => {
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { execFile } = await import("node:child_process");
+    const directory = await mkdtemp(join(tmpdir(), "e2b-cwd-"));
+    const workspace = join(directory, "workspace"), home = join(directory, "home");
+    const { mkdir } = await import("node:fs/promises");
+    await Promise.all([mkdir(workspace), mkdir(home)]);
+    const sandbox = makeSdkSandbox("workspace");
+    sandbox.commands.run.mockImplementation(async (command, options) => new Promise((resolve, reject) => {
+      execFile("sh", ["-c", command], { cwd: options.cwd === "/workspace" ? workspace : home }, (error, stdout, stderr) => {
+        if (error) reject(error); else resolve({ stdout, stderr, exitCode: 0 });
+      });
+    }));
+    try {
+      const adapter = new E2BSandboxExecutor(sandbox as never, {});
+      await adapter.exec("mkdir -p hello && printf REPOSITORY_READY > hello/README");
+      expect(await readFile(join(workspace, "hello/README"), "utf8")).toBe("REPOSITORY_READY");
+      await expect(readFile(join(home, "hello/README"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it("still surfaces transport failures from exec as errors", async () => {
     const sandbox = makeSdkSandbox("transport");
     sandbox.commands.run.mockRejectedValueOnce(new Error("[unauthenticated] invalid username: 'user'"));

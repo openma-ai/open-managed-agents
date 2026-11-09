@@ -357,6 +357,7 @@ export class E2BSandboxExecutor
   async exec(command: string, timeout?: number): Promise<string> {
     const wrapped = this.applyEnv(command);
     const result = await settleCommand(this.sandbox.commands.run(wrapped, {
+      cwd: "/workspace",
       timeoutMs: timeout ?? this.defaultTimeoutMs,
       ...this.user,
     }) as Promise<E2BCommandResult>);

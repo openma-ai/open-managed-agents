@@ -154,8 +154,8 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(sb.commands.run.mock.calls[0]?.[0]).toContain("export BASE='a'\\''b';");
     expect(sb.commands.run.mock.calls[0]?.[0]).toContain("export TOKEN='secret';");
     expect(sb.commands.run.mock.calls[1]?.[0]).not.toContain("TOKEN");
-    expect(sb.commands.run.mock.calls[0]?.[1]).toEqual({ timeoutMs: 2 });
-    expect(sb.commands.run.mock.calls[1]?.[1]).toEqual({ timeoutMs: 50 });
+    expect(sb.commands.run.mock.calls[0]?.[1]).toEqual({ cwd: "/workspace", timeoutMs: 2 });
+    expect(sb.commands.run.mock.calls[1]?.[1]).toEqual({ cwd: "/workspace", timeoutMs: 50 });
   });
 
   it("maps background ProcessHandle lifecycle, including missing pids and kill errors", async () => {
