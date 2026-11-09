@@ -60,10 +60,15 @@ import {
   type StaleToolUse,
   isTurnCancellationError,
   interruptTurn,
+  classifyTurnInput,
+  planRequiresActionAnswers,
   type LaneStatus,
   openTurnMarker,
-  settleTurnFailure,
+  reportTurnFailure,
+  runTurnAttempts,
   TURN_RETRY,
+  type TurnAttemptsResult,
+  type TurnFailureEventsPort,
   type RuntimeAdapter,
   type TurnRuntimeAgent,
   type RecoveryDecision,
@@ -73,14 +78,13 @@ import {
   asWireEvents,
   awaitsCustomToolResult,
   knownToolCallIds,
-  remainingAfterAnswer,
   requiresActionStopReason,
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
 import { SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
-import { abortableDelay, interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
+import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -2180,18 +2184,7 @@ export class SessionDO extends DurableObject<Env> {
         await runAgentTurn(
           this.turnRuntimeAdapter(),
           turnName,
-          async () => {
-            if (event.type === "user.message") {
-              await this.processUserMessage(event as UserMessageEvent);
-            } else if (event.type === "user.tool_confirmation") {
-              await this.handleToolConfirmation(event as UserToolConfirmationEvent, history);
-            } else if (event.type === "user.custom_tool_result") {
-              const customResult = event as UserCustomToolResultEvent;
-              if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) return;
-              history.append(this.customToolResultTranscriptEvent(customResult));
-              await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, history);
-            }
-          },
+          async () => { await this.runAcceptedTurn(event, [event], history); },
           {},
         );
         // Turn finished cleanly — clear any prior recovery counter so the
@@ -2329,40 +2322,26 @@ export class SessionDO extends DurableObject<Env> {
     }
     try {
       const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
-      for (const rawEvent of execution.events) {
-        if (rawEvent.type === "system.message") continue;
-        if (rawEvent.type === "session.updated") {
-          // Budget resume: continue from history, no new user input.
-          if (rawEvent.resume === true) {
-            await this.processUserMessage({
-              type: "user.message",
-              content: [{ type: "text", text: "" }],
-            }, 0, false, signal, fence);
-          }
-          continue;
+      const turnInput = classifyTurnInput(execution.events);
+      // user.interrupt is applied on receipt (POST /event), never as an execution.
+      if (turnInput.type === "run") {
+        const batch: SessionEvent[] = [];
+        for (const rawEvent of execution.events) {
+          if (rawEvent.type === "system.message" || rawEvent.type === "session.updated") continue;
+          // Execution rows use the Managed Agents domain shape. The DO
+          // runtime uses the legacy wire shape, so this is the one
+          // explicit protocol projection at the host boundary.
+          const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
+          const localQueued = this.ensureLocalQueueInput(event);
+          if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
+          batch.push(event);
         }
-        // Execution rows use the Managed Agents domain shape. The DO
-        // runtime uses the legacy wire shape, so this is the one
-        // explicit protocol projection at the host boundary.
-        const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
-        const localQueued = this.ensureLocalQueueInput(event);
-        if (localQueued !== null) this.promoteQueueRow(localQueued, broadcastIds.has(localQueued.event_id));
-        if (event.type === "user.message") {
-          const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
-          if (turn?.holdQueuedOnLane) {
-            holdQueuedOnLane = true;
-            this.setExhaustedAt(threadId, Date.now());
-          }
-        } else if (event.type === "user.tool_confirmation") {
-          await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
-        } else if (event.type === "user.custom_tool_result") {
-          const customResult = event as UserCustomToolResultEvent;
-          // Late answer for a call that is already closed (interrupt
-          // settled it, or a duplicate POST): a second tool_result for
-          // one tool_use makes the provider 400 the whole transcript.
-          if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
-          executionHistory.append(this.customToolResultTranscriptEvent(customResult));
-          await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
+        // A budget resume continues from history with no new user input.
+        const trigger = turnInput.trigger.type === "session.updated" ? null : batch.at(-1) ?? null;
+        const turn = await this.runAcceptedTurn(trigger, batch, executionHistory, signal, fence);
+        if (turn?.holdQueuedOnLane) {
+          holdQueuedOnLane = true;
+          this.setExhaustedAt(threadId, Date.now());
         }
       }
       // `broadcastEvent` deliberately serializes the managed-runtime
@@ -4754,14 +4733,15 @@ export class SessionDO extends DurableObject<Env> {
    * Handle tool confirmation: execute the confirmed tool or inject denial,
    * then re-run the harness to continue the conversation.
    */
-  private async handleToolConfirmation(
+  /** A confirmed call runs and a denied one gets its denial result; the turn
+   * itself is resumed by runAcceptedTurn. */
+  private async applyToolConfirmation(
     confirmation: UserToolConfirmationEvent,
     history: HistoryStore,
     parentSignal?: AbortSignal,
     executionFence?: SessionExecutionFence,
   ): Promise<void> {
     // Wrapped sandbox: per-method warmup happens inside any actual call.
-    if (this.toolUseAlreadyAnswered(confirmation.tool_use_id, history)) return;
     // Confirmation handlers may not even touch the sandbox depending on
     // tool type, so eager warmup is wasted; lazy is the right default.
     const sandbox = this.bindSandboxToExecution(
@@ -4775,17 +4755,6 @@ export class SessionDO extends DurableObject<Env> {
     // Retrieve the pending tool call from session metadata
     const pendingCalls = this.state.pending_tool_calls;
     const pending = pendingCalls.find(p => p.toolCallId === confirmation.tool_use_id);
-
-    // The turn resumes before the confirmed tool runs, so its result lands
-    // inside running...idle. A partial batch stays parked and announces nothing.
-    let runningAnnounced = false;
-    const announceRunning = () => {
-      if (remainingAfterAnswer(this.state.pending_tool_calls ?? [], confirmation.tool_use_id, () => asWireEvents(history.getEvents())).length > 0) return;
-      const runningEvent: SessionEvent = { type: "session.status_running" };
-      history.append(runningEvent);
-      this.broadcastEvent(runningEvent, executionFence);
-      runningAnnounced = true;
-    };
 
     if (confirmation.result === "allow" && pending) {
       // Execute the tool
@@ -4839,7 +4808,6 @@ export class SessionDO extends DurableObject<Env> {
         // its target tool with the target's arguments.
         const target = resolveProxiedToolCall(pending.toolName, pending.args);
         const originalTool = allTools[target.toolName];
-        announceRunning();
         if (originalTool?.execute) {
           try {
             const result = await originalTool.execute(target.args, {
@@ -4877,7 +4845,6 @@ export class SessionDO extends DurableObject<Env> {
       }
     } else {
       // Denied or not found — inject denial result
-      announceRunning();
       const denyMsg = confirmation.deny_message || "Tool execution was denied by the user.";
       const toolResultEvent: SessionEvent = {
         type: "agent.tool_result",
@@ -4891,22 +4858,8 @@ export class SessionDO extends DurableObject<Env> {
       history.append(toolResultEvent);
       this.broadcastEvent(toolResultEvent);
     }
-
-    // Remove the confirmed/denied call from pending, and only resume the
-    // model once every parallel call of the batch has a result.
-    await this.resumeWhenToolBatchSettled(confirmation.tool_use_id, history, parentSignal, executionFence, runningAnnounced);
   }
 
-  /**
-   * A model step can emit several tool calls at once (parallel
-   * custom_tool_use / always_ask tool_use). Each one is answered by its own
-   * user event. Resuming the model after the FIRST answer replays a
-   * transcript with unmatched tool_use blocks, which providers reject
-   * (400 "tool_result without tool_use" / missing results) and the turn
-   * then loops through rescheduled+error. CMA semantics: stay
-   * idle(requires_action) listing the still-outstanding ids, and resume
-   * only when the whole batch is settled.
-   */
   /**
    * The aborted step's partial output can still land after user.interrupt
    * (stream-end fixup persists it), including tool_use blocks. Left open,
@@ -5087,31 +5040,69 @@ export class SessionDO extends DurableObject<Env> {
     return pending.map((p) => ({ toolCallId: p.toolCallId, toolName: resolveProxiedToolCall(p.toolName, p.args).toolName }));
   }
 
-  private async resumeWhenToolBatchSettled(
-    answeredId: string,
+  /**
+   * One turn over an accepted batch, in the Node accept order. Answers to
+   * closed calls change nothing; a partial answer batch re-announces what is
+   * still owed without sampling (a model step can park several parallel
+   * calls, and resuming on the first answer replays unmatched tool_use
+   * blocks); otherwise the trigger runs one turn. `trigger` is null for a
+   * budget resume.
+   */
+  private async runAcceptedTurn(
+    trigger: SessionEvent | null,
+    batch: readonly SessionEvent[],
     history: HistoryStore,
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
-    runningAnnounced = false,
-  ): Promise<void> {
-    const remaining = remainingAfterAnswer(this.state.pending_tool_calls ?? [], answeredId, () => asWireEvents(history.getEvents()));
-    this.setState({ ...this.state, pending_tool_calls: remaining });
-    if (remaining.length > 0) {
+  ): Promise<{ holdQueuedOnLane?: boolean } | void> {
+    // CF applies an outcome on receipt (POST /event); the next turn grades it.
+    if (trigger?.type === "user.define_outcome") return;
+    const answers = planRequiresActionAnswers(asWireEvents(batch), () => asWireEvents(history.getEvents()));
+    if (answers.type === "no_effect") return;
+    const parkedStill = (answers.remaining?.length ?? 0) > 0;
+    const answeredNow = new Set<string>();
+    // A confirmed tool's result lands inside running...idle.
+    const runningAnnounced = !parkedStill && batch.some((event) => event.type === "user.tool_confirmation");
+    if (runningAnnounced) {
+      const runningEvent: SessionEvent = { type: "session.status_running" };
+      history.append(runningEvent);
+      this.broadcastEvent(runningEvent, fence);
+    }
+    for (const event of batch) {
+      if (event.type === "user.tool_confirmation") {
+        const confirmation = event as UserToolConfirmationEvent;
+        answeredNow.add(confirmation.tool_use_id);
+        // A second tool_result for one tool_use makes the provider 400 the
+        // whole transcript.
+        if (this.toolUseAlreadyAnswered(confirmation.tool_use_id, history)) continue;
+        await this.applyToolConfirmation(confirmation, history, signal, fence);
+      } else if (event.type === "user.custom_tool_result") {
+        const customResult = event as UserCustomToolResultEvent;
+        answeredNow.add(customResult.custom_tool_use_id);
+        if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) continue;
+        history.append(this.customToolResultTranscriptEvent(customResult));
+      }
+    }
+    if (answeredNow.size > 0) {
+      const closed = toolResultIds(asWireEvents(history.getEvents()));
+      this.setState({ ...this.state, pending_tool_calls: (this.state.pending_tool_calls ?? [])
+        .filter((pending) => !answeredNow.has(pending.toolCallId) && !closed.has(pending.toolCallId)) });
+    }
+    if (parkedStill) {
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
-        stop_reason: requiresActionStopReason(remaining.map((p) => p.toolCallId)),
+        stop_reason: requiresActionStopReason(answers.remaining!),
       } as SessionEvent;
       history.append(idleEvent);
       this.broadcastEvent(idleEvent, fence);
       return;
     }
-    // Re-run the harness to continue the conversation
-    // Use an empty user message — the history already has the tool result
-    const resumeMsg: UserMessageEvent = {
-      type: "user.message",
-      content: [{ type: "text", text: "" }],
-    };
-    await this.processUserMessage(resumeMsg, 0, runningAnnounced, signal, fence);
+    // Answers and a budget resume continue from history: the empty message
+    // adds no input of its own.
+    const message: UserMessageEvent = trigger?.type === "user.message"
+      ? trigger as UserMessageEvent
+      : { type: "user.message", content: [{ type: "text", text: "" }] };
+    return this.processUserMessage(message, runningAnnounced, signal, fence);
   }
 
   /**
@@ -5623,11 +5614,9 @@ export class SessionDO extends DurableObject<Env> {
    * evaluate outcome, emit status.
    *
    * @param runningAnnounced — if true, this turn's status_running is already out (resume after tool confirmation)
-   * @param retryCount — for transient error retries
    */
   private async processUserMessage(
     userMessage: UserMessageEvent,
-    retryCount: number = 0,
     runningAnnounced: boolean = false,
     parentSignal?: AbortSignal,
     executionFence?: SessionExecutionFence,
@@ -5679,8 +5668,8 @@ export class SessionDO extends DurableObject<Env> {
     // has finished closing so clients cannot observe idle while resources are
     // still live.
     let completedIdleEvent: SessionEvent | undefined;
-    // Null until the harness starts: preparation has no agent side effects.
-    let agentEventsBeforeRun: number | null = null;
+    // How the harness attempts ended, when they did not complete.
+    let failedAttempts: Exclude<TurnAttemptsResult, { type: "completed" }> | undefined;
 
     // Reuse session-level sandbox (singleton) — files persist across turns.
     // Returned object is a lazy proxy. Warmup starts concurrently with the
@@ -6128,6 +6117,22 @@ export class SessionDO extends DurableObject<Env> {
       },
     };
 
+    // Official CMA ordering: session.error{retrying} then status_rescheduled.
+    const failureEvents: TurnFailureEventsPort = {
+      sessionError: (message, retry_status) => {
+        const event = {
+          type: "session.error",
+          error: { type: "unknown_error", message, retry_status },
+        } as SessionEvent;
+        history.append(event);
+        this.broadcastEvent(event, activeFence);
+      },
+      rescheduled: (reason) => {
+        const event: SessionEvent = { type: "session.status_rescheduled", reason };
+        history.append(event);
+        this.broadcastEvent(event, activeFence);
+      },
+    };
     try {
       // Run harness.onSessionInit exactly once per session, BEFORE the first
       // running status. Default impl writes <system-reminder> user.message
@@ -6146,9 +6151,11 @@ export class SessionDO extends DurableObject<Env> {
       // user.interrupt may still start this turn after the interrupt already
       // closed its calls and emitted idle end_turn. Official CMA: the
       // interrupt ends the turn; only a new user.message resumes. So if the
-      // newest user input on this thread is the interrupt, do not sample.
+      // newest user input on this thread is the interrupt, a continuation does
+      // not sample. A queued user.message (it has its own id) still runs as the
+      // lane's next turn, as on Node.
       // https://platform.claude.com/docs/en/managed-agents/events-and-streaming
-      {
+      if ((userMessage as { id?: string }).id === undefined) {
         let lastUserType: string | undefined;
         for (const e of history.getEvents()) {
           if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== turnThreadId) continue;
@@ -6175,8 +6182,22 @@ export class SessionDO extends DurableObject<Env> {
         this.broadcastEvent(runningEvent, activeFence);
       }
 
-      agentEventsBeforeRun = countAgentEvents(history.getEvents());
-      await harness.run(ctx);
+      const attempts = await runTurnAttempts({
+        run: () => harness.run(ctx),
+        agentEventCount: () => countAgentEvents(history.getEvents()),
+        // A lost execution fence is a cancellation too: the replacement owner
+        // runs the turn, so this one must neither retry nor report.
+        isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
+        classify: classifyTurnFailure,
+        retry: TURN_RETRY,
+        signal: abortController.signal,
+        events: failureEvents,
+        describe: (error) => this.describeError(error),
+      });
+      if (attempts.type !== "completed") {
+        failedAttempts = attempts;
+        throw attempts.error;
+      }
 
       // A parked call can already be closed by the time the run returns
       // (steer/interrupt closed it with a tool_result, or the client answered
@@ -6376,103 +6397,15 @@ export class SessionDO extends DurableObject<Env> {
       };
       completedIdleEvent = idleEvent;
     } catch (err) {
-      const errorMessage = this.describeError(err);
-
-      // A lost execution fence is an expected cancellation, not a model or
-      // infrastructure failure.  The lease owner may have been replaced by
-      // another worker; retrying here would let the stale worker race the new
-      // owner and would also try to append a second error/idle pair through
-      // the fenced history wrapper.  Treat the sandbox guard's equivalent
-      // error the same way as an AbortError.
-      if (isTurnCancellationError(err)) {
-        // Interrupt handler (POST /event user.interrupt branch) already
-        // appended its own session.status_idle synchronously before
-        // the abort propagated, so the finally block must NOT emit a
-        // second one — this flag suppresses the duplicate.
+      // An interrupt or a lost execution fence ends the turn elsewhere: the
+      // interrupt emits its idle, a replacement owner runs the turn.
+      if (failedAttempts?.type === "cancelled" || isTurnCancellationError(err) || abortController.signal.aborted) {
         idleEmitted = true;
         return;
       }
-
-      // Retry-by-default policy. Specific fatal classes short-circuit;
-      // everything else (including unclassified errors) re-runs once
-      // before surfacing. The previous shape was a TRANSIENT allowlist
-      // of substrings ("timeout", "ECONNREFUSED"...); every new transient
-      // class (CF "version rollout", container OOM, future infra wording)
-      // silently fell off the list and the user saw a hard failure.
-      //
-      // Boundary wrappers (wrapSandboxWithLazyWarmup, the streamText
-      // boundary, ) re-throw native errors as
-      // typed OmaErrors via classifyExternalError, so most well-known
-      // fatal conditions arrive here as the right class already.
-      // For errors that escaped the boundaries (D1, KV, future SDKs),
-      // run classifyExternalError once more inline as belt-and-braces.
-      const classified = classifyExternalError(err);
-      // Session-terminal classes: retry_status terminal + terminate().
-      // ModelError is turn-dead only (exhausted + retries_exhausted): same
-      // prompt fails again, but the session stays usable for a new prompt.
-      // Caught 2026-05-11 sess-y2bfxm1de4e1zqxm: retries burned tokens.
-      const plan = await settleTurnFailure({
-        cancelled: false,
-        // A turn that already produced agent events is not re-run: a retry
-        // would repeat its tool calls.
-        failureClass: classifyTurnFailure(
-          classified,
-          agentEventsBeforeRun !== null && countAgentEvents(history.getEvents()) > agentEventsBeforeRun,
-        ),
-        attempt: retryCount + 1,
-        maxAttempts: TURN_RETRY.attempts,
-        delayMs: TURN_RETRY.delayMs,
-        message: errorMessage,
-        // Official CMA ordering: session.error{retrying} then status_rescheduled.
-        events: {
-          sessionError: (message, retry_status) => {
-            const event = {
-              type: "session.error",
-              error: { type: "unknown_error", message, retry_status },
-            } as SessionEvent;
-            history.append(event);
-            this.broadcastEvent(event, activeFence);
-          },
-          rescheduled: (reason) => {
-            const event: SessionEvent = { type: "session.status_rescheduled", reason };
-            history.append(event);
-            this.broadcastEvent(event, activeFence);
-          },
-        },
-        // An interrupt during the backoff ends the wait at once (same as Node).
-        wait: (ms) => abortableDelay(ms, abortController.signal),
-      });
-
-      if (plan.type === "retry") {
-        // Retry hold (cma-steer-coherent-turn.md): do not flush unstamped
-        // mid-turn inputs and do not start a new agent turn from them.
-        // Leave them until the next consume boundary after this resume;
-        // takeSteeringInputs then ingests them into the continuing turn.
-        // Recursive call owns the next idle emit (success or its own
-        // finally). Suppress this frame's catch-all so we don't get
-        // two status_idle events on a successful retry.
-        idleEmitted = true;
-        return this.processUserMessage(
-          userMessage,
-          retryCount + 1,
-          false,
-          parentSignal,
-          activeFence,
-        );
-      }
-
-      if (plan.type === "exhausted") {
-        // Official CMA exhausted: session.error{exhausted} then idle
-        // retries_exhausted. No status_rescheduled on the final failure.
-        // Owner lock: retain mid-run queued inputs (holdQueuedOnLane), do not
-        // flush/delete (deliberate divergence from SDK "flushed").
-        holdQueuedOnLane = true;
-        completedIdleEvent = {
-          type: "session.status_idle",
-          stop_reason: { type: "retries_exhausted" },
-        };
-      } else if (plan.type === "terminal") {
+      if (failedAttempts?.type === "terminal") {
         // Official CMA: retry_status terminal → session transitions to terminated.
+        const classified = classifyExternalError(err);
         this.terminate(
           classified instanceof PaymentRequiredError ? "payment_required"
             : classified instanceof AuthError ? "auth"
@@ -6481,7 +6414,20 @@ export class SessionDO extends DurableObject<Env> {
         );
         // terminate() emits status_terminated; suppress catch-all idle.
         idleEmitted = true;
+        return;
       }
+      // A failure outside the harness attempts is the turn's last one (same as
+      // Node); the attempts already announced their own exhaustion.
+      if (failedAttempts === undefined) {
+        reportTurnFailure({ type: "exhausted" }, this.describeError(err), failureEvents);
+      }
+      // Official CMA exhausted: idle retries_exhausted. Owner lock: retain
+      // mid-run queued inputs (holdQueuedOnLane), do not flush them.
+      holdQueuedOnLane = true;
+      completedIdleEvent = {
+        type: "session.status_idle",
+        stop_reason: { type: "retries_exhausted" },
+      };
     } finally {
       await disposeTools(allTools);
       if (!managedMemorySynchronized) {

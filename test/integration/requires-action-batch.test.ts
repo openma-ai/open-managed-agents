@@ -9,7 +9,16 @@ import { toSessionEventResponse } from "../../packages/managed-agents-api/src/ma
 // parallel batch re-announces only its outstanding ids (an open custom call
 // or confirmation alike), a
 // duplicate answer is stored with no effect, and the batch resumes the model
-// with an empty resume message once every call has a result.
+// with an empty resume message once every call has a result. As on Node, the
+// parked requires_action idle in the log is what an answer batch is read against.
+function park(history: SqliteHistory, ids: string[]) {
+  history.append({ type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ids } } as never);
+}
+const answer = (call: string) => ({ type: "user.custom_tool_result", id: `sevt_answer_${call}`,
+  custom_tool_use_id: call, content: [{ type: "text", text: call }] });
+const settle = (room: any, history: SqliteHistory, call: string) =>
+  room.runAcceptedTurn(answer(call), [answer(call)], history);
+
 function seed(room: any, sessionId: string, pending: Array<{ toolCallId: string; toolName: string }>) {
   room._ensureCfAgentsSchema(); room.ensureSchema(); room._coldStartFlushDone = true;
   room.setState({ ...room.state, session_id: sessionId, tenant_id: "workspace", agent_id: "a",
@@ -34,7 +43,8 @@ describe("CF requires_action batch bookkeeping", () => {
       ]);
       const history = new SqliteHistory(state.storage.sql, null);
       history.append({ type: "agent.custom_tool_use", id: "call_a", name: "lookup_ticket", input: {} } as never);
-      await room.resumeWhenToolBatchSettled("call_a", history);
+      park(history, ["call_a", "call_b"]);
+      await settle(room, history, "call_a");
       const cf = (history.getEvents() as any[]).filter((e) => e.type === "session.status_idle").at(-1).stop_reason;
       const node = (toSessionEventResponse({
         id: "idle", type: "session.status_idle", processedAt: "2026-11-09T00:00:00.000Z",
@@ -56,11 +66,12 @@ describe("CF requires_action batch bookkeeping", () => {
       ]);
       const history = new SqliteHistory(state.storage.sql, null);
       history.append({ type: "agent.custom_tool_use", id: "ctu_a", name: "lookup_ticket", input: {} } as never);
+      park(history, ["ctu_a", "tu_mcp"]);
       const resumed: unknown[] = [];
       room.processUserMessage = async (...args: unknown[]) => { resumed.push(args); };
       const idles = () => (history.getEvents() as any[]).filter((e) => e.type === "session.status_idle");
 
-      await room.resumeWhenToolBatchSettled("ctu_a", history);
+      await settle(room, history, "ctu_a");
       expect(idles().at(-1).stop_reason).toEqual({ type: "requires_action", event_ids: ["tu_mcp"] });
       expect(room.state.pending_tool_calls.map((p: any) => p.toolCallId)).toEqual(["tu_mcp"]);
       expect(resumed).toEqual([]);
@@ -79,22 +90,21 @@ describe("CF requires_action batch bookkeeping", () => {
       const history = new SqliteHistory(state.storage.sql, null);
       history.append({ type: "agent.custom_tool_use", id: "ctu_a", name: "lookup_ticket", input: {} } as never);
       history.append({ type: "agent.custom_tool_use", id: "ctu_b", name: "lookup_user", input: {} } as never);
+      park(history, ["ctu_a", "ctu_b"]);
       const resumed: unknown[] = [];
       room.processUserMessage = async (...args: unknown[]) => { resumed.push(args); };
       const idles = () => (history.getEvents() as any[]).filter((e) => e.type === "session.status_idle");
 
-      await room.resumeWhenToolBatchSettled("ctu_a", history);
+      await settle(room, history, "ctu_a");
       expect(idles().at(-1).stop_reason).toEqual({ type: "requires_action", event_ids: ["ctu_b"] });
+      expect(resumed).toEqual([]);
 
-      // ctu_a's echoed result counts as answered when the batch is re-read.
-      history.append({ type: "agent.tool_result", tool_use_id: "ctu_a", content: "a" } as never);
-      history.append({ type: "agent.tool_result", tool_use_id: "ctu_b", content: "b" } as never);
-      await room.resumeWhenToolBatchSettled("ctu_b", history);
+      await settle(room, history, "ctu_b");
       expect(room.state.pending_tool_calls).toEqual([]);
       expect(resumed).toHaveLength(1);
       expect((resumed[0] as any[])[0]).toEqual({ type: "user.message", content: [{ type: "text", text: "" }] });
       // A custom tool's resume has not announced status_running yet.
-      expect((resumed[0] as any[])[2]).toBe(false);
+      expect((resumed[0] as any[])[1]).toBe(false);
     });
   });
 
