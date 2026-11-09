@@ -40,7 +40,7 @@ export interface SessionSandboxIdleTimer {
   /** idlePauseMs (design §0.0 rule 11). */
   pauseMs: number;
   /** Call idlePause() once, `delayMs` from now, replacing a pending one. */
-  schedule(delayMs: number): void | Promise<void>;
+  schedule(delayMs: number, version?: number): void | Promise<void>;
   cancel(): void | Promise<void>;
 }
 

@@ -32,7 +32,7 @@ export async function armIdle<R>(state: LiveSessionSandbox<R>, delayMs: number):
   if (idle === undefined) return;
   state.idleSince = state.now();
   state.idleVersion = (await state.load()).version;
-  await idle.schedule(delayMs);
+  await idle.schedule(delayMs, state.idleVersion);
   state.options.info?.(`sandbox_idle_started pause_in_ms=${delayMs}`);
 }
 
@@ -43,8 +43,9 @@ export async function disarmIdle<R>(state: LiveSessionSandbox<R>): Promise<void>
 }
 
 /** The idle timer fired. */
-export async function idlePause<R>(state: LiveSessionSandbox<R>): Promise<"paused" | "skipped"> {
+export async function idlePause<R>(state: LiveSessionSandbox<R>, expectedVersion?: number): Promise<"paused" | "skipped"> {
   const idle = state.options.idle;
+  if (expectedVersion !== undefined) state.idleVersion = expectedVersion;
   await state.quiesce();
   if (idle === undefined) return "skipped";
   if (state.idleSince === null) {
@@ -58,7 +59,7 @@ export async function idlePause<R>(state: LiveSessionSandbox<R>): Promise<"pause
   // Only an early fire waits; calls in flight do not hold the pause off.
   const remaining = state.idleSince + idle.pauseMs - state.now();
   if (remaining > 0) {
-    await idle.schedule(remaining);
+    await idle.schedule(remaining, state.idleVersion ?? undefined);
     return "skipped";
   }
   state.idleSince = null;

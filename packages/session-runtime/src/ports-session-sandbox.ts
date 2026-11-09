@@ -97,7 +97,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   /** Execution end: the sandbox keeps running until the idle pause. */
   endExecution(): Promise<void> { return endExecution(this.state); }
   /** The idle timer fired. */
-  idlePause(): Promise<"paused" | "skipped"> { return idlePause(this.state); }
+  idlePause(version?: number): Promise<"paused" | "skipped"> { return idlePause(this.state, version); }
   /** A failed execution: nothing published, the sandbox released. */
   failExecution(): Promise<void> { return failExecution(this.state); }
   /** This instance's last open started the sandbox from a snapshot. */

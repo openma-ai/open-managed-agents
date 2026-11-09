@@ -3903,7 +3903,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /** Idle pause alarm callback (sandbox-idle-alarm.ts). */
-  async pauseIdleSandbox(): Promise<void> { this.ensureSandboxCreated(); await this.portsSandbox!.idlePause(); }
+  async pauseIdleSandbox(payload?: { version: number }): Promise<void> { this.ensureSandboxCreated(); await this.portsSandbox!.idlePause(payload?.version); }
 
   /** Used inside warmup itself to avoid the wrap → warmup → wrap recursion. */
   private getRawSandbox(): SandboxExecutor {

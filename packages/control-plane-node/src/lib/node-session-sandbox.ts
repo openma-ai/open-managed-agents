@@ -426,7 +426,7 @@ export class NodeSessionSandbox implements SandboxPort {
       },
       idle: {
         pauseMs: options.idlePauseMs,
-        schedule: (delayMs) => this.scheduleIdle(delayMs),
+        schedule: (delayMs, version) => this.scheduleIdle(delayMs, version),
         cancel: () => this.cancelIdle(),
       },
     });
@@ -606,11 +606,11 @@ export class NodeSessionSandbox implements SandboxPort {
     this.checkpoint = async (input) => (port() ?? runtime).checkpoint(input);
   }
 
-  private scheduleIdle(delayMs: number): void {
+  private scheduleIdle(delayMs: number, version?: number): void {
     this.cancelIdle();
     this.idleTimer = setTimeout(() => {
       this.idleTimer = undefined;
-      void this.core.idlePause().catch((error: unknown) => {
+      void this.core.idlePause(version).catch((error: unknown) => {
         this.options.warn(`sandbox_idle_pause_failed error=${error instanceof Error ? error.message : String(error)}`, this.context);
       });
     }, delayMs);

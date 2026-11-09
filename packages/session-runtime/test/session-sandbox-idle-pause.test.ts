@@ -81,6 +81,13 @@ describe("Session sandbox idle pause", () => {
     expect(gone.log).toEqual(["attach:r9"]);
   });
 
+  it("an evicted host's stale timer cannot pause a newer record", async () => {
+    const h = fakeSessionSandbox({ saved: runningRecord("r9", { version: 8 }) });
+    h.setExecution(undefined);
+    expect(await h.sandbox.idlePause(7)).toBe("skipped");
+    expect(h.log).toEqual([]);
+  });
+
   it("a timer armed before the host was evicted fires on a fresh instance: it attaches the recorded sandbox and pauses it", async () => {
     // Cloudflare: the DO alarm outlives the in-memory instance that armed it;
     // a cancelled timer never fires (the schedule row is deleted).
