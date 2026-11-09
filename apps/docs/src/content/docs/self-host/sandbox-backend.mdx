@@ -314,7 +314,7 @@ Anything else must be on `PATH` (`command -v`). Success prints
 
 | Artifact | Pin |
 |---|---|
-| `apps/agent/Dockerfile` | `FROM docker.io/node:24-bookworm-slim`, then `COPY --from=docker.io/cloudflare/sandbox:1.0.3` of `/usr/local/bin/sandbox-shim`. `Files`, `S3Mount` and `DirectoryBackup` run that helper, so its tag stays lock-step with `@cloudflare/sandbox`. `S3Mount` drives `s3fs` over FUSE, so the image also installs `fuse3` and `s3fs` |
+| `apps/agent/Dockerfile` | `FROM docker.io/node:24-trixie-slim`, then `COPY --from=docker.io/cloudflare/sandbox:1.0.3` of `/usr/local/bin/sandbox-shim`. `Files`, `S3Mount` and `DirectoryBackup` run that helper, so its tag stays lock-step with `@cloudflare/sandbox`. `S3Mount` drives `s3fs` over FUSE, so the image also installs `fuse3` and `s3fs`. The shim always passes `-o compat_dir`, which exists from s3fs 1.92: bookworm ships 1.90, so the base is trixie (1.95) |
 | `.github/workflows/build-sandbox-image.yml` | Builds that Dockerfile as `docker.io/openma/sandbox-base`, tags `latest`, the git SHA, the `cloudflare/sandbox` version parsed from the Dockerfile, and the Dockerfile's sha256. Cache is GitHub Actions cache (`type=gha`) for this workflow only. Platform is `linux/amd64`. Trigger is `workflow_dispatch` or a push to `main` that changes `apps/agent/Dockerfile` |
 | `apps/agent/Dockerfile.sandbox` | `FROM docker.io/openma/sandbox-base:<64-char content hash>`. Wrangler points the container class at this file |
 | Node managed runtime | `createNodeManagedRuntime({ image })` requires an explicit image string. No default |

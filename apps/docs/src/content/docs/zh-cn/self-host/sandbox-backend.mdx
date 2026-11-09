@@ -221,7 +221,7 @@ Scope 是 `{ workspaceId, environmentId, sessionId, workId }`。一份租约对�
 
 | 制品 | 钉死方式 |
 |---|---|
-| `apps/agent/Dockerfile` | `FROM docker.io/node:24-bookworm-slim`，再从 `docker.io/cloudflare/sandbox:1.0.3` `COPY` 出 `/usr/local/bin/sandbox-shim`。`Files`、`S3Mount` 和 `DirectoryBackup` 都运行这个助手，所以它的 tag 与 `@cloudflare/sandbox` 锁步。`S3Mount` 通过 FUSE 驱动 `s3fs`，所以镜像还安装 `fuse3` 和 `s3fs` |
+| `apps/agent/Dockerfile` | `FROM docker.io/node:24-trixie-slim`，再从 `docker.io/cloudflare/sandbox:1.0.3` `COPY` 出 `/usr/local/bin/sandbox-shim`。`Files`、`S3Mount` 和 `DirectoryBackup` 都运行这个助手，所以它的 tag 与 `@cloudflare/sandbox` 锁步。`S3Mount` 通过 FUSE 驱动 `s3fs`，所以镜像还安装 `fuse3` 和 `s3fs`。shim 固定传 `-o compat_dir`，s3fs 1.92 起才有：bookworm 是 1.90，所以基础镜像用 trixie（1.95） |
 | `.github/workflows/build-sandbox-image.yml` | 把该 Dockerfile 构建为 `docker.io/openma/sandbox-base`，打上 `latest`、git SHA、从 Dockerfile 解析出的 `cloudflare/sandbox` 版本，以及 Dockerfile 的 sha256。缓存只属于这个 workflow 的 GitHub Actions cache（`type=gha`）。平台是 `linux/amd64`。触发方式是 `workflow_dispatch`，或推到 `main` 且改动了 `apps/agent/Dockerfile` |
 | `apps/agent/Dockerfile.sandbox` | `FROM docker.io/openma/sandbox-base:<64 字符内容哈希>`。Wrangler 把容器类指向这个文件 |
 | Node 托管运行时 | `createNodeManagedRuntime({ image })` 要求显式的镜像字符串。没有默认值 |

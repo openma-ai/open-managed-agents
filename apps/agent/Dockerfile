@@ -2,8 +2,10 @@
 # Base: Debian + toolchain. Copy sandbox-shim from cloudflare/sandbox:1.0.3
 # (must match @cloudflare/sandbox in package.json). Files / S3Mount /
 # DirectoryBackup require the shim. FUSE/s3fs required for bucket mounts.
+# sandbox-shim passes `-o compat_dir` to s3fs, which needs s3fs >= 1.92:
+# bookworm ships 1.90 ("unknown option 'compat_dir'"), trixie ships 1.95.
 
-FROM docker.io/node:24-bookworm-slim
+FROM docker.io/node:24-trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
