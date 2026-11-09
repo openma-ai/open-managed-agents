@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { describe, it, expect, beforeAll } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
 import { SPEC_EVENT_TYPES } from "../../packages/api-types/src/types";
@@ -860,7 +861,9 @@ describe("SSE endpoint matrix", () => {
       return t === "user.message";
     });
     expect(allUsers.length).toBeGreaterThanOrEqual(2);
-    const cursorSeq = allUsers[0].seq;
+    await waitForSessionExecution(session.id);
+    const completed = await waitForUserMessages(session.id, 2);
+    const cursorSeq = completed.filter(row => (row.data?.type ?? row.type) === "user.message")[0].seq;
 
     const streamRes = await api(`/v1/oma/sessions/${session.id}/events/stream`, {
       headers: {

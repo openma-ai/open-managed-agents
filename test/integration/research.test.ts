@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
@@ -565,7 +566,7 @@ describe("Outcomes", () => {
     expect(msgRes.status).toBe(202);
 
     // Wait for harness to complete (outcome eval will error but session recovers)
-    await new Promise((r) => setTimeout(r, 500));
+    await waitForSessionExecution(sessionId);
 
     // Connect via WebSocket to verify the harness did run
     const doId = env.SESSION_DO!.idFromName(sessionId);

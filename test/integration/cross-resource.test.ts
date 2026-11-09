@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
@@ -608,8 +609,8 @@ describe("Cross-entity lifecycle", () => {
     });
     expect(evtRes.status).toBe(202);
 
-    // Wait for harness
-    await new Promise((r) => setTimeout(r, 500));
+    // Wait for the accepted input and its durable execution to finish.
+    await waitForSessionExecution(session.id);
 
     // Verify events
     const events = await collectReplayedEvents(session.id, 100);

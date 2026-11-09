@@ -7,6 +7,7 @@
 // changes is asserted separately in the converged-code tests and listed in
 // the convergence report.
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { beforeAll, describe, expect, it } from "vitest";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { ensureModelCards } from "./_model-cards";
@@ -64,14 +65,7 @@ function stub(sessionId: string) {
   return env.SESSION_DO!.get(env.SESSION_DO!.idFromName(sessionId));
 }
 
-async function waitForIdle(sessionId: string, maxWaitMs = 10_000) {
-  for (let waited = 0; waited < maxWaitMs; waited += 200) {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const body = await (await stub(sessionId).fetch(new Request("http://internal/status"))).json() as any;
-    if (body.status === "idle") return;
-  }
-  throw new Error(`session ${sessionId} did not become idle`);
-}
+const waitForIdle = waitForSessionExecution;
 
 async function events(sessionId: string): Promise<any[]> {
   const res = await stub(sessionId).fetch(new Request("http://internal/events", { headers: { Accept: "application/json" } }));

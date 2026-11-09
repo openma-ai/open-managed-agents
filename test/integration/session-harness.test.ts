@@ -1,6 +1,7 @@
 // @ts-nocheck
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
@@ -75,18 +76,10 @@ async function postAndWait(sessionId: string, text: string, waitMs = 400) {
   await post(`/v1/oma/sessions/${sessionId}/events`, {
     events: [{ type: "user.message", content: [{ type: "text", text }] }],
   });
-  await new Promise((r) => setTimeout(r, waitMs));
+  await waitForSessionExecution(sessionId);
 }
 
-async function waitForIdle(sessionId: string, maxWaitMs = 5000) {
-  const polls = Math.ceil(maxWaitMs / 200);
-  for (let i = 0; i < polls; i++) {
-    await new Promise((r) => setTimeout(r, 200));
-    const statusRes = await getDoStatus(sessionId);
-    const body = (await statusRes.json()) as any;
-    if (body.status === "idle") return;
-  }
-}
+const waitForIdle = waitForSessionExecution;
 
 // ============================================================
 // Harness execution flow
