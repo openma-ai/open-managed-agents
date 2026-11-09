@@ -142,6 +142,58 @@ it.each(["warning", "pre-warning"])("actual Node runner recovers %s install unce
   expect(frames.filter(e => e.type === "agent.tool_result" && e.tool_use_id === retry.id)).toHaveLength(1);
 });
 
+// The break caught here is dispatch after cancellation while the real host
+// executor is awaiting tool construction. Keep runner, installer, codec and
+// execution guard real; only external ACP placement remains the file's double.
+it.each(["interrupt", "lease_lost"])("actual host %s during confirmation preparation prevents a second installer dispatch", async action => {
+  const { DefaultNodeManagedSessionRunner } = await import("../../../packages/control-plane-node/src/lib/node-managed-session-runner");
+  const { decodeRuntimeEvent } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+  const f = fixture(); const history: any[] = [], frames: any[] = []; let sequence = 0;
+  const session: any = { id: "s", agent: { id: "a", model: { id: "test" }, tools: [], mcpServers: [] }, usage: {}, status: "running", budget: null };
+  const environment: any = { id: "env", config: { type: "self_hosted" } };
+  const scope = { workspaceId: "w", sessionId: "s", session, environment };
+  let release!: () => void, reached!: () => void;
+  const prepared = new Promise<void>(resolve => { reached = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const runner = new DefaultNodeManagedSessionRunner({
+    buildSandbox: async () => f.sandbox, buildModel: async () => ({}), buildTools: async () => ({}),
+    buildHarness: () => new AcpSandboxHarness(),
+    buildHarnessContext: async (input: any) => ({ ...f.ctx, runtime: input.runtime }),
+    confirmedTools: new NodeManagedConfirmedToolExecutor({ buildExecutableTools: async (input: any) => {
+      reached(); await barrier;
+      return buildTools(f.agent as never, input.sandbox, {}, { enforcePermissions: false });
+    } }),
+    clock: { now: () => new Date("2026-11-01T00:00:00Z") }, ids: { nextEventId: () => "e" + (++sequence) },
+  } as any);
+  const send = async (events: any[]) => {
+    history.push(...events); const output: any[] = [];
+    try {
+      await runner.accept({ ...scope, executionFence: { executionId: "x", attemptId: "old", ownerId: "owner" },
+        events, initialEvents: [], historyEvents: [...history], output: async (frame: any) => { output.push(frame); } } as any);
+    } finally {
+      for (const frame of output) history.push(...decodeRuntimeEvent(frame, new Set()));
+      frames.push(...output);
+    }
+  };
+  await runner.start({ ...scope, initialEvents: [] });
+  await send([{ id: "first", type: "user.message", content: [{ type: "text", text: "start" }], processedAt: "2026-11-01T00:00:00Z" }]);
+  const retry = frames.find(e => e.type === "agent.tool_use" && e.id.startsWith("retry:"));
+  expect(retry).toBeDefined(); expect(f.commands).toHaveLength(1); f.succeed();
+  const pending = send([{ id: "allow", type: "user.tool_confirmation", toolUseId: retry.id, result: "allow", processedAt: "2026-11-01T00:00:01Z" }]);
+  await prepared;
+  if (action === "interrupt") await send([{ id: "interrupt", type: "user.interrupt", processedAt: "2026-11-01T00:00:02Z" }]);
+  else runner.cancel({ ...scope, reason: "lease_lost" });
+  release();
+  if (action === "lease_lost") await expect(pending).rejects.toBe("lease_lost");
+  else await pending;
+  expect(f.commands).toHaveLength(1);
+  expect(frames.filter(e => e.type === "agent.tool_result" && e.tool_use_id === retry.id)).toHaveLength(0);
+  if (action === "lease_lost") {
+    expect(frames.filter(e => e.type === "session.status_idle")).toHaveLength(1);
+    expect(frames.some(e => e.type === "session.error")).toBe(false);
+  }
+});
+
 it("orphan canonical install without result or warning is conservatively parked and repaired", async () => {
   const f = fixture(); await f.run();
   const original = f.events.find(e => e.type === "agent.tool_use" && !e.id.startsWith("retry:"));
