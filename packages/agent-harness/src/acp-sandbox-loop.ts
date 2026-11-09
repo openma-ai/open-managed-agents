@@ -1,5 +1,6 @@
 import { parkUnknownToolRetry, isDispatchedUnknown } from "./unknown-tool-retry";
 import { installAcpAgentWithHistory } from "./acp-install";
+import { gateExhausted } from "./budget";
 import { harnessContextFromEvents, transitionHarnessContext, type HarnessContextState } from "@open-managed-agents/session-runtime-contract";
 import { SessionExecutionLostError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
@@ -83,6 +84,9 @@ export class AcpSandboxHarness implements HarnessInterface {
   async run(ctx: HarnessContext): Promise<void> {
     const runtime = ctx.runtime;
     if (parkUnknownToolRetry(runtime)) return;
+    // Same pre-request meter as Pi: a capped Session must not install or
+    // launch an ACP child just to receive a textual gateway 402 error.
+    if (gateExhausted(ctx.budget)) { ctx.budget!.reached = true; return; }
     this.#runtime = runtime;
     const config = ctx.agent.acp;
     if (!config?.agent?.command && !config?.agent?.registry) {

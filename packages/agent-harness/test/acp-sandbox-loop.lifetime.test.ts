@@ -101,6 +101,16 @@ function context(port: unknown, acp: Record<string, unknown> = {}): HarnessConte
 }
 
 describe("acp-sandbox child lifetime", () => {
+  it("returns through the existing budget terminal path before install, child launch or model span at the cap", async () => {
+    const { createSessionBudgetGate, memoryListCostPicoStore } = await import("../src/budget");
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.budget = createSessionBudgetGate({ amount: "0", currency: "USD" }, { version: 1, currency: "USD", input_per_mtok: "1", output_per_mtok: "1" }, memoryListCostPicoStore());
+    await new AcpSandboxHarness().run(ctx);
+    expect(ctx.budget!.reached).toBe(true);
+    expect(started).toHaveLength(0); expect(prompts).toHaveLength(0);
+    expect(s.files.size).toBe(0);
+    expect(ctx.runtime.history.getEvents()).toEqual([]);
+  });
   it("does not start a native agent while an unknown retry waits for authorization", async () => {
     const s = sandbox(false), ctx = context(s.port);
     ctx.runtime.broadcast({id:"effect",type:"agent.tool_use",name:"bash",input:{command:"effect"}});
