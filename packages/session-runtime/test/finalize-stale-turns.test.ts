@@ -40,7 +40,7 @@ const types = (events: Array<Record<string, unknown>>) => events.map((event) => 
 const dangling = { type: "session.status_running", ts: (NOW - 120_000) / 1000 };
 
 function settled(state: "failed" | "completed", settledAtMs: number, failure: string | null = null) {
-  return { id: "execution-1", attemptCount: 1, state, settledAt: new Date(settledAtMs).toISOString(), failure } as never;
+  return { id: "execution-1", workspaceId: "w", sessionId: "s", attempt: { id: "a", ownerId: "o", generation: 1, leaseExpiresAt: "2026-01-01T00:00:00.000Z" }, attemptCount: 1, state, settledAt: new Date(settledAtMs).toISOString(), failure } as never;
 }
 function records(active: unknown[], last: ReturnType<typeof settled> | null) {
   return {
@@ -53,8 +53,8 @@ describe("deadExecutionFailure", () => {
   const scope = { workspaceId: "w", sessionId: "s" };
   const turnAt = 10_000;
   it("reads the failure the sweep settled after the turn started", async () => {
-    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt + 1, "lease expired")), ...scope }, turnAt)).toEqual({ message: "lease expired", executionId: "execution-1", attempt: 1 });
-    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt, null)), ...scope }, turnAt)).toEqual({ message: "execution failed", executionId: "execution-1", attempt: 1 });
+    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt + 1, "lease expired")), ...scope }, turnAt)).toEqual({ message: "lease expired", executionId: "execution-1", attempt: 1, fence: expect.objectContaining({ executionId: "execution-1", attemptId: "a", settlement: "failed" }) });
+    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt, null)), ...scope }, turnAt)).toEqual({ message: "execution failed", executionId: "execution-1", attempt: 1, fence: expect.objectContaining({ executionId: "execution-1", attemptId: "a", settlement: "failed" }) });
   });
   it("is null while an execution is queued or running, or with no store", async () => {
     expect(await deadExecutionFailure({ store: records([{}], settled("failed", turnAt + 1)), ...scope }, turnAt)).toBeNull();

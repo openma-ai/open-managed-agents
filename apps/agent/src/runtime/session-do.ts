@@ -1,4 +1,5 @@
 import { TurnInvocation } from "./turn-invocation";
+import { appendStaleTurnEvent } from "./stale-turn-settlement";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -7795,8 +7796,7 @@ export class SessionDO extends DurableObject<Env> {
     // Ensure schema for alarm() too; CREATE IF NOT EXISTS is idempotent.
     try { this.ensureSchema(); } catch { /* schema already up-to-date */ }
 
-    // Let the cold-start recovery scan (started by ensureSchema) finish
-    // before pairing. Otherwise it races this finalizer: it can inject a
+    // Await the cold-start scan before pairing; otherwise it can inject a
     // non-is_error placeholder for the same tool_use we are about to
     // abort, or append a second result after our scan saw it unpaired.
     // Awaiting the shared promise makes the pairing decision see a
@@ -7816,8 +7816,8 @@ export class SessionDO extends DurableObject<Env> {
       listToolUses: () => this._staleToolUses(),
       listToolResultIds: () => this._staleToolResultIds(),
       parkedCallIds: () => (this.state.pending_tool_calls ?? []).map((pending) => pending.toolCallId),
-      append: async (event) => { await this.runtimeAdapter.eventLog.append(event); },
-      broadcast: (event) => this.broadcastEvent(event),
+      append: async (event, fence) => fence ? appendStaleTurnEvent({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, append: e => this.runtimeAdapter.eventLog.append(e), sockets: () => this.ctx.getWebSockets() }, event, fence) : this.runtimeAdapter.eventLog.append(event),
+      broadcast: (event) => { if (!event.id?.startsWith("stale:")) this.broadcastEvent(event); },
       hasEvent: (id) => this.ctx.storage.sql.exec("SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", id).toArray().length > 0,
       listOrphanTurns: () => this.runtimeAdapter.listOrphanTurns(this.state.session_id),
       endTurn: (turnId) => this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle"),

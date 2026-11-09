@@ -2085,6 +2085,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     | { type: "recorded" }
     | { type: "ignored" }
     | { type: "not_found" }
+    | { type: "execution_fence_lost" }
     | { type: "version_conflict" }
   > {
     let raw: unknown;
@@ -2114,7 +2115,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       });
       if (result.type === "recorded") return { type: "recorded" };
       if (result.type === "not_found") return { type: "not_found" };
-      if (result.type === "execution_fence_lost") return { type: "version_conflict" };
+      if (result.type === "execution_fence_lost") return { type: "execution_fence_lost" };
       // Shared keep-first semantics: the first recorded body stands and the
       // replay is a no-op (persistence already logged the collision).
       if (result.type === "event_id_collision") return { type: "ignored" };

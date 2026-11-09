@@ -159,10 +159,10 @@ export function isTurnCancellationError(error: unknown): boolean {
  * lease sweep. Hosts provide indexed existence checks and durable output.
  * A failed append stops before idle, leaving a durable retry anchor. */
 export async function settleDeadExecutionFailure(
-  failure: { executionId: string; attempt: number; message: string },
+  failure: { executionId: string; attempt: number; message: string; fence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence },
   port: {
     hasEvent(id: string): boolean | Promise<boolean>;
-    append(event: import("@open-managed-agents/shared").SessionEvent): Promise<void>;
+    append(event: import("@open-managed-agents/shared").SessionEvent, fence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence): Promise<void | boolean>;
     broadcast(event: import("@open-managed-agents/shared").SessionEvent): void;
   },
 ): Promise<void> {
@@ -180,7 +180,15 @@ export async function settleDeadExecutionFailure(
     const id = `stale:${failure.executionId}:${failure.attempt}:${event.type}`;
     if (await port.hasEvent(id)) continue;
     Object.assign(event, { id });
-    await port.append(event);
+    if (await port.append(event, failure.fence) === false) return;
     port.broadcast(event);
   }
+}
+
+/** Reuse the failed owner's existing attempt reference, never mint recovery ownership. */
+export function failedExecutionSettlementFence(execution: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecution): import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence {
+  if (!execution.attempt) throw new Error("Failed execution has no attempt proof for settlement");
+  return { executionId: execution.id, workspaceId: execution.workspaceId, sessionId: execution.sessionId,
+    attemptId: execution.attempt.id, ownerId: execution.attempt.ownerId, generation: execution.attempt.generation,
+    expiresAt: execution.attempt.leaseExpiresAt, settlement: "failed" };
 }

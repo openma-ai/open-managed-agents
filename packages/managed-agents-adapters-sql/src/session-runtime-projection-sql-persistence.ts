@@ -14,6 +14,14 @@ import {
 import type { StoredSession } from "@open-managed-agents/session-store";
 import { sessionFromSourceRow } from "./session-sql-source";
 
+const FAILED_ATTEMPT_SQL = `SELECT 1 FROM managed_session_executions old
+      WHERE old.workspace_id = ? AND old.id = ? AND old.session_id = ?
+        AND old.state = 'failed' AND old.attempt_id = ? AND old.owner_id = ? AND old.generation = ?
+        AND NOT EXISTS (SELECT 1 FROM managed_session_executions newer
+          WHERE newer.workspace_id = old.workspace_id AND newer.session_id = old.session_id AND newer.id <> old.id
+            AND (newer.state IN ('queued', 'running') OR newer.admitted_at_ms >= old.admitted_at_ms
+              OR newer.settled_at_ms > old.settled_at_ms))`;
+
 interface ProjectionSessionRow {
   id: string;
   document: string;
@@ -95,7 +103,9 @@ export class SqlSessionRuntimeProjectionPersistence
         environmentWorkFence.generation < 1)
     ) return { type: "execution_fence_lost" };
     const now = this.#now().getTime();
-    const fenceSql = fence !== undefined
+    const fenceSql = fence?.settlement === "failed"
+      ? `AND EXISTS (${FAILED_ATTEMPT_SQL})`
+      : fence !== undefined
       ? `AND EXISTS (
            SELECT 1 FROM managed_session_executions
             WHERE workspace_id = ? AND id = ? AND session_id = ?
@@ -119,7 +129,7 @@ export class SqlSessionRuntimeProjectionPersistence
           fence.attemptId,
           fence.ownerId,
           fence.generation,
-          now,
+          ...(fence.settlement === "failed" ? [] : [now]),
         ]
       : environmentWorkFence !== undefined
         ? [
@@ -286,6 +296,11 @@ export class SqlSessionRuntimeProjectionPersistence
     now: number,
   ): Promise<boolean> {
     const fence = input.executionFence;
+    if (fence?.settlement === "failed") {
+      const row = await this.client.prepare(FAILED_ATTEMPT_SQL)
+        .bind(fence.workspaceId, fence.executionId, fence.sessionId, fence.attemptId, fence.ownerId, fence.generation).first();
+      return row !== null;
+    }
     if (fence !== undefined) {
       const active = await this.client.prepare(
         `SELECT 1 AS active FROM managed_session_executions

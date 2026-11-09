@@ -107,7 +107,7 @@ export {
   type TurnFailureEventsPort,
   type TurnFailurePlan,
 } from "./turn-failure";
-export { settleDeadExecutionFailure } from "./turn-failure";
+export { settleDeadExecutionFailure, failedExecutionSettlementFence } from "./turn-failure";
 export { classifyTurnInput, type TurnInput } from "./turn-input";
 export { planRequiresActionAnswers, type RequiresActionAnswerPlan } from "./turn-answers";
 export { openTurnMarker, type TurnMarker, type TurnMarkerHooks } from "./turn-marker";

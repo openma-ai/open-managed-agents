@@ -107,7 +107,7 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
         return { type: "recorded", session };
       } }),
     });
-    const execution = { id: "dead", attemptCount: 1, failure: "lease expired", workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" } as import("@open-managed-agents/session-runtime-contract/coordination").SessionExecution;
+    const execution = { id: "dead", attempt: { id: "a", ownerId: "o", generation: 1, leaseExpiresAt: "2026-01-01T00:00:00.000Z" }, attemptCount: 1, failure: "lease expired", workspaceId: "workspace_01", sessionId: "session_01", laneId: "sthr_primary" } as import("@open-managed-agents/session-runtime-contract/coordination").SessionExecution;
     await expect(driver.finalizeDeadExecution(execution)).rejects.toThrow("projection offline");
     await driver.finalizeDeadExecution(execution);
     await driver.finalizeDeadExecution(execution);

@@ -57,9 +57,38 @@ function toChildHandle(
   process: SandboxDuplexProcess,
   onDiagnosticLine?: (line: string) => void,
 ): ChildHandle {
+  const observation = {
+    event: "acp.process_exit_stdio", clock: "unix_ms", byteTiming: "consumer_read", observationWindowMs: STDOUT_DRAIN_AFTER_EXIT_MS * 2, processId: crypto.randomUUID(), exitAtMs: null as number | null,
+    stdout: { lastByteAtMs: null as number | null, eofAtMs: null as number | null, timedOutAtMs: null as number | null, outcome: "pending" },
+    stderr: { lastByteAtMs: null as number | null, eofAtMs: null as number | null, timedOutAtMs: null as number | null, outcome: "pending" },
+  };
+  let reported = false;
+  let reportTimer: ReturnType<typeof setTimeout> | undefined;
+  const report = () => {
+    if (reported || observation.exitAtMs === null) return;
+    reported = true;
+    if (reportTimer !== undefined) clearTimeout(reportTimer);
+    console.info(JSON.stringify(observation));
+  };
+  const observe = (channel: "stdout" | "stderr", kind: "byte" | "eof" | "timed_out" | "error" | "cancelled") => {
+    const stream = observation[channel];
+    if (kind === "byte") stream.lastByteAtMs = Date.now();
+    else { stream.outcome = kind; if (kind === "eof") stream.eofAtMs = Date.now(); if (kind === "timed_out") stream.timedOutAtMs = Date.now(); }
+    if (observation.stdout.outcome !== "pending" && observation.stderr.outcome !== "pending") report();
+  };
+  void process.exited.then(() => undefined, () => undefined).then(() => {
+    observation.exitAtMs = Date.now();
+    if (observation.stdout.outcome !== "pending" && observation.stderr.outcome !== "pending") report();
+    else reportTimer = setTimeout(() => {
+      for (const channel of ["stdout", "stderr"] as const) {
+        if (observation[channel].outcome === "pending") { observation[channel].outcome = "timed_out"; observation[channel].timedOutAtMs = Date.now(); }
+      }
+      report();
+    }, STDOUT_DRAIN_AFTER_EXIT_MS * 2);
+  });
   let handle: ChildHandle;
   const onTransportError = (error: SandboxAcpTransportError) => { if (error.channel === "stdout") transportErrors.set(handle, error); };
-  let stderr = endingWithProcess(process.stderr, process.exited, "stderr", onTransportError);
+  let stderr = endingWithProcess(process.stderr, process.exited, "stderr", onTransportError, observe);
   if (onDiagnosticLine !== undefined) {
     const branches = stderr.tee();
     stderr = branches[0];
@@ -67,7 +96,7 @@ function toChildHandle(
   }
   handle = {
     stdin: inputEndingWithProcess(process.stdin, process.exited),
-    stdout: endingWithProcess(process.stdout, process.exited, "stdout", onTransportError),
+    stdout: endingWithProcess(process.stdout, process.exited, "stdout", onTransportError, observe),
     stderr,
     exited: process.exited,
     kill: (signal) => process.kill(signal),
@@ -86,6 +115,7 @@ function endingWithProcess(
   exited: Promise<unknown>,
   channel: "stdout" | "stderr",
   onTransportError: (error: SandboxAcpTransportError) => void,
+  observe: (channel: "stdout" | "stderr", kind: "byte" | "eof" | "timed_out" | "error" | "cancelled") => void,
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
   let ended = false;
@@ -102,6 +132,7 @@ function endingWithProcess(
       if (ended || pending === undefined) return;
       ended = true;
       const error = new SandboxAcpTransportError(channel);
+      observe(channel, "timed_out");
       onTransportError(error);
       pending.error(error);
       pending = undefined;
@@ -121,15 +152,16 @@ function endingWithProcess(
         clearTimer();
         pending = undefined;
         if (ended) return;
-        if (item.done) { ended = true; controller.close(); }
-        else controller.enqueue(item.value);
+        if (item.done) { ended = true; observe(channel, "eof"); controller.close(); }
+        else { if (item.value.byteLength > 0) observe(channel, "byte"); controller.enqueue(item.value); }
       } catch (error) {
         clearTimer();
         pending = undefined;
-        if (!ended) { ended = true; controller.error(error); }
+        if (!ended) { ended = true; observe(channel, "error"); controller.error(error); }
       }
     },
     cancel(reason) {
+      observe(channel, "cancelled");
       ended = true;
       pending = undefined;
       clearTimer();

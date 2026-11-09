@@ -6,7 +6,7 @@
 import type { SessionExecution } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { OrphanTurn, TurnId } from "./ports";
-import { settleDeadExecutionFailure } from "./turn-failure";
+import { settleDeadExecutionFailure, failedExecutionSettlementFence } from "./turn-failure";
 
 export interface StaleToolUse {
   id: string;
@@ -30,7 +30,7 @@ export interface StaleTurnFinalizerPort {
   listToolResultIds(): string[];
   /** Calls parked on the client: unpaired by design. */
   parkedCallIds(): string[];
-  append(event: SessionEvent): Promise<void>;
+  append(event: SessionEvent, fence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence): Promise<void | boolean>;
   broadcast(event: SessionEvent): void;
   /** Durable event-id lookup; recovery passes are serialized by the host. */
   hasEvent(id: string): boolean;
@@ -56,14 +56,14 @@ export interface StaleTurnFinalizerPort {
 export async function deadExecutionFailure(
   executions: { store: SessionExecutionRecords | null; workspaceId: string; sessionId: string },
   statusAtMs: number,
-): Promise<{ message: string; executionId: string; attempt: number } | null> {
+): Promise<{ message: string; executionId: string; attempt: number; fence: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence } | null> {
   const { store, ...scope } = executions;
   if (store === null) return null;
   if ((await store.listActive(scope)).length > 0) return null;
   const last = await store.latestSettled(scope);
   if (last === null || last.state !== "failed" || last.settledAt === null) return null;
   if (Date.parse(last.settledAt) < statusAtMs) return null;
-  return { message: last.failure ?? "execution failed", executionId: last.id, attempt: last.attemptCount };
+  return { message: last.failure ?? "execution failed", executionId: last.id, attempt: last.attemptCount, fence: failedExecutionSettlementFence(last) };
 }
 
 export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<void> {

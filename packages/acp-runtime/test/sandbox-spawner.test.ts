@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 
@@ -51,6 +51,38 @@ function openStdoutProcess(dieOn: "initialize" | "session/prompt") {
 const agent = { command: "open-stdout-agent", cwd: "/workspace" };
 
 describe("SandboxSpawner stdout", () => {
+  it("logs bounded payload-free exit and both output drain timings", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const child = openStdoutProcess("session/prompt");
+      child.process.stderr = new ReadableStream({ start(c) { c.enqueue(encoder.encode("PRIVATE-DIAGNOSTIC")); c.close(); } });
+      child.process.stdout = new ReadableStream({ start(c) { c.enqueue(encoder.encode("PRIVATE-PAYLOAD")); c.close(); } });
+      const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);
+      child.die();
+      for await (const _ of handle.stdout) {}
+      for await (const _ of handle.stderr) {}
+      const entries = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("acp.process_exit_stdio"));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).not.toMatch(/PRIVATE|open-stdout-agent/);
+      expect(JSON.parse(entries[0])).toMatchObject({ event: "acp.process_exit_stdio", exitAtMs: expect.any(Number),
+        stdout: { lastByteAtMs: expect.any(Number), eofAtMs: expect.any(Number), outcome: "eof" },
+        stderr: { lastByteAtMs: expect.any(Number), eofAtMs: expect.any(Number), outcome: "eof" } });
+    } finally { log.mockRestore(); }
+  });
+  it("logs timed-out EOF observation without falsely logging successful EOF", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const child = openStdoutProcess("session/prompt");
+      const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);
+      const output = expect(handle.stdout.getReader().read()).rejects.toMatchObject({ name: "SandboxAcpTransportError" });
+      const errorOutput = expect(handle.stderr.getReader().read()).rejects.toMatchObject({ name: "SandboxAcpTransportError" });
+      child.die();
+      await Promise.all([output, errorOutput]);
+      const entries = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("acp.process_exit_stdio"));
+      expect(entries).toHaveLength(1);
+      expect(JSON.parse(entries[0])).toMatchObject({ stdout: { eofAtMs: null, timedOutAtMs: expect.any(Number), outcome: "timed_out" }, stderr: { eofAtMs: null, timedOutAtMs: expect.any(Number), outcome: "timed_out" } });
+    } finally { log.mockRestore(); }
+  }, 5_000);
   it("reports uncertain transport drain instead of EOF before a tail delayed beyond the quiet window", async () => {
     const child = openStdoutProcess("session/prompt");
     const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);

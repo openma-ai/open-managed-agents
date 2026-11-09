@@ -314,6 +314,7 @@ export interface Env {
       event: string;
       executionFence?: unknown;
     }): Promise<
+      | { type: "execution_fence_lost" }
       | { type: "recorded" }
       | { type: "ignored" }
       | { type: "not_found" }

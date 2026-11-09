@@ -29,6 +29,17 @@ it.each(["session.error", "session.status_idle"])("durably retries dead executio
   expect(events.map(e => e.type)).toEqual(["session.error", "session.status_idle"]);
 });
 
+it("stops dead-owner settlement immediately when its atomic attempt check rejects", async () => {
+  const attempted: string[] = [], published: string[] = [];
+  await settleDeadExecutionFailure({ executionId: "old", attempt: 1, message: "dead" }, {
+    hasEvent: () => false,
+    append: async event => { attempted.push(event.type); return false; },
+    broadcast: event => { published.push(event.type); },
+  });
+  expect(attempted).toEqual(["session.error"]);
+  expect(published).toEqual([]);
+});
+
 const base: PlanTurnFailureInput = {
   cancelled: false,
   failureClass: "transient",

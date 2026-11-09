@@ -448,6 +448,50 @@ describe("SqlSessionPersistence", () => {
       .toMatchObject({ status: "idle" });
   });
 
+  it.each([false, true])("fences failed-owner settlement at the transaction boundary (new execution: %s)", async superseded => {
+    await ensureSessionExecutionCoordinatorSchema(client);
+    const sessions = new SqlSessionPersistence(client, testSealer);
+    await sessions.insert({ workspaceId: "workspace_01", session, initialEvents: [], resourceSecrets: [] });
+    const coordinator = new SqlSessionExecutionCoordinator(client);
+    const admit = (id: string, time: string) => coordinator.admit({ execution: {
+      id, workspaceId: "workspace_01", sessionId: session.id, admittedAt: time,
+      events: [{ id, type: "user.message", content: [{ type: "text", text: "run" }], processedAt: time }],
+    } });
+    await admit("old", "2026-08-26T02:00:00.000Z");
+    const claimed = await coordinator.claim({ ownerId: "gone", attemptId: "old-attempt", claimedAt: "2026-08-26T02:00:01.000Z", leaseTtlMs: 1_000 });
+    if (claimed.type !== "claimed") throw new Error("claim");
+    await coordinator.settle({ fence: claimed.fence, outcome: "failed", failure: "dead", settledAt: "2026-08-26T02:00:01.500Z" });
+    const candidate = await coordinator.latestSettled({ workspaceId: "workspace_01", sessionId: session.id });
+    expect(candidate?.state).toBe("failed");
+    const { DefaultNodeManagedSessionRuntimeDriver } = await import("../../control-plane-node/src/lib/node-managed-session-runtime");
+    const { SessionRuntimeProjectionApplicationService } = await import("@open-managed-agents/managed-agents-application");
+    const published: string[] = [];
+    // Interleave at the transaction boundary, not merely before findCurrent.
+    let injected = false;
+    const racingClient: SqlClient = { ...client, prepare: q => client.prepare(q), exec: q => client.exec(q), batch: async statements => {
+      if (superseded && !injected) { injected = true; await admit("new", "2026-08-26T02:00:02.000Z"); }
+      return client.batch(statements);
+    } };
+    const projection = new SqlSessionRuntimeProjectionPersistence(racingClient);
+    const driver = new DefaultNodeManagedSessionRuntimeDriver({
+      engine: { start: async () => {}, stop: async () => {}, accept: async () => {}, archiveThread: async () => {} },
+      realtime: { publish: (frame: any) => { published.push(frame.frame.event.type); }, attach: () => () => {}, closeSession: () => {} } as never,
+      projectionFor: () => new SessionRuntimeProjectionApplicationService({ workspaceId: "workspace_01", persistence: projection }),
+    });
+    await driver.finalizeDeadExecution(candidate!);
+    if (superseded) {
+      expect(published).toEqual([]);
+      expect(await client.prepare("SELECT id FROM managed_session_events WHERE type IN ('session.error', 'session.status_idle')").first()).toBeNull();
+      expect(await sessions.findCurrent({ workspaceId: "workspace_01", sessionId: session.id })).toMatchObject({ revision: 1, session: { status: "running" } });
+      expect((await coordinator.listActive({ workspaceId: "workspace_01", sessionId: session.id })).map(e => e.id)).toEqual(["new"]);
+    } else {
+      expect(published).toEqual(["session.error", "session.status_idle"]);
+      expect(await sessions.findCurrent({ workspaceId: "workspace_01", sessionId: session.id })).toMatchObject({ revision: 3, session: { status: "idle" } });
+      await driver.finalizeDeadExecution(candidate!);
+      expect(published).toHaveLength(2);
+    }
+  });
+
   it("atomically fences runtime projection against a reclaimed execution", async () => {
     await ensureSessionExecutionCoordinatorSchema(client);
     const sessions = new SqlSessionPersistence(client, testSealer);
