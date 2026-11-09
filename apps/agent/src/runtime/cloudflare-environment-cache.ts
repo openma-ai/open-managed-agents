@@ -48,6 +48,15 @@ export interface CloudflareEnvironmentSetup {
 /** kv_entries of the tenant's D1, scoped to one workspace. */
 export function d1EnvironmentCacheStore(db: D1Database, workspaceId: string): EnvironmentCacheStore {
   return {
+    async compareAndSwap(key, expected, value) {
+      const statement = expected === null
+        ? db.prepare("INSERT INTO kv_entries (tenant_id, key, value, expires_at) VALUES (?, ?, ?, NULL) ON CONFLICT (tenant_id, key) DO NOTHING").bind(workspaceId, key, value)
+        : value === null
+          ? db.prepare("DELETE FROM kv_entries WHERE tenant_id = ? AND key = ? AND value = ?").bind(workspaceId, key, expected)
+          : db.prepare("UPDATE kv_entries SET value = ?, expires_at = NULL WHERE tenant_id = ? AND key = ? AND value = ?").bind(value, workspaceId, key, expected);
+      if (expected === null && value === null) return (await this.get(key)) === null;
+      return (await statement.run()).meta.changes === 1;
+    },
     async get(key) {
       const row = await db.prepare("SELECT value, expires_at FROM kv_entries WHERE tenant_id = ? AND key = ?")
         .bind(workspaceId, key).first<{ value: string; expires_at: number | null }>();

@@ -18,6 +18,7 @@ const logger = () => {
 function kv() {
   const data = new Map<string, string>();
   return { data, store: {
+    compareAndSwap: async (key: string, expected: string | null, value: string | null) => { if ((data.get(key) ?? null) !== expected) return false; if (value === null) data.delete(key); else data.set(key, value); return true; },
     get: async (key: string) => data.get(key) ?? null,
     put: async (key: string, value: string) => { data.set(key, value); },
     delete: async (key: string) => { data.delete(key); },

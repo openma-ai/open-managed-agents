@@ -31,9 +31,11 @@ function harness(options: {
   setup?: () => Promise<void>;
   deleteSnapshot?: ((ref: EnvironmentSnapshotRef) => Promise<void>) | null;
   noSnapshots?: boolean;
+  data?: Map<string, string>;
 } = {}) {
   const stores = new Map<string, Map<string, string>>();
   const storeOf = (id: string) => stores.get(id) ?? stores.set(id, new Map()).get(id)!;
+  if (options.data) stores.set("ws_1", options.data);
   const data = storeOf("ws_1");
   let now = 0;
   let n = 0;
@@ -68,7 +70,7 @@ function harness(options: {
     lifecycle,
     storeFor: (id) => {
       const map = storeOf(id);
-      return { get: async (k) => map.get(k) ?? null, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
+      return { compareAndSwap: async (k, expected, value) => { if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); return true; }, get: async (k) => map.get(k) ?? null, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
     },
     restrictEgress: async () => { setups.push("restricted"); await options.restrictEgress?.(); },
     setup: async (_runtime, setup) => { setups.push(setup); await options.setup?.(); },
@@ -258,6 +260,21 @@ describe("EnvironmentCache", () => {
     expect(reasons(h)).toEqual(["snapshot_build_failed"]);
     expect(h.released).toHaveLength(1);
     expect(h.data.size).toBe(0);
+  });
+
+  it("two cache instances sharing a store publish one winner and delete the loser", async () => {
+    const data = new Map<string, string>();
+    let finish1!: (ref: EnvironmentSnapshotRef) => void;
+    let finish2!: (ref: EnvironmentSnapshotRef) => void;
+    const a = harness({ data, snapshot: () => new Promise(resolve => { finish1 = resolve; }) });
+    const b = harness({ data, snapshot: () => new Promise(resolve => { finish2 = resolve; }) });
+    await a.acquire("s1"); await b.acquire("s2");
+    a.cache.prepared(scopeOf("s1")); b.cache.prepared(scopeOf("s2"));
+    for (let i = 0; i < 50 && (!finish1 || !finish2); i++) await Promise.resolve();
+    finish1({ adapter: "fake", ref: "winner" }); await a.cache.idle();
+    finish2({ adapter: "fake", ref: "loser" }); await b.cache.idle();
+    expect(JSON.parse(data.get(a.storeKey)!).snapshot.ref).toBe("winner");
+    expect(b.deleted).toContain("loser");
   });
 
   it("two Sessions missing together build once and both hear of a failure", async () => {

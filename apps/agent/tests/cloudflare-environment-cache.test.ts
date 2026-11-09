@@ -54,6 +54,7 @@ function harness(options: { failSnapshot?: boolean; failInstall?: boolean } = {}
   const adapter = createCloudflareSandboxAdapter({ sandbox: runtimeFor, backups: { async delete() {} } });
   const rows = new Map<string, string>();
   const store: EnvironmentCacheStore = {
+    compareAndSwap: async (key, expected, value) => { if ((rows.get(key) ?? null) !== expected) return false; if (value === null) rows.delete(key); else rows.set(key, value); return true; },
     get: async (key) => rows.get(key) ?? null,
     put: async (key, value) => { rows.set(key, value); },
     delete: async (key) => { rows.delete(key); },

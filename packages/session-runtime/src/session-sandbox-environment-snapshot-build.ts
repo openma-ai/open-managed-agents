@@ -17,6 +17,8 @@ export interface EnvironmentCacheStore {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
+  /** Atomic exact-document CAS; null expected/value means absent/delete. */
+  compareAndSwap(key: string, expected: string | null, value: string | null): Promise<boolean>;
 }
 
 export interface EnvironmentCacheLogger {
@@ -67,7 +69,7 @@ class BuildAborted extends Error {}
 
 export async function buildEnvironmentSnapshot<R, Q>(
   context: EnvironmentSnapshotBuildContext<R, Q>,
-  input: { store: EnvironmentCacheStore; storeKey: string; local: string; fields: Record<string, unknown>; scope: RuntimeResourceScope; plan: SandboxPlan; setup: Q },
+  input: { expected: string | null; store: EnvironmentCacheStore; storeKey: string; local: string; fields: Record<string, unknown>; scope: RuntimeResourceScope; plan: SandboxPlan; setup: Q },
 ): Promise<EnvironmentSnapshotBuildOutcome> {
   const { lifecycle, logger } = context;
   const startMs = context.now();
@@ -128,9 +130,13 @@ export async function buildEnvironmentSnapshot<R, Q>(
   try {
     const snapshot = await Promise.race([steps, abortedPromise]);
     const retired = await context.retired(input.store, input.storeKey);
-    await input.store.put(input.storeKey, JSON.stringify({
+    const published = await input.store.compareAndSwap(input.storeKey, input.expected, JSON.stringify({
       state: "ready", snapshot, createdAtMs: context.now(), ...(retired.length === 0 ? {} : { retired }),
     } satisfies EnvironmentCacheEntry));
+    if (!published) {
+      await lifecycle.deleteEnvironmentSnapshot?.({ ref: snapshot });
+      return { outcome: "aborted" };
+    }
     logger.info({ ...fields, path: "build_ok", snapshotRef: snapshot.ref, durationMs: context.now() - startMs }, "Environment snapshot built");
     return { outcome: "built" };
   } catch (error) {

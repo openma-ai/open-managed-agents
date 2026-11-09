@@ -298,15 +298,16 @@ export class EnvironmentCache<R, Q> {
   async #runBuild(pending: PendingBuild<Q>, waiters: Set<(warning: EnvironmentCacheWarning) => void>): Promise<void> {
     const { store, storeKey, local, fields } = pending;
     // Another replica or Session may have finished one meanwhile.
-    const current = await store.get(storeKey).catch(() => null);
+    let current = await store.get(storeKey);
     const { entry: existing } = this.#parse(current, local, fields);
     if (existing !== null && !environmentSnapshotExpired(existing, this.#ttl, this.#now())) return;
     if (this.#records(current).retired.length >= MAX_RETIRED) {
       const retired = await this.#retire(this.#records(current).retired, fields);
       await this.#keepRetired(store, storeKey, retired, fields);
       if (retired.length >= MAX_RETIRED) return;
+      current = await store.get(storeKey);
     }
-    const result = await buildEnvironmentSnapshot(this.#build, { store, storeKey, local, fields, scope: pending.scope, plan: pending.plan, setup: pending.setup });
+    const result = await buildEnvironmentSnapshot(this.#build, { expected: current, store, storeKey, local, fields, scope: pending.scope, plan: pending.plan, setup: pending.setup });
     if (result.outcome === "built") this.#hitFailures.delete(local);
     if (result.outcome !== "failed") return;
     for (const warn of waiters) {

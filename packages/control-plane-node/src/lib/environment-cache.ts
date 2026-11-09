@@ -78,7 +78,14 @@ export class NodeEnvironmentCache {
     this.#cache = new EnvironmentCache<SandboxPort, EnvironmentCacheSetup>({
       adapter: options.adapter,
       lifecycle: options.lifecycle,
-      storeFor: (workspaceId) => options.kvFor(workspaceId),
+      storeFor: (workspaceId) => {
+        const kv = options.kvFor(workspaceId);
+        return { get: key => kv.get(key), put: (key, value) => kv.put(key, value), delete: key => kv.delete(key),
+          compareAndSwap: (key, expected, value) => {
+            if (!kv.compareAndSwap) throw new Error("Environment cache requires a strongly consistent CAS store");
+            return kv.compareAndSwap(key, expected, value);
+          } };
+      },
       restrictEgress: (runtime, setup) => options.applyFirewall(runtime, environmentBuildFirewall(setup, pipIndexUrl)),
       setup: (runtime, setup, { buildId }) => options.setup !== undefined
         ? options.setup(runtime, setup, buildId)
