@@ -231,7 +231,7 @@ export class LiveSessionSandbox<R> {
       const after = await this.retryReleases(next, execution);
       // A warm adoption may account for OUR two cleanup writes, never an
       // intervening lifecycle writer. Its initial v1 witness stays strict.
-      if (after.version === saved.version + 2) return { before: saved, after };
+      if (after.version === saved.version + 1 || after.version === saved.version + 2) return { before: saved, after };
       return;
     }
     throw new SessionSandboxStateConflictError(`Could not retire runtime=${handle.runtimeId}: record CAS conflicted three times; provider cleanup was not authorized`);

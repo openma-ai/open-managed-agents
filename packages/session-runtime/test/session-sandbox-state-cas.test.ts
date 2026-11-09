@@ -187,6 +187,15 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("warm-owner"), version: 3 });
   });
 
+  it("a first acquire loser adopts the completed warmer even when retired allocation deletion fails", async () => {
+    const w=world();const ready=deferred(),finish=deferred();w.gates.acquiring=ready.resolve;w.gates.acquire=finish.promise;
+    const a=w.core({execution:attempt,gated:"acquire"});const opening=a.sandbox.exec("WORK");
+    await ready.promise;await w.core().sandbox.warm();
+    w.gates.onRelease=async()=>{throw Error("old allocation deletion unavailable");};
+    finish.resolve();await expect(opening).resolves.toBe("exit=0\n");
+    expect(w.log).toContain("exec:WORK@r2");
+    expect(w.store.get()).toMatchObject({handle:fake("r2"),retiredHandles:[{handle:fake("r1"),released:false}]});
+  });
   it("a first acquire loser attaches the completed warm winner without another allocation or execution failure", async () => {
     const w = world();
     const acquiring = deferred(), finishAcquire = deferred();
