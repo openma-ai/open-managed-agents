@@ -599,6 +599,15 @@ describe("SqlSessionExecutionCoordinator", () => {
     });
   });
 
+  it("no-deadline execution cannot stay running after repeated lease loss", async () => {
+    await coordinator.admit({ ...admitted("forever", "session_01", at(1)), policy: { maxAttempts: 2, timeoutMs: 253402300799999 - Date.parse(at(1)) } });
+    await coordinator.claim({ ownerId: "same", attemptId: "a", claimedAt: at(2), leaseTtlMs: 1 });
+    await Promise.all([coordinator.sweepExpired(Date.parse(at(3))), coordinator.sweepExpired(Date.parse(at(3)))]);
+    await coordinator.claim({ ownerId: "same", attemptId: "b", claimedAt: at(4), leaseTtlMs: 1 });
+    await Promise.all([coordinator.sweepExpired(Date.parse(at(5))), coordinator.sweepExpired(Date.parse(at(5)))]);
+    expect(await coordinator.find({ workspaceId: "workspace_01", executionId: "forever" })).toMatchObject({ state: "failed", attemptCount: 2, deadlineAt: "9999-12-31T23:59:59.999Z" });
+  });
+
   it("terminalizes poison work after its attempt budget is exhausted", async () => {
     await coordinator.admit({
       ...admitted("poison", "session_a", at(1)),
