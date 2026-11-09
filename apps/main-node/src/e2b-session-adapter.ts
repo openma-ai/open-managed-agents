@@ -5,18 +5,24 @@
 // handed to the adapter.
 
 import type { NodeSessionSandboxAdapter } from "@open-managed-agents/control-plane-node";
-import { readS3MemoryBucket } from "@open-managed-agents/sandbox";
+import { assertLeaseCoversIdle, readS3MemoryBucket, SANDBOX_LEASE_MARGIN_MS } from "@open-managed-agents/sandbox";
 import {
   createE2BV2Adapter,
   E2B_SANDBOX_DIRECTORIES,
   type E2BV2Module,
 } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 
-/** E2B lease (idle reclaim) when E2B_SANDBOX_TIMEOUT_MS is unset; renewed by keepAlive. */
-export const DEFAULT_E2B_LEASE_MS = 30 * 60_000;
+/** E2B lease (its own idle reclaim) when E2B_SANDBOX_TIMEOUT_MS is unset:
+ * idlePauseMs + SANDBOX_LEASE_MARGIN_MS (design §0.0b A.10), renewed by
+ * keepAlive inside executions only. A shorter E2B_SANDBOX_TIMEOUT_MS fails
+ * composition. */
+export function defaultE2BLeaseMs(idlePauseMs: number): number {
+  return idlePauseMs + SANDBOX_LEASE_MARGIN_MS;
+}
 
 export async function createNodeE2BSessionAdapter(
   env: Readonly<Record<string, string | undefined>>,
+  idlePauseMs: number,
   loadSdk: () => Promise<unknown> = () => import("e2b"),
 ): Promise<NodeSessionSandboxAdapter> {
   const maxLifetimeMs = positiveMs(env, "E2B_MAX_LIFETIME_MS");
@@ -25,7 +31,8 @@ export async function createNodeE2BSessionAdapter(
       "E2B_MAX_LIFETIME_MS is required with SANDBOX_PROVIDER=e2b: the account plan's continuous-run cap in milliseconds (Hobby 3600000, Pro 86400000)",
     );
   }
-  const leaseMs = positiveMs(env, "E2B_SANDBOX_TIMEOUT_MS") ?? DEFAULT_E2B_LEASE_MS;
+  const leaseMs = positiveMs(env, "E2B_SANDBOX_TIMEOUT_MS") ?? defaultE2BLeaseMs(idlePauseMs);
+  assertLeaseCoversIdle("E2B_SANDBOX_TIMEOUT_MS", leaseMs, idlePauseMs);
   const memoryBucket = readS3MemoryBucket(env);
   const adapter = createE2BV2Adapter({
     sdk: (await loadSdk()) as E2BV2Module,

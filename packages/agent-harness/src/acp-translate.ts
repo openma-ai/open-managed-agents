@@ -136,6 +136,8 @@ export class AcpTranslator {
    *  `content`, and leaves `rawOutput` unset. */
   #toolOutputs: Map<string, string> = new Map();
   #producedOutput = false;
+  #promptError: string | null = null;
+  get promptError(): string | null { return this.#promptError; }
 
   /** The agent sent text, thinking or a tool call this turn. */
   get producedOutput(): boolean {
@@ -179,6 +181,7 @@ export class AcpTranslator {
       return;
     }
     if (msg.type === "promptError") {
+      this.#promptError = msg.error ?? "ACP prompt failed";
       await this.#flushAllPendingToolUses();
       await this.#closeMessage();
       await this.#closeThinking();

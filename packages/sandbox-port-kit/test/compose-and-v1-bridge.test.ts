@@ -224,8 +224,8 @@ describe("fromV1SandboxProvider", () => {
     const runtime = fakeRuntime("r2");
     const adapter = bridge(new Map([["r2", runtime]]), fakeRuntime("new"));
     const handle = { provider: "v1", runtimeId: "r2" };
-    expect(await adapter.lifecycle.pause({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", metadata: { kind: "self" } });
-    expect(await adapter.lifecycle.checkpoint({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", metadata: { kind: "self" } });
+    expect(await adapter.lifecycle.pause({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", kind: "self" });
+    expect(await adapter.lifecycle.checkpoint({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", kind: "self" });
   });
 
   it("restores a portable checkpoint into a new runtime and releases idempotently", async () => {

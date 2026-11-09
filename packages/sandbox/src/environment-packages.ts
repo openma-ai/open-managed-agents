@@ -328,7 +328,27 @@ export async function ensureEnvironmentPackages(
   const markers = `echo "${full}" > ${WARM_MARKER}; { mkdir -p /var/lib/oma && echo "${full}" > ${ROOTFS_WARM_MARKER}; } 2>/dev/null || { mkdir -p "$HOME/.cache" && echo "${full}" > "${HOME_WARM_MARKER}"; } 2>/dev/null || true; mkdir -p /workspace; echo "${lang}" > ${RESTORED_MARKER}`;
 
   const probe = await probeSetupState(sandbox, full, lang);
-  const state = probe.path;
+  let state = probe.path;
+  // Workspace-only restores can retain the marker but exclude node_modules.
+  // Even a prepared-base /tmp marker is not proof that the restored packages exist.
+  if (state !== "fresh" && packages?.npm?.length) {
+    // npm ls with multiple filters succeeds when ANY filter matches. Query
+    // each declared spec separately: npm applies its own version/range filter,
+    // and we also require that spec's dependency in the machine-readable tree.
+    for (const spec of packages.npm) {
+      const name = /^(?:(@[^/]+\/[^@]+)|([^@/]+))(?:@.*)?$/.exec(spec)?.slice(1).find(Boolean);
+      if (!name) { state = "fresh"; break; }
+      try {
+        const result = parseExecResult(await sandbox.exec("npm ls --global --prefix /workspace/.npm-global --depth=0 --json " + shellQuote(spec), 30_000));
+        const tree = JSON.parse(result.stdout) as {dependencies?: Record<string, {version?: string; missing?: boolean; invalid?: unknown}>};
+        const installed = tree.dependencies?.[name];
+        if (result.exitCode !== 0 || !installed?.version || installed.missing || installed.invalid) { state = "fresh"; break; }
+      } catch {
+        state = "fresh";
+        break;
+      }
+    }
+  }
   if (state === "warm") {
     onProgress?.({ kind: "done", path: "warm", durationMs: Date.now() - startMs });
     return { path: "warm", durationMs: Date.now() - startMs };

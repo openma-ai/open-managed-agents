@@ -1,6 +1,9 @@
+import { harnessContextFromEvents, transitionHarnessContext, type HarnessContextState } from "@open-managed-agents/session-runtime-contract";
+import { SessionExecutionLostError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import {
+  SandboxGoneError,
   PLATFORM_ROOT,
   supportsDuplexProcess,
   workspaceRootOf,
@@ -31,7 +34,7 @@ import {
 import { InferenceEndpointsMissingError } from "@open-managed-agents/acp-runtime/inference-config";
 import { wireHostedInferenceForAcpLaunch } from "@open-managed-agents/harness-inference-adapters";
 import {
-  buildAcpSemanticRecoveryPrompt,
+  rebuildAcpContext,
   type AcpSemanticRecoveryReason,
 } from "./acp-recovery";
 
@@ -56,10 +59,10 @@ export class AcpSandboxHarness implements HarnessInterface {
   #session: AcpSession | null = null;
   #configKey: string | null = null;
   #resumeAcpSessionId: string | null = null;
-  #checkpointLoadedForKey: string | null = null;
   #runtime: HarnessRuntime | null = null;
   #preparation: AcpSandboxAgentPreparation | null = null;
   #semanticRecoveryReason: AcpSemanticRecoveryReason | null = null;
+  #contextState: HarnessContextState = { state: "none" };
 
   async onSessionInit(_ctx: HarnessContext, _runtime: HarnessRuntime): Promise<void> {
     // Platform context is delivered with the first prompt of each fresh ACP
@@ -112,6 +115,7 @@ export class AcpSandboxHarness implements HarnessInterface {
       return;
     }
     const stateBinding = preparation.binding;
+    this.#contextState = harnessContextFromEvents([...(ctx.acpRecoveryHistory ?? []), ...runtime.history.getEvents()]);
     const configKey = JSON.stringify({ config, stateAdapter: stateBinding.adapterId });
     await materializeAcpSandboxAgentState(runtime.sandbox, preparation);
     if (!this.#session && this.#configKey !== null && this.#configKey !== configKey) {
@@ -119,10 +123,8 @@ export class AcpSandboxHarness implements HarnessInterface {
       // session is not this one's to resume.
       this.#configKey = null;
       this.#resumeAcpSessionId = null;
-      this.#checkpointLoadedForKey = null;
     }
-    if (!this.#session && this.#checkpointLoadedForKey !== configKey) {
-      this.#checkpointLoadedForKey = configKey;
+    if (!this.#session) {
       this.#semanticRecoveryReason = null;
       this.#resumeAcpSessionId = await this.#loadCheckpoint(
         runtime,
@@ -138,20 +140,14 @@ export class AcpSandboxHarness implements HarnessInterface {
       this.#session = null;
     }
 
-    if (
-      !this.#session &&
-      this.#resumeAcpSessionId &&
-      stateBinding.resume === "native-and-acp" &&
-      !(await hasRequiredAcpSandboxAgentState(runtime.sandbox, preparation))
-    ) {
-      this.#resumeAcpSessionId = null;
-      this.#semanticRecoveryReason = "native-state-missing";
-    } else if (
-      !this.#session &&
-      this.#resumeAcpSessionId &&
-      stateBinding.resume === "native-and-acp"
-    ) {
-      await restoreAcpSandboxAgentState(runtime.sandbox, preparation);
+    if (!this.#session && this.#resumeAcpSessionId && stateBinding.resume === "native-and-acp") {
+      try {
+        if (!(await hasRequiredAcpSandboxAgentState(runtime.sandbox, preparation))) throw new Error("native state missing");
+        await restoreAcpSandboxAgentState(runtime.sandbox, preparation);
+      } catch {
+        this.#resumeAcpSessionId = null;
+        this.#semanticRecoveryReason = "native-state-missing";
+      }
     }
 
     const translator = new AcpTranslator(runtime, {
@@ -248,38 +244,22 @@ export class AcpSandboxHarness implements HarnessInterface {
           this.#semanticRecoveryReason ??= "resume-unsupported";
         }
         this.#resumeAcpSessionId = this.#session.acpSessionId || null;
-        await this.#saveCheckpoint(
-          runtime,
-          configKey,
-          this.#session.acpSessionId,
-          stateBinding.checkpointPath,
-        );
+        // Startup identity is not a successful context checkpoint. Persist it
+        // before prompting so a failed first execution cannot look like none.
+        if (this.#session.acpSessionId) {
+          this.#contextState = {state:"started", acp_session_id:this.#session.acpSessionId, checkpoint_fingerprint:"", configuration_sha256:await configurationDigest(configKey)};
+          runtime.broadcast({type:"session.warning", source:"oma.acp_context", message:"ACP session started; context checkpoint is not yet committed.", details:{...this.#contextState}});
+        }
       }
 
       const session = this.#session;
       const recoveryReason = this.#semanticRecoveryReason;
-      const turnText = recoveryReason
-        ? buildAcpSemanticRecoveryPrompt(
-            ctx.acpRecoveryHistory ?? runtime.history.getEvents(),
-            ctx.userMessage,
-            { reason: recoveryReason },
-          )
-        : text;
+      const recovery = recoveryReason ? await rebuildAcpContext(ctx, recoveryReason) : null;
+      const turnText = recovery?.prompt ?? text;
       const platformPrompt = ctx.systemPrompt.trimEnd();
       const promptText = (freshAcpSession || recoveryReason) && platformPrompt
         ? `<openma-platform>\n${platformPrompt}\n</openma-platform>\n\n${turnText}`
         : turnText;
-      if (recoveryReason) {
-        runtime.broadcast({
-          type: "session.warning",
-          source: "acp_semantic_recovery",
-          message: "Agent-native session state was unavailable; continued from canonical OpenMA history.",
-          details: {
-            reason: recoveryReason,
-            adapter_id: stateBinding.adapterId,
-          },
-        });
-      }
       const consumePrompt = async (abortSignal: AbortSignal) => {
         for await (const update of session.prompt(promptText, { abortSignal })) {
           await translator.consumePromptItem(update, session.acpSessionId);
@@ -294,14 +274,31 @@ export class AcpSandboxHarness implements HarnessInterface {
       } finally {
         runtime.abortSignal?.removeEventListener("abort", onAbort);
       }
+      if (translator.promptError !== null) throw new Error(translator.promptError);
       // Empty output is not a successful turn. Adapter failures arrive as ACP
       // errors; do not inspect private transcripts to support obsolete adapters.
       if (!translator.producedOutput && !runtime.abortSignal?.aborted) {
         throw new Error("ACP agent ended the turn without any output; check its model configuration");
       }
+      await this.#saveCheckpoint(runtime, configKey, session.acpSessionId, stateBinding.checkpointPath);
+      if (recoveryReason && recovery && this.#contextState.state !== "none") {
+        this.#contextState = transitionHarnessContext(this.#contextState, { type: "rebuild", reason: recoveryReason, id: session.acpSessionId, fingerprint: this.#contextState.checkpoint_fingerprint });
+        runtime.broadcast({
+          type: "session.warning", source: "oma.acp_context",
+          message: recovery.exceedsLimit
+            ? "Agent context rebuilt from canonical history; history exceeded the recovery limit. " + (recovery.compacted ? "Existing compaction was applied." : "Compaction was unavailable; full history was retained without truncation.")
+            : "Agent context rebuilt from canonical history because native resume was unavailable.",
+          details: { ...this.#contextState, adapter_id: stateBinding.adapterId, compacted: recovery.compacted, history_characters: recovery.historyCharacters, exceeds_limit: recovery.exceedsLimit },
+        });
+      }
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       this.#semanticRecoveryReason = null;
     } catch (error) {
+      if (error instanceof SandboxGoneError) {
+        this.#session = null; this.#runtime = null; this.#preparation = null;
+        throw new SessionExecutionLostError("sandbox_gone");
+      }
+      if (!runtime.abortSignal?.aborted) await translator.consume({type:"promptError",error:error instanceof Error ? error.message : String(error)});
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed", error instanceof Error ? error.message : String(error));
       if (!runtime.abortSignal?.aborted) {
         if (error instanceof Error && (error.name === "AcpTurnTimeoutError" || error.name === "AcpPromptCancellationTimeoutError")) throw error;
@@ -325,6 +322,10 @@ export class AcpSandboxHarness implements HarnessInterface {
       await session.dispose();
       this.#session = null;
     } catch (error) {
+      if (error instanceof SandboxGoneError) {
+        this.#session = null; this.#runtime = null; this.#preparation = null;
+        throw new SessionExecutionLostError("sandbox_gone");
+      }
       // Exit not confirmed: keep the child as the barrier so the host's
       // dispose also rejects instead of touching state under it.
       this.#emitError(runtime, error instanceof Error ? error.message : String(error));
@@ -344,7 +345,6 @@ export class AcpSandboxHarness implements HarnessInterface {
     this.#session = null;
     this.#configKey = null;
     this.#resumeAcpSessionId = null;
-    this.#checkpointLoadedForKey = null;
     this.#runtime = null;
     this.#preparation = null;
     this.#semanticRecoveryReason = null;
@@ -382,10 +382,17 @@ export class AcpSandboxHarness implements HarnessInterface {
     configKey: string,
     checkpointPath: string,
   ): Promise<string | null> {
+    const expected = await configurationDigest(configKey);
+    const durableId = this.#contextState.state !== "none"
+      && this.#contextState.state !== "started"
+      && (!this.#contextState.configuration_sha256 || this.#contextState.configuration_sha256 === expected)
+      ? this.#contextState.acp_session_id : null;
     let parsed: unknown;
     try {
       parsed = JSON.parse(await runtime.sandbox.readFile(checkpointPath));
     } catch {
+      if (durableId) return durableId;
+      if (this.#contextState.state !== "none") this.#semanticRecoveryReason = "checkpoint-unavailable";
       return null;
     }
     if (
@@ -395,11 +402,18 @@ export class AcpSandboxHarness implements HarnessInterface {
       typeof (parsed as { configurationSha256?: unknown }).configurationSha256 !== "string" ||
       typeof (parsed as { acpSessionId?: unknown }).acpSessionId !== "string" ||
       (parsed as { acpSessionId: string }).acpSessionId.length === 0
-    ) return null;
-    const expected = await configurationDigest(configKey);
-    return (parsed as AcpSandboxCheckpoint).configurationSha256 === expected
-      ? (parsed as AcpSandboxCheckpoint).acpSessionId
-      : null;
+    ) {
+      if (durableId) return durableId;
+      if (this.#contextState.state !== "none") this.#semanticRecoveryReason = "checkpoint-unavailable";
+      return null;
+    }
+    const checkpoint = parsed as AcpSandboxCheckpoint;
+    const fingerprint = await configurationDigest(JSON.stringify(checkpoint));
+    if (checkpoint.configurationSha256 !== expected || (this.#contextState.state !== "none" && (this.#contextState.acp_session_id !== checkpoint.acpSessionId || this.#contextState.checkpoint_fingerprint !== fingerprint))) {
+      this.#semanticRecoveryReason = "checkpoint-unavailable";
+      return null;
+    }
+    return checkpoint.acpSessionId;
   }
 
   async #saveCheckpoint(
@@ -418,6 +432,8 @@ export class AcpSandboxHarness implements HarnessInterface {
       checkpointPath,
       `${JSON.stringify(checkpoint)}\n`,
     );
+    this.#contextState = { ...transitionHarnessContext(this.#contextState, { type: "record_native", id: acpSessionId, fingerprint: await configurationDigest(JSON.stringify(checkpoint)) }), configuration_sha256: checkpoint.configurationSha256 } as HarnessContextState;
+    runtime.broadcast({ type: "session.warning", source: "oma.acp_context", message: "Agent-native context checkpoint recorded.", details: { ...this.#contextState } });
   }
 
   #emitError(runtime: HarnessRuntime, message: string): void {

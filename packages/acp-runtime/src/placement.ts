@@ -1,3 +1,4 @@
+import { SandboxGoneError } from "@open-managed-agents/sandbox";
 import type { SandboxDuplexProcessPort } from "@open-managed-agents/sandbox";
 import type {
   AcpRuntime,
@@ -8,7 +9,7 @@ import type {
 } from "@openma/common/acp-runtime";
 
 import { AcpRuntimeImpl } from "./runtime.js";
-import { SandboxSpawner, sandboxAcpTransportError } from "./spawners/sandbox.js";
+import { SandboxSpawner, sandboxAcpTransportError, awaitSandboxAcpTransportError } from "./spawners/sandbox.js";
 
 /** Runtime placement is a composition decision, not a second ACP runtime.
  * Both branches construct the same AcpRuntimeImpl and therefore share ACP
@@ -86,7 +87,7 @@ class PlacementAcpRuntime implements AcpRuntime {
     });
     let session: AcpSession;
     try { session = await runtime.start(engineOptions); }
-    catch (error) { throw (child && sandboxAcpTransportError(child)) ?? error; }
+    catch (error) { throw (child && await awaitSandboxAcpTransportError(child)) ?? error; }
     if (!child) {
       await session.dispose().catch(() => undefined);
       throw new Error("ACP runtime initialized without a child process");
@@ -161,6 +162,8 @@ async function supervisedDispose(
   cancelGraceMs: number,
   markDead: () => void,
 ): Promise<void> {
+  const transportError = sandboxAcpTransportError(child);
+  if (transportError instanceof SandboxGoneError) throw transportError;
   // Protocol close/kill acknowledgement does not prove process exit. Native
   // state may only be captured or deleted after the child exit signal settles.
   void session.dispose().catch(() => undefined);
@@ -171,6 +174,8 @@ async function supervisedDispose(
   markDead();
   const stopped = Promise.all([child.kill("SIGKILL"), child.exited]);
   if (!await finishesWithin(stopped, 2_000)) {
+    const confirmed = await awaitSandboxAcpTransportError(child);
+    if (confirmed instanceof SandboxGoneError) throw confirmed;
     throw new Error("ACP child exit was not confirmed within 2000ms after SIGKILL; native state must not be captured or deleted");
   }
 }
@@ -248,7 +253,7 @@ async function* supervisedPrompt(
       } catch (error) {
         escalated = error instanceof AcpPromptCancellationTimeoutError;
         void next.catch(() => undefined);
-        throw sandboxAcpTransportError(child) ?? error;
+        throw await awaitSandboxAcpTransportError(child) ?? error;
       }
       if (item.done) {
         completed = true;

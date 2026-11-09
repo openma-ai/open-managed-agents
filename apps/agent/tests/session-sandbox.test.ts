@@ -59,16 +59,22 @@ function cfDeps(resources: Array<Record<string, unknown>> = []) {
       async downloadManagedSessionFile() { return { type: "not_found" }; },
     },
   } as never;
+  const idle: Array<number | string> = [];
   return {
     warnings,
+    idle,
     deps: {
       env,
-      storage: {} as never,
+      storage: (() => {
+        const kv = new Map<string, unknown>();
+        return { kv: { get: (key: string) => kv.get(key), put: (key: string, value: unknown) => { kv.set(key, value); }, delete: (key: string) => kv.delete(key) } };
+      })() as never,
       sandboxId: "do-hex-id",
       sandboxImage: null,
       session: () => session,
       networking: async () => undefined,
       warn: (message: string) => { warnings.push(message); },
+      idleTimer: { schedule: (delayMs: number) => { idle.push(delayMs); }, cancel: () => { idle.push("cancel"); } },
     },
   };
 }
@@ -110,6 +116,16 @@ describe("createSessionSandbox", () => {
     expect(await sandbox.exec("true")).toBe("exit=0\n");
     await sandbox.destroy();
     expect(cf.calls.at(-1)).toEqual(["destroy"]);
+  });
+
+  it("the core pauses the Cloudflare container at idlePauseMs: a snapshot, then stop (design §0.0b A.1, A.3)", async () => {
+    const cf = fakeSandboxDo();
+    setCloudflareSandboxForTest(cf.stub);
+    const { deps, idle } = cfDeps();
+    const sandbox = createSessionSandbox("cloudflare", deps);
+    await sandbox.prepare();
+    await sandbox.endExecution();
+    expect(idle).toEqual([300_000]);
   });
 
   it("plans Memory Stores with the generation and fails the open when a mount is missing", async () => {

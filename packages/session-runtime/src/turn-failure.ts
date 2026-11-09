@@ -11,6 +11,7 @@ import {
   ModelError,
   PaymentRequiredError,
 } from "@open-managed-agents/shared";
+import { SessionExecutionLostError } from "@open-managed-agents/session-runtime-contract/coordination";
 import { abortableDelay } from "@open-managed-agents/session-runtime-contract";
 
 export type TurnFailureClass =
@@ -126,7 +127,7 @@ export async function runTurnAttempts(input: {
       await input.run();
       return { type: "completed" };
     } catch (error) {
-      if (!(error instanceof Error)) throw error;
+      if (error instanceof SessionExecutionLostError || !(error instanceof Error)) throw error;
       const plan = await settleTurnFailure({
         cancelled: input.isCancelled(error),
         failureClass: input.classify(error, input.agentEventCount() !== agentEventsBefore),

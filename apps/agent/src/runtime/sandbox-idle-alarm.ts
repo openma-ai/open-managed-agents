@@ -6,7 +6,7 @@
 import type { SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
 
 export interface IdleAlarmSchedulerPort {
-  schedule(delaySeconds: number, callback: string): Promise<unknown>;
+  schedule(delaySeconds: number, callback: string, payload?: { version: number }): Promise<unknown>;
   getSchedules(): Array<{ id: string; callback: string }>;
   cancelSchedule(id: string): Promise<boolean>;
 }
@@ -21,9 +21,9 @@ export function createSandboxIdleAlarm(
     }
   };
   return {
-    async schedule(delayMs) {
+    async schedule(delayMs, version) {
       await cancel();
-      await scheduler.schedule(Math.max(1, Math.ceil(delayMs / 1000)), callback);
+      await scheduler.schedule(Math.max(1, Math.ceil(delayMs / 1000)), callback, version === undefined ? undefined : { version });
     },
     cancel,
   };

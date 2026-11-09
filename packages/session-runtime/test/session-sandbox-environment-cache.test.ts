@@ -9,6 +9,7 @@ import {
   type EnvironmentCacheWarning,
 } from "../src/session-sandbox-environment-cache";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
+import { type SessionSandboxState, stateVersion } from "../src/session-sandbox-state";
 
 const DAY = 24 * 60 * 60_000;
 const FROM_IMAGE: SandboxPlan["from"] = { image: "img@sha256:1" };
@@ -567,10 +568,18 @@ describe("EnvironmentCache", () => {
 describe("PortsSessionSandbox with an environment cache", () => {
   it("acquires through the cache and reports the setup as prepared", async () => {
     const calls: string[] = [];
+    let stored: SessionSandboxState | undefined;
     const sandbox = new PortsSessionSandbox<string>({
       compose: async () => ({ ports: { sandbox: { handle: "changes", maxLifetimeMs: null, acquire: async () => { calls.push("port.acquire"); return "gone"; } } } as never }),
       executor: () => ({ exec: async () => "exit=0\n" }) as never,
-      state: { load: async () => undefined, save: async () => undefined, clear: async () => undefined },
+      state: {
+        load: async () => stored,
+        save: async (next, expected) => {
+          if (stateVersion(stored) !== expected) return false;
+          stored = next;
+          return true;
+        },
+      },
       scope: () => scopeOf("s1"),
       plan: async () => planOf("s1"),
       resumeRef: async () => null,

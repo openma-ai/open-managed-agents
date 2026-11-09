@@ -6,7 +6,7 @@ function scheduler() {
   let next = 0;
   return {
     rows,
-    async schedule(delaySeconds: number, callback: string) { rows.push({ id: `s${++next}`, callback, delaySeconds }); },
+    async schedule(delaySeconds: number, callback: string, payload?: unknown) { rows.push({ id: `s${++next}`, callback, delaySeconds, ...(payload === undefined ? {} : { payload }) } as never); },
     getSchedules: () => rows.map(({ id, callback }) => ({ id, callback })),
     async cancelSchedule(id: string) { const i = rows.findIndex((row) => row.id === id); if (i < 0) return false; rows.splice(i, 1); return true; },
   };
@@ -20,7 +20,8 @@ describe("createSandboxIdleAlarm", () => {
     await alarm.schedule(300_000);
     await alarm.schedule(1_500);
     expect(s.rows).toEqual([{ id: "s1", callback: "recoverEventQueue", delaySeconds: 5 }, { id: "s3", callback: "pauseIdleSandbox", delaySeconds: 2 }]);
-    await alarm.schedule(1);
+    await alarm.schedule(1, 7);
+    expect(s.rows.at(-1)).toHaveProperty("payload", { version: 7 });
     expect(s.rows.at(-1)).toMatchObject({ callback: "pauseIdleSandbox", delaySeconds: 1 });
     await alarm.cancel();
     expect(s.rows.map((row) => row.callback)).toEqual(["recoverEventQueue"]);

@@ -51,6 +51,47 @@ function openStdoutProcess(dieOn: "initialize" | "session/prompt") {
 const agent = { command: "open-stdout-agent", cwd: "/workspace" };
 
 describe("SandboxSpawner stdout", () => {
+  it.each(["gone", "alive", "unknown"] as const)("only provider-confirmed %s may stop uncertain exit drains", async state => {
+    let rejectExit!: (error:Error)=>void;
+    const cancelled:string[]=[];
+    const process = {stdin:new WritableStream<Uint8Array>(),stdout:new ReadableStream<Uint8Array>({cancel(){cancelled.push("stdout");}}),stderr:new ReadableStream<Uint8Array>({cancel(){cancelled.push("stderr");}}),kill:async()=>{},exited:new Promise<{code:number|null;signal:string|null}>((_r,reject)=>{rejectExit=reject;}),confirmSandboxGone:async()=>{if(state==="unknown")throw new Error("network unavailable");return state==="gone";}};
+    const handle=await new SandboxSpawner({spawnDuplexProcess:async()=>process}).spawn(agent);
+    const output=handle.stdout.getReader().read().catch(error=>error);
+    const errors=handle.stderr.getReader().read().catch(error=>error);
+    const observed=handle.exited.catch(error=>error);
+    rejectExit(new Error("exit observation lost"));
+    if(state==="gone"){
+      expect(await observed).toMatchObject({name:"SandboxGoneError"});
+      expect(await output).toMatchObject({name:"SandboxGoneError"});
+      expect(await errors).toMatchObject({name:"SandboxGoneError"});
+      expect(cancelled.sort()).toEqual(["stderr","stdout"]);
+    }else{
+      expect(await observed).toMatchObject({message:"exit observation lost"});
+      expect(cancelled).toEqual([]);
+      await Promise.all([output,errors]);
+    }
+  },5000);
+  it("preserves confirmed gone when the ACP engine observes stdout failure before provider confirmation", async () => {
+    const child=openStdoutProcess("initialize");
+    let rejectExit!:(error:Error)=>void;
+    child.process.exited=new Promise((_r,reject)=>{rejectExit=reject;});
+    child.process.confirmSandboxGone=async()=>{await new Promise(r=>setTimeout(r,20));return true;};
+    let output!: ReadableStreamDefaultController<Uint8Array>;
+    child.process.stdout=new ReadableStream({start(controller){output=controller;}});
+    child.process.stdin=new WritableStream({write(){rejectExit(new Error("observation lost"));output.error(new Error("transport closed before confirmation"));}});
+    const start=createAcpRuntime({type:"sandbox",sandbox:{spawnDuplexProcess:async()=>child.process}}).start({agent});
+    await expect(start).rejects.toMatchObject({name:"SandboxGoneError"});
+  });
+
+  it("releases dispose only when the provider confirms gone even with a pending exit observation", async () => {
+    const child=openStdoutProcess("session/prompt");
+    child.process.exited=new Promise(()=>{});
+    child.process.kill=async()=>{};
+    child.process.confirmSandboxGone=async()=>true;
+    const session=await createAcpRuntime({type:"sandbox",sandbox:{spawnDuplexProcess:async()=>child.process}},{cancelGraceMs:0}).start({agent});
+    await expect(session.dispose()).rejects.toMatchObject({name:"SandboxGoneError"});
+  },5000);
+
   it("does not keep Node alive for the exit observation window", async () => {
     const timer = vi.spyOn(globalThis, "setTimeout");
     const child = openStdoutProcess("session/prompt");

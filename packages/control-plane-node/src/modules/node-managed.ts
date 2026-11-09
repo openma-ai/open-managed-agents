@@ -23,6 +23,7 @@ import { installEnvironmentPackages } from "../lib/environment-packages";
 import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder";
 import { createNodeEnvironmentCache } from "../lib/environment-cache";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
+import { nodeSessionSandboxWarning } from "../lib/node-session-sandbox-warning";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
 import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
@@ -102,7 +103,7 @@ import {
   nodeManagedMemoryStoreModeName,
 } from "../lib/node-managed-session-inputs.js";
 import { NodeManagedMemorySnapshotMaterializer } from "../lib/node-managed-memory-snapshots.js";
-import { NodeSessionSandboxes, sandboxIdlePauseMs } from "../lib/node-session-sandbox.js";
+import { NodeSessionSandboxes, sandboxIdlePauseMs, sandboxSnapshotIntervalMs } from "../lib/node-session-sandbox.js";
 import { createNodeSessionStorage } from "../lib/node-session-storage.js";
 import { NodeSessionExecutionWorker } from "../lib/node-session-execution-worker.js";
 import {
@@ -268,6 +269,9 @@ export async function createManagedNodeRuntime(
   // injects its adapter, storage, egress relay and fence here.
   const sessionSandboxes = new NodeSessionSandboxes({
     ...(components.sessionSandboxAdapter === undefined ? {} : { adapter: components.sessionSandboxAdapter }),
+    ...(foundation.sessionSandboxProvider === undefined ? {} : { provider: foundation.sessionSandboxProvider }),
+    sql, snapshotIntervalMs: sandboxSnapshotIntervalMs(config.sandbox.environment.SANDBOX_SNAPSHOT_INTERVAL_MS),
+    info: (message, { workspaceId, session }) => logger.info({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message),
     images: config.sandbox.images,
     createV1: createManagedSandboxBuilder({
       capabilities: components.sandbox.capabilities,
@@ -293,8 +297,6 @@ export async function createManagedNodeRuntime(
       isFenceActive: isManagedSessionExecutionFenceActive,
       warn: (fields, message) => logger.warn(fields, message),
     }),
-    // Vault environment_variable / cap_cli credentials reach the sandbox only
-    // as placeholders (design §0.5, §8.8): the relay substitutes them.
     substitutions: (context) => repositoryEgress.substitutions(context, () => managedCredentialResolver),
     token: (attempt, harness, sandbox) => managedAcpCapabilities.issueEgress(attempt, harness, sandbox),
     relay: () => !platformRootSecret || !config.http.publicBaseUrl ? null
@@ -302,10 +304,8 @@ export async function createManagedNodeRuntime(
     isFenceActive: isManagedSessionExecutionFenceActive,
     idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
     warmAtCreate: config.workspace.strategy !== "checkpoint_restore", mountOutputsAtCreate: sharedSessionOutputs === undefined && components.sandbox.capabilities?.mountsFixedAtCreate === true,
-    warn: (message, { workspaceId, session }) =>
-      logger.warn({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message),
+    warn: nodeSessionSandboxWarning(sql, logger),
   });
-
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     backgroundPiSandbox: true,
     ...(workspaceCheckpoints === undefined ? {} : { workspaceCheckpoints }),

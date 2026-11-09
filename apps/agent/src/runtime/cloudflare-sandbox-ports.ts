@@ -5,24 +5,13 @@
 // CloudflareSandbox directly; this is the v2 composition of the same
 // primitives.
 //
-// Restore points are /workspace backups (DirectoryBackup in OmaSandbox,
-// objects in BACKUP_BUCKET under backups/); discard deletes their objects.
-//
-// Environment snapshots (environment cache) are container snapshots
-// (ctx.container.snapshotContainer, durable_object scheduling policy): the
-// whole root filesystem, without mounts, memory, processes or /run. Measured
-// to restore in another Durable Object. The ref is the snapshot id. A missing
-// one does not fail start(); OmaSandbox reports SNAPSHOT_GONE from the
-// container monitor and acquire returns "gone". A snapshot of an older image
-// still starts that older image, so the host's cache key carries the image
-// digest. There is no delete API: deleteEnvironmentSnapshot is left out and
-// snapshots expire after 30 days without a restore (each restore renews it).
-//
-// Gaps (§0.3): pause = workspace backup + destroy; the idle timeout is per deployment
-// (OmaSandbox reads SANDBOX_IDLE_TIMEOUT_MS; plan.idleMs is not applied per
-// sandbox); there is no runtime firewall, so a limited policy is enforced
-// only on traffic the outbound handler sees; revoke reuses the handler's
-// deny binding.
+// Restore points use ctx.container.snapshotContainer(): the complete filesystem,
+// not a /workspace backup. Restore starts the container from its snapshot ID.
+// Requires durable_object scheduling. Snapshots are image-version-bound and
+// expire 30 days after creation/last restore; Cloudflare exposes no delete API.
+// https://developers.cloudflare.com/containers/guides/snapshots/
+// Environment cache uses separate per-workspace rootfs snapshots. Missing
+// environment snapshots rebuild; missing Session snapshots fail closed.
 
 import type { ResumeRef, SandboxHandle, SandboxLifecyclePort, SandboxPlan } from "@open-managed-agents/sandbox";
 import { parseExecResult } from "@open-managed-agents/sandbox";
@@ -33,7 +22,7 @@ import type { CloudflareSandbox } from "./sandbox";
 /** The CloudflareSandbox surface this adapter uses. */
 export type CloudflareSandboxRuntime = Pick<
   CloudflareSandbox,
-  | "describeSandbox" | "provisionSandbox" | "createWorkspaceBackup" | "restoreWorkspaceBackup"
+  | "describeSandbox" | "provisionSandbox" | "createContainerSnapshot"
   | "memoryStoreMount" | "sessionOutputsMount" | "setOutboundContext" | "revokeOutboundContext"
   | "destroy" | "renewActivityTimeout" | "exec" | "writeFileBytes" | "setEnvVars"
   | "snapshotEnvironment" | "restrictOutboundToHosts"
@@ -48,13 +37,6 @@ const SNAPSHOT_GONE = "SNAPSHOT_GONE";
 export const isSnapshotGoneError = (error: unknown): boolean =>
   (error instanceof Error ? error.message : String(error)).includes(SNAPSHOT_GONE);
 
-const BACKUP_TTL_SEC = 7 * 24 * 60 * 60;
-/** OmaSandbox's DirectoryBackup storage: `{ binding: "BACKUP_BUCKET", prefix:
- * "backups/" }` (oma-sandbox.ts), archive key `<prefix><id>.tar.zst`
- * (@cloudflare/sandbox DirectoryBackupRecord), expiry sidecar
- * `backups/<id>.meta.json` (oma-sandbox.ts metaKey). */
-export const backupObjectKeys = (id: string) => [`backups/${id}.tar.zst`, `backups/${id}.meta.json`];
-
 export function createCloudflareSandboxAdapter(input: {
   /** The DO-named sandbox of a Session: the handle is fixed. */
   sandbox(sessionId: string): CloudflareSandboxRuntime;
@@ -64,7 +46,6 @@ export function createCloudflareSandboxAdapter(input: {
   backups: Pick<R2Bucket, "delete">;
 }): SandboxAdapterPort<CloudflareSandboxRuntime> {
   const sandboxFor = input.sandbox;
-  const backups = input.backups;
   const handleFor = (scope: RuntimeResourceScope): SandboxHandle => ({ provider: "cloudflare", runtimeId: scope.sessionId });
   const mountsFor = (runtime: CloudflareSandboxRuntime, scope: RuntimeResourceScope, plan: SandboxPlan) => {
     const outputs = runtime.sessionOutputsMount({ tenantId: scope.workspaceId, sessionId: scope.sessionId });
@@ -116,6 +97,8 @@ export function createCloudflareSandboxAdapter(input: {
       return (await runtime.describeSandbox()).running ? { runtime, handle: handleFor(input.scope) } : "gone";
     },
 
+    /** The container's inactivity timeout is per deployment (OmaSandbox's
+     * backstop, longer than the core's idle pause): `ttlMs` is ignored. */
     async keepAlive(input) {
       if (!(await input.runtime.describeSandbox()).running) return "gone";
       await input.runtime.renewActivityTimeout();
@@ -124,10 +107,8 @@ export function createCloudflareSandboxAdapter(input: {
 
     async checkpoint(input): Promise<ResumeRef> {
       input.signal.throwIfAborted();
-      const backup = await input.runtime.createWorkspaceBackup({ ttlSec: BACKUP_TTL_SEC });
-      return backup === null
-        ? { provider: "cloudflare", ref: input.handle.runtimeId, metadata: { kind: "self" } }
-        : { provider: "cloudflare", ref: backup.id, metadata: { kind: "backup", backup: JSON.stringify(backup) } };
+      const snapshot = await input.runtime.createContainerSnapshot();
+      return { provider: "cloudflare", ref: snapshot.id, kind: "snapshot", metadata: { kind: "container" } };
     },
 
     async pause(input) {
@@ -136,27 +117,19 @@ export function createCloudflareSandboxAdapter(input: {
       return ref;
     },
 
+    /** Native start errors are surfaced; never restore only /workspace. */
     async resume(input) {
-      const acquired = await provision(input.scope, input.plan);
-      const raw = input.ref.metadata?.backup;
-      if (typeof raw !== "string") return acquired;
-      const restored = await acquired.runtime.restoreWorkspaceBackup(JSON.parse(raw));
-      if (restored.ok) return acquired;
-      await acquired.runtime.destroy();
-      return "gone";
+      input.signal.throwIfAborted();
+      if (input.ref.provider !== "cloudflare" || input.ref.kind !== "snapshot" || input.ref.metadata?.kind !== "container") return "gone";
+      return provision(input.scope, input.plan, { id: input.ref.ref });
     },
 
     async release(input) {
       await sandboxFor(input.handle.runtimeId).destroy();
     },
 
-    /** Backups: delete their objects (deleting a missing key succeeds). A
-     * ref to the sandbox itself is a no-op. */
-    async discard(input) {
-      if (input.ref.provider !== "cloudflare" || input.ref.metadata?.kind !== "backup") return;
-      await backups.delete(backupObjectKeys(input.ref.ref));
-    },
-
+    /** Native snapshots have no delete API and wait for expiry. */
+    async discard() {},
 
     /** Snapshot the build sandbox's root filesystem; its mounts, memory and
      * processes are not in it. No deleteEnvironmentSnapshot: Containers has

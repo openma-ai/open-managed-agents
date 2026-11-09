@@ -11,10 +11,12 @@ import type { SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
 import { relaySandboxToken } from "./session-sandbox-token";
 import type { PortsSessionSandbox, SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
 import type { EnvironmentPackages } from "@open-managed-agents/sandbox";
+import type { SessionSandboxStateStorage } from "./session-sandbox-do-state";
 
 export interface SessionSandboxDeps {
   env: Env;
-  storage: Pick<DurableObjectStorage, "get" | "put" | "delete">;
+  /** Where the Session sandbox record lives (session-sandbox-do-state). */
+  storage: SessionSandboxStateStorage;
   /** Sandbox Durable Object name for the Cloudflare adapter. */
   sandboxId: string;
   /** Operator catalog image for the Cloudflare adapter; null = SANDBOX. */
@@ -26,8 +28,7 @@ export interface SessionSandboxDeps {
   /** The Session's current execution attempt (design §0.0 rule 10). */
   fence(): SandboxExecutionFence | undefined;
   warn(message: string): void;
-  /** Idle pause timer for adapters the host pauses (E2B); the Cloudflare
-   * container stops itself through sleepAfter. */
+  /** The core's idle pause timer (design §0.0b A.1). */
   idleTimer: Omit<SessionSandboxIdleTimer, "pauseMs">;
   /** Environment cache (Cloudflare adapter): the Session's Environment config now. */
   environmentConfig?(): Promise<{ id?: string; config?: { packages?: EnvironmentPackages } } | null>;
@@ -41,7 +42,7 @@ export function createSessionSandbox(adapter: string | undefined, deps: SessionS
     return createCloudflareSessionSandbox({ ...deps, relayToken: (attempt, sandbox) => relaySandboxToken(deps.env, attempt, deps.harness(), sandbox) }) as PortsSessionSandbox<unknown>;
   }
   if (name === "e2b") {
-    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, relayToken: (attempt, sandbox) => relaySandboxToken(deps.env, attempt, deps.harness(), sandbox), idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
+    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, relayToken: (attempt, sandbox) => relaySandboxToken(deps.env, attempt, deps.harness(), sandbox), warn: deps.warn, idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
   }
   throw new Error(`Unknown SANDBOX_ADAPTER: ${name}`);
 }

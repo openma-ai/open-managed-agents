@@ -5,11 +5,13 @@
 // lifecycle      handle "changes" (E2B assigns sandbox ids)
 // acquire        Sandbox.create(plan.from) with {workspaceId, sessionId} metadata
 // attach         Sandbox.connect (resumes a paused sandbox)
-// keepAlive      setTimeout(leaseMs); leaseMs must exceed plan.idleMs
+// keepAlive      setTimeout(ttlMs ?? leaseMs): sets, never extends; leaseMs
+//                must be at least plan.idleMs + SANDBOX_LEASE_MARGIN_MS
 // maxLifetimeMs  required: the account plan's continuous-run cap (Hobby 1 h,
 //                Pro 24 h); plan.idleMs must stay below it
-// pause/resume   pause (full memory) / connect; the ref is the sandbox itself
-// checkpoint     createSnapshot; resume from it = Sandbox.create(snapshotId)
+// pause/resume   pause (full memory) / connect; kind "self" (the sandbox itself)
+// checkpoint     createSnapshot({ mode: "filesystem" }), kind "snapshot";
+//                resume from it = Sandbox.create(snapshotId) (a new sandbox)
 // snapshotEnvironment createSnapshot({ mode: "filesystem" }) → { adapter: "e2b",
 //                ref: snapshotId }; acquire from it = Sandbox.create(ref);
 //                deleteEnvironmentSnapshot = Sandbox.deleteSnapshot
@@ -110,7 +112,6 @@ export interface E2BObjectStorageOptions {
   ttlSeconds?: number;
 }
 
-const SELF = "self";
 const DEFAULT_RETRY_AFTER_MS = 1_000;
 
 /** `setup` creating the platform mount points. A base template's default
@@ -212,7 +213,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
     async keepAlive(input) {
       try {
-        await input.runtime.renewLease({ ttlMs: options.leaseMs });
+        await input.runtime.renewLease({ ttlMs: input.ttlMs ?? options.leaseMs });
         return "alive";
       } catch (error) {
         if (isGone(error)) return "gone";
@@ -222,19 +223,21 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
     async checkpoint(input) {
       input.signal.throwIfAborted();
-      const checkpoint = await lifecycleCall(() => input.runtime.checkpoint({ kind: "memory" }));
-      return { provider: "e2b", ref: checkpoint.checkpointId, metadata: { kind: "snapshot", source: input.handle.runtimeId } };
+      // Disk only: the snapshot must outlive this sandbox (a pause in place
+      // does not), and what a new sandbox needs from it is the workspace.
+      const checkpoint = await lifecycleCall(() => input.runtime.checkpoint({ kind: "filesystem" }));
+      return { provider: "e2b", ref: checkpoint.checkpointId, kind: "snapshot", metadata: { source: input.handle.runtimeId } };
     },
 
     async pause(input) {
       input.signal.throwIfAborted();
       await lifecycleCall(() => input.runtime.suspend({ kind: "memory" }));
-      return { provider: "e2b", ref: input.handle.runtimeId, metadata: { kind: SELF } };
+      return { provider: "e2b", ref: input.handle.runtimeId, kind: "self" };
     },
 
     async resume(input) {
       requireOwn(input.ref);
-      if (input.ref.metadata?.kind === SELF) {
+      if (input.ref.kind === "self") {
         input.signal.throwIfAborted();
         return connect(input.ref.ref);
       }
@@ -252,7 +255,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
     async discard(input) {
       requireOwn(input.ref);
-      if (input.ref.metadata?.kind === SELF) return;
+      if ("kind" in input.ref && input.ref.kind === "self") return;
       try {
         await sdk.Sandbox.deleteSnapshot(input.ref.ref, connection);
       } catch (error) {

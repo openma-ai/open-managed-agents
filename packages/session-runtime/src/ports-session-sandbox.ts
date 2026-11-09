@@ -5,23 +5,27 @@
 // only compose (session-sandbox-options.ts): createSandboxPorts + an
 // adapter, the handle record, scope, plan, fence and idle timer.
 //
-// Each lifecycle step is its own module: opening (session-sandbox-open),
+// The record and every transition of it are session-sandbox-state. Each
+// lifecycle step is its own module: opening (session-sandbox-open),
 // egress and storage (session-sandbox-storage-egress), exec-boundary
 // renewals (session-sandbox-renewal), the lifetime refresh
 // (session-sandbox-lifetime), the idle pause (session-sandbox-idle-pause)
-// and the execution end (session-sandbox-execution-end), over one
+// snapshots (session-sandbox-snapshot) and the execution end
+// (session-sandbox-execution-end), over one
 // LiveSessionSandbox state. A sandbox that disappears while Memory or
 // outputs are attached is remembered: the next syncStorage throws
 // SandboxGoneError instead of publishing nothing (design §0.0 rule 16).
 
 import type { MemoryStoreBinding, SandboxDuplexProcess, SandboxDuplexProcessSpec, SandboxExecutor } from "@open-managed-agents/sandbox";
 import { endExecution, failExecution } from "./session-sandbox-execution-end";
-import { disarmIdle, idlePause, touchIdle } from "./session-sandbox-idle-pause";
+import { disarmIdle, idlePause } from "./session-sandbox-idle-pause";
 import { lifetimeDue, refreshLifetime } from "./session-sandbox-lifetime";
-import { LiveSessionSandbox, mergeStores } from "./session-sandbox-live";
+import { LiveSessionSandbox, mergeStores, SessionSandboxStateConflictError } from "./session-sandbox-live";
 import { openSandbox, rollbackOpen, warmSandbox } from "./session-sandbox-open";
+import { recordedHandle } from "./session-sandbox-state";
 import type { PortsSessionSandboxOptions, SessionSandboxExecutor } from "./session-sandbox-options";
 import { renewActivityTimeout, renewAtExecBoundary } from "./session-sandbox-renewal";
+import { snapshotDue, snapshotInGap } from "./session-sandbox-snapshot";
 import { attachStorage, syncStorage } from "./session-sandbox-storage-egress";
 
 export class PortsSessionSandbox<R> implements SandboxExecutor {
@@ -33,8 +37,28 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
 
   async exec(command: string, timeout?: number): Promise<string> { return this.call((e) => e.exec(command, timeout)); }
   startProcess(command: string) { return this.call((e) => e.startProcess(command)); }
-  spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> { return this.call((e) => e.spawnDuplexProcess(spec)); }
-  readFile(path: string) { return this.call((e) => e.readFile(path)); }
+  /** Counted until it exits: it changes the sandbox without calls (session-sandbox-snapshot). */
+  spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> {
+    const state = this.state;
+    return this.call(async (e) => {
+      const process = await e.spawnDuplexProcess(spec);
+      const spawnedIn = state.current;
+      const spawnedExecution = state.execution();
+      state.liveProcesses += 1;
+      const exited = () => { state.liveProcesses -= 1; };
+      process.exited.then(exited, exited);
+      return { ...process, confirmSandboxGone: async () => {
+        const { ports } = await state.compose();
+        const open = spawnedIn;
+        if (open === null || (state.current !== null && state.current !== open) || spawnedExecution === undefined || state.execution()?.attemptId !== spawnedExecution.attemptId || state.execution()?.generation !== spawnedExecution.generation) return false;
+        const result = await ports.sandbox.keepAlive(open);
+        if (result !== "gone") return false;
+        state.markLost();
+        return true;
+      } };
+    });
+  }
+  readFile(path: string) { return this.call((e) => e.readFile(path), false); }
   writeFile(path: string, content: string) { return this.call((e) => e.writeFile(path, content)); }
   writeFileBytes(path: string, bytes: Uint8Array) { return this.call((e) => e.writeFileBytes(path, bytes)); }
 
@@ -85,14 +109,17 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   /** Execution end: the sandbox keeps running until the idle pause. */
   endExecution(): Promise<void> { return endExecution(this.state); }
   /** The idle timer fired. */
-  idlePause(): Promise<"paused" | "skipped"> { return idlePause(this.state); }
+  idlePause(version?: number): Promise<"paused" | "skipped"> { return idlePause(this.state, version); }
   /** A failed execution: nothing published, the sandbox released. */
   failExecution(): Promise<void> { return failExecution(this.state); }
+  /** This instance's last open started the sandbox from a snapshot. */
+  restoredFromSnapshot(): boolean { return this.state.restored; }
   /** The fence was lost: exit without writing back, pausing or releasing. */
   abandon(): void { this.state.abandon(); }
   renewActivityTimeout(): Promise<void> { return renewActivityTimeout(this.state); }
 
-  /** Session end: storage.detach, egress.revoke, release, discard the restore point. */
+  /** Session end: storage.detach, egress.revoke, release, then the release
+   * transition (it discards the snapshots). Nothing opens again. */
   async destroy(): Promise<void> {
     const state = this.state;
     const { ports } = await state.compose();
@@ -105,11 +132,11 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       await ports.storage.detach({ runtime: open.runtime, scope }).catch(() => undefined);
       await ports.egress.revoke({ runtime: open.runtime, scope, fence: state.fence(scope), reason: "completed" }).catch(() => undefined);
     }
-    const saved = await state.options.state.load();
-    const handle = open?.handle ?? saved?.handle;
+    const saved = await state.load();
+    if (saved.phase === "released") { await state.retryDiscards(saved); return; }
+    const handle = open?.handle ?? recordedHandle(saved);
     if (handle !== undefined) await ports.sandbox.release({ scope, handle });
-    if (saved?.resumeRef !== undefined) await ports.sandbox.discard({ scope, ref: saved.resumeRef }).catch(() => undefined);
-    await state.options.state.clear();
+    await state.apply(saved, { type: "release" });
   }
 
   /** A store or the outputs added to an open sandbox; a fresh open attaches them itself. */
@@ -119,7 +146,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     const open = await openSandbox(state);
     if (opening) return;
     try {
-      await state.record(open);
+      if (await state.record(open) === null) throw new SessionSandboxStateConflictError("Another writer changed the Session sandbox record while storage was mounted");
       await attachStorage(state, open, new AbortController().signal);
     } catch (error) {
       await rollbackOpen(state, open);
@@ -127,19 +154,21 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     }
   }
 
-  private async call<T>(operation: (executor: SessionSandboxExecutor) => Promise<T>): Promise<T> {
+  /** `changes`: the call may change the sandbox (everything but reads), so it is due a snapshot. */
+  private async call<T>(operation: (executor: SessionSandboxExecutor) => Promise<T>, changes = true): Promise<T> {
     const state = this.state;
     await state.quiesce();
     state.throwRefreshError();
-    touchIdle(state);
     let open = await openSandbox(state);
-    // Past the threshold during idle time: refresh now, in this gap.
-    if (state.inFlight === 0 && lifetimeDue(state, open)) {
+    // Past the threshold during idle time: refresh now, in this gap (only
+    // for an execution: idle activity renews nothing, design §0.0b A.10).
+    if (state.inFlight === 0 && state.execution() !== undefined && lifetimeDue(state, open)) {
       await refreshLifetime(state, open);
       state.throwRefreshError();
       open = await openSandbox(state);
     }
     state.inFlight += 1;
+    if (changes) state.dirty = true;
     try {
       await renewAtExecBoundary(state, open);
       return await operation(open.executor);
@@ -151,7 +180,10 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       state.inFlight -= 1;
       // The last call returned: the model is thinking. Refresh in the background.
       const current = state.current;
-      if (state.inFlight === 0 && current !== null && lifetimeDue(state, current)) void refreshLifetime(state, current);
+      if (state.inFlight === 0 && current !== null && state.execution() !== undefined && lifetimeDue(state, current)) void refreshLifetime(state, current);
+      // ...and snapshot a changed sandbox once the interval passed (inside an
+      // execution: nothing in the idle window touches the sandbox, design §0.0b A.10).
+      else if (state.inFlight === 0 && current !== null && state.refreshing === null && state.execution() !== undefined && snapshotDue(state)) void snapshotInGap(state, current);
     }
   }
 }

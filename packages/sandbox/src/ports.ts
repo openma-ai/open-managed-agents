@@ -38,6 +38,8 @@ export interface SandboxDuplexProcessSpec {
  * structurally compatible with openma-common's ACP `ChildHandle`; the ACP
  * adapter can pass it through without coupling the sandbox package to ACP. */
 export interface SandboxDuplexProcess {
+  /** Only the lifecycle owner may confirm the exact sandbox is gone. Errors are unknown. */
+  confirmSandboxGone?(): Promise<boolean>;
   stdin: WritableStream<Uint8Array>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
@@ -390,6 +392,9 @@ export interface SandboxProviderPort<
     ctx: SandboxFactoryContext,
     env: SandboxFactoryEnv,
   ): Promise<Runtime>;
+  /** Delete a portable checkpoint (the Session keeps only its latest
+   * snapshot). Omitted = checkpoints wait for the provider's expiry. */
+  discard?(checkpoint: SandboxCheckpointHandle, env: SandboxFactoryEnv): Promise<void>;
 }
 
 export function supportsSandboxRuntime(

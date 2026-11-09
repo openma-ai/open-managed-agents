@@ -66,20 +66,28 @@ export interface SandboxLifecyclePort<R> {
   /** Find this sandbox again by handle (prewarmed, paused, or left by a
    * previous owner) and wake it if paused. Not found, or its disk is gone → `"gone"`. */
   attach(input: { scope: RuntimeResourceScope; handle: SandboxHandle; signal: AbortSignal }): Promise<Acquired<R> | "gone">;
-  /** Called periodically during an execution: checks liveness and counts as
-   * activity for the provider. The existing heartbeat. */
-  keepAlive(input: { runtime: R; handle: SandboxHandle }): Promise<"alive" | "gone">;
-  /** Take a restore point without stopping compute (a live checkpoint).
-   * Providers that cannot snapshot a running sandbox return a ref to the
-   * sandbox itself. */
+  /** Called during an execution only: checks liveness and sets the
+   * provider's own timeout (its idle reclaim) to `ttlMs` from now, the
+   * adapter's lease when omitted (design §0.0b A.10): it sets the timeout, it
+   * does not extend it. A provider whose timeout cannot be set per call
+   * ignores `ttlMs`. */
+  keepAlive(input: { runtime: R; handle: SandboxHandle; ttlMs?: number }): Promise<"alive" | "gone">;
+  /** Take a snapshot without stopping compute: a ref of kind `"snapshot"`
+   * that outlives the sandbox (a new sandbox can be started from it). The
+   * core takes one at every execution end and in tool-call gaps, keeps only
+   * the latest and starts a new sandbox from it when the handle cannot be
+   * found again (design §0.0 rule 11). An adapter that returns
+   * `kind: "self"` here declares it has no snapshots (a bare v1 factory):
+   * a lost sandbox is then replaced by a new one, with a warning. */
   checkpoint(input: { scope: RuntimeResourceScope; runtime: R; handle: SandboxHandle; signal: AbortSignal }): Promise<ResumeRef>;
   /** Keep the workspace and stop compute. Providers that pause in place do so
-   * (the ref is the sandbox itself); others snapshot the rootfs and stop;
-   * auto-pause-only providers return a ref to themselves. */
+   * (`kind: "self"`, gone with the sandbox); providers without pause snapshot
+   * instead (`kind: "snapshot"`, Cloudflare: backup then stop); providers
+   * that keep running return `kind: "self"`. */
   pause(input: { scope: RuntimeResourceScope; runtime: R; handle: SandboxHandle; signal: AbortSignal }): Promise<ResumeRef>;
-  /** After `attach` returned `"gone"`: start a sandbox from `ref`, either the
-   * same one or a new one from a snapshot. The handle may change. Expired or
-   * deleted → `"gone"`. */
+  /** After `attach` returned `"gone"`: `kind: "self"` wakes the same
+   * sandbox; `kind: "snapshot"` starts a new one from the snapshot. The
+   * handle may change. Expired or deleted → `"gone"`. */
   resume(input: { scope: RuntimeResourceScope; ref: ResumeRef; plan: SandboxPlan; signal: AbortSignal }): Promise<Acquired<R> | "gone">;
   /** Delete this sandbox, running or paused. Idempotent, and callable with
    * only the serialized handle (orphan reaping). Terminate + reap today. */
@@ -108,15 +116,14 @@ export interface SandboxLifecyclePort<R> {
  * serializable, may change; saved under the fence every time it is returned.
  * Same shape as ManagedSandboxLease. */
 export interface SandboxHandle { provider: string; runtimeId: string; metadata?: OpaqueMetadata }
-/** Restore point: the sandbox itself when paused in place, a snapshot id
- * otherwise. Returned by checkpoint / pause and published with the fence; the
- * core only stores it and hands it back. */
-export interface ResumeRef { provider: string; ref: string; metadata?: OpaqueMetadata }
-/** An environment snapshot: a disk with the Environment setup on it that
- * starts any number of sandboxes. Opaque: `adapter` names the adapter that
- * made it (the only part the core reads, to never hand one adapter's ref to
- * another), `ref` is that adapter's to interpret. Cached per workspace,
- * never across tenants. */
+/** Restore point, returned by checkpoint / pause and published with the
+ * fence. `kind` is the adapter's declaration the core branches on (never on
+ * the provider): `"self"` = the sandbox itself (a pause in place; it is gone
+ * when the sandbox is), `"snapshot"` = stored apart from the sandbox, so a
+ * new sandbox can start from it. The core keeps the two apart: a pause ref
+ * never replaces the latest snapshot. */
+export interface ResumeRef { provider: string; ref: string; kind: "self" | "snapshot"; metadata?: OpaqueMetadata }
+/** Environment setup snapshot, cached per workspace, never across tenants. */
 export interface EnvironmentSnapshotRef { adapter: string; ref: string }
 export interface Acquired<R> { runtime: R; handle: SandboxHandle }
 
@@ -141,6 +148,21 @@ export interface SandboxPlan {
   /** Written to provider labels so a sandbox whose handle was never saved can
    * still be found and reaped. */
   labels: { workspaceId: string; sessionId: string };
+}
+
+/** Headroom of a provider lease over idlePauseMs (design §0.0b A.10): the
+ * longest single tool call (10 min, bash MAX_BASH_TIMEOUT) plus 5 min, so a
+ * running execution renewed only at exec boundaries keeps its sandbox. */
+export const SANDBOX_LEASE_MARGIN_MS = 15 * 60_000;
+
+/** Design §0.0b A.10: the provider's own idle reclaim (its lease) is
+ * idlePauseMs + SANDBOX_LEASE_MARGIN_MS or more, so a sandbox whose idle
+ * pause never ran still stops within idle start + lease. Composition calls
+ * this and fails on a shorter lease. */
+export function assertLeaseCoversIdle(name: string, leaseMs: number, idlePauseMs: number): void {
+  if (!Number.isSafeInteger(leaseMs) || leaseMs < idlePauseMs + SANDBOX_LEASE_MARGIN_MS) {
+    throw new RangeError(`${name}: the provider lease (${leaseMs} ms) must be at least idlePauseMs (${idlePauseMs} ms) + ${SANDBOX_LEASE_MARGIN_MS} ms`);
+  }
 }
 
 /** Any method may throw it: provider throttling or busy. The core backs off

@@ -55,8 +55,7 @@ function harness(opts: { execution?: () => SessionSandboxExecution | undefined }
     executor: () => executor,
     state: {
       load: async () => stored,
-      save: async (state) => { stored = state; },
-      clear: async () => { log.push("clear"); stored = undefined; },
+      save: async (state, expected) => { if ((stored?.version ?? 0) !== expected) return false; stored = state; return true; },
     },
     scope: () => scope,
     plan: async ({ stores }) => ({
@@ -102,12 +101,13 @@ describe("Session sandbox runtime today (characterization)", () => {
     expect(h.fences.at(-1)).toMatchObject({ ...scope, ownerId: "session-do", generation: 1, token: "session-do" });
   });
 
-  it("destroy detaches storage, revokes egress, releases and forgets the handle", async () => {
+  it("destroy detaches storage, revokes egress, releases, and the record is released for good", async () => {
     const h = harness();
     await h.sandbox.exec("a");
     h.log.length = 0;
     await h.sandbox.destroy();
-    expect(h.log).toEqual(["storage.detach", "egress.revoke:completed", "release", "clear"]);
+    expect(h.log).toEqual(["storage.detach", "egress.revoke:completed", "release"]);
+    expect(h.stored()).toMatchObject({ phase: "released" });
   });
 
   // Same behaviour, now keyed by the execution attempt itself (the

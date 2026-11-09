@@ -33,6 +33,7 @@ export {
 export { registerCoreHarnesses } from "./builtins";
 export { DefaultHarness } from "./default-loop";
 export { PiHarness } from "./pi-loop";
+export { rebuildAcpContext, type AcpSemanticRecoveryReason } from "./acp-recovery";
 export { AcpSandboxHarness } from "./acp-sandbox-loop";
 export { AcpProxyHarness } from "./acp-proxy-loop";
 export { resolveRepositoryLocalPath } from "./acp-proxy-delivery";

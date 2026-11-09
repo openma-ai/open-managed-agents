@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
-import { backupObjectKeys, createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "../src/runtime/cloudflare-sandbox-ports";
+import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "../src/runtime/cloudflare-sandbox-ports";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "work" };
 const fence = { ...scope, ownerId: "owner", generation: 3, token: "tok", expiresAt: "2030-01-01T00:00:00.000Z" };
@@ -17,14 +17,15 @@ function fakeCf(opts: { restoreOk?: boolean; backup?: boolean } = {}) {
   const state = { running: false, mounts: [] as string[] };
   const runtime = {
     async describeSandbox() { return { running: state.running, incarnation: state.running ? "inc" : null, mounts: state.mounts }; },
-    async provisionSandbox(input: { mounts: Array<{ mountPath: string }> }) {
+    async provisionSandbox(input: { mounts: Array<{ mountPath: string }>; containerSnapshot?: { id: string } }) {
+      if (input.containerSnapshot) { log.push(["restore", input.containerSnapshot]); if (opts.restoreOk === false) throw new Error("snapshot restore failed"); }
       log.push(["provision", input.mounts.map((m) => m.mountPath)]);
       state.running = true;
       state.mounts = input.mounts.map((m) => m.mountPath);
       return { incarnation: "inc", started: true, pendingMounts: [] };
     },
-    async createWorkspaceBackup() { log.push(["backup"]); return opts.backup === false ? null : { id: "bk1", dir: "/workspace", sha256: "x" }; },
-    async restoreWorkspaceBackup(handle: unknown) { log.push(["restore", handle]); return { ok: opts.restoreOk ?? true }; },
+    async createContainerSnapshot() { log.push(["snapshot"]); if (opts.backup === false) throw new Error("snapshot capability unavailable"); return { id: "bk1", size: 42 }; },
+
     memoryStoreMount: (s: { storeName: string }) => ({ bucket: "memory", mountPath: `/mnt/memory/${s.storeName}`, options: {} }),
     sessionOutputsMount: () => ({ bucket: "files", mountPath: "/mnt/session/outputs", options: {} }),
     async setOutboundContext(input: unknown) { log.push(["outbound", input]); },
@@ -88,13 +89,11 @@ describe("Cloudflare v2 adapter", () => {
     expect(lifecycle.deleteEnvironmentSnapshot).toBeUndefined();
   });
 
-  it("discard deletes backup objects and leaves self refs alone", async () => {
+  it("discard waits for native snapshot expiry and never deletes backup objects", async () => {
     deleted.length = 0;
     const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => fakeCf().runtime, backups });
-    await lifecycle.discard({ scope, ref: { provider: "cloudflare", ref: "bk1", metadata: { kind: "backup", backup: "{}" } } });
-    await lifecycle.discard({ scope, ref: { provider: "cloudflare", ref: "sess", metadata: { kind: "self" } } });
-    expect(deleted).toEqual([backupObjectKeys("bk1")]);
-    expect(backupObjectKeys("bk1")).toEqual(["backups/bk1.tar.zst", "backups/bk1.meta.json"]);
+    await lifecycle.discard({ scope, ref: { provider: "cloudflare", ref: "bk1", kind: "snapshot", metadata: { kind: "container" } } });
+    expect(deleted).toEqual([]);
   });
 
   it("binds a required outbound handler without any fence or token (fail closed; SessionDO binds the token), and revokes it", async () => {
@@ -106,31 +105,33 @@ describe("Cloudflare v2 adapter", () => {
     expect(cf.log.at(-1)).toEqual(["revoke", { workId: "work", generation: 3, reason: "lease_lost" }]);
   });
 
-  it("pauses as backup + destroy and resumes by provisioning and restoring", async () => {
+  it("pauses as container snapshot + destroy and resumes by provisioning and restoring", async () => {
     const cf = fakeCf();
     const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, backups });
     const acquired = await lifecycle.acquire({ scope, plan, signal });
     if (acquired === "gone") throw new Error("unexpected");
     expect(await lifecycle.keepAlive(acquired)).toBe("alive");
     const ref = await lifecycle.pause({ scope, ...acquired, signal });
-    expect(ref).toMatchObject({ provider: "cloudflare", ref: "bk1", metadata: { kind: "backup" } });
+    expect(ref).toMatchObject({ provider: "cloudflare", ref: "bk1", kind: "snapshot", metadata: { kind: "container" } });
     expect(cf.state.running).toBe(false);
     expect(await lifecycle.keepAlive(acquired)).toBe("gone");
     expect(await lifecycle.resume({ scope, ref, plan, signal })).toMatchObject({ handle: { runtimeId: "sess" } });
-    expect(cf.log.find(([op]) => op === "restore")?.[1]).toEqual({ id: "bk1", dir: "/workspace", sha256: "x" });
+    expect(cf.log.find(([op]) => op === "restore")?.[1]).toEqual({ id: "bk1" });
     await lifecycle.discard({ scope, ref });
     await lifecycle.release({ scope, handle: acquired.handle });
     expect(cf.log.at(-1)).toEqual(["destroy"]);
   });
 
-  it("reports a failed restore as gone and a missing backup as a self ref", async () => {
+  it("surfaces native snapshot errors without falling back to a workspace backup", async () => {
     const failing = fakeCf({ restoreOk: false });
     const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => failing.runtime, backups });
-    expect(await lifecycle.resume({ scope, ref: { provider: "cloudflare", ref: "bk", metadata: { kind: "backup", backup: "{}" } }, plan, signal })).toBe("gone");
+    await expect(lifecycle.resume({ scope, ref: { provider: "cloudflare", ref: "bk", kind: "snapshot", metadata: { kind: "container" } }, plan, signal })).rejects.toThrow("snapshot restore failed");
     const none = fakeCf({ backup: false });
     const adapter = createCloudflareSandboxAdapter({ sandbox: () => none.runtime, backups });
-    expect(await adapter.lifecycle.checkpoint({ scope, runtime: none.runtime, handle: { provider: "cloudflare", runtimeId: "sess" }, signal }))
-      .toEqual({ provider: "cloudflare", ref: "sess", metadata: { kind: "self" } });
+    // A snapshot that is not one is never handed out (no silent fallback to the sandbox itself).
+    await expect(adapter.lifecycle.checkpoint({ scope, runtime: none.runtime, handle: { provider: "cloudflare", runtimeId: "sess" }, signal }))
+      .rejects.toThrow("snapshot capability unavailable");
+    expect(await adapter.lifecycle.resume({ scope, ref: { provider: "cloudflare", ref: "sess", kind: "self" }, plan, signal })).toBe("gone");
     expect(await adapter.vendor.readFile(none.runtime, "/missing")).toBeNull();
     expect(await adapter.vendor.readFile(none.runtime, "/present")).toEqual(new Uint8Array([9]));
   });

@@ -650,8 +650,8 @@ describe("ACP sandbox harness", () => {
       expect(recoveredText).not.toContain("touch /workspace/should-not-repeat");
       expect(events).toContainEqual(expect.objectContaining({
         type: "session.warning",
-        source: "acp_semantic_recovery",
-        details: expect.objectContaining({ reason: "native-state-missing" }),
+        source: "oma.acp_context",
+        details: expect.objectContaining({ state: "rebuilt", from: "canonical_history", reason: "native-state-missing", acp_session_id: expect.any(String), checkpoint_fingerprint: expect.any(String) }),
       }));
     } finally {
       await (recoveredHarness as { dispose?: () => Promise<void> } | undefined)

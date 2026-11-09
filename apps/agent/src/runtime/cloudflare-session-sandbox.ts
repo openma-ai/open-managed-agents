@@ -3,10 +3,12 @@
 //
 // Composition only: createSandboxPorts + createCloudflareSandboxAdapter, handed
 // to the shared Session runtime (session-sandbox.ts). The handle is "fixed":
-// one Sandbox Durable Object per SessionDO, so state is derived, never stored.
-// Restore points are the existing D1 workspace backups (workspace-backups.ts)
-// that OmaSandbox writes when it backs up and stops an idle or destroyed
-// container.
+// one Sandbox Durable Object per SessionDO, so a Session with no record yet
+// starts from a running record naming it (attach is tried first, as a
+// container may outlive its record). The record is kept in SessionDO storage,
+// every write a compare-and-set on its version (session-sandbox-do-state).
+// Recovery points live only in the version-CAS Session sandbox record.
+// D1 workspace backups are not container snapshots and never override it.
 //
 // Two deliberate differences from the adapter defaults:
 //   - egress binds the outbound handler to the Session execution attempt's
@@ -26,13 +28,11 @@ import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
 import type { SandboxEgressPort } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
 import { sandboxTokenSha256, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
-import { log, logWarn } from "@open-managed-agents/shared";
-import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
+import { buildCfTenantDbProvider } from "@open-managed-agents/services";
 import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources } from "./managed-session-resources";
-import { findLatestBackup, type WorkspaceBackupHandle } from "./workspace-backups";
-import { memoryStoreMountTarget, PortsSessionSandbox, type SessionEnvironmentCache } from "@open-managed-agents/session-runtime";
+import { sandboxIdlePauseMs, initialSandboxState, memoryStoreMountTarget, PortsSessionSandbox, type SessionSandboxIdleTimer, type SessionEnvironmentCache } from "@open-managed-agents/session-runtime";
 import {
   createCloudflareEnvironmentCache,
   d1EnvironmentCacheStore,
@@ -40,6 +40,7 @@ import {
   UNKNOWN_SANDBOX_IMAGE,
   type CloudflareEnvironmentSetup,
 } from "./cloudflare-environment-cache";
+import { durableObjectSandboxState, type SessionSandboxStateStorage } from "./session-sandbox-do-state";
 
 export interface CloudflareSessionSandboxDeps {
   env: Env;
@@ -47,12 +48,16 @@ export interface CloudflareSessionSandboxDeps {
   sandboxId: string;
   /** Operator catalog image (container binding + workdir); null = SANDBOX. */
   sandboxImage: CloudflareSandboxImage | null;
+  /** Where the handle record lives (SessionDO storage). */
+  storage: SessionSandboxStateStorage;
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
   /** The Session's current execution attempt (SessionDO's fence); undefined between turns. */
   fence(): SandboxExecutionFence | undefined;
   /** The sandbox token for one egress binding of `attempt` (#561). */
   relayToken(attempt: SessionExecutionAttemptRef, sandbox?: object | string): Promise<string>;
   warn(message: string): void;
+  /** Schedules the core's idle pause (design §0.0 rule 11); `pauseMs` = IDLE_MS. */
+  idleTimer: Omit<SessionSandboxIdleTimer, "pauseMs">;
   /** The Session's Environment config now (environment cache); omitted = cache off. */
   environmentConfig?(): Promise<{ config?: { packages?: EnvironmentPackages } } | null>;
   /** The Durable Object's waitUntil, for the background environment snapshot build. */
@@ -69,10 +74,12 @@ export interface SandboxExecutionFence { executionId: string; attemptId: string;
 export const sandboxExecutionFenceKey = (fence: SandboxExecutionFence | undefined): string =>
   fence === undefined ? "" : `${fence.executionId}/${fence.attemptId}/${fence.ownerId}/${fence.generation}`;
 
-const IDLE_MS = 5 * 60_000;
+/** idlePauseMs; OmaSandbox's idle backstop (OMA_SANDBOX_IDLE_TIMEOUT_MS) is longer. */
 const START_ATTEMPTS = 3;
+const STATE_KEY = "cloudflare_sandbox_state";
 
 export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDeps): PortsSessionSandbox<CloudflareSandboxRuntime> {
+  const idleMs = sandboxIdlePauseMs((deps.env as { SANDBOX_IDLE_PAUSE_MS?: string }).SANDBOX_IDLE_PAUSE_MS);
   const sandbox = new CloudflareSandbox(deps.env, deps.sandboxId, deps.sandboxImage);
   const scope = () => {
     const s = deps.session();
@@ -104,11 +111,11 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
       return { ports };
     },
     executor: () => sandbox,
-    state: {
-      load: async () => ({ handle: handle(), stores: [], outputs: false }),
-      save: async () => undefined,
-      clear: async () => undefined,
-    },
+    state: (() => {
+      const stored = durableObjectSandboxState(deps.storage, STATE_KEY);
+      // No record yet: this Session's Sandbox DO, whose container may be running.
+      return { ...stored, load: async () => (await stored.load()) ?? { ...initialSandboxState(), phase: "running", handle: handle(), runStartedAt: 0 } };
+    })(),
     scope,
     async plan({ scope: s, generation }) {
       const session = deps.session();
@@ -117,14 +124,11 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
         egress: null,
         stores: session.sessionId ? await managedStores(deps.env, session, generation) : [],
         outputs: { bindingId: `outputs:${s.sessionId}`, mountPath: "/mnt/session/outputs" },
-        idleMs: IDLE_MS,
+        idleMs,
         labels: { workspaceId: s.workspaceId, sessionId: s.sessionId },
       };
     },
-    async resumeRef() {
-      const backup = await latestBackup(deps.env, deps.session());
-      return backup === null ? null : { provider: "cloudflare", ref: backup.id, metadata: { kind: "backup", backup: JSON.stringify(backup) } };
-    },
+    resumeRef: async () => null,
     warn: deps.warn,
     outputDurability: () => sandbox.sessionOutputMountCapabilities(),
     // The outbound handler holds no expiring credential; it is rebound when
@@ -132,7 +136,8 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     // §0.0 rule 10); the one SessionDO holds now is the current one.
     egressRenewMs: null,
     execution: () => deps.fence?.(),
-    isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
+    isCurrent: async (execution) => sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
+    idle: { pauseMs: idleMs, ...deps.idleTimer },
     ...(environmentCache === undefined ? {} : { environmentCache }),
   });
 }
@@ -185,13 +190,13 @@ function backupBucket(env: Env): Pick<R2Bucket, "delete"> {
   };
 }
 
-/** Binds what OmaSandbox's idle teardown needs, after every acquire /
- * attach / resume; retries a failed container start. */
+/** Binds billing/legacy backup context and retries container starts.
+ * Snapshot publication belongs exclusively to the shared CAS core. */
 function withSessionContext(
   lifecycle: SandboxLifecyclePort<CloudflareSandboxRuntime>,
   sandbox: CloudflareSandbox,
   session: CloudflareSessionSandboxDeps["session"],
-): SandboxLifecyclePort<CloudflareSandboxRuntime> {
+ ): SandboxLifecyclePort<CloudflareSandboxRuntime> {
   const bind = async <T>(acquired: T): Promise<T> => {
     if (acquired === "gone") return acquired;
     const s = session();
@@ -271,32 +276,4 @@ async function managedStores(
     if (target !== null) stores.push(target);
   }
   return stores;
-}
-
-/** Latest workspace backup of this Session; none when a github_repository
- * clones into /workspace (git clone needs it empty). Best effort, as before. */
-async function latestBackup(
-  env: Env,
-  session: { tenantId: string; environmentId: string; sessionId: string },
-): Promise<WorkspaceBackupHandle | null> {
-  if (!session.tenantId || !session.environmentId || !env.MAIN_DB) return null;
-  try {
-    if (session.sessionId) {
-      const services = await getCfServicesForTenant(env, session.tenantId);
-      const rows = await services.sessions.listResourcesBySession({ sessionId: session.sessionId });
-      if (rows.some((r) => r.type === "github_repository" || r.type === "github_repo")) {
-        logWarn({ op: "session_do.warmup.skip_restore_github_repo", session_id: session.sessionId }, "skipping workspace restore — session attaches github_repository (git clone needs empty /workspace)");
-        return null;
-      }
-    }
-    const db = await buildCfTenantDbProvider(env).resolve(session.tenantId);
-    const backup = await findLatestBackup(db, session.tenantId, session.environmentId, session.sessionId || "unknown", Date.now());
-    if (backup === null) {
-      log({ op: "session_do.warmup.no_backup", session_id: session.sessionId, tenant_id: session.tenantId, environment_id: session.environmentId }, "no workspace backup found for this session — starting fresh");
-    }
-    return backup;
-  } catch (err) {
-    logWarn({ op: "session_do.warmup.restore_backup", session_id: session.sessionId, err }, "workspace backup lookup failed; continuing with empty /workspace");
-    return null;
-  }
 }

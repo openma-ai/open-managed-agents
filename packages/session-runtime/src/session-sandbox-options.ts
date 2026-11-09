@@ -8,15 +8,14 @@ import type {
   Acquired,
   MemoryStoreBinding,
   ProcessHandle,
-  ResumeRef,
   SandboxDuplexProcess,
   SandboxDuplexProcessSpec,
   SandboxExecutor,
-  SandboxHandle,
   SandboxPlan,
   SandboxPorts,
 } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
+import type { SessionSandboxState, SnapshotRef } from "./session-sandbox-state";
 
 /** What a Session host calls on a sandbox runtime. */
 export type SessionSandboxExecutor = Pick<SandboxExecutor, "exec" | "readFile" | "writeFile"> & {
@@ -25,21 +24,6 @@ export type SessionSandboxExecutor = Pick<SandboxExecutor, "exec" | "readFile" |
   writeFileBytes(path: string, bytes: Uint8Array): Promise<string>;
   setEnvVars(env: Record<string, string>): Promise<void>;
 };
-
-/** The handle record: what a new owner of the Session needs to find its sandbox. */
-export interface SessionSandboxState {
-  /** The Session's sandbox (running or paused); absent after a failed
-   * execution released it. */
-  handle?: SandboxHandle;
-  stores: MemoryStoreBinding[];
-  outputs: boolean;
-  /** Start (epoch ms) of the sandbox's current continuous run. */
-  runStartedAt?: number;
-  /** Restore point recorded by the idle pause (design §0.1 step 8). */
-  resumeRef?: ResumeRef;
-  /** The idle pause stopped the sandbox: attaching wakes it and starts a new run. */
-  paused?: boolean;
-}
 
 /** A Session execution attempt (managed_session_executions): the one fence
  * (design §0.0 rule 10). */
@@ -57,7 +41,7 @@ export interface SessionSandboxIdleTimer {
   /** idlePauseMs (design §0.0 rule 11). */
   pauseMs: number;
   /** Call idlePause() once, `delayMs` from now, replacing a pending one. */
-  schedule(delayMs: number): void | Promise<void>;
+  schedule(delayMs: number, version?: number): void | Promise<void>;
   cancel(): void | Promise<void>;
 }
 
@@ -75,16 +59,27 @@ export interface PortsSessionSandboxOptions<R> {
   executor(runtime: R): SessionSandboxExecutor;
   state: {
     load(): Promise<SessionSandboxState | undefined>;
-    save(state: SessionSandboxState): Promise<void>;
-    clear(): Promise<void>;
+    /** Atomic compare-and-set (design §0.0b A.10): stores `state` (its
+     * version is `expected` + 1) only when the stored version (no record = 0)
+     * is still `expected`; false = another writer got there first and nothing
+     * was written. */
+    save(state: SessionSandboxState, expected: number): Promise<boolean>;
   };
   scope(): RuntimeResourceScope;
   /** `stores`: stores already mounted through this runtime. */
   plan(input: { scope: RuntimeResourceScope; generation: string; stores: MemoryStoreBinding[] }): Promise<SandboxPlan>;
-  /** Latest published restore point, or null. */
-  resumeRef(): Promise<ResumeRef | null>;
+  /** The latest snapshot the host publishes itself (Cloudflare: D1
+   * workspace_backups, where its snapshots are recorded too); preferred over
+   * the record's latestSnapshot. null = only the record's. */
+  resumeRef(): Promise<SnapshotRef | null>;
+  /** Snapshot in a tool-call gap at most this often, and only when a call
+   * ran since the last one (default SNAPSHOT_INTERVAL_MS). Every execution
+   * end and idle pause also snapshots a changed sandbox. */
+  snapshotIntervalMs?: number;
+  /** Lifecycle progress (snapshots, restores); not a warning. Omitted = dropped. */
+  info?(message: string): void;
   /** A host that records this in the event log uses sessionSandboxWarningEvent (./session-warning). */
-  warn(message: string): void;
+  warn(message: string): void | Promise<void>;
   outputDurability(): { durability: "durable" | "best_effort" } | null;
   /** egress.attach again this often at exec boundaries (an expiring
    * credential in the egress, e.g. the E2B relay pass); null = never. */

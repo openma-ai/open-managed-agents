@@ -11,7 +11,7 @@ import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 const post = (path: string, body: any) =>
   exports.default.fetch(new Request(`http://localhost${path}`, { method: "POST", headers: H, body: JSON.stringify(body) }));
-const stubOf = (id: string) => env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+const stubOf = (id: string) => env.SESSION_DO.get(env.SESSION_DO.idFromName(JSON.stringify(["default", id])));
 const texts: string[] = [];
 
 beforeAll(async () => {
@@ -29,6 +29,7 @@ beforeAll(async () => {
       });
     },
   }));
+  registerHarness("confirmed-gone", () => ({async run(){const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");throw new SessionExecutionLostError("sandbox_gone");}}));
   registerHarness("record-order", () => ({
     async run(ctx) { texts.push(ctx.userMessage.content[0]?.text); },
   }));
@@ -36,8 +37,8 @@ beforeAll(async () => {
 
 async function createSession(harness: string, extra = {}) {
   const a = await post("/v1/oma/agents", { name: `host-${crypto.randomUUID()}`, model: "claude-sonnet-4-6", _oma: { harness }, ...extra });
-  const e = await post("/v1/oma/environments", { name: `env-${crypto.randomUUID()}`, config: { type: "cloud" } });
-  const s = await post("/v1/oma/sessions", { agent: ((await a.json()) as any).id, environment_id: ((await e.json()) as any).id });
+  const e = await post("/v1/environments", { name: `env-${crypto.randomUUID()}`, config: { type: "cloud" } });
+  const s = await post("/v1/sessions", { agent: ((await a.json()) as any).id, environment_id: ((await e.json()) as any).id });
   const id = ((await s.json()) as any).id as string;
   await runInDurableObject(stubOf(id), (instance: any) => instance._sandboxWarm);
   return id;
@@ -52,13 +53,22 @@ async function until(id: string, pred: (e: any[]) => boolean) {
   }
   return events(id);
 }
-const send = (id: string, event: any) => post(`/v1/oma/sessions/${id}/events`, { events: [event] });
+const send = (id: string, event: any) => post(`/v1/sessions/${id}/events`, { events: [event] });
 const message = (text: string) => ({ type: "user.message", content: [{ type: "text", text }] });
 const lifecycle = (seen: any[]) => seen
   .filter((e) => e.type === "user.interrupt" || e.type === "session.status_running" || e.type === "session.status_idle")
   .map((e) => e.type === "session.status_idle" ? `idle:${e.stop_reason?.type}` : e.type);
 
 describe("characterization: SessionDO interrupt and lane drain", () => {
+  it("leaves a typed sandbox loss to the execution lease instead of reporting failed idle", async () => {
+    const id=await createSession("confirmed-gone");
+    await send(id,message("lost"));
+    await until(id,e=>e.some(x=>x.type==="session.status_running"));
+    await new Promise(r=>setTimeout(r,1000));
+    const seen=await events(id);
+    expect(seen.filter(e=>e.type==="session.error"||e.type==="session.status_idle")).toEqual([]);
+  },30000);
+
   it("interrupting a running turn ends it once with idle end_turn", async () => {
     const id = await createSession("hang-until-abort");
     await send(id, message("hang"));

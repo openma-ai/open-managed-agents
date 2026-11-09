@@ -317,21 +317,19 @@ export class E2BSandboxExecutor
     kind: "filesystem" | "memory";
     name?: string;
   }): Promise<SandboxCheckpointHandle> {
-    if (input.kind !== "memory") {
-      throw new Error("E2B durable checkpoints currently support memory state only");
-    }
     if (typeof this.sandbox.createSnapshot !== "function") {
       throw new Error("E2B SDK does not expose sandbox.createSnapshot");
     }
     const runtimeId = this.requireRuntimeId();
-    const snapshot = await this.sandbox.createSnapshot(
-      input.name ? { name: input.name } : undefined,
-    );
+    // memory: the SDK default (full); filesystem: disk only, the sandbox
+    // started from it cold-boots.
+    const opts = { ...(input.name ? { name: input.name } : {}), ...(input.kind === "filesystem" ? { mode: "filesystem" as const } : {}) };
+    const snapshot = await this.sandbox.createSnapshot(Object.keys(opts).length === 0 ? undefined : opts);
     return {
       provider: "e2b",
       checkpointId: snapshot.snapshotId,
       sourceRuntimeId: runtimeId,
-      kind: "memory",
+      kind: input.kind,
       scope: "portable",
     };
   }

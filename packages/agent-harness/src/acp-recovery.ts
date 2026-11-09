@@ -1,13 +1,17 @@
+import { isRuntimeHistoryEventVisible } from "@open-managed-agents/session-runtime-contract/history";
+import { SummarizeCompactionStrategy } from "./compaction";
+import type { HarnessContext } from "./interface";
 import type {
   ContentBlock,
   SessionEvent,
   UserMessageEvent,
 } from "@open-managed-agents/shared";
 
-export type AcpSemanticRecoveryReason = "native-state-missing" | "resume-unsupported";
+export type AcpSemanticRecoveryReason = "native-state-missing" | "resume-unsupported" | "checkpoint-unavailable" | "execution-lost";
 
 export interface AcpSemanticRecoveryOptions {
   reason: AcpSemanticRecoveryReason;
+  /** Threshold for compaction; never authorizes dropping characters. */
   maxCharacters?: number;
 }
 
@@ -27,7 +31,7 @@ export function buildAcpSemanticRecoveryPrompt(
 ): string {
   const currentText = contentToText(currentMessage.content).trim();
   const relevantEvents = withoutCurrentMessage(
-    eventsAfterLastCompaction(events),
+    eventsAfterLastCompaction(events.filter(isRuntimeHistoryEventVisible)),
     currentMessage,
   );
   const toolNames = collectToolNames(relevantEvents);
@@ -42,20 +46,10 @@ export function buildAcpSemanticRecoveryPrompt(
     "Do not repeat completed side effects. Inspect current files before changing them.",
     "Recovered conversation:",
   ].join("\n");
-  const maxCharacters = Math.max(1_024, options.maxCharacters ?? DEFAULT_MAX_CHARACTERS);
   const currentLabel = "Current request:";
   const closingTag = "</openma-recovery>";
-  // Four separators join prefix/history/current-label/current/closing-tag.
-  const payloadBudget = Math.max(
-    0,
-    maxCharacters - prefix.length - currentLabel.length - closingTag.length - 4,
-  );
-  const currentBudget = lines.length > 0
-    ? Math.max(256, Math.floor(payloadBudget * 0.6))
-    : payloadBudget;
-  const boundedCurrent = truncateCurrentRequest(currentText, currentBudget);
-  const historyBudget = Math.max(0, payloadBudget - boundedCurrent.length);
-  const history = takeRecentLines(lines, historyBudget);
+  const boundedCurrent = currentText;
+  const history = lines.join("\n");
   return [
     prefix,
     history,
@@ -63,6 +57,30 @@ export function buildAcpSemanticRecoveryPrompt(
     boundedCurrent,
     closingTag,
   ].join("\n");
+}
+
+/** Single rebuild implementation shared with execution-loss recovery. Never replays tool inputs. */
+export async function rebuildAcpContext(ctx: HarnessContext, reason: AcpSemanticRecoveryReason): Promise<{ prompt: string; compacted: boolean; historyCharacters: number; exceedsLimit: boolean }> {
+  const events = withoutCurrentMessage((ctx.acpRecoveryHistory ?? ctx.runtime.history.getEvents()).filter(isRuntimeHistoryEventVisible), ctx.userMessage);
+  const prompt = buildAcpSemanticRecoveryPrompt(events, ctx.userMessage, { reason });
+  if (!eventsAfterLastCompaction(events).some(event => eventToRecoveryLines(event, new Map()).length > 0)) {
+    throw new Error("ACP context could not be rebuilt: canonical history contains no usable conversation");
+  }
+  if (prompt.length <= DEFAULT_MAX_CHARACTERS) return { prompt, compacted: false, historyCharacters: prompt.length, exceedsLimit: false };
+  // Use the existing summarize strategy rather than a last-N-characters window.
+  const result = await new SummarizeCompactionStrategy().compact(events, {
+    model: ctx.model, contextWindowTokens: 128_000, systemPrompt: ctx.systemPrompt,
+    tools: ctx.tools, runtime: ctx.runtime,
+    applyCacheStrategy: (system, tools, messages) => ({ system, tools, messages }),
+  }).catch(() => null);
+  if (result?.summary.some(block => block.type === "text" && block.text.trim())) {
+    const boundary = { type: "agent.thread_context_compacted" as const, ...result };
+    ctx.runtime.broadcast(boundary);
+    return { prompt: buildAcpSemanticRecoveryPrompt([boundary], ctx.userMessage, { reason }), compacted: true, historyCharacters: prompt.length, exceedsLimit: true };
+  }
+  // A failed/empty compaction must not destroy usable context. Send it intact;
+  // the provider may reject an oversized prompt, but it never becomes blank.
+  return { prompt, compacted: false, historyCharacters: prompt.length, exceedsLimit: true };
 }
 
 function eventsAfterLastCompaction(
@@ -179,40 +197,4 @@ function contentToText(content: readonly ContentBlock[]): string {
   }).filter(Boolean).join("\n");
 }
 
-function takeRecentLines(lines: readonly string[], budget: number): string {
-  const selected: string[] = [];
-  let remaining = budget;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index];
-    const cost = line.length + (selected.length > 0 ? 1 : 0);
-    if (cost <= remaining) {
-      selected.unshift(line);
-      remaining -= cost;
-      continue;
-    }
-    if (selected.length === 0) {
-      selected.unshift(`…${line.slice(Math.max(0, line.length - remaining + 1))}`);
-    }
-    break;
-  }
-  const omitted = "… earlier history omitted …";
-  if (selected.length < lines.length && omitted.length <= budget) {
-    while (
-      selected.length > 0 &&
-      selected.join("\n").length + omitted.length + 1 > budget
-    ) {
-      selected.shift();
-    }
-    selected.unshift(omitted);
-  }
-  return selected.join("\n");
-}
-
-function truncateCurrentRequest(text: string, budget: number): string {
-  if (text.length <= budget) return text;
-  const marker = "\n… [current request truncated] …\n";
-  const remaining = budget - marker.length;
-  const head = Math.ceil(remaining / 2);
-  const tail = Math.floor(remaining / 2);
-  return `${text.slice(0, head)}${marker}${text.slice(text.length - tail)}`;
-}
+// Oversized history is handled by rebuildAcpContext, never sliced here.

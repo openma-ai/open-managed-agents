@@ -433,10 +433,12 @@ export const githubAuthHandler = async (
 
 
 
-/** Idle reclaim: snapshot and stop a container after this long without a
- * Durable Object request (same 5m as the 0.12 `sleepAfter`). Override with
- * the SANDBOX_IDLE_TIMEOUT_MS variable. */
-export const OMA_SANDBOX_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/** Idle reclaim backstop: snapshot and stop a container after this long
+ * without a Durable Object request. The core's idle pause (5 min, design
+ * §0.0b A.1) stops it first; this only runs if that pause never did, so it is
+ * idlePauseMs + SANDBOX_LEASE_MARGIN_MS. Override with the
+ * SANDBOX_IDLE_TIMEOUT_MS variable. */
+export const OMA_SANDBOX_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 /** Extra time before the platform stops a container whose idle alarm could
  * not run. Cloudflare counts Durable Object requests, not container traffic,
  * as activity. */
@@ -538,10 +540,8 @@ export interface OmaProvisionRequest {
   /** Process environment. Replaces it for a new container, merges otherwise. */
   env?: Record<string, string>;
   autoStart?: boolean;
-  /** Start a new container from this container snapshot instead of the
-   * image (environment cache). Only this start: a later restart of the same
-   * Durable Object starts from the image. Ignored when one is running. */
-  containerSnapshot?: { id: string };
+  /** Full native filesystem snapshot, never a DirectoryBackup. */
+  containerSnapshot?: ContainerSnapshotRestoreParams;
 }
 
 export interface OmaProvisionResult {
@@ -871,15 +871,17 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     }
   }
 
-  private async startContainer(requestedIncarnation?: string, snapshot?: { id: string }): Promise<void> {
+  private async startContainer(requestedIncarnation?: string, snapshot?: ContainerSnapshotRestoreParams): Promise<void> {
     const newContainer = !this.container.running;
     const plan = this.plan();
     const fromSnapshot = newContainer && snapshot !== undefined;
     if (newContainer) {
-      const env = { ...CONTAINER_ENV, ...this.processEnv() };
-      this.container.start(fromSnapshot
-        ? { containerSnapshot: { id: snapshot.id }, instance: "standard-1", env, enableInternet: false }
-        : { image: this.container.images.sandbox, instance: "standard-1", env, enableInternet: false });
+      this.container.start({
+        ...(snapshot === undefined ? { image: this.container.images.sandbox } : { containerSnapshot: snapshot }),
+        instance: "standard-1",
+        env: { ...CONTAINER_ENV, ...this.processEnv() },
+        enableInternet: false,
+      });
     }
     try {
       // A missing snapshot is reported by the monitor only; without this the
@@ -911,7 +913,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     }
   }
 
-  private startSetup(incarnation?: string, snapshot?: { id: string }): Promise<void> {
+  private startSetup(incarnation?: string, snapshot?: ContainerSnapshotRestoreParams): Promise<void> {
     this.setupPending = true;
     const setup = this.startContainer(incarnation, snapshot).then(
       () => {
@@ -1104,6 +1106,12 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
       outboundHandlerOverride: { method: "package_source_passthrough" },
     });
     if (this.container.running) await this.interceptOutbound();
+  }
+
+  /** Full filesystem only; memory/processes are not captured. Errors propagate. */
+  async createContainerSnapshot(options?: ContainerSnapshotOptions): Promise<ContainerSnapshot> {
+    if (!this.container.running) throw new Error("Cannot snapshot a stopped container");
+    return this.container.snapshotContainer(options);
   }
 
   async describe(): Promise<OmaSandboxDescription> {

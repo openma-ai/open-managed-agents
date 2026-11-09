@@ -77,6 +77,10 @@ export class Sandbox extends DurableObject {
   }
   // No digest-pinned container image is available in the workerd test double.
   async sandboxImage() { return null; }
+  async createContainerSnapshot() {
+    if (this.incarnation === null) throw new Error("Cannot snapshot a stopped container");
+    return { id: `stub-rootfs-${this.incarnation}`, size: 0 };
+  }
   async renewActivityTimeout() {}
   async destroy() {
     this.incarnation = null;

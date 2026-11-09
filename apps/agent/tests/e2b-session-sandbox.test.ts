@@ -11,7 +11,7 @@ import {
   storageConfig,
 } from "../src/runtime/e2b-session-sandbox";
 import { sessionEgressPolicy } from "@open-managed-agents/sandbox-port-kit";
-import { STORAGE_SYNC_INTERVAL_MS } from "@open-managed-agents/session-runtime";
+import { initialSandboxState, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
 
@@ -27,7 +27,10 @@ function fakeRuntime(id: string) {
   } as unknown as E2BSandboxExecutor & { id: string; env: Record<string, string> };
 }
 
-function harness(saved?: { handle: { provider: string; runtimeId: string }; stores: never[]; outputs: boolean }) {
+const running = (runtimeId: string, outputs = false): SessionSandboxState =>
+  ({ ...initialSandboxState(), phase: "running", handle: { provider: "e2b", runtimeId }, runStartedAt: 0, outputs });
+
+function harness(saved?: SessionSandboxState) {
   const log: string[] = [];
   const clock = { now: 1_000_000 };
   let syncFails: Error | null = null;
@@ -57,13 +60,14 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
     },
   } as unknown as SandboxPorts<E2BSandboxExecutor>;
   const timers: string[] = [];
+  const warnings: string[] = [];
   const sandbox = new E2BSessionSandbox({
+    warn: (message: string) => warnings.push(message),
     compose: async () => ({ ports, vendor: {} as never }),
     idle: { pauseMs: 300_000, schedule: (ms) => { timers.push(`schedule:${ms}`); }, cancel: () => { timers.push("cancel"); } },
     state: {
-      load: async () => stored as never,
-      save: async (state) => { stored = state as never; },
-      clear: async () => { stored = undefined; },
+      load: async () => stored,
+      save: async (state, expected) => { if ((stored?.version ?? 0) !== expected) return false; stored = state; return true; },
     },
     scope: () => scope,
     plan: async (s, stores) => ({
@@ -72,7 +76,7 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
     }),
     now: () => clock.now,
   });
-  return { sandbox, log, clock, timers, stored: () => stored, goneOnAttach: () => { attachGone = true; }, failSync: (error: Error) => { syncFails = error; } };
+  return { sandbox, log, clock, timers, warnings, stored: () => stored, goneOnAttach: () => { attachGone = true; }, failSync: (error: Error) => { syncFails = error; } };
 }
 
 describe("E2BSessionSandbox", () => {
@@ -82,22 +86,23 @@ describe("E2BSessionSandbox", () => {
     expect(await h.sandbox.exec("echo hi")).toBe("exit=0\nran:echo hi");
     expect(await h.sandbox.exec("fail")).toBe("exit=2\nout\nstderr: bad");
     expect(h.log).toEqual(["acquire", "egress.attach:open"]);
-    expect(h.stored()?.handle).toEqual({ provider: "e2b", runtimeId: "new" });
+    expect(h.stored()).toMatchObject({ phase: "running", handle: { provider: "e2b", runtimeId: "new" } });
   });
 
   it("re-attaches a saved handle and re-applies storage and env", async () => {
-    const h = harness({ handle: { provider: "e2b", runtimeId: "old" }, stores: [], outputs: true });
+    const h = harness(running("old", true));
     await h.sandbox.setEnvVars({ A: "1" });
     await h.sandbox.exec("true");
     expect(h.log).toEqual(["attach:old", "egress.attach:open", "storage.attach:0"]);
   });
 
   it("releases a gone handle and acquires a new sandbox", async () => {
-    const h = harness({ handle: { provider: "e2b", runtimeId: "old" }, stores: [], outputs: false });
+    const h = harness(running("old"));
     h.goneOnAttach();
     await h.sandbox.exec("true");
     expect(h.log).toEqual(["attach:old", "release:old", "acquire", "egress.attach:open"]);
-    expect(h.stored()?.handle.runtimeId).toBe("new");
+    expect(h.stored()).toMatchObject({ handle: { runtimeId: "new" } });
+    expect(h.warnings.some(message => message.startsWith("sandbox_recreated:"))).toBe(true);
   });
 
   it("mounts stores and outputs, publishes at turn end and releases on destroy", async () => {
@@ -109,13 +114,14 @@ describe("E2BSessionSandbox", () => {
     expect(h.stored()?.stores).toEqual([{ storeName: "notes", storeId: "st", readOnly: false }]);
     expect(h.sandbox.sessionOutputMountCapabilities()).toEqual({ durability: "best_effort" });
     await h.sandbox.syncStorage("turn_end");
+    // No execution holds the sandbox: the heartbeat renews nothing (design §0.0b A.10).
     await h.sandbox.renewActivityTimeout();
     await h.sandbox.destroy();
     expect(h.log).toEqual([
       "acquire", "egress.attach:open", "storage.attach:0", "storage.attach:1",
-      "storage.sync:turn_end", "keepAlive", "storage.detach", "egress.revoke", "release:new",
+      "storage.sync:turn_end", "storage.detach", "egress.revoke", "release:new",
     ]);
-    expect(h.stored()).toBeUndefined();
+    expect(h.stored()).toMatchObject({ phase: "released" });
   });
 });
 
@@ -128,7 +134,7 @@ describe("E2BSessionSandbox idle pause (design §0.0 rule 11)", () => {
     h.clock.now += 300_000;
     expect(await h.sandbox.idlePause()).toBe("paused");
     expect(h.log.slice(-3)).toEqual(["storage.sync:before_stop", "storage.detach", "pause:new"]);
-    expect(h.stored()).toMatchObject({ handle: { runtimeId: "new" }, paused: true });
+    expect(h.stored()).toMatchObject({ phase: "paused", handle: { runtimeId: "new" } });
     const before = h.log.length;
     await h.sandbox.exec("again");
     expect(h.log.slice(before)).toEqual(["attach:new", "egress.attach:open", "storage.attach:0"]);
@@ -190,6 +196,16 @@ describe("createE2BSessionSandbox", () => {
     expect(build("300000")).toThrow(/must exceed the idle pause window/);
     expect(build("3600000")()).toBeInstanceOf(E2BSessionSandbox);
     expect(parseMaxLifetime("86400000")).toBe(86_400_000);
+  });
+
+  it("validates the configured idle window instead of a hard-coded default", () => {
+    const build = (idle: string) => () => createE2BSessionSandbox({
+      env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "120000", SANDBOX_IDLE_PAUSE_MS: idle, MEMORY_BUCKET: bucket as never, FILES_BUCKET: bucket },
+      storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null,
+    });
+    expect(build("60000")()).toBeInstanceOf(E2BSessionSandbox);
+    expect(build("120000")).toThrow("must exceed the idle pause window (120000 ms)");
+    for (const bad of ["0", "-1", "1.5", "invalid"]) expect(build(bad)).toThrow("SANDBOX_IDLE_PAUSE_MS must be a positive integer");
   });
 
   it("chooses native with the general key alone or with a files key, sync with no key, and rejects a partial setup", () => {

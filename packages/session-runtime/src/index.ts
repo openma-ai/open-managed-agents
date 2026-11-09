@@ -1,3 +1,4 @@
+export { DEFAULT_SANDBOX_IDLE_PAUSE_MS, sandboxIdlePauseMs } from "./session-sandbox-config";
 // Public surface of @open-managed-agents/session-runtime.
 //
 // Phase 2 of the unified-runtime refactor: SessionStateMachine + the
@@ -65,6 +66,7 @@ export {
 
 export { SessionSandboxRuntime, type SessionSandboxMode } from "./session-sandbox";
 export { PortsSessionSandbox } from "./ports-session-sandbox";
+export { sessionErrorMessage } from "./session-error-message";
 export { sessionSandboxWarningEvent } from "./session-warning";
 export type {
   PortsSessionSandboxOptions,
@@ -72,9 +74,25 @@ export type {
   SessionSandboxExecutor,
   SessionEnvironmentCache,
   SessionSandboxIdleTimer,
-  SessionSandboxState,
 } from "./session-sandbox-options";
+export {
+  initialSandboxState,
+  recordedHandle,
+  SANDBOX_TRANSITIONS,
+  SessionSandboxTransitionError,
+  stateVersion,
+  transition,
+  type LatestSnapshot,
+  type SandboxAction,
+  type SandboxActionType,
+  type SandboxPhase,
+  type SandboxPhaseName,
+  type SessionSandboxState,
+  type SnapshotRef,
+} from "./session-sandbox-state";
 export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
+export { SessionSandboxStateConflictError } from "./session-sandbox-live";
+export { SandboxRestoreError } from "./session-sandbox-open";
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";
 export {

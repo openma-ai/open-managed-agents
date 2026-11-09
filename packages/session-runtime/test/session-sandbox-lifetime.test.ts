@@ -3,7 +3,9 @@ import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import { SandboxGoneError } from "@open-managed-agents/sandbox";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
 import { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "../src/session-sandbox-lifetime";
-import type { SessionSandboxExecutor, SessionSandboxState } from "../src/session-sandbox-options";
+import type { SessionSandboxExecutor } from "../src/session-sandbox-options";
+import type { SessionSandboxState } from "../src/session-sandbox-state";
+import { runningRecord } from "./fake-session-sandbox-ports";
 
 // Design §0.0 rule 11 / §0.1 maxLifetimeMs: the shared runtime pauses →
 // attaches in a gap between tool calls before the provider's continuous-run
@@ -13,6 +15,7 @@ const HOUR = 60 * 60_000;
 const THRESHOLD = HOUR - MAX_TOOL_CALL_MS - LIFETIME_REFRESH_MARGIN_MS;
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
 const START = Date.UTC(2026, 10, 8, 12, 0, 0);
+const attempt = { executionId: "exec_1", attemptId: "att_1", ownerId: "owner_1", generation: 1 };
 
 function deferred() {
   let resolve!: () => void;
@@ -81,8 +84,7 @@ function harness(opts: { maxLifetimeMs: number | null; saved?: SessionSandboxSta
     executor: (runtime) => executor(runtime.id),
     state: {
       load: async () => stored,
-      save: async (state) => { stored = state; },
-      clear: async () => { stored = undefined; },
+      save: async (state, expected) => { if ((stored?.version ?? 0) !== expected) return false; stored = state; return true; },
     },
     scope: () => scope,
     plan: async ({ stores }) => ({
@@ -93,6 +95,8 @@ function harness(opts: { maxLifetimeMs: number | null; saved?: SessionSandboxSta
     outputDurability: () => null,
     egressRenewMs: null,
     now: () => clock.now,
+    // The refresh renews only inside an execution (design §0.0b A.10).
+    execution: () => attempt,
     isCurrent: async () => (opts.isCurrent ?? (() => true))(),
   });
   return {
@@ -111,7 +115,7 @@ describe("PortsSessionSandbox lifetime refresh (maxLifetimeMs)", () => {
   it("refreshes in the background only past the threshold and only when no call is in flight", async () => {
     const h = harness();
     await h.sandbox.exec("a");
-    expect(h.stored()?.runStartedAt).toBe(START);
+    expect(h.stored()).toMatchObject({ phase: "running", runStartedAt: START });
     h.clock.now += THRESHOLD - 1;
     await h.sandbox.exec("b");
     await flush();
@@ -188,15 +192,14 @@ describe("PortsSessionSandbox lifetime refresh (maxLifetimeMs)", () => {
   });
 
   it("keeps the recorded run start across a new runtime instance; an unknown start is due", async () => {
-    const saved = { handle: { provider: "fake", runtimeId: "old" }, stores: [], outputs: false };
-    const fresh = harness({ maxLifetimeMs: HOUR, saved: { ...saved, runStartedAt: START - THRESHOLD + 60_000 } });
+    const fresh = harness({ maxLifetimeMs: HOUR, saved: runningRecord("old", { runStartedAt: START - THRESHOLD + 60_000 }) });
     await fresh.sandbox.exec("a");
     await flush();
     expect(fresh.refreshes()).toBe(0);
     fresh.clock.now += 60_000; // now past the threshold of the recorded run
     await fresh.sandbox.exec("b");
     expect(fresh.refreshes()).toBe(1);
-    const unknown = harness({ maxLifetimeMs: HOUR, saved });
+    const unknown = harness({ maxLifetimeMs: HOUR, saved: runningRecord("old") });
     await unknown.sandbox.exec("a");
     // Reopened (attach + egress.attach), then refreshed in this gap before running.
     expect(unknown.log).toEqual(["attach:old", "egress.attach", "pause:old", "attach:old", "egress.attach", "exec:a@old"]);

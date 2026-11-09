@@ -223,6 +223,18 @@ describe("environment packages", () => {
     expect(parsed.status, parsed.stderr).toBe(0);
   });
 
+  it.each([false, true])("reinstalls missing npm packages despite restored markers (warm=%s)", async (warm) => {
+    const box = fakeSandbox();
+    const packages = { npm: ["pi-acp@0.0.33"] };
+    await ensureEnvironmentPackages(box.sandbox, packages);
+    if (!warm) box.files.delete("warm");
+    const exec = box.sandbox.exec.bind(box.sandbox);
+    box.sandbox.exec = async (command, timeout) => command.startsWith("npm ls ") ? "missing pi-acp\n[exit 1]" : exec(command, timeout);
+    const restored = await ensureEnvironmentPackages(box.sandbox, packages);
+    expect(restored).toMatchObject({path: "fresh"});
+    expect(box.commands.filter(command => command.includes("npm install -g --silent 'pi-acp@0.0.33'"))).toHaveLength(2);
+  });
+
   it("installs once, then finds the container warm", async () => {
     const { sandbox, commands } = fakeSandbox();
     const first = await ensureEnvironmentPackages(sandbox, { pip: ["pyodps"] });

@@ -90,7 +90,7 @@ import {
   SqlSessionExecutionStore,
 } from "@open-managed-agents/session-runtime-sql/coordination";
 import {
-  consumeSessionInputs,
+  consumeSessionInputs, SessionExecutionLostError,
   takeQueuedSteeringInputs,
   type SessionExecution,
   type SessionExecutionFence,
@@ -3753,7 +3753,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /** Idle pause alarm callback (sandbox-idle-alarm.ts). */
-  async pauseIdleSandbox(): Promise<void> { this.ensureSandboxCreated(); await this.portsSandbox!.idlePause(); }
+  async pauseIdleSandbox(payload?: { version: number }): Promise<void> { this.ensureSandboxCreated(); await this.portsSandbox!.idlePause(payload?.version); }
 
   /** Used inside warmup itself to avoid the wrap → warmup → wrap recursion. */
   private getRawSandbox(): SandboxExecutor {
@@ -6234,6 +6234,7 @@ export class SessionDO extends DurableObject<Env> {
       };
       completedIdleEvent = idleEvent;
     } catch (err) {
+      if (err instanceof SessionExecutionLostError) { idleEmitted = true; managedMemorySynchronized = true; throw err; }
       // An interrupt or a lost execution fence ends the turn elsewhere: the
       // interrupt emits its idle, a replacement owner runs the turn.
       if (failedAttempts?.type === "cancelled" || isTurnCancellationError(err) || abortController.signal.aborted) {
@@ -7492,25 +7493,9 @@ export class SessionDO extends DurableObject<Env> {
     // matter what woke the DO.
     await this._runRecovery("alarm");
 
-    // Container keepalive: while there's at least one background_tasks row,
-    // ping the sandbox container to reset its sleepAfter timer. Means
-    // long-running `python script.py &` jobs that the agent is waiting on
-    // don't get killed by the 5-minute idle TTL. Cheap (~5 ms RPC).
-    try {
-      const rows = this.ctx.storage.sql
-        .exec("SELECT 1 FROM background_tasks LIMIT 1")
-        .toArray();
-      if (rows.length > 0) {
-        await this.runAlarmMaintenance("container_keepalive", async () => {
-        const sb = await this.getOrCreateSandbox();
-        if (typeof (sb as { renewActivityTimeout?: () => Promise<void> }).renewActivityTimeout === "function") {
-          await (sb as { renewActivityTimeout: () => Promise<void> }).renewActivityTimeout();
-        }
-        });
-      }
-    } catch {
-      // background_tasks table missing or container down — alarm continues
-    }
+    // No sandbox keepalive from the alarm (design §0.0b A.10): an idle
+    // sandbox is never renewed, background tasks included; work that must
+    // outlive the execution has to hold one.
 
     await this.runAlarmMaintenance("rearm", () => this._multiplexAlarm({ reason: "alarm" }));
   }

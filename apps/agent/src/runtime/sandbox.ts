@@ -317,8 +317,7 @@ export class CloudflareSandbox
     incarnation: string;
     mounts: OmaMountBucketRequest[];
     autoStart?: boolean;
-    /** Start from this container snapshot (environment cache). */
-    containerSnapshot?: { id: string };
+    containerSnapshot?: ContainerSnapshotRestoreParams;
   }): Promise<OmaProvisionResult> {
     const sandbox = await this.getSandbox();
     if (typeof sandbox.provision !== "function") {
@@ -334,6 +333,7 @@ export class CloudflareSandbox
       incarnation: input.incarnation,
       mounts: input.mounts,
       autoStart: input.autoStart ?? false,
+      ...(input.containerSnapshot === undefined ? {} : { containerSnapshot: input.containerSnapshot }),
       // A new container starts with an empty process environment; warmup
       // publishes the current contract again.
       env: {},
@@ -362,6 +362,12 @@ export class CloudflareSandbox
     const sandbox = await this.getSandbox();
     if (typeof sandbox.restrictOutboundToHosts !== "function") throw new Error("This sandbox cannot restrict its egress to package sources");
     await sandbox.restrictOutboundToHosts(hosts);
+  }
+
+  /** Native full filesystem snapshot; capability errors must reach the caller. */
+  async createContainerSnapshot(options?: ContainerSnapshotOptions): Promise<ContainerSnapshot> {
+    const sandbox = await this.getSandbox();
+    return sandbox.createContainerSnapshot(options);
   }
 
   /**

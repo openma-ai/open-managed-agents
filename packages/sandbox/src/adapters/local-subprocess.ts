@@ -34,6 +34,7 @@ import { promises as fs } from "node:fs";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readlinkSync,
@@ -45,12 +46,20 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type {
   ProcessHandle,
+  SandboxCheckpointHandle,
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
   SandboxDuplexProcessSpec,
   SandboxExecutor,
   SandboxFactory,
+  SandboxFactoryContext,
+  SandboxProviderPort,
+  SandboxRuntimeCapabilities,
+  SandboxRuntimeHandle,
+  SandboxRuntimePort,
+  SandboxRuntimeStatus,
 } from "../ports";
+import { randomUUID } from "node:crypto";
 import { rejectSandboxImageSelection } from "../sandbox-images";
 import { getLogger } from "@open-managed-agents/observability";
 
@@ -114,7 +123,7 @@ interface OutputsMount {
 }
 
 export class LocalSubprocessSandbox
-  implements SandboxExecutor, SandboxDuplexProcessPort {
+  implements SandboxExecutor, SandboxDuplexProcessPort, SandboxRuntimePort {
   private workdir: string;
   private readonly relayPort: Promise<number>;
   private defaultTimeoutMs: number;
@@ -473,6 +482,45 @@ export class LocalSubprocessSandbox
     return full;
   }
 
+  // ── runtime lifecycle (SandboxRuntimePort) ───────────────────────────────
+  // The workdir is the sandbox: its path is the handle, so a new process
+  // finds it again (sandboxProvider.resume). A snapshot is a copy of the
+  // workdir (without the .mnt mount links) under <parent>/.oma-snapshots/.
+
+  runtimeHandle(): SandboxRuntimeHandle {
+    return { provider: LOCAL_PROVIDER, runtimeId: this.workdir };
+  }
+
+  runtimeCapabilities(): SandboxRuntimeCapabilities {
+    return { lease: false, suspend: [], checkpoint: ["filesystem"] };
+  }
+
+  async status(): Promise<SandboxRuntimeStatus> {
+    return existsSync(this.workdir) ? "running" : "stopped";
+  }
+
+  async renewLease(): Promise<void> {}
+
+  async suspend(): Promise<SandboxCheckpointHandle> {
+    throw new Error("local-subprocess sandboxes cannot be suspended");
+  }
+
+  async resume(): Promise<void> {
+    throw new Error("local-subprocess sandboxes cannot be suspended");
+  }
+
+  async checkpoint(): Promise<SandboxCheckpointHandle> {
+    if (!existsSync(this.workdir)) throw new Error(`local-subprocess workdir ${this.workdir} is gone`);
+    const id = `lsnap_${randomUUID()}`;
+    const path = join(localSnapshotsRoot(this.workdir), id);
+    await fs.cp(this.workdir, path, {
+      recursive: true,
+      verbatimSymlinks: true,
+      filter: (source) => source !== join(this.workdir, ".mnt"),
+    });
+    return { provider: LOCAL_PROVIDER, checkpointId: id, sourceRuntimeId: this.workdir, kind: "filesystem", scope: "portable", metadata: { path } };
+  }
+
   async destroy(): Promise<void> {
     // Port allocation is not a prerequisite for releasing owned processes.
     await this.relayPort.catch(() => undefined);
@@ -756,11 +804,53 @@ class BackgroundProcess implements ProcessHandle {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
+const LOCAL_PROVIDER = "local-subprocess";
+
+/** Snapshots live next to the Session workdirs, never inside one. */
+function localSnapshotsRoot(workdir: string): string {
+  return join(dirname(resolve(workdir)), ".oma-snapshots");
+}
+
+/** A snapshot's copy, which must sit directly under the snapshots root. */
+function localSnapshotPath(checkpoint: SandboxCheckpointHandle): string {
+  const path = checkpoint.metadata?.path;
+  if (checkpoint.provider !== LOCAL_PROVIDER || checkpoint.scope !== "portable" || typeof path !== "string"
+    || !/^lsnap_[0-9a-f-]+$/u.test(checkpoint.checkpointId) || resolve(path) !== join(localSnapshotsRoot(checkpoint.sourceRuntimeId), checkpoint.checkpointId)) {
+    throw new Error("local-subprocess received a checkpoint it did not take");
+  }
+  return path;
+}
+
+function localSandbox(ctx: SandboxFactoryContext): LocalSubprocessSandbox {
+  return new LocalSubprocessSandbox({ workdir: ctx.workdir, memoryRoot: ctx.memoryRoot, outputsRoot: ctx.outputsRoot });
+}
+
 export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0]) => {
   rejectSandboxImageSelection("local-subprocess", ctx.image);
-  return new LocalSubprocessSandbox({
-    workdir: ctx.workdir,
-    memoryRoot: ctx.memoryRoot,
-    outputsRoot: ctx.outputsRoot,
-  });
+  return localSandbox(ctx);
 }, { capabilities: { allocationIsolation: true } });
+
+/** Finds a sandbox again by its handle (the workdir) and starts a new one
+ * from a snapshot copy, so a restarted host keeps the Session's files. */
+export const sandboxProvider: SandboxProviderPort<LocalSubprocessSandbox> = {
+  async create(ctx) {
+    rejectSandboxImageSelection("local-subprocess", ctx.image);
+    return localSandbox(ctx);
+  },
+  async resume(handle, ctx) {
+    if (handle.provider !== LOCAL_PROVIDER || resolve(handle.runtimeId) !== resolve(ctx.workdir) || !existsSync(handle.runtimeId)) {
+      throw new Error(`local-subprocess sandbox ${handle.runtimeId} is gone`);
+    }
+    return localSandbox(ctx);
+  },
+  async restore(checkpoint, ctx) {
+    const path = localSnapshotPath(checkpoint);
+    if (!existsSync(path)) throw new Error(`local-subprocess snapshot ${checkpoint.checkpointId} is gone`);
+    rmSync(ctx.workdir, { recursive: true, force: true });
+    await fs.cp(path, ctx.workdir, { recursive: true, verbatimSymlinks: true });
+    return localSandbox(ctx);
+  },
+  async discard(checkpoint) {
+    rmSync(localSnapshotPath(checkpoint), { recursive: true, force: true });
+  },
+};
