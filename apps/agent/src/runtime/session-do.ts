@@ -92,7 +92,7 @@ import {
   SqlSessionExecutionStore,
 } from "@open-managed-agents/session-runtime-sql/coordination";
 import {
-  consumeSessionInputs,
+  consumeSessionInputs, SessionExecutionLostError,
   takeQueuedSteeringInputs,
   type SessionExecution,
   type SessionExecutionFence,
@@ -6374,6 +6374,7 @@ export class SessionDO extends DurableObject<Env> {
       };
       completedIdleEvent = idleEvent;
     } catch (err) {
+      if (err instanceof SessionExecutionLostError) { idleEmitted = true; managedMemorySynchronized = true; throw err; }
       // An interrupt or a lost execution fence ends the turn elsewhere: the
       // interrupt emits its idle, a replacement owner runs the turn.
       if (failedAttempts?.type === "cancelled" || isTurnCancellationError(err) || abortController.signal.aborted) {
@@ -6426,9 +6427,7 @@ export class SessionDO extends DurableObject<Env> {
           }
         }
       }
-      // Only delete if it's still ours — a sub-agent run within the same
-      // thread may have temporarily replaced it. Same-thread re-entry is
-      // mutex'd by _draining so this is theoretical safety only.
+      // Delete only our controller; nested threads may have replaced it.
       if (this._threadAbortControllers.get(turnThreadId) === abortController) {
         this._threadAbortControllers.delete(turnThreadId);
       }

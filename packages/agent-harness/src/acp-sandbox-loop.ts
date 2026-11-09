@@ -1,8 +1,10 @@
 import { harnessContextFromEvents, transitionHarnessContext, type HarnessContextState } from "@open-managed-agents/session-runtime-contract";
+import { SessionExecutionLostError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
 import { readAcpSandboxAgentTurnError } from "@open-managed-agents/acp-runtime/sandbox-agent-turn-error";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import {
+  SandboxGoneError,
   PLATFORM_ROOT,
   supportsDuplexProcess,
   workspaceRootOf,
@@ -296,6 +298,10 @@ export class AcpSandboxHarness implements HarnessInterface {
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       this.#semanticRecoveryReason = null;
     } catch (error) {
+      if (error instanceof SandboxGoneError) {
+        this.#session = null; this.#runtime = null; this.#preparation = null;
+        throw new SessionExecutionLostError("sandbox_gone");
+      }
       if (!runtime.abortSignal?.aborted) await translator.consume({type:"promptError",error:error instanceof Error ? error.message : String(error)});
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed", error instanceof Error ? error.message : String(error));
       if (!runtime.abortSignal?.aborted) {
@@ -320,6 +326,10 @@ export class AcpSandboxHarness implements HarnessInterface {
       await session.dispose();
       this.#session = null;
     } catch (error) {
+      if (error instanceof SandboxGoneError) {
+        this.#session = null; this.#runtime = null; this.#preparation = null;
+        throw new SessionExecutionLostError("sandbox_gone");
+      }
       // Exit not confirmed: keep the child as the barrier so the host's
       // dispose also rejects instead of touching state under it.
       this.#emitError(runtime, error instanceof Error ? error.message : String(error));

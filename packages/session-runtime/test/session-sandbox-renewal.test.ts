@@ -5,6 +5,13 @@ import { fakeSessionSandbox } from "./fake-session-sandbox-ports";
 // Renewals at exec boundaries (research/sandbox-sdk-v2-design.md §0.1 step 5).
 
 describe("Session sandbox exec-boundary renewals", () => {
+  it.each([false, true])("confirms duplex loss only from the same provider handle (gone: %s)", async gone => {
+    const h = fakeSessionSandbox({keepAliveGone:gone});
+    const process = await h.sandbox.spawnDuplexProcess({command:"acp"});
+    const before = h.log.length;
+    expect(await process.confirmSandboxGone!()).toBe(gone);
+    expect(h.log.slice(before)).toEqual(["keepAlive"]);
+  });
   it("keepAlive renews the provider lease every keepAliveMs, only at exec boundaries", async () => {
     const h = fakeSessionSandbox({ keepAliveMs: 60_000 });
     await h.sandbox.exec("first");

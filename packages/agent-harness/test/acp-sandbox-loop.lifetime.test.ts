@@ -10,6 +10,7 @@ const disposed: string[] = [];
 const prompts: string[] = [];
 let alive = true;
 let failPrompt = false;
+let gonePrompt = false;
 let terminalError = false;
 let resumeSame = false;
 
@@ -21,7 +22,7 @@ vi.mock("../../acp-runtime/src/placement.ts", () => ({
       return {
         acpSessionId: id,
         isAlive: () => alive,
-        async *prompt(text: string) { prompts.push(text); if (failPrompt) throw new Error("first turn failed"); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; if (terminalError) yield {type:"promptError",error:"provider disconnected"}; },
+        async *prompt(text: string) { prompts.push(text); if (gonePrompt) { const {SandboxGoneError}=await import("@open-managed-agents/sandbox"); throw new SandboxGoneError("confirmed gone"); } if (failPrompt) throw new Error("first turn failed"); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; if (terminalError) yield {type:"promptError",error:"provider disconnected"}; },
         async dispose() { disposed.push(id); },
       };
     },
@@ -199,7 +200,7 @@ describe("acp-sandbox child lifetime", () => {
     expect(started.at(-1)).not.toHaveProperty("resumeAcpSessionId");
     expect(prompts.at(-1)).toContain("valid consumed history");
   });
-  beforeEach(() => { resumeSame = false; terminalError = false; failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
+  beforeEach(() => { gonePrompt=false; resumeSame = false; terminalError = false; failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
 
   it("ignores idle_timeout_ms: it belongs to acp-proxy", async () => {
     const s = sandbox(false);
@@ -234,6 +235,18 @@ describe("acp-sandbox child lifetime", () => {
     };
     await new AcpSandboxHarness().run(ctx);
     expect(wired.map((input) => input.model.wireModel)).toEqual(["claude-sonnet-5-5"]);
+  });
+
+  it("passes confirmed gone to the execution host without native capture or deletion", async () => {
+    const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");
+    const s=sandbox(false), ctx=context(s.port), harness=new AcpSandboxHarness();
+    gonePrompt=true;
+    await expect(harness.run(ctx)).rejects.toBeInstanceOf(SessionExecutionLostError);
+    expect(s.files.size).toBe(0);
+    expect(vi.mocked(captureAcpSandboxAgentState)).not.toHaveBeenCalled();
+    await expect(harness.dispose("shutdown")).resolves.toBeUndefined();
+    expect(vi.mocked(captureAcpSandboxAgentState)).not.toHaveBeenCalled();
+    expect(ctx.runtime.history.getEvents().filter(e=>e.type==="session.error")).toEqual([]);
   });
 
   it("leaves keep-alive to the core: no lease renewal from the harness", async () => {

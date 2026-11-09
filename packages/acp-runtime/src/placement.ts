@@ -1,3 +1,4 @@
+import { SandboxGoneError } from "@open-managed-agents/sandbox";
 import type { SandboxDuplexProcessPort } from "@open-managed-agents/sandbox";
 import type {
   AcpRuntime,
@@ -155,6 +156,8 @@ async function supervisedDispose(
   cancelGraceMs: number,
   markDead: () => void,
 ): Promise<void> {
+  const transportError = sandboxAcpTransportError(child);
+  if (transportError instanceof SandboxGoneError) throw transportError;
   // Protocol close/kill acknowledgement does not prove process exit. Native
   // state may only be captured or deleted after the child exit signal settles.
   void session.dispose().catch(() => undefined);

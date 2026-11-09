@@ -165,6 +165,15 @@ describe("runTurnAttempts", () => {
   }
   const blip = new Error("blip");
 
+  it("passes typed execution loss to the host without retry or failure events", async () => {
+    const { SessionExecutionLostError } = await import("@open-managed-agents/session-runtime-contract/coordination");
+    const lost = new SessionExecutionLostError("sandbox_gone");
+    const a = attempts([lost]);
+    await expect(a.result).rejects.toBe(lost);
+    expect(a.runs()).toBe(1);
+    expect(a.log).toEqual([]);
+  });
+
   it("retries a side-effect-free failure until it completes", async () => {
     const a = attempts([blip]);
     expect(await a.result).toEqual({ type: "completed" });

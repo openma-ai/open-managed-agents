@@ -54,7 +54,7 @@ const at = (ms: number) => new Date(Date.parse(T0) + ms).toISOString();
 
 /** Harness that, when `park` is set, emits the given custom/ask tool uses and
  * leaves them pending (as the CF default loop does). */
-async function setup(park: Array<{ id: string; type: "agent.custom_tool_use" | "agent.tool_use" }> = []) {
+async function setup(park: Array<{ id: string; type: "agent.custom_tool_use" | "agent.tool_use" }> = [], failure?: Error) {
   let runs = 0;
   let nextId = 0;
   const executions: string[] = [];
@@ -74,6 +74,7 @@ async function setup(park: Array<{ id: string; type: "agent.custom_tool_use" | "
     buildHarness: () => ({
       run: async (ctx: { runtime: { broadcast(e: unknown): void; pendingConfirmations: string[] } }) => {
         runs += 1;
+        if(failure)throw failure;
         for (const call of parkNext) {
           ctx.runtime.broadcast({ id: call.id, type: call.type, name: "tool", input: {},
             ...(call.type === "agent.tool_use" && { evaluated_permission: "ask" }) });
@@ -131,6 +132,13 @@ const idleOf = (out: Frame[]) => out.filter((f) => f.type === "session.status_id
 const types = (out: Frame[]) => out.map((f) => f.type);
 
 describe("Node managed runner requires_action (CMA parity, #398)", () => {
+  it("preserves typed execution loss without publishing a failed or idle turn", async () => {
+    const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");
+    const lost=new SessionExecutionLostError("sandbox_gone"), s=await setup([],lost);
+    await expect(s.send([msg("lost")])).rejects.toBe(lost);
+    expect(s.runs()).toBe(1);
+    expect(s.wire.filter(e=>e.type==="session.error"||e.type==="session.status_idle")).toEqual([]);
+  });
   it("parks on a custom tool call and resumes sampling once the client answers", async () => {
     const s = await setup([{ id: "call_custom_1", type: "agent.custom_tool_use" }]);
     const first = await s.send([msg("u1")]);

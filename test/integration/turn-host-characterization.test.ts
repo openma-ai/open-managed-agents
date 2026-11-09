@@ -30,6 +30,7 @@ beforeAll(async () => {
       });
     },
   }));
+  registerHarness("confirmed-gone", () => ({async run(){const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");throw new SessionExecutionLostError("sandbox_gone");}}));
   registerHarness("record-order", () => ({
     async run(ctx) { texts.push(ctx.userMessage.content[0]?.text); },
   }));
@@ -60,6 +61,15 @@ const lifecycle = (seen: any[]) => seen
   .map((e) => e.type === "session.status_idle" ? `idle:${e.stop_reason?.type}` : e.type);
 
 describe("characterization: SessionDO interrupt and lane drain", () => {
+  it("leaves a typed sandbox loss to the execution lease instead of reporting failed idle", async () => {
+    const id=await createSession("confirmed-gone");
+    await send(id,message("lost"));
+    await until(id,e=>e.some(x=>x.type==="session.status_running"));
+    await new Promise(r=>setTimeout(r,1000));
+    const seen=await events(id);
+    expect(seen.filter(e=>e.type==="session.error"||e.type==="session.status_idle")).toEqual([]);
+  },30000);
+
   it("keeps the alarm open until its turn finishes and errors before its wall-time budget", async () => {
     const id = await createSession("hang-until-abort");
     // Replace the infrastructure budget only; exercise the real alarm, drain,

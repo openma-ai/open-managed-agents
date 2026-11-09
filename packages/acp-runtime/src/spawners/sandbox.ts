@@ -1,3 +1,4 @@
+import { SandboxGoneError } from "@open-managed-agents/sandbox";
 import type {
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
@@ -24,8 +25,8 @@ export class SandboxAcpTransportError extends Error {
     super(`ACP transport failed: ${channel} drain was not confirmed after process exit; output may be incomplete. Restart the agent and inspect the sandbox transport.`);
   }
 }
-const transportErrors = new WeakMap<ChildHandle, SandboxAcpTransportError>();
-export function sandboxAcpTransportError(child: ChildHandle): SandboxAcpTransportError | undefined {
+const transportErrors = new WeakMap<ChildHandle, SandboxAcpTransportError | SandboxGoneError>();
+export function sandboxAcpTransportError(child: ChildHandle): SandboxAcpTransportError | SandboxGoneError | undefined {
   return transportErrors.get(child);
 }
 
@@ -57,6 +58,16 @@ function toChildHandle(
   process: SandboxDuplexProcess,
   onDiagnosticLine?: (line: string) => void,
 ): ChildHandle {
+  const stops: Array<(error: Error) => void> = [];
+  const observedExit = process.exited.catch(async error => {
+    const gone = await process.confirmSandboxGone?.().catch(() => false);
+    if (!gone) throw error;
+    const lost = new SandboxGoneError("Provider confirmed the ACP sandbox is gone");
+    transportErrors.set(handle, lost);
+    for (const stop of stops) stop(lost);
+    throw lost;
+  });
+  void observedExit.catch(() => undefined);
   const observation = {
     event: "acp.process_exit_stdio", clock: "unix_ms", byteTiming: "consumer_read", observationWindowMs: STDOUT_DRAIN_AFTER_EXIT_MS * 2, processId: crypto.randomUUID(), exitAtMs: null as number | null,
     stdout: { lastByteAtMs: null as number | null, eofAtMs: null as number | null, timedOutAtMs: null as number | null, outcome: "pending" },
@@ -76,7 +87,7 @@ function toChildHandle(
     else { stream.outcome = kind; if (kind === "eof") stream.eofAtMs = Date.now(); if (kind === "timed_out") stream.timedOutAtMs = Date.now(); }
     if (observation.stdout.outcome !== "pending" && observation.stderr.outcome !== "pending") report();
   };
-  void process.exited.then(() => undefined, () => undefined).then(() => {
+  void observedExit.then(() => undefined, () => undefined).then(() => {
     observation.exitAtMs = Date.now();
     if (observation.stdout.outcome !== "pending" && observation.stderr.outcome !== "pending") report();
     else reportTimer = setTimeout(() => {
@@ -89,17 +100,17 @@ function toChildHandle(
   });
   let handle: ChildHandle;
   const onTransportError = (error: SandboxAcpTransportError) => { if (error.channel === "stdout") transportErrors.set(handle, error); };
-  let stderr = endingWithProcess(process.stderr, process.exited, "stderr", onTransportError, observe);
+  let stderr = endingWithProcess(process.stderr, observedExit, "stderr", onTransportError, observe, stops);
   if (onDiagnosticLine !== undefined) {
     const branches = stderr.tee();
     stderr = branches[0];
     void consumeDiagnosticLines(branches[1], onDiagnosticLine).catch(() => undefined);
   }
   handle = {
-    stdin: inputEndingWithProcess(process.stdin, process.exited),
-    stdout: endingWithProcess(process.stdout, process.exited, "stdout", onTransportError, observe),
+    stdin: inputEndingWithProcess(process.stdin, observedExit),
+    stdout: endingWithProcess(process.stdout, observedExit, "stdout", onTransportError, observe, stops),
     stderr,
-    exited: process.exited,
+    exited: observedExit,
     kill: (signal) => process.kill(signal),
   };
   return handle;
@@ -117,9 +128,11 @@ function endingWithProcess(
   channel: "stdout" | "stderr",
   onTransportError: (error: SandboxAcpTransportError) => void,
   observe: (channel: "stdout" | "stderr", kind: "byte" | "eof" | "timed_out" | "error" | "cancelled") => void,
+  stops: Array<(error: Error) => void>,
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
   let ended = false;
+  let terminalError: Error | undefined;
   let hasExited = false;
   let pending: ReadableStreamDefaultController<Uint8Array> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -127,6 +140,11 @@ function endingWithProcess(
     if (timer !== undefined) clearTimeout(timer);
     timer = undefined;
   };
+  stops.push(error => {
+    ended = true; terminalError = error; clearTimer();
+    pending?.error(error); pending = undefined;
+    void reader.cancel(error).catch(() => undefined);
+  });
   const arm = () => {
     if (!hasExited || pending === undefined || ended) return;
     timer = setTimeout(() => {
@@ -146,6 +164,7 @@ function endingWithProcess(
   });
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
+      if (terminalError) { controller.error(terminalError); return; }
       pending = controller;
       arm();
       try {

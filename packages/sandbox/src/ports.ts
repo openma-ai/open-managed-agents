@@ -38,6 +38,8 @@ export interface SandboxDuplexProcessSpec {
  * structurally compatible with openma-common's ACP `ChildHandle`; the ACP
  * adapter can pass it through without coupling the sandbox package to ACP. */
 export interface SandboxDuplexProcess {
+  /** Only the lifecycle owner may confirm the exact sandbox is gone. Errors are unknown. */
+  confirmSandboxGone?(): Promise<boolean>;
   stdin: WritableStream<Uint8Array>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;

@@ -28,7 +28,7 @@ import {
   type SandboxLiveness,
 } from "@open-managed-agents/sandbox";
 import { randomUUID } from "node:crypto";
-import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import { SessionExecutionLostError, SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
   type HarnessContext, type HarnessInterface,
 } from "@open-managed-agents/agent-harness";
@@ -977,6 +977,11 @@ export class DefaultNodeManagedSessionRunner
         throw new Error(`The environment restarted after the agent's last step. ${unreported.split(" Background processes")[0].replace(/^This tool call was interrupted because the environment restarted\. /, "")} The changes made in this turn were lost.`);
       }
     } catch (error) {
+      if (error instanceof SessionExecutionLostError) {
+        sandboxLost = true; runFailed = true;
+        abortController.abort("lease_lost");
+        throw error;
+      }
       await recovery.close();
       if (abortController.signal.reason === INTERRUPT_REQUESTED) {
         // Official CMA: user.interrupt "pauses agent execution and returns

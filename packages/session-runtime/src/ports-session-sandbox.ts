@@ -42,10 +42,20 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     const state = this.state;
     return this.call(async (e) => {
       const process = await e.spawnDuplexProcess(spec);
+      const spawnedIn = state.current;
+      const spawnedExecution = state.execution();
       state.liveProcesses += 1;
       const exited = () => { state.liveProcesses -= 1; };
       process.exited.then(exited, exited);
-      return process;
+      return { ...process, confirmSandboxGone: async () => {
+        const { ports } = await state.compose();
+        const open = spawnedIn;
+        if (open === null || (state.current !== null && state.current !== open) || state.execution() !== spawnedExecution || spawnedExecution === undefined) return false;
+        const result = await ports.sandbox.keepAlive(open);
+        if (result !== "gone") return false;
+        state.markLost();
+        return true;
+      } };
     });
   }
   readFile(path: string) { return this.call((e) => e.readFile(path), false); }
