@@ -301,7 +301,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
       await this.input.run({ session, runtime, sandbox });
       // Capture this turn before output draining lets siblings advance. An
       // explicit terminal frame is authoritative, not a later session flag.
-      const terminal = runtime.history.getEvents().findLast(event => event.type === "session.status_idle");
+      const terminal = runtime.history.getEvents().slice().reverse().find(event => event.type === "session.status_idle");
       stopReason = terminal?.type === "session.status_idle"
         ? (terminal.stop_reason?.type === "budget_reached" ? "budget_reached" : "end_turn")
         : runtime.turnBudgetReached ? "budget_reached" : "end_turn";
