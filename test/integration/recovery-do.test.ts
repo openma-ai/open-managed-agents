@@ -907,35 +907,23 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   it("fresh-instance alarm finalizes a turn left running by an isolate reset", async () => {
-    // Start a real turn (armed alarm + D1 running marker), then simulate
-    // the isolate being replaced while harness.run() is still in flight:
-    // the in-memory active/drain sets are gone and the turn predates the
-    // new instance. The surviving alarm must run _finalizeStaleTurns,
-    // flip D1 to idle, and abort the unpaired non-parked tool_use.
-    const sessionId = await newSession("alarm-hold-harness");
+    // turn-anchor awaits harness completion in alarm(). Clearing sets on a
+    // still-running instance is not an isolate reset: the old alarm can resume,
+    // renew its lease and complete while the probe runs. Seed only the durable
+    // state a replacement isolate inherits, with no surviving old JS promise.
+    // The preceding test separately proves a real turn arms its durable alarm.
+    const sessionId = await newSessionDirect("fresh_reset");
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
-
-    const deadline = Date.now() + 8_000;
-    let row: { status?: string; turn_id?: string | null } | null = null;
-    while (Date.now() < deadline) {
-      row = await env.AUTH_DB
-        .prepare(`SELECT status, turn_id FROM sessions WHERE id=?`)
-        .bind(sessionId)
-        .first();
-      if (row?.status === "running" && row.turn_id) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(row?.status, "turn should mark D1 running").toBe("running");
-    expect(row?.turn_id, "turn should have a durable turn marker").toBeTruthy();
-
-    const armed = await runInDurableObject(stub, (_instance, state) =>
-      state.storage.getAlarm(),
-    );
-    expect(armed, "the surviving alarm is what must wake the new instance").not.toBeNull();
+    const now = Date.now();
+    await env.AUTH_DB.prepare("UPDATE sessions SET status='running', turn_id=?, turn_started_at=? WHERE id=?")
+      .bind("dead_turn", now - 10_000, sessionId).run();
 
     await runInDurableObject(stub, async (instance, state) => {
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      const plan = state.storage.sql.exec("EXPLAIN QUERY PLAN SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", "stale:probe").toArray();
+      expect(plan.some(row => String(row.detail).includes("idx_events_event_id"))).toBe(true);
       // A model call emitted this just before the reset and never paired it.
       history.append({
         type: "agent.tool_use",

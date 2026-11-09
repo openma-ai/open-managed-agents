@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { TurnInvocation } from "../../apps/agent/src/runtime/turn-invocation";
 //
 // Integration tests for the AMA thread CRUD endpoints on SessionDO.
 // Reaches the DO directly via stub.fetch — bypasses the main worker's
@@ -506,8 +507,10 @@ describe("threads HTTP endpoints", () => {
         adds.push(item);
         return originalAdd(item);
       };
-      await (instance as { drainEventQueue: (t: string) => Promise<void> })
-        .drainEventQueue("sthr_subA");
+      const invocation = instance._turnInvocation = new TurnInvocation();
+      try {
+        await (instance as { drainEventQueue: (t: string) => Promise<void> }).drainEventQueue("sthr_subA");
+      } finally { invocation.close(); instance._turnInvocation = null; }
       drainSet.delete("sthr_primary"); // cleanup
       return { adds };
     });
