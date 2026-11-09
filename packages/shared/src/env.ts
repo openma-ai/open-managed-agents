@@ -333,9 +333,8 @@ export interface Env {
     }): Promise<{ status: number; headers: Record<string, string>; body: string }>;
     credentialEgress(scope: {
       tenantId: string; sessionId: string;
-      runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
-      /** Session sandbox: the execution attempt (design §0.0 rule 10). Without either fence: denied. */
-      executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
+      /** The outbound binding's sandbox token (#561), as its digest (sandboxTokenSha256). None: denied (401). */
+      tokenSha256?: string;
     }, action: "resolve" | "forward", request: Request): Promise<Response>;
     /**
      * Per-repo GitHub credential lookup for the network-layer proxy
@@ -349,14 +348,8 @@ export interface Env {
       sessionId: string;
       hostname: string;
       pathname: string;
-      runtimeFence?: {
-        environmentId: string;
-        workId: string;
-        ownerId: string;
-        generation: number;
-        token: string;
-      };
-      executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
+      /** The outbound binding's sandbox token digest; none / not current: null. */
+      tokenSha256?: string;
     }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null>;
     /**
      * Transparent HTTP proxy for the cloud agent's MCP traffic. Agent

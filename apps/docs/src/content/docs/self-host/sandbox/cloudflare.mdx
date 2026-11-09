@@ -70,12 +70,19 @@ BlobStore for portable `/workspace` tar archives, plus
 | Process checkpoints | none | none |
 | Credential egress | **`enforced` / `live`, http+https** | `unsupported`/`snapshot` default |
 
-Outbound credential binding on `cloudflare` is per container, not per process.
-A background process left over from an earlier turn of the same session can use
-the credentials while a later turn runs. Once the execution settles, its
-requests are rejected with 403. Everything inside one session's sandbox is one
-trust boundary, so don't run code in it that the session shouldn't be able to
-act as.
+Credential egress on `cloudflare` is authorized by the session's sandbox token,
+the same `oma_sbx_` token the E2B and Node relays present and an in-sandbox
+ACP harness uses for the model and MCP gateways (one token per execution
+attempt). The container's outbound binding holds only that token's SHA-256,
+never the token, and every Vault or GitHub injection checks it against the
+current execution attempt. Between turns the binding holds no token. When the
+token is no longer current (the execution settled, or another owner took it
+over), a request carrying a Vault placeholder is refused with 401; other
+outbound traffic goes out without credentials. The next execution binds its
+own token, so a background process left over from an earlier turn regains
+Vault access while that execution runs: the binding is per container, not per
+process. Everything inside one session's sandbox is one trust boundary, so
+don't run code in it that the session shouldn't be able to act as.
 
 <Aside type="note">
   The bridge driver keeps OpenMA as the Work and fencing authority while the

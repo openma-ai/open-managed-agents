@@ -8,7 +8,9 @@
 // Architectural property (mirrors Anthropic Managed Agents' "credential
 // proxy outside the harness" pattern): this handler runs in the trusted
 // agent Worker, outside the untrusted container. Its durable binding contains
-// only the complete runtime scope + fence. A live lookup may return plaintext
+// only the Session and the digest of the current sandbox token (#561; the
+// binding is stored, so never the token). Every injection checks that token
+// like the E2B / Node relay's does. A live lookup may return plaintext
 // to this trusted handler long enough to construct the upstream request, but
 // the credential is never placed in handler params, container memory, process
 // env, checkpoints, or logs.
@@ -75,56 +77,24 @@ interface SdkContext<P = unknown> {
 
 export interface OutboundContextParams {
   tenantId?: string;
-  environmentId?: string;
   sessionId?: string;
+  /** Routing only: the Work a Work runtime binding serves (control-plane paths). */
+  environmentId?: string;
   workId?: string;
-  ownerId?: string;
-  generation?: number;
-  fenceToken?: string;
-  /** Session sandbox: the execution attempt this binding serves (design §0.0 rule 10). */
-  executionId?: string;
-  attemptId?: string;
+  /** SHA-256 of the current sandbox token (sandboxTokenSha256): the only
+   * authority for Vault and GitHub injection. Absent between turns. */
+  tokenSha256?: string;
+  /** Provider-enforced egress: without a bound token nothing leaves. */
   required?: boolean;
   /** Exact trusted API origin for the Work capability (scheme + host + port). */
   controlPlaneOrigin?: string;
 }
 
-interface RuntimeFenceLookupClaim {
-  environmentId: string;
-  workId: string;
-  ownerId: string;
-  generation: number;
-  token: string;
-}
-
-function runtimeFenceClaim(params: OutboundContextParams): RuntimeFenceLookupClaim | null {
-  if (
-    typeof params.environmentId !== "string" || params.environmentId.length === 0
-    || typeof params.workId !== "string" || params.workId.length === 0
-    || typeof params.ownerId !== "string" || params.ownerId.length === 0
-    || !Number.isSafeInteger(params.generation) || (params.generation ?? 0) < 1
-    || typeof params.fenceToken !== "string" || params.fenceToken.length === 0
-  ) {
-    return null;
-  }
-  return {
-    environmentId: params.environmentId,
-    workId: params.workId,
-    ownerId: params.ownerId,
-    generation: params.generation!,
-    token: params.fenceToken,
-  };
-}
-
-/** The Session execution attempt bound by SessionDO; null between turns. */
-function executionFenceClaim(params: OutboundContextParams): { executionId: string; attemptId: string; ownerId: string; generation: number } | null {
-  if (
-    typeof params.executionId !== "string" || params.executionId.length === 0
-    || typeof params.attemptId !== "string" || params.attemptId.length === 0
-    || typeof params.ownerId !== "string" || params.ownerId.length === 0
-    || !Number.isSafeInteger(params.generation) || (params.generation ?? 0) < 1
-  ) return null;
-  return { executionId: params.executionId, attemptId: params.attemptId, ownerId: params.ownerId, generation: params.generation! };
+/** What main checks the binding by; null with no token bound (between turns). */
+function boundToken(params: OutboundContextParams, env: Env): { tenantId: string; sessionId: string; tokenSha256: string } | null {
+  return params.tenantId && params.sessionId && params.tokenSha256 && env.MAIN_MCP !== undefined
+    ? { tenantId: params.tenantId, sessionId: params.sessionId, tokenSha256: params.tokenSha256 }
+    : null;
 }
 
 /**
@@ -152,51 +122,43 @@ export const handleCredentialEgressRequest = async (
   // HTTP semantics (HEAD Content-Length, SigV4 signed headers,
   // Transfer-Encoding: chunked, streaming, Trailer, etc).
   const required = params.required === true;
-  const fence = runtimeFenceClaim(params);
-  if (required && (
-    !params.tenantId
-    || !params.sessionId
-    || fence === null
-    || e.MAIN_MCP === undefined
-  )) {
-    return new Response("credential egress denied: invalid runtime binding", {
-      status: 403,
-    });
+  const bound = boundToken(params, e);
+  if (required && bound === null) {
+    return new Response("credential egress denied: no sandbox token bound", { status: 403 });
   }
+  // Materialize body — Workers needs a known-length body to set
+  // Content-Length on the outbound request.
+  const bodyBytes = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
+  const placeholder = carriesVaultPlaceholder(request.headers, bodyBytes);
 
   // Native interception shares the ordinary relay application. The binding
   // returns only forwarding results/metadata, never the upstream token.
   // Vault credentials are only ever injected over HTTPS (the relay rejects
   // any other scheme with 400), so plain HTTP (e.g. apt mirrors) skips the
   // lookup and is forwarded below with sandbox authorization stripped.
+  // No token bound (between turns, before the first turn) → no Vault.
   const injectable = url.protocol === "https:";
-  // No fence (between turns, or before the first turn) → no Vault: the
-  // request goes out uninjected (design §0.0 rule 10).
-  const execution = fence === null ? executionFenceClaim(params) : null;
-  const fenced = fence !== null || execution !== null;
-  if (injectable && fenced && params.tenantId && params.sessionId && e.MAIN_MCP) {
+  if (injectable && bound !== null) {
     try {
-      const scope = { tenantId: params.tenantId, sessionId: params.sessionId,
-        ...(fence !== null ? { runtimeFence: fence } : { executionFence: execution! }) };
-      const resolved = await e.MAIN_MCP.credentialEgress(scope, "resolve", new Request(request.url));
-      // A Session binding whose attempt has ended (a background process
-      // between turns) loses Vault but keeps ordinary egress.
-      if (!resolved.ok && !(resolved.status === 403 && !required)) return resolved;
-      const { inject } = resolved.ok ? await resolved.json() as { inject: boolean } : { inject: false };
-      if (inject) return e.MAIN_MCP.credentialEgress(scope, "forward", request);
+      const resolved = await e.MAIN_MCP!.credentialEgress(bound, "resolve", new Request(request.url));
+      if (!resolved.ok) {
+        // Only a token that is no longer current (401: a background process
+        // after its turn) keeps ordinary egress; a request carrying a Vault
+        // placeholder, a required binding, or any other failure is refused.
+        if (resolved.status !== 401 || placeholder || required) return resolved;
+      } else if ((await resolved.json() as { inject: boolean }).inject) {
+        return e.MAIN_MCP!.credentialEgress(bound, "forward", new Request(request.url, {
+          method: request.method, headers: request.headers, ...(bodyBytes === null ? {} : { body: bodyBytes }), redirect: "manual",
+        }));
+      }
     } catch {
       return new Response("credential egress unavailable", { status: 502 });
     }
-  } else if (injectable && required) {
-    return new Response("credential egress unavailable", { status: 502 });
   }
   const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required || !injectable });
-  // Materialize body — Workers needs a known-length body to set
-  // Content-Length on the outbound request.
-  const bodyBytes = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
   // A Vault placeholder the gateway did not take (wrong host, plain HTTP, no
-  // current attempt) is refused, never sent on (design §8.4 rule 2).
-  if (carriesVaultPlaceholder(request.headers, bodyBytes)) {
+  // current token) is refused, never sent on (design §8.4 rule 2).
+  if (placeholder) {
     console.warn(`[oma-sandbox] vault placeholder refused host=${url.hostname} rule=credential_host_mismatch`);
     return new Response("Credential relay request denied: credential_host_mismatch", { status: 403 });
   }
@@ -301,12 +263,14 @@ export const handleOpenmaControlPlaneRequest = async (
   }
   const url = new URL(request.url);
   const authorization = request.headers.get("authorization") ?? "";
+  // The sandbox token as Bearer / Basic; the sealed Work token (ADR 0005)
+  // only on a Work runtime's binding. The main API checks the credential,
+  // its Session and its scope on every request.
+  const sandboxToken = authorization.startsWith("Bearer oma_sbx_") || authorization.startsWith("Basic ");
+  const workToken = typeof params.workId === "string" && params.workId.length > 0 && authorization.startsWith("Bearer sk-ant-req-v1.");
   if (
     url.origin !== expectedOrigin
-    // Sealed Work token (ADR 0005; also the pre-#561 execution token during
-    // the deploy transition), or the sandbox token as Bearer / Basic. The
-    // main API checks it, its Session and its scope on every request.
-    || !(authorization.startsWith("Bearer sk-ant-req-v1.") || authorization.startsWith("Bearer oma_sbx_") || authorization.startsWith("Basic "))
+    || !(sandboxToken || workToken)
     || !isAllowedWorkCapabilityPath(url.pathname, params)
   ) {
     return new Response("control-plane egress denied", { status: 403 });
@@ -394,7 +358,7 @@ const r2OutboundPassthrough = async (request: Request): Promise<Response> => {
 // declared repo's token. Cross-token mutations (graphql to repo B with
 // token A's scope) return GitHub's standard error envelope; we don't
 // retry.
-const githubAuthHandler = async (
+export const githubAuthHandler = async (
   request: Request,
   env: unknown,
   ctx: SdkContext<OutboundContextParams>,
@@ -403,37 +367,24 @@ const githubAuthHandler = async (
   const params = ctx.params ?? {};
   const e = env as Env;
   const required = params.required === true;
-  const fence = runtimeFenceClaim(params);
-  if (required && (
-    !params.tenantId
-    || !params.sessionId
-    || fence === null
-    || e.MAIN_MCP === undefined
-  )) {
-    return new Response("credential egress denied: invalid runtime binding", {
-      status: 403,
-    });
+  const bound = boundToken(params, e);
+  if (required && bound === null) {
+    return new Response("credential egress denied: no sandbox token bound", { status: 403 });
   }
 
   let cred: { scheme: "Basic" | "Bearer"; token: string; slug: string } | null = null;
 
-  // ① per-repo first
-  if (params.tenantId && params.sessionId && e.MAIN_MCP) {
+  // ① per-repo first, only for a current sandbox token (none bound or not
+  // current: null, and the Vault handler below decides). A token that
+  // cannot be checked fails the request.
+  if (bound !== null) {
     try {
-      cred = await e.MAIN_MCP.lookupGithubCredential({
-        tenantId: params.tenantId,
-        sessionId: params.sessionId,
-        hostname: url.hostname,
-        pathname: url.pathname,
-        ...(fence !== null ? { runtimeFence: fence } : executionFenceClaim(params) === null ? {} : { executionFence: executionFenceClaim(params)! }),
-      });
+      cred = await e.MAIN_MCP!.lookupGithubCredential({ ...bound, hostname: url.hostname, pathname: url.pathname });
     } catch (err) {
       console.error(
         `[oma-sandbox] lookupGithubCredential threw host=${url.hostname}: ${(err as Error)?.message ?? err}`,
       );
-      if (required) {
-        return new Response("credential egress unavailable", { status: 502 });
-      }
+      return new Response("credential egress unavailable", { status: 502 });
     }
   }
 

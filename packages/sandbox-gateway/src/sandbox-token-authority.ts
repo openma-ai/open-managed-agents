@@ -5,7 +5,7 @@
 // `unavailable` (gateways answer 503), never a rejection.
 
 import type { SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
-import { generateSandboxToken, sandboxTokenRandomPart, sha256Hex } from "./sandbox-token";
+import { generateSandboxToken, sandboxTokenSha256 } from "./sandbox-token";
 import { isSandboxTokenScope, sandboxTokenScopeAdmits, type SandboxTokenChannel, type SandboxTokenScope } from "./sandbox-token-scope";
 import type { SandboxTokenAttempt, SandboxTokenSession, SandboxTokenStore } from "./sandbox-token-store";
 
@@ -28,11 +28,22 @@ export async function authenticateSandboxToken(
   input: { sessionId: string; token: string; channel: SandboxTokenChannel },
   now: () => number = Date.now,
 ): Promise<SandboxTokenDecision> {
-  const randomPart = sandboxTokenRandomPart(input.token);
-  if (randomPart === null || input.sessionId === "") return { type: "rejected" };
+  const tokenSha256 = await sandboxTokenSha256(input.token);
+  if (tokenSha256 === null) return { type: "rejected" };
+  return authenticateSandboxTokenSha256(store, { sessionId: input.sessionId, tokenSha256, channel: input.channel }, now);
+}
+
+/** The same decision from the token's stored digest (sandboxTokenSha256),
+ * for a holder that keeps only that: a Cloudflare outbound binding. */
+export async function authenticateSandboxTokenSha256(
+  store: SandboxTokenStore,
+  input: { sessionId: string; tokenSha256: string; channel: SandboxTokenChannel },
+  now: () => number = Date.now,
+): Promise<SandboxTokenDecision> {
+  if (input.sessionId === "" || !/^[0-9a-f]{64}$/u.test(input.tokenSha256)) return { type: "rejected" };
   let found: Awaited<ReturnType<SandboxTokenStore["find"]>>;
   try {
-    found = await store.find({ sessionId: input.sessionId, tokenSha256: await sha256Hex(randomPart) });
+    found = await store.find({ sessionId: input.sessionId, tokenSha256: input.tokenSha256 });
   } catch (error) {
     return { type: "unavailable", error };
   }
@@ -77,7 +88,7 @@ export async function issueSandboxToken(
     throw new Error("Sandbox token requires the pinned Session agent (child ACP capabilities are not supported)");
   }
   const token = generateSandboxToken();
-  const appended = await store.appendTokenHash({ fence, tokenSha256: await sha256Hex(sandboxTokenRandomPart(token)!), scope: options.scope, nowMs: (options.now ?? Date.now)() });
+  const appended = await store.appendTokenHash({ fence, tokenSha256: (await sandboxTokenSha256(token))!, scope: options.scope, nowMs: (options.now ?? Date.now)() });
   if (appended === "stale") throw new Error("Sandbox token Session Execution fence is stale");
   if (appended === "scope_mismatch") throw new Error(`Sandbox token scope ${options.scope} differs from this execution attempt's`);
   return token;

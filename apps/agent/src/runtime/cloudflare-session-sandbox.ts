@@ -9,10 +9,11 @@
 // container.
 //
 // Two deliberate differences from the adapter defaults:
-//   - egress binds the outbound handler to the Session execution attempt
-//     (design §0.0 rule 10), not to a runtime-resource fence: main checks the
-//     attempt live (sandbox-gateway). With no attempt the binding carries
-//     none and gets no Vault; revoke rebinds it that way.
+//   - egress binds the outbound handler to the Session execution attempt's
+//     sandbox token (design §0.0 rule 10, #561; its digest, the binding is
+//     stored), the one an in-sandbox ACP harness also holds: main checks it
+//     live (sandbox-gateway), as for the E2B / Node relay. With no attempt the
+//     binding carries none and gets no Vault; revoke rebinds it that way.
 //   - acquire / resume keep the 3-attempt container start retry and bind the
 //     backup and billing context OmaSandbox needs for its idle teardown.
 
@@ -20,6 +21,7 @@ import type { MemoryStoreBinding, SandboxLifecyclePort } from "@open-managed-age
 import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
 import type { SandboxEgressPort } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
+import { sandboxTokenSha256, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { log, logWarn } from "@open-managed-agents/shared";
 import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
@@ -37,6 +39,8 @@ export interface CloudflareSessionSandboxDeps {
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
   /** The Session's current execution attempt (SessionDO's fence); undefined between turns. */
   fence(): SandboxExecutionFence | undefined;
+  /** The sandbox token for one egress binding of `attempt` (#561). */
+  relayToken(attempt: SessionExecutionAttemptRef): Promise<string>;
   warn(message: string): void;
 }
 
@@ -63,7 +67,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
       const { ports } = createSandboxPorts({
         ...adapter,
         lifecycle: withSessionContext(adapter.lifecycle, sandbox, deps.session),
-        native: { ...adapter.native, egress: () => ({ port: executionEgress(deps.session, deps.fence) }) },
+        native: { ...adapter.native, egress: () => ({ port: executionEgress(deps) }) },
       // Both are native, so the generic implementations' deps are never read.
       }, { storage: {} as never, egress: {} as never });
       return { ports };
@@ -151,17 +155,26 @@ async function startWithRetry<T>(start: () => Promise<T>): Promise<T> {
   throw new Error(`Sandbox container failed to start after ${START_ATTEMPTS} attempts. Last error: ${message}`);
 }
 
-function executionEgress(
-  session: CloudflareSessionSandboxDeps["session"],
-  fence: CloudflareSessionSandboxDeps["fence"],
-): SandboxEgressPort<CloudflareSandboxRuntime> {
+/** A Session with no sandbox token (none issues: e.g. no managed Session
+ * record) is bound without one and warned about: it gets no Vault, and a
+ * request carrying a Vault placeholder is refused (oma-sandbox). */
+export function executionEgress(deps: Pick<CloudflareSessionSandboxDeps, "session" | "fence" | "relayToken" | "warn">): SandboxEgressPort<CloudflareSandboxRuntime> {
+  const { fence } = deps;
+  const tokenFor = async (attempt: SessionExecutionAttemptRef) => {
+    try {
+      const tokenSha256 = await sandboxTokenSha256(await deps.relayToken(attempt));
+      if (tokenSha256 === null) throw new Error("Sandbox token is malformed");
+      return tokenSha256;
+    } catch (error) {
+      deps.warn(`Vault and GitHub credentials are unavailable this execution: no sandbox token (${error instanceof Error ? error.message : String(error)})`);
+      return null;
+    }
+  };
   const bind = async (runtime: CloudflareSandboxRuntime, current: SandboxExecutionFence | undefined) => {
-    const s = session();
+    const s = deps.session();
     if (!s.sessionId || !s.tenantId) return;
-    await runtime.setOutboundContext({
-      tenantId: s.tenantId, sessionId: s.sessionId,
-      ...(current === undefined ? {} : { executionId: current.executionId, attemptId: current.attemptId, ownerId: current.ownerId, generation: current.generation }),
-    });
+    const tokenSha256 = current === undefined ? null : await tokenFor({ workspaceId: s.tenantId, sessionId: s.sessionId, ...current });
+    await runtime.setOutboundContext({ tenantId: s.tenantId, sessionId: s.sessionId, ...(tokenSha256 === null ? {} : { tokenSha256 }) });
   };
   return {
     attach: ({ runtime }) => bind(runtime, fence?.()),

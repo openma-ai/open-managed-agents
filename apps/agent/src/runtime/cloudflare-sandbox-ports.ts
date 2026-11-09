@@ -199,9 +199,8 @@ export function createCloudflareSandboxAdapter(input: {
               environmentId: egress.scope.environmentId,
               sessionId: egress.scope.sessionId,
               workId: egress.scope.workId,
-              ownerId: egress.fence.ownerId,
-              generation: egress.fence.generation,
-              fenceToken: egress.fence.token,
+              // No sandbox token here: a required binding without one lets
+              // nothing out (SessionDO binds the token: cloudflare-session-sandbox).
               required: true,
               ...(input.controlPlaneBaseUrl === undefined ? {} : { controlPlaneBaseUrl: input.controlPlaneBaseUrl }),
             });
@@ -212,9 +211,8 @@ export function createCloudflareSandboxAdapter(input: {
               environmentId: egress.scope.environmentId,
               sessionId: egress.scope.sessionId,
               workId: egress.scope.workId,
-              ownerId: egress.fence.ownerId,
-              generation: egress.fence.generation,
-              fenceToken: egress.fence.token,
+              // No sandbox token here: a required binding without one lets
+              // nothing out (SessionDO binds the token: cloudflare-session-sandbox).
               required: true,
               ...(input.controlPlaneBaseUrl === undefined ? {} : { controlPlaneBaseUrl: input.controlPlaneBaseUrl }),
             });
