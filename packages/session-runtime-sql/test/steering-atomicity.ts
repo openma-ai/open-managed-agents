@@ -58,6 +58,11 @@ export function steeringAtomicityConformance(name: string, withClient: (run: (sq
         expect((await read()).consumedByExecutionId).toBeUndefined();
       } else {
         expect(results.filter(result => result.type === 'steered')).toHaveLength(1);
+        const delivered = results.find(result => result.type === 'steered');
+        if (delivered?.type !== 'steered') throw new Error('expected delivery');
+        // The live harness must see the same consumed stamp as recovery does;
+        // explicit null is excluded from model context, not a consumed input.
+        expect(delivered.execution.events).toMatchObject([{ id: 'S', processedAt: at(mode === 'preconsumed' ? 1 : 4) }]);
         expect(await read()).toMatchObject({ executionId: 'S', consumedByExecutionId: 'Y', event: { processedAt: at(mode === 'preconsumed' ? 1 : 4) } });
         if (mode === 'preconsumed') expect(Number((await sql.prepare('SELECT processed_at FROM managed_session_events WHERE workspace_id = ? AND session_id = ? AND id = ?').bind(workspaceId, sessionId, 'S').first<{ processed_at: number }>())!.processed_at)).toBe(101000);
         expect(await store.find({ workspaceId, executionId: 'S' })).toMatchObject({ state: 'completed' });

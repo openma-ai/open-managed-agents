@@ -1249,7 +1249,11 @@ export class SqlSessionExecutionStore
         .bind(steeredAt, input.workspaceId, input.executionId, candidate.revision, ...gateArgs),
     ]);
     if (results.at(-1)?.meta.changes !== 1) return { type: "not_queued" };
-    return { type: "steered", execution: { ...candidate, state: "completed", settledAt: input.steeredAt, revision: candidate.revision + 1 } };
+    // Return the facts committed by the consumption CAS, not the admission
+    // snapshot (whose explicit null stamp is excluded from model context).
+    const consumed = new Map(documents.map(row => [row.id, decodeSessionEventDocument(row.document).event]));
+    const events = candidate.events.map(event => ({ ...event, processedAt: consumed.get(event.id)!.processedAt ?? input.steeredAt }));
+    return { type: "steered", execution: { ...candidate, events, state: "completed", settledAt: input.steeredAt, revision: candidate.revision + 1 } };
   }
 
   async listQueued(input: {
