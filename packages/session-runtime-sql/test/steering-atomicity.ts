@@ -33,7 +33,7 @@ export function steeringAtomicityConformance(name: string, withClient: (run: (sq
         const broken: SqlClient = { prepare: s => sql.prepare(s), exec: s => sql.exec(s), batch: statements => sql.batch([
           ...statements, sql.prepare('INSERT INTO oma_intentionally_missing_table VALUES (1)'),
         ]) };
-        await expect(new SqlSessionExecutionStore(broken).steerQueued(input)).rejects.toBeDefined();
+        await expect(new SqlSessionExecutionStore(broken).steerPendingExecution(input)).rejects.toBeDefined();
         expect(await store.find({ workspaceId, executionId: 'S' })).toMatchObject({ state: 'queued' });
         expect((await read()).consumedByExecutionId).toBeUndefined();
       }
@@ -44,16 +44,16 @@ export function steeringAtomicityConformance(name: string, withClient: (run: (sq
             .bind(encodeSessionEventDocument({ ...message('S'), processedAt: at(4) }, { revision: 2, index: 0 }, 'S', 'other'), workspaceId, sessionId, 'S').run();
           return sql.batch(statements);
         } };
-        expect(await new SqlSessionExecutionStore(competing).steerQueued(input)).toEqual({ type: 'not_queued' });
+        expect(await new SqlSessionExecutionStore(competing).steerPendingExecution(input)).toEqual({ type: 'not_steerable' });
         expect(await store.find({ workspaceId, executionId: 'S' })).toMatchObject({ state: 'queued' });
         expect((await read()).consumedByExecutionId).toBe('other');
         return;
       }
       const results = mode === 'racing'
-        ? await Promise.all([store.steerQueued(input), new SqlSessionExecutionStore(sql).steerQueued(input)])
-        : [await store.steerQueued(input)];
+        ? await Promise.all([store.steerPendingExecution(input), new SqlSessionExecutionStore(sql).steerPendingExecution(input)])
+        : [await store.steerPendingExecution(input)];
       if (mode === 'expired') {
-        expect(results[0].type).toBe('not_queued');
+        expect(results[0].type).toBe('not_steerable');
         expect(await store.find({ workspaceId, executionId: 'S' })).toMatchObject({ state: 'queued' });
         expect((await read()).consumedByExecutionId).toBeUndefined();
       } else {
@@ -68,7 +68,7 @@ export function steeringAtomicityConformance(name: string, withClient: (run: (sq
         expect(await store.find({ workspaceId, executionId: 'S' })).toMatchObject({ state: 'completed' });
         // Reconstruct the adapter and discard the original returned inputs.
         const restarted = new SqlSessionExecutionStore(sql);
-        expect(await restarted.steerQueued(input)).toEqual({ type: 'not_queued' });
+        expect(await restarted.steerPendingExecution(input)).toEqual({ type: 'not_steerable' });
         expect(await takeQueuedSteeringInputs(restarted, { ...input, laneId: 'sthr_primary' })).toMatchObject([{ id: 'S2' }]);
         expect((await read('S2')).consumedByExecutionId).toBe('Y');
       }

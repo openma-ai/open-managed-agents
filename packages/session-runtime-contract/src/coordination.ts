@@ -1,5 +1,6 @@
 import type { SentSessionEvent, SessionBootstrapEvent } from "@open-managed-agents/domain/sessions";
 
+/** queued is internal unclaimed/unconsumed work, not a product queue API. */
 export type SessionExecutionState =
   | "queued"
   | "running"
@@ -156,15 +157,17 @@ export interface SessionExecutionStorePort {
         execution?: SessionExecution;
       }
   >;
-  /** Absorb one queued execution into the running turn (steering). The
-   *  row and its input consumption commit atomically under the consumer fence. */
-  steerQueued(input: {
+  /** Absorb pending input into the current turn under the consumer fence.
+   *  Success atomically consumes input; processedAt is not model completion.
+   *  not_steerable leaves eligibility/race handling to the existing consumption
+   *  paths: it does not mean the input was discarded or consumed. */
+  steerPendingExecution(input: {
     workspaceId: string;
     sessionId: string;
     executionId: string;
     steeredAt: string;
     consumer: SessionExecutionFence;
-  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }>;
+  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_steerable" }>;
   /** Queued (unclaimed) executions on one lane, admission order. Used by the
    *  running turn to find mid-run inputs to steer at the next after-call
    *  boundary (see takeQueuedSteeringInputs). */
@@ -280,7 +283,7 @@ function steerableEvent(event: SentSessionEvent): boolean {
  * CMA coherent-turn steering over the shared execution store (ADR 0006: only
  * SessionExecutionStorePort). Every queued execution on the running lane whose
  * events are plain mid-run `user.message`s (plus carried system messages) is
- * compare-and-set from `queued` to `completed` via `steerQueued`, so it never
+ * compare-and-set from `queued` to `completed` via `steerPendingExecution`, so it never
  * runs as its own next turn. Consumption is part of that transaction, and its
  * events are returned for the caller to
  * re-emit and hand to the harness at the next
@@ -290,7 +293,7 @@ function steerableEvent(event: SentSessionEvent): boolean {
  * See docs/implementation/cma-steer-coherent-turn.md.
  */
 export async function takeQueuedSteeringInputs(
-  store: Pick<SessionExecutionStorePort, "listQueued" | "steerQueued">,
+  store: Pick<SessionExecutionStorePort, "listQueued" | "steerPendingExecution">,
   input: {
     workspaceId: string;
     sessionId: string;
@@ -310,7 +313,7 @@ export async function takeQueuedSteeringInputs(
     if (execution.id === input.consumer.executionId) continue;
     if (!execution.events.some((event) => event.type === "user.message")) continue;
     if (!execution.events.every(steerableEvent)) continue;
-    const result = await store.steerQueued({
+    const result = await store.steerPendingExecution({
       workspaceId: input.workspaceId,
       sessionId: input.sessionId,
       executionId: execution.id,

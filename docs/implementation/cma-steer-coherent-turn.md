@@ -89,7 +89,7 @@ only on `SessionExecutionStorePort` (ADR 0006):
 - `takeQueuedSteeringInputs(store, { workspaceId, sessionId, laneId, … })`
   (`packages/session-runtime-contract/src/coordination.ts`) lists the lane's
   queued executions (`listQueued`) and CAS-steers each plain mid-run
-  `user.message` batch (`steerQueued` → `completed`, so it never runs as its
+  `user.message` batch (`steerPendingExecution` → `completed`, so it never runs as its
   own next turn). Tool confirmations / interrupts are never steered.
 - `NodeSessionExecutionWorker` hands that as a per-run hook
   (`takeSteeringInputs`); `DefaultNodeManagedSessionRuntimeDriver` wraps it

@@ -1178,18 +1178,18 @@ export class SqlSessionExecutionStore
     return { type: "not_queued", reason, execution };
   }
 
-  async steerQueued(input: {
+  async steerPendingExecution(input: {
     workspaceId: string;
     sessionId: string;
     executionId: string;
     steeredAt: string;
     consumer: SessionExecutionFence;
-  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }> {
+  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_steerable" }> {
     const steeredAt = timestamp(input.steeredAt, "queued steering");
     const fence = input.consumer;
-    if (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.sessionId || fence.executionId === input.executionId) return { type: "not_queued" };
+    if (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.sessionId || fence.executionId === input.executionId) return { type: "not_steerable" };
     const candidate = await this.find({ workspaceId: input.workspaceId, executionId: input.executionId });
-    if (!candidate || candidate.sessionId !== input.sessionId || candidate.state !== "queued" || candidate.heldAfterExhaustedAt !== null) return { type: "not_queued" };
+    if (!candidate || candidate.sessionId !== input.sessionId || candidate.state !== "queued" || candidate.heldAfterExhaustedAt !== null) return { type: "not_steerable" };
     const documents = [];
     for (const id of new Set(candidate.events.map(event => event.id))) {
       const row = await this.sql.prepare(`SELECT document FROM managed_session_events
@@ -1197,7 +1197,7 @@ export class SqlSessionExecutionStore
         .bind(input.workspaceId, input.sessionId, id).first<{ document: string }>();
       if (!row) throw new Error(`Steering input ${id} has no persisted event`);
       const decoded = decodeSessionEventDocument(row.document);
-      if (decoded.consumedByExecutionId && decoded.consumedByExecutionId !== fence.executionId) return { type: "not_queued" };
+      if (decoded.consumedByExecutionId && decoded.consumedByExecutionId !== fence.executionId) return { type: "not_steerable" };
       const event = { ...decoded.event, processedAt: decoded.event.processedAt ?? input.steeredAt };
       const document = decoded.position
         ? encodeSessionEventDocument(event, decoded.position, decoded.executionId, fence.executionId)
@@ -1248,7 +1248,7 @@ export class SqlSessionExecutionStore
         WHERE workspace_id = ? AND id = ? AND state = 'queued' AND revision = ? AND ${gate}`)
         .bind(steeredAt, input.workspaceId, input.executionId, candidate.revision, ...gateArgs),
     ]);
-    if (results.at(-1)?.meta.changes !== 1) return { type: "not_queued" };
+    if (results.at(-1)?.meta.changes !== 1) return { type: "not_steerable" };
     // Return the facts committed by the consumption CAS, not the admission
     // snapshot (whose explicit null stamp is excluded from model context).
     const consumed = new Map(documents.map(row => [row.id, decodeSessionEventDocument(row.document).event]));

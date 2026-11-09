@@ -1096,7 +1096,7 @@ describe("SqlSessionExecutionCoordinator", () => {
     if (consumer.type !== "claimed") throw new Error("expected consumer");
     await coordinator.admit(admitted("queued_steer", "session_r", at(1)));
     await seedSteeringEvents("session_r", ["queued_steer"]);
-    await expect(coordinator.steerQueued({
+    await expect(coordinator.steerPendingExecution({
       workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", steeredAt: at(2), consumer: consumer.fence,
     })).resolves.toMatchObject({ type: "steered" });
     await expect(coordinator.cancelQueued({
