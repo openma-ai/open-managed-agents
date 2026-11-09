@@ -287,6 +287,8 @@ function apiErrorStatus(error: unknown): number | undefined {
 
 interface ClaimedSessionCredential {
   sessionsToken: string;
+  /** claim_generation of this claim: the Runtime Host's authority reference. */
+  claimGeneration: number;
   workSecret: string;
   apiBaseUrl?: string;
 }
@@ -314,8 +316,16 @@ function decodeClaimedSessionCredential(
   if (decoded.api_base_url !== undefined && typeof decoded.api_base_url !== "string") {
     throw new Error(`Session Work ${work.id} has an invalid api_base_url`);
   }
+  if (
+    typeof decoded.claim_generation !== "number"
+    || !Number.isSafeInteger(decoded.claim_generation)
+    || decoded.claim_generation < 1
+  ) {
+    throw new Error(`Session Work ${work.id} has no claim_generation`);
+  }
   return {
     sessionsToken: decoded.sessions_token,
+    claimGeneration: decoded.claim_generation,
     workSecret: work.secret,
     ...(decoded.api_base_url === undefined
       ? {}
@@ -414,6 +424,7 @@ export function createManagedEnvironmentWorker(
       sessionId: work.data.id,
       workId: work.id,
     };
+    const hostClaim = { generation: claim.claimGeneration, token: claim.sessionsToken };
     const sessionInputAccess = {
       async downloadFile(input: { fileId: string; signal: AbortSignal }) {
         const response = await sessionClient.beta.files.download(
@@ -562,6 +573,7 @@ export function createManagedEnvironmentWorker(
     if (profile.driver.type === "ama_worker") {
       const result = await options.host.run({
         scope,
+        claim: hostClaim,
         profile,
         session: projectClaimedSession(session),
         sessionInputAccess,
@@ -629,6 +641,7 @@ export function createManagedEnvironmentWorker(
     try {
       result = await options.host.run({
         scope,
+        claim: hostClaim,
         profile,
         session: projectClaimedSession(session),
         sessionInputAccess,

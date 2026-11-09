@@ -10,6 +10,11 @@ const scope = {
   workId: "work_1",
 };
 
+const claimOf = (fence: { generation: number; token: string }) => ({
+  generation: fence.generation,
+  token: fence.token,
+});
+
 const directDriver = {
   type: "ama_worker" as const,
   process: {
@@ -149,7 +154,7 @@ describe("managed runtime plan", () => {
 });
 
 describe("managed runtime lifecycle", () => {
-  it("renews the resource fence while slow resources materialize before a sandbox exists", async () => {
+  it("re-checks the Work claim while slow resources materialize before a sandbox exists", async () => {
     const createManagedRuntimeHost = exportedFunction("createManagedRuntimeHost");
     const fence = {
       ...scope,
@@ -165,12 +170,11 @@ describe("managed runtime lifecycle", () => {
     let sleeps = 0;
     const renew = vi.fn(async () => {
       releaseMaterialize();
-      return { type: "renewed", fence } as const;
+      return true;
     });
 
     const host = createManagedRuntimeHost({
       ownerId: "worker_1",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       orphans: new MemoryRuntimeOrphanPort(),
       scheduler: {
@@ -181,11 +185,10 @@ describe("managed runtime lifecycle", () => {
           );
         },
       },
-      fences: {
-        acquire: vi.fn(async () => ({ type: "acquired", fence, publication: null })),
-        renew,
+      claims: {
+        open: vi.fn(async () => ({ type: "current", expiresAt: fence.expiresAt, publication: null })),
+        isCurrent: renew,
         publish: vi.fn(async () => ({ type: "published", revision: 1 })),
-        release: vi.fn(async () => {}),
       },
       sandbox: {
         capabilities: vi.fn(async () => ({
@@ -231,6 +234,7 @@ describe("managed runtime lifecycle", () => {
     await expect(
       host.run({
         scope,
+        claim: claimOf(fence),
         profile: {
           workspace: { requirement: "durable" },
           outputs: { requirement: "disabled" },
@@ -242,7 +246,7 @@ describe("managed runtime lifecycle", () => {
     expect(renew).toHaveBeenCalledTimes(1);
   }, 1_000);
 
-  it("publishes immutable workspace and output candidates under the active fence", async () => {
+  it("publishes immutable workspace and output candidates under the current Work claim", async () => {
     const createManagedRuntimeHost = exportedFunction("createManagedRuntimeHost");
     const calls: string[] = [];
     const fence = {
@@ -256,7 +260,6 @@ describe("managed runtime lifecycle", () => {
 
     const host = createManagedRuntimeHost({
       ownerId: "worker_1",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       orphans: new MemoryRuntimeOrphanPort(),
       scheduler: {
@@ -265,20 +268,19 @@ describe("managed runtime lifecycle", () => {
             signal.addEventListener("abort", () => reject(signal.reason), { once: true });
           }),
       },
-      fences: {
-        acquire: vi.fn(async () => {
-          calls.push("fence.acquire");
-          return { type: "acquired", fence };
+      claims: {
+        open: vi.fn(async () => {
+          calls.push("claims.open");
+          return { type: "current", expiresAt: fence.expiresAt, publication: null };
         }),
-        renew: vi.fn(),
+        isCurrent: vi.fn(async () => true),
         publish: vi.fn(async (input: any) => {
-          calls.push("fence.publish");
-          expect(input.fence).toEqual(fence);
+          calls.push("claims.publish");
+          expect(input.claim).toEqual({ ...scope, generation: fence.generation, token: fence.token });
           expect(input.workspaceCandidate.id).toBe("workspace-candidate-1");
           expect(input.outputCandidate.id).toBe("output-candidate-1");
           return { type: "published", revision: 11 };
         }),
-        release: vi.fn(async () => calls.push("fence.release")),
       },
       sandbox: {
         capabilities: vi.fn(async () => ({
@@ -348,12 +350,12 @@ describe("managed runtime lifecycle", () => {
       },
     });
 
-    await expect(host.run({ scope, profile: durableProfile })).resolves.toEqual({
+    await expect(host.run({ scope, claim: claimOf(fence), profile: durableProfile })).resolves.toEqual({
       type: "completed",
       revision: 11,
     });
     expect(calls).toEqual([
-      "fence.acquire",
+      "claims.open",
       "workspace.materialize",
       "outputs.prepare",
       "sandbox.acquire",
@@ -363,15 +365,14 @@ describe("managed runtime lifecycle", () => {
       "workspace.checkpoint",
       "outputs.collect",
       "outputs.finalize",
-      "fence.publish",
+      "claims.publish",
       "workspace.checkpoint",
       "outputs.collect",
       "outputs.finalize",
-      "fence.publish",
+      "claims.publish",
       "sandbox.terminate",
       "outputs.release",
       "workspace.release",
-      "fence.release",
     ]);
     expect(host).toBeDefined();
   });
@@ -392,7 +393,6 @@ describe("managed runtime lifecycle", () => {
     };
     const host = createManagedRuntimeHost({
       ownerId: "worker_2",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       orphans: new MemoryRuntimeOrphanPort(),
       scheduler: {
@@ -401,10 +401,10 @@ describe("managed runtime lifecycle", () => {
             signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
           ),
       },
-      fences: {
-        acquire: vi.fn(async () => ({
-          type: "acquired",
-          fence,
+      claims: {
+        open: vi.fn(async () => ({
+          type: "current",
+          expiresAt: fence.expiresAt,
           publication: {
             generation: 1,
             revision: 4,
@@ -412,9 +412,8 @@ describe("managed runtime lifecycle", () => {
             outputCandidate: null,
           },
         })),
-        renew: vi.fn(),
+        isCurrent: vi.fn(async () => true),
         publish: vi.fn(async () => ({ type: "published", revision: 5 })),
-        release: vi.fn(async () => {}),
       },
       sandbox: {
         capabilities: vi.fn(async () => ({
@@ -456,6 +455,7 @@ describe("managed runtime lifecycle", () => {
 
     await host.run({
       scope,
+      claim: claimOf(fence),
       profile: {
         workspace: { requirement: "durable" },
         outputs: { requirement: "disabled" },
@@ -468,7 +468,7 @@ describe("managed runtime lifecycle", () => {
     );
   });
 
-  it("aborts the hand and never publishes after the resource fence is lost", async () => {
+  it("aborts the hand and never publishes after the Work claim is lost", async () => {
     const createManagedRuntimeHost = exportedFunction("createManagedRuntimeHost");
     const fence = {
       ...scope,
@@ -484,7 +484,6 @@ describe("managed runtime lifecycle", () => {
 
     const host = createManagedRuntimeHost({
       ownerId: "worker_1",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       orphans: new MemoryRuntimeOrphanPort(),
       scheduler: {
@@ -495,11 +494,10 @@ describe("managed runtime lifecycle", () => {
           });
         },
       },
-      fences: {
-        acquire: vi.fn(async () => ({ type: "acquired", fence })),
-        renew: vi.fn(async () => ({ type: "lost" })),
+      claims: {
+        open: vi.fn(async () => ({ type: "current", expiresAt: fence.expiresAt, publication: null })),
+        isCurrent: vi.fn(async () => false),
         publish,
-        release: vi.fn(async () => {}),
       },
       sandbox: {
         capabilities: vi.fn(async () => ({
@@ -548,7 +546,7 @@ describe("managed runtime lifecycle", () => {
       },
     });
 
-    await expect(host.run({ scope, profile: durableProfile })).resolves.toEqual({
+    await expect(host.run({ scope, claim: claimOf(fence), profile: durableProfile })).resolves.toEqual({
       type: "lease_lost",
     });
     expect(checkpoint).not.toHaveBeenCalled();
@@ -580,7 +578,6 @@ describe("managed runtime lifecycle", () => {
     };
     const host = createManagedRuntimeHost({
       ownerId: "worker_1",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       orphans: new MemoryRuntimeOrphanPort(),
       scheduler: {
@@ -589,14 +586,13 @@ describe("managed runtime lifecycle", () => {
             signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
           ),
       },
-      fences: {
-        acquire: vi.fn(async () => ({ type: "acquired", fence, publication: null })),
-        renew: vi.fn(),
+      claims: {
+        open: vi.fn(async () => ({ type: "current", expiresAt: fence.expiresAt, publication: null })),
+        isCurrent: vi.fn(async () => true),
         publish: vi.fn(async () => {
-          calls.push("fence.publish");
+          calls.push("claims.publish");
           return { type: "published", revision: 1 };
         }),
-        release: vi.fn(async () => calls.push("fence.release")),
       },
       sandbox: {
         capabilities: vi.fn(async () => ({
@@ -655,6 +651,7 @@ describe("managed runtime lifecycle", () => {
     await expect(
       host.run({
         scope,
+        claim: claimOf(fence),
         profile: {
           workspace: { requirement: "continuable" },
           outputs: { requirement: "disabled" },
@@ -670,9 +667,8 @@ describe("managed runtime lifecycle", () => {
       // Runtime checkpoints are created only after the canonical workspace
       // candidate exists, so the checkpoint records its revision.
       "runtime.checkpoint",
-      "fence.publish",
+      "claims.publish",
       "workspace.release",
-      "fence.release",
     ]);
     expect(calls).not.toContain("sandbox.terminate");
   });
@@ -705,7 +701,6 @@ describe("managed runtime lifecycle", () => {
     const restore = vi.fn(async () => restoredLease);
     const host = createManagedRuntimeHost({
       ownerId: fence.ownerId,
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       orphans: new MemoryRuntimeOrphanPort(),
       scheduler: {
@@ -714,10 +709,10 @@ describe("managed runtime lifecycle", () => {
             signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
           ),
       },
-      fences: {
-        acquire: vi.fn(async () => ({
-          type: "acquired" as const,
-          fence,
+      claims: {
+        open: vi.fn(async () => ({
+          type: "current" as const,
+          expiresAt: fence.expiresAt,
           publication: {
             generation: 1,
             revision: 1,
@@ -726,9 +721,8 @@ describe("managed runtime lifecycle", () => {
             runtimeCheckpoint: checkpoint,
           },
         })),
-        renew: vi.fn(),
+        isCurrent: vi.fn(async () => true),
         publish: vi.fn(async () => ({ type: "published" as const, revision: 2 })),
-        release: vi.fn(async () => {}),
       },
       runtimeCheckpoint: { create: vi.fn(), restore },
       sandbox: {
@@ -771,6 +765,7 @@ describe("managed runtime lifecycle", () => {
 
     await expect(host.run({
       scope,
+      claim: claimOf(fence),
       profile: {
         workspace: { requirement: "durable" },
         outputs: { requirement: "disabled" },

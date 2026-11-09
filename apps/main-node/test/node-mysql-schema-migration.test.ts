@@ -14,7 +14,8 @@ const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
 const invitationsSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
 const heldAfterExhaustedSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
 const runtimeResourceTablesSnapshot = "a569ec0b-0d55-4c2a-bd30-401b50191e4b";
-const currentSnapshot = "b328314c-2463-496b-9428-8396e54e5a8c";
+const sandboxTokenHashesSnapshot = "b328314c-2463-496b-9428-8396e54e5a8c";
+const currentSnapshot = "6f23cfa4-a1c3-4c7a-8efa-040a495a1191";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
@@ -44,7 +45,8 @@ describe("main-node MySQL snapshot migrations", () => {
     const sql = new MigrationSqlClient(heldAfterExhaustedSnapshot, ["tenant_id", "created_at", "id"]);
     await migrateNodeMysqlSchema(sql, migrations);
     expect(sql.snapshotId).toBe(currentSnapshot);
-    expect(sql.createdTables).toEqual(expect.arrayContaining(["runtime_resource_fences", "runtime_resource_orphans"]));
+    expect(sql.createdTables).toEqual(expect.arrayContaining(["runtime_resource_orphans"]));
+    expect(sql.createdTables).not.toContain("runtime_resource_fences");
   });
 
   it("adds the sandbox token hashes column to the runtime resource tables snapshot (#561)", async () => {
@@ -52,6 +54,17 @@ describe("main-node MySQL snapshot migrations", () => {
     await migrateNodeMysqlSchema(sql, migrations);
     expect(sql.snapshotId).toBe(currentSnapshot);
     expect(sql.statements.some((statement) => /sandbox_token_hashes/u.test(statement))).toBe(true);
+  });
+
+  it("adds the Work-claim restore pointer and sandbox token columns without dropping the retired fence table", async () => {
+    const sql = new MigrationSqlClient(sandboxTokenHashesSnapshot, ["tenant_id", "created_at", "id"]);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.statements.some((statement) =>
+      /ALTER TABLE `managed_environment_work` ADD COLUMN `runtime_publication_json` TEXT/u.test(statement))).toBe(true);
+    expect(sql.statements.some((statement) =>
+      /ALTER TABLE `managed_environment_work` ADD COLUMN `sandbox_token_hashes` TEXT/u.test(statement))).toBe(true);
+    expect(sql.statements.some((statement) => /DROP/u.test(statement))).toBe(false);
   });
 
   it.each([invitationsSnapshot, currentSnapshot])(

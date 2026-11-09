@@ -391,7 +391,7 @@ describe("Environment Work application", () => {
       }),
     ).resolves.toEqual({
       type: "work",
-      work: { ...work, secret: stored.secret },
+      work: { ...work, secret: { ...stored.secret, claimGeneration: 1 } },
     });
     expect(claimCalls).toEqual([
       {
@@ -468,6 +468,7 @@ describe("Environment Work application", () => {
         secret: {
           ...stored.secret,
           sessionsToken: "sk-ant-req-claim-bound-token",
+          claimGeneration: 1,
         },
       },
     });
@@ -481,6 +482,7 @@ describe("Environment Work application", () => {
         secret: {
           ...stored.secret,
           sessionsToken: "sk-ant-req-claim-bound-token",
+          claimGeneration: 1,
         },
         claim: claimed.claim,
         heartbeatTtlSeconds: 90,

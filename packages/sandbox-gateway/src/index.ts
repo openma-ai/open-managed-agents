@@ -6,7 +6,6 @@
 
 export type { SessionExecutionAttemptRef, SessionExecutionLease, SessionExecutionLeases } from "@open-managed-agents/session-runtime/execution-lease";
 export * from "./vault-substitution";
-export * from "./environment-work-egress";
 export * from "./sandbox-token";
 export * from "./sandbox-token-store";
 export * from "./sandbox-token-authority";

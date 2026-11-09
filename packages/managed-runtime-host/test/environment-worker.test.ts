@@ -23,7 +23,7 @@ const queuedWork: BetaSelfHostedWork = {
   environment_id: "env_01",
   latest_heartbeat_at: null,
   metadata: {},
-  secret: Buffer.from(JSON.stringify({ sessions_token: "session-token" }))
+  secret: Buffer.from(JSON.stringify({ sessions_token: "session-token", claim_generation: 1 }))
     .toString("base64url"),
   started_at: null,
   state: "queued",
@@ -410,6 +410,8 @@ describe("managed Environment Worker activation", () => {
     [Buffer.from(JSON.stringify({ sessions_token: 1 })).toString("base64url"), /no sessions_token/u],
     [Buffer.from(JSON.stringify({ sessions_token: "" })).toString("base64url"), /no sessions_token/u],
     [Buffer.from(JSON.stringify({ sessions_token: "token", api_base_url: 1 })).toString("base64url"), /invalid api_base_url/u],
+    [Buffer.from(JSON.stringify({ sessions_token: "token" })).toString("base64url"), /no claim_generation/u],
+    [Buffer.from(JSON.stringify({ sessions_token: "token", claim_generation: 0 })).toString("base64url"), /no claim_generation/u],
   ])("fails a Session Work with invalid credential %j without starting the host", async (secret, message) => {
     const badWork = { ...queuedWork, secret } as BetaSelfHostedWork;
     const { client } = structuralClient({ work: badWork });
@@ -434,6 +436,7 @@ describe("managed Environment Worker activation", () => {
       ...queuedWork,
       secret: Buffer.from(JSON.stringify({
         sessions_token: "session-token",
+        claim_generation: 1,
         api_base_url: "https://claim.example",
       })).toString("base64url"),
     };
@@ -784,6 +787,7 @@ describe("managed Environment Worker activation", () => {
       metadata: sessionSnapshot.metadata,
       resources: sessionSnapshot.resources,
     });
+    expect(runs[0]?.claim).toEqual({ generation: 1, token: "session-token" });
     expect(runs[0]?.scope).toEqual({
       workspaceId: "workspace_01",
       environmentId: "env_01",

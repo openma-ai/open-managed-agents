@@ -9,7 +9,7 @@ import {
   type SandboxTokenStore,
   type SessionExecutionAttemptRef,
 } from "@open-managed-agents/sandbox-gateway";
-import { createSqlSandboxTokenStore } from "@open-managed-agents/sandbox-gateway-sql";
+import { createSqlGatewaySandboxTokenStore } from "@open-managed-agents/sandbox-gateway-sql";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 
 /** The sandbox token (#561) on Node: issued once per execution attempt into the
@@ -19,12 +19,13 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
 export function createNodeManagedAcpCapabilities(dependencies: {
   gatewayBaseUrl?: string;
   now(): Date;
-  /** The token store (tests pass one); else SQL over `sql`. */
+  /** The token store (tests pass one); else SQL over `sql`, verifying both
+   * lanes (execution attempt, Environment Work claim). */
   tokens?: SandboxTokenStore;
   sql?: SqlClient;
 }) {
   const now = () => dependencies.now().getTime();
-  const tokens = dependencies.tokens ?? (dependencies.sql === undefined ? null : createSqlSandboxTokenStore(dependencies.sql));
+  const tokens = dependencies.tokens ?? (dependencies.sql === undefined ? null : createSqlGatewaySandboxTokenStore(dependencies.sql));
   if (tokens === null) throw new Error("Node sandbox tokens need a store or a SQL client");
   // One token per attempt, shared by the harness channels and the relay.
   const attemptTokens = attemptSandboxTokens();

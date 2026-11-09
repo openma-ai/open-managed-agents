@@ -14,7 +14,7 @@ import type { SandboxTokenAttempt, SandboxTokenSession, SandboxTokenStore } from
 export const MAX_SANDBOX_TOKENS_PER_ATTEMPT = 32;
 const APPEND_RETRIES = 8;
 
-interface SessionRow {
+export interface SessionRow {
   id: string; workspace_id: string; document: string; archived_at: number | string | null;
   environment_id: string | null; agent_id: string | null; agent_version: number | string | null;
 }
@@ -23,7 +23,7 @@ interface FoundRow extends SessionRow {
   claimed_at_ms: number | string | null; lease_expires_at_ms: number | string | null; sandbox_token_hashes: string | null;
 }
 
-function sessionOf(row: SessionRow): SandboxTokenSession {
+export function sessionOf(row: SessionRow): SandboxTokenSession {
   const document = JSON.parse(row.document) as {
     environmentId?: string; vaultIds?: string[]; agent?: { id?: string; version?: number; skills?: Array<{ skillId: string; version: string }> };
     resources?: Array<{ type: string; fileId?: string; memoryStoreId?: string; access?: string }>;
@@ -45,9 +45,9 @@ function sessionOf(row: SessionRow): SandboxTokenSession {
 
 /** One stored token. `scope` is kept as read: a missing or unknown value is
  * rejected by the authority (sandboxTokenScopeAdmits), never defaulted. */
-interface TokenEntry { hash: string; scope: unknown }
+export interface TokenEntry { hash: string; scope: unknown }
 
-const entries = (raw: string | null): TokenEntry[] => {
+export const entries = (raw: string | null): TokenEntry[] => {
   if (raw === null || raw === "") return [];
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) return [];
@@ -61,7 +61,7 @@ const entries = (raw: string | null): TokenEntry[] => {
   });
 };
 
-const serialize = (list: readonly TokenEntry[]) => JSON.stringify(list.map((entry) => ({ h: entry.hash, s: entry.scope })));
+export const serialize = (list: readonly TokenEntry[]) => JSON.stringify(list.map((entry) => ({ h: entry.hash, s: entry.scope })));
 
 export function createSqlSandboxTokenStore(sql: SqlClient): SandboxTokenStore {
   return {

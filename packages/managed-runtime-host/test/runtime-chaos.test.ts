@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createManagedRuntimeHost,
 } from "../src/index";
-import type { RuntimeResourceFence } from "@open-managed-agents/runtime-resource-contract";
+import type { EnvironmentWorkClaim } from "@open-managed-agents/runtime-resource-contract";
 import type { ManagedRuntimeHostDependencies } from "../src/index";
 import {
   MemoryRuntimeOrphanPort,
-  MemoryRuntimeResourceFencePort,
+  MemoryEnvironmentWorkClaimPort,
 } from "../src/testing";
 
 const scope = {
@@ -16,6 +16,8 @@ const scope = {
   sessionId: "session_chaos",
   workId: "work_chaos",
 };
+
+const claim = { generation: 11, token: "chaos-token" };
 
 const profile = {
   workspace: { requirement: "durable" as const },
@@ -37,7 +39,7 @@ const postAcquireStages = [
   "workspace.checkpoint",
   "outputs.collect",
   "outputs.finalize",
-  "fences.publish",
+  "claims.publish",
 ] as const;
 
 type PostAcquireStage = (typeof postAcquireStages)[number];
@@ -54,13 +56,6 @@ function blockedScheduler() {
 function chaosFixture(failAt: PostAcquireStage) {
   const trace: string[] = [];
   let loseRenew = false;
-  const fence = {
-    ...scope,
-    ownerId: "chaos-owner",
-    generation: 11,
-    token: "chaos-token",
-    expiresAt: "2099-01-01T00:00:00.000Z",
-  };
   const stage = <T>(name: PostAcquireStage, value: T) =>
     vi.fn(async (..._arguments: unknown[]) => {
       trace.push(name);
@@ -70,21 +65,17 @@ function chaosFixture(failAt: PostAcquireStage) {
 
   const dependencies = {
     ownerId: "chaos-owner",
-    leaseTtlMs: 90_000,
     heartbeatIntervalMs: 30_000,
     scheduler: blockedScheduler(),
     orphans: new MemoryRuntimeOrphanPort(),
-    fences: {
-      acquire: vi.fn(async () => ({ type: "acquired" as const, fence, publication: null })),
-      renew: vi.fn(async () =>
-        loseRenew
-          ? ({ type: "lost" as const })
-          : ({ type: "renewed" as const, fence })
-      ),
-      publish: stage("fences.publish", { type: "published" as const, revision: 1 }),
-      release: vi.fn(async ({ reason }: { reason: string }) => {
-        trace.push(`fences.release:${reason}`);
-      }),
+    claims: {
+      open: vi.fn(async () => ({
+        type: "current" as const,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        publication: null,
+      })),
+      isCurrent: vi.fn(async () => !loseRenew),
+      publish: stage("claims.publish", { type: "published" as const, revision: 1 }),
     },
     sandbox: {
       capabilities: vi.fn(async () => ({
@@ -147,7 +138,7 @@ function chaosFixture(failAt: PostAcquireStage) {
   return {
     dependencies,
     trace,
-    loseFenceOnRenew() {
+    loseClaim() {
       loseRenew = true;
     },
   };
@@ -161,18 +152,16 @@ describe("managed runtime deterministic chaos matrix", () => {
       await expect(
         createManagedRuntimeHost(
           dependencies as unknown as ManagedRuntimeHostDependencies,
-        ).run({ scope, profile }),
+        ).run({ scope, claim, profile }),
       ).resolves.toMatchObject({
         type: "failed",
         error: expect.objectContaining({ message: `injected:${failAt}` }),
       });
 
       expect(dependencies.outputs.release).not.toHaveBeenCalled();
-      if (failAt !== "fences.publish") {
-        expect(dependencies.fences.publish).not.toHaveBeenCalled();
+      if (failAt !== "claims.publish") {
+        expect(dependencies.claims.publish).not.toHaveBeenCalled();
       }
-      expect(dependencies.fences.release).toHaveBeenCalledOnce();
-      expect(trace.at(-1)).toBe("fences.release:failed");
 
       const sandboxWasAllocated = postAcquireStages.indexOf(failAt) >
         postAcquireStages.indexOf("sandbox.acquire");
@@ -192,12 +181,12 @@ describe("managed runtime deterministic chaos matrix", () => {
     },
   );
 
-  it("fences a run that loses ownership while output finalization is in flight", async () => {
+  it("stops a run that loses its Work claim while output finalization is in flight", async () => {
     let wakeMonitor!: () => void;
     const monitorMayRun = new Promise<void>((resolve) => {
       wakeMonitor = resolve;
     });
-    const { dependencies, loseFenceOnRenew } = chaosFixture("fences.publish");
+    const { dependencies, loseClaim } = chaosFixture("claims.publish");
     dependencies.scheduler = {
       sleep: async (_milliseconds: number, signal: AbortSignal) => {
         await Promise.race([
@@ -208,7 +197,7 @@ describe("managed runtime deterministic chaos matrix", () => {
         ]);
       },
     };
-    loseFenceOnRenew();
+    loseClaim();
     dependencies.outputs.finalize.mockImplementation(async (rawInput: unknown) => {
       const { signal } = rawInput as { signal: AbortSignal };
       wakeMonitor();
@@ -221,9 +210,9 @@ describe("managed runtime deterministic chaos matrix", () => {
     await expect(
       createManagedRuntimeHost(
         dependencies as unknown as ManagedRuntimeHostDependencies,
-      ).run({ scope, profile }),
+      ).run({ scope, claim, profile }),
     ).resolves.toEqual({ type: "lease_lost" });
-    expect(dependencies.fences.publish).not.toHaveBeenCalled();
+    expect(dependencies.claims.publish).not.toHaveBeenCalled();
     expect(dependencies.outputs.abort).toHaveBeenCalledWith(
       expect.objectContaining({ reason: "lease_lost" }),
     );
@@ -241,66 +230,57 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-describe("runtime fence seeded model chaos", () => {
+describe("Work claim seeded model chaos", () => {
   it.each([1, 7, 42, 2_026_090_3])(
-    "preserves single-owner and stale-publication invariants for seed %i",
+    "only the newest unlost claim publishes, for seed %i",
     async (seed) => {
-      const clock = { now: Date.parse("2026-09-03T00:00:00.000Z") };
-      let token = 0;
-      const store = new MemoryRuntimeResourceFencePort({
-        now: () => new Date(clock.now),
-        nextToken: (generation) => `token:${generation}:${++token}`,
-      });
+      const store = new MemoryEnvironmentWorkClaimPort();
       const random = mulberry32(seed);
-      const held: RuntimeResourceFence[] = [];
+      const held: EnvironmentWorkClaim[] = [];
 
       for (let step = 0; step < 250; step += 1) {
-        const action = Math.floor(random() * 5);
+        const action = Math.floor(random() * 4);
         if (action === 0 || held.length === 0) {
-          const ownerId = `owner_${Math.floor(random() * 4)}`;
-          const result = await store.acquire({ scope, ownerId, ttlMs: 10 });
-          if (result.type === "acquired") held.push(result.fence);
+          held.push(store.claim(scope));
         } else if (action === 1) {
-          clock.now += 1 + Math.floor(random() * 12);
+          if (random() < 0.5) store.requestStop(scope);
+          else store.lose(scope);
         } else {
           const candidate = held[Math.floor(random() * held.length)]!;
+          const before = store.inspect(scope)!;
+          const holds = before.state !== "lost"
+            && before.generation === candidate.generation
+            && before.token === candidate.token;
           if (action === 2) {
-            await store.renew({ fence: candidate, ttlMs: 10 });
-          } else if (action === 3) {
-            await store.release({ fence: candidate });
+            await expect(store.isCurrent(candidate)).resolves.toBe(holds);
           } else {
             const publication = await store.publish({
-              fence: candidate,
+              claim: candidate,
               workspaceCandidate: {
                 id: `workspace:${candidate.generation}`,
                 contentHash: `sha256:${candidate.generation}`,
               },
               outputCandidate: null,
             });
+            expect(publication.type).toBe(holds ? "published" : "lost");
+            const observed = store.inspect(scope)!;
             if (publication.type === "published") {
-              const observed = store.inspect(scope)!;
-              expect(observed.active).toMatchObject({
-                ownerId: candidate.ownerId,
-                token: candidate.token,
-                generation: candidate.generation,
-              });
               expect(observed.publication).toMatchObject({
                 generation: candidate.generation,
                 revision: publication.revision,
               });
+            } else {
+              expect(observed.publication).toEqual(before.publication);
             }
           }
         }
 
         const observed = store.inspect(scope);
-        if (observed?.active !== null && observed?.active !== undefined) {
-          const successfulHeld = held.filter(
-            (candidate) =>
-              candidate.token === observed.active?.token &&
-              candidate.generation === observed.active.generation,
-          );
-          expect(new Set(successfulHeld.map((candidate) => candidate.token)).size).toBe(1);
+        const current = [];
+        for (const candidate of held) {
+          if (await store.isCurrent(candidate)) current.push(candidate);
         }
+        expect(current.length).toBeLessThanOrEqual(1);
         if (observed?.publication !== null && observed?.publication !== undefined) {
           expect(observed.publication.generation).toBeLessThanOrEqual(observed.generation);
           expect(observed.publication.revision).toBeGreaterThan(0);

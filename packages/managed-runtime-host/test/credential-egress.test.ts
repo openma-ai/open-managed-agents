@@ -10,6 +10,8 @@ const scope = {
   workId: "work_1",
 };
 
+const claim = { generation: 7, token: "runtime-fence-secret" };
+
 const profile = {
   workspace: { requirement: "durable" as const },
   outputs: { requirement: "disabled" as const },
@@ -28,13 +30,7 @@ function createFixture(options: {
   run?: (signal: AbortSignal) => Promise<{ type: "completed" } | { type: "aborted" }>;
 } = {}) {
   const calls = options.calls ?? [];
-  const fence = {
-    ...scope,
-    ownerId: "owner_1",
-    generation: 7,
-    token: "runtime-fence-secret",
-    expiresAt: "2099-09-06T00:00:00.000Z",
-  };
+  const fence = { ...scope, ...claim, ownerId: "owner_1", expiresAt: "2099-09-06T00:00:00.000Z" };
   const binding = {
     bindingId: "egress-binding-7",
     enforcement: "enforced" as const,
@@ -69,7 +65,6 @@ function createFixture(options: {
       };
   const host = createManagedRuntimeHost({
     ownerId: "owner_1",
-    leaseTtlMs: 90_000,
     heartbeatIntervalMs: 30_000,
     scheduler: {
       sleep: (_milliseconds: number, signal: AbortSignal) =>
@@ -77,14 +72,13 @@ function createFixture(options: {
           signal.addEventListener("abort", () => reject(signal.reason), { once: true });
         }),
     },
-    fences: {
-      acquire: vi.fn(async () => ({ type: "acquired" as const, fence, publication: null })),
-      renew: vi.fn(),
+    claims: {
+      open: vi.fn(async () => ({ type: "current" as const, expiresAt: fence.expiresAt, publication: null })),
+      isCurrent: vi.fn(async () => true),
       publish: vi.fn(async () => {
-        calls.push("fence.publish");
+        calls.push("claims.publish");
         return { type: "published" as const, revision: 1 };
       }),
-      release: vi.fn(async () => calls.push("fence.release")),
     },
     sandbox: {
       capabilities: vi.fn(async () => ({
@@ -151,6 +145,7 @@ describe("ManagedRuntimeHost credential egress", () => {
 
     await expect(fixture.host.run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -173,6 +168,7 @@ describe("ManagedRuntimeHost credential egress", () => {
 
     await expect(fixture.host.run({
       scope,
+      claim,
       profile: {
         ...profile,
         driver: {
@@ -206,6 +202,7 @@ describe("ManagedRuntimeHost credential egress", () => {
 
     await expect(fixture.host.run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -236,6 +233,7 @@ describe("ManagedRuntimeHost credential egress", () => {
 
     await expect(fixture.host.run({
       scope,
+      claim,
       profile: { ...profile, credentialEgress: { requirement: "disabled" } },
       session: {
         id: scope.sessionId,
@@ -266,6 +264,7 @@ describe("ManagedRuntimeHost credential egress", () => {
 
     await expect(fixture.host.run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -320,6 +319,7 @@ describe("ManagedRuntimeHost credential egress", () => {
 
     await expect(fixture.host.run({
       scope,
+      claim,
       profile: {
         ...profile,
         driver: {
@@ -364,6 +364,7 @@ describe("ManagedRuntimeHost credential egress", () => {
 
     await expect(fixture.host.run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -383,7 +384,7 @@ describe("ManagedRuntimeHost credential egress", () => {
   it("binds enforced egress before the harness and revokes it before sandbox cleanup", async () => {
     const fixture = createFixture();
 
-    await expect(fixture.host.run({ scope, profile } as any)).resolves.toEqual({
+    await expect(fixture.host.run({ scope, claim, profile } as any)).resolves.toEqual({
       type: "completed",
       revision: 1,
     });
@@ -394,19 +395,18 @@ describe("ManagedRuntimeHost credential egress", () => {
       "workspace.attach",
       "egress.attach",
       "harness.run",
-      "fence.publish",
+      "claims.publish",
       "egress.revoke:completed",
       "sandbox.terminate",
       "egress.release",
       "workspace.release",
-      "fence.release",
     ]);
   });
 
   it("fails closed before allocating compute when required egress is unavailable", async () => {
     const fixture = createFixture({ egress: null });
 
-    await expect(fixture.host.run({ scope, profile } as any)).rejects.toThrow(
+    await expect(fixture.host.run({ scope, claim, profile } as any)).rejects.toThrow(
       /required credential egress/i,
     );
     expect(fixture.calls).not.toContain("sandbox.acquire");
@@ -424,7 +424,7 @@ describe("ManagedRuntimeHost credential egress", () => {
       },
     });
 
-    await expect(fixture.host.run({ scope, profile } as any)).rejects.toThrow(
+    await expect(fixture.host.run({ scope, claim, profile } as any)).rejects.toThrow(
       /requires enforced credential egress/i,
     );
     expect(fixture.calls).not.toContain("egress.prepare");
@@ -444,7 +444,7 @@ describe("ManagedRuntimeHost credential egress", () => {
     });
 
     await expect(
-      fixture.host.run({ scope, profile, signal: controller.signal } as any),
+      fixture.host.run({ scope, claim, profile, signal: controller.signal } as any),
     ).resolves.toEqual({ type: "lease_lost" });
 
     expect(fixture.calls.indexOf("egress.revoke:lease_lost")).toBeGreaterThan(-1);

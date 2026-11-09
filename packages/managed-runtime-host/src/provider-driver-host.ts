@@ -14,10 +14,9 @@ export interface ManagedRuntimeProviderHostOptions
   extends Pick<
     ManagedRuntimeHostDependencies,
     | "ownerId"
-    | "leaseTtlMs"
     | "heartbeatIntervalMs"
     | "checkpointIntervalMs"
-    | "fences"
+    | "claims"
     | "orphans"
     | "scheduler"
   > {
@@ -31,7 +30,7 @@ export interface ManagedRuntimeProviderHostOptions
 
 /** Project one dynamically selected provider driver into the ordinary
  * ManagedRuntimeHost state machine. Capability admission happens before the
- * driver's create hook; provider resources are then fenced and published by
+ * driver's create hook; provider resources are then claim-checked and published by
  * exactly the same host logic as preinstalled Node/Cloudflare compositions. */
 export function createManagedRuntimeProviderHost(
   options: ManagedRuntimeProviderHostOptions,
@@ -61,10 +60,9 @@ export function createManagedRuntimeProviderHost(
       const resources = selection.resources;
       const host = createManagedRuntimeHost({
         ownerId: options.ownerId,
-        leaseTtlMs: options.leaseTtlMs,
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         ...(options.checkpointIntervalMs === undefined ? {} : { checkpointIntervalMs: options.checkpointIntervalMs }),
-        fences: options.fences,
+        claims: options.claims,
         orphans: options.orphans,
         sandbox: resources.sandbox,
         workspace: resources.workspace,

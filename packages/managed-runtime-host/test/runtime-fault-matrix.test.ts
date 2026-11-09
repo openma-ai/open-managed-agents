@@ -19,6 +19,7 @@ const fence = {
   token: "fault-secret",
   expiresAt: "2026-09-03T12:00:00.000Z",
 };
+const claim = { generation: fence.generation, token: fence.token };
 const profile = {
   workspace: { requirement: "durable" as const },
   outputs: { requirement: "durable" as const },
@@ -42,16 +43,13 @@ function fixture(overrides: Record<string, any> = {}) {
   const calls: string[] = [];
   const base: any = {
     ownerId: "fault-owner",
-    leaseTtlMs: 90_000,
     heartbeatIntervalMs: 30_000,
     scheduler: blockedScheduler(),
     orphans: new MemoryRuntimeOrphanPort(),
-    fences: {
-      acquire: vi.fn(async () => ({ type: "acquired", fence, publication: null })),
+    claims: {
+      open: vi.fn(async () => ({ type: "current", expiresAt: fence.expiresAt, publication: null })),
       isCurrent: vi.fn(async () => true),
-      renew: vi.fn(async () => ({ type: "renewed", fence })),
       publish: vi.fn(async () => ({ type: "published", revision: 1 })),
-      release: vi.fn(async ({ reason }: { reason: string }) => calls.push(`release:${reason}`)),
     },
     sandbox: {
       capabilities: vi.fn(async () => ({
@@ -134,7 +132,7 @@ describe("Managed Runtime Host fault matrix", () => {
 
   it("fences and aborts outputs when a live turn checkpoint loses ownership", async () => {
     const { dependencies } = fixture({
-      fences: {
+      claims: {
         publish: vi.fn(async () => ({ type: "lost" })),
       },
       harnessDriver: {
@@ -149,7 +147,7 @@ describe("Managed Runtime Host fault matrix", () => {
       },
     });
 
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toEqual({ type: "lease_lost" });
     expect(dependencies.workspace.checkpoint).toHaveBeenCalledOnce();
     expect(dependencies.outputs.finalize).toHaveBeenCalledOnce();
@@ -178,7 +176,7 @@ describe("Managed Runtime Host fault matrix", () => {
       },
     });
 
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toMatchObject({
         type: "failed",
         error: expect.objectContaining({
@@ -202,18 +200,20 @@ describe("Managed Runtime Host fault matrix", () => {
 
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: { ...profile, outputs: { requirement: "disabled" } },
     })).resolves.toEqual({ type: "completed", revision: 1 });
     expect(dependencies.outputs.prepare).not.toHaveBeenCalled();
     expect(dependencies.outputs.collect).not.toHaveBeenCalled();
     expect(dependencies.outputs.finalize).not.toHaveBeenCalled();
-    expect(dependencies.fences.publish).toHaveBeenCalledTimes(2);
+    expect(dependencies.claims.publish).toHaveBeenCalledTimes(2);
   });
 
   it("accepts an empty Session resource set without a materializer", async () => {
     const { dependencies } = fixture();
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -236,9 +236,10 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: { ...profile, runtimeCheckpoint: "optional" },
     })).rejects.toThrow(/does not provide RuntimeCheckpointPort/u);
-    expect(dependencies.fences.acquire).not.toHaveBeenCalled();
+    expect(dependencies.claims.open).not.toHaveBeenCalled();
   });
 
   it("fails the fenced transaction when required credential egress cannot be prepared", async () => {
@@ -253,6 +254,7 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: {
         ...profile,
         credentialEgress: { requirement: "required" },
@@ -272,13 +274,12 @@ describe("Managed Runtime Host fault matrix", () => {
     const { dependencies } = fixture();
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile,
       signal: controller.signal,
     })).resolves.toEqual({ type: "lease_lost" });
     expect(dependencies.harnessDriver.run).not.toHaveBeenCalled();
-    expect(dependencies.fences.release).toHaveBeenCalledWith(expect.objectContaining({
-      reason: "lease_lost",
-    }));
+    expect(dependencies.claims.publish).not.toHaveBeenCalled();
   });
 
   it("handles cancellation that races a completed scheduler sleep", async () => {
@@ -299,10 +300,11 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile,
       signal: controller.signal,
     })).resolves.toEqual({ type: "lease_lost" });
-    expect(dependencies.fences.renew).not.toHaveBeenCalled();
+    expect(dependencies.claims.isCurrent).not.toHaveBeenCalled();
   });
 
   it("aborts the active harness when the provider reports its sandbox lease lost", async () => {
@@ -339,7 +341,7 @@ describe("Managed Runtime Host fault matrix", () => {
         }),
       },
     });
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toEqual({ type: "lease_lost" });
     expect(dependencies.sandbox.heartbeat).toHaveBeenCalledOnce();
   });
@@ -352,10 +354,10 @@ describe("Managed Runtime Host fault matrix", () => {
           if (failureAt === "scheduler") throw failure;
         }),
       },
-      fences: {
-        renew: vi.fn(async () => {
+      claims: {
+        isCurrent: vi.fn(async () => {
           if (failureAt === "fence") throw failure;
-          return { type: "renewed", fence };
+          return true;
         }),
       },
       workspace: {
@@ -368,11 +370,11 @@ describe("Managed Runtime Host fault matrix", () => {
         }),
       },
     });
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toEqual({ type: "lease_lost" });
   });
 
-  it("stops without publishing when a renewal reports the fence lost", async () => {
+  it("stops without publishing when the Work claim check reports the claim lost", async () => {
     let sleeps = 0;
     const { dependencies } = fixture({
       scheduler: {
@@ -382,7 +384,7 @@ describe("Managed Runtime Host fault matrix", () => {
           signal.throwIfAborted();
         }),
       },
-      fences: { renew: vi.fn(async () => ({ type: "lost" })) },
+      claims: { isCurrent: vi.fn(async () => false) },
       harnessDriver: {
         run: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
           if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
@@ -390,14 +392,13 @@ describe("Managed Runtime Host fault matrix", () => {
         }),
       },
     });
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toEqual({ type: "lease_lost" });
-    expect(dependencies.fences.publish).not.toHaveBeenCalled();
+    expect(dependencies.claims.publish).not.toHaveBeenCalled();
     expect(dependencies.sandbox.terminate).toHaveBeenCalledWith(expect.objectContaining({ reason: "lease_lost" }));
-    expect(dependencies.fences.release).toHaveBeenCalledWith(expect.objectContaining({ reason: "lease_lost" }));
   });
 
-  it("self-fences when a partition leaves runtime fence renewal hanging", async () => {
+  it("self-fences when a partition leaves the Work claim check hanging", async () => {
     vi.useFakeTimers();
     try {
       let wakeHeartbeat!: () => void;
@@ -415,8 +416,8 @@ describe("Managed Runtime Host fault matrix", () => {
             ]);
           },
         },
-        fences: {
-          renew: vi.fn(async () => {
+        claims: {
+          isCurrent: vi.fn(async () => {
             renewalStarted();
             await new Promise<never>(() => {});
           }),
@@ -433,7 +434,7 @@ describe("Managed Runtime Host fault matrix", () => {
         },
       });
 
-      const running = createManagedRuntimeHost(dependencies).run({ scope, profile });
+      const running = createManagedRuntimeHost(dependencies).run({ scope, claim, profile });
       await renewing;
       await vi.advanceTimersByTimeAsync(5_000);
 
@@ -482,7 +483,7 @@ describe("Managed Runtime Host fault matrix", () => {
         },
       });
 
-      const running = createManagedRuntimeHost(dependencies).run({ scope, profile });
+      const running = createManagedRuntimeHost(dependencies).run({ scope, claim, profile });
       await heartbeating;
       await vi.advanceTimersByTimeAsync(5_000);
 
@@ -502,6 +503,7 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -526,6 +528,7 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -551,6 +554,7 @@ describe("Managed Runtime Host fault matrix", () => {
 
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,
@@ -560,7 +564,7 @@ describe("Managed Runtime Host fault matrix", () => {
       },
     })).resolves.toEqual({ type: "completed", revision: 1 });
 
-    expect(dependencies.fences.isCurrent).toHaveBeenCalledTimes(2);
+    expect(dependencies.claims.isCurrent).toHaveBeenCalledTimes(2);
   });
 
   it.each(["materialize", "synchronize"] as const)(
@@ -568,7 +572,7 @@ describe("Managed Runtime Host fault matrix", () => {
     async (stage) => {
       let fenceChecks = 0;
       const { dependencies } = fixture({
-        fences: {
+        claims: {
           isCurrent: vi.fn(async () => {
             fenceChecks += 1;
             return stage === "materialize" ? false : fenceChecks === 1;
@@ -586,6 +590,7 @@ describe("Managed Runtime Host fault matrix", () => {
 
       await expect(createManagedRuntimeHost(dependencies).run({
         scope,
+        claim,
         profile,
         session: {
           id: scope.sessionId,
@@ -624,6 +629,7 @@ describe("Managed Runtime Host fault matrix", () => {
 
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: {
         ...profile,
         driver: {
@@ -697,6 +703,7 @@ describe("Managed Runtime Host fault matrix", () => {
 
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: {
         ...profile,
         driver: {
@@ -765,6 +772,7 @@ describe("Managed Runtime Host fault matrix", () => {
 
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: {
         ...profile,
         driver: {
@@ -825,6 +833,7 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     const running = createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: {
         ...profile,
         driver: {
@@ -862,7 +871,7 @@ describe("Managed Runtime Host fault matrix", () => {
         run: vi.fn(async () => ({ type: "aborted" })),
       },
     });
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toEqual({ type: "lease_lost" });
   });
 
@@ -874,10 +883,10 @@ describe("Managed Runtime Host fault matrix", () => {
       let fenceRenewed!: () => void;
       const renewed = new Promise<void>((resolve) => { fenceRenewed = resolve; });
       const { dependencies } = fixture({
-        fences: {
-          renew: vi.fn(async () => {
+        claims: {
+          isCurrent: vi.fn(async () => {
             fenceRenewed();
-            return { type: "renewed", fence };
+            return true;
           }),
         },
         sandbox: {
@@ -893,12 +902,12 @@ describe("Managed Runtime Host fault matrix", () => {
       });
       dependencies.scheduler = undefined;
       dependencies.heartbeatIntervalMs = 10;
-      const running = createManagedRuntimeHost(dependencies).run({ scope, profile });
+      const running = createManagedRuntimeHost(dependencies).run({ scope, claim, profile });
       await started;
       const expectation = expect(running).resolves.toEqual({ type: "completed", revision: 1 });
       await vi.advanceTimersByTimeAsync(10);
       await expectation;
-      expect(dependencies.fences.renew).toHaveBeenCalledOnce();
+      expect(dependencies.claims.isCurrent).toHaveBeenCalledOnce();
       expect(dependencies.sandbox.heartbeat).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
@@ -927,10 +936,11 @@ describe("Managed Runtime Host fault matrix", () => {
         })),
       },
       runtimeCheckpoint: { create, restore: vi.fn() },
-      fences: { publish },
+      claims: { publish },
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: {
         ...profile,
         runtimeCheckpoint: "required",
@@ -959,10 +969,10 @@ describe("Managed Runtime Host fault matrix", () => {
     const restore = vi.fn(async () => { throw restoreFailure; });
     const acquire = vi.fn(async () => ({ provider: "fake", runtimeId: "runtime-fresh" }));
     const { dependencies } = fixture({
-      fences: {
-        acquire: vi.fn(async () => ({
-          type: "acquired",
-          fence,
+      claims: {
+        open: vi.fn(async () => ({
+          type: "current",
+          expiresAt: fence.expiresAt,
           publication: {
             generation: 0,
             revision: 1,
@@ -1000,6 +1010,7 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: { ...profile, runtimeCheckpoint: "optional" },
     })).resolves.toEqual({ type: "completed", revision: 1 });
     expect(restore).toHaveBeenCalledOnce();
@@ -1033,10 +1044,11 @@ describe("Managed Runtime Host fault matrix", () => {
         })),
         restore: vi.fn(),
       },
-      fences: { publish },
+      claims: { publish },
     });
     const result = await createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: { ...profile, runtimeCheckpoint: mode },
     });
     expect(result.type).toBe(outcome);
@@ -1066,6 +1078,7 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: { ...profile, runtimeCheckpoint: "required" },
     })).resolves.toEqual({ type: "failed", error: failure });
   });
@@ -1076,7 +1089,7 @@ describe("Managed Runtime Host fault matrix", () => {
       sandbox: { terminate: vi.fn(async () => { throw "provider disconnected"; }) },
       orphans: { enqueue, list: vi.fn(), resolved: vi.fn(), failed: vi.fn() },
     });
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toEqual({ type: "completed", revision: 1 });
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
       error: "provider disconnected",
@@ -1100,7 +1113,7 @@ describe("Managed Runtime Host fault matrix", () => {
       });
       dependencies.orphans = orphans;
 
-      const running = createManagedRuntimeHost(dependencies).run({ scope, profile });
+      const running = createManagedRuntimeHost(dependencies).run({ scope, claim, profile });
       await started;
       await vi.advanceTimersByTimeAsync(5_000);
 
@@ -1128,12 +1141,11 @@ describe("Managed Runtime Host fault matrix", () => {
         failed: vi.fn(),
       },
     });
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .rejects.toBe(persistenceFailure);
     expect(calls).toEqual([
       "outputs.release",
       "workspace.release",
-      "release:completed",
     ]);
   });
 
@@ -1145,20 +1157,16 @@ describe("Managed Runtime Host fault matrix", () => {
       workspace: {
         release: vi.fn(async () => { throw new Error("workspace release failed"); }),
       },
-      fences: {
-        release: vi.fn(async () => { throw new Error("fence release failed"); }),
-      },
     });
-    await expect(createManagedRuntimeHost(dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(dependencies).run({ scope, claim, profile }))
       .resolves.toEqual({ type: "completed", revision: 1 });
 
     const failed = fixture({
       harnessDriver: { run: vi.fn(async () => { throw new Error("execution failed"); }) },
       outputs: { abort: vi.fn(async () => { throw new Error("output abort failed"); }) },
       workspace: { release: vi.fn(async () => { throw new Error("workspace release failed"); }) },
-      fences: { release: vi.fn(async () => { throw new Error("fence release failed"); }) },
     });
-    await expect(createManagedRuntimeHost(failed.dependencies).run({ scope, profile }))
+    await expect(createManagedRuntimeHost(failed.dependencies).run({ scope, claim, profile }))
       .resolves.toMatchObject({ type: "failed" });
   });
 
@@ -1183,15 +1191,15 @@ describe("Managed Runtime Host fault matrix", () => {
     });
     await expect(createManagedRuntimeHost(dependencies).run({
       scope,
+      claim,
       profile: {
         ...profile,
         credentialEgress: { requirement: "required" },
       },
     })).rejects.toBe(failure);
     expect(dependencies.workspace.release).toHaveBeenCalledOnce();
-    expect(dependencies.fences.release).toHaveBeenCalledOnce();
   });
-  it("rejects unsupported driver/output/checkpoint profiles before fence acquisition", async () => {
+  it("rejects unsupported driver/output/checkpoint profiles before opening the Work claim", async () => {
     const { dependencies } = fixture({
       sandbox: {
         capabilities: vi.fn(async () => ({
@@ -1207,8 +1215,8 @@ describe("Managed Runtime Host fault matrix", () => {
       },
     });
     const host = createManagedRuntimeHost(dependencies);
-    await expect(host.run({ scope, profile })).rejects.toThrow(/durable.*outputs/i);
-    expect(dependencies.fences.acquire).not.toHaveBeenCalled();
+    await expect(host.run({ scope, claim, profile })).rejects.toThrow(/durable.*outputs/i);
+    expect(dependencies.claims.open).not.toHaveBeenCalled();
 
     const missingDriver = fixture({
       harnessDriver: {
@@ -1216,18 +1224,19 @@ describe("Managed Runtime Host fault matrix", () => {
       },
     });
     await expect(
-      createManagedRuntimeHost(missingDriver.dependencies).run({ scope, profile }),
+      createManagedRuntimeHost(missingDriver.dependencies).run({ scope, claim, profile }),
     ).rejects.toThrow(/ama_worker/i);
-    expect(missingDriver.dependencies.fences.acquire).not.toHaveBeenCalled();
+    expect(missingDriver.dependencies.claims.open).not.toHaveBeenCalled();
 
     const missingCheckpoint = fixture();
     await expect(
       createManagedRuntimeHost(missingCheckpoint.dependencies).run({
         scope,
+        claim,
         profile: { ...profile, runtimeCheckpoint: "required" },
       }),
     ).rejects.toThrow(/runtime checkpoint/i);
-    expect(missingCheckpoint.dependencies.fences.acquire).not.toHaveBeenCalled();
+    expect(missingCheckpoint.dependencies.claims.open).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1237,29 +1246,27 @@ describe("Managed Runtime Host fault matrix", () => {
   ])("cleans every allocated resource when %s fails", async (_phase, overrides) => {
     const { dependencies, calls } = fixture(overrides as Record<string, any>);
     await expect(
-      createManagedRuntimeHost(dependencies).run({ scope, profile }),
+      createManagedRuntimeHost(dependencies).run({ scope, claim, profile }),
     ).resolves.toMatchObject({ type: "failed" });
-    expect(dependencies.fences.publish).not.toHaveBeenCalled();
+    expect(dependencies.claims.publish).not.toHaveBeenCalled();
     expect(calls).toEqual([
       "terminate:failed",
       "outputs.abort:failed",
       "workspace.release",
-      "release:failed",
     ]);
   });
 
   it("treats a rejected atomic publication as lease loss and never releases outputs", async () => {
     const { dependencies, calls } = fixture({
-      fences: { publish: vi.fn(async () => ({ type: "lost" })) },
+      claims: { publish: vi.fn(async () => ({ type: "lost" })) },
     });
     await expect(
-      createManagedRuntimeHost(dependencies).run({ scope, profile }),
+      createManagedRuntimeHost(dependencies).run({ scope, claim, profile }),
     ).resolves.toEqual({ type: "lease_lost" });
     expect(calls).toEqual([
       "terminate:lease_lost",
       "outputs.abort:lease_lost",
       "workspace.release",
-      "release:lease_lost",
     ]);
     expect(dependencies.outputs.release).not.toHaveBeenCalled();
   });
@@ -1276,7 +1283,7 @@ describe("Managed Runtime Host fault matrix", () => {
     dependencies.orphans = orphans;
 
     await expect(
-      createManagedRuntimeHost(dependencies).run({ scope, profile }),
+      createManagedRuntimeHost(dependencies).run({ scope, claim, profile }),
     ).resolves.toEqual({ type: "completed", revision: 1 });
     const pending = await orphans.list({ limit: 10 });
     expect(pending).toEqual([

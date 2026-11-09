@@ -404,7 +404,7 @@ export class EnvironmentWorkApplicationService
       expectedRevision: result.record.revision,
       next: {
         ...recordWithoutRevision(result.record),
-        secret: bound.secret,
+        secret: { ...bound.secret, claimGeneration: result.record.claim.generation },
       },
     });
     if (replaced.type !== "replaced") {

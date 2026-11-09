@@ -2,7 +2,10 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => vi.restoreAllMocks());
-import { sandboxBasicCredential, sandboxTokenSha256 } from "../../packages/sandbox-gateway/src/index";
+import { issueSandboxToken, sandboxBasicCredential, sandboxTokenSha256 } from "../../packages/sandbox-gateway/src/index";
+import { createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef } from "../../packages/sandbox-gateway-sql/src/index";
+import { SqlEnvironmentWorkStore } from "../../packages/environment-work-store-sql/src/index";
+import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
 
 const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 /** A pre-#561 HMAC relay pass, signed the way the removed issuer did: refused (design §0.0b B.4). */
@@ -275,6 +278,66 @@ describe("Cloudflare native credential egress RPC", () => {
       expect(upstream).toEqual([]);
       expect(relayPassKeys(importKey)).toBe(0);
     } finally {
+      await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
+    }
+  });
+
+  it("self-hosted lane: the binding's token issued under the Environment Work claim injects while the claim holds; a reclaim or a stop refuses it (design §0.0b B.3, ADR 0005)", async () => {
+    const api = async (path: string, body: unknown) => {
+      const response = await exports.default.fetch(new Request(`https://localhost${path}`, { method: "POST", headers: {
+        "x-api-key": "test-key", "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01",
+      }, body: JSON.stringify(body) }));
+      expect(response.status, await response.clone().text()).toBeLessThan(300); return response.json();
+    };
+    await exports.default.fetch(new Request("http://localhost/health"));
+    const target = "https://work-authority.example/mcp";
+    const vault = await api("/v1/vaults", { display_name: "work relay" });
+    await api(`/v1/vaults/${vault.id}/credentials`, { auth: { type: "static_bearer", mcp_server_url: target, token: "work-vault-token" } });
+    const id = `relay-work-${crypto.randomUUID()}`;
+    const environmentId = `env-work-${crypto.randomUUID()}`;
+    const workId = `work-${crypto.randomUUID()}`;
+    const claimedAt = Date.now(); const iso = new Date(claimedAt).toISOString();
+    await env.MAIN_DB.prepare(`INSERT INTO managed_sessions
+      (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
+      VALUES ('default',?,?,1,'agent',1,?,'idle',?,?,NULL)`)
+      .bind(id, JSON.stringify({ vaultIds: [vault.id] }), environmentId, claimedAt, claimedAt).run();
+    const sql = sqlClientFromD1(env.MAIN_DB);
+    const work = new SqlEnvironmentWorkStore(sql, { seal: async ({ plaintext }) => ({ ciphertext: plaintext }), open: async ({ ciphertext }) => ({ plaintext: ciphertext }) });
+    await work.insert({ workspaceId: "default", record: {
+      work: { id: workId, acknowledgedAt: iso, createdAt: iso, data: { type: "session", id }, environmentId, latestHeartbeatAt: iso,
+        metadata: {}, startedAt: iso, state: "active", stopRequestedAt: null, stoppedAt: null },
+      secret: { sessionsToken: "work-bearer" }, claim: { claimedAt: iso, workerId: "worker-a", generation: 1 }, heartbeatTtlSeconds: 90,
+    } });
+    // What the Cloudflare self-hosted attach does (apps/agent managed-runtime): issue under the claim, bind the digest.
+    const issue = async (generation: number) => (await sandboxTokenSha256(await issueSandboxToken(
+      createSqlEnvironmentWorkSandboxTokenStore(sql),
+      environmentWorkSandboxTokenRef({ workspaceId: "default", environmentId, sessionId: id, workId, generation }),
+      { scope: "egress" },
+    )))!;
+    const resolve = (tokenSha256: string) => env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, tokenSha256 }, "resolve", new Request(target));
+    const refused = async (tokenSha256: string) => {
+      const response = await resolve(tokenSha256);
+      expect(response.status).toBe(401); expect(await response.text()).toBe("Credential relay request denied");
+    };
+    const setState = (state: string) => env.MAIN_DB.prepare("UPDATE managed_environment_work SET state=? WHERE workspace_id='default' AND id=?").bind(state, workId).run();
+    try {
+      const first = await issue(1);
+      expect(await (await resolve(first)).json()).toEqual({ inject: true });
+      // Another worker reclaims after the lease: the previous claim's token is refused at once.
+      const later = new Date(claimedAt + 91_000).toISOString();
+      const reclaimed = await work.claimAvailable({ workspaceId: "default", environmentId, workerId: "worker-b", claimedAt: later, reclaimBefore: later, heartbeatTtlSeconds: 90 });
+      expect(reclaimed).toMatchObject({ type: "claimed", record: { claim: { generation: 2, workerId: "worker-b" } } });
+      await refused(first);
+      expect(await issue(1).then(() => null, (error: Error) => error.message)).toMatch(/stale/u);
+      const second = await issue(2);
+      await refused(second); // claimed, not yet acknowledged
+      await setState("active");
+      expect(await (await resolve(second)).json()).toEqual({ inject: true });
+      await refused(first);
+      await setState("stopped");
+      await refused(second);
+    } finally {
+      await env.MAIN_DB.prepare("DELETE FROM managed_environment_work WHERE workspace_id='default' AND id=?").bind(workId).run();
       await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
     }
   });

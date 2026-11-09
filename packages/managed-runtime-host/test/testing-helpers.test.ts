@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MemoryRuntimeOrphanPort,
-  MemoryRuntimeResourceFencePort,
+  MemoryEnvironmentWorkClaimPort,
 } from "../src/testing";
 
 const scope = {
@@ -13,24 +13,26 @@ const scope = {
 };
 
 describe("managed runtime deterministic test Ports", () => {
-  it("uses its production-like clock/token defaults and exposes unknown scopes", async () => {
-    const fences = new MemoryRuntimeResourceFencePort();
-    const acquired = await fences.acquire({ scope, ownerId: "owner", ttlMs: 1_000 });
-    expect(acquired.type).toBe("acquired");
-    if (acquired.type !== "acquired") return;
-
-    expect(acquired.fence.token).toMatch(/^1:/u);
-    await expect(fences.isCurrent(acquired.fence)).resolves.toBe(true);
-    await expect(fences.isCurrent({ ...acquired.fence, token: "stale" })).resolves.toBe(false);
-    expect(fences.inspect(scope)).toMatchObject({ generation: 1 });
-    expect(fences.inspect({ ...scope, workId: "missing" })).toBeNull();
-    await expect(fences.publish({
-      fence: acquired.fence,
+  it("tracks Work claims by generation and token and exposes unknown scopes", async () => {
+    const claims = new MemoryEnvironmentWorkClaimPort({ now: () => new Date("2026-09-07T15:00:00.000Z") });
+    const claim = claims.claim(scope);
+    expect(claim).toMatchObject({ generation: 1, token: "work-token-1" });
+    await expect(claims.open(claim)).resolves.toEqual({
+      type: "current", expiresAt: "2026-09-07T15:01:30.000Z", publication: null,
+    });
+    await expect(claims.isCurrent(claim)).resolves.toBe(true);
+    await expect(claims.isCurrent({ ...claim, token: "stale" })).resolves.toBe(false);
+    expect(claims.inspect(scope)).toMatchObject({ generation: 1 });
+    expect(claims.inspect({ ...scope, workId: "missing" })).toBeNull();
+    await expect(claims.open({ ...scope, workId: "missing", generation: 1, token: "work-token-1" }))
+      .resolves.toEqual({ type: "lost" });
+    await expect(claims.publish({
+      claim,
       workspaceCandidate: { id: "workspace", contentHash: "sha256:workspace" },
       outputCandidate: null,
     })).resolves.toEqual({ type: "published", revision: 1 });
-    await expect(fences.publish({
-      fence: acquired.fence,
+    await expect(claims.publish({
+      claim,
       workspaceCandidate: { id: "workspace", contentHash: "sha256:workspace" },
       outputCandidate: null,
       runtimeCheckpoint: {
@@ -45,6 +47,17 @@ describe("managed runtime deterministic test Ports", () => {
         runtimeIdentity: "runtime-identity",
       },
     })).resolves.toEqual({ type: "published", revision: 2 });
+
+    claims.requestStop(scope);
+    await expect(claims.open(claim)).resolves.toEqual({ type: "lost" });
+    await expect(claims.isCurrent(claim)).resolves.toBe(true);
+    const reclaimed = claims.claim(scope);
+    await expect(claims.isCurrent(claim)).resolves.toBe(false);
+    await expect(claims.open(reclaimed)).resolves.toMatchObject({
+      type: "current", publication: { generation: 1, revision: 2 },
+    });
+    claims.lose(scope);
+    await expect(claims.isCurrent(reclaimed)).resolves.toBe(false);
   });
 
   it("handles metadata-free orphans, string failures, stable sorting, and missing updates", async () => {

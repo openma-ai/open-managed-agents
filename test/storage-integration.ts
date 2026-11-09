@@ -9,7 +9,7 @@ export interface StorageIntegrationConfig {
     eventFanout: string;
     queue: string;
     s3Memory: string;
-    runtimeFence: string;
+    runtimeOrphans: string;
   };
   s3: {
     endpoint: string;

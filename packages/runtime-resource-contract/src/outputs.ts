@@ -19,7 +19,7 @@ export interface SessionOutputEntryCandidate {
   mediaType?: string;
 }
 
-/** Immutable candidate. It is not user-visible until FencePort.publish. */
+/** Immutable candidate. It is not user-visible until the authority-conditioned publication. */
 export interface SessionOutputManifestCandidate {
   id: string;
   contentHash: string;

@@ -116,7 +116,11 @@ lost sandbox goes through ADR 0005 recovery.
   nothing and have no wall. Native `/v1` sessions remain sandboxed; this ADR
   does not add a native `none`.
 - A Session's sandbox mode does not change after create.
-- `self_hosted` / Environment Work keeps its current behaviour.
+- `self_hosted` / Environment Work keeps its current behaviour. Its one
+  authority is the official Work claim (ADR 0005, amended 2026-11-09): the
+  sandbox token and the restore pointer live on the Work row and end with the
+  claim. A Session sandbox's single authority is its Session Execution
+  attempt. There is no separate runtime resource fence on either lane.
 
 
 ### 6. New sandbox port shape (`packages/sandbox`)

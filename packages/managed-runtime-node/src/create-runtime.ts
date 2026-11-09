@@ -5,16 +5,16 @@ import {
   SupervisedSandboxHarnessDriver,
   type RuntimeSchedulerPort,
 } from "@open-managed-agents/managed-runtime-host";
+import { SqlEnvironmentWorkClaimPort } from "@open-managed-agents/environment-work-store-sql";
 import {
-  ensureRuntimeResourceFenceSchema,
-  SqlRuntimeResourceFencePort,
+  ensureRuntimeOrphanSchema,
   SqlRuntimeOrphanPort,
-  type SqlRuntimeResourceFenceOptions,
-} from "@open-managed-agents/runtime-resource-fence-sql";
+} from "@open-managed-agents/sandbox-orphan-store-sql";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   CredentialEgressCapabilities,
   CredentialEgressPort,
+  EnvironmentWorkClaimPort,
   ManagedRuntimeProviderDriverPort,
   RuntimeCheckpointPort,
   SessionInputMaterializerPort,
@@ -29,11 +29,16 @@ import { NodeFilesystemWorkspacePort } from "./workspace";
 
 export interface CreateNodeManagedRuntimeOptions {
   rootDir: string;
+  /** Holds the orphan queue and, unless `claims` is given, the control
+   * plane's managed_environment_work rows the default claim Port reads. */
   sql: SqlClient;
   /** Explicit because production schema migration should remain operator-owned. */
-  initializeFenceSchema?: boolean;
+  initializeOrphanSchema?: boolean;
+  /** The Environment Work claim the host is authorized by (ADR 0005).
+   * Defaults to SqlEnvironmentWorkClaimPort over `sql`, which requires the
+   * host to share the control plane database. */
+  claims?: EnvironmentWorkClaimPort;
   ownerId: string;
-  leaseTtlMs: number;
   heartbeatIntervalMs: number;
   /** Optional safe-point checkpoint target for supervised checkpoint_restore sessions. */
   checkpointIntervalMs?: number;
@@ -47,7 +52,6 @@ export interface CreateNodeManagedRuntimeOptions {
   }[];
   extraHosts?: readonly { hostname: string; address: string }[];
   scheduler?: RuntimeSchedulerPort;
-  fence?: SqlRuntimeResourceFenceOptions;
   /** Optional provider-owned process checkpoint adapter. */
   runtimeCheckpoint?: RuntimeCheckpointPort;
   /**
@@ -67,14 +71,14 @@ export interface CreateNodeManagedRuntimeDriverOptions
   credentialEgressCapabilities?: CredentialEgressCapabilities;
 }
 
-/** Preinstalled Node reference composition: SQL fence + filesystem + Docker. */
+/** Preinstalled Node reference composition: Work claim + filesystem + Docker. */
 export async function createNodeManagedRuntime(
   options: CreateNodeManagedRuntimeOptions,
 ) {
-  if (options.initializeFenceSchema === true) {
-    await ensureRuntimeResourceFenceSchema(options.sql);
+  if (options.initializeOrphanSchema === true) {
+    await ensureRuntimeOrphanSchema(options.sql);
   }
-  const fences = new SqlRuntimeResourceFencePort(options.sql, options.fence);
+  const claims = options.claims ?? new SqlEnvironmentWorkClaimPort(options.sql);
   const orphans = new SqlRuntimeOrphanPort(options.sql);
   const workspace = new NodeFilesystemWorkspacePort({ rootDir: options.rootDir });
   const outputs = new NodeFilesystemSessionOutputPort({ rootDir: options.rootDir });
@@ -97,10 +101,9 @@ export async function createNodeManagedRuntime(
   );
   const host = createManagedRuntimeHost({
     ownerId: options.ownerId,
-    leaseTtlMs: options.leaseTtlMs,
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     ...(options.checkpointIntervalMs === undefined ? {} : { checkpointIntervalMs: options.checkpointIntervalMs }),
-    fences,
+    claims,
     sandbox,
     workspace,
     outputs,
@@ -118,7 +121,7 @@ export async function createNodeManagedRuntime(
   const orphanReconciler = createManagedRuntimeOrphanReconciler({ orphans, sandbox });
   return {
     host,
-    fences,
+    claims,
     orphans,
     orphanReconciler,
     sandbox,

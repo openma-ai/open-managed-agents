@@ -9,8 +9,10 @@ import { promisify } from "node:util";
 import { build } from "esbuild";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { MemoryEnvironmentWorkClaimPort } from "@open-managed-agents/managed-runtime-host/testing";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { createNodeManagedRuntime } from "../src/index";
+import { openClaim, runClaim } from "./work-claim";
 
 describe("whole-brain ACP harness in Docker", () => {
   const roots: string[] = [];
@@ -212,13 +214,13 @@ input.on("line", (line) => {
       outfile: supervisorBundle,
     });
 
-    const sql = await createBetterSqlite3SqlClient(":memory:");
+    const claims = new MemoryEnvironmentWorkClaimPort();
     const runtime = await createNodeManagedRuntime({
       rootDir,
-      sql,
-      initializeFenceSchema: true,
+      sql: await createBetterSqlite3SqlClient(":memory:"),
+      initializeOrphanSchema: true,
+      claims,
       ownerId: "production-acp-docker-host",
-      leaseTtlMs: 10_000,
       heartbeatIntervalMs: 100,
       image: process.env.OMA_RUNTIME_NODE_IMAGE ?? "node:24-alpine",
       additionalMounts: [{
@@ -256,28 +258,23 @@ input.on("line", (line) => {
     };
 
     const firstController = new AbortController();
-    const firstRun = runtime.host.run({ scope, profile, signal: firstController.signal });
+    const firstClaim = claims.claim(scope);
+    const firstRun = runtime.host.run({ scope, claim: runClaim(firstClaim), profile, signal: firstController.signal });
     await expect.poll(async () => {
-      const row = await sql.prepare(
-        "SELECT revision FROM runtime_resource_fences WHERE session_id = ? AND work_id = ?",
-      ).bind(scope.sessionId, scope.workId).first<{ revision: number }>();
-      return Number(row?.revision ?? 0);
+      const opened = await claims.open(firstClaim);
+      return opened.type === "current" ? opened.publication?.revision ?? 0 : 0;
     }, { timeout: 10_000 }).toBe(1);
     firstController.abort(new Error("simulated host crash after committed turn"));
     await expect(firstRun).resolves.toEqual({ type: "lease_lost" });
     await expect(dockerContainersForWork(scope.workId)).resolves.toEqual([]);
 
     secondGeneration = true;
-    await expect(runtime.host.run({ scope, profile })).resolves.toEqual({
+    await expect(runtime.host.run({ scope, claim: runClaim(claims.claim(scope)), profile })).resolves.toEqual({
       type: "completed",
       revision: 3,
     });
-    const verifier = await runtime.fences.acquire({
-      scope,
-      ownerId: "production-acp-verifier",
-      ttlMs: 10_000,
-    });
-    if (verifier.type !== "acquired" || verifier.publication === null) {
+    const verifier = await openClaim(claims, claims.claim(scope), "production-acp-verifier");
+    if (verifier.publication === null) {
       throw new Error("expected production supervisor publication");
     }
     const restored = await runtime.workspace.materialize({
@@ -313,7 +310,6 @@ input.on("line", (line) => {
     ]));
     expect(requestAuthorizations.length).toBeGreaterThan(0);
     expect(new Set(requestAuthorizations)).toEqual(new Set([`Bearer ${sessionsToken}`]));
-    await runtime.fences.release({ fence: verifier.fence, reason: "completed" });
     await expect(dockerContainersForWork(scope.workId)).resolves.toEqual([]);
   }, 60_000);
 
@@ -475,13 +471,13 @@ input.on("line", (line) => {
       target: "node24",
       outfile: fixtureBundle,
     });
-    const sql = await createBetterSqlite3SqlClient(":memory:");
+    const claims = new MemoryEnvironmentWorkClaimPort();
     const runtime = await createNodeManagedRuntime({
       rootDir,
-      sql,
-      initializeFenceSchema: true,
+      sql: await createBetterSqlite3SqlClient(":memory:"),
+      initializeOrphanSchema: true,
+      claims,
       ownerId: "supervised-acp-docker-host",
-      leaseTtlMs: 10_000,
       heartbeatIntervalMs: 100,
       image: process.env.OMA_RUNTIME_NODE_IMAGE ?? "node:24-alpine",
       additionalMounts: [{
@@ -493,6 +489,7 @@ input.on("line", (line) => {
 
     await expect(runtime.host.run({
       scope,
+      claim: runClaim(claims.claim(scope)),
       profile: {
         workspace: { requirement: "durable" },
         outputs: { requirement: "durable" },
@@ -512,12 +509,8 @@ input.on("line", (line) => {
       },
     })).resolves.toEqual({ type: "completed", revision: 2 });
 
-    const verifier = await runtime.fences.acquire({
-      scope,
-      ownerId: "supervised-acp-docker-verifier",
-      ttlMs: 10_000,
-    });
-    if (verifier.type !== "acquired" || verifier.publication === null) {
+    const verifier = await openClaim(claims, claims.claim(scope), "supervised-acp-docker-verifier");
+    if (verifier.publication === null) {
       throw new Error("expected supervised ACP publication");
     }
     const restored = await runtime.workspace.materialize({
@@ -556,13 +549,13 @@ input.on("line", (line) => {
       }),
       expect.objectContaining({ type: "session.complete", turnId: "turn_docker_1" }),
     ]));
-    await runtime.fences.release({ fence: verifier.fence, reason: "completed" });
 
     // A second Runtime Host attempt must create a fresh container, restore the
     // OpenMA-owned checkpoint, and use ACP session/resume only after the
     // Harbor-derived native Codex session directory has been materialized.
     await expect(runtime.host.run({
       scope,
+      claim: runClaim(claims.claim(scope)),
       profile: {
         workspace: { requirement: "durable" },
         outputs: { requirement: "durable" },
@@ -582,12 +575,8 @@ input.on("line", (line) => {
       },
     })).resolves.toEqual({ type: "completed", revision: 4 });
 
-    const finalVerifier = await runtime.fences.acquire({
-      scope,
-      ownerId: "supervised-acp-docker-final-verifier",
-      ttlMs: 10_000,
-    });
-    if (finalVerifier.type !== "acquired" || finalVerifier.publication === null) {
+    const finalVerifier = await openClaim(claims, claims.claim(scope), "supervised-acp-docker-final-verifier");
+    if (finalVerifier.publication === null) {
       throw new Error("expected restored supervised ACP publication");
     }
     const finalRestored = await runtime.workspace.materialize({

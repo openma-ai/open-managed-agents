@@ -290,28 +290,29 @@ describe("isolated Cloudflare managed runtime package", () => {
 
   it("constructs host/orphan and environment-worker compositions with URL precedence", () => {
     const createSandbox = () => new FakeSandbox();
+    const claims = { open: vi.fn(), isCurrent: vi.fn(), publish: vi.fn() };
     const runtimeCheckpoint = { kind: "memory", create: vi.fn(), restore: vi.fn() } as never;
     const sessionInputs = {
       materialize: vi.fn(async () => {}),
       synchronize: vi.fn(async () => {}),
     };
-    const host = createCloudflareManagedRuntimeHost(env, { ownerId: "owner", createSandbox, leaseTtlMs: 1000, heartbeatIntervalMs: 200, runtimeCheckpoint, sessionInputs });
-    expect(host).toMatchObject({ fences: expect.any(Object), orphans: expect.any(Object), host: expect.any(Object), orphanReconciler: expect.any(Object), sessionInputs });
-    expect(createCloudflareManagedRuntimeHost(env, { ownerId: "owner-defaults", createSandbox })).toMatchObject({ host: expect.any(Object) });
+    const host = createCloudflareManagedRuntimeHost(env, { ownerId: "owner", createSandbox, claims, leaseTtlMs: 1000, heartbeatIntervalMs: 200, runtimeCheckpoint, sessionInputs });
+    expect(host).toMatchObject({ claims, orphans: expect.any(Object), host: expect.any(Object), orphanReconciler: expect.any(Object), sessionInputs });
+    expect(createCloudflareManagedRuntimeHost(env, { ownerId: "owner-defaults", createSandbox, claims })).toMatchObject({ host: expect.any(Object) });
     expect(() => createCloudflareManagedRuntimeHost(env, {
-      ownerId: "owner-interval", createSandbox, checkpointIntervalMs: 0,
+      ownerId: "owner-interval", createSandbox, claims, checkpointIntervalMs: 0,
     })).toThrow(/checkpointIntervalMs/);
 
     const client: Record<string, unknown> = { baseURL: "https://client" };
     client.withOptions = vi.fn(() => client);
     const worker = { client, environmentId: "environment", environmentKey: "key" };
     for (const runtime of [
-      { ownerId: "owner-a", createSandbox, controlPlaneBaseUrl: "https://explicit" },
-      { ownerId: "owner-b", createSandbox },
+      { ownerId: "owner-a", createSandbox, claims, controlPlaneBaseUrl: "https://explicit" },
+      { ownerId: "owner-b", createSandbox, claims },
     ]) {
       const composed = createCloudflareManagedEnvironmentWorker(env, { runtime, worker: runtime.controlPlaneBaseUrl ? worker : { ...worker, sandboxApiBaseUrl: "https://sandbox" } } as never);
       expect(composed.environmentWorker).toBeDefined();
     }
-    expect(createCloudflareManagedEnvironmentWorker(env, { runtime: { ownerId: "owner-c", createSandbox }, worker } as never).environmentWorker).toBeDefined();
+    expect(createCloudflareManagedEnvironmentWorker(env, { runtime: { ownerId: "owner-c", createSandbox, claims }, worker } as never).environmentWorker).toBeDefined();
   });
 });

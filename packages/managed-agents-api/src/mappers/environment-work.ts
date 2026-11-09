@@ -127,6 +127,7 @@ function encodeEnvironmentWorkSecret(
   const document = JSON.stringify({
     sessions_token: secret.sessionsToken,
     ...(secret.apiBaseUrl !== undefined && { api_base_url: secret.apiBaseUrl }),
+    ...(secret.claimGeneration !== undefined && { claim_generation: secret.claimGeneration }),
   });
   const bytes = new TextEncoder().encode(document);
   let binary = "";

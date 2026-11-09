@@ -1,10 +1,9 @@
 import type {
-  AcquireRuntimeFenceInput,
-  AcquireRuntimeFenceResult,
+  EnvironmentWorkClaim,
+  EnvironmentWorkClaimPort,
+  OpenEnvironmentWorkClaimResult,
   PublishRuntimeResourcesResult,
   RuntimePublicationCandidate,
-  RuntimeResourceFence,
-  RuntimeResourceFencePort,
   RuntimeResourcePublication,
   RuntimeResourceScope,
   RuntimeOrphanPort,
@@ -12,14 +11,17 @@ import type {
 } from "@open-managed-agents/runtime-resource-contract";
 import { runtimeOrphanId } from "@open-managed-agents/runtime-resource-contract";
 
-export interface MemoryRuntimeResourceFenceOptions {
+export interface MemoryEnvironmentWorkClaimOptions {
   now?: () => Date;
-  nextToken?: (generation: number) => string;
+  /** Work heartbeat TTL reported as the claim's informational expiry. */
+  ttlMs?: number;
 }
 
-interface FenceRecord {
+interface WorkClaimRecord {
   generation: number;
-  active: RuntimeResourceFence | null;
+  token: string;
+  /** claimed: starting/active; stopping: stop requested, claim kept; lost: force-stopped or expired. */
+  state: "claimed" | "stopping" | "lost";
   publication: RuntimeResourcePublication | null;
   nextRevision: number;
 }
@@ -31,15 +33,6 @@ function scopeKey(scope: RuntimeResourceScope): string {
     scope.sessionId,
     scope.workId,
   ].join("\u0000");
-}
-
-function sameFence(left: RuntimeResourceFence, right: RuntimeResourceFence): boolean {
-  return (
-    left.generation === right.generation &&
-    left.ownerId === right.ownerId &&
-    left.token === right.token &&
-    scopeKey(left) === scopeKey(right)
-  );
 }
 
 function sameCandidate(
@@ -54,94 +47,84 @@ function sameRuntimeCheckpoint(
   left: RuntimeResourcePublication["runtimeCheckpoint"],
   right: RuntimeResourcePublication["runtimeCheckpoint"],
 ): boolean {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  // An omitted checkpoint differs from an explicit null, as in the SQL Port's
+  // stable-JSON comparison of the publication fields.
+  return (left === undefined) === (right === undefined)
+    && JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
 /**
- * Deterministic fake for lifecycle/fault tests. It mirrors the required
- * single-record transaction: active fence validation and publication pointer
- * advancement happen synchronously in one method.
+ * Deterministic stand-in for the Work record's claim columns. `claim` plays
+ * the protocol poll (a reclaim bumps claim_generation and rotates the Work
+ * token); `requestStop` and `lose` play stop and force-stop/lease expiry.
+ * Claim validation and pointer advancement happen in one synchronous step,
+ * like the SQL conditional write.
  */
-export class MemoryRuntimeResourceFencePort implements RuntimeResourceFencePort {
-  readonly #records = new Map<string, FenceRecord>();
+export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
+  readonly #records = new Map<string, WorkClaimRecord>();
   readonly #now: () => Date;
-  readonly #nextToken: (generation: number) => string;
+  readonly #ttlMs: number;
 
-  constructor(options: MemoryRuntimeResourceFenceOptions = {}) {
+  constructor(options: MemoryEnvironmentWorkClaimOptions = {}) {
     this.#now = options.now ?? (() => new Date());
-    this.#nextToken =
-      options.nextToken ??
-      ((generation) => `${generation}:${crypto.randomUUID()}`);
+    this.#ttlMs = options.ttlMs ?? 90_000;
   }
 
-  async acquire(
-    input: AcquireRuntimeFenceInput,
-  ): Promise<AcquireRuntimeFenceResult> {
-    const key = scopeKey(input.scope);
-    const record = this.#records.get(key) ?? {
-      generation: 0,
-      active: null,
-      publication: null,
-      nextRevision: 1,
-    };
-    const now = this.#now().getTime();
-    if (record.active !== null && Date.parse(record.active.expiresAt) > now) {
-      if (record.active.ownerId === input.ownerId) {
-        return {
-          type: "acquired",
-          fence: { ...record.active },
-          publication: record.publication === null ? null : structuredClone(record.publication),
-        };
-      }
-      return { type: "conflict", expiresAt: record.active.expiresAt };
-    }
-
-    const generation = record.generation + 1;
-    const fence: RuntimeResourceFence = {
-      ...input.scope,
-      ownerId: input.ownerId,
+  /** A worker claims the Work (first claim or reclaim). `token` stands in
+   * for the Work's sessions_token when a test serves a real Work secret. */
+  claim(scope: RuntimeResourceScope, token?: string): EnvironmentWorkClaim {
+    const key = scopeKey(scope);
+    const record = this.#records.get(key);
+    const generation = (record?.generation ?? 0) + 1;
+    token ??= `work-token-${generation}`;
+    this.#records.set(key, {
       generation,
-      token: this.#nextToken(generation),
-      expiresAt: new Date(now + input.ttlMs).toISOString(),
-    };
-    this.#records.set(key, { ...record, generation, active: fence });
+      token,
+      state: "claimed",
+      publication: record?.publication ?? null,
+      nextRevision: record?.nextRevision ?? 1,
+    });
+    return { ...scope, generation, token };
+  }
+
+  /** Graceful stop: the Work moves to stopping and keeps its claim. */
+  requestStop(scope: RuntimeResourceScope): void {
+    const record = this.#records.get(scopeKey(scope));
+    if (record !== undefined && record.state === "claimed") record.state = "stopping";
+  }
+
+  /** Force stop or an expired lease: no claim is current. */
+  lose(scope: RuntimeResourceScope): void {
+    const record = this.#records.get(scopeKey(scope));
+    if (record !== undefined) record.state = "lost";
+  }
+
+  async open(claim: EnvironmentWorkClaim): Promise<OpenEnvironmentWorkClaimResult> {
+    const record = this.#records.get(scopeKey(claim));
+    if (!this.#holds(record, claim) || record!.state !== "claimed") return { type: "lost" };
     return {
-      type: "acquired",
-      fence: { ...fence },
-      publication: record.publication === null ? null : structuredClone(record.publication),
+      type: "current",
+      expiresAt: new Date(this.#now().getTime() + this.#ttlMs).toISOString(),
+      publication: record!.publication === null ? null : structuredClone(record!.publication),
     };
   }
 
-  async renew(input: {
-    fence: RuntimeResourceFence;
-    ttlMs: number;
-  }) {
-    const record = this.#records.get(scopeKey(input.fence));
-    if (!this.#isCurrent(record, input.fence)) return { type: "lost" } as const;
-    const renewed: RuntimeResourceFence = {
-      ...input.fence,
-      expiresAt: new Date(this.#now().getTime() + input.ttlMs).toISOString(),
-    };
-    record!.active = renewed;
-    return { type: "renewed", fence: { ...renewed } } as const;
-  }
-
-  async isCurrent(fence: RuntimeResourceFence): Promise<boolean> {
-    return this.#isCurrent(this.#records.get(scopeKey(fence)), fence);
+  async isCurrent(claim: EnvironmentWorkClaim): Promise<boolean> {
+    return this.#holds(this.#records.get(scopeKey(claim)), claim);
   }
 
   async publish(input: {
-    fence: RuntimeResourceFence;
+    claim: EnvironmentWorkClaim;
     workspaceCandidate: RuntimePublicationCandidate;
     outputCandidate: RuntimePublicationCandidate | null;
     runtimeCheckpoint?: RuntimeResourcePublication["runtimeCheckpoint"];
   }): Promise<PublishRuntimeResourcesResult> {
-    const record = this.#records.get(scopeKey(input.fence));
-    if (!this.#isCurrent(record, input.fence)) return { type: "lost" };
+    const record = this.#records.get(scopeKey(input.claim));
+    if (!this.#holds(record, input.claim)) return { type: "lost" };
     const previous = record!.publication;
     if (
       previous !== null &&
-      previous.generation === input.fence.generation &&
+      previous.generation === input.claim.generation &&
       sameCandidate(previous.workspaceCandidate, input.workspaceCandidate) &&
       sameCandidate(previous.outputCandidate, input.outputCandidate) &&
       sameRuntimeCheckpoint(previous.runtimeCheckpoint, input.runtimeCheckpoint)
@@ -151,7 +134,7 @@ export class MemoryRuntimeResourceFencePort implements RuntimeResourceFencePort 
     const revision = record!.nextRevision;
     record!.nextRevision += 1;
     record!.publication = {
-      generation: input.fence.generation,
+      generation: input.claim.generation,
       revision,
       workspaceCandidate: { ...input.workspaceCandidate },
       outputCandidate:
@@ -163,28 +146,16 @@ export class MemoryRuntimeResourceFencePort implements RuntimeResourceFencePort 
     return { type: "published", revision };
   }
 
-  async release(input: { fence: RuntimeResourceFence }): Promise<void> {
-    const record = this.#records.get(scopeKey(input.fence));
-    if (record !== undefined && record.active !== null && sameFence(record.active, input.fence)) {
-      record.active = null;
-    }
-  }
-
-  inspect(scope: RuntimeResourceScope): Readonly<FenceRecord> | null {
+  inspect(scope: RuntimeResourceScope): Readonly<WorkClaimRecord> | null {
     const record = this.#records.get(scopeKey(scope));
     return record === undefined ? null : structuredClone(record);
   }
 
-  #isCurrent(
-    record: FenceRecord | undefined,
-    fence: RuntimeResourceFence,
-  ): boolean {
-    return (
-      record?.active !== null &&
-      record?.active !== undefined &&
-      sameFence(record.active, fence) &&
-      Date.parse(record.active.expiresAt) > this.#now().getTime()
-    );
+  #holds(record: WorkClaimRecord | undefined, claim: EnvironmentWorkClaim): boolean {
+    return record !== undefined
+      && record.state !== "lost"
+      && record.generation === claim.generation
+      && record.token === claim.token;
   }
 }
 
