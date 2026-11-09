@@ -6,6 +6,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
+import { TurnInvocation } from "../../apps/agent/src/runtime/turn-invocation";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
@@ -59,6 +60,27 @@ const lifecycle = (seen: any[]) => seen
   .map((e) => e.type === "session.status_idle" ? `idle:${e.stop_reason?.type}` : e.type);
 
 describe("characterization: SessionDO interrupt and lane drain", () => {
+  it("keeps the alarm open until its turn finishes and errors before its wall-time budget", async () => {
+    const id = await createSession("hang-until-abort");
+    // Replace the infrastructure budget only; exercise the real alarm, drain,
+    // harness and public error settlement without waiting thirteen minutes.
+    await runInDurableObject(stubOf(id), (instance: any) => {
+      const alarm = instance.runAlarm.bind(instance);
+      instance.alarm = async () => {
+        const invocation = instance._turnInvocation = new TurnInvocation(1000);
+        try { await alarm(); }
+        finally { invocation.close(); instance._turnInvocation = null; }
+      };
+    });
+    await send(id, message("hang"));
+    const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
+    expect(seen.some(e => e.type === "session.error" && JSON.stringify(e).includes("wall-time budget"))).toBe(true);
+    expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["retries_exhausted"]);
+    await send(id, message("finish"));
+    const second = await until(id, e => e.filter(x => x.type === "session.status_idle").length === 2);
+    expect(second.filter(e => e.type === "session.status_idle").at(-1).stop_reason.type).toBe("end_turn");
+  }, 30_000);
+
   it("interrupting a running turn ends it once with idle end_turn", async () => {
     const id = await createSession("hang-until-abort");
     await send(id, message("hang"));
@@ -77,6 +99,21 @@ describe("characterization: SessionDO interrupt and lane drain", () => {
     await send(id, { type: "user.interrupt" });
     await until(id, (e) => e.some((x) => x.type === "user.interrupt"));
     expect(lifecycle(await events(id))).toEqual(["session.status_running", "idle:end_turn", "user.interrupt"]);
+  }, 30_000);
+
+  it("a message queued before an interrupt still runs as the next turn", async () => {
+    const id = await createSession("hang-until-abort");
+    texts.length = 0;
+    await send(id, message("hang"));
+    await until(id, (e) => e.some((x) => x.type === "agent.message"));
+    await send(id, message("finish"));
+    await send(id, { type: "user.interrupt" });
+    await until(id, (e) => e.filter((x) => x.type === "session.status_idle").length >= 2);
+    expect(texts).toEqual(["hang", "finish"]);
+    expect(lifecycle(await events(id))).toEqual([
+      "session.status_running", "user.interrupt", "idle:end_turn",
+      "session.status_running", "idle:end_turn",
+    ]);
   }, 30_000);
 
   it("drains queued messages one turn at a time, in order", async () => {

@@ -437,6 +437,6 @@ it.each(["agent.tool_use", "agent.mcp_tool_use"] as const)("reports an unknown %
   const result = f.log.getEvents().find(e => e.type === (type === "agent.tool_use" ? "agent.tool_result" : "agent.mcp_tool_result"));
   expect(result).toMatchObject({
     is_error: true,
-    content: "Execution outcome is unknown: execution was interrupted, so completion cannot be confirmed. The operation may have taken effect. Verify the current state before repeating it.",
+    content: "interrupted: the execution was lost before this tool finished; it was not re-run automatically",
   });
 });

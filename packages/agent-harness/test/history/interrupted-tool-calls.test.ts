@@ -3,6 +3,20 @@ import { eventsToMessages } from "../../src/history/events-to-messages";
 import { normalizeInterruptedToolCalls } from "../../src/history/interrupted-tool-calls";
 
 describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
+  it.each([{ _queued: true }, { cancelled_at_ms: 1 }, { processed_at: null }])("ignores invisible inputs before pairing real tool results: %j", async (marker) => {
+    const events: any[] = [
+      { type: "agent.tool_use", id: "visible-tool", name: "bash", input: {} },
+      { type: "user.message", id: "hidden-input", content: [{ type: "text", text: "HIDDEN" }], ...marker },
+      { type: "agent.tool_result", tool_use_id: "visible-tool", content: "REAL_SUCCESS" },
+    ];
+    const { eventsToMessagesAsync } = await import("../../src/history/events-to-messages");
+    for (const messages of [eventsToMessages(events), await eventsToMessagesAsync(events, async () => null)]) {
+      const text = JSON.stringify(messages);
+      expect(text).toContain("REAL_SUCCESS");
+      expect(text).not.toContain("interrupted");
+      expect(text).not.toContain("HIDDEN");
+    }
+  });
   it("interrupt + user.message in one batch: next turn history pairs every pending id", () => {
     const events: any[] = [
       { type: "user.message", id: "m1", content: [{ type: "text", text: "go" }] },
@@ -37,7 +51,7 @@ describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
     const syn = out[out.length - 1];
     expect(syn.tool_use_id).toBe("c1");
     expect(syn.is_error).toBe(true);
-    expect(JSON.stringify(syn.content)).toContain("Execution outcome is unknown");
+    expect(JSON.stringify(syn.content)).toContain("interrupted: the execution was lost before this tool finished; it was not re-run automatically");
     const msgs = eventsToMessages(events as never);
     const calls = msgs.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "tool-call").map((p: any) => p.toolCallId);
     const results = msgs.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "tool-result").map((p: any) => p.toolCallId);
@@ -57,7 +71,7 @@ describe("interruptRequiresActionClosure (shared CF/Node core)", () => {
       { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["c1"] } },
     ];
     expect(interruptRequiresActionClosure(ev as never)).toEqual([]);
-    expect(INTERRUPTED_TOOL_RESULT_TEXT).toBe("Execution outcome is unknown: execution was interrupted, so completion cannot be confirmed. The operation may have taken effect. Verify the current state before repeating it.");
+    expect(INTERRUPTED_TOOL_RESULT_TEXT).toBe("interrupted: the execution was lost before this tool finished; it was not re-run automatically");
   });
   it("is a no-op when idle end_turn", () => {
     expect(interruptRequiresActionClosure([{ type: "session.status_idle", stop_reason: { type: "end_turn" } }] as never)).toEqual([]);
@@ -83,7 +97,7 @@ describe("normalizeInterruptedToolCalls: no-op idle interrupt (official CMA)", (
     const parts = eventsToMessages(parked as never).flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
     const results = parts.filter((p: any) => p.type === "tool-result");
     expect(results.map((p: any) => p.toolCallId).sort()).toEqual(["c1", "t1"]);
-    expect(JSON.stringify(results)).not.toContain("Execution outcome is unknown");
+    expect(JSON.stringify(results)).not.toContain("interrupted: the execution was lost before this tool finished; it was not re-run automatically");
   });
   it("partially settled (resume not yet allowed) still synthesizes nothing for the answered id", () => {
     const partial = parked.slice(0, 8);
@@ -160,7 +174,7 @@ describe("normalizeInterruptedToolCalls: user.message cannot split tool_use/tool
     ]);
     expect(out[3].tool_use_id).toBe("c1");
     expect(out[3].is_error).toBe(true);
-    expect(JSON.stringify(out[3].content)).toContain("Execution outcome is unknown");
+    expect(JSON.stringify(out[3].content)).toContain("interrupted: the execution was lost before this tool finished; it was not re-run automatically");
     // Model sample: assistant+tools, tool results, user — never user between.
     const msgs = eventsToMessages(events as never) as any[];
     expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
@@ -181,6 +195,6 @@ describe("normalizeInterruptedToolCalls: user.message cannot split tool_use/tool
     const results = parts.filter((p: any) => p.type === "tool-result");
     expect(results).toHaveLength(1);
     expect(JSON.stringify(results[0])).toContain("real");
-    expect(JSON.stringify(results[0])).not.toContain("Execution outcome is unknown");
+    expect(JSON.stringify(results[0])).not.toContain("interrupted: the execution was lost before this tool finished; it was not re-run automatically");
   });
 });

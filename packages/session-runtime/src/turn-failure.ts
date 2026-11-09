@@ -11,6 +11,7 @@ import {
   ModelError,
   PaymentRequiredError,
 } from "@open-managed-agents/shared";
+import { abortableDelay } from "@open-managed-agents/session-runtime-contract";
 
 export type TurnFailureClass =
   /** Worth another attempt while the budget lasts. */
@@ -38,6 +39,13 @@ export type TurnFailurePlan =
   | { type: "retry"; delayMs: number }
   | { type: "exhausted" }
   | { type: "terminal" };
+
+/** Retry budget of a failed turn attempt, the same on every host: three
+ * attempts, 2s then 4s apart, capped at 30s. */
+export const TURN_RETRY = {
+  attempts: 3,
+  delayMs: (attempt: number): number => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),
+} as const;
 
 export interface PlanTurnFailureInput {
   /** The turn was cancelled, so the failure is not reported at all. */
@@ -95,6 +103,47 @@ export async function settleTurnFailure(
   return plan;
 }
 
+export type TurnAttemptsResult =
+  | { type: "completed" }
+  | { type: "cancelled" | "exhausted" | "terminal"; error: Error };
+
+/** Runs a harness attempt under the shared retry policy. Every failure is
+ * announced here; the caller only ends the turn from the result. A value that
+ * is not an Error is rethrown for the caller's own failure path. */
+export async function runTurnAttempts(input: {
+  run(): Promise<void>;
+  agentEventCount(): number;
+  isCancelled(error: Error): boolean;
+  classify(error: Error, producedAgentEvents: boolean): TurnFailureClass;
+  retry: { attempts: number; delayMs(attempt: number): number };
+  signal: AbortSignal;
+  events: TurnFailureEventsPort;
+  describe(error: Error): string;
+}): Promise<TurnAttemptsResult> {
+  for (let attempt = 1; ; attempt += 1) {
+    const agentEventsBefore = input.agentEventCount();
+    try {
+      await input.run();
+      return { type: "completed" };
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const plan = await settleTurnFailure({
+        cancelled: input.isCancelled(error),
+        failureClass: input.classify(error, input.agentEventCount() !== agentEventsBefore),
+        attempt,
+        maxAttempts: input.retry.attempts,
+        delayMs: input.retry.delayMs,
+        message: input.describe(error),
+        events: input.events,
+        // An interrupt during the backoff ends the wait at once.
+        wait: (ms) => abortableDelay(ms, input.signal),
+      });
+      if (plan.type !== "retry") return { type: plan.type, error };
+      if (input.signal.aborted) return { type: "cancelled", error };
+    }
+  }
+}
+
 const CANCELLATION_ERROR_NAMES = new Set([
   "AbortError",
   "ExecutionFenceLostError",
@@ -104,4 +153,48 @@ const CANCELLATION_ERROR_NAMES = new Set([
 /** An interrupt or a lost execution fence, not a model or infrastructure failure. */
 export function isTurnCancellationError(error: unknown): boolean {
   return error instanceof Error && CANCELLATION_ERROR_NAMES.has(error.name);
+}
+
+/** The single durable dead-owner settlement used by CF recovery and Node's
+ * lease sweep. Hosts provide indexed existence checks and durable output.
+ * A failed append stops before idle, leaving a durable retry anchor. */
+export async function settleDeadExecutionFailure(
+  failure: { executionId: string; attempt: number; message: string; fence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence },
+  port: {
+    hasEvent(id: string): boolean | Promise<boolean>;
+    append(event: import("@open-managed-agents/shared").SessionEvent, fence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence): Promise<void | boolean>;
+    broadcast(event: import("@open-managed-agents/shared").SessionEvent): void;
+  },
+): Promise<void> {
+  const events: import("@open-managed-agents/shared").SessionEvent[] = [];
+  reportTurnFailure({ type: "exhausted" },
+    `The agent runtime stopped during the turn (${failure.message}). Send a new message to continue.`, {
+      sessionError: (message, retryStatus) => { events.push({
+        type: "session.error",
+        error: { type: "unknown_error", message, retry_status: { type: retryStatus } },
+      } as never); },
+      rescheduled: () => { throw new Error("Dead executions cannot be retried"); },
+    });
+  events.push({ type: "session.status_idle", stop_reason: { type: "retries_exhausted" } } as never);
+  for (const event of events) {
+    const id = `stale:${failure.executionId}:${failure.attempt}:${event.type}`;
+    if (await port.hasEvent(id)) continue;
+    Object.assign(event, { id });
+    if (await port.append(event, failure.fence) === false) return;
+    port.broadcast(event);
+  }
+}
+
+/** Reuse the failed owner's existing attempt reference, never mint recovery ownership. */
+export function failedExecutionSettlementFence(execution: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecution): import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence {
+  if (!execution.attempt) return {
+    executionId: execution.id, workspaceId: execution.workspaceId, sessionId: execution.sessionId,
+    // No owner is invented: these unused fields preserve the existing fence
+    // wire shape; failed_unclaimed checks identity plus NULL attempt in SQL.
+    attemptId: "", ownerId: "", generation: 0, expiresAt: execution.settledAt ?? execution.admittedAt,
+    settlement: "failed_unclaimed",
+  };
+  return { executionId: execution.id, workspaceId: execution.workspaceId, sessionId: execution.sessionId,
+    attemptId: execution.attempt.id, ownerId: execution.attempt.ownerId, generation: execution.attempt.generation,
+    expiresAt: execution.attempt.leaseExpiresAt, settlement: "failed" };
 }

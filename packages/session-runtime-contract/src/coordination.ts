@@ -52,6 +52,8 @@ export interface SessionExecutionFence {
   ownerId: string;
   generation: number;
   expiresAt: string;
+  /** Recover only this failed attempt; persistence must reject newer work atomically. */
+  settlement?: "failed" | "failed_unclaimed";
 }
 
 export interface AdmitSessionExecution {
@@ -77,6 +79,8 @@ export interface ClaimSessionExecution {
   laneId?: string;
   ownerId: string;
   attemptId: string;
+  /** Only attempts still executing locally; a stopped attempt may be reclaimed. */
+  excludeAttemptIds?: readonly string[];
   claimedAt: string;
   leaseTtlMs: number;
   /**
@@ -319,6 +323,17 @@ export async function takeQueuedSteeringInputs(
   return out;
 }
 
+/** Only emit after the lifecycle owner confirms the execution environment is
+ * gone and stops its output drain. A rejected exit observation alone is not
+ * proof. Hosts stop renewing, leave the existing lease to expire, and let the
+ * ordinary claim/maxAttempts/deadline transaction recover canonical history. */
+export class SessionExecutionLostError extends Error {
+  constructor(readonly reason: "sandbox_gone" | "process_exited") {
+    super(reason);
+    this.name = "SessionExecutionLostError";
+  }
+}
+
 /** Thrown / returned when a turn ends in retries_exhausted so the execution
  *  host can settle with holdQueuedOnLane (owner lock: retain mid-run inputs,
  *  do not auto-run them alone). */
@@ -350,7 +365,6 @@ export function annotateHeldAfterExhaustedEvents<T extends { id: string; process
 
 // Shared lease/sweep policy lives beside the execution coordinator contract so
 // every adapter (Node SQL store, CF SessionDO) applies identical decisions.
-export * from "./coordination-policy";
 
 /** One consumption boundary for every host: persist ownership and processing
  * time atomically before re-emitting or handing inputs to the harness. */

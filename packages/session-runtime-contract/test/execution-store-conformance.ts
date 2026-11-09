@@ -184,6 +184,29 @@ export function sessionExecutionStoreConformance(
         })).resolves.toEqual({ type: "empty" });
       }));
 
+    it("chaos: same process excludes live attempts, then races two reclaimers with one CAS winner", () =>
+      harness.withStore("chaos-same-process", async store => {
+        await store.admit({ ...admitted("chaos", "session_chaos", at(1)), policy: { maxAttempts: 3, timeoutMs: 60000 } });
+        const stale = await store.claim({ ownerId: "same", attemptId: "a", claimedAt: at(2), leaseTtlMs: 10 });
+        if (stale.type !== "claimed") throw new Error("claim");
+        expect(await store.claim({ ownerId: "same", attemptId: "b", claimedAt: at(3), leaseTtlMs: 10, excludeAttemptIds: ["a"] })).toEqual({ type: "empty" });
+        const results = await Promise.all(["same", "other"].map((ownerId, i) => store.claim({ ownerId, attemptId: "new" + i, claimedAt: at(3), leaseTtlMs: 1000, excludeAttemptIds: [] })));
+        expect(results.map(r => r.type).sort()).toEqual(["claimed", "empty"]);
+        expect(await store.settle({ fence: stale.fence, settledAt: at(3), outcome: "completed" })).toEqual({ type: "lost" });
+        const winner = results.find(r => r.type === "claimed");
+        if (winner?.type !== "claimed") throw new Error("winner");
+        expect(await store.settle({ fence: winner.fence, settledAt: at(3), outcome: "completed" })).toMatchObject({ type: "settled", execution: { state: "completed", attemptCount: 2 } });
+      }));
+
+    it("chaos: repeated loss with no practical deadline always exhausts attempts", () =>
+      harness.withStore("chaos-exhaust", async store => {
+        await store.admit({ ...admitted("chaos", "session_chaos", at(1)), policy: { maxAttempts: 2, timeoutMs: 60 * 60 * 1000 } });
+        expect((await store.claim({ ownerId: "same", attemptId: "a", claimedAt: at(2), leaseTtlMs: 1 })).type).toBe("claimed");
+        expect((await store.claim({ ownerId: "same", attemptId: "b", claimedAt: at(3), leaseTtlMs: 1 })).type).toBe("claimed");
+        expect(await store.claim({ ownerId: "same", attemptId: "c", claimedAt: at(4), leaseTtlMs: 1 })).toEqual({ type: "empty" });
+        expect(await store.find({ workspaceId: "workspace_01", executionId: "chaos" })).toMatchObject({ state: "failed", attemptCount: 2 });
+      }));
+
     it("reclaims an expired lease and fences the stale attempt", () =>
       harness.withStore("reclaim", async (store) => {
         await store.admit(admitted("execution_01", "session_01", at(1)));

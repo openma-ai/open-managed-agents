@@ -1,4 +1,5 @@
 export interface Env {
+  OMA_SESSION_EXECUTION_LEASE_TTL_MS?: string;
   CONFIG_KV: KVNamespace;
   /** @deprecated Pre-shard binding. Equivalent to AUTH_DB_00 (the original
    *  openma-auth database) for back-compat during the shard rollout. New
@@ -301,12 +302,14 @@ export interface Env {
       outputManifest: () => Promise<string>;
       readOutput: (path: string) => Promise<Uint8Array>;
     }): Promise<{ type: "published" } | { type: "not_found" }>;
+    managedSessionCanonicalEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("./index").SessionEvent[]>;
     managedSessionEventProduced(opts: {
       workspaceId: string;
       sessionId: string;
       event: string;
       executionFence?: unknown;
     }): Promise<
+      | { type: "execution_fence_lost" }
       | { type: "recorded" }
       | { type: "ignored" }
       | { type: "not_found" }

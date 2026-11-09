@@ -1,7 +1,8 @@
-// R2 mount targets of a Cloudflare container sandbox. Each R2 key is scoped to
-// one bucket: Memory mounts use the memory bucket key, outputs the files bucket
-// key and FILES_BUCKET_NAME. A wrong pair is AccessDenied, which the shim reports
-// as "cannot verify the new FUSE connection".
+// R2 mount targets of a Cloudflare container sandbox. Outputs mount
+// FILES_BUCKET_NAME with the R2_FILES_* key when set (a key per bucket), else
+// with R2_ACCESS_KEY_ID (one key for every bucket). A key that cannot reach the
+// bucket is AccessDenied, which the shim reports as "cannot verify the new FUSE
+// connection".
 import { describe, expect, it } from "vitest";
 import { CloudflareSandbox } from "../src/runtime/sandbox";
 
@@ -36,14 +37,31 @@ describe("CloudflareSandbox R2 mounts", () => {
     });
   });
 
-  it.each(["FILES_BUCKET_NAME", "R2_FILES_ACCESS_KEY_ID", "R2_FILES_SECRET_ACCESS_KEY"])(
-    "refuses an outputs mount without %s instead of using another bucket or key",
-    (name) => {
-      const env = { ...base, [name]: undefined };
+  it("mounts outputs with the general key when no files key is set", () => {
+    const env = { ...base, R2_FILES_ACCESS_KEY_ID: undefined, R2_FILES_SECRET_ACCESS_KEY: undefined };
+    expect(new CloudflareSandbox(env as never, "sess").sessionOutputsMount({ tenantId: "t1", sessionId: "s1" })).toMatchObject({
+      bucket: "lane-files",
+      options: { credentials: { accessKeyId: "memory-key", secretAccessKey: "memory-secret" } },
+    });
+  });
+
+  it.each([
+    ["R2_FILES_ACCESS_KEY_ID", "R2_FILES_SECRET_ACCESS_KEY"],
+    ["R2_FILES_SECRET_ACCESS_KEY", "R2_FILES_ACCESS_KEY_ID"],
+  ])("refuses an outputs mount with only one files key (%s unset)", (unset, kept) => {
+    const env = { ...base, [unset]: undefined };
+    expect(env[kept as keyof typeof env]).toBeTruthy();
+    expect(() => new CloudflareSandbox(env as never, "sess").sessionOutputsMount({ tenantId: "t1", sessionId: "s1" }))
+      .toThrow(new RegExp(`must be set together; ${unset} is missing`));
+  });
+
+  it("refuses an outputs mount without FILES_BUCKET_NAME, with either key shape", () => {
+    for (const keys of [{}, { R2_FILES_ACCESS_KEY_ID: undefined, R2_FILES_SECRET_ACCESS_KEY: undefined }]) {
+      const env = { ...base, ...keys, FILES_BUCKET_NAME: undefined };
       expect(() => new CloudflareSandbox(env as never, "sess").sessionOutputsMount({ tenantId: "t1", sessionId: "s1" }))
-        .toThrow(new RegExp(name));
-    },
-  );
+        .toThrow(/FILES_BUCKET_NAME/);
+    }
+  });
 
   it("keeps the local outputs directory when no R2 key is configured (wrangler dev)", () => {
     const env = { SANDBOX: {}, FILES_BUCKET: {} };

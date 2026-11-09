@@ -20,7 +20,7 @@ export class SqliteHistory implements HistoryStore {
   private repo: CfDoEventLog;
 
   constructor(
-    sql: SqlStorage,
+    private readonly sql: SqlStorage,
     r2: R2Bucket | null = null,
     r2KeyPrefix: string = "",
     /** Prefer SessionDO.processedClock so (processed_at, id) list order matches append order. */
@@ -34,6 +34,22 @@ export class SqliteHistory implements HistoryStore {
 
   append(event: SessionEvent): void {
     this.repo.append(event);
+  }
+
+  /** Reconcile committed facts without re-enqueueing consumed inputs or changing
+   * local seq identities. Canonical order is a projection, never a fence. */
+  async reconcileCanonicalEvents(events: SessionEvent[]): Promise<SessionEvent[]> {
+    await this.repo.indexLegacySpillIds();
+    const added: SessionEvent[] = [];
+    for (const [order, event] of events.entries()) {
+      if (!event.id) continue;
+      const rows = this.sql.exec("SELECT processed_at FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", event.id).toArray();
+      if (rows.length === 0) { this.append(event); added.push(event); }
+      const processedAt = Date.parse((event as { processed_at?: string }).processed_at ?? "");
+      this.sql.exec("UPDATE events SET canonical_order = ? WHERE json_extract(data, '$.id') = ?", order, event.id);
+      if (rows.length > 0 && rows[0]!.processed_at == null) this.sql.exec("UPDATE events SET data = ?, processed_at = ?, cancelled_at = NULL WHERE json_extract(data, '$.id') = ? AND processed_at IS NULL", JSON.stringify(event), Number.isFinite(processedAt) ? processedAt : Date.now(), event.id);
+    }
+    return added;
   }
 
   getEvents(afterSeq?: number): SessionEvent[] {

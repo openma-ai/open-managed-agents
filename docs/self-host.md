@@ -14,6 +14,10 @@ provider; there is no host-subprocess fallback.
 > the same `Services` abstractions used on Cloudflare, including better-auth
 > multi-tenant. See "What works / doesn't" below.
 
+## Execution lease
+
+`OMA_SESSION_EXECUTION_LEASE_TTL_MS` configures the execution lease on Node and CF (default 90000 ms). Heartbeats run every TTL / 3 (default 30000 ms). Sandbox token validity follows the live execution lease, not an independent credential lifetime: a lost/replaced attempt is fenced immediately and its successor receives a new token (§0.0b B.3).
+
 ## Choose a backend
 
 One image, multiple SQL adapters — pick the one that matches your durability

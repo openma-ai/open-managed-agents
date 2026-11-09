@@ -252,7 +252,7 @@ export class AcpTranslator {
   }
 
   /** Close any open message/thinking + buffered tool_uses at turn boundary. */
-  async flush(reason: "completed" | "aborted" = "completed"): Promise<void> {
+  async flush(reason: "completed" | "aborted" = "completed", errorMessage?: string): Promise<void> {
     if (reason === "aborted") {
       if (this.#activeMessage) {
         await this.#runtime.broadcastStreamEnd(this.#activeMessage.id, "aborted");
@@ -273,7 +273,7 @@ export class AcpTranslator {
     await this.#closeThinking();
     // Backward compatibility with daemons predating PromptResponse relay:
     // close the span even though those hosts cannot report usage details.
-    await this.#closeModelRequest({ stopReason: "end_turn" });
+    await this.#closeModelRequest({ stopReason: "end_turn" }, errorMessage);
   }
 
   async #onTextChunk(delta: string): Promise<void> {

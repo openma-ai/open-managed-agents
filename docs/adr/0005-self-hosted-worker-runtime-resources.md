@@ -447,7 +447,8 @@ The Node coordinator guarantees:
 2. strict FIFO within a Session and parallel claims across Sessions;
 3. one winning claim generation, renewable only by its owner/attempt;
 4. expired attempts may be reclaimed only by a different live owner;
-5. interrupt intent is durable, cancels queued work, and is observed through
+5. interrupt intent is durable, cancels only the running attempt (queued work
+   survives and runs as the lane's next turns), and is observed through
    renewal by a running owner;
 6. every canonical runtime projection is committed with the execution fence,
    so an expired generation cannot append accepted output.

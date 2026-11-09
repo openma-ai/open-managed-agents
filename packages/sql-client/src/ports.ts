@@ -76,6 +76,8 @@ export interface SqlStatement {
 export interface SqlClient {
   prepare(sql: string): SqlStatement;
   batch<T = unknown>(stmts: SqlStatement[]): Promise<Array<SqlRunResult<T>>>;
+  /** Node adapters validate before COMMIT; throwing rolls back every statement. */
+  batchChecked?<T = unknown>(stmts: SqlStatement[], validate: (results: Array<SqlRunResult<T>>) => void): Promise<Array<SqlRunResult<T>>>;
   /** Execute raw DDL/migration SQL. No params, no result rows. */
   exec(sql: string): Promise<void>;
 }

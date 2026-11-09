@@ -265,8 +265,8 @@ describe("eventsToMessages — ignored event types", () => {
     expect(messages[0].role).toBe("user");
   });
 
-  // user.interrupt flushes queued user.* by setting cancelled_at_ms on
-  // the row. Adapter (CfDoEventLog/InMemoryEventLog) attaches that to
+  // DELETE /pending/:event_id cancels a queued user.* by setting
+  // cancelled_at_ms on the row. Adapter (CfDoEventLog/InMemoryEventLog) attaches that to
   // the parsed event. eventsToMessages must skip those so the LLM
   // never sees inputs the user explicitly cancelled.
   it("cancelled user.message excluded from context", () => {

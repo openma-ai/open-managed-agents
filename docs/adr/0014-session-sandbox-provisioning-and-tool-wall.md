@@ -172,6 +172,24 @@ Node differ only in triggers and storage adapters (standing user lock). One
 shared port-level certification suite (the test list in Consequences) runs
 against both wrapped legacy adapters and native ones.
 
+Turn execution follows the same rule (#545). The business decisions of one
+turn are one implementation in `packages/session-runtime`, Node's where the
+hosts differed: which event runs and how a `session.updated` resume continues
+(`classifyTurnInput`), requires_action answer filtering
+(`planRequiresActionAnswers`), retry and failure endings (`runTurnAttempts`,
+`settleTurnFailure`) and the idle ending (`finishTurn`). Interrupt has one
+meaning on both: an idle lane, idle requires_action included, is left as it
+is, and queued inputs survive. Its steps are infrastructure: on Cloudflare
+the SessionDO records the interrupt and ends the lane through `interruptTurn`;
+on Node the execution worker owns the durable interrupt and the runner only
+aborts its running turn, which emits its own idle. Only platform
+infrastructure stays per host: checkpoint, restore and barrier, sandbox
+acquisition, DO state / queue / turn-marker storage, and the wire shape of
+events. The one kept difference is failure
+classification: a Payment / Auth / Config failure terminates the Session on
+Cloudflare (`retry_status: terminal`) and ends only the turn on Node, which
+has no terminated state.
+
 ### 10. Cloudflare is the first native implementation
 
 Dogfood the new port on `@cloudflare/sandbox` 1.0 helpers with our own

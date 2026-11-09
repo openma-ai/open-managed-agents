@@ -52,6 +52,18 @@ package never imports the app), `leaseTtlMs`, `controlPlaneBaseUrl`,
 `WORKSPACE_BUCKET`, `WORKSPACE_BUCKET_NAME`, `R2_ENDPOINT`, and the `R2_*`
 credentials).
 
+### R2 keys for mounts
+
+With `R2_ENDPOINT` set, Session outputs are mounted from the bucket named by
+`FILES_BUCKET_NAME` (required; startup of the mount fails naming the variable
+if it is missing). Choose one key layout:
+
+- **One key for every bucket:** set `R2_ACCESS_KEY_ID` and
+  `R2_SECRET_ACCESS_KEY`. Memory and outputs both use it.
+- **One key per bucket:** additionally set `R2_FILES_ACCESS_KEY_ID` and
+  `R2_FILES_SECRET_ACCESS_KEY` for the files bucket. Set both or neither; one
+  alone is an error.
+
 The **`cloudflare-bridge`** variant reaches an operator-deployed official
 Cloudflare Sandbox Bridge over HTTP instead. Its factory,
 `createCloudflareBridgeManagedRuntime`, takes `baseUrl`, `apiKey` (the

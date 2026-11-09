@@ -121,7 +121,11 @@ export class BetterSqlite3SqlClient implements SqlClient {
     return new BetterSqlite3SqlStatement(this.db.prepare(sql));
   }
 
-  async batch<T = unknown>(stmts: SqlStatement[]): Promise<Array<SqlRunResult<T>>> {
+  batch<T = unknown>(stmts: SqlStatement[]): Promise<Array<SqlRunResult<T>>> {
+    return this.batchChecked(stmts, () => {});
+  }
+
+  async batchChecked<T = unknown>(stmts: SqlStatement[], validate: (results: Array<SqlRunResult<T>>) => void): Promise<Array<SqlRunResult<T>>> {
     // better-sqlite3 transactions are synchronous. Retry the whole
     // transaction function; a failure rolls it back before the next attempt.
     return retrySqlite(async () => {
@@ -135,6 +139,7 @@ export class BetterSqlite3SqlClient implements SqlClient {
           }
           out.push(s.executeRun() as SqlRunResult<T>);
         }
+        validate(out);
         return out;
       });
       return txn() as SqlRunResult<T>[];
