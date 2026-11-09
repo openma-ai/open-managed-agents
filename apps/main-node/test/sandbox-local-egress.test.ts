@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LocalSubprocessSandbox } from "../../../packages/sandbox/src/adapters/local-subprocess";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "../../../packages/sandbox-egress/src/ca";
 import { prepareSandboxEgress, clearSandboxEgress } from "../../../packages/sandbox-egress/src/install";
-import { createCredentialEgressRelay, createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
+import { createCredentialEgressRelay } from "../../../packages/managed-credential-resolver/src/relay";
+import { memorySandboxTokens } from "../../../packages/sandbox-gateway/test/memory-sandbox-token-store";
 import { ManagedCredentialResolver } from "../../../packages/managed-credential-resolver/src/resolver";
 import { builtinSpecs, createSpecRegistry } from "../../../packages/cap/src/index";
 import type { StoredCredential, CredentialStore } from "../../../packages/credential-store/src/index";
@@ -25,9 +26,10 @@ async function fixture(cliId?: "gh" | "glab", realCli = false) {
   const dir = await mkdtemp(join(tmpdir(), "oma-local-relay-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const upstreamCA = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "upstream")));
-  let status = 200; let refreshOk = true; let archivedAt: string | null = null; let vaultIds = ["vault"];
+  let status = 200; let refreshOk = true; let vaultIds = ["vault"];
   const seen: Array<{ token?: string; path: string; body: Buffer; headers: Record<string, unknown> }> = [];
-  let refreshes = 0; let now = Date.now();
+  let refreshes = 0;
+  const tokens = memorySandboxTokens({ vaultIds: () => vaultIds });
   const upstream = createServer(await upstreamCA.leafFor("localhost"), async (request, response) => {
     const parts: Buffer[] = []; for await (const chunk of request) parts.push(chunk);
     seen.push({ token: request.headers.authorization, path: request.url!, body: Buffer.concat(parts), headers: request.headers });
@@ -58,8 +60,7 @@ async function fixture(cliId?: "gh" | "glab", realCli = false) {
     archive: async () => ({ type: "not_found" }), delete: async () => ({ type: "not_found" }), list: async ({ vaultId }) => vaultId === "vault" ? [row] : [],
   };
   const resolver = new ManagedCredentialResolver({ credentials, vaults: { find: async () => ({ vault: { archivedAt: null } }) }, clock: { now: () => new Date() }, log: { warn() {} }, fetch: async () => { refreshes++; return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("no", { status: 400 }); } }, createSpecRegistry(cliId && !realCli ? builtinSpecs.map(spec => spec.cli_id === cliId ? { ...spec, endpoints: ["localhost"] } : spec) : builtinSpecs));
-  const passes = createEgressRelayPasses("root", () => now);
-  const relay = createCredentialEgressRelay({ passes, credentials: resolver, authorize: async (claims) => archivedAt === null ? { workspaceId: claims.workspaceId, sessionId: claims.sessionId, vaultIds } : null, send: request => sendDirectHttps(realCli ? new Request(`${target}${new URL(request.url).pathname}${new URL(request.url).search}`, request) : request, upstreamCA.certificatePem) });
+  const relay = createCredentialEgressRelay({ credentials: resolver, authenticate: tokens.authenticate, send: request => sendDirectHttps(realCli ? new Request(`${target}${new URL(request.url).pathname}${new URL(request.url).search}`, request) : request, upstreamCA.certificatePem) });
   const routes = new Hono().route("/v1/oma/egress", buildCredentialEgressRoutes(() => relay));
   const controlCA = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "control-test")));
   const control = createServer(await controlCA.leafFor("localhost"), async (incoming, outgoing) => {
@@ -75,8 +76,9 @@ async function fixture(cliId?: "gh" | "glab", realCli = false) {
   const sandbox = new LocalSubprocessSandbox({ workdir: join(dir, "sandbox-a") });
   cleanup.push(() => sandbox.destroy());
   const scope = { workspaceId: "ws", sessionId: "session", vaultIds: ["vault"] };
-  const prepare = (box = sandbox) => prepareSandboxEgress({ sandbox: box, scope, relay: { endpoint, pass: "", ca: controlCA.certificatePem }, issuePass: () => passes.issue({ workspaceId: "ws", sessionId: "session", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60000 }), placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
-  return { dir, sandbox, target, prepare, seen, upstreamPem: upstreamCA.certificatePem, expire: () => { now += 120000; }, get refreshes() { return refreshes; }, setStatus: (value: number) => { status = value; }, failRefresh: () => { refreshOk = false; }, setVaults: (value: string[]) => { vaultIds = value; }, archive: () => { archivedAt = "now"; } };
+  const issued: string[] = [];
+  const prepare = (box = sandbox) => prepareSandboxEgress({ sandbox: box, scope, relay: { endpoint, ca: controlCA.certificatePem }, issueToken: async () => { const token = await tokens.issue(); issued.push(token); return token; }, placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
+  return { dir, sandbox, target, prepare, seen, issued, tokens, upstreamPem: upstreamCA.certificatePem, settle: () => tokens.settle(), get refreshes() { return refreshes; }, setStatus: (value: number) => { status = value; }, failRefresh: () => { refreshOk = false; }, setVaults: (value: string[]) => { vaultIds = value; }, archive: () => tokens.archive() };
 }
 
 describe("sandbox-owned local credential relay", () => {
@@ -165,7 +167,7 @@ describe("sandbox-owned local credential relay", () => {
     expect(await call()).toContain("200"); expect(f.refreshes).toBe(1); expect(f.seen).toHaveLength(2);
     expect(f.seen.map(row => row.body)).toEqual([Buffer.from([0,255,1,128]), Buffer.from([0,255,1,128])]);
     f.setVaults([]); expect(await call()).toContain("403"); expect(f.seen).toHaveLength(2);
-    f.setVaults(["vault"]); f.archive(); expect(await call()).toMatch(/403|502/); expect(f.seen).toHaveLength(2);
+    f.setVaults(["vault"]); f.archive(); expect(await call()).toMatch(/401|502/); expect(f.seen).toHaveLength(2);
   });
 
   it.each([401, 403])("does not resend failed refresh or forbidden %s", async status => {
@@ -181,10 +183,47 @@ describe("sandbox-owned local credential relay", () => {
     expect(f.seen).toHaveLength(1); expect(f.seen[0]!.token).toBe("Bearer direct-only"); expect(f.refreshes).toBe(0);
   });
 
-  it("denies an expired Session pass without dialing the upstream", async () => {
-    const f = await fixture(); await f.prepare(); f.expire();
+  it("denies a token whose execution attempt ended (401) without dialing the upstream", async () => {
+    const f = await fixture(); await f.prepare(); f.settle();
     expect(await f.sandbox.exec(`curl -sS --noproxy '' '${f.target}/expired' 2>&1 || true`)).toContain("401");
     expect(f.seen).toHaveLength(0);
+  });
+
+  it("a gateway that cannot check (503) fails only the request; the forwarder keeps serving", async () => {
+    const f = await fixture(); const ready = await f.prepare(); f.tokens.fail();
+    expect(await f.sandbox.exec(`curl -sS --noproxy '' '${f.target}/down' 2>&1 || true`)).toMatch(/503|502/);
+    f.tokens.fail(false);
+    expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/back'`)).toContain("200");
+    expect(() => process.kill(ready.pid!, 0)).not.toThrow();
+  });
+
+  it("the token reaches the relay through one file that it deletes: no file under .oma-egress holds it", async () => {
+    const f = await fixture(); await f.prepare(); await f.prepare(); // a re-sign is consumed too
+    expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/'`)).toContain("200");
+    const listing = await f.sandbox.exec("ls -A .oma-egress");
+    expect(listing).not.toMatch(/binding\.(json|next\.json|consuming)/u);
+    expect(f.issued).toHaveLength(2);
+    for (const token of f.issued) expect(await f.sandbox.exec(`grep -rlF '${token}' .oma-egress || echo NONE`)).toContain("NONE");
+    const ready = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json")) as Record<string, unknown>;
+    expect(ready).toMatchObject({ protocol: 3, bindingError: null });
+    expect(Object.keys(ready).sort()).toEqual(["bindingError", "bindingId", "caBundleFile", "caFile", "pid", "port", "protocol"]);
+  });
+
+  it("a malformed delivery never replaces the working binding and is reported; the installer fails", async () => {
+    const f = await fixture(); const ready = await f.prepare();
+    await f.sandbox.exec(`printf '%s' '{"endpoint":"http://plain"}' > .oma-egress/binding.json && chmod 600 .oma-egress/binding.json`);
+    for (let i = 0; i < 50 && (await f.sandbox.exec("test -e .oma-egress/binding.json && echo PRESENT || echo GONE")).includes("PRESENT"); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    const state = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json")) as { bindingError: string | null; pid: number };
+    expect(state.bindingError).toMatch(/binding rejected/);
+    expect(state.pid).toBe(ready.pid);
+    expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/still'`)).toContain("200");
+  });
+
+  it("a relay started with no delivery exits with an error instead of running without a binding", async () => {
+    const f = await fixture(); await f.prepare();
+    await f.sandbox.exec("node -e \"process.kill(JSON.parse(require('fs').readFileSync('.oma-egress/ready.json')).pid,'SIGTERM')\"; sleep 0.3");
+    const output = await f.sandbox.exec("node .oma-egress/relay.cjs \"$PWD/.oma-egress\" 2>&1; echo EXIT=$?");
+    expect(output).toContain("has no binding"); expect(output).toContain("EXIT=1");
   });
 
   it("clears the proxy environment and closes the local listener on Vault removal", async () => {

@@ -1,20 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { ManagedCredentialResolver } from "../../../packages/managed-credential-resolver/src/resolver";
 import { createSpecRegistry, builtinSpecs } from "../../../packages/cap/src/index";
-import { createCredentialEgressRelay, createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
+import { createCredentialEgressRelay } from "../../../packages/managed-credential-resolver/src/relay";
 import { buildCredentialEgressRoutes } from "../../../packages/managed-agents-adapters-http/src/credential-egress";
 import type { StoredCredential, CredentialStore } from "../../../packages/credential-store/src/index";
-import { authorizeSandboxEgress } from "../../../packages/sandbox-gateway/src/index";
-
-/** The execution attempt every pass in this file is bound to (design §0.0 rule 10). */
-const ATTEMPT = { workspaceId: "ws", sessionId: "session", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1 };
+import { sandboxBasicCredential } from "../../../packages/sandbox-gateway/src/index";
+import { memorySandboxTokens } from "../../../packages/sandbox-gateway/test/memory-sandbox-token-store";
 
 function fixture(cliId?: string) {
   let vaultIds = ["vault"];
-  let archivedAt: string | null = null;
-  let exists = true;
-  let attemptState = "running";
-  let now = 1000;
+  const now = 1000;
   let status = 200;
   let refreshOk = true;
   const seen: Request[] = [];
@@ -34,12 +29,9 @@ function fixture(cliId?: string) {
     refreshes++;
     return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("refused", { status: 400 });
   } }, createSpecRegistry(builtinSpecs));
-  const passes = createEgressRelayPasses("root-secret", () => now);
-  const relay = createCredentialEgressRelay({ passes,
-    authorize: claims => authorizeSandboxEgress(() => ({
-      leases: { find: async () => ({ executionId: "exe", sessionId: "session", state: attemptState, attemptId: "att", ownerId: "owner", generation: 1, claimedAtMs: 0, leaseExpiresAtMs: now + 60_000 }) },
-      findSession: async () => exists ? { vaultIds, archivedAt, environmentId: "env", agent: { id: "agent", version: 1 } } : null,
-    }), claims, () => now),
+  const tokens = memorySandboxTokens({ vaultIds: () => vaultIds });
+  const relay = createCredentialEgressRelay({
+    authenticate: tokens.authenticate,
     credentials: resolver,
     send: async request => {
       seen.push(request);
@@ -50,14 +42,14 @@ function fixture(cliId?: string) {
       } });
     },
   });
-  return { passes, relay, seen, get refreshes() { return refreshes; }, setVaults: (ids: string[]) => { vaultIds = ids; }, archive: () => { archivedAt = "now"; }, remove: () => { exists = false; }, settle: () => { attemptState = "completed"; }, expire: () => { now = 100000; }, setStatus: (value: number) => { status = value; }, failRefresh: () => { refreshOk = false; } };
+  return { tokens, relay, seen, get refreshes() { return refreshes; }, setVaults: (ids: string[]) => { vaultIds = ids; }, archive: () => tokens.archive(), settle: () => tokens.settle(), setStatus: (value: number) => { status = value; }, failRefresh: () => { refreshOk = false; } };
 }
 
-async function call(f: ReturnType<typeof fixture>, path: string, opts: { pass?: string; target?: string; headers?: Record<string, string>; body?: Uint8Array; method?: string } = {}) {
-  const pass = opts.pass ?? await f.passes.issue({ ...ATTEMPT, ttlMs: 10000 });
+async function call(f: ReturnType<typeof fixture>, path: string, opts: { authorization?: string; target?: string; headers?: Record<string, string>; body?: Uint8Array; method?: string } = {}) {
+  const authorization = opts.authorization ?? sandboxBasicCredential("session", await f.tokens.issue());
   const app = buildCredentialEgressRoutes(() => f.relay);
   return app.request(`https://control.example${path}`, { method: "POST", headers: {
-    authorization: `Bearer ${pass}`, "x-oma-egress-target": opts.target ?? "https://upstream.example/a%2Fb?q=one%20two",
+    authorization, "x-oma-egress-target": opts.target ?? "https://upstream.example/a%2Fb?q=one%20two",
     "x-oma-egress-method": opts.method ?? "POST", "x-oma-egress-headers": JSON.stringify(opts.headers ?? { authorization: "Bearer __cap_managed__", "content-type": "application/octet-stream" }),
   }, body: opts.body ?? new Uint8Array([0, 255, 1, 128]) });
 }
@@ -96,7 +88,7 @@ describe("credential relay shared HTTP contract", () => {
     expect(response.headers.has("content-length")).toBe(false);
     expect(response.headers.get("x-oma-egress-head-content-length")).toBe("123");
     const native = await f.relay.handle("forward", new Request("https://control.example/forward", { method: "POST", headers: {
-      authorization: `Bearer ${await f.passes.issue({ ...ATTEMPT, ttlMs: 10000 })}`,
+      authorization: sandboxBasicCredential("session", await f.tokens.issue()),
       "x-oma-egress-target": "https://upstream.example/", "x-oma-egress-method": "HEAD",
     } }));
     expect(native.body).toBeNull(); expect(native.headers.get("content-length")).toBe("123");
@@ -121,18 +113,28 @@ describe("credential relay shared HTTP contract", () => {
     expect((await call(f, "/forward")).status).toBe(200);
   });
 
-  it("binds a pass to the execution attempt: a Session-only pass is neither issued nor accepted (design §0.0 rule 10)", async () => {
+  it("takes the sandbox token as Basic <sessionId>:<token> only (design §0.0 rule 10, #561)", async () => {
     const f = fixture();
-    await expect(f.passes.issue({ workspaceId: "ws", sessionId: "session", ttlMs: 10000 } as never)).rejects.toThrow("Invalid relay scope");
-    expect(await f.passes.verify((await f.passes.issue({ ...ATTEMPT, ttlMs: 10000 })))).toMatchObject(ATTEMPT);
-    expect((await call(f, "/forward", { pass: "unfenced" })).status).toBe(401);
+    const token = await f.tokens.issue();
+    expect((await call(f, "/forward", { authorization: `Bearer ${token}` })).status).toBe(401);
+    expect((await call(f, "/forward", { authorization: sandboxBasicCredential("other", token) })).status).toBe(401);
+    expect((await call(f, "/forward", { authorization: "Bearer unfenced" })).status).toBe(401);
+    expect(f.seen).toHaveLength(0);
   });
 
-  it.each(["archive", "remove", "expire", "settle"] as const)("denies requests after session/pass %s", async action => {
+  it.each(["archive", "settle"] as const)("denies requests (401, a definite rejection) after %s", async action => {
     const f = fixture();
-    const pass = await f.passes.issue({ ...ATTEMPT, ttlMs: 10000 });
+    const authorization = sandboxBasicCredential("session", await f.tokens.issue());
     f[action]();
-    expect((await call(f, "/forward", { pass })).status).toBe(action === "expire" ? 401 : 403);
+    expect((await call(f, "/forward", { authorization })).status).toBe(401);
+    expect(f.seen).toHaveLength(0);
+  });
+
+  it("answers 503 when the token cannot be checked, never 401", async () => {
+    const f = fixture();
+    const authorization = sandboxBasicCredential("session", await f.tokens.issue());
+    f.tokens.fail();
+    expect((await call(f, "/forward", { authorization })).status).toBe(503);
     expect(f.seen).toHaveLength(0);
   });
 
@@ -152,7 +154,7 @@ describe("credential relay shared HTTP contract", () => {
 
   it("rejects malformed passes, plaintext targets and relay loops before dialing", async () => {
     const f = fixture();
-    expect((await call(f, "/forward", { pass: "bad" })).status).toBe(401);
+    expect((await call(f, "/forward", { authorization: "Basic bad" })).status).toBe(401);
     expect((await call(f, "/forward", { target: "http://upstream.example/" })).status).toBe(400);
     expect((await call(f, "/forward", { target: "https://control.example/v1/oma/egress/forward" })).status).toBe(400);
     expect(f.seen).toHaveLength(0);

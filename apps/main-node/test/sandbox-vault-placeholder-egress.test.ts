@@ -14,7 +14,8 @@ import { Hono } from "hono";
 import { LocalSubprocessSandbox } from "../../../packages/sandbox/src/adapters/local-subprocess";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "../../../packages/sandbox-egress/src/ca";
 import { prepareSandboxEgress } from "../../../packages/sandbox-egress/src/install";
-import { createCredentialEgressRelay, createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
+import { createCredentialEgressRelay } from "../../../packages/managed-credential-resolver/src/relay";
+import { memorySandboxTokens } from "../../../packages/sandbox-gateway/test/memory-sandbox-token-store";
 import { ManagedCredentialResolver } from "../../../packages/managed-credential-resolver/src/resolver";
 import { createVaultPlaceholders } from "../../../packages/sandbox-gateway/src/vault-substitution";
 import { builtinSpecs, createSpecRegistry } from "../../../packages/cap/src/index";
@@ -57,10 +58,10 @@ async function fixture() {
     credentials, vaults: { find: async () => ({ vault: { archivedAt: null } }) }, clock: { now: () => new Date() },
     log: { warn() {} }, fetch: async () => new Response("unused", { status: 500 }), placeholders: createVaultPlaceholders("root"),
   }, createSpecRegistry(builtinSpecs));
-  const passes = createEgressRelayPasses("root", Date.now);
+  const tokens = memorySandboxTokens();
   const relay = createCredentialEgressRelay({
-    passes, credentials: resolver,
-    authorize: async (claims) => ({ workspaceId: claims.workspaceId, sessionId: claims.sessionId, vaultIds: ["vault"] }),
+    credentials: resolver,
+    authenticate: tokens.authenticate,
     send: (request) => sendDirectHttps(request, upstreamCA.certificatePem),
     log: { warn: (fields) => { refused.push(fields); } },
   });
@@ -79,8 +80,8 @@ async function fixture() {
   const scope = { workspaceId: "ws", sessionId: "session", vaultIds: ["vault"] };
   await prepareSandboxEgress({
     sandbox, scope, // upstreamCa: the relay's direct upstreams trust the fixture CA the way real ones trust public roots.
-    relay: { endpoint: `https://localhost:${controlPort}`, pass: "", ca: controlCA.certificatePem, upstreamCa: upstreamCA.certificatePem },
-    issuePass: () => passes.issue({ workspaceId: "ws", sessionId: "session", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60_000 }),
+    relay: { endpoint: `https://localhost:${controlPort}`, ca: controlCA.certificatePem, upstreamCa: upstreamCA.certificatePem },
+    issueToken: () => tokens.issue(),
     placeholders: (s) => resolver.placeholderEnvironment(s),
   });
   const curl = (url: string, header: string) => sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w 'HTTP=%{http_code}' -H "${header}" '${url}' 2>&1`);

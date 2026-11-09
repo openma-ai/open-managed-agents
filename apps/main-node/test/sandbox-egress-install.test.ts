@@ -10,7 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 const scope = { workspaceId: "workspace", sessionId: "session", vaultIds: ["vault"] };
-const input = (sandbox: SandboxPort) => ({ sandbox, scope, relay: { endpoint: "https://control.example", pass: "" }, issuePass: async () => "session-pass", placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
+const input = (sandbox: SandboxPort) => ({ sandbox, scope, relay: { endpoint: "https://control.example" }, issueToken: async () => "session-token", placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("sandbox credential egress installation boundary", () => {
@@ -19,7 +19,7 @@ describe("sandbox credential egress installation boundary", () => {
     const raw = new LocalSubprocessSandbox({ workdir: root });
     const write = raw.writeFile.bind(raw);
     raw.writeFile = (path, content) => write(path, path.endsWith("/relay.cjs")
-      ? `const fs=require('fs'),http=require('http'),path=require('path');const dir=process.argv[2];const s=http.createServer((q,r)=>r.end('ok'));s.listen(0,'127.0.0.1',()=>fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({pid:process.pid,port:s.address().port,caFile:path.join(dir,'ca.crt'),caBundleFile:path.join(dir,'ca-bundle.crt')})));process.on('SIGTERM',()=>s.close(()=>process.exit(0)));`
+      ? `const fs=require('fs'),http=require('http'),path=require('path');const dir=process.argv[2];const b=path.join(dir,'binding.json');let id=null;const take=()=>{try{id=JSON.parse(fs.readFileSync(b,'utf8')).deliveryId;fs.unlinkSync(b)}catch{}};take();const s=http.createServer((q,r)=>r.end('ok'));const pub=()=>fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({pid:process.pid,port:s.address().port,protocol:3,bindingId:id,bindingError:null,caFile:path.join(dir,'ca.crt'),caBundleFile:path.join(dir,'ca-bundle.crt')}));s.listen(0,'127.0.0.1',()=>{pub();setInterval(()=>{if(fs.existsSync(b)){take();pub()}},50)});process.on('SIGTERM',()=>s.close(()=>process.exit(0)));`
       : content);
     let pid = 0; let fail = false;
     const runner = new DefaultNodeManagedSessionRunner({
@@ -54,7 +54,7 @@ describe("sandbox credential egress installation boundary", () => {
     const env: Record<string, string> = {};
     const native = { exec: vi.fn(async () => ""), readFile: async () => "", writeFile: vi.fn(async path => path), setEnvVars: async values => { Object.assign(env, values); }, prepareCredentialEgress: vi.fn(async () => {}), clearCredentialEgress: vi.fn(async () => {}) };
     await prepareSandboxEgress(input(native));
-    expect(native.prepareCredentialEgress).toHaveBeenCalledWith({ endpoint: "https://control.example", pass: "session-pass" });
+    expect(native.prepareCredentialEgress).toHaveBeenCalledWith({ endpoint: "https://control.example", sessionId: "session", token: "session-token" });
     expect(native.writeFile).not.toHaveBeenCalled(); expect(native.exec).not.toHaveBeenCalled();
     expect(env).toEqual({ GITHUB_TOKEN: "__cap_managed__" });
     await clearSandboxEgress(native);

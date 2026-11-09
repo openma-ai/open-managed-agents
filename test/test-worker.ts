@@ -98,6 +98,8 @@ import modelCardPricingSchema from "../apps/main/migrations/0025_model_card_pric
 import heldAfterExhaustedSchema from "../apps/main/migrations/0026_closed_tempest.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import runtimeResourceTablesSchema from "../apps/main/migrations/0027_runtime_resource_tables.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import sandboxTokenHashesSchema from "../apps/main/migrations/0028_sandbox_token_hashes.sql?raw";
 
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
@@ -132,6 +134,7 @@ const MIGRATIONS_RAW: string[] = [
   modelCardPricingSchema as string,
   heldAfterExhaustedSchema as string,
   runtimeResourceTablesSchema as string,
+  sandboxTokenHashesSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];
