@@ -6,7 +6,7 @@ import {
   decideRecoveryFromCanonicalStream,
   type CoordinationAction,
   type ExecutionLeaseRecord,
-} from "../../session-runtime-contract/src/coordination";
+} from "../../session-runtime/src/coordination-policy";
 
 const at = (seconds: number) => new Date(Date.UTC(2026, 10, 2, 0, 0, seconds)).toISOString();
 

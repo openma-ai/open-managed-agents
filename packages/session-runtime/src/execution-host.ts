@@ -69,6 +69,7 @@ function asError(error: unknown): Error {
  * authority after the store rejects the fence.
  */
 export class SessionExecutionHost {
+  readonly #liveAttemptIds = new Set<string>();
   readonly #leaseTtlMs: number;
   readonly #heartbeatIntervalMs: number;
 
@@ -93,13 +94,16 @@ export class SessionExecutionHost {
       ...this.dependencies.scope,
       ...(options.continuationsOnly ? { continuationsOnly: true } : {}),
       ownerId: this.dependencies.ownerId,
+      excludeAttemptIds: [...this.#liveAttemptIds],
       attemptId: this.dependencies.ids.nextAttemptId(),
       claimedAt: this.dependencies.clock.now().toISOString(),
       leaseTtlMs: this.#leaseTtlMs,
     });
     if (claimed.type === "empty") return { type: "empty" };
     this.dependencies.onFenceChanged?.(claimed.fence);
-    return this.#runClaimed(claimed, run);
+    this.#liveAttemptIds.add(claimed.fence.attemptId);
+    try { return await this.#runClaimed(claimed, run); }
+    finally { this.#liveAttemptIds.delete(claimed.fence.attemptId); }
   }
 
   /**

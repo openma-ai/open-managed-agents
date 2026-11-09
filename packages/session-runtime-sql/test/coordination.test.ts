@@ -1,3 +1,4 @@
+import { decideExpiredExecution, decideRecoveryFromCanonicalStream, type CoordinationAction, type ExecutionLeaseRecord } from "../../session-runtime/src/coordination-policy";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,13 +18,9 @@ import {
   SqlSessionExecutionCoordinator,
 } from "../src/coordination";
 import {
-  decideExpiredExecution,
-  decideRecoveryFromCanonicalStream,
   sessionExecutionEventBatches,
   sessionExecutionId,
   takeQueuedSteeringInputs,
-  type CoordinationAction,
-  type ExecutionLeaseRecord,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import { sessionExecutionStoreConformance } from
   "../../session-runtime-contract/test/execution-store-conformance";
@@ -576,17 +573,19 @@ describe("SqlSessionExecutionCoordinator", () => {
     await expect(coordinator.claim({
       ownerId: "node_live",
       attemptId: "attempt_duplicate",
+      excludeAttemptIds: ["attempt_old"],
       claimedAt: at(5),
       leaseTtlMs: 30_000,
     })).resolves.toEqual({ type: "empty" });
     await expect(coordinator.claim({
-      ownerId: "node_replacement",
+      ownerId: "node_live",
       attemptId: "attempt_replacement",
+      excludeAttemptIds: [],
       claimedAt: at(5),
       leaseTtlMs: 30_000,
     })).resolves.toMatchObject({
       type: "claimed",
-      fence: { ownerId: "node_replacement", generation: 2 },
+      fence: { ownerId: "node_live", generation: 2 },
     });
   });
 

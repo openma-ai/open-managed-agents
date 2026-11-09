@@ -84,7 +84,7 @@ import {
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
-import { SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
+import { decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
@@ -92,16 +92,6 @@ import {
   SqlSessionExecutionStore,
 } from "@open-managed-agents/session-runtime-sql/coordination";
 import {
-  decideExpiredExecution,
-  decideLeaseRenewal,
-  decideRecoveryFromCanonicalStream,
-  evaluateCoordinationPolicy,
-  type ActiveTurnRecord,
-  type CanonicalTurnEvidence,
-  type CoordinationAction,
-  type ExecutionLeaseRecord,
-  type QueuedInputRecord,
-  type ScheduleWakeRecord,
   consumeSessionInputs,
   takeQueuedSteeringInputs,
   type SessionExecution,
@@ -7399,7 +7389,7 @@ export class SessionDO extends DurableObject<Env> {
   private async _sweepExpiredLeases(nowMs: number): Promise<void> {
     const store = await this.getExecutionStore();
     if (store === null) return;
-    await store.sweepExpired(nowMs, {
+    await store.sweepExpired(nowMs, { excludeAttemptIds: [...this._executionFences.values()].map(fence => fence.attemptId),
       decideForRecord: (record) => this._decideSweepForRecord(record, nowMs),
       onDecision: (action: CoordinationAction) => {
         if (action.type === "requeue") {

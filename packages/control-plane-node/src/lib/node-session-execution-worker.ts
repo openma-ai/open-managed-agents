@@ -288,6 +288,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       const claimedAt = this.dependencies.clock.now().toISOString();
       const claimed = await this.dependencies.coordinator.claim({
         ownerId: this.dependencies.ownerId,
+        excludeAttemptIds: [...this.#active.values()].map(active => active.fence.attemptId),
         attemptId: this.dependencies.ids.nextAttemptId(),
         claimedAt,
         leaseTtlMs: this.#leaseTtlMs,

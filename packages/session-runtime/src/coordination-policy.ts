@@ -1,3 +1,4 @@
+import { transitionExecution, type ExecutionState } from "./execution-state";
 /**
  * Shared lease / sweep policy for Session Executions.
  *
@@ -44,6 +45,8 @@ export interface ExecutionLeaseRecord {
   /** Epoch ms absolute execution deadline, when the store has one. */
   deadlineAtMs?: number | null;
   ownerId?: string | null;
+  attemptId?: string | null;
+  interruptRequested?: boolean;
   /** Queued after retries_exhausted: not claimable alone. */
   heldAfterExhausted?: boolean;
 }
@@ -96,6 +99,7 @@ export type LeaseSweepReason =
   | "lease_expired"
   | "lease_expired_attempts_exhausted"
   | "deadline_exceeded"
+  | "user_cancelled"
   /** The canonical stream shows the input was applied but the turn never
    *  finished: interrupt and keep the persisted outputs/tool results. */
   | "input_applied"
@@ -207,44 +211,17 @@ export function decideExpiredExecution(
   nowMs: number,
 ): CoordinationAction | null {
   if (record.state !== "queued" && record.state !== "running") return null;
-
-  if (record.deadlineAtMs != null && record.deadlineAtMs <= nowMs) {
-    return {
-      type: "finalize-interrupted",
-      executionId: record.executionId,
-      ...(laneOf(record) === undefined ? {} : { laneId: laneOf(record)! }),
-      reason: "deadline_exceeded",
-      attemptCount: record.attemptCount,
-      maxAttempts: record.maxAttempts,
-    };
-  }
-
-  // Queued work has no lease to expire. It becomes claimable as-is.
-  if (record.state === "queued") return null;
-
-  const leaseExpired = record.leaseExpiresAtMs === null ||
-    record.leaseExpiresAtMs <= nowMs;
-  if (!leaseExpired) return null;
-
-  if (record.attemptCount < record.maxAttempts) {
-    return {
-      type: "requeue",
-      executionId: record.executionId,
-      ...(laneOf(record) === undefined ? {} : { laneId: laneOf(record)! }),
-      reason: "lease_expired",
-      attemptCount: record.attemptCount,
-      maxAttempts: record.maxAttempts,
-    };
-  }
-
-  return {
-    type: "finalize-interrupted",
-    executionId: record.executionId,
-    ...(laneOf(record) === undefined ? {} : { laneId: laneOf(record)! }),
-    reason: "lease_expired_attempts_exhausted",
-    attemptCount: record.attemptCount,
-    maxAttempts: record.maxAttempts,
-  };
+  const fields = { revision: 0, attemptCount: record.attemptCount, maxAttempts: record.maxAttempts,
+    deadlineAtMs: record.deadlineAtMs ?? null, interruptRequested: record.interruptRequested === true };
+  const state: ExecutionState = record.state === "queued" ? { ...fields, state: "queued" }
+    : { ...fields, state: "running", attemptId: record.attemptId ?? "", leaseExpiresAtMs: record.leaseExpiresAtMs };
+  const transition = transitionExecution(state, { type: record.deadlineAtMs != null && record.deadlineAtMs <= nowMs ? "deadline" : "lease_lost", nowMs, liveAttemptIds: [] });
+  if (transition === null) return null;
+  const base = { executionId: record.executionId, ...(laneOf(record) === undefined ? {} : { laneId: laneOf(record)! }),
+    attemptCount: record.attemptCount, maxAttempts: record.maxAttempts };
+  if (transition.next.state === "queued") return { ...base, type: "requeue", reason: "lease_expired" };
+  return { ...base, type: "finalize-interrupted", reason: transition.next.state === "cancelled" ? "user_cancelled"
+    : "reason" in transition.next && transition.next.reason === "deadline" ? "deadline_exceeded" : "lease_expired_attempts_exhausted" };
 }
 
 /**

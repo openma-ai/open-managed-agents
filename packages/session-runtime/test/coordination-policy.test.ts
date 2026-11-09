@@ -7,7 +7,7 @@ import {
   evaluateCoordinationPolicy,
   type CanonicalTurnEvidence,
   type ExecutionLeaseRecord,
-} from "@open-managed-agents/session-runtime-contract/coordination";
+} from "../src/coordination-policy";
 
 const NOW = Date.UTC(2026, 8, 4, 0, 0, 30);
 

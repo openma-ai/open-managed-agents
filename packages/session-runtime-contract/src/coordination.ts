@@ -79,6 +79,8 @@ export interface ClaimSessionExecution {
   laneId?: string;
   ownerId: string;
   attemptId: string;
+  /** Only attempts still executing locally; a stopped attempt may be reclaimed. */
+  excludeAttemptIds?: readonly string[];
   claimedAt: string;
   leaseTtlMs: number;
   /**
@@ -352,7 +354,6 @@ export function annotateHeldAfterExhaustedEvents<T extends { id: string; process
 
 // Shared lease/sweep policy lives beside the execution coordinator contract so
 // every adapter (Node SQL store, CF SessionDO) applies identical decisions.
-export * from "./coordination-policy";
 
 /** One consumption boundary for every host: persist ownership and processing
  * time atomically before re-emitting or handing inputs to the harness. */

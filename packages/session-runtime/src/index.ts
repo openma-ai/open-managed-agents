@@ -141,3 +141,6 @@ export {
   type TemplateStore,
 } from "./session-sandbox-template-cache";
 export { finalizeStaleTurns, type SessionExecutionRecords, type StaleToolUse, type StaleTurnFinalizerPort } from "./finalize-stale-turns";
+
+export * from "./execution-state";
+export * from "./coordination-policy";
