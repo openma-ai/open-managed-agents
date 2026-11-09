@@ -226,7 +226,7 @@ export class EnvironmentCache<R, Q> {
       entry = null;
       logger.info({ ...fields, path: "expired", snapshotRef: expired.ref }, "Environment snapshot expired; rebuilding it");
       retired = await this.#retire([...retired, expired], fields);
-      await this.#keepRetired(store, storeKey, retired, fields);
+      await this.#keepRetired(store, storeKey, retired, fields, raw);
     }
 
     let build = true;
@@ -234,7 +234,8 @@ export class EnvironmentCache<R, Q> {
       const snapshot = entry.snapshot;
       const gone = async (detail: string) => {
         this.#hitFailures.delete(local);
-        await this.#keepRetired(store, storeKey, retired, fields);
+        retired = await this.#retire([...retired, snapshot], fields);
+        await this.#keepRetired(store, storeKey, retired, fields, raw);
         logger.warn({ ...fields, path: "snapshot_gone", snapshotRef: snapshot.ref, detail, durationMs: this.#now() - startMs }, "The environment snapshot is no longer valid; rebuilding it");
         warn({ reason: "snapshot_gone", message: "The cached environment snapshot is no longer valid (" + detail + "); packages are installed in this Session and the cache is rebuilt." });
       };
@@ -242,7 +243,7 @@ export class EnvironmentCache<R, Q> {
         const acquired = await sessionLifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: snapshot } }, signal });
         if (acquired !== "gone") {
           this.#hitFailures.delete(local);
-          await this.#recordUse(store, storeKey, { ...entry, ...(retired.length === 0 ? {} : { retired }) }, fields);
+          await this.#recordUse(store, storeKey, raw, { ...entry, ...(retired.length === 0 ? {} : { retired }) }, fields);
           logger.info({ ...fields, path: "hit", snapshotRef: snapshot.ref, durationMs: this.#now() - startMs }, "Sandbox started from the environment snapshot");
           return acquired;
         }
@@ -321,9 +322,10 @@ export class EnvironmentCache<R, Q> {
     if (existing !== null && !environmentSnapshotExpired(existing, this.#ttl, this.#now())) return;
     if (this.#records(current).retired.length >= MAX_RETIRED) {
       const retired = await this.#retire(this.#records(current).retired, fields);
-      await this.#keepRetired(store, storeKey, retired, fields);
+      await this.#keepRetired(store, storeKey, retired, fields, current);
       if (retired.length >= MAX_RETIRED) return;
       current = await store.get(storeKey);
+      if (this.#parse(current, local, fields).entry !== null) return;
     }
     const result = await buildEnvironmentSnapshot(this.#build, { expected: current, store, storeKey, local, fields, scope: pending.scope, plan: pending.plan, setup: pending.setup });
     if (result.outcome === "built") this.#hitFailures.delete(local);
@@ -333,13 +335,13 @@ export class EnvironmentCache<R, Q> {
     }
   }
 
-  async #recordUse(store: EnvironmentCacheStore, storeKey: string, entry: EnvironmentCacheEntry, fields: Record<string, unknown>): Promise<void> {
+  async #recordUse(store: EnvironmentCacheStore, storeKey: string, expected: string | null, entry: EnvironmentCacheEntry, fields: Record<string, unknown>): Promise<void> {
     const now = this.#now();
     if (entry.lastUsedAtMs !== undefined && now - entry.lastUsedAtMs < USAGE_RECORD_INTERVAL_MS) return;
     const { retired: previous, ...rest } = entry;
     const retired = await this.#retire(previous ?? [], fields);
     try {
-      await store.put(storeKey, JSON.stringify({ ...rest, lastUsedAtMs: now, ...(retired.length === 0 ? {} : { retired }) } satisfies EnvironmentCacheEntry));
+      await store.compareAndSwap(storeKey, expected, JSON.stringify({ ...rest, lastUsedAtMs: now, ...(retired.length === 0 ? {} : { retired }) } satisfies EnvironmentCacheEntry));
     } catch (error) {
       this.#options.logger.warn({ ...fields, path: "record_failed", error: this.#errorText(error) }, "Recording the environment snapshot's use failed");
     }
@@ -362,20 +364,11 @@ export class EnvironmentCache<R, Q> {
   }
 
   /** The record without a usable snapshot: kept for its retired ones, else removed. */
-  async #keepRetired(store: EnvironmentCacheStore, storeKey: string, retired: EnvironmentSnapshotRef[], fields: Record<string, unknown>): Promise<void> {
-    if (retired.length === 0) return this.#remove(store, storeKey, fields);
+  async #keepRetired(store: EnvironmentCacheStore, storeKey: string, retired: EnvironmentSnapshotRef[], fields: Record<string, unknown>, expected: string | null): Promise<void> {
     try {
-      await store.put(storeKey, JSON.stringify({ state: "retired", retired } satisfies EnvironmentCacheRetiredRecord));
+      await store.compareAndSwap(storeKey, expected, retired.length === 0 ? null : JSON.stringify({ state: "retired", retired } satisfies EnvironmentCacheRetiredRecord));
     } catch (error) {
       this.#options.logger.warn({ ...fields, path: "record_failed", error: this.#errorText(error) }, "Recording the retired environment snapshots failed");
-    }
-  }
-
-  async #remove(store: EnvironmentCacheStore, storeKey: string, fields: Record<string, unknown>): Promise<void> {
-    try {
-      await store.delete(storeKey);
-    } catch (error) {
-      this.#options.logger.warn({ ...fields, path: "record_failed", error: this.#errorText(error) }, "Removing the environment cache record failed");
     }
   }
 

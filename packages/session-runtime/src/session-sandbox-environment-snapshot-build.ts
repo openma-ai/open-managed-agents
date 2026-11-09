@@ -81,6 +81,7 @@ export async function buildEnvironmentSnapshot<R, Q>(
   const scope: RuntimeResourceScope = { ...input.scope, sessionId: buildId, workId: buildId };
   const plan: SandboxPlan = {
     ...input.plan, egress: null, stores: [],
+    outputs: { bindingId: "outputs:" + buildId, mountPath: "/mnt/session/outputs" },
     labels: { workspaceId: input.scope.workspaceId, sessionId: buildId },
   };
   const controller = new AbortController();

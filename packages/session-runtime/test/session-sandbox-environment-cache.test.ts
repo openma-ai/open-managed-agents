@@ -155,6 +155,7 @@ describe("EnvironmentCache", () => {
     const [build] = h.builds();
     expect(build!.plan).toMatchObject({ from: FROM_IMAGE, egress: null, stores: [] });
     expect(build!.plan.labels.sessionId).toBe(build!.sessionId);
+    expect(build!.plan.outputs).toEqual({ bindingId: "outputs:" + build!.sessionId, mountPath: "/mnt/session/outputs" });
     expect(h.setups).toEqual(["restricted", "setup-of-s1"]);
     expect(h.released).toEqual(["h_2"]);
   });
@@ -263,6 +264,17 @@ describe("EnvironmentCache", () => {
     expect(reasons(h)).toEqual(["snapshot_build_failed"]);
     expect(h.released).toHaveLength(1);
     expect(h.data.size).toBe(0);
+  });
+
+  it("a stale hit cannot overwrite a concurrently published winner or its cleanup refs", async () => {
+    let replace = false;
+    const h = harness({ acquire: from => {
+      if (replace && "environmentSnapshot" in from) h.data.set(h.storeKey, JSON.stringify({ state: "ready", snapshot: { adapter: "fake", ref: "new-winner" }, createdAtMs: 0, retired: [{ adapter: "fake", ref: "cleanup" }] }));
+      return undefined;
+    } });
+    await h.session("s1"); replace = true;
+    await h.session("s2");
+    expect(JSON.parse(h.data.get(h.storeKey)!)).toMatchObject({ snapshot: { ref: "new-winner" }, retired: [{ ref: "cleanup" }] });
   });
 
   it("publication failure keeps a refused snapshot delete durably and the next Session retries", async () => {
