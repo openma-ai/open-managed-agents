@@ -16,6 +16,8 @@
     "start": "tsx src/index.ts",
     "test:prepare": "pnpm --filter @open-managed-agents/sandbox-egress build",
     "test": "pnpm run test:prepare && vitest run --config vitest.config.ts",
+    "test:live:openai": "tsx test/live/openai-real-model.live.ts",
+    "typecheck:live": "tsc -p tsconfig.live.json",
     "test:integration:mysql": "pnpm run test:prepare && vitest run --config vitest.mysql.config.ts",
     "test:integration:postgres": "pnpm run test:prepare && vitest run --config vitest.postgres.config.ts",
     "test:e2e:acp-deepseek-cache": "pnpm run test:prepare && tsx scripts/acp-deepseek-native-cache.e2e.ts",
