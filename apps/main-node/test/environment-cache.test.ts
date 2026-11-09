@@ -3,6 +3,7 @@ import type { KvStore } from "@open-managed-agents/kv-store";
 import type { SandboxLifecyclePort, SandboxPlan, SandboxPort } from "@open-managed-agents/sandbox";
 import {
   createNodeEnvironmentCache,
+  environmentBuildFirewall,
   environmentCacheAcpInstall,
   NodeEnvironmentCache,
   redact,
@@ -55,13 +56,37 @@ describe("redact", () => {
   });
 });
 
+describe("environmentBuildFirewall", () => {
+  const hostsOf = (setup: EnvironmentCacheSetup, index?: string) => environmentBuildFirewall(setup, index);
+
+  it("is an allowlist of the package sources without the gateway", () => {
+    const rules = hostsOf({ environment });
+    expect(rules).toMatchObject({ mode: "allowlist", includesGateway: false, allowCidrs: [] });
+    expect(rules.allowHosts).toEqual(expect.arrayContaining(["pypi.org", "registry.npmjs.org", "deb.debian.org"]));
+    expect(rules.allowHosts).not.toContain("github.com");
+  });
+
+  it("adds the pip index host (never its credentials) and the nvm hosts only for ACP", () => {
+    expect(hostsOf({ environment }, "https://user:pw@mirror.example/simple").allowHosts).toContain("mirror.example");
+    expect(JSON.stringify(hostsOf({ environment }, "https://user:pw@mirror.example/simple"))).not.toContain("pw");
+    expect(hostsOf({ environment, acpRegistry: "claude-acp@0.94.0" }).allowHosts).toEqual(expect.arrayContaining(["github.com", "nodejs.org"]));
+  });
+});
+
 describe("createNodeEnvironmentCache", () => {
   const deps = () => ({ kvFor: () => kv().store, ...logger() });
+  const vendor = { applyFirewall: async () => undefined };
 
   it("is on only for an adapter that can snapshot", () => {
-    expect(createNodeEnvironmentCache({ environment: {} }, { name: "e2b", lifecycle: lifecycle().port }, deps())).toBeInstanceOf(NodeEnvironmentCache);
-    expect(createNodeEnvironmentCache({ environment: {} }, { name: "x", lifecycle: lifecycle(false).port }, deps())).toBeUndefined();
+    expect(createNodeEnvironmentCache({ environment: {} }, { name: "e2b", lifecycle: lifecycle().port, vendor }, deps())).toBeInstanceOf(NodeEnvironmentCache);
+    expect(createNodeEnvironmentCache({ environment: {} }, { name: "x", lifecycle: lifecycle(false).port, vendor }, deps())).toBeUndefined();
     expect(createNodeEnvironmentCache({ environment: {} }, undefined, deps())).toBeUndefined();
+  });
+
+  it("is off, with a warning, for an adapter that cannot restrict a build's egress", () => {
+    const d = deps();
+    expect(createNodeEnvironmentCache({ environment: {} }, { name: "e2b", lifecycle: lifecycle().port, vendor: {} }, d)).toBeUndefined();
+    expect(d.warned).toHaveLength(1);
   });
 
   it("warns when the expiry is configured on a path without a cache, and stays silent otherwise", () => {
@@ -74,7 +99,7 @@ describe("createNodeEnvironmentCache", () => {
   });
 
   it("rejects an invalid TTL", () => {
-    expect(() => createNodeEnvironmentCache({ environment: { SANDBOX_TEMPLATE_USED_TTL_MS: "soon" } }, { name: "e2b", lifecycle: lifecycle().port }, deps())).toThrow(/SANDBOX_TEMPLATE_USED_TTL_MS/);
+    expect(() => createNodeEnvironmentCache({ environment: { SANDBOX_TEMPLATE_USED_TTL_MS: "soon" } }, { name: "e2b", lifecycle: lifecycle().port, vendor }, deps())).toThrow(/SANDBOX_TEMPLATE_USED_TTL_MS/);
   });
 });
 
@@ -83,8 +108,10 @@ describe("NodeEnvironmentCache per Session", () => {
     const store = kv();
     const life = lifecycle();
     const setups: string[] = [];
+    const firewalls: string[] = [];
     const cache = new NodeEnvironmentCache({
       adapter: "e2b", lifecycle: life.port, kvFor: () => store.store, logger: logger().logger,
+      applyFirewall: async (_r, rules) => { firewalls.push(rules.mode); },
       setup: async (_r, _s, buildId) => { setups.push(buildId); },
     });
     const forSession = (setup: EnvironmentCacheSetup | null) => cache.forSession(() => setup, () => undefined);
@@ -94,7 +121,7 @@ describe("NodeEnvironmentCache per Session", () => {
       session.prepared(scope(id));
       await cache.idle();
     };
-    return { store, life, setups, run };
+    return { store, life, setups, firewalls, run };
   }
 
   it("misses, builds in the background under the KV prefix deployments already have, then hits", async () => {
@@ -102,6 +129,7 @@ describe("NodeEnvironmentCache per Session", () => {
     await h.run("s1", "base");
     expect([...h.store.data.keys()][0]).toMatch(/^sandbox_prepared_base:v1:e2b:[0-9a-f]{64}$/);
     expect(h.setups[0]).toMatch(/^env_snapshot_/);
+    expect(h.firewalls).toEqual(["allowlist"]);
     await h.run("s2", "base");
     expect(h.life.froms.at(-1)).toMatchObject({ environmentSnapshot: { adapter: "e2b" } });
   });

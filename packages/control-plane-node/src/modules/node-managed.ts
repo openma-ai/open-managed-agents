@@ -278,6 +278,7 @@ export async function createManagedNodeRuntime(
       build: buildSandbox,
     }),
     ...(environmentCache === undefined ? {} : { environmentCache }),
+    sessionWarning: ({ workspaceId, session }, source, message) => managedRuntimeDriver.publishSessionWarning({ workspaceId, sessionId: session.id, source, message }),
     ...(config.workspace.sandboxLeaseTtlMs === undefined ? {} : { v1LeaseTtlMs: config.workspace.sandboxLeaseTtlMs }),
     storage: createNodeSessionStorage({
       memoryStoreMode,
@@ -379,7 +380,6 @@ export async function createManagedNodeRuntime(
       isSandboxCurrent: ({ workspaceId, session, runtimeGeneration }: { workspaceId: string; session: { id: string }; runtimeGeneration: string }) =>
         sharedSessionOutputs.isSandboxCurrent(workspaceId, session.id, runtimeGeneration),
     }),
-    takeSandboxWarnings: ({ workspaceId, session }) => sessionSandboxes.takeWarnings(workspaceId, session.id),
     prepareSandbox: async ({ workspaceId, session, environment, sandbox, runtimeGeneration, signal, executionFence }) => {
       const sessionSandbox = sessionSandboxes.get({ workspaceId, session });
       sessionSandbox.bind({ context: { workspaceId, session, environment }, runtimeGeneration, ...(executionFence === undefined ? {} : { executionFence }) });

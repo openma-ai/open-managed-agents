@@ -27,6 +27,7 @@ const planOf = (sessionId: string): SandboxPlan => ({
 function harness(options: {
   acquire?: (from: SandboxPlan["from"]) => "gone" | Error | undefined;
   snapshot?: () => Promise<EnvironmentSnapshotRef>;
+  restrictEgress?: () => Promise<void>;
   setup?: () => Promise<void>;
   deleteSnapshot?: ((ref: EnvironmentSnapshotRef) => Promise<void>) | null;
   noSnapshots?: boolean;
@@ -69,6 +70,7 @@ function harness(options: {
       const map = storeOf(id);
       return { get: async (k) => map.get(k) ?? null, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
     },
+    restrictEgress: async () => { setups.push("restricted"); await options.restrictEgress?.(); },
     setup: async (_runtime, setup) => { setups.push(setup); await options.setup?.(); },
     logger: { info: (f) => logs.push(String(f.path)), warn: (f) => logs.push(String(f.path)) },
     op: "test.environment_cache",
@@ -148,7 +150,7 @@ describe("EnvironmentCache", () => {
     const [build] = h.builds();
     expect(build!.plan).toMatchObject({ from: FROM_IMAGE, egress: null, stores: [] });
     expect(build!.plan.labels.sessionId).toBe(build!.sessionId);
-    expect(h.setups).toEqual(["setup-of-s1"]);
+    expect(h.setups).toEqual(["restricted", "setup-of-s1"]);
     expect(h.released).toEqual(["h_2"]);
   });
 
@@ -243,6 +245,15 @@ describe("EnvironmentCache", () => {
   it("a failing build setup is a failed build, and the build sandbox is released", async () => {
     const h = harness({ setup: async () => { throw new Error("mirror down"); } });
     await h.session("s1");
+    expect(reasons(h)).toEqual(["snapshot_build_failed"]);
+    expect(h.released).toHaveLength(1);
+    expect(h.data.size).toBe(0);
+  });
+
+  it("a build sandbox whose egress cannot be restricted never runs the setup", async () => {
+    const h = harness({ restrictEgress: async () => { throw new Error("no firewall"); } });
+    await h.session("s1");
+    expect(h.setups).toEqual(["restricted"]);
     expect(reasons(h)).toEqual(["snapshot_build_failed"]);
     expect(h.released).toHaveLength(1);
     expect(h.data.size).toBe(0);

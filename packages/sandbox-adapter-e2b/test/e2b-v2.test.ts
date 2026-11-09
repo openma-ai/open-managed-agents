@@ -448,3 +448,20 @@ describe("E2B v2 egress (generic forwarder over the E2B vendor)", () => {
     expect(fake.files.has("/workspace/.oma-egress/relay.cjs")).toBe(false);
   });
 });
+
+describe("a deleted environment snapshot", () => {
+  it("is gone for the error E2B really returns (SandboxError, status 404)", async () => {
+    const error = apiError("SandboxError", 404);
+    error.message = "404: template 'team/oma-env-1' not found";
+    const { isGone } = await import("../src/v2");
+    expect(isGone(error)).toBe(true);
+  });
+
+  it("acquire from it returns gone instead of throwing", async () => {
+    const error = apiError("SandboxError", 404);
+    const { createE2BV2Adapter } = await import("../src/v2");
+    const sdk = { Sandbox: { create: async () => { throw error; } } };
+    const adapter = createE2BV2Adapter({ sdk: sdk as never, connection: {}, leaseMs: 120_000, maxLifetimeMs: 3_600_000 });
+    await expect(adapter.lifecycle.acquire({ scope: { workspaceId: "ws", sessionId: "sess", workId: "sess" } as never, plan: { ...plan, from: { environmentSnapshot: { adapter: "e2b", ref: "deleted" } } }, signal })).resolves.toBe("gone");
+  });
+});

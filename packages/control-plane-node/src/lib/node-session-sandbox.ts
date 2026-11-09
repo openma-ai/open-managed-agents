@@ -126,6 +126,8 @@ export interface NodeSessionSandboxOptions {
   mountOutputsAtCreate?: boolean;
   /** Present only with a v2 adapter that can snapshot an environment. */
   environmentCache?: NodeEnvironmentCache;
+  /** Writes a session.warning to the Session's event stream now. */
+  sessionWarning?(context: NodeSessionSandboxContext, source: string, message: string): Promise<void>;
 }
 
 /** Node's only egress path for Vault sandbox credentials: the in-sandbox
@@ -146,36 +148,8 @@ export class NodeSessionSandboxes {
   private readonly warmed = new Map<string, Promise<SessionSandboxState | undefined>>();
   /** v1 runtimes this process holds, shared by every facade's bridge. */
   private readonly held = new Map<string, SandboxPort>();
-  /** Environment cache warnings waiting for each Session's next turn. */
-  private readonly warnings = new Map<string, string[]>();
 
   constructor(private readonly options: NodeSessionSandboxOptions) {}
-
-  /** The warnings to publish as session.warning at this Session's next turn. */
-  takeWarnings(workspaceId: string, sessionId: string): string[] {
-    const key = keyOf(workspaceId, sessionId);
-    const taken = this.warnings.get(key) ?? [];
-    this.warnings.delete(key);
-    return taken;
-  }
-
-  private queueWarning(context: NodeSessionSandboxContext, message: string): void {
-    const key = keyOf(context.workspaceId, context.session.id);
-    const queue = this.warnings.get(key) ?? [];
-    queue.push(message);
-    this.warnings.set(key, queue);
-    this.options.warn(`environment_cache ${message}`, context);
-  }
-
-  private facade(
-    context: NodeSessionSandboxContext,
-    allocationId: string | undefined,
-    onDestroyed: () => void,
-    initialState?: Promise<SessionSandboxState | undefined>,
-    onSaved?: (state: SessionSandboxState) => void,
-  ): NodeSessionSandbox {
-    return new NodeSessionSandbox(context, allocationId, this.options, this.held, onDestroyed, initialState, onSaved, (warned, message) => this.queueWarning(warned, message));
-  }
 
   /** Session create admission (SandboxCredentialAdmission.substitutes). */
   credentialEgress(): boolean {
@@ -191,7 +165,7 @@ export class NodeSessionSandboxes {
     const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
     const warmed = input.allocationId === undefined ? this.warmed.get(key) : undefined;
     this.warmed.delete(key);
-    const sandbox: NodeSessionSandbox = this.facade(context, input.allocationId, () => {
+    const sandbox: NodeSessionSandbox = new NodeSessionSandbox(context, input.allocationId, this.options, this.held, () => {
       if (this.current.get(key) === sandbox) this.current.delete(key);
     }, warmed?.catch(() => undefined));
     sandbox.bind({
@@ -209,7 +183,7 @@ export class NodeSessionSandboxes {
     const key = keyOf(context.workspaceId, context.session.id);
     if (this.current.has(key) || this.warmed.has(key)) return;
     let state: SessionSandboxState | undefined;
-    const sandbox = this.facade(context, undefined, () => undefined, undefined, (next) => { state = next; });
+    const sandbox = new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, undefined, (next) => { state = next; });
     // A build that starts meanwhile awaits this and adopts the sandbox.
     const warming = sandbox.warm().then(() => state);
     this.warmed.set(key, warming);
@@ -223,7 +197,7 @@ export class NodeSessionSandboxes {
     if (warming === undefined) return;
     this.warmed.delete(key);
     const state = await warming.catch(() => undefined);
-    if (state !== undefined) await this.facade(context, undefined, () => undefined, Promise.resolve(state)).destroy();
+    if (state !== undefined) await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, Promise.resolve(state)).destroy();
   }
 
   /** `runtime` plus the warm-up at Session creation and the release of a
@@ -294,7 +268,6 @@ export class NodeSessionSandbox implements SandboxPort {
     private readonly onDestroyed: () => void,
     initialState?: Promise<SessionSandboxState | undefined>,
     onSaved?: (state: SessionSandboxState) => void,
-    queueWarning?: (context: NodeSessionSandboxContext, message: string) => void,
   ) {
     this.context = context;
     let adopting = initialState;
@@ -378,7 +351,14 @@ export class NodeSessionSandbox implements SandboxPort {
       ...(options.adapter === undefined || options.environmentCache === undefined ? {} : {
         environmentCache: options.environmentCache.forSession(
           () => this.environmentSetup(),
-          (warning) => queueWarning?.(this.context, `${warning.reason}: ${warning.message}`),
+          (warning) => {
+            const message = `${warning.reason}: ${warning.message}`;
+            options.warn(`environment_cache ${message}`, this.context);
+            const context = this.context;
+            void options.sessionWarning?.(context, "environment_cache", message).catch((error: unknown) => {
+              options.warn(`session_warning_failed error=${error instanceof Error ? error.message : String(error)}`, context);
+            });
+          },
         ),
       }),
     });

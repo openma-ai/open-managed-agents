@@ -68,6 +68,9 @@ export interface EnvironmentCacheOptions<R, Q> extends EnvironmentCacheExpiry {
   lifecycle: SandboxLifecyclePort<R>;
   /** The store scoped to the owning workspace. */
   storeFor(workspaceId: string): EnvironmentCacheStore;
+  /** Limit a build sandbox's egress to public package sources (design §0.1
+   * step 1), before its setup runs. A failure fails the build, never the Session. */
+  restrictEgress(runtime: R, setup: Q): Promise<void>;
   /** Run only the Environment setup on a build sandbox. */
   setup(runtime: R, setup: Q, input: { buildId: string }): Promise<void>;
   /** Drops secrets an error message could echo. */
@@ -143,6 +146,7 @@ export class EnvironmentCache<R, Q> {
     this.#ttl = environmentCacheExpiry(options);
     this.#build = {
       lifecycle: options.lifecycle,
+      restrictEgress: options.restrictEgress,
       setup: options.setup,
       logger: options.logger,
       now: () => this.#now(),

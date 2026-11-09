@@ -198,8 +198,6 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   maxSandboxReplacements?: number;
   /** Optional checkpoint_restore workspace. Ordinary OSS mounts are a different strategy. */
   workspaceCheckpoints?: NodeManagedWorkspaceCheckpoints;
-  /** Sandbox warnings waiting for this Session's next turn (environment cache). */
-  takeSandboxWarnings?(input: { workspaceId: string; session: { id: string } }): readonly string[];
   prepareSandbox?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
     runtimeGeneration: string;
@@ -842,9 +840,6 @@ export class DefaultNodeManagedSessionRunner
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
-    for (const message of this.dependencies.takeSandboxWarnings?.({ workspaceId: input.workspaceId, session: input.session }) ?? []) {
-      runtime.broadcastProducedEvent({ type: "session.warning", source: "environment_cache", message });
-    }
     let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;

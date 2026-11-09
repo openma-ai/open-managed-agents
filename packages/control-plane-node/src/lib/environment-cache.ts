@@ -27,9 +27,14 @@ import {
   type SandboxLifecyclePort,
   type SandboxPort,
 } from "@open-managed-agents/sandbox";
+import { PACKAGE_HOSTS } from "@open-managed-agents/sandbox-port-kit";
+import { compileFirewall, type FirewallRules } from "@open-managed-agents/sandbox-port-kit/firewall";
 import { installEnvironmentPackages, type PackagedEnvironment } from "./environment-packages";
 
 const OP = "main-node.environment_cache";
+
+/** Where the ACP install fetches nvm and Node when the image's Node is too old. */
+const ACP_INSTALL_HOSTS = ["raw.githubusercontent.com", "github.com", "nodejs.org"];
 
 /** What a Session asks of its Environment setup. */
 export interface EnvironmentCacheSetup {
@@ -57,6 +62,8 @@ export interface NodeEnvironmentCacheOptions extends EnvironmentCacheExpiry {
   buildTimeoutMs?: number;
   disposeTimeoutMs?: number;
   setupVersion?: string;
+  /** Apply firewall rules to a build sandbox. */
+  applyFirewall(runtime: SandboxPort, rules: FirewallRules): Promise<void>;
   /** Build sandbox setup; defaults to the exact Session setup steps. */
   setup?(runtime: SandboxPort, setup: EnvironmentCacheSetup, buildId: string): Promise<void>;
 }
@@ -72,6 +79,7 @@ export class NodeEnvironmentCache {
       adapter: options.adapter,
       lifecycle: options.lifecycle,
       storeFor: (workspaceId) => options.kvFor(workspaceId),
+      restrictEgress: (runtime, setup) => options.applyFirewall(runtime, environmentBuildFirewall(setup, pipIndexUrl)),
       setup: (runtime, setup, { buildId }) => options.setup !== undefined
         ? options.setup(runtime, setup, buildId)
         : prepareEnvironmentBuildSandbox(runtime, setup, buildId, pipIndexUrl === undefined ? {} : { pipIndexUrl }),
@@ -135,7 +143,7 @@ export class NodeEnvironmentCache {
  * that set the expiry variables on any other path gets a warning. */
 export function createNodeEnvironmentCache(
   sandbox: { environment: Readonly<Record<string, string | undefined>> },
-  adapter: { name: string; lifecycle: SandboxLifecyclePort<SandboxPort> } | undefined,
+  adapter: { name: string; lifecycle: SandboxLifecyclePort<SandboxPort>; vendor: { applyFirewall?(runtime: SandboxPort, rules: FirewallRules): Promise<void> } } | undefined,
   dependencies: Pick<NodeEnvironmentCacheOptions, "kvFor" | "logger" | "clock" | "buildTimeoutMs" | "disposeTimeoutMs" | "setupVersion" | "setup" | "maxRetentionMs">,
 ): NodeEnvironmentCache | undefined {
   const env = sandbox.environment;
@@ -147,11 +155,18 @@ export function createNodeEnvironmentCache(
     }
     return undefined;
   }
+  // A build sandbox never runs with open egress (design §0.1 step 1).
+  const vendor = adapter.vendor;
+  if (vendor.applyFirewall === undefined) {
+    dependencies.logger.warn({ op: OP, path: "unsupported", adapter: adapter.name }, "The sandbox adapter cannot restrict a build sandbox's egress; the environment cache is off");
+    return undefined;
+  }
   const pipIndexUrl = env.SANDBOX_PIP_INDEX_URL;
   return new NodeEnvironmentCache({
     ...dependencies,
     adapter: adapter.name,
     lifecycle: adapter.lifecycle,
+    applyFirewall: (runtime, rules) => vendor.applyFirewall!(runtime, rules),
     ...(pipIndexUrl ? { pipIndexUrl } : {}),
     ...(unusedTtlMs === undefined ? {} : { unusedTtlMs }),
     ...(usedTtlMs === undefined ? {} : { usedTtlMs }),
@@ -163,6 +178,33 @@ function ttlFromEnv(name: string, value: string | undefined): number | undefined
   const ms = Number(value);
   if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error(name + " must be a positive integer of milliseconds, got " + JSON.stringify(value));
   return ms;
+}
+
+/** A build sandbox reaches the public package sources, the deployment's pip
+ * index and, for an ACP install, nvm and Node; no platform gateway, Vault or
+ * Environment host. */
+export function environmentBuildFirewall(setup: EnvironmentCacheSetup, pipIndexUrl: string | undefined): FirewallRules {
+  const acp = setup.acpRegistry !== undefined && setup.acpRegistry.length > 0;
+  return compileFirewall({
+    scope: { workspaceId: "", sessionId: "", generation: 1 },
+    networking: {
+      type: "limited",
+      hosts: [],
+      packageSources: [...PACKAGE_HOSTS, ...pipIndexHost(pipIndexUrl), ...(acp ? ACP_INSTALL_HOSTS : [])],
+      mcpHosts: [],
+    },
+    substitutions: [],
+  }, { gateway: { hosts: [] }, channels: [] });
+}
+
+function pipIndexHost(pipIndexUrl: string | undefined): string[] {
+  const value = pipIndexUrl?.trim();
+  if (!value) return [];
+  try {
+    return [new URL(value).hostname];
+  } catch {
+    return [];
+  }
 }
 
 /** The snapshot's setup: the same idempotent steps a Session runs, nothing else. */

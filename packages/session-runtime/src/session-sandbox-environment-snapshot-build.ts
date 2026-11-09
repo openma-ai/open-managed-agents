@@ -1,7 +1,8 @@
 // One environment snapshot build (design §0.1 step 1): a throwaway build
 // sandbox (same adapter and image as a Session sandbox; no Session inputs,
-// Vault, Memory, outputs or egress token) runs only the setup, the adapter
-// snapshots it and the sandbox is released. Never rejects: every outcome is
+// Vault, Memory, outputs or egress token) has its egress restricted to public
+// package sources, runs only the setup, the adapter snapshots it and the
+// sandbox is released. Never rejects: every outcome is
 // logged and returned, and the build sandbox is released on success, failure,
 // deadline and shutdown alike. A failure records nothing, so the next Session
 // tries again.
@@ -32,6 +33,8 @@ export interface EnvironmentCacheEntry {
 
 export interface EnvironmentSnapshotBuildContext<R, Q> {
   lifecycle: SandboxLifecyclePort<R>;
+  /** Limit the build sandbox's egress to public package sources; a failure fails the build. */
+  restrictEgress(runtime: R, setup: Q): Promise<void>;
   /** Run only the Environment setup on the build sandbox. */
   setup(runtime: R, setup: Q, input: { buildId: string }): Promise<void>;
   logger: EnvironmentCacheLogger;
@@ -58,6 +61,7 @@ export async function buildEnvironmentSnapshot<R, Q>(
   const { lifecycle, logger } = context;
   const startMs = context.now();
   const fields = input.fields;
+  logger.info({ ...fields, path: "build_started" }, "Environment snapshot build started");
   const buildId = "env_snapshot_" + crypto.randomUUID();
   const scope: RuntimeResourceScope = { ...input.scope, sessionId: buildId, workId: buildId };
   const plan: SandboxPlan = {
@@ -97,6 +101,8 @@ export async function buildEnvironmentSnapshot<R, Q>(
     } finally {
       acquireDone();
     }
+    await context.restrictEgress(acquired.runtime, input.setup);
+    if (aborted !== undefined) throw aborted;
     await context.setup(acquired.runtime, input.setup, { buildId });
     if (aborted !== undefined) throw aborted;
     const snapshot = await lifecycle.snapshotEnvironment!({ runtime: acquired.runtime, handle: acquired.handle, signal: controller.signal });
