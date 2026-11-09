@@ -142,6 +142,55 @@ describe("self-hosted ownership races (characterization)", () => {
     await expect(owner.dependencies.claims.open({ ...scope, ...owner.runInput.claim })).resolves.toEqual({ type: "lost" });
   });
 
+  it.each([false, true])("renews through slow finalization and publish, then stops (abort=%s)", async (abort) => {
+    const owner = ownership();
+    const scheduler = manualScheduler();
+    const controller = new AbortController();
+    let finishCheckpoint!: () => void;
+    let finishPublish!: () => void;
+    const checkpointGate = new Promise<void>((resolve) => { finishCheckpoint = resolve; });
+    const publishGate = new Promise<void>((resolve) => { finishPublish = resolve; });
+    const dependencies = fixture(owner, {
+      scheduler,
+      workspace: { checkpoint: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+        await checkpointGate;
+        signal.throwIfAborted();
+        return { id: "workspace-a", contentHash: "sha256:a", revision: 1 };
+      }) },
+      harnessDriver: { run: vi.fn(async () => {
+        owner.dependencies.claims.stop(scope);
+        return { type: "completed" };
+      }) },
+    });
+    const publish = vi.spyOn(owner.dependencies.claims, "publish").mockImplementation(async () => {
+      await publishGate;
+      return { type: "published", revision: 1 };
+    });
+    const running = createManagedRuntimeHost(dependencies).run({
+      scope, profile, ...owner.runInput, signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(dependencies.workspace.checkpoint).toHaveBeenCalled());
+    // Each tick represents a complete sandbox heartbeat interval after stop.
+    for (let count = 1; count <= 2; count += 1) {
+      scheduler.tick();
+      await vi.waitFor(() => expect(dependencies.sandbox.heartbeat).toHaveBeenCalledTimes(count));
+    }
+    if (abort) controller.abort();
+    finishCheckpoint();
+    if (!abort) {
+      await vi.waitFor(() => expect(publish).toHaveBeenCalled());
+      scheduler.tick();
+      await vi.waitFor(() => expect(dependencies.sandbox.heartbeat).toHaveBeenCalledTimes(3));
+    }
+    finishPublish();
+    await expect(running).resolves.toMatchObject({ type: abort ? "lease_lost" : "completed" });
+    const count = dependencies.sandbox.heartbeat.mock.calls.length;
+    scheduler.tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(dependencies.sandbox.heartbeat).toHaveBeenCalledTimes(count);
+    if (abort) expect(publish).not.toHaveBeenCalled();
+  });
+
   it("race 1: a stale owner's publication is lost and the new owner's pointer stays", async () => {
     const owner = ownership();
     const dependencies = fixture(owner, {

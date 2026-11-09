@@ -352,41 +352,45 @@ export function createManagedRuntimeHost(
       // lane); a second heartbeater would break its expected_last_heartbeat
       // CAS. The host observes the same claim record the heartbeats keep:
       // reclaim, stop or an expired lease (the 412 condition) ends the run.
+      const renewalAbort = new AbortController();
+      const abortRenewal = () => renewalAbort.abort(controller.signal.reason);
+      if (controller.signal.aborted) abortRenewal();
+      else controller.signal.addEventListener("abort", abortRenewal, { once: true });
       monitor = (async () => {
-        while (!controller.signal.aborted) {
-          await scheduler.sleep(
-            dependencies.heartbeatIntervalMs,
-            controller.signal,
-          );
-          if (controller.signal.aborted || harnessSettled) return;
-          const current = await withDeadline(
-            dependencies.claims.isCurrent(claim),
-            dependencies.heartbeatIntervalMs,
-            `Environment Work claim check timed out after ${dependencies.heartbeatIntervalMs}ms`,
-          );
-          if (harnessSettled) return;
-          if (!current) {
-            loseLease("Environment Work claim lost");
-            return;
+        while (!renewalAbort.signal.aborted) {
+          await scheduler.sleep(dependencies.heartbeatIntervalMs, renewalAbort.signal);
+          if (renewalAbort.signal.aborted) return;
+          // Claim observation ends with the harness. Final publication alone
+          // decides whether its normally stopped generation may still drain.
+          if (!harnessSettled) {
+            const current = await withDeadline(
+              dependencies.claims.isCurrent(claim),
+              dependencies.heartbeatIntervalMs,
+              `Environment Work claim check timed out after ${dependencies.heartbeatIntervalMs}ms`,
+            );
+            if (!harnessSettled && !current) {
+              loseLease("Environment Work claim lost");
+              return;
+            }
           }
+          // Provider renewal covers checkpoint/output collection and final
+          // publication too, even after the worker has stopped its Work.
+          if (renewalAbort.signal.aborted) return;
           const activeSandboxLease = sandboxLease;
           if (activeSandboxLease === null) continue;
           const sandboxHeartbeat = await withDeadline(
-            dependencies.sandbox.heartbeat({
-              scope,
-              fence,
-              lease: activeSandboxLease,
-            }),
+            dependencies.sandbox.heartbeat({ scope, fence, lease: activeSandboxLease }),
             dependencies.heartbeatIntervalMs,
             `Sandbox heartbeat timed out after ${dependencies.heartbeatIntervalMs}ms`,
           );
+          if (renewalAbort.signal.aborted) return;
           if (sandboxHeartbeat.type === "lost") {
             loseLease("Sandbox lease lost");
             return;
           }
         }
       })().catch((error: unknown) => {
-        if (!controller.signal.aborted) {
+        if (!renewalAbort.signal.aborted) {
           loseLease(`Runtime heartbeat failed: ${String(error)}`);
         }
       });
@@ -829,6 +833,7 @@ export function createManagedRuntimeHost(
           outputCandidate,
           ...(runtimeCheckpoint === null ? {} : { runtimeCheckpoint }),
         });
+        renewalAbort.abort(new Error("Managed runtime final publication settled"));
         if (published.type === "lost") {
           cleanupReason = "lease_lost";
           return { type: "lease_lost" };
@@ -842,6 +847,8 @@ export function createManagedRuntimeHost(
         cleanupReason = "failed";
         return { type: "failed", error };
       } finally {
+        renewalAbort.abort(new Error("Managed runtime cleanup"));
+        controller.signal.removeEventListener("abort", abortRenewal);
         signal?.removeEventListener("abort", onExternalAbort);
         sessionInputSyncAbort?.abort(new Error("Managed runtime cleanup"));
         (checkpointRequestAbort as AbortController | null)?.abort(new Error("Managed runtime cleanup"));
