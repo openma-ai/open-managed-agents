@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3ee3d802-1082-4169-bd13-acd442cfac44",
+  "id": "6f23cfa4-a1c3-4c7a-8efa-040a495a1191",
   "prevId": "b328314c-2463-496b-9428-8396e54e5a8c",
   "tables": {
     "account": {
@@ -1133,6 +1133,13 @@
         },
         "runtime_publication_json": {
           "name": "runtime_publication_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sandbox_token_hashes": {
+          "name": "sandbox_token_hashes",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

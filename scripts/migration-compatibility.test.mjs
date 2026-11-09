@@ -109,9 +109,10 @@ for (const [name, bootstrap, orphans] of [
         0,
       );
       assert.equal(database.prepare("SELECT count(*) AS n FROM runtime_resource_orphans").get().n, orphans);
-      const work = database.prepare("SELECT revision, runtime_publication_json FROM managed_environment_work").get();
+      const work = database.prepare("SELECT revision, runtime_publication_json, sandbox_token_hashes FROM managed_environment_work").get();
       assert.equal(work.revision, 5);
       assert.equal(work.runtime_publication_json, null);
+      assert.equal(work.sandbox_token_hashes, null);
     } finally {
       database.close();
     }

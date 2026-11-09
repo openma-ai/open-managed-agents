@@ -1,5 +1,5 @@
 {
-  "id": "99cb3051-9b39-4e02-af8d-261ed370afec",
+  "id": "840c8eff-e740-4ff3-bc73-d504370587a1",
   "prevId": "db0dc6b6-8613-4051-9a76-647f839cd05f",
   "version": "7",
   "dialect": "postgresql",
@@ -1300,6 +1300,12 @@
         },
         "runtime_publication_json": {
           "name": "runtime_publication_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sandbox_token_hashes": {
+          "name": "sandbox_token_hashes",
           "type": "text",
           "primaryKey": false,
           "notNull": false

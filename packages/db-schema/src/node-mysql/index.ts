@@ -81,12 +81,13 @@ const sandboxTokenHashesMigration = {
   toSnapshot: "b328314c-2463-496b-9428-8396e54e5a8c",
 } as const;
 
-/** Runtime Host restore pointer on the Work row (ADR 0005). SQLite/PG drop
+/** Runtime Host restore pointer and the claim's sandbox token hashes on the
+ * Work row (ADR 0005). SQLite/PG drop
  * runtime_resource_fences here; MySQL retains the unused table, as it does
  * for retired tables, so the upgrade never needs DROP permission. */
 const workClaimPublicationMigration = {
   fromSnapshot: sandboxTokenHashesMigration.toSnapshot,
-  toSnapshot: "3ee3d802-1082-4169-bd13-acd442cfac44",
+  toSnapshot: "6f23cfa4-a1c3-4c7a-8efa-040a495a1191",
 } as const;
 
 /**
@@ -204,6 +205,7 @@ export async function migrateNodeMysqlSchema(
         }
         if (installed.snapshot_id === workClaimPublicationMigration.fromSnapshot) {
           await ensureMysqlNullableColumn(sql, "managed_environment_work", "runtime_publication_json", "TEXT");
+          await ensureMysqlNullableColumn(sql, "managed_environment_work", "sandbox_token_hashes", "TEXT");
           installed = { snapshot_id: workClaimPublicationMigration.toSnapshot };
           continue;
         }
