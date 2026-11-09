@@ -43,7 +43,16 @@ export function snapshotInGap<R>(state: LiveSessionSandbox<R>, open: { runtime: 
 /** Snapshot `open` if it changed since the last snapshot and publish it
  * under `execution`'s fence (undefined = between executions), against
  * `expected` (omitted = the record read before checkpointing). Never throws. */
-export async function takeSnapshot<R>(
+export function takeSnapshot<R>(
+  state: LiveSessionSandbox<R>,
+  open: { runtime: R; handle: SandboxHandle },
+  execution: SessionSandboxExecution | undefined,
+  expected?: SessionSandboxState,
+): Promise<SnapshotOutcome> {
+  return state.checkpointing ??= checkpoint(state, open, execution, expected).finally(() => { state.checkpointing = null; });
+}
+
+async function checkpoint<R>(
   state: LiveSessionSandbox<R>,
   open: { runtime: R; handle: SandboxHandle },
   execution: SessionSandboxExecution | undefined,

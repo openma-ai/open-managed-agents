@@ -39,6 +39,8 @@ export class LiveSessionSandbox<R> {
   refreshError: unknown = null;
   /** A snapshot in a tool-call gap (session-sandbox-snapshot); calls wait for it. */
   snapshotting: Promise<void> | null = null;
+  /** Every checkpoint trigger shares this vendor-call single flight. */
+  checkpointing: Promise<import("./session-sandbox-snapshot").SnapshotOutcome> | null = null;
   /** The open sandbox was started from a snapshot. */
   restored = false;
   /** A call that may change the sandbox ran since the last snapshot. */
