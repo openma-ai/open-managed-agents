@@ -1,5 +1,5 @@
 /**
- * Turn lifetime for the OMA agent harness (recovery is in turn-recovery.ts).
+ * Turn lifetime for the OMA agent harness.
  *
  * Replaces the tangled mix of withRetry + per-attempt keepAliveWhile +
  * stale-chunk + heartbeat + ctx.waitUntil-backup that grew up inside
@@ -12,14 +12,6 @@
  *      internal retry — the caller (eval-runner / app) decides what to
  *      do. Stall detection lives in the harness next to streamText
  *      (default-loop.ts), not here.
- *
- *   2. **recoverAgentTurn** — after a process death (DO eviction, Node
- *      restart, container OOM kill), read SQL events + streams to
- *      reconstruct the state at the moment of interruption, then hand a
- *      typed `RecoveryContext` to the caller's resume function. The
- *      caller decides whether to persist any partials and whether to
- *      continue. We cap recovery attempts per turn to bound runaway
- *      loops.
  *
  * Background on the design:
  *   - Lifecycle is now expressed as RuntimeAdapter.beginTurn /
@@ -53,12 +45,6 @@ export interface TurnRuntimeAgent {
   adapter: RuntimeAdapter;
   /** Session id this adapter is bound to — passed to beginTurn/endTurn. */
   sessionId: string;
-  /** Subset of DurableObjectStorage we use for the recovery counter. */
-  storage: {
-    get<T = unknown>(key: string): Promise<T | undefined>;
-    put<T = unknown>(key: string, value: T): Promise<void>;
-    delete(key: string): Promise<void>;
-  };
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────

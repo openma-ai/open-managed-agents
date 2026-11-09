@@ -55,8 +55,6 @@ import {
   mountSessionResources,
   RuntimeAdapterImpl,
   runAgentTurn,
-  recoverAgentTurn,
-  clearTurnRecoveryCount,
   TurnAborted,
   classifyTurnFailure,
   finishTurn,
@@ -75,8 +73,6 @@ import {
   type TurnFailureEventsPort,
   type RuntimeAdapter,
   type TurnRuntimeAgent,
-  type RecoveryDecision,
-  type PartialStream,
 } from "@open-managed-agents/session-runtime";
 import {
   asWireEvents,
@@ -820,13 +816,9 @@ export class SessionDO extends DurableObject<Env> {
   private currentWarmupGen: string | null = null;
   private hasWritableManagedMemoryMount = false;
   /**
-   * Per-turn dedup of `agent.message` broadcasts. Recovery's
-   * `loadRecoveryContext` reads prior agent messages out of SQL so the
-   * next streamText resumes with the right context, but each recovery
-   * attempt also calls `persistAgentMessage` for any partial streams it
-   * found — without this Set, every recovery re-`broadcastEvent`s the
-   * same message_id, producing the duplicate-broadcast storm we saw on
-   * `sess-lyh1t4ilelc87ypk` 2026-05-02 (12 dupes at 5x recovery cap fire).
+   * Per-turn dedup of `agent.message` broadcasts and aborted-stream rescue.
+   * A partial message persisted during stream finalization must not be
+   * appended or broadcast a second time.
    * Reset at the START of each new turn (drainEventQueue loop) so a
    * legitimately re-emitted message_id in a new turn isn't suppressed.
    */
@@ -1623,144 +1615,6 @@ export class SessionDO extends DurableObject<Env> {
     }));
   }
 
-  /**
-   * Called by _checkOrphanTurns when an orphan turn (sessions row marked
-   * status='running' with a turn_id we don't own) is detected at alarm
-   * wake or cold-start. Historically this was wired into the cf-agents
-   * runFiber/onFiberRecovered hook; Phase 3 unified the trigger via the
-   * RuntimeAdapter, so the entry shape is identical to what the old
-   * fiber API produced — { id, name, snapshot:null }. Recovery itself
-   * works the same way: emit a session.status_rescheduled marker so
-   * observers see what happened, reset stale state.status, and re-drain.
-   * The unprocessed user.message at seq is still pending (we never
-   * emitted status_idle for it) so drain re-runs the harness; generateText
-   * sees prior tool_use/tool_result rows in history and continues from
-   * roughly where it left off (at-least-once semantics — a tool may be
-   * re-decided once, but no tool effect is lost since each result is in
-   * SQL).
-   */
-  async onFiberRecovered(ctx: { id: string; name: string; snapshot: unknown }): Promise<void> {
-    if (!ctx.name.startsWith("turn:")) {
-      console.warn(`[orphan-recover] unknown turn name: ${ctx.name}`);
-      return;
-    }
-    console.warn(
-      `[orphan-recover] turn ${ctx.name} (id=${ctx.id}) interrupted; routing through recoverAgentTurn`,
-    );
-    this.ensureSchema();
-
-    // Status is derived from cf_agents_runs row presence — onFiberRecovered
-    // is invoked AFTER _checkRunFibers DELETEs the orphan, so deriveStatus
-    // automatically reads "idle" here. No manual state mutation needed.
-
-    const history = this.openHistory();
-
-    const decision = await recoverAgentTurn(
-      this.turnRuntimeAdapter(),
-      ctx,
-      // loadRecoveryContext: read SQL events + streams to reconstruct the
-      // state at the moment of interruption. We deliberately do NOT use
-      // ctx.snapshot from cf-agents stash — OMA's events table already
-      // carries richer canonical state.
-      async () => {
-        const lastUserMsgSeq = this.getLastEventSeq("user.message");
-        const eventsAfter = this.getEventsBetween(lastUserMsgSeq, Number.MAX_SAFE_INTEGER);
-        const partialStreams: PartialStream[] = [];
-        try {
-          const cursor = this.ctx.storage.sql.exec(
-            `SELECT message_id, status, chunks_json FROM streams WHERE status IN ('streaming', 'interrupted') ORDER BY started_at`,
-          );
-          for (const row of cursor) {
-            try {
-              const chunks = JSON.parse(row.chunks_json as string) as string[];
-              partialStreams.push({
-                message_id: row.message_id as string,
-                partial_text: chunks.join(""),
-                status: (row.status as "streaming" | "interrupted"),
-              });
-            } catch {}
-          }
-        } catch {
-          // streams table might not exist yet (older session); fine, return empty
-        }
-        return { history: eventsAfter, partialStreams };
-      },
-      // Resume policy: always continue. recoverAgentTurn caps at 5 attempts;
-      // on the 6th the cap fires and we get a session.error + force-idle
-      // automatically (no need to track it here). Persist partial agent
-      // messages so the trajectory shows what was streamed before the cut.
-      async (rctx) => {
-        const reschedEvent: SessionEvent = {
-          type: "session.status_rescheduled",
-          reason: `Recovered after DO eviction (turn ${ctx.name}, recovery ${rctx.recoveryCount}/5)`,
-        };
-        history.append(reschedEvent);
-        this.broadcastEvent(reschedEvent);
-        return { continue: true, persistPartial: true };
-      },
-      {
-        emitEvent: (e) => {
-          history.append(e);
-          this.broadcastEvent(e);
-        },
-        persistAgentMessage: (text, message_id) => {
-          // Recovery's loadRecoveryContext seeds streamText with prior
-          // partials; each recovery iteration also passes those same
-          // (text, message_id) tuples through this callback. Without
-          // dedup we'd re-append + re-broadcast each one per recovery
-          // attempt — observed as 12 duplicate agent.message events at
-          // 5x cap fire. Set is in-memory + per-turn (cleared at the
-          // start of each drainEventQueue iteration).
-          if (this.broadcastedMessageIds.has(message_id)) return;
-          this.broadcastedMessageIds.add(message_id);
-          const ev: SessionEvent = {
-            type: "agent.message",
-            id: message_id,
-            content: [{ type: "text", text }],
-          } as unknown as SessionEvent;
-          history.append(ev);
-          this.broadcastEvent(ev);
-        },
-        forceIdle: () => {
-          // Status auto-derives to "idle" once recoverAgentTurn returns
-          // and cf_agents_runs is empty. Just emit the trajectory event.
-          const idleEvent: SessionEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } };
-          history.append(idleEvent);
-          this.broadcastEvent(idleEvent);
-        },
-        maxRecoveries: 5,
-      },
-    );
-
-    if (decision.continue) {
-      await this.dispatchEventQueue();
-    }
-  }
-
-  /**
-   * Read events strictly between two seq values (exclusive on both ends).
-   * Helper used by recoverAgentTurn's loadRecoveryContext.
-   */
-  private getEventsBetween(afterSeq: number, beforeSeq: number): SessionEvent[] {
-    const out: SessionEvent[] = [];
-    try {
-      const cursor = this.ctx.storage.sql.exec(
-        `SELECT data FROM events WHERE seq > ? AND seq < ? ORDER BY seq`,
-        afterSeq,
-        beforeSeq,
-      );
-      for (const row of cursor) {
-        try {
-          out.push(JSON.parse(row.data as string) as SessionEvent);
-        } catch {
-          // Skip rows that fail to parse (read-side resilience).
-        }
-      }
-    } catch {
-      // events table may not exist yet
-    }
-    return out;
-  }
 
   /**
    * Drain the event queue for one thread: pull pending user events
@@ -2203,7 +2057,7 @@ export class SessionDO extends DurableObject<Env> {
       if (!row) break;
 
       // Fresh per-turn dedup window for agent.message broadcasts. See
-      // broadcastedMessageIds field doc for the recovery-replay context.
+      // broadcastedMessageIds field doc for aborted-stream rescue.
       this.broadcastedMessageIds.clear();
 
       // Stamp processed_at = now on the SAME row. AMA spec: processed_at is
@@ -2248,9 +2102,6 @@ export class SessionDO extends DurableObject<Env> {
           async () => { await this.runAcceptedTurn(event, [event], history); },
           {},
         );
-        // Turn finished cleanly — clear any prior recovery counter so the
-        // next turn doesn't inherit stale state.
-        await clearTurnRecoveryCount(this.turnRuntimeAdapter(), turnName);
       } catch (err) {
         if (err instanceof TurnAborted) {
           console.warn(`[drain] turn ${turnName} aborted: ${err.cause.kind}`);
@@ -2459,8 +2310,7 @@ export class SessionDO extends DurableObject<Env> {
   /**
    * Build the adapter turn-runtime needs from this DO. Returns a
    * RuntimeAdapter (the unified adapter Node also uses) wrapped in the
-   * thin TurnRuntimeAgent shape that pins it to this DO's sessionId
-   * and exposes ctx.storage for the recovery counter.
+   * thin TurnRuntimeAgent shape that pins it to this DO's sessionId.
    *
    * The RuntimeAdapter's `hintTurnInFlight` callback is wired here to
    * setAlarm(now+30s) — this is CF's keep-alive: the alarm rearms
@@ -2471,11 +2321,6 @@ export class SessionDO extends DurableObject<Env> {
     return {
       adapter: this.runtimeAdapter,
       sessionId: this.state.session_id,
-      storage: {
-        get: <T = unknown,>(key: string) => this.ctx.storage.get<T>(key),
-        put: <T = unknown,>(key: string, value: T) => this.ctx.storage.put(key, value),
-        delete: (key: string) => this.ctx.storage.delete(key).then(() => undefined),
-      },
     };
   }
 
@@ -2560,18 +2405,6 @@ export class SessionDO extends DurableObject<Env> {
     return this._runtimeAdapter;
   }
 
-  /**
-   * Get the sequence number of the last event of a given type.
-   * Returns 0 if no such event exists.
-   */
-  private getLastEventSeq(type: string): number {
-    const result = this.ctx.storage.sql.exec(
-      "SELECT seq FROM events WHERE type = ? ORDER BY seq DESC LIMIT 1",
-      type
-    );
-    for (const row of result) return row.seq as number;
-    return 0;
-  }
 
   /**
    * Get the first event after a given sequence number matching any of the given types.
@@ -6527,15 +6360,11 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Live-derived session status. Single source of truth — replaces the old
-   * mutable `state.status` field which had a race window between the
-   * `setState({status:"running"})` write and the cf_agents_runs INSERT
-   * inside runFiber. With derivation that race is impossible: status is
-   * always consistent with whatever cf_agents_runs holds at query time.
+   * Live-derived session status from active turn and execution-lane markers.
    *
    * - `terminated_at` set → "terminated" (destroy is the only persistent
    *   state value that needs to survive restarts)
-   * - any cf_agents_runs row → "running"
+   * - any active turn or execution lane → "running"
    * - else → "idle"
    *
    * Back-compat: if a session was written before this refactor, its
@@ -7571,7 +7400,7 @@ export class SessionDO extends DurableObject<Env> {
   /**
    * Alarm entry point. Fired by CF runtime when setAlarm() time is reached.
    * Dispatches all due schedules in time order, then runs housekeeping
-   * (orphan-fiber recovery), then re-arms the next alarm.
+   * (execution lease recovery), then re-arms the next alarm.
    */
   async alarm(): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1000);

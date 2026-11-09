@@ -61,7 +61,12 @@ const lifecycle = (seen: any[]) => seen
 
 it.each(["recoverEventQueue", "recoverExecutionQueue", "alarm"])("%s returns while a claimed harness remains pending", async method => {
   const id = await createSession("hang-until-abort");
-  await runInDurableObject(stubOf(id), instance => { instance._coldStartFlushDone = true; instance._runRecovery = instance._runRecovery.bind(instance); });
+  await runInDurableObject(stubOf(id), async instance => {
+    expect(instance.onFiberRecovered).toBeUndefined();
+    // Reset recovery guards as on a fresh incarnation, without any SDK hook.
+    instance._coldStartFlushDone = false;
+    await instance._runRecovery("cold_start");
+  });
   const observed = await runInDurableObject(stubOf(id), async (instance, state) => {
     const event = { id: "input_" + id, type: "user.message", content: [{ type: "text", text: "hang" }] };
     instance.queue.enqueueQueueInput(event);

@@ -4,7 +4,6 @@ import { runAgentTurn, TurnAborted, type TurnRuntimeAgent } from "../src/turn-li
 
 function fakeAgent(overrides: Partial<RuntimeAdapter> = {}) {
   const calls: string[] = [];
-  const store = new Map<string, unknown>();
   const adapter = {
     beginTurn: async () => { calls.push("begin"); },
     endTurn: async (_s: string, _t: string, status: string) => { calls.push(`end:${status}`); },
@@ -15,13 +14,8 @@ function fakeAgent(overrides: Partial<RuntimeAdapter> = {}) {
   const agent: TurnRuntimeAgent = {
     adapter,
     sessionId: "sess_1",
-    storage: {
-      get: async <V,>(key: string) => store.get(key) as V | undefined,
-      put: async (key, value) => { store.set(key, value); },
-      delete: async (key) => { store.delete(key); },
-    },
   };
-  return { agent, calls, store };
+  return { agent, calls };
 }
 
 async function causeOf(run: Promise<unknown>) {

@@ -683,9 +683,8 @@ describe("SessionDO recovery — DO-level", () => {
   it("orphan turn + dangling tool_use in same session: alarm reconciles row AND injects placeholder", async () => {
     // The full crash-recovery story end-to-end on CF: a turn died with
     // unflushed event-log state (orphan tool_use) AND the sessions row
-    // marked running. _checkOrphanTurns calls onFiberRecovered →
-    // recoverAgentTurn (which does the event-log recovery) THEN flips
-    // status to idle. Both effects must occur in the same alarm pass.
+    // marked running. The alarm finalizes stale event-log state and clears
+    // the orphan marker. Both effects must occur in the same alarm pass.
     const sessionId = await newSessionDirect("orphan_combined");
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
 

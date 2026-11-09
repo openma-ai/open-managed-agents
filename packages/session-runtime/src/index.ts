@@ -85,14 +85,6 @@ export {
   type TurnError,
   type TurnRuntimeAgent,
 } from "./turn-lifetime";
-export {
-  clearTurnRecoveryCount,
-  recoverAgentTurn,
-  type PartialStream,
-  type RecoverAgentTurnOptions,
-  type RecoveryContext,
-  type RecoveryDecision,
-} from "./turn-recovery";
 export { finishTurn, type TurnEndPort, type TurnStop } from "./turn-end";
 export {
   classifyTurnFailure,
