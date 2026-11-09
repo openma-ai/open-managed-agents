@@ -176,6 +176,40 @@ scope and immediate claim fencing, not secrecy. It never authorizes Vault reads
 or becomes the upstream MCP header; the gateway replaces it. Deployments still
 need rate limits and should keep heartbeat TTLs short.
 
+### Managed sandbox token (#561)
+
+An OpenMA-managed execution attempt hands its sandbox exactly one opaque
+token, shared by the model gateway, MCP gateway, sandbox API and Vault egress:
+`oma_sbx_` + 43 base62 random characters + 6 base62 CRC32 characters. The
+token carries no Session data. A token with a bad shape or checksum is rejected
+without a database read. The Session id travels on its own channel: in the path
+for the model and MCP gateways, and as the Basic user name
+(`Basic base64(<sessionId>:<token>)`) for the sandbox API and egress.
+
+Only the SHA-256 of the random part is stored, as `{h, s}` entries in
+`managed_session_executions.sandbox_token_hashes` on the attempt row. Every
+request reads that row directly (no cache, no Session snapshot), and a single
+read checks Session, attempt, hash, lease and scope together. Claim, requeue,
+settle and interrupt-finalize clear the column, so the fence is unchanged:
+losing the attempt revokes every token issued for it. Each attempt receives
+a new token. A re-issue appends a hash with a compare-and-set update and never
+rewrites existing entries.
+
+`s` is the scope, chosen at issue from where the harness runs: `all` for a
+harness inside the sandbox (`acp-sandbox`), `egress` for a harness outside
+it. The model gateway, MCP gateway and sandbox API admit only `all`; egress
+admits `all` or `egress`. An entry whose scope is missing or unknown is
+rejected, with no permissive default. A re-issue keeps the attempt's scope.
+
+A store error is `503` (retryable); only a definite rejection is `401`. The
+egress forwarder holds the token in memory only and exits only on `401`.
+
+Transition: HMAC relay passes and sealed `sk-ant-req-v1.` execution
+`sessions_token`s are no longer issued. They are still verified while their
+attempt is running, with the lease checked on every request, and they have no
+scope. Remove that path in the next release. The official self-hosted Work
+`sessions_token` above is unchanged.
+
 ## Provider mapping
 
 Adapters report one of three enforcement levels:
