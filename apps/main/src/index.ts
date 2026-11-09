@@ -116,7 +116,8 @@ import {
 } from "@open-managed-agents/managed-agents-adapters-http";
 import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
 import type { DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
-import type { EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
+import { SqlEnvironmentWorkStore, type EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
+import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 import {
   SqlMcpOAuthCliStore,
   SqlDeploymentAgentSource,
@@ -133,8 +134,7 @@ import {
 } from "@open-managed-agents/managed-agents-adapters-sql";
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
-import { authenticateSandboxEgress, authorizeEnvironmentWorkEgress, authorizeSandboxEgress, isEnvironmentWorkFenceCurrent, issueSandboxToken, legacyRelayPassCheck, sandboxHarnessPlacement, sandboxTokenScopeFor, type EnvironmentWorkFenceRef, type SandboxGatewayStores, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
+import { authenticateSandboxEgress, authorizeEnvironmentWorkEgress, authorizeSandboxEgress, issueSandboxToken, legacyRelayPassCheck, sandboxHarnessPlacement, sandboxTokenScopeFor, type EnvironmentWorkClaims, type EnvironmentWorkEgressClaim, type SandboxGatewayStores, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
 import { issueCfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
 import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
@@ -1131,10 +1131,14 @@ function managedDeploymentCipherFor(ctx: AppCtx): DeploymentResourceSecretCipher
 function managedEnvironmentWorkCipherFor(
   ctx: AppCtx,
 ): EnvironmentWorkSecretCipher {
-  const workCrypto = ctx.env.PLATFORM_ROOT_SECRET === undefined
+  return environmentWorkCipherOn(ctx.env);
+}
+
+function environmentWorkCipherOn(env: Env): EnvironmentWorkSecretCipher {
+  const workCrypto = env.PLATFORM_ROOT_SECRET === undefined
     ? null
     : new WebCryptoAesGcm(
-        ctx.env.PLATFORM_ROOT_SECRET,
+        env.PLATFORM_ROOT_SECRET,
         "managed.environment-work.secret",
       );
   return {
@@ -1723,6 +1727,36 @@ export default {
 export { RuntimeRoom } from "./runtime-room";
 
 /** Tenant D1 behind @open-managed-agents/sandbox-gateway (design §0.7). */
+/** The Work claim a self-hosted Cloudflare sandbox binding carries: the host
+ * sets generation = claim_generation and token = the claim's Work token. */
+function environmentWorkEgressClaim(
+  workspaceId: string,
+  sessionId: string,
+  binding: { environmentId: string; workId: string; generation: number; token: string },
+): EnvironmentWorkEgressClaim {
+  return {
+    workspaceId,
+    sessionId,
+    environmentId: binding.environmentId,
+    workId: binding.workId,
+    generation: binding.generation,
+    token: binding.token,
+  };
+}
+
+/** Self-hosted egress authority on Cloudflare: the binding's claim must be
+ * the Work's current claim (generation and Work token), the Work starting or
+ * active and its heartbeat lease unexpired — the check a Work bearer gets. */
+function cfEnvironmentWorkClaims(env: Env, tenantDb: D1Database): EnvironmentWorkClaims {
+  const store = new SqlEnvironmentWorkStore(new CfD1SqlClient(tenantDb), environmentWorkCipherOn(env));
+  return {
+    isCurrent: (claim) => isCurrentEnvironmentWorkClaim(
+      { store, now: () => new Date() },
+      { ...claim, claimedAt: "", method: "EGRESS", path: "" },
+    ),
+  };
+}
+
 function cfSandboxGatewayStores(env: Env): SandboxGatewayStores {
   return async (workspaceId) => createSqlSandboxGatewayStore(new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(workspaceId)));
 }
@@ -2217,12 +2251,12 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     let authorize: () => Promise<{ vaultIds: readonly string[] } | null>;
     if (scope.runtimeFence !== undefined) {
       // Self-hosted Environment Work has no execution attempt (ADR 0005, the
-      // exception in design §0.0 rule 10): its fence is the authority.
-      const fence: EnvironmentWorkFenceRef = { workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence };
-      const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-      if (!await isEnvironmentWorkFenceCurrent(fences, fence)) return new Response("Credential relay denied", { status: 403 });
+      // exception in design §0.0 rule 10): its Work claim is the authority.
+      const claim = environmentWorkEgressClaim(scope.tenantId, scope.sessionId, scope.runtimeFence);
+      const claims = cfEnvironmentWorkClaims(this.env, db);
+      if (!await claims.isCurrent(claim)) return new Response("Credential relay denied", { status: 403 });
       const sessions = new SqlSessionSource(new CfD1SqlClient(db));
-      authorize = () => authorizeEnvironmentWorkEgress(fences, (input) => sessions.find(input), fence);
+      authorize = () => authorizeEnvironmentWorkEgress(claims, (input) => sessions.find(input), claim);
     } else {
       // A Session sandbox: only while its execution attempt is current. No
       // attempt (between turns, warmup before the first turn) → no Vault.
@@ -2276,17 +2310,15 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       cfSandboxGatewayStores(this.env),
       opts.executionFence === undefined ? null : { workspaceId: opts.tenantId, sessionId: opts.sessionId, ...opts.executionFence },
     ) === null) return null;
-    const fence: EnvironmentWorkFenceRef | null = opts.runtimeFence === undefined
-      ? null
-      : { workspaceId: opts.tenantId, sessionId: opts.sessionId, ...opts.runtimeFence };
-    const runtimeFences = fence === null
-      ? null
-      : new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-    if (fence !== null && !await isEnvironmentWorkFenceCurrent(runtimeFences!, fence)) {
-      throw new Error("stale runtime credential-egress fence");
-    }
     const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
     const client = new CfD1SqlClient(tenantDb);
+    const claim = opts.runtimeFence === undefined
+      ? null
+      : environmentWorkEgressClaim(opts.tenantId, opts.sessionId, opts.runtimeFence);
+    const claims = cfEnvironmentWorkClaims(this.env, tenantDb);
+    if (claim !== null && !await claims.isCurrent(claim)) {
+      throw new Error("stale Environment Work claim for credential egress");
+    }
     const sessionSource = new SqlSessionSource(client);
     const canonicalSession = await withMissingManagedSessionSchemaFallback(
       () => sessionSource.find({
@@ -2316,8 +2348,8 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
             pathname: opts.pathname,
           },
         );
-    if (fence !== null && !await isEnvironmentWorkFenceCurrent(runtimeFences!, fence)) {
-      throw new Error("stale runtime credential-egress fence");
+    if (claim !== null && !await claims.isCurrent(claim)) {
+      throw new Error("stale Environment Work claim for credential egress");
     }
     return credential;
   }

@@ -12,7 +12,29 @@ async function legacyPass(claims: Record<string, unknown>) {
   return `${payload}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))}`;
 }
 import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
-import { SqlRuntimeResourceFencePort } from "../../packages/runtime-resource-fence-sql/src/index";
+import { SqlEnvironmentWorkStore } from "../../packages/environment-work-store-sql/src/index";
+import { WebCryptoAesGcm } from "../../packages/integrations-adapters-cf/src/crypto";
+
+/** A self-hosted Session's claimed, active Environment Work in the tenant D1:
+ * the binding a Cloudflare host carries is its claim (ADR 0005). */
+async function claimedWork(sessionId: string) {
+  const cipher = new WebCryptoAesGcm(env.PLATFORM_ROOT_SECRET, "managed.environment-work.secret");
+  const store = new SqlEnvironmentWorkStore(sqlClientFromD1(env.MAIN_DB), {
+    seal: async ({ plaintext }) => ({ ciphertext: await cipher.encrypt(plaintext) }),
+    open: async ({ ciphertext }) => ({ plaintext: await cipher.decrypt(ciphertext) }),
+  });
+  const workId = `work-${crypto.randomUUID()}`;
+  const token = `sk-ant-session-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  await store.insert({ workspaceId: "default", record: {
+    work: { id: workId, acknowledgedAt: now, createdAt: now, data: { type: "session", id: sessionId }, environmentId: "environment",
+      latestHeartbeatAt: now, metadata: {}, startedAt: now, state: "active", stopRequestedAt: null, stoppedAt: null },
+    secret: { sessionsToken: token, claimGeneration: 1 },
+    claim: { claimedAt: now, workerId: "worker", generation: 1 },
+    heartbeatTtlSeconds: 600,
+  } });
+  return { environmentId: "environment", workId, ownerId: "owner", generation: 1, token };
+}
 
 /** A running execution attempt for `sessionId`: Session sandbox credentials
  * (relay pass, native egress) are bound to it (design §0.0 rule 10). */
@@ -221,13 +243,7 @@ describe("Cloudflare native credential egress RPC", () => {
       (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [vault.id] }), Date.now(), Date.now()).run();
-    const sql = sqlClientFromD1(env.MAIN_DB);
-    const acquired = await new SqlRuntimeResourceFencePort(sql).acquire({
-      scope: { workspaceId: "default", environmentId: "environment", sessionId: id, workId: "work" }, ownerId: "owner", ttlMs: 600000,
-    });
-    if (acquired.type !== "acquired") throw new Error("expected fence");
-    const { environmentId, workId, ownerId, generation, token } = acquired.fence;
-    const runtimeFence = { environmentId, workId, ownerId, generation, token };
+    const runtimeFence = await claimedWork(id);
     const upstream: Array<{ url: string; method: string; headers: Headers; body: Uint8Array }> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
       const request = input instanceof Request ? input : new Request(input);
@@ -279,6 +295,7 @@ describe("Cloudflare native credential egress RPC", () => {
       await denied(await egress("resolve", new Request(`${target}#fragment`)), 400, "Credential relay request denied");
       const stale = { ...runtimeFence, token: "stale-token" };
       await denied(await egress("resolve", new Request(target), stale), 403, "Credential relay denied");
+      await denied(await egress("resolve", new Request(target), { ...runtimeFence, generation: 2 }), 403, "Credential relay denied");
       // Denied before buffering, so send no RPC body stream that nobody would drain.
       await denied(await egress("forward", new Request(target, { method: "POST" }), stale), 403, "Credential relay denied");
       await denied(await env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: `${id}-missing` }, "resolve", new Request(target)), 403, "Credential relay request denied");
@@ -292,21 +309,18 @@ describe("Cloudflare native credential egress RPC", () => {
     }
   });
 
-  it("GitHub credential lookup fails closed on a stale Environment Work fence (characterization)", async () => {
+  it("GitHub credential lookup fails closed on a stale Environment Work claim (characterization)", async () => {
     await exports.default.fetch(new Request("http://localhost/health"));
     const sessionId = `relay-gh-${crypto.randomUUID()}`;
-    const acquired = await new SqlRuntimeResourceFencePort(sqlClientFromD1(env.MAIN_DB)).acquire({
-      scope: { workspaceId: "default", environmentId: "environment", sessionId, workId: "work" }, ownerId: "owner", ttlMs: 600000,
+    const claim = await claimedWork(sessionId);
+    const lookup = (binding: typeof claim) => env.MAIN_MCP.lookupGithubCredential({
+      tenantId: "default", sessionId, hostname: "github.com", pathname: "/acme/app", runtimeFence: binding,
     });
-    if (acquired.type !== "acquired") throw new Error("expected fence");
-    const { environmentId, workId, ownerId, generation, token } = acquired.fence;
-    const lookup = (fenceToken: string) => env.MAIN_MCP.lookupGithubCredential({
-      tenantId: "default", sessionId, hostname: "github.com", pathname: "/acme/app",
-      runtimeFence: { environmentId, workId, ownerId, generation, token: fenceToken },
-    });
-    await expect(lookup(token)).resolves.toBeNull();
+    await expect(lookup(claim)).resolves.toBeNull();
     // Settled here: an RPC promise handed to expect().rejects is reported as unhandled.
-    const stale = await lookup("stale-token").then(() => null, (error: Error) => error);
-    expect(stale?.message).toMatch(/stale runtime credential-egress fence/);
+    for (const stale of [{ ...claim, token: "stale-token" }, { ...claim, generation: 2 }]) {
+      const error = await lookup(stale).then(() => null, (failure: Error) => failure);
+      expect(error?.message).toMatch(/stale Environment Work claim/);
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it } from "vitest";
 import { sqlClientFromD1 } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import { SqlRuntimeOrphanPort } from "@open-managed-agents/runtime-resource-fence-sql";
+import { SqlRuntimeOrphanPort } from "@open-managed-agents/sandbox-orphan-store-sql";
 import { setCloudflareSandboxForTest } from "../../apps/agent/src/runtime/sandbox";
 import { getCfServicesForTenant } from "@open-managed-agents/services";
 import type { E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
