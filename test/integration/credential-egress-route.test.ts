@@ -2,20 +2,21 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => vi.restoreAllMocks());
-import { sandboxBasicCredential } from "../../packages/sandbox-gateway/src/index";
+import { issueSandboxToken, sandboxBasicCredential, sandboxTokenSha256 } from "../../packages/sandbox-gateway/src/index";
+import { createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef } from "../../packages/sandbox-gateway-sql/src/index";
+import { SqlEnvironmentWorkStore } from "../../packages/environment-work-store-sql/src/index";
+import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
 
 const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-/** The pre-#561 HMAC relay pass, signed the way the removed issuer did (deploy transition only). */
+/** A pre-#561 HMAC relay pass, signed the way the removed issuer did: refused (design §0.0b B.4). */
 async function legacyPass(claims: Record<string, unknown>) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`credential-relay.v2:${env.PLATFORM_ROOT_SECRET}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const payload = b64url(new TextEncoder().encode(JSON.stringify(claims)));
   return `${payload}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))}`;
 }
-import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
-import { SqlRuntimeResourceFencePort } from "../../packages/runtime-resource-fence-sql/src/index";
 
-/** A running execution attempt for `sessionId`: Session sandbox credentials
- * (relay pass, native egress) are bound to it (design §0.0 rule 10). */
+/** A running execution attempt for `sessionId`: the Session sandbox token
+ * (relay and native egress) is bound to it (design §0.0 rule 10). */
 async function runningAttempt(sessionId: string) {
   const executionId = `exe-${crypto.randomUUID()}`; const now = Date.now();
   await env.MAIN_DB.prepare(`INSERT INTO managed_session_executions
@@ -27,7 +28,7 @@ async function runningAttempt(sessionId: string) {
   return {
     fence,
     /** Issued through the main worker RPC the E2B SessionDO uses; `harness` fixes the scope. */
-    token: (harness: string | null = null) => env.MAIN_MCP.issueSandboxEgressToken({ tenantId: "default", sessionId, attempt: { workspaceId: "default", sessionId, ...fence }, harness }),
+    token: (harness: string | null = null) => env.MAIN_MCP.issueSandboxToken({ tenantId: "default", sessionId, attempt: { workspaceId: "default", sessionId, ...fence }, harness }),
     settle: () => env.MAIN_DB.prepare("UPDATE managed_session_executions SET state='completed' WHERE workspace_id='default' AND id=?").bind(executionId).run(),
   };
 }
@@ -145,9 +146,9 @@ describe("Cloudflare production Session relay route", () => {
       expect((await call("Bearer unfenced")).status).toBe(401);
       expect((await call(`Bearer ${token}`)).status).toBe(401); // token without its Session id
       expect((await call(sandboxBasicCredential(`${id}-other`, token))).status).toBe(401);
-      // Deploy transition: a pre-#561 pass verifies only for the running attempt.
-      expect((await call(`Bearer ${legacy}`)).status).toBe(200);
-      expect((await call(`Bearer ${staleLegacy}`)).status).toBe(401); // was 403: a definite rejection is now 401 (the forwarder exits on it)
+      // No compatibility: a pre-#561 relay pass is refused even for the running attempt (design §0.0b B.4).
+      expect((await call(`Bearer ${legacy}`)).status).toBe(401);
+      expect((await call(`Bearer ${staleLegacy}`)).status).toBe(401);
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=? WHERE workspace_id='default' AND id=?").bind(Date.now(), id).run();
       expect((await call(valid)).status).toBe(401);
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=NULL WHERE workspace_id='default' AND id=?").bind(id).run();
@@ -205,7 +206,7 @@ describe("Cloudflare native credential egress RPC", () => {
   const relayPassKeys = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter(([format, data]) =>
     format === "raw" && new TextDecoder().decode(data as Uint8Array).startsWith("credential-relay.v2:")).length;
 
-  it("serves resolve and forward without a relay pass, keeping fence and Session denials; no fence → denied (design §0.0 rule 10)", async () => {
+  it("serves resolve and forward for the binding's current sandbox token only: 401 once it is not current, a new attempt's token restores it (design §0.0b B)", async () => {
     const api = async (path: string, body: unknown) => {
       const response = await exports.default.fetch(new Request(`https://localhost${path}`, { method: "POST", headers: {
         "x-api-key": "test-key", "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01",
@@ -221,13 +222,6 @@ describe("Cloudflare native credential egress RPC", () => {
       (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
       VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
       .bind(id, JSON.stringify({ vaultIds: [vault.id] }), Date.now(), Date.now()).run();
-    const sql = sqlClientFromD1(env.MAIN_DB);
-    const acquired = await new SqlRuntimeResourceFencePort(sql).acquire({
-      scope: { workspaceId: "default", environmentId: "environment", sessionId: id, workId: "work" }, ownerId: "owner", ttlMs: 600000,
-    });
-    if (acquired.type !== "acquired") throw new Error("expected fence");
-    const { environmentId, workId, ownerId, generation, token } = acquired.fence;
-    const runtimeFence = { environmentId, workId, ownerId, generation, token };
     const upstream: Array<{ url: string; method: string; headers: Headers; body: Uint8Array }> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
       const request = input instanceof Request ? input : new Request(input);
@@ -235,27 +229,23 @@ describe("Cloudflare native credential egress RPC", () => {
       return new Response(new Uint8Array([1, 255]), { status: 201, headers: { connection: "x-hop", "x-hop": "strip", "x-upstream": "keep" } });
     });
     const importKey = vi.spyOn(crypto.subtle, "importKey");
-    const egress = (action: "resolve" | "forward", request: Request, fence: unknown = runtimeFence) =>
-      env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, ...(fence === null ? {} : { runtimeFence: fence }) }, action, request);
+    const first = await runningAttempt(id);
+    const tokenSha256 = (await sandboxTokenSha256(await first.token()))!;
+    const egress = (action: "resolve" | "forward", request: Request, sha: string | null = tokenSha256) =>
+      env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, ...(sha === null ? {} : { tokenSha256: sha }) }, action, request);
     const post = (url = target) => new Request(url, { method: "POST", body: new Uint8Array([0, 255, 128]), headers: {
       authorization: "Bearer __cap_managed__", "proxy-authorization": "strip", "x-client": "keep",
     } });
+    const denied = async (response: Response, status: number, text: string) => {
+      expect(response.status).toBe(status); expect(await response.text()).toBe(text);
+    };
     try {
       expect(await (await egress("resolve", new Request(target))).json()).toEqual({ inject: true });
       expect(await (await egress("resolve", new Request("https://public.example/"))).json()).toEqual({ inject: false });
-      // Deliberate (design §0.0 rule 10): without a fence the RPC no longer injects.
-      const noFence = await egress("resolve", new Request(target), null);
-      expect(noFence.status).toBe(403);
-      // A Session sandbox's execution attempt: injected while current, denied once it ends.
-      const attempt = await runningAttempt(id);
-      const executionEgress = (action: "resolve" | "forward", request: Request) =>
-        env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, executionFence: attempt.fence }, action, request);
-      expect(await (await executionEgress("resolve", new Request(target))).json()).toEqual({ inject: true });
-      expect((await executionEgress("resolve", new Request(target))).status).toBe(200);
-      const staleExecution = await env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, executionFence: { ...attempt.fence, attemptId: "previous" } }, "resolve", new Request(target));
-      expect(staleExecution.status).toBe(403);
-      await attempt.settle();
-      expect((await executionEgress("resolve", new Request(target))).status).toBe(403);
+      // No token bound (between turns), a digest that is no token, another workspace: 401.
+      await denied(await egress("resolve", new Request(target), null), 401, "Credential relay request denied");
+      await denied(await egress("resolve", new Request(target), "0".repeat(64)), 401, "Credential relay request denied");
+      await denied(await env.MAIN_MCP.credentialEgress({ tenantId: "other", sessionId: id, tokenSha256 }, "resolve", new Request(target)), 401, "Credential relay request denied");
       const forwarded = await egress("forward", post());
       expect(forwarded.status).toBe(201);
       expect(new Uint8Array(await forwarded.arrayBuffer())).toEqual(new Uint8Array([1, 255]));
@@ -270,21 +260,21 @@ describe("Cloudflare native credential egress RPC", () => {
       expect(get.status).toBe(201); expect(new Uint8Array(await get.arrayBuffer())).toEqual(new Uint8Array([1, 255]));
       expect(upstream[1]).toMatchObject({ method: "GET", body: new Uint8Array([]) });
       upstream.length = 0;
-
-      const denied = async (response: Response, status: number, text: string) => {
-        expect(response.status).toBe(status); expect(await response.text()).toBe(text);
-      };
       await denied(await egress("forward", post("https://public.example/")), 403, "Credential relay request denied");
       await denied(await egress("forward", post("http://rpc-authority.example/mcp")), 400, "Credential relay request denied");
       await denied(await egress("resolve", new Request(`${target}#fragment`)), 400, "Credential relay request denied");
-      const stale = { ...runtimeFence, token: "stale-token" };
-      await denied(await egress("resolve", new Request(target), stale), 403, "Credential relay denied");
-      // Denied before buffering, so send no RPC body stream that nobody would drain.
-      await denied(await egress("forward", new Request(target, { method: "POST" }), stale), 403, "Credential relay denied");
-      await denied(await env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: `${id}-missing` }, "resolve", new Request(target)), 403, "Credential relay request denied");
+      // The attempt ends: its token is refused, also before buffering a body.
+      await first.settle();
+      await denied(await egress("resolve", new Request(target)), 401, "Credential relay request denied");
+      await denied(await egress("forward", new Request(target, { method: "POST" })), 401, "Credential relay request denied");
+      // The next attempt's token restores Vault; the old one stays refused.
+      const second = await runningAttempt(id);
+      const next = (await sandboxTokenSha256(await second.token()))!;
+      expect(await (await egress("resolve", new Request(target), next)).json()).toEqual({ inject: true });
+      await denied(await egress("resolve", new Request(target)), 401, "Credential relay request denied");
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=? WHERE workspace_id='default' AND id=?").bind(Date.now(), id).run();
-      await denied(await egress("resolve", new Request(target)), 403, "Credential relay request denied");
-      await denied(await egress("forward", post()), 403, "Credential relay request denied");
+      await denied(await egress("resolve", new Request(target), next), 401, "Credential relay request denied");
+      await denied(await egress("forward", post(), next), 401, "Credential relay request denied");
       expect(upstream).toEqual([]);
       expect(relayPassKeys(importKey)).toBe(0);
     } finally {
@@ -292,21 +282,86 @@ describe("Cloudflare native credential egress RPC", () => {
     }
   });
 
-  it("GitHub credential lookup fails closed on a stale Environment Work fence (characterization)", async () => {
+  it("self-hosted lane: the binding's token issued under the Environment Work claim injects while the claim holds; a reclaim or a stop refuses it (design §0.0b B.3, ADR 0005)", async () => {
+    const api = async (path: string, body: unknown) => {
+      const response = await exports.default.fetch(new Request(`https://localhost${path}`, { method: "POST", headers: {
+        "x-api-key": "test-key", "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01",
+      }, body: JSON.stringify(body) }));
+      expect(response.status, await response.clone().text()).toBeLessThan(300); return response.json();
+    };
+    await exports.default.fetch(new Request("http://localhost/health"));
+    const target = "https://work-authority.example/mcp";
+    const vault = await api("/v1/vaults", { display_name: "work relay" });
+    await api(`/v1/vaults/${vault.id}/credentials`, { auth: { type: "static_bearer", mcp_server_url: target, token: "work-vault-token" } });
+    const id = `relay-work-${crypto.randomUUID()}`;
+    const environmentId = `env-work-${crypto.randomUUID()}`;
+    const workId = `work-${crypto.randomUUID()}`;
+    const claimedAt = Date.now(); const iso = new Date(claimedAt).toISOString();
+    await env.MAIN_DB.prepare(`INSERT INTO managed_sessions
+      (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
+      VALUES ('default',?,?,1,'agent',1,?,'idle',?,?,NULL)`)
+      .bind(id, JSON.stringify({ vaultIds: [vault.id] }), environmentId, claimedAt, claimedAt).run();
+    const sql = sqlClientFromD1(env.MAIN_DB);
+    const work = new SqlEnvironmentWorkStore(sql, { seal: async ({ plaintext }) => ({ ciphertext: plaintext }), open: async ({ ciphertext }) => ({ plaintext: ciphertext }) });
+    await work.insert({ workspaceId: "default", record: {
+      work: { id: workId, acknowledgedAt: iso, createdAt: iso, data: { type: "session", id }, environmentId, latestHeartbeatAt: iso,
+        metadata: {}, startedAt: iso, state: "active", stopRequestedAt: null, stoppedAt: null },
+      secret: { sessionsToken: "work-bearer" }, claim: { claimedAt: iso, workerId: "worker-a", generation: 1 }, heartbeatTtlSeconds: 90,
+    } });
+    // What the Cloudflare self-hosted attach does (apps/agent managed-runtime): issue under the claim, bind the digest.
+    const issue = async (generation: number) => (await sandboxTokenSha256(await issueSandboxToken(
+      createSqlEnvironmentWorkSandboxTokenStore(sql),
+      environmentWorkSandboxTokenRef({ workspaceId: "default", environmentId, sessionId: id, workId, generation }),
+      { scope: "egress" },
+    )))!;
+    const resolve = (tokenSha256: string) => env.MAIN_MCP.credentialEgress({ tenantId: "default", sessionId: id, tokenSha256 }, "resolve", new Request(target));
+    const refused = async (tokenSha256: string) => {
+      const response = await resolve(tokenSha256);
+      expect(response.status).toBe(401); expect(await response.text()).toBe("Credential relay request denied");
+    };
+    const setState = (state: string) => env.MAIN_DB.prepare("UPDATE managed_environment_work SET state=? WHERE workspace_id='default' AND id=?").bind(state, workId).run();
+    try {
+      const first = await issue(1);
+      expect(await (await resolve(first)).json()).toEqual({ inject: true });
+      // Another worker reclaims after the lease: the previous claim's token is refused at once.
+      const later = new Date(claimedAt + 91_000).toISOString();
+      const reclaimed = await work.claimAvailable({ workspaceId: "default", environmentId, workerId: "worker-b", claimedAt: later, reclaimBefore: later, heartbeatTtlSeconds: 90 });
+      expect(reclaimed).toMatchObject({ type: "claimed", record: { claim: { generation: 2, workerId: "worker-b" } } });
+      await refused(first);
+      expect(await issue(1).then(() => null, (error: Error) => error.message)).toMatch(/stale/u);
+      const second = await issue(2);
+      await refused(second); // claimed, not yet acknowledged
+      await setState("active");
+      expect(await (await resolve(second)).json()).toEqual({ inject: true });
+      await refused(first);
+      await setState("stopped");
+      await refused(second);
+    } finally {
+      await env.MAIN_DB.prepare("DELETE FROM managed_environment_work WHERE workspace_id='default' AND id=?").bind(workId).run();
+      await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
+    }
+  });
+
+  it("GitHub credential lookup only for the binding's current sandbox token", async () => {
     await exports.default.fetch(new Request("http://localhost/health"));
     const sessionId = `relay-gh-${crypto.randomUUID()}`;
-    const acquired = await new SqlRuntimeResourceFencePort(sqlClientFromD1(env.MAIN_DB)).acquire({
-      scope: { workspaceId: "default", environmentId: "environment", sessionId, workId: "work" }, ownerId: "owner", ttlMs: 600000,
+    await env.MAIN_DB.prepare(`INSERT INTO managed_sessions
+      (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
+      VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
+      .bind(sessionId, JSON.stringify({ vaultIds: [], resources: [] }), Date.now(), Date.now()).run();
+    const attempt = await runningAttempt(sessionId);
+    const tokenSha256 = (await sandboxTokenSha256(await attempt.token()))!;
+    const lookup = (sha?: string) => env.MAIN_MCP.lookupGithubCredential({
+      tenantId: "default", sessionId, hostname: "github.com", pathname: "/acme/app", ...(sha === undefined ? {} : { tokenSha256: sha }),
     });
-    if (acquired.type !== "acquired") throw new Error("expected fence");
-    const { environmentId, workId, ownerId, generation, token } = acquired.fence;
-    const lookup = (fenceToken: string) => env.MAIN_MCP.lookupGithubCredential({
-      tenantId: "default", sessionId, hostname: "github.com", pathname: "/acme/app",
-      runtimeFence: { environmentId, workId, ownerId, generation, token: fenceToken },
-    });
-    await expect(lookup(token)).resolves.toBeNull();
-    // Settled here: an RPC promise handed to expect().rejects is reported as unhandled.
-    const stale = await lookup("stale-token").then(() => null, (error: Error) => error);
-    expect(stale?.message).toMatch(/stale runtime credential-egress fence/);
+    try {
+      // No github_repository resource: null either way; no token or a refused one never reads resources.
+      await expect(lookup(tokenSha256)).resolves.toBeNull();
+      await expect(lookup()).resolves.toBeNull();
+      await attempt.settle();
+      await expect(lookup(tokenSha256)).resolves.toBeNull();
+    } finally {
+      await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(sessionId).run();
+    }
   });
 });

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { attemptSandboxTokens, authenticateSandboxToken, issueSandboxToken, type SandboxTokenStore } from "../../sandbox-gateway/src/index";
+import { memorySandboxTokens } from "../../sandbox-gateway/test/memory-sandbox-token-store";
+import { attemptOfFence } from "../../session-runtime/src/session-sandbox-fence";
 import { RetryableSandboxError, SandboxGoneError } from "@open-managed-agents/sandbox";
 import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-kit/object-storage";
 import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
@@ -406,10 +409,21 @@ describe("E2B v2 egress (generic forwarder over the E2B vendor)", () => {
   it("installs the relay against the gateway with a sandbox token, sets placeholders and allows only the gateway beyond the policy", async () => {
     const fake = fakeSdk();
     const kit = adapter(fake);
-    const issued: string[] = [];
+    const memory = memorySandboxTokens({ sessionId: "sess" });
+    const hashes: string[] = [];
+    const store: SandboxTokenStore = { ...memory.store, async replaceTokenHash(input) {
+      const result = await memory.store.replaceTokenHash(input);
+      if (result === "replaced") hashes.splice(0, hashes.length, input.tokenSha256);
+      return result;
+    } };
+    const holder = attemptSandboxTokens();
+    const attempt = attemptOfFence(fence)!;
+    let issued = 0;
+    const issue = async () => { issued++; return issueSandboxToken(store, attempt, { scope: "all" }); };
+    const harnessEnv = async () => ({ ANTHROPIC_AUTH_TOKEN: await holder.token(attempt, issue) });
     const { ports } = createSandboxPorts(kit, {
       storage: {} as never,
-      egress: { gateway: { ...gatewayDeps.gateway, endpoint: { url: "https://control.example" }, issueToken: async ({ scope: s }) => { issued.push(s.sessionId); return "oma_sbx_test"; } } },
+      egress: { gateway: { ...gatewayDeps.gateway, endpoint: { url: "https://control.example" }, issueToken: ({ attempt: current, sandbox }) => holder.relayDelivery(current!, issue, sandbox) } },
     });
     const acquired = await kit.lifecycle.acquire({ scope, plan, signal });
     if (acquired === "gone") throw new Error("unexpected");
@@ -419,19 +433,34 @@ describe("E2B v2 egress (generic forwarder over the E2B vendor)", () => {
       substitutions: [{ credentialId: "cap_cli:GITHUB_TOKEN", envName: "GITHUB_TOKEN", placeholder: "__cap_managed__", hosts: [], inject: { header: true, body: false } }],
     };
     await ports.egress.attach({ runtime: acquired.runtime, scope, fence, policy, signal });
-    expect(issued).toEqual(["sess"]);
+    expect(issued).toBe(1);
+    const old = (await harnessEnv()).ANTHROPIC_AUTH_TOKEN;
+    expect(hashes).toHaveLength(1);
     expect(fake.calls.network.at(-1)).toEqual({ allowOut: ["control.example", "pypi.org"], denyOut: ["0.0.0.0/0"] });
     expect(new TextDecoder().decode(fake.files.get("/workspace/.oma-egress/relay.cjs")).length).toBeGreaterThan(100_000);
     const staged = [...fake.files.keys()].filter((path) => /^\/workspace\/\.oma-egress\/binding\.[0-9a-f]{24}\.next\.json$/u.test(path));
     expect(staged).toHaveLength(1);
     const binding = JSON.parse(new TextDecoder().decode(fake.files.get(staged[0]!)));
-    expect(binding).toEqual({ endpoint: "https://control.example", sessionId: "sess", token: "oma_sbx_test", deliveryId: expect.stringMatching(/^[0-9a-f]{24}$/u) });
+    expect(binding).toEqual({ endpoint: "https://control.example", sessionId: "sess", token: old, deliveryId: expect.stringMatching(/^[0-9a-f]{24}$/u) });
     // Every generic exec runs from /workspace, where the installer's relative paths live.
     expect(fake.calls.commands.filter((c) => c.cmd.includes(".oma-egress")).every((c) => c.cmd.startsWith("cd /workspace 2>/dev/null; "))).toBe(true);
     const run = await acquired.runtime.run("env");
     void run;
     const envs = fake.calls.commands.at(-1)!.opts.envs as Record<string, string>;
     expect(envs).toMatchObject({ GITHUB_TOKEN: "__cap_managed__", HTTPS_PROXY: "http://127.0.0.1:18080", SSL_CERT_FILE: "/workspace/.oma-egress/ca-bundle.crt" });
+    await ports.egress.attach({ runtime: acquired.runtime, scope, fence, policy, signal });
+    expect(issued).toBe(1);
+    const rebuilt = await kit.lifecycle.acquire({ scope, plan, signal });
+    if (rebuilt === "gone") throw new Error("unexpected");
+    await ports.egress.attach({ runtime: rebuilt.runtime, scope, fence, policy, signal });
+    const fresh = (await harnessEnv()).ANTHROPIC_AUTH_TOKEN;
+    expect(issued).toBe(2);
+    expect(fresh).not.toBe(old);
+    expect(hashes).toHaveLength(1);
+    const deliveries = [...fake.files.entries()].filter(([path]) => path.endsWith(".next.json")).map(([, bytes]) => JSON.parse(new TextDecoder().decode(bytes)));
+    expect(deliveries.at(-1).token).toBe(fresh);
+    expect((await authenticateSandboxToken(store, { sessionId: "sess", token: old, channel: "api" })).type).toBe("rejected");
+    expect((await authenticateSandboxToken(store, { sessionId: "sess", token: fresh, channel: "api" })).type).toBe("accepted");
     await ports.egress.revoke({ runtime: acquired.runtime, scope, fence, reason: "completed" });
     await acquired.runtime.run("env");
     expect((fake.calls.commands.at(-1)!.opts.envs as Record<string, string>).HTTPS_PROXY).toBe("");

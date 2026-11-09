@@ -153,6 +153,11 @@ export function createCloudflareSandboxAdapter(input: {
     name: "cloudflare",
     lifecycle,
     vendor: {
+      sandboxIdentity: async runtime => {
+        const incarnation = (await runtime.describeSandbox()).incarnation;
+        if (!incarnation) throw new Error("Sandbox token requires a physical container incarnation");
+        return incarnation;
+      },
       async exec(runtime, cmd, opts) {
         let command = cmd;
         if (opts?.stdin !== undefined) {
@@ -199,9 +204,8 @@ export function createCloudflareSandboxAdapter(input: {
               environmentId: egress.scope.environmentId,
               sessionId: egress.scope.sessionId,
               workId: egress.scope.workId,
-              ownerId: egress.fence.ownerId,
-              generation: egress.fence.generation,
-              fenceToken: egress.fence.token,
+              // No sandbox token here: a required binding without one lets
+              // nothing out (SessionDO binds the token: cloudflare-session-sandbox).
               required: true,
               ...(input.controlPlaneBaseUrl === undefined ? {} : { controlPlaneBaseUrl: input.controlPlaneBaseUrl }),
             });
@@ -212,9 +216,8 @@ export function createCloudflareSandboxAdapter(input: {
               environmentId: egress.scope.environmentId,
               sessionId: egress.scope.sessionId,
               workId: egress.scope.workId,
-              ownerId: egress.fence.ownerId,
-              generation: egress.fence.generation,
-              fenceToken: egress.fence.token,
+              // No sandbox token here: a required binding without one lets
+              // nothing out (SessionDO binds the token: cloudflare-session-sandbox).
               required: true,
               ...(input.controlPlaneBaseUrl === undefined ? {} : { controlPlaneBaseUrl: input.controlPlaneBaseUrl }),
             });

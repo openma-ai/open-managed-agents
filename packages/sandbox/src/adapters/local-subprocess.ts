@@ -28,6 +28,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { Buffer } from "node:buffer";
+import { createServer } from "node:net";
 import { Readable, Writable } from "node:stream";
 import { promises as fs } from "node:fs";
 import {
@@ -116,6 +117,7 @@ interface OutputsMount {
 export class LocalSubprocessSandbox
   implements SandboxExecutor, SandboxDuplexProcessPort {
   private workdir: string;
+  private readonly relayPort: Promise<number>;
   private defaultTimeoutMs: number;
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
@@ -140,6 +142,31 @@ export class LocalSubprocessSandbox
       log: (msg) => moduleLogger.info(msg),
     };
     mkdirSync(this.workdir, { recursive: true });
+    this.relayPort = this.allocateRelayPort();
+    // Acquisition may never reach egress (e.g. rejected runtime settings).
+    // Observe rejection now, but preserve it for egressRelayPort to fail closed.
+    void this.relayPort.catch(() => undefined);
+  }
+
+  egressRelayPort(): Promise<number> { return this.relayPort; }
+
+  private async allocateRelayPort(): Promise<number> {
+    const state = join(this.workdir, ".oma-relay-port");
+    const read = async () => {
+      const value = Number(await fs.readFile(state, "utf8"));
+      if (!Number.isSafeInteger(value) || value < 1 || value > 65535) throw new Error("Invalid persisted sandbox relay port");
+      return value;
+    };
+    try { return await read(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const server = createServer();
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
+    });
+    try {
+      try { await fs.writeFile(state, String(port), { flag: "wx", mode: 0o600 }); return port; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; return await read(); }
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   }
 
   async exec(command: string, timeout?: number): Promise<string> {
@@ -448,6 +475,8 @@ export class LocalSubprocessSandbox
   }
 
   async destroy(): Promise<void> {
+    // Port allocation is not a prerequisite for releasing owned processes.
+    await this.relayPort.catch(() => undefined);
     await Promise.all(
       [...this.duplexProcesses].map((proc) =>
         proc.kill("SIGKILL").catch(() => undefined)

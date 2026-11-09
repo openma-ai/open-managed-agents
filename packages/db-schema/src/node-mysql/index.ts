@@ -68,8 +68,8 @@ const heldAfterExhaustedMigration = {
   toSnapshot: "173fcc90-140f-4d11-92d5-9c8d917213e9",
 } as const;
 
-/** ManagedRuntimeHost fence and orphan tables: new tables only, so the
- * CREATE TABLE IF NOT EXISTS pass below installs them. */
+/** ManagedRuntimeHost orphan table (and the since-retired fence table): new
+ * tables only, so the CREATE TABLE IF NOT EXISTS pass below installs them. */
 const runtimeResourceTablesMigration = {
   fromSnapshot: heldAfterExhaustedMigration.toSnapshot,
   toSnapshot: "a569ec0b-0d55-4c2a-bd30-401b50191e4b",
@@ -79,6 +79,13 @@ const runtimeResourceTablesMigration = {
 const sandboxTokenHashesMigration = {
   fromSnapshot: runtimeResourceTablesMigration.toSnapshot,
   toSnapshot: "b328314c-2463-496b-9428-8396e54e5a8c",
+} as const;
+
+/** Runtime Host restore pointer and the claim's sandbox token hashes on the
+ * Work row (ADR 0005). Preserve legacy publications before retiring the fence. */
+const workClaimPublicationMigration = {
+  fromSnapshot: sandboxTokenHashesMigration.toSnapshot,
+  toSnapshot: "6f23cfa4-a1c3-4c7a-8efa-040a495a1191",
 } as const;
 
 /**
@@ -147,6 +154,7 @@ export async function migrateNodeMysqlSchema(
       heldAfterExhaustedMigration.toSnapshot,
       runtimeResourceTablesMigration.toSnapshot,
       sandboxTokenHashesMigration.toSnapshot,
+      workClaimPublicationMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -191,6 +199,28 @@ export async function migrateNodeMysqlSchema(
         if (installed.snapshot_id === sandboxTokenHashesMigration.fromSnapshot) {
           await ensureMysqlNullableColumn(sql, "managed_session_executions", "sandbox_token_hashes", "TEXT");
           installed = { snapshot_id: sandboxTokenHashesMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === workClaimPublicationMigration.fromSnapshot) {
+          await ensureMysqlNullableColumn(sql, "managed_environment_work", "runtime_publication_json", "TEXT");
+          await ensureMysqlNullableColumn(sql, "managed_environment_work", "sandbox_token_hashes", "TEXT");
+          const fenceTable = await sql.prepare(
+            "SELECT 1 AS present FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+          ).bind("runtime_resource_fences").first();
+          if (fenceTable !== null) {
+            await sql.exec(`UPDATE managed_environment_work AS work
+              JOIN runtime_resource_fences AS fence
+                ON fence.workspace_id = work.workspace_id
+               AND fence.environment_id = work.environment_id
+               AND fence.session_id = work.session_id
+               AND fence.work_id = work.id
+              SET work.runtime_publication_json = JSON_SET(fence.publication_json,
+                '$.generation', fence.publication_generation, '$.revision', fence.revision)
+              WHERE fence.publication_json IS NOT NULL
+                AND work.runtime_publication_json IS NULL`);
+          }
+          await sql.exec("DROP TABLE IF EXISTS runtime_resource_fences");
+          installed = { snapshot_id: workClaimPublicationMigration.toSnapshot };
           continue;
         }
       }

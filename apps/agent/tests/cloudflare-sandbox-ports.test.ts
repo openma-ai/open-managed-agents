@@ -91,11 +91,11 @@ describe("Cloudflare v2 adapter", () => {
     expect(backupObjectKeys("bk1")).toEqual(["backups/bk1.tar.zst", "backups/bk1.meta.json"]);
   });
 
-  it("binds and revokes the outbound handler with the execution fence", async () => {
+  it("binds a required outbound handler without any fence or token (fail closed; SessionDO binds the token), and revokes it", async () => {
     const cf = fakeCf();
     const { ports } = createSandboxPorts(createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, controlPlaneBaseUrl: "https://main.example", backups }), { storage: {} as never, egress: {} as never });
-    await ports.egress.attach({ runtime: cf.runtime, scope, fence, policy: null, signal });
-    expect(cf.log.at(-1)).toEqual(["outbound", { tenantId: "ws", environmentId: "env", sessionId: "sess", workId: "work", ownerId: "owner", generation: 3, fenceToken: "tok", required: true, controlPlaneBaseUrl: "https://main.example" }]);
+    await ports.egress.attach({ runtime: cf.runtime, scope, fence: { ...fence, ownerId: "session-do", token: "session-do" }, policy: null, signal });
+    expect(cf.log.at(-1)).toEqual(["outbound", { tenantId: "ws", environmentId: "env", sessionId: "sess", workId: "work", required: true, controlPlaneBaseUrl: "https://main.example" }]);
     await ports.egress.revoke({ runtime: cf.runtime, scope, fence, reason: "lease_lost" });
     expect(cf.log.at(-1)).toEqual(["revoke", { workId: "work", generation: 3, reason: "lease_lost" }]);
   });

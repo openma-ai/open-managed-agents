@@ -256,15 +256,14 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     resolveSandboxToken: (request) => managedAcpCapabilities.authenticateToken(request),
     resolveBearerToken: async ({ token, method, path }) => {
       if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
-      // The shared sealed bearer check (design §0.0 rule 10): the pre-#561
-      // execution token on proxy routes (deploy transition), then the Work token.
-      const decision = await authenticateSandboxBearer(managedAcpCapabilities.authority({
+      // The shared sealed bearer check (design §0.0 rule 10, §0.0b B.4): the Work token only.
+      const decision = await authenticateSandboxBearer({ work: {
         codec: sealedSandboxBearerCodec(managedEnvironmentWorkSessionTokenCrypto, () => new Date()),
         isCurrentClaim: (claim) => isCurrentEnvironmentWorkClaim({
           store: managedEnvironmentWorkStore,
           now: () => new Date(),
         }, claim),
-      }), { token, method, path });
+      } }, { token, method, path });
       // A database error is not a rejection: the middleware answers 503.
       if (decision.type === "unavailable") throw decision.error instanceof Error ? decision.error : new Error("sealed bearer could not be checked");
       if (decision.type === "none") return null;

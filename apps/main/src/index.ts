@@ -133,10 +133,8 @@ import {
 } from "@open-managed-agents/managed-agents-adapters-sql";
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
-import { authenticateSandboxEgress, authorizeEnvironmentWorkEgress, authorizeSandboxEgress, isEnvironmentWorkFenceCurrent, issueSandboxToken, legacyRelayPassCheck, sandboxHarnessPlacement, sandboxTokenScopeFor, type EnvironmentWorkFenceRef, type SandboxGatewayStores, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
-import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
-import { issueCfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
+import { authenticateSandboxEgress, authenticateSandboxEgressSha256, issueSandboxToken, sandboxHarnessPlacement, sandboxTokenScopeFor, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
+import { cfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
 import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
 import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
 import { createSqlSessionExecutionLeases } from "@open-managed-agents/session-runtime-sql/execution-lease";
@@ -313,10 +311,8 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   if (!env.PLATFORM_ROOT_SECRET) throw new Error("Credential relay is not configured");
   const { createCredentialEgressRelay } = await import("@open-managed-agents/managed-credential-resolver");
   const store = cfSandboxTokenStore(env);
-  // DEPLOY TRANSITION ONLY: pre-#561 HMAC relay passes, verify-only, next release removes.
-  const legacyPass = legacyRelayPassCheck(env.PLATFORM_ROOT_SECRET, cfSandboxGatewayStores(env));
   return createCredentialEgressRelay({
-    authenticate: authorization => authenticateSandboxEgress(store, authorization, { legacyPass }),
+    authenticate: authorization => authenticateSandboxEgress(store, authorization),
     credentials: {
       outboundTarget: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).outboundTarget(scope, hostname),
       forward: async (workspaceId, target, send) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(workspaceId)).forward(workspaceId, target, send),
@@ -1722,11 +1718,6 @@ export default {
 // them by class_name in durable_objects.bindings + migrations.
 export { RuntimeRoom } from "./runtime-room";
 
-/** Tenant D1 behind @open-managed-agents/sandbox-gateway (design §0.7). */
-function cfSandboxGatewayStores(env: Env): SandboxGatewayStores {
-  return async (workspaceId) => createSqlSandboxGatewayStore(new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(workspaceId)));
-}
-
 /** True while `fence` still owns its running execution in tenant D1. Main
  * revalidates this before every fenced mutation requested by a SessionDO.
  * The shared check (design §0.0 rule 10), scoped to the calling Session. */
@@ -2010,15 +2001,17 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     );
   }
 
-  /** ACP model / MCP channels for one SessionDO execution (design §0.6). */
-  async issueManagedAcpExecutionChannels(opts: Parameters<typeof issueCfAcpExecutionChannels>[1]) {
-    return issueCfAcpExecutionChannels(this.env, opts);
+  /** ACP model / MCP channels for one SessionDO execution (design §0.6),
+   * over that execution's sandbox token. */
+  async managedAcpExecutionChannels(opts: Parameters<typeof cfAcpExecutionChannels>[1]) {
+    return cfAcpExecutionChannels(this.env, opts);
   }
 
-  /** A sandbox token for the in-sandbox egress forwarder (#561) of the
-   * SessionDO's current execution attempt. `harness` is the agent's harness
-   * name: it fixes the scope (sandboxHarnessPlacement). */
-  async issueSandboxEgressToken(opts: { tenantId: string; sessionId: string; attempt: SessionExecutionAttemptRef; harness: string | null }): Promise<string> {
+  /** A sandbox token (#561) for the SessionDO's current execution attempt,
+   * appended to the attempt. SessionDO asks once per attempt and shares it
+   * (attemptSandboxTokens); a relay re-delivery asks again. `harness` is the
+   * agent's harness name: it fixes the scope (sandboxHarnessPlacement). */
+  async issueSandboxToken(opts: { tenantId: string; sessionId: string; attempt: SessionExecutionAttemptRef; harness: string | null }): Promise<string> {
     if (opts.attempt.workspaceId !== opts.tenantId || opts.attempt.sessionId !== opts.sessionId) {
       throw new Error("Sandbox token fence does not name this Session");
     }
@@ -2204,39 +2197,26 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
   }
 
   /** Native outbound adapter transport for the shared HTTPS relay core.
-   * The fenced binding is the caller's authority, so no relay pass is minted.
-   * Only requests and responses cross this boundary, never Vault tokens. */
-  async credentialEgress(scope: {
-    tenantId: string; sessionId: string;
-    runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
-    executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
-  }, action: "resolve" | "forward", request: Request): Promise<Response> {
+   * The binding's sandbox token (its digest: binding params are stored) is
+   * the authority, checked like the E2B / Node relay's (#561): 401 once the
+   * token is not current, 503 when it cannot be checked. Only requests and
+   * responses cross this boundary, never Vault tokens. */
+  async credentialEgress(scope: { tenantId: string; sessionId: string; tokenSha256?: string }, action: "resolve" | "forward", request: Request): Promise<Response> {
     const { createCredentialEgressCore, credentialEgressDenied } = await import("@open-managed-agents/managed-credential-resolver");
     if (!this.env.PLATFORM_ROOT_SECRET) return new Response("Credential relay unavailable", { status: 503 });
+    const store = cfSandboxTokenStore(this.env);
+    const authorize = () => authenticateSandboxEgressSha256(store, { workspaceId: scope.tenantId, sessionId: scope.sessionId, tokenSha256: scope.tokenSha256 });
+    const denied = (decision: Exclude<Awaited<ReturnType<typeof authorize>>, { type: "accepted" }>) =>
+      decision.type === "unavailable" ? new Response("Credential relay unavailable", { status: 503 }) : credentialEgressDenied(401);
+    const first = await authorize();
+    if (first.type !== "accepted") return denied(first);
     const db = await buildCfTenantDbProvider(this.env).resolve(scope.tenantId);
-    let authorize: () => Promise<{ vaultIds: readonly string[] } | null>;
-    if (scope.runtimeFence !== undefined) {
-      // Self-hosted Environment Work has no execution attempt (ADR 0005, the
-      // exception in design §0.0 rule 10): its fence is the authority.
-      const fence: EnvironmentWorkFenceRef = { workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence };
-      const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-      if (!await isEnvironmentWorkFenceCurrent(fences, fence)) return new Response("Credential relay denied", { status: 403 });
-      const sessions = new SqlSessionSource(new CfD1SqlClient(db));
-      authorize = () => authorizeEnvironmentWorkEgress(fences, (input) => sessions.find(input), fence);
-    } else {
-      // A Session sandbox: only while its execution attempt is current. No
-      // attempt (between turns, warmup before the first turn) → no Vault.
-      const fence = scope.executionFence === undefined ? null : { workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.executionFence };
-      const stores = cfSandboxGatewayStores(this.env);
-      authorize = () => authorizeSandboxEgress(stores, fence);
-      if (await authorize() === null) return credentialEgressDenied(403);
-    }
     const body = action === "forward" && !["GET", "HEAD"].includes(request.method) ? await request.arrayBuffer() : null;
     // Re-check after buffering, immediately before injecting.
-    const session = await authorize();
-    if (session === null) return credentialEgressDenied(403);
+    const decision = await authorize();
+    if (decision.type !== "accepted") return denied(decision);
     const core = createCredentialEgressCore({ credentials: createManagedCredentialResolver(this.env, db), send: req => fetch(req), log: { warn: (fields, message) => logWarn(fields, message) } });
-    const egressScope = { workspaceId: scope.tenantId, sessionId: scope.sessionId, vaultIds: session.vaultIds };
+    const egressScope = { workspaceId: scope.tenantId, sessionId: scope.sessionId, vaultIds: decision.scope.vaultIds };
     return action === "resolve"
       ? core.resolve(egressScope, request.url)
       : core.forward(egressScope, { target: request.url, method: request.method, headers: request.headers, body });
@@ -2261,30 +2241,15 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     sessionId: string;
     hostname: string;
     pathname: string;
-    runtimeFence?: {
-      environmentId: string;
-      workId: string;
-      ownerId: string;
-      generation: number;
-      token: string;
-    };
-    executionFence?: { executionId: string; attemptId: string; ownerId: string; generation: number };
+    /** The outbound binding's sandbox token digest (credentialEgress). */
+    tokenSha256?: string;
   }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null> {
-    // A Session sandbox gets GitHub credentials only while its execution
-    // attempt is current (design §0.0 rule 10); ManagedRuntimeHost below.
-    if (opts.runtimeFence === undefined && await authorizeSandboxEgress(
-      cfSandboxGatewayStores(this.env),
-      opts.executionFence === undefined ? null : { workspaceId: opts.tenantId, sessionId: opts.sessionId, ...opts.executionFence },
-    ) === null) return null;
-    const fence: EnvironmentWorkFenceRef | null = opts.runtimeFence === undefined
-      ? null
-      : { workspaceId: opts.tenantId, sessionId: opts.sessionId, ...opts.runtimeFence };
-    const runtimeFences = fence === null
-      ? null
-      : new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-    if (fence !== null && !await isEnvironmentWorkFenceCurrent(runtimeFences!, fence)) {
-      throw new Error("stale runtime credential-egress fence");
-    }
+    // Only for a current sandbox token (design §0.0 rule 10, #561); a token
+    // that cannot be checked fails the lookup (the handler answers 502).
+    const authorize = () => authenticateSandboxEgressSha256(cfSandboxTokenStore(this.env), { workspaceId: opts.tenantId, sessionId: opts.sessionId, tokenSha256: opts.tokenSha256 });
+    const decision = await authorize();
+    if (decision.type === "unavailable") throw new Error("sandbox token could not be checked");
+    if (decision.type === "rejected") return null;
     const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
     const client = new CfD1SqlClient(tenantDb);
     const sessionSource = new SqlSessionSource(client);
@@ -2316,9 +2281,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
             pathname: opts.pathname,
           },
         );
-    if (fence !== null && !await isEnvironmentWorkFenceCurrent(runtimeFences!, fence)) {
-      throw new Error("stale runtime credential-egress fence");
-    }
+    if ((await authorize()).type !== "accepted") return null;
     return credential;
   }
 

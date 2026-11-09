@@ -63,6 +63,14 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** What is stored for a token: the SHA-256 of its random part; null when
+ * malformed. A holder that may persist what it holds (a Cloudflare outbound
+ * binding) keeps this, never the token. */
+export async function sandboxTokenSha256(token: string): Promise<string | null> {
+  const randomPart = sandboxTokenRandomPart(token);
+  return randomPart === null ? null : sha256Hex(randomPart);
+}
+
 /** HTTP Basic (and SOCKS5 user/password): username = Session id, password = token. */
 export function sandboxBasicCredential(sessionId: string, token: string): string {
   if (sessionId === "" || sessionId.includes(":")) throw new Error("Sandbox credential Session id is invalid");

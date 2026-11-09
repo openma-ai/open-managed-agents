@@ -1,6 +1,9 @@
+import { attemptSandboxTokens } from "../../sandbox-gateway/src/attempt-sandbox-token";
 import { describe, expect, it } from "vitest";
 import type { EgressPolicy } from "@open-managed-agents/sandbox";
 import { createForwarderEgress } from "../src/forwarder-egress";
+import { createSandboxPorts } from "../src/create-sandbox-ports";
+import { attemptOfFence } from "@open-managed-agents/session-runtime/session-sandbox-fence";
 import { repositoryChannels, type FirewallRules } from "../src/firewall";
 import type { SandboxEgressDepsPort, SandboxVendorPort } from "../src/ports";
 
@@ -49,6 +52,36 @@ describe("createForwarderEgress firewall today (characterization)", () => {
 });
 
 describe("relay pass binding (design §0.0 rule 10)", () => {
+  it("repeated attach and policy update on one runtime and attempt share one issuance; a replacement runtime reissues", async () => {
+    const bindings: string[] = [];
+    const runtime = {
+      exec: async (command: string) => command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":123,"port":18080,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}' : "",
+      readFile: async () => "",
+      writeFile: async (path: string, content: string) => { if (path.endsWith(".next.json")) bindings.push(JSON.parse(content).token); return path; },
+      setEnvVars: async () => {},
+    };
+    let issued = 0;
+    const holder = attemptSandboxTokens();
+    const issue = async () => "token-" + ++issued;
+    const harnessEnv = async () => ({ ANTHROPIC_AUTH_TOKEN: await holder.token(attemptOfFence(fence)!, issue) });
+    const { ports: { egress } } = createSandboxPorts({ name: "consumer-test", lifecycle: {} as never, vendor: { ...vendor([]), asSandboxPort: () => runtime } }, { storage: {} as never, egress: {
+      gateway: { ...deps.gateway, issueToken: async ({ attempt, sandbox }) => holder.relayDelivery(attempt!, issue, sandbox) },
+    } });
+    const policy = { ...limited, substitutions: [{ credentialId: "vault:TOKEN", envName: "TOKEN", placeholder: "oma_ph_1", hosts: [], inject: { header: true, body: false } }] };
+    const input = { runtime, scope, fence, policy, signal };
+    await egress.attach(input);
+    await Promise.all([egress.attach(input), egress.attach(input)]);
+    await egress.update({ ...input, changedCredentialIds: ["vault:TOKEN"] });
+    expect(new Set(bindings)).toEqual(new Set(["token-1"]));
+    expect(issued).toBe(1);
+    expect((await harnessEnv()).ANTHROPIC_AUTH_TOKEN).toBe(bindings.at(-1));
+    await egress.attach({ ...input, runtime: { ...runtime } });
+    expect(bindings.at(-1)).toBe("token-2");
+    expect((await harnessEnv()).ANTHROPIC_AUTH_TOKEN).toBe(bindings.at(-1));
+    await egress.attach({ ...input, fence: { ...fence, token: "next-attempt" } });
+    expect(bindings.at(-1)).toBe("token-3");
+  });
+
   const withVault: EgressPolicy = {
     ...limited,
     substitutions: [{ envName: "TOKEN", placeholder: "__p__", credentialId: "vault", hosts: ["api.example.com"] }] as never,

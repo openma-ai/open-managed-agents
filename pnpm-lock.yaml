@@ -132,6 +132,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../../packages/managed-agents-domain
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/environment-work-store-sql
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../../packages/environments-store
@@ -183,6 +186,9 @@ importers:
       '@open-managed-agents/sandbox-gateway':
         specifier: workspace:*
         version: link:../../packages/sandbox-gateway
+      '@open-managed-agents/sandbox-gateway-sql':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-gateway-sql
       '@open-managed-agents/sandbox-port-kit':
         specifier: workspace:*
         version: link:../../packages/sandbox-port-kit
@@ -665,9 +671,6 @@ importers:
       '@open-managed-agents/runtime-relay':
         specifier: workspace:*
         version: link:../../packages/runtime-relay
-      '@open-managed-agents/runtime-resource-fence-sql':
-        specifier: workspace:*
-        version: link:../../packages/runtime-resource-fence-sql
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
@@ -677,6 +680,9 @@ importers:
       '@open-managed-agents/sandbox-gateway-sql':
         specifier: workspace:*
         version: link:../../packages/sandbox-gateway-sql
+      '@open-managed-agents/sandbox-orphan-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-orphan-store-sql
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../../packages/scheduler
@@ -2071,6 +2077,9 @@ importers:
       '@open-managed-agents/environment-work-store':
         specifier: workspace:*
         version: link:../environment-work-store
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
@@ -3012,12 +3021,12 @@ importers:
       '@open-managed-agents/runtime-resource-contract':
         specifier: workspace:*
         version: link:../runtime-resource-contract
-      '@open-managed-agents/runtime-resource-fence-sql':
-        specifier: workspace:*
-        version: link:../runtime-resource-fence-sql
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@open-managed-agents/sandbox-orphan-store-sql':
+        specifier: workspace:*
+        version: link:../sandbox-orphan-store-sql
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
@@ -3150,6 +3159,9 @@ importers:
 
   packages/managed-runtime-node:
     dependencies:
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../environment-work-store-sql
       '@open-managed-agents/managed-runtime-host':
         specifier: workspace:*
         version: link:../managed-runtime-host
@@ -3159,9 +3171,9 @@ importers:
       '@open-managed-agents/runtime-resource-contract':
         specifier: workspace:*
         version: link:../runtime-resource-contract
-      '@open-managed-agents/runtime-resource-fence-sql':
+      '@open-managed-agents/sandbox-orphan-store-sql':
         specifier: workspace:*
-        version: link:../runtime-resource-fence-sql
+        version: link:../sandbox-orphan-store-sql
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
@@ -3953,25 +3965,6 @@ importers:
 
   packages/runtime-resource-contract: {}
 
-  packages/runtime-resource-fence-sql:
-    dependencies:
-      '@open-managed-agents/runtime-resource-contract':
-        specifier: workspace:*
-        version: link:../runtime-resource-contract
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
-    devDependencies:
-      better-sqlite3:
-        specifier: ^13.0.3
-        version: 13.0.3
-      postgres:
-        specifier: ^3.4.0
-        version: 3.4.9
-      vitest:
-        specifier: ^5.0.5
-        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
-
   packages/sandbox:
     dependencies:
       '@open-managed-agents/observability':
@@ -4114,6 +4107,25 @@ importers:
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+
+  packages/sandbox-orphan-store-sql:
+    dependencies:
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      postgres:
+        specifier: ^3.4.0
+        version: 3.4.9
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
 
   packages/sandbox-port-kit:
     dependencies:

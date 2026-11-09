@@ -174,11 +174,11 @@ describe("E2BSessionSandbox maintenance and failures", () => {
 describe("createE2BSessionSandbox", () => {
   const bucket = {} as R2Bucket;
   it("names every missing deployment variable", () => {
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null }))
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, relayToken: async () => "oma_sbx_test" }))
       .toThrow("SANDBOX_ADAPTER=e2b requires E2B_TEMPLATE, E2B_MAX_LIFETIME_MS");
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "s2" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null }))
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000", R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "s2" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, relayToken: async () => "oma_sbx_test" }))
       .toThrow("SANDBOX_ADAPTER=e2b native storage requires CLOUDFLARE_ACCOUNT_ID, R2_ENDPOINT, MEMORY_BUCKET_NAME, FILES_BUCKET_NAME");
-    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null }))
+    expect(() => createE2BSessionSandbox({ env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "3600000" }, storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, relayToken: async () => "oma_sbx_test" }))
       .toThrow("copy sync requires the MEMORY_BUCKET, FILES_BUCKET binding");
   });
 

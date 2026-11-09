@@ -6,8 +6,8 @@ import type {
   ManagedSandboxLease,
   ManagedSandboxPort,
   SandboxHarnessDriverPort,
+  EnvironmentWorkClaimPort,
   RuntimeResourceFence,
-  RuntimeResourceFencePort,
   RuntimeOrphanPort,
   RuntimeResourceScope,
   RuntimeCheckpointPort,
@@ -31,7 +31,7 @@ export interface RuntimeSchedulerPort {
 
 export interface ManagedRuntimeHostDependencies {
   ownerId: string;
-  leaseTtlMs: number;
+  /** Cadence of the Work-claim check and the sandbox heartbeat. */
   heartbeatIntervalMs: number;
   /** Cadence for materializer-owned writable Memory Stores. Defaults to 15s,
    * matching the official Environment Worker's synchronization interval. */
@@ -43,7 +43,8 @@ export interface ManagedRuntimeHostDependencies {
   /** Upper bound for provider sandbox destruction before durable orphan
    * reconciliation takes ownership. Defaults to 30s. */
   sandboxTerminationTimeoutMs?: number;
-  fences: RuntimeResourceFencePort;
+  /** The protocol Work claim is the only authority of this lane (ADR 0005). */
+  claims: EnvironmentWorkClaimPort;
   sandbox: ManagedSandboxPort;
   workspace: WorkspacePersistencePort;
   outputs: SessionOutputPort;
@@ -60,13 +61,14 @@ export interface ManagedRuntimeHostDependencies {
 
 export type ManagedRuntimeRunResult =
   | { type: "completed"; revision: number }
-  | { type: "conflict"; expiresAt: string | null }
   | { type: "lease_lost" }
   | { type: "failed"; error: unknown };
 
 export interface ManagedRuntimeHost {
   run(input: {
     scope: RuntimeResourceScope;
+    /** The claimed Work this run executes under: its claim_generation and Work token. */
+    claim: { generation: number; token: string };
     profile: ManagedRuntimeProfile;
     /** Session snapshot fetched after claim with the per-work bearer. */
     session?: RuntimeSessionSnapshot;
@@ -232,7 +234,7 @@ export function createManagedRuntimeHost(
   }
 
   return {
-    async run({ scope, profile, session, sessionInputAccess, signal }) {
+    async run({ scope, claim: claimed, profile, session, sessionInputAccess, signal }) {
       if (
         dependencies.sessionInputs === undefined
         && session !== undefined
@@ -299,14 +301,17 @@ export function createManagedRuntimeHost(
       }
       const runtimeIdentity = checkpointIdentity(profile);
 
-      const acquired = await dependencies.fences.acquire({
-        scope,
-        ownerId: dependencies.ownerId,
-        ttlMs: dependencies.leaseTtlMs,
-      });
-      if (acquired.type === "conflict") return acquired;
+      const claim = { ...scope, generation: claimed.generation, token: claimed.token };
+      const acquired = await dependencies.claims.open(claim);
+      if (acquired.type === "lost") return { type: "lease_lost" };
 
-      let fence: RuntimeResourceFence = acquired.fence;
+      const fence: RuntimeResourceFence = {
+        ...scope,
+        ownerId: dependencies.ownerId,
+        generation: claim.generation,
+        token: claim.token,
+        expiresAt: acquired.expiresAt,
+      };
       let workspaceBinding: WorkspaceBinding | null = null;
       let outputBinding: SessionOutputBinding | null = null;
       let credentialEgressBinding: CredentialEgressBinding | null = null;
@@ -320,6 +325,7 @@ export function createManagedRuntimeHost(
       const committedCheckpointIds = new Set<string>();
       const controller = new AbortController();
       let leaseLost = false;
+      let harnessSettled = false;
       let monitor: Promise<void> | null = null;
       let sessionInputSyncAbort: AbortController | null = null;
       let sessionInputSyncLoop: Promise<void> | null = null;
@@ -338,48 +344,53 @@ export function createManagedRuntimeHost(
       if (signal?.aborted) onExternalAbort();
       else signal?.addEventListener("abort", onExternalAbort, { once: true });
 
-      // Fence ownership starts at acquire, not when the sandbox eventually
-      // becomes runnable. Restore, mount and provider allocation may all take
-      // longer than one TTL, so renew throughout the complete resource
-      // transaction. The sandbox heartbeat joins only after acquire returns.
+      // Ownership is checked from open, not from when the sandbox eventually
+      // becomes runnable: restore, mount and provider allocation may take
+      // longer than one Work TTL. The Work heartbeat itself belongs to the
+      // worker that holds the claim (the official worker inside the sandbox
+      // for ama_worker, the outer Environment Worker for the supervised
+      // lane); a second heartbeater would break its expected_last_heartbeat
+      // CAS. The host observes the same claim record the heartbeats keep:
+      // reclaim, stop or an expired lease (the 412 condition) ends the run.
+      const renewalAbort = new AbortController();
+      const abortRenewal = () => renewalAbort.abort(controller.signal.reason);
+      if (controller.signal.aborted) abortRenewal();
+      else controller.signal.addEventListener("abort", abortRenewal, { once: true });
       monitor = (async () => {
-        while (!controller.signal.aborted) {
-          await scheduler.sleep(
-            dependencies.heartbeatIntervalMs,
-            controller.signal,
-          );
-          if (controller.signal.aborted) return;
-          const renewed = await withDeadline(
-            dependencies.fences.renew({
-              fence,
-              ttlMs: dependencies.leaseTtlMs,
-            }),
-            dependencies.heartbeatIntervalMs,
-            `Runtime fence heartbeat timed out after ${dependencies.heartbeatIntervalMs}ms`,
-          );
-          if (renewed.type === "lost") {
-            loseLease("Runtime resource fence lost");
-            return;
+        while (!renewalAbort.signal.aborted) {
+          await scheduler.sleep(dependencies.heartbeatIntervalMs, renewalAbort.signal);
+          if (renewalAbort.signal.aborted) return;
+          // Claim observation ends with the harness. Final publication alone
+          // decides whether its normally stopped generation may still drain.
+          if (!harnessSettled) {
+            const current = await withDeadline(
+              dependencies.claims.isCurrent(claim),
+              dependencies.heartbeatIntervalMs,
+              `Environment Work claim check timed out after ${dependencies.heartbeatIntervalMs}ms`,
+            );
+            if (!harnessSettled && !current) {
+              loseLease("Environment Work claim lost");
+              return;
+            }
           }
-          fence = renewed.fence;
+          // Provider renewal covers checkpoint/output collection and final
+          // publication too, even after the worker has stopped its Work.
+          if (renewalAbort.signal.aborted) return;
           const activeSandboxLease = sandboxLease;
           if (activeSandboxLease === null) continue;
           const sandboxHeartbeat = await withDeadline(
-            dependencies.sandbox.heartbeat({
-              scope,
-              fence,
-              lease: activeSandboxLease,
-            }),
+            dependencies.sandbox.heartbeat({ scope, fence, lease: activeSandboxLease }),
             dependencies.heartbeatIntervalMs,
             `Sandbox heartbeat timed out after ${dependencies.heartbeatIntervalMs}ms`,
           );
+          if (renewalAbort.signal.aborted) return;
           if (sandboxHeartbeat.type === "lost") {
             loseLease("Sandbox lease lost");
             return;
           }
         }
       })().catch((error: unknown) => {
-        if (!controller.signal.aborted) {
+        if (!renewalAbort.signal.aborted) {
           loseLease(`Runtime heartbeat failed: ${String(error)}`);
         }
       });
@@ -528,8 +539,8 @@ export function createManagedRuntimeHost(
             ),
             ...(sessionInputAccess === undefined ? {} : { access: sessionInputAccess }),
             authorize: async () => {
-              const current = await dependencies.fences.isCurrent(fence);
-              if (!current) loseLease("Runtime resource fence lost during Session input materialization");
+              const current = await dependencies.claims.isCurrent(claim);
+              if (!current) loseLease("Environment Work claim lost during Session input materialization");
               return current;
             },
             signal: controller.signal,
@@ -562,8 +573,8 @@ export function createManagedRuntimeHost(
                 `session-inputs-synchronize-${stage}`,
               ),
               authorize: async () => {
-                const current = await dependencies.fences.isCurrent(fence);
-                if (!current) loseLease("Runtime resource fence lost during Session input synchronization");
+                const current = await dependencies.claims.isCurrent(claim);
+                if (!current) loseLease("Environment Work claim lost during Session input synchronization");
                 return current;
               },
               ...(sessionInputAccess === undefined ? {} : { access: sessionInputAccess }),
@@ -656,15 +667,15 @@ export function createManagedRuntimeHost(
             });
             controller.signal.throwIfAborted();
           }
-          const published = await dependencies.fences.publish({
-            fence,
+          const published = await dependencies.claims.publish({
+            claim,
             workspaceCandidate,
             outputCandidate: publishedOutputCandidate,
             runtimeCheckpoint: null,
           });
           if (published.type === "lost") {
-            loseLease("Runtime resource fence lost during live checkpoint");
-            throw new Error("Runtime resource fence lost during live checkpoint");
+            loseLease("Environment Work claim lost during live checkpoint");
+            throw new Error("Environment Work claim lost during live checkpoint");
           }
           committedCheckpointIds.add(input.checkpointId);
           outputPublished = outputBinding !== null;
@@ -709,6 +720,9 @@ export function createManagedRuntimeHost(
             : {}),
           signal: controller.signal,
         });
+        // After execution, only the final publication CAS decides authority.
+        // The official worker has already stopped/revoked its live claim.
+        harnessSettled = true;
         // Registered by the supervised driver after ready (inside a callback).
         (checkpointRequestAbort as AbortController | null)?.abort(new Error("Managed runtime harness settled"));
         await checkpointRequestLoop;
@@ -812,17 +826,22 @@ export function createManagedRuntimeHost(
           controller.signal.throwIfAborted();
           publishedOutputCandidate = outputCandidate;
         }
-        const published = await dependencies.fences.publish({
-          fence,
+        const published = await dependencies.claims.publish({
+          claim,
+          final: true,
           workspaceCandidate,
           outputCandidate,
           ...(runtimeCheckpoint === null ? {} : { runtimeCheckpoint }),
         });
+        renewalAbort.abort(new Error("Managed runtime final publication settled"));
         if (published.type === "lost") {
           cleanupReason = "lease_lost";
           return { type: "lease_lost" };
         }
         outputPublished = true;
+        // Publication is durable, but cannot restore a lost sandbox lease.
+        // Preserve its failure while releasing (not aborting) published outputs.
+        controller.signal.throwIfAborted();
         retainedRuntimePublished = plan.workspaceStrategy === "retained_runtime";
         cleanupReason = "completed";
         return { type: "completed", revision: published.revision };
@@ -831,6 +850,8 @@ export function createManagedRuntimeHost(
         cleanupReason = "failed";
         return { type: "failed", error };
       } finally {
+        renewalAbort.abort(new Error("Managed runtime cleanup"));
+        controller.signal.removeEventListener("abort", abortRenewal);
         signal?.removeEventListener("abort", onExternalAbort);
         sessionInputSyncAbort?.abort(new Error("Managed runtime cleanup"));
         (checkpointRequestAbort as AbortController | null)?.abort(new Error("Managed runtime cleanup"));
@@ -919,9 +940,6 @@ export function createManagedRuntimeHost(
             .release({ scope, fence, binding: workspaceBinding })
             .catch(() => {});
         }
-        await dependencies.fences
-          .release({ fence, reason: cleanupReason })
-          .catch(() => {});
         if (cleanupPersistenceError !== null) throw cleanupPersistenceError;
       }
     },

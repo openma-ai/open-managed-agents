@@ -100,6 +100,8 @@ import heldAfterExhaustedSchema from "../apps/main/migrations/0026_closed_tempes
 import runtimeResourceTablesSchema from "../apps/main/migrations/0027_runtime_resource_tables.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import sandboxTokenHashesSchema from "../apps/main/migrations/0028_sandbox_token_hashes.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import workClaimPublicationSchema from "../apps/main/migrations/0029_work_claim_publication.sql?raw";
 
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
@@ -135,6 +137,7 @@ const MIGRATIONS_RAW: string[] = [
   heldAfterExhaustedSchema as string,
   runtimeResourceTablesSchema as string,
   sandboxTokenHashesSchema as string,
+  workClaimPublicationSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

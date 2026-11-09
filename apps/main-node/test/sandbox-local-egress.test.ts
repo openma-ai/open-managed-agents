@@ -13,6 +13,20 @@ const fixture = (cliId?: "gh" | "glab", realCli = false) => localRelayFixture(cl
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 describe("sandbox-owned local credential relay", () => {
+  it("two local Sessions run relays concurrently, and each restart retains its allocated proxy port", async () => {
+    const a = await fixture(); const b = await fixture();
+    const [one, two] = await Promise.all([a.prepare(), b.prepare()]);
+    expect(one.port).not.toBe(two.port);
+    for (const f of [a, b]) expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/concurrent'`)).toBe("200");
+    await clearSandboxEgress(a.sandbox);
+    const reattached = new LocalSubprocessSandbox({ workdir: a.workdir });
+    cleanup.push(() => reattached.destroy());
+    expect(await reattached.egressRelayPort()).toBe(one.port);
+    const again = await a.prepare();
+    expect(again.port).toBe(one.port);
+    expect(await b.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${b.target}/still'`)).toBe("200");
+  });
+
   it("runs a real CLI via localhost and ordinary HTTPS relay with placeholders only in the client", async () => {
     const f = await fixture(); await f.prepare();
     const output = await f.sandbox.exec(`printf '%s\\n' "$GITHUB_TOKEN"; curl -sS --noproxy '' -H "Authorization: Bearer $GITHUB_TOKEN" '${f.target}/a%2Fb?q=one%20two' | od -An -tu1`);
@@ -129,22 +143,28 @@ describe("sandbox-owned local credential relay", () => {
   });
 
   it("the token reaches the relay through one file that it deletes: no file under .oma-egress holds it", async () => {
-    const f = await fixture(); await f.prepare(); await f.prepare(); // a re-sign is consumed too
+    const f = await fixture(); await f.prepare(); await f.prepare(); // same-sandbox redelivery is consumed too
     expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/'`)).toContain("200");
     const listing = await f.sandbox.exec("ls -A .oma-egress");
     expect(listing).not.toMatch(/binding\./u);
-    expect(f.issued).toHaveLength(2);
+    expect(f.issued).toHaveLength(1);
     for (const token of f.issued) expect(await f.sandbox.exec(`grep -rlF '${token}' .oma-egress || echo NONE`)).toContain("NONE");
     const ready = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json")) as Record<string, unknown>;
-    expect(ready).toMatchObject({ protocol: 3, bindingError: null });
+    expect(ready).toMatchObject({ protocol: 4, bindingError: null });
     expect(Object.keys(ready).sort()).toEqual(["bindingError", "bindingId", "caBundleFile", "caFile", "pid", "port", "protocol"]);
   });
 
   it("a malformed delivery never replaces the working binding and is reported; the installer fails", async () => {
     const f = await fixture(); const ready = await f.prepare();
     await f.sandbox.exec(`printf '%s' '{"endpoint":"http://plain"}' > .oma-egress/binding.json && chmod 600 .oma-egress/binding.json`);
-    for (let i = 0; i < 50 && (await f.sandbox.exec("test -e .oma-egress/binding.json && echo PRESENT || echo GONE")).includes("PRESENT"); i++) await new Promise((resolve) => setTimeout(resolve, 50));
-    const state = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json")) as { bindingError: string | null; pid: number };
+    // Deletion precedes the readiness write; wait for the externally visible
+    // rejection, not merely the file disappearing between those two steps.
+    let state!: { bindingError: string | null; pid: number };
+    for (let i = 0; i < 50; i++) {
+      state = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json"));
+      if (state.bindingError !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     expect(state.bindingError).toMatch(/binding rejected/);
     expect(state.pid).toBe(ready.pid);
     expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/still'`)).toContain("200");
@@ -167,11 +187,14 @@ describe("sandbox-owned local credential relay", () => {
   it("uses independent sandbox CAs and repairs a killed warm relay before commands run", async () => {
     const f = await fixture(); const a = await f.prepare();
     const b = new LocalSubprocessSandbox({ workdir: join(f.dir, "sandbox-b") }); cleanup.push(() => b.destroy());
+    await clearSandboxEgress(f.sandbox);
     const other = await f.prepare(b);
     expect(await readFile(a.caFile!, "utf8")).not.toBe(await readFile(other.caFile!, "utf8"));
-    for (const box of [f.sandbox, b]) expect(await box.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/'`)).toContain("200");
-    await run("kill", ["-KILL", String(a.pid)]);
-    const repaired = await f.prepare(); expect(repaired.pid).not.toBe(a.pid);
+    expect(await b.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/'`)).toContain("200");
+    await clearSandboxEgress(b);
+    const restarted = await f.prepare();
+    await run("kill", ["-KILL", String(restarted.pid)]);
+    const repaired = await f.prepare(); expect(repaired.pid).not.toBe(restarted.pid);
     expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/warm'`)).toContain("200");
   });
 });

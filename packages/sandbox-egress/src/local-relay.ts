@@ -5,6 +5,7 @@ import { Readable } from "node:stream";
 import type { Duplex } from "node:stream";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "./ca.js";
 import { sendDirectHttps } from "./direct-https.js";
+import { SANDBOX_RELAY_PORT } from "./relay-port.js";
 import { relayAuthorization, type RelayBinding } from "./relay-binding.js";
 /** `inspect`: the sandbox env holds Vault placeholders (oma_vault_…), so every
  * HTTPS host is terminated here: a request carrying one goes to the gateway
@@ -46,6 +47,7 @@ async function respond(response: Response, output: ServerResponse) {
 }
 /** Runs inside one sandbox. It never receives a Vault token or root secret. */
 export async function startLocalRelay(config: () => LocalRelayConfig, state: { exiting(): boolean } = { exiting: () => false }) {
+  const relayPort = config().port ?? SANDBOX_RELAY_PORT;
   const authority = await createEgressCertificateAuthority(await loadOrCreateEgressCa(config().directory));
   const sockets = new Set<Duplex>();
   const track = (socket: Duplex) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); };
@@ -113,7 +115,12 @@ export async function startLocalRelay(config: () => LocalRelayConfig, state: { e
       track(tls); tls.once("error", () => tls.destroy()); tunnels.set(tls, { hostname, port, inject: inject || interceptedHosts.has(hostname) }); intercepted.emit("connection", tls);
     } catch { reject(client, 502); }
   });
-  await new Promise<void>((resolve, reject) => { front.once("error", reject); front.listen(0, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve, reject) => {
+    front.once("error", (error: NodeJS.ErrnoException) => reject(new Error(
+      `Sandbox relay port ${relayPort} ${error.code === "EADDRINUSE" ? "is in use" : "could not be bound"}`, { cause: error },
+    )));
+    front.listen(relayPort, "127.0.0.1", resolve);
+  });
   return { port: (front.address() as { port: number }).port, certificatePem: authority.certificatePem,
     async close() { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => front.close(() => resolve())); intercepted.close(); },
   };

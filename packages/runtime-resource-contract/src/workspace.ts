@@ -15,7 +15,7 @@ export interface WorkspaceBinding {
   metadata?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
-/** Immutable candidate. It is not active until FencePort.publish succeeds. */
+/** Immutable candidate. It is not active until the authority-conditioned publication succeeds. */
 export interface WorkspaceCheckpointCandidate {
   id: string;
   contentHash: string;

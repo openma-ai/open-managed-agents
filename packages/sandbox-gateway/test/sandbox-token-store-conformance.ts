@@ -9,7 +9,7 @@ import type { SessionExecutionFence, SessionExecutionStorePort } from "@open-man
 import {
   authenticateSandboxEgress, authenticateSandboxToken, authenticateSandboxTokenRequest, generateSandboxToken,
   issueSandboxToken, sandboxBasicCredential, sandboxTokenRandomPart, sha256Hex,
-  type SandboxGatewayStore, type SandboxTokenChannel, type SandboxTokenStore,
+  type SandboxTokenChannel, type SandboxTokenStore,
 } from "../src/index";
 import { seedSandboxGatewaySessionRows, type SandboxGatewaySessionSeed } from "./gateway-store-conformance";
 
@@ -94,8 +94,6 @@ export interface SandboxTokenStoreFixture {
   gate: StatementGate;
   /** The same database, ungated (fixture writes such as a resource detach). */
   raw: GateSql;
-  /** The fence-bound store the pre-#561 credentials verify against, over the gated client. */
-  gatewayStore: SandboxGatewayStore;
   executions: SessionExecutionStorePort;
   seedSession(session: SandboxGatewaySessionSeed & { document?: Record<string, unknown> }): Promise<void>;
   /** Overwrites sandbox_token_hashes (to plant malformed entries). */
@@ -177,10 +175,11 @@ export function sandboxTokenStoreConformance(adapterName: string, harness: Sandb
         const first = await issueSandboxToken(f.store, fence, { scope: "egress", now: clock(1) });
         const second = await issueSandboxToken(f.store, fence, { scope: "egress", now: clock(2) });
         await expect(issueSandboxToken(f.store, fence, { scope: "all", now: clock(2) })).rejects.toThrow(/scope egress|scope all/);
-        for (const token of [first, second]) {
-          expect(await verify(f.store, id, token, "egress")).toBe("accepted");
-          expect(await verify(f.store, id, token, "api")).toBe("rejected");
-        }
+        expect(await verify(f.store, id, first, "egress")).toBe("rejected");
+        expect(await verify(f.store, id, second, "egress")).toBe("accepted");
+        expect(await verify(f.store, id, second, "api")).toBe("rejected");
+        const row = await f.raw.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE workspace_id = ? AND id = ?").bind(f.workspaceId, fence.executionId).first() as { sandbox_token_hashes: string };
+        expect(JSON.parse(row.sandbox_token_hashes)).toHaveLength(1);
         // No default: an issue without a scope never reaches the store.
         await expect(issueSandboxToken(f.store, fence, { scope: undefined as never, now: clock(2) })).rejects.toThrow(/requires a scope/);
       }));
@@ -246,7 +245,7 @@ export function sandboxTokenStoreConformance(adapterName: string, harness: Sandb
       }));
 
     it("race: settle commits while a re-sign holds its CAS write — the write misses, the re-sign is stale, no token is left", () =>
-      harness.withStore("race-settle-append", async (f) => {
+      harness.withStore("race-settle-replace", async (f) => {
         const id = sessionIdOf(f, "s"); await f.seedSession(seed(id));
         const fence = await claim(f, id, "a1", 1);
         const kept = await issueSandboxToken(f.store, fence, { scope: "all", now: clock(1) });
@@ -259,8 +258,8 @@ export function sandboxTokenStoreConformance(adapterName: string, harness: Sandb
         expect(await verify(f.store, id, kept, "egress", 3)).toBe("rejected");
       }));
 
-    it("race: two re-signs interleave on one attempt — CAS keeps both hashes, both with the attempt's scope", () =>
-      harness.withStore("race-append-append", async (f) => {
+    it("race: two re-signs interleave — only the last committed hash remains, with the attempt's scope", () =>
+      harness.withStore("race-replace-replace", async (f) => {
         const id = sessionIdOf(f, "s"); await f.seedSession(seed(id));
         const fence = await claim(f, id, "a1", 1);
         const held = f.gate.holdNext(/UPDATE managed_session_executions SET sandbox_token_hashes/u);
@@ -269,10 +268,9 @@ export function sandboxTokenStoreConformance(adapterName: string, harness: Sandb
         const fast = await issueSandboxToken(f.store, fence, { scope: "egress", now: clock(2) });
         held.release();
         const slowToken = await slow;
-        for (const token of [fast, slowToken]) {
-          expect(await verify(f.store, id, token, "egress")).toBe("accepted");
-          expect(await verify(f.store, id, token, "api")).toBe("rejected");
-        }
+        expect(await verify(f.store, id, fast, "egress")).toBe("rejected");
+        expect(await verify(f.store, id, slowToken, "egress")).toBe("accepted");
+        expect(await verify(f.store, id, slowToken, "api")).toBe("rejected");
       }));
 
     it("race: the scope is read in the same statement as the settle / lease state — one read decides hash, lease and scope", () =>

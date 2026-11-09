@@ -14,6 +14,7 @@ import { prepareSandboxEgress } from "../../../../packages/sandbox-egress/src/in
 import { sendDirectHttps } from "../../../../packages/sandbox-egress/src/direct-https";
 import { createCredentialEgressRelay } from "../../../../packages/managed-credential-resolver/src/relay";
 import { ManagedCredentialResolver } from "../../../../packages/managed-credential-resolver/src/resolver";
+import { attemptSandboxTokens } from "../../../../packages/sandbox-gateway/src/attempt-sandbox-token";
 import { memorySandboxTokens } from "../../../../packages/sandbox-gateway/test/memory-sandbox-token-store";
 import { builtinSpecs, createSpecRegistry } from "../../../../packages/cap/src/index";
 import type { StoredCredential, CredentialStore } from "../../../../packages/credential-store/src/index";
@@ -76,7 +77,8 @@ export async function localRelayFixture(cleanup: Array<() => Promise<unknown>>, 
   cleanup.push(() => sandbox.destroy());
   const scope = { workspaceId: "ws", sessionId: "session", vaultIds: ["vault"] };
   const issued: string[] = [];
-  const prepare = (box = sandbox) => prepareSandboxEgress({ sandbox: box, scope, relay: { endpoint, ca: controlCA.certificatePem }, issueToken: async () => { const token = await tokens.issue(); issued.push(token); return token; }, placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
+  const holder = attemptSandboxTokens();
+  const prepare = (box = sandbox) => prepareSandboxEgress({ sandbox: box, scope, relay: { endpoint, ca: controlCA.certificatePem }, issueToken: () => holder.relayDelivery(tokens.fence, async () => { const token = await tokens.issue(); issued.push(token); return token; }, box), placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
   const workdir = join(dir, "sandbox-a");
   return { dir, workdir, egressDir: join(workdir, ".oma-egress"), relayConfig: { endpoint, ca: controlCA.certificatePem }, sandbox, target, prepare, seen, issued, tokens, upstreamPem: upstreamCA.certificatePem, settle: () => tokens.settle(), get refreshes() { return refreshes; }, setStatus: (value: number) => { status = value; }, failRefresh: () => { refreshOk = false; }, setVaults: (value: string[]) => { vaultIds = value; }, archive: () => tokens.archive() };
 }

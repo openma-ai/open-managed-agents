@@ -204,6 +204,20 @@
       "when": 1794189207752,
       "tag": "0028_sandbox_token_hashes",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1794206575048,
+      "tag": "0029_work_claim_publication",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1794224138567,
+      "tag": "0030_retire_resource_fences",
+      "breakpoints": true
     }
   ]
 }

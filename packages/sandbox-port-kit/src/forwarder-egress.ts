@@ -12,9 +12,10 @@ import type { SandboxEgressDepsPort, SandboxVendorPort } from "./ports";
 import { v1FileView } from "./sync-storage";
 
 /**
- * Known gaps of the reused installer (§0.2 table), not changed here: the
- * relay token is persisted in the sandbox's binding file rather than held
- * only in memory, the CA key is not on tmpfs, and the relay port is random.
+ * The token is delivered through a one-use 0600 binding file; the relay
+ * reads it into memory and immediately deletes the file. The CA key is not
+ * on tmpfs. The loopback port is stable for the sandbox (18080 in isolated
+ * networks, allocated per local Session), so inherited proxies survive restart.
  * The relay bundle is embedded in sandbox-egress, so Workers hosts install
  * it too; the sandbox image needs `node`.
  */
@@ -33,7 +34,6 @@ export function createForwarderEgress<R extends object>(
     }
     return port;
   };
-  const gatewayHost = new URL(deps.gateway.endpoint.url).hostname;
   const configure = async (input: {
     runtime: R;
     scope: RuntimeResourceScope;
@@ -42,13 +42,14 @@ export function createForwarderEgress<R extends object>(
     signal: AbortSignal;
   }) => {
     input.signal.throwIfAborted();
+    const substitutions = input.policy?.substitutions ?? [];
+    const gatewayHosts = substitutions.length === 0 ? [] : [new URL(deps.gateway.endpoint.url).hostname];
     if (vendor.applyFirewall !== undefined) {
       await vendor.applyFirewall(input.runtime, compileFirewall(input.policy, {
-        gateway: { hosts: [gatewayHost], ...(deps.gateway.endpoint.fixedIps === undefined ? {} : { fixedIps: deps.gateway.endpoint.fixedIps }) },
+        gateway: { hosts: gatewayHosts, ...(deps.gateway.endpoint.fixedIps === undefined ? {} : { fixedIps: deps.gateway.endpoint.fixedIps }) },
         channels: [...(await deps.channels?.(input.scope) ?? [])],
       }));
     }
-    const substitutions = input.policy?.substitutions ?? [];
     if (substitutions.length === 0) {
       await clearSandboxEgress(view(input.runtime));
       return;
@@ -62,7 +63,7 @@ export function createForwarderEgress<R extends object>(
         vaultIds: [...new Set(substitutions.map((item) => item.credentialId))],
       },
       relay: { endpoint: deps.gateway.endpoint.url },
-      issueToken: () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence) }),
+      issueToken: async () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence), sandbox: await vendor.sandboxIdentity?.(input.runtime) ?? input.runtime }),
       placeholders: async () => placeholders,
     });
     input.signal.throwIfAborted();

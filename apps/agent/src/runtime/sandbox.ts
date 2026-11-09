@@ -930,13 +930,10 @@ export class CloudflareSandbox
     tenantId: string;
     environmentId?: string;
     sessionId: string;
+    /** Routing only (a Work runtime's control-plane paths). */
     workId?: string;
-    ownerId?: string;
-    generation?: number;
-    fenceToken?: string;
-    /** Session execution attempt (design §0.0 rule 10); absent = no Vault. */
-    executionId?: string;
-    attemptId?: string;
+    /** The current sandbox token's digest (#561); absent = no Vault. */
+    tokenSha256?: string;
     required?: boolean;
     controlPlaneBaseUrl?: string;
   }): Promise<void> {
@@ -976,11 +973,7 @@ export class CloudflareSandbox
         environmentId: opts.environmentId,
         sessionId: opts.sessionId,
         workId: opts.workId,
-        ownerId: opts.ownerId,
-        generation: opts.generation,
-        fenceToken: opts.fenceToken,
-        executionId: opts.executionId,
-        attemptId: opts.attemptId,
+        tokenSha256: opts.tokenSha256,
         required: this.outboundRequired,
       });
       if (typeof sandbox.setOutboundByHost === "function") {
@@ -989,11 +982,7 @@ export class CloudflareSandbox
           environmentId: opts.environmentId,
           sessionId: opts.sessionId,
           workId: opts.workId,
-          ownerId: opts.ownerId,
-          generation: opts.generation,
-          fenceToken: opts.fenceToken,
-          executionId: opts.executionId,
-          attemptId: opts.attemptId,
+          tokenSha256: opts.tokenSha256,
           required: this.outboundRequired,
           controlPlaneOrigin: controlPlane?.origin,
         };

@@ -25,11 +25,11 @@ export function memorySandboxTokens(options: { sessionId?: string; workspaceId?:
     async findSession() {
       return { workspaceId, sessionId, archivedAt: null, environmentId: "env", vaultIds: [], agent: { id: "agent", version: 1 }, skills: [], fileIds: [], memoryStores: [] };
     },
-    async appendTokenHash(input) {
+    async replaceTokenHash(input) {
       if (state !== "running") return "stale";
       if (entries.some((entry) => entry.scope !== input.scope)) return "scope_mismatch";
-      entries = [...entries, { hash: input.tokenSha256, scope: input.scope }];
-      return "appended";
+      entries = [{ hash: input.tokenSha256, scope: input.scope }];
+      return "replaced";
     },
   };
   return {
@@ -45,7 +45,7 @@ export function memorySandboxTokens(options: { sessionId?: string; workspaceId?:
     /** The attempt ends (settle / take-over): every token of it is refused. */
     settle() { state = "settled"; entries = []; },
     /** A new attempt claims the execution: an empty token set, running again. */
-    claimNext() { state = "running"; entries = []; },
+    claimNext() { fence.generation++; fence.attemptId = `att-${fence.generation}`; state = "running"; entries = []; },
     archive() { archived = true; },
     /** The database cannot be read: 503, the forwarder stays up. */
     fail(value = true) { failing = value; },

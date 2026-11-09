@@ -143,9 +143,8 @@ describe("Managed Environment Worker installation composition", () => {
         placement: "driver_service",
         providerConfig: { pool: "warm" },
         ownerId: "worker_01",
-        leaseTtlMs: 90_000,
         heartbeatIntervalMs: 30_000,
-        fences: {} as never,
+        claims: {} as never,
         orphans: {} as never,
       },
       worker: {
@@ -255,9 +254,8 @@ describe("Managed Environment Worker installation composition", () => {
         placement: "driver_service",
         providerConfig: {},
         ownerId: "worker",
-        leaseTtlMs: 90_000,
         heartbeatIntervalMs: 30_000,
-        fences: {} as never,
+        claims: {} as never,
         orphans: {} as never,
       },
       worker: {

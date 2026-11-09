@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import { createNodeManagedAcpCapabilities } from "../../../packages/control-plane-node/src/lib/node-managed-acp-capability";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
-import { createSqlSessionRuntimeReaders } from "@open-managed-agents/session-runtime-sql";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql/coordination";
-import { createSqlSandboxGatewayStore, createSqlSandboxTokenStore } from "../../../packages/sandbox-gateway-sql/src/index";
-import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
+import { createSqlSandboxTokenStore } from "../../../packages/sandbox-gateway-sql/src/index";
+import { seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
 import { gatedSql, sandboxTokenStoreConformance, type SandboxTokenStoreTestHarness } from "../../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
 import { sandboxTokenRaceConformance } from "../../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
 
@@ -26,13 +25,10 @@ async function database() {
 async function fixture(harness: string | null = "acp-sandbox") {
   const sql = await database();
   const executions = new SqlSessionExecutionCoordinator(sql);
-  const readers = createSqlSessionRuntimeReaders(sql);
   const now = new Date();
   const capabilities = createNodeManagedAcpCapabilities({
-    crypto: null, gatewayBaseUrl: "https://service.test", now: () => new Date(),
+    gatewayBaseUrl: "https://service.test", now: () => new Date(),
     tokens: createSqlSandboxTokenStore(sql),
-    findExecution: (input) => executions.find(input),
-    findSession: async (input) => (await readers.executionContext.find(input))?.session ?? null,
   });
   await seedSandboxGatewaySessionRows(sql, "tenant", { id: "session", environmentId: "env", vaultIds: [], agent: { id: "agent", version: 7 }, archivedAt: null });
   await executions.admit({ execution: { id: "exec", workspaceId: "tenant", sessionId: "session", admittedAt: now.toISOString(), events: [{ id: "evt", type: "user.message", content: [], processedAt: now.toISOString() }] } });
@@ -66,11 +62,11 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
 
   it("outside harness: the forwarder token (scope egress) is refused on every API channel, and the attempt can never receive an all token", async () => {
     const f = await fixture(null);
-    const relay = await f.capabilities.issueEgress(f.fence, null);
+    const relay = await f.capabilities.issueEgress(f.fence, null, "box-1");
     for (const path of ["/v1/oma/mcp-proxy/session/x", "/v1/oma/inference-proxy/session/anthropic/v1/messages"]) {
       expect((await call(f.capabilities, path, { authorization: `Bearer ${relay}` })).type).toBe("rejected");
     }
-    await expect(f.capabilities.issueEgress(f.fence, "acp-sandbox")).rejects.toThrow(/scope/);
+    await expect(f.capabilities.issueEgress(f.fence, "acp-sandbox", "replacement")).rejects.toThrow(/scope/);
   });
 
   it("refuses to issue for a mismatched Session, a stale fence, or no fence", async () => {
@@ -81,6 +77,47 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
     await expect(f.capabilities.issue({ ...f.input, environment: { id: "other" } as Environment })).rejects.toThrow(/Session environment/);
   });
 
+  // One execution, one token (design §0.0 rule 10): the in-sandbox harness
+  // (model / MCP channels) and the egress relay of one attempt hold the same
+  // string, and the attempt row holds one hash, whichever asks first.
+  for (const order of ["harness first", "relay first"] as const) {
+    it(`acp-sandbox: one attempt holds one token hash, shared by the harness and the relay (${order})`, async () => {
+      const f = await fixture("acp-sandbox");
+      const harness = () => f.capabilities.issue(f.input).then((channels) => channels.sessionsToken);
+      const relay = () => f.capabilities.issueEgress(f.fence, "acp-sandbox");
+      const [first, second] = order === "harness first" ? [await harness(), await relay()] : [await relay(), await harness()];
+      const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE workspace_id = ? AND id = ?")
+        .bind("tenant", f.fence.executionId).first<{ sandbox_token_hashes: string }>();
+      expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+      expect(second).toBe(first);
+    });
+  }
+
+  it("a replacement sandbox in the same attempt rotates and revokes the old token", async () => {
+    const f = await fixture("acp-sandbox");
+    const { sessionsToken: harness } = await f.capabilities.issue(f.input);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1")).toBe(harness);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1")).toBe(harness);
+    const redelivered = await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-2");
+    expect(redelivered).not.toBe(harness);
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${harness}` })).type).toBe("rejected");
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${redelivered}` })).type).toBe("accepted");
+    // The harness channels of the attempt now get the re-signed one.
+    expect((await f.capabilities.issue(f.input)).sessionsToken).toBe(redelivered);
+  });
+
+  it("a rebuilt host holder rotates instead of leaving two valid tokens", async () => {
+    const f = await fixture();
+    const old = await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1");
+    const rebuilt = createNodeManagedAcpCapabilities({ gatewayBaseUrl: "https://service.test", now: () => new Date(), tokens: createSqlSandboxTokenStore(f.sql) });
+    const fresh = await rebuilt.issueEgress(f.fence, "acp-sandbox", "box-1");
+    expect(fresh).not.toBe(old);
+    expect((await call(rebuilt, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${old}` })).type).toBe("rejected");
+    expect((await call(rebuilt, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${fresh}` })).type).toBe("accepted");
+    const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE id = ?").bind(f.fence.executionId).first<{ sandbox_token_hashes: string }>();
+    expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+  });
+
   it("dies with the attempt", async () => {
     const f = await fixture();
     const { sessionsToken: token } = await f.capabilities.issue(f.input);
@@ -89,32 +126,13 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
   });
 });
 
-// Node's native egress binding store (fence-checked, unchanged by #561).
-sandboxGatewayStoreConformance("Node managed ACP stores (better-sqlite3)", {
-  async withStore(_fixtureId, run) {
-    const sql = await database();
-    const executions = new SqlSessionExecutionCoordinator(sql);
-    const readers = createSqlSessionRuntimeReaders(sql);
-    const capabilities = createNodeManagedAcpCapabilities({
-      crypto: null, now: () => new Date(), tokens: createSqlSandboxTokenStore(sql),
-      findExecution: (input) => executions.find(input),
-      findSession: async (input) => (await readers.executionContext.find(input))?.session ?? null,
-    });
-    const workspaceId = "workspace_01";
-    return run({
-      workspaceId, executions, store: await capabilities.stores(workspaceId),
-      seedSession: (session) => seedSandboxGatewaySessionRows(sql, workspaceId, session),
-    });
-  },
-});
-
 const sqliteTokenHarness: SandboxTokenStoreTestHarness = {
   async withStore(fixtureId, run) {
     const raw = await database();
     const { sql, gate } = gatedSql(raw);
     const workspaceId = `ws_${fixtureId}`;
     return run({
-      workspaceId, gate, raw, gatewayStore: createSqlSandboxGatewayStore(sql),
+      workspaceId, gate, raw,
       store: createSqlSandboxTokenStore(sql),
       executions: new SqlSessionExecutionCoordinator(raw),
       seedSession: (session) => seedSandboxGatewaySessionRows(raw, workspaceId, session),

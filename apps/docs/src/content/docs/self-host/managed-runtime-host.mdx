@@ -129,7 +129,7 @@ mode starts no local scheduler: OpenMA exposes the unchanged Work API and the
 operator owns the Worker below it.
 
 For `runtime_host`, the same entry point can load a provider driver and project
-its resource Ports into the common fence/persistence/output state machine:
+its resource Ports into the common claim/persistence/output state machine:
 
 ```ts
 const installation = await createManagedEnvironmentWorkerInstallation({
@@ -143,9 +143,8 @@ const installation = await createManagedEnvironmentWorkerInstallation({
     placement: "in_process",
     providerConfig: {},
     ownerId: processId,
-    leaseTtlMs: 90_000,
     heartbeatIntervalMs: 30_000,
-    fences,
+    claims, // EnvironmentWorkClaimPort, e.g. SqlEnvironmentWorkClaimPort
     orphans,
   },
   worker: environmentWorkerOptions,
@@ -236,7 +235,7 @@ or locked releases for full reproducibility. Existing preinstalled inventories
 (`OPENMA_ACP_HARNESSES`) and legacy unpinned `version: "1"` remain supported.
 The protocol remains `openma-harness-supervisor-v1`.
 
-Both lanes use the same sandbox, workspace, output, and resource-fence Ports.
+Both lanes use the same sandbox, workspace, output, and Work-claim Ports.
 The supervisor protocol is never required for an ordinary Managed Agents
 worker. In the `ama_worker` lane, the official worker inside the sandbox owns
 Work heartbeat and `stop`, so the outer poller uses `autoStop: false`. In the
@@ -299,10 +298,11 @@ Placement selects exactly one scheduling authority:
 | Harness outside sandbox | Session execution claim | The application-side harness attempt and any tool sandbox it drives |
 | Harness inside a self-hosted sandbox | Official Environment Work claim | One combined sandbox executor containing supervisor, harness and tools |
 
-The in-sandbox lane never acquires a nested Session execution claim. The
-Runtime Host resource generation is a subordinate publication fence for
-workspace, checkpoint and output candidates; the supervisor heartbeat is a
-process-health signal. Neither is a second scheduler.
+The in-sandbox lane never acquires a nested Session execution claim, and it
+has no separate resource fence: workspace, checkpoint and output candidates
+are published on the Work row under the same Work claim, and the sandbox token
+ends with that claim. The supervisor heartbeat is a process-health signal, not
+a second scheduler.
 
 Session execution and Environment Work use a shared internal lease controller
 for serialized renewals, bounded uncertainty, cancellation and graceful stop,
@@ -405,13 +405,13 @@ The host uses five independent boundaries:
 - `SessionInputAccessPort` is the ephemeral, per-claim content reader used by
   that materializer. It is never serialized into a lease, checkpoint, provider
   configuration, or sandbox environment.
-- `RuntimeResourceFencePort` is the only authority allowed to publish a
-  workspace/output candidate as active.
+- `EnvironmentWorkClaimPort` checks the Work claim and is the only authority
+  allowed to publish a workspace/output candidate as active.
 
-The Work heartbeat, runtime resource fence, and supervised-harness heartbeat
-are separate liveness signals. Only the Work lease is the in-sandbox scheduling
-claim; the resource fence gates publication and the supervisor heartbeat
-reports process health. Losing an authoritative lease aborts the execution. A
+The Work heartbeat and the supervised-harness heartbeat are separate liveness
+signals. Only the Work claim is authoritative: it schedules the in-sandbox
+attempt and gates publication; the supervisor heartbeat reports process
+health. Losing an authoritative lease aborts the execution. A
 stale process can remain alive briefly after a network failure, but it cannot
 append canonical Session Events or publish a new canonical workspace/final
 output manifest. External tool side effects still need their own idempotency
@@ -723,10 +723,9 @@ provider and chaos matrix.
     const cluster = await createNodeManagedEnvironmentWorker({
       runtime: {
         rootDir: "/var/lib/openma/runtime",
-        sql,
-        initializeFenceSchema: true,
+        sql, // the control plane database: Work claims and the orphan queue
+        initializeOrphanSchema: true,
         ownerId: `environment-worker:${process.pid}`,
-        leaseTtlMs: 90_000,
         heartbeatIntervalMs: 30_000,
         image: "my-community-worker:latest",
         sessionInputs: repoAndFileMaterializer,
@@ -808,10 +807,10 @@ provider and chaos matrix.
     });
     ```
 
-    The preset uses `MAIN_DB` for fence/orphan rows, `SANDBOX` for compute,
-    and `FILES_BUCKET` for immutable output candidates. Applying the exported
-    runtime-resource SQL schema is an operator migration, not an on-request
-    side effect.
+    The preset checks Work claims in each workspace's tenant D1, keeps orphan
+    rows in `MAIN_DB`, uses `SANDBOX` for compute, and `FILES_BUCKET` for
+    immutable output candidates. Applying the schema is an operator migration,
+    not an on-request side effect.
   </TabItem>
   <TabItem label="Node → Cloudflare Bridge">
     ```ts
@@ -905,12 +904,12 @@ The activation and commit sequence is input-gated and candidate-first:
 5. create and hash an immutable workspace candidate;
 6. enumerate output files, re-read them to detect mutation, upload
    content-addressed blobs, and create an immutable manifest;
-7. compare-and-set both candidates through the current fence generation;
+7. compare-and-set both candidates on the Work row under the current claim;
 8. release compute without deleting the canonical candidates.
 
 If hard termination fails, the host persists a token-free orphan record. The
 reconciler reconnects by the serialized provider/runtime ID and retries an
-idempotent destroy. Fence tokens are never stored in the orphan queue.
+idempotent destroy. Work tokens are never stored in the orphan queue.
 
 An interrupted candidate upload is not active. A duplicate upload is accepted
 only when its bytes hash to the expected content address. Corrupt checkpoint

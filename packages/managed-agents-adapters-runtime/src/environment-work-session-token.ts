@@ -287,32 +287,7 @@ function authorized(claims: EnvironmentWorkSessionTokenClaims, method: string, p
     && parts[4] === "runtime-events"
   ) return verb === "POST";
 
-  // An in-sandbox harness must never receive an upstream MCP credential.
-  // It connects to OpenMA's HTTP MCP gateway with the already-scoped Work
-  // bearer instead.  The gateway path is deliberately part of the same
-  // claim: reclaiming the Work rotates `sessions_token`, and `isCurrent`
-  // fences the old sandbox before the gateway resolves any Vault material.
-  if (
-    parts.length === 5
-    && parts[0] === "v1"
-    && parts[1] === "oma"
-    && parts[2] === "mcp-proxy"
-    && parts[3] === claims.sessionId
-    && parts[4]!.length > 0
-  ) {
-    return verb === "GET" || verb === "POST" || verb === "DELETE";
-  }
-
-  if (
-    parts.length >= 5
-    && parts[0] === "v1"
-    && parts[1] === "oma"
-    && parts[2] === "inference-proxy"
-    && parts[3] === claims.sessionId
-    && parts[4]!.length > 0
-  ) {
-    return verb === "GET" || verb === "POST" || verb === "DELETE" || verb === "PATCH";
-  }
+  // Model and MCP gateways require oma_sbx_; the Work bearer is protocol-only.
 
   if (parts[0] === "v1" && parts[1] === "skills" && verb === "GET") {
     const skill = claims.skills.find((candidate) => candidate.skillId === parts[2]);
@@ -401,25 +376,6 @@ export async function authenticateEnvironmentWorkSessionBearer(
   } catch {
     return null;
   }
-}
-
-/** Seals a pre-#561 execution sessions_token. Nothing issues these any more
- * (#561: the sandbox token replaced them); kept only so the deploy-transition
- * verify path is tested against the real sealing. Remove with that path. */
-export function sealedExecutionSessionsToken(
-  crypto: EnvironmentWorkSessionTokenCrypto,
-  now: () => Date,
-  subject: { workspaceId: string; session: IssueEnvironmentWorkSessionCredential["session"]; environmentId: string },
-) {
-  const issuer = new SealedEnvironmentWorkSessionCredentialIssuer({ crypto, now });
-  return async (lease: { executionId: string; claimedAt: string; generation: number }): Promise<string> => {
-    // The sealed claims read only the environment's id.
-    const environment = { id: subject.environmentId } as IssueEnvironmentWorkSessionCredential["environment"];
-    const issued = await issuer.issue({ workspaceId: subject.workspaceId, session: subject.session, environment, workId: lease.executionId });
-    if (issued.type !== "issued") throw new Error(issued.message);
-    const bound = await issuer.bindToClaim({ secret: issued.secret, claimedAt: lease.claimedAt, generation: lease.generation });
-    return bound.secret.sessionsToken;
-  };
 }
 
 /** The sealed bearer as a @open-managed-agents/sandbox-gateway SandboxBearerCodec

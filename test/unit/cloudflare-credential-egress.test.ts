@@ -3,24 +3,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   denyCredentialEgressRequest,
+  githubAuthHandler,
   handleCredentialEgressRequest,
   handleOpenmaControlPlaneRequest,
 } from "../../apps/agent/src/oma-sandbox";
 import { CloudflareSandbox } from "../../apps/agent/src/runtime/sandbox";
 
+const TOKEN_SHA = "a".repeat(64);
+/** A Session sandbox binding with its current sandbox token (digest). */
+const session = { tenantId: "tenant-1", sessionId: "session-1", tokenSha256: TOKEN_SHA };
 const context = {
   containerId: "container-1",
   className: "OmaSandbox",
-  params: {
-    tenantId: "tenant-1",
-    environmentId: "environment-1",
-    sessionId: "session-1",
-    workId: "work-1",
-    ownerId: "worker-1",
-    generation: 2,
-    fenceToken: "fence-secret",
-    required: true,
-  },
+  params: { ...session, environmentId: "environment-1", workId: "work-1", required: true },
 };
 
 describe("Cloudflare credential egress handler", () => {
@@ -31,7 +26,7 @@ describe("Cloudflare credential egress handler", () => {
     vi.restoreAllMocks();
   });
 
-  it("fails closed when the live fenced credential lookup is unavailable", async () => {
+  it("fails closed when the live token check is unavailable", async () => {
     globalThis.fetch = vi.fn(async () => new Response("unexpected"));
     const response = await handleCredentialEgressRequest(
       new Request("https://mcp.example.test/rpc", {
@@ -40,7 +35,7 @@ describe("Cloudflare credential egress handler", () => {
       {
         MAIN_MCP: {
           credentialEgress: vi.fn(async () => {
-            throw new Error("stale runtime fence");
+            throw new Error("store unavailable");
           }),
         },
       },
@@ -52,7 +47,7 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("requires the full runtime fence claim in enforced mode", async () => {
+  it("a required binding without a sandbox token lets nothing out", async () => {
     const lookup = vi.fn();
     globalThis.fetch = vi.fn(async () => new Response("unexpected"));
     const response = await handleCredentialEgressRequest(
@@ -68,7 +63,7 @@ describe("Cloudflare credential egress handler", () => {
 
   it("relays the request without receiving the real Vault token in the native adapter", async () => {
     const relay = vi.fn(async (scope, action, request) => {
-      expect(scope).toMatchObject({ tenantId: "tenant-1", sessionId: "session-1", runtimeFence: { token: "fence-secret" } });
+      expect(scope).toEqual(session);
       if (action === "resolve") return Response.json({ inject: true });
       expect(request.headers.get("authorization")).toBe("Bearer __cap_managed__");
       expect(new Uint8Array(await request.arrayBuffer())).toEqual(new Uint8Array([0,255,128]));
@@ -84,9 +79,8 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  // Deliberate change (design §0.0 rule 10), replacing the characterization
-  // "a Session binding without any fence still gets Vault injection".
-  it("a Session binding without an execution attempt gets no Vault: the request goes out uninjected", async () => {
+  // Design §0.0 rule 10: between turns the binding holds no token.
+  it("a Session binding without a sandbox token gets no Vault: the request goes out uninjected", async () => {
     const relay = vi.fn();
     globalThis.fetch = vi.fn(async () => new Response("direct", { status: 200 }));
     const response = await handleCredentialEgressRequest(new Request("https://mcp.example.test/rpc"),
@@ -96,12 +90,11 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("binds Vault egress to the execution attempt; once it ends a background process keeps only ordinary egress", async () => {
-    const execution = { tenantId: "tenant-1", sessionId: "session-1", executionId: "exe-1", attemptId: "att-1", ownerId: "owner-1", generation: 3 };
+  it("binds Vault egress to the sandbox token; once it is not current a background process keeps only ordinary egress", async () => {
     let current = true;
     const relay = vi.fn(async (scope, action) => {
-      expect(scope).toEqual({ tenantId: "tenant-1", sessionId: "session-1", executionFence: { executionId: "exe-1", attemptId: "att-1", ownerId: "owner-1", generation: 3 } });
-      if (!current) return new Response("Credential relay request denied", { status: 403 });
+      expect(scope).toEqual(session);
+      if (!current) return new Response("Credential relay request denied", { status: 401 });
       return action === "resolve" ? Response.json({ inject: true }) : new Response("relayed", { status: 201 });
     });
     globalThis.fetch = vi.fn(async (request) => {
@@ -110,7 +103,7 @@ describe("Cloudflare credential egress handler", () => {
       return new Response("direct", { status: 200 });
     });
     const call = () => handleCredentialEgressRequest(new Request("https://mcp.example.test/rpc", { headers: { authorization: "Bearer __cap_managed__" } }),
-      { MAIN_MCP: { credentialEgress: relay } }, { ...context, params: execution });
+      { MAIN_MCP: { credentialEgress: relay } }, { ...context, params: session });
     expect((await call()).status).toBe(201);
     expect(globalThis.fetch).not.toHaveBeenCalled();
     current = false; // the turn ended
@@ -118,6 +111,31 @@ describe("Cloudflare credential egress handler", () => {
     expect(after.status).toBe(200);
     expect(await after.text()).toBe("direct");
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // §0.0b B.5: no "inject nothing and send it anyway" for Vault traffic.
+  it("a rejected token never sends a Vault placeholder on; any failure other than 401 is returned, not degraded", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("must not be reached"));
+    const call = (status: number, headers: Record<string, string>, params: object = session) => handleCredentialEgressRequest(
+      new Request("https://mcp.example.test/rpc", { headers }),
+      { MAIN_MCP: { credentialEgress: vi.fn(async () => new Response("denied", { status })) } },
+      { ...context, params },
+    );
+    expect((await call(401, { authorization: `Bearer oma_vault_${"A".repeat(43)}` })).status).toBe(401);
+    expect((await call(503, {})).status).toBe(503);
+    expect((await call(403, {})).status).toBe(403);
+    expect((await call(401, {}, { ...session, required: true })).status).toBe(401);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("GitHub: a token check that fails is an error (502), never an unauthenticated fallback; a bound token is what main checks", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("must not be reached"));
+    const lookup = vi.fn(async () => { throw new Error("sandbox token could not be checked"); });
+    const response = await githubAuthHandler(new Request("https://api.github.com/user"),
+      { MAIN_MCP: { lookupGithubCredential: lookup, credentialEgress: vi.fn() } }, { ...context, params: session });
+    expect(response.status).toBe(502);
+    expect(lookup).toHaveBeenCalledWith({ ...session, hostname: "api.github.com", pathname: "/user" });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("passes plain HTTP through without the credential relay (apt over http://)", async () => {
@@ -170,9 +188,21 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  // §0.0b B.4: the sealed Work token only on a Work runtime's binding; no
+  // pre-#561 execution token on a Session binding.
+  it("refuses a sk-ant-req-v1 bearer on a Session binding (no workId); the sandbox token passes", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("ok"));
+    const bound = { ...context, params: { ...session, controlPlaneOrigin: "https://api.openma.test" } };
+    const call = (authorization: string) => handleOpenmaControlPlaneRequest(
+      new Request("https://api.openma.test/v1/oma/inference-proxy/session-1/v1/messages", { method: "POST", headers: { authorization }, body: "{}" }), {}, bound);
+    expect((await call("Bearer sk-ant-req-v1.legacy")).status).toBe(403);
+    expect((await call("Bearer oma_sbx_x")).status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
   it("passes the Work capability only to the bound OpenMA origin", async () => {
     globalThis.fetch = vi.fn(async (request: Request) => {
-      expect(request.headers.get("authorization")).toBe("Bearer sk-ant-req-v1.current");
+      expect(request.headers.get("authorization")).toBe("Bearer oma_sbx_current");
       expect(request.headers.has("cookie")).toBe(false);
       expect(request.redirect).toBe("manual");
       return new Response("ok");
@@ -181,7 +211,7 @@ describe("Cloudflare credential egress handler", () => {
       new Request("https://api.openma.test/v1/oma/mcp-proxy/session-1/linear", {
         method: "POST",
         headers: {
-          authorization: "Bearer sk-ant-req-v1.current",
+          authorization: "Bearer oma_sbx_current",
           cookie: "console-session=must-not-leak",
         },
         body: "{}",
@@ -198,6 +228,13 @@ describe("Cloudflare credential egress handler", () => {
 
     expect(response.status).toBe(200);
     expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each(["mcp-proxy/session-1/linear", "inference-proxy/session-1/v1/messages"])("refuses a Work bearer on the %s sandbox gateway", async (path) => {
+    globalThis.fetch = vi.fn(async () => new Response("unexpected"));
+    const response = await handleOpenmaControlPlaneRequest(new Request(`https://api.openma.test/v1/oma/${path}`, { headers: { authorization: "Bearer sk-ant-req-v1.current" } }), {}, { ...context, params: { ...context.params, controlPlaneOrigin: "https://api.openma.test" } });
+    expect(response.status).toBe(401);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("lets the scoped Work client reach every attached resource API family", async () => {
@@ -278,9 +315,6 @@ describe("Cloudflare credential egress handler", () => {
       environmentId: "environment-1",
       sessionId: "session-1",
       workId: "work-1",
-      ownerId: "worker-1",
-      generation: 1,
-      fenceToken: "fence-1",
       required: true,
       controlPlaneBaseUrl: "https://api.openma.test",
     })).rejects.toThrow("MAIN_MCP");

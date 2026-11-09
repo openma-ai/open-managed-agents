@@ -192,8 +192,11 @@ request reads that row directly (no cache, no Session snapshot), and a single
 read checks Session, attempt, hash, lease and scope together. Claim, requeue,
 settle and interrupt-finalize clear the column, so the fence is unchanged:
 losing the attempt revokes every token issued for it. Each attempt receives
-a new token. A re-issue appends a hash with a compare-and-set update and never
-rewrites existing entries.
+a new token. Repeated delivery to the same physical sandbox reuses it. A new
+physical incarnation in the same attempt (or a lost in-memory holder after host
+restart) rotates it: a compare-and-set atomically replaces the entire column
+with one hash, so the old token immediately stops authorizing new requests.
+No plaintext token is persisted for recovery.
 
 `s` is the scope, chosen at issue from where the harness runs: `all` for a
 harness inside the sandbox (`acp-sandbox`), `egress` for a harness outside
@@ -203,12 +206,22 @@ rejected, with no permissive default. A re-issue keeps the attempt's scope.
 
 A store error is `503` (retryable); only a definite rejection is `401`. The
 egress forwarder holds the token in memory only and exits only on `401`.
+The bundled forwarder listens on the fixed loopback address `127.0.0.1:18080`
+(`SANDBOX_RELAY_PORT` in `sandbox-egress/src/relay-port.ts`). All proxy
+environment variables use that address, so background processes reconnect
+after a relay restart and use the current attempt binding. An occupied port
+fails installation with the port number; it never selects a random alternative.
+Local-subprocess sandboxes share the host network. At acquisition each
+allocates a loopback port and persists it in its sandbox state
+(`.oma-relay-port`). Relay restarts reuse that port. Occupancy is an error,
+not a reason to allocate another port. This per-sandbox exception was selected
+by the coordinating agent; it is not a user-selected global-port change.
 
-Transition: HMAC relay passes and sealed `sk-ant-req-v1.` execution
-`sessions_token`s are no longer issued. They are still verified while their
-attempt is running, with the lease checked on every request, and they have no
-scope. Remove that path in the next release. The official self-hosted Work
-`sessions_token` above is unchanged.
+No compatibility path: the pre-#561 HMAC relay passes and sealed
+`sk-ant-req-v1.` execution `sessions_token`s are neither issued nor
+accepted. A sealed `sk-ant-req-v1.` bearer is accepted only as the official
+self-hosted Work `sessions_token` above, checked against the current Work
+claim.
 
 ## Provider mapping
 

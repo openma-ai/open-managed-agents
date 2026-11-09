@@ -1,5 +1,4 @@
-export { supportsCredentialEgress, DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe, workspaceRootOf } from "./ports";
-export type { SandboxCredentialEgressBinding, SandboxCredentialEgressPort } from "./ports";
+export { DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe, workspaceRootOf } from "./ports";
 export type {
   ProcessHandle,
   SandboxDuplexProcess,

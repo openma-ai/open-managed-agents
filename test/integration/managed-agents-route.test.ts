@@ -613,6 +613,8 @@ describe("Cloudflare official Managed Agents route", () => {
     expect(decodeWorkSecret(polledWork.secret!)).toEqual({
       sessions_token: expect.stringMatching(/^sk-ant-req-/),
       api_base_url: "http://localhost",
+      // The Runtime Host's Work-claim reference (ADR 0005); the SDK ignores it.
+      claim_generation: 1,
     });
     expect(
       await client.beta.environments.work.retrieve(polledWork.id, {
@@ -881,6 +883,10 @@ describe("Cloudflare official Managed Agents route", () => {
       }),
     ).rejects.toMatchObject({ status: 401 });
 
+    for (const path of [`/v1/oma/mcp-proxy/${session.id}/server`, `/v1/oma/inference-proxy/${session.id}/v1/messages`]) {
+      const denied = await workerFetch(`http://localhost${path}`, { method: "POST", headers: { Authorization: `Bearer ${sessionsToken}`, "content-type": "application/json" }, body: "{}" });
+      expect(denied.status, path).toBe(401);
+    }
     const unrelated = await workerFetch("http://localhost/v1/agents", {
       headers: { Authorization: `Bearer ${sessionsToken}` },
     });

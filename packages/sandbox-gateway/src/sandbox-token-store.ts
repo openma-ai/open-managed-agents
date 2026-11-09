@@ -36,9 +36,8 @@ export interface SandboxTokenStore {
   find(input: { sessionId: string; tokenSha256: string }): Promise<{ session: SandboxTokenSession; attempt: SandboxTokenAttempt | null } | null>;
   /** The Session record (issue-time checks). */
   findSession(input: { workspaceId: string; sessionId: string }): Promise<SandboxTokenSession | null>;
-  /** Adds a hash with its scope to the attempt's set in one conditional
-   * write, only while `fence` is the running attempt with a live lease.
-   * Never replaces. `scope_mismatch`: the attempt already holds tokens of the
+  /** Atomically replaces all previous hashes with one scoped hash, only
+   * while `fence` is the running attempt with a live lease. `scope_mismatch`: the attempt already holds tokens of the
    * other scope (an attempt has one harness placement). */
-  appendTokenHash(input: { fence: SessionExecutionAttemptRef; tokenSha256: string; scope: SandboxTokenScope; nowMs: number }): Promise<"appended" | "stale" | "scope_mismatch">;
+  replaceTokenHash(input: { fence: SessionExecutionAttemptRef; tokenSha256: string; scope: SandboxTokenScope; nowMs: number }): Promise<"replaced" | "stale" | "scope_mismatch">;
 }
