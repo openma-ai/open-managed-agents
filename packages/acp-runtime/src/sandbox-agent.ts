@@ -398,6 +398,9 @@ export async function installAcpSandboxAgent(
   try {
     output = await sandbox.exec(buildAcpSandboxInstallScript(install), INSTALL_TIMEOUT_MS);
   } catch (error) {
+    // Preserve adapter certainty across the installation caller. Rewrapping
+    // this as an ordinary error would permit an automatic blind rerun.
+    if (error !== null && typeof error === "object" && "outcome" in error && error.outcome === "dispatched_unknown") throw error;
     throw new Error(
       `ACP agent install failed for ${label}: ${error instanceof Error ? error.message : String(error)}`,
     );
