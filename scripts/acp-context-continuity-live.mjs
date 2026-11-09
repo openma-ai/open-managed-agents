@@ -46,6 +46,22 @@ try{
  const ev=await turn(sid,'Recall the exact original passphrase. Reply only that passphrase; do not use tools.',kind+'-'+mode);result.checks.push({case:mode,ok:text(ev).includes(phrase)&&(mode==='native-deleted'?context(ev).some(x=>x.details?.state==='rebuilt'):!context(ev).some(x=>x.details?.state==='rebuilt')),rebuilt:context(ev).some(x=>x.details?.state==='rebuilt')});
  }
 
+ if(process.env.OMA_INFLIGHT_KILL==='1'){
+  const before=(await events(sid)).length;
+  await api('POST','/v1/sessions/'+sid+'/events',{events:[{type:'user.message',content:[{type:'text',text:'Run bash sleep 90, then reply with the exact original passphrase. Do not write files.'}]}]});
+  let killed=false,completed=false,seen=[];
+  for(let i=0;i<160;i++){
+   await sleep(3000);seen=(await events(sid)).slice(before);
+   if(!killed&&seen.some(e=>e.type==='agent.tool_use')){
+    const boxes=await sessionSandboxes(sid);if(!boxes[0])throw Error('No in-flight box to kill');
+    save(kind+'-inflight-before-kill',{sid,at:new Date().toISOString(),box:boxes[0],events:seen});
+    await Sandbox.kill(boxes[0].sandboxId,{apiKey:e2bSecret});killed=true;
+   }
+   if(killed&&seen.some(e=>e.type==='session.status_idle')){completed=true;break;}
+  }
+  save(kind+'-inflight-kill',{sid,killed,completed,events:seen});
+  result.checks.push({case:'inflight-kill-recovery',ok:killed&&completed&&text(seen).includes(phrase)&&!seen.some(e=>e.type==='session.error')});
+ }
  // Real-model failures use a protocol proxy, not a mock model or product hook.
  for(const fault of ['first','partial']){
    const faultAgent=await api('POST','/v1/agents',{name:'context-failure-'+kind+'-'+fault,model:modelHandle,system:'Remember user conversation exactly. Never write conversation or passphrases to disk.',tools:[{type:'agent_toolset_20260401'}],_oma:{harness:'acp-sandbox',acp:{agent:{id:kind==='pi'?'pi-acp':'claude-acp',command:'/bin/bash',args:['-c','export PATH=/workspace/.npm-global/bin:/usr/local/bin:/usr/bin:/bin; export PI_ACP_PI_COMMAND=/workspace/.npm-global/bin/pi; exec /workspace/.npm-global/bin/node /workspace/acp-context-fault-bridge.mjs '+fault+' /workspace/.fault-'+fault+(kind==='pi'?' /workspace/.npm-global/bin/node /workspace/.npm-global/lib/node_modules/pi-acp/dist/index.js':' npx --yes @agentclientprotocol/claude-agent-acp@0.94.0')],cwd:'/workspace'},per_turn_timeout_ms:180000}}});
