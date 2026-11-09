@@ -8,7 +8,7 @@ import type { MemoryStoreBinding, SandboxHandle, SandboxPlan, SandboxPorts } fro
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { executionKey, fenceFor, runtimeFenceOf } from "./session-sandbox-fence";
 import type { PortsSessionSandboxOptions, SessionSandboxExecution, SessionSandboxExecutor } from "./session-sandbox-options";
-import { droppedSnapshots, initialSandboxState, recordedHandle, transition, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
+import { initialSandboxState, recordedHandle, transition, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
 
 /** Another writer changed the Session sandbox record since this one read it
  * (design §0.0b A.10): this writer's result was dropped and what it started
@@ -154,15 +154,33 @@ export class LiveSessionSandbox<R> {
       this.options.warn(`sandbox_state_conflict expected_version=${current.version} action=${action.type}: another writer changed the Session sandbox record; this result is dropped`);
       return null;
     }
-    const dropped = droppedSnapshots(current, next);
-    if (dropped.length > 0) {
-      const { ports } = await this.compose();
-      for (const ref of dropped) {
-        await ports.sandbox.discard({ scope: this.scope(), ref }).catch((error) => this.options.warn(`sandbox_discard_failed ref=${ref.ref} error=${errorText(error)}`));
-        this.options.info?.(`sandbox_snapshot_discarded ref=${ref.ref} action=${action.type}`);
+    return this.retryDiscards(next);
+  }
+
+  /** Queue entries survive a vendor failure and process restart. A successful
+   * deletion is acknowledged by CAS; a conflict leaves it safe to retry. */
+  async retryDiscards(record?: SessionSandboxState): Promise<SessionSandboxState> {
+    let saved = record ?? await this.load();
+    const pending = saved.pendingDiscards ?? [];
+    if (pending.length === 0) return saved;
+    const { ports } = await this.compose();
+    const deleted = [];
+    for (const ref of pending) {
+      try {
+        await ports.sandbox.discard({ scope: this.scope(), ref });
+        deleted.push(ref);
+        this.options.info?.(`sandbox_snapshot_discarded ref=${ref.ref}`);
+      } catch (error) {
+        this.options.warn(`sandbox_discard_failed ref=${ref.ref} pending_count=${pending.length} error=${errorText(error)}`);
       }
     }
-    return next;
+    if (deleted.length > 0) {
+      const next = transition(saved, { type: "discarded", refs: deleted });
+      if (await this.options.state.save(next, saved.version)) saved = next;
+      else saved = await this.load();
+    }
+    this.options.info?.(`sandbox_snapshot_discards pending_count=${saved.pendingDiscards?.length ?? 0}`);
+    return saved;
   }
 
   /** Records what is attached to `open`, the running sandbox of this record.

@@ -121,7 +121,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       await ports.egress.revoke({ runtime: open.runtime, scope, fence: state.fence(scope), reason: "completed" }).catch(() => undefined);
     }
     const saved = await state.load();
-    if (saved.phase === "released") return;
+    if (saved.phase === "released") { await state.retryDiscards(saved); return; }
     const handle = open?.handle ?? recordedHandle(saved);
     if (handle !== undefined) await ports.sandbox.release({ scope, handle });
     await state.apply(saved, { type: "release" });

@@ -45,6 +45,7 @@ const actions: Record<SandboxActionType, SandboxAction> = {
   snapshotFailed: { type: "snapshotFailed" },
   lose: { type: "lose" },
   release: { type: "release" },
+  discarded: { type: "discarded", refs: [] },
 };
 
 const running = (latestSnapshot: LatestSnapshot, runStartedAt = 500) => ({ phase: "running", handle: other, runStartedAt, latestSnapshot });
@@ -75,6 +76,10 @@ const legal: Array<{ action: SandboxActionType; from: SandboxPhaseName; snapshot
   { action: "release", from: "lost", snapshot: taken("s1"), to: { phase: "released", latestSnapshot: none } },
 ];
 
+for (const from of Object.keys(inPhase) as SandboxPhaseName[]) {
+  legal.push({ action: "discarded", from, to: inPhase[from](none) });
+}
+
 const phases = Object.keys(inPhase) as SandboxPhaseName[];
 const actionTypes = Object.keys(actions) as SandboxActionType[];
 const isLegal = (action: SandboxActionType, from: SandboxPhaseName) => legal.some((entry) => entry.action === action && entry.from === from);
@@ -83,7 +88,8 @@ describe("Session sandbox transitions: every legal one", () => {
   for (const { action, from, snapshot, to } of legal) {
     it(`${from} × ${action}`, () => {
       const next = transition(inPhase[from](snapshot ?? none), actions[action]);
-      expect(next).toEqual({ ...to, ...shared, version: 8 });
+      const dropped = droppedSnapshots(inPhase[from](snapshot ?? none), next);
+      expect(next).toEqual({ ...to, ...shared, version: 8, ...(dropped.length > 0 ? { pendingDiscards: dropped } : {}) });
     });
   }
 });

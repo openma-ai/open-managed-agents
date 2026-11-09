@@ -66,5 +66,6 @@ export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<vo
   const handle = open?.handle ?? recorded;
   if (handle !== undefined) {
     await ports.sandbox.release({ scope, handle }).catch((error) => state.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`));
+    await state.retryDiscards();
   }
 }

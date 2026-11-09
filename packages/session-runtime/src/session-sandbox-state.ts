@@ -49,6 +49,8 @@ export type SandboxPhaseName = SandboxPhase["phase"];
  * its sandbox. `version` is +1 per write (design §0.0b A.10). */
 export type SessionSandboxState = SandboxPhase & {
   latestSnapshot: LatestSnapshot;
+  /** Durable retry queue. Old records without it mean an empty queue. */
+  pendingDiscards?: SnapshotRef[];
   /** What is attached; not lifecycle, so it changes with any write. */
   stores: MemoryStoreBinding[];
   outputs: boolean;
@@ -76,7 +78,9 @@ export type SandboxAction =
   /** The sandbox failed or cannot be found; the latest snapshot stays. */
   | { type: "lose" }
   /** The Session ended. */
-  | { type: "release" };
+  | { type: "release" }
+  /** Acknowledges successful vendor deletions, under the same version CAS. */
+  | { type: "discarded"; refs: SnapshotRef[] };
 
 export type SandboxActionType = SandboxAction["type"];
 
@@ -131,6 +135,7 @@ export const SANDBOX_TRANSITIONS: Rules = {
   },
   lose: { running: lost, paused: lost },
   release: { none: released, running: released, paused: released, lost: released },
+  discarded: { none: (state) => state, running: (state) => state, paused: (state) => state, lost: (state) => state, released: (state) => state },
 };
 
 /** The next record, one version on. Pure; throws SessionSandboxTransitionError. */
@@ -138,7 +143,15 @@ export function transition(state: SessionSandboxState, action: SandboxAction): S
   const rule = SANDBOX_TRANSITIONS[action.type][state.phase] as Rule<SandboxAction> | undefined;
   const next = rule?.(state, action) ?? null;
   if (next === null) throw new SessionSandboxTransitionError(state.phase, action.type);
-  return { ...next, stores: state.stores, outputs: state.outputs, version: state.version + 1 };
+  const result: SessionSandboxState = { ...next, stores: state.stores, outputs: state.outputs, version: state.version + 1 };
+  const pending = [...(state.pendingDiscards ?? [])];
+  for (const ref of droppedSnapshots(state, result)) {
+    if (!pending.some((other) => sameRef(other, ref))) pending.push(ref);
+  }
+  const remaining = action.type === "discarded" ? pending.filter((ref) => !action.refs.some((other) => sameRef(other, ref))) : pending;
+  if (remaining.length > 0) result.pendingDiscards = remaining;
+  else delete result.pendingDiscards;
+  return result;
 }
 
 /** The record of a Session with no stored one. */
