@@ -53,15 +53,24 @@ export async function openSandbox<R>(state: LiveSessionSandbox<R>): Promise<Open
 /** Undo an open: revoke egress, the lose transition when the record names this
  * sandbox, release it. A writer that changed the record meanwhile keeps it:
  * nothing is released. */
-export async function rollbackOpen<R>(state: LiveSessionSandbox<R>, opened: Pick<OpenSandbox<R>, "runtime" | "handle">): Promise<void> {
+export async function rollbackOpen<R>(state: LiveSessionSandbox<R>, opened: Pick<OpenSandbox<R>, "runtime" | "handle">, execution = state.execution()): Promise<void> {
   state.current = null;
+  const current = async () => {
+    if (await state.isCurrent(execution)) return true;
+    state.abandon();
+    return false;
+  };
+  if (!await current()) return;
   const { ports } = await state.compose();
   const scope = state.scope();
   await ports.egress.revoke({ runtime: opened.runtime, scope, fence: state.fence(scope), reason: "failed" }).catch(() => undefined);
+  if (!await current()) return;
   const saved = await state.load().catch(() => undefined);
+  if (!await current()) return;
   if (saved !== undefined && sameHandle(recordedHandle(saved), opened.handle)) {
     if (await state.apply(saved, { type: "lose" }).catch(() => null) === null) return;
   }
+  if (!await current()) return;
   await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
 }
 
@@ -74,11 +83,18 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
   const scope = state.scope();
   const signal = new AbortController().signal;
   // The record every write of this open is a compare-and-set against.
+  const execution = state.execution();
+  const assertCurrent = async () => {
+    if (await state.isCurrent(execution)) return;
+    state.abandon();
+    throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was opened");
+  };
   let record = await state.load();
   // The Session ended: nothing opens, before any provider call.
   if (record.phase === "released") throw new SessionSandboxTransitionError("released", "acquire");
   state.stores = mergeStores(record.stores, state.stores);
   state.outputs ||= record.outputs;
+  const initialStores = state.stores;
   const recorded = recordedHandle(record);
   // Held by this open; released if a later step fails.
   let opened: Acquired<R> | "gone" = "gone";
@@ -99,7 +115,6 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
   // An attached sandbox may have kept running: keep the recorded start; one
   // the idle pause stopped wakes now. A resumed or new one starts a run now.
   let runStartedAt = record.phase === "running" ? record.runStartedAt : state.now();
-  const execution = state.execution();
   // The transition this open still has to publish.
   let publish: (handle: SandboxHandle, at: number) => SandboxAction = (handle, at) => ({ type: "attach", handle, at });
   let plan: SandboxPlan;
@@ -150,28 +165,43 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
           runStartedAt = winner.runStartedAt;
           reused = true;
           record = winner;
+          // Discard the losing generation's materialized bindings. The
+          // winner's persisted mounts and marker define the attach plan.
+          state.stores = mergeStores(initialStores, winner.stores);
+          state.outputs ||= winner.outputs;
+          plan = await state.options.plan({ scope, generation, stores: state.stores });
+          await assertCurrent();
+          state.stores = mergeStores(plan.stores, winner.stores);
         } else record = next;
         publish = (handle, at) => ({ type: "attach", handle, at });
       }
     }
   } catch (error) {
-    if (opened !== "gone") await rollbackOpen(state, opened);
+    if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
+    if (opened !== "gone") await rollbackOpen(state, opened, execution);
     throw error;
   }
   const open: OpenSandbox<R> = { ...opened, executor: state.options.executor(opened.runtime), generation, plan, runStartedAt };
   try {
+    await assertCurrent();
     if (Object.keys(state.env).length > 0) await open.executor.setEnvVars(state.env);
+    await assertCurrent();
     await attachEgress(state, open, plan.egress, state.now(), signal);
+    await assertCurrent();
     await attachStorage(state, open, signal);
+    await assertCurrent();
     state.storageSyncedAt = state.now();
     state.keptAliveAt = state.now();
     // The tool-call-gap snapshot interval counts from the first open.
     if (state.snapshotAt === 0) state.snapshotAt = state.now();
     if (!reused) await writeMarker(open.executor, generation);
+    await assertCurrent();
     if (await state.apply(record, publish(open.handle, runStartedAt)) === null) throw conflict("its sandbox was opened");
+    await assertCurrent();
   } catch (error) {
+    if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
     if (!(error instanceof SessionSandboxStateConflictError)) {
-      await rollbackOpen(state, open);
+      await rollbackOpen(state, open, execution);
       throw error;
     }
     // Lost the record: drop this open; a sandbox it started is cleaned up.

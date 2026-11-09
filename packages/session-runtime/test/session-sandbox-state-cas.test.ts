@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SandboxPorts } from "@open-managed-agents/sandbox";
+import type { SandboxPorts, SandboxPlan } from "@open-managed-agents/sandbox";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
 import { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "../src/session-sandbox-lifetime";
 import { SessionSandboxStateConflictError } from "../src/session-sandbox-live";
@@ -64,7 +64,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
   const clock = { now: 1_000_000 };
   const store = versionedStore(initial);
   let n = 0;
-  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void>; acquire?: Promise<void>; acquiring?: () => void; onAttach?: () => Promise<void> } = {};
+  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void>; acquire?: Promise<void>; acquiring?: () => void; onAttach?: () => Promise<void>; onStorage?: (input: { stores: SandboxPlan["stores"] }) => Promise<void>; generationStores?: boolean; onRevoke?: () => Promise<void> } = {};
   const ports = (gated: "pause" | "attachAfterPause" | "acquire" | null) => {
     let paused = false;
     return {
@@ -95,8 +95,8 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
         async discard({ ref }: { ref: { ref: string } }) { log.push(`discard:${ref.ref}`); },
         async keepAlive() { return "alive"; },
       },
-      storage: { async attach() {}, async sync() {}, async detach() {} },
-      egress: { async attach() {}, async update() {}, async revoke() {} },
+      storage: { async attach(input: { stores: SandboxPlan["stores"] }) { await gates.onStorage?.(input); }, async sync() {}, async detach() {} },
+      egress: { async attach() {}, async update() {}, async revoke() { await gates.onRevoke?.(); } },
     } as unknown as SandboxPorts<{ id: string }>;
   };
   const executor = (id: string) => ({
@@ -117,8 +117,8 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
       executor: (runtime) => executor(runtime.id),
       state: store.state,
       scope: () => scope,
-      plan: async ({ stores }) => ({
-        from: { image: "img" }, egress: null, stores, outputs: { bindingId: "o", mountPath: "/mnt/session/outputs" }, idleMs: 1_000, labels: { workspaceId: "ws", sessionId: "sess" },
+      plan: async ({ stores, generation }) => ({
+        from: { image: "img" }, egress: null, stores: gates.generationStores ? [{bindingId:"memory",storeName:"notes",storeId:generation,mountPath:"/mnt/memory/notes",access:"read_write"}] : stores, outputs: { bindingId: "o", mountPath: "/mnt/session/outputs" }, idleMs: 1_000, labels: { workspaceId: "ws", sessionId: "sess" },
       }),
       resumeRef: async () => null,
       // Only execution-end and idle-pause snapshots here: deterministic writes.
@@ -235,6 +235,49 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     expect(w.log.filter(entry=>entry.startsWith("release:"))).toEqual(["release:r1"]);
     expect(w.log.some(entry=>entry.startsWith("exec:"))).toBe(false);
     expect(w.store.get()).toMatchObject({phase:"running",handle:fake("r2"),version:2});
+  });
+
+  it.each([false, true])("adoption storage fence loss cannot execute or release the winner (throws=%s)", async throws => {
+    const w = world(); w.gates.generationStores = true;
+    const ready=deferred(), release=deferred();
+    w.gates.acquiring=ready.resolve; w.gates.acquire=release.promise;
+    const a=w.core({execution:attempt,gated:"acquire"});
+    const pending=a.sandbox.exec("STALE_WORK");
+    await ready.promise; await w.core().sandbox.warm();
+    const saved=w.store.get();
+    w.gates.onStorage=async()=>{a.setExecution(undefined);if(throws)throw Error("storage failed after fence loss");};
+    release.resolve();
+    await expect(pending).rejects.toBeInstanceOf(Error);
+    await a.sandbox.failExecution();
+    expect(w.log.filter(x=>x.startsWith("release:"))).toEqual(["release:r1"]);
+    expect(w.log.some(x=>x.startsWith("exec:STALE_WORK"))).toBe(false);
+    expect(w.store.get()).toEqual(saved);
+  });
+
+  it.each([false, true])("adoption restores winner memory bindings and generation plan (winnerOnly=%s)", async winnerOnly => {
+    const w=world(); w.gates.generationStores=!winnerOnly;
+    const ready=deferred(),release=deferred();
+    w.gates.acquiring=ready.resolve;w.gates.acquire=release.promise;
+    const a=w.core({execution:attempt,gated:"acquire"});const pending=a.sandbox.exec("work");
+    await ready.promise;w.gates.generationStores=true;await w.core().sandbox.warm();
+    const saved=w.store.get()!;w.gates.generationStores=!winnerOnly;
+    let mounted: SandboxPlan["stores"] | undefined;
+    w.gates.onStorage=async input=>{mounted=input.stores;};
+    release.resolve();await pending;
+    expect(mounted).toEqual(saved.stores);
+    expect(w.store.get()!.stores).toEqual(saved.stores);
+  });
+
+  it("rollback stops if the adopted execution fence changes while egress is revoked", async () => {
+    const w=world();w.gates.generationStores=true;
+    const ready=deferred(),release=deferred();w.gates.acquiring=ready.resolve;w.gates.acquire=release.promise;
+    const a=w.core({execution:attempt,gated:"acquire"});const pending=a.sandbox.exec("must-not-run");
+    await ready.promise;await w.core().sandbox.warm();const saved=w.store.get();
+    w.gates.onStorage=async()=>{throw Error("storage failed");};
+    w.gates.onRevoke=async()=>{a.setExecution(undefined);};
+    release.resolve();await expect(pending).rejects.toThrow();
+    expect(w.log.filter(x=>x.startsWith("release:"))).toEqual(["release:r1"]);
+    expect(w.store.get()).toEqual(saved);
   });
 
   it("warm acquire: the loser releases the sandbox it warmed", async () => {
