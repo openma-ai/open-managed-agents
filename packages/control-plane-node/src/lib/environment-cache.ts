@@ -1,7 +1,6 @@
 // Node composition of the shared environment cache (session-runtime
-// EnvironmentCache, design §0.0 rule 13): the cache key (adapter, image,
-// packages, pip index, pinned ACP install, setup version), the build sandbox's
-// setup steps (the same idempotent steps a Session runs) and redaction of the
+// EnvironmentCache and environmentCacheKey, design §0.0 rule 13): the build
+// sandbox's setup steps (the same idempotent steps a Session runs) and redaction of the
 // pip index from recorded errors. Lookup, expiry and the build lifecycle are
 // the core's. Only a Sandbox SDK v2 adapter that can snapshot an environment
 // gets a cache.
@@ -9,9 +8,10 @@
 // Deployed names kept on purpose: SANDBOX_TEMPLATE_UNUSED_TTL_MS and
 // SANDBOX_TEMPLATE_USED_TTL_MS configure the expiry.
 
-import { createHash } from "node:crypto";
 import {
   EnvironmentCache,
+  environmentCacheKey,
+  type EnvironmentCacheAcpInstall,
   type EnvironmentCacheExpiry,
   type EnvironmentCacheLogger,
   type EnvironmentCacheWarning,
@@ -24,73 +24,18 @@ import {
 import { resolvePinnedAcpRegistryAgent } from "@open-managed-agents/acp-runtime/registry-pins";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import {
-  hasEnvironmentPackages,
-  type EnvironmentPackages,
   type SandboxLifecyclePort,
   type SandboxPort,
 } from "@open-managed-agents/sandbox";
 import { installEnvironmentPackages, type PackagedEnvironment } from "./environment-packages";
 
-/** Bump whenever the setup scripts a snapshot contains change (environment
- * packages script, ACP install script, marker format). */
-export const ENVIRONMENT_CACHE_SETUP_VERSION = "2026-10-24.1";
-
 const OP = "main-node.environment_cache";
-
-/** The pinned registry install a snapshot contains (the non-secret identity). */
-export interface EnvironmentCacheAcpInstall {
-  package: string;
-  version: string;
-  nodeMajor: number;
-}
 
 /** What a Session asks of its Environment setup. */
 export interface EnvironmentCacheSetup {
   environment: PackagedEnvironment;
   /** Pinned ACP registry reference when the Agent is acp-sandbox. */
   acpRegistry?: string;
-}
-
-export interface EnvironmentCacheKeyInput {
-  adapter: string;
-  /** The image the plan starts from. */
-  image: string;
-  /** Catalog alias; it counts too, since the setup markers carry it. */
-  imageAlias?: string;
-  packages?: EnvironmentPackages;
-  pipIndexUrl?: string;
-  acp: EnvironmentCacheAcpInstall | null;
-  setupVersion?: string;
-}
-
-const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
-
-/**
- * Content key of an environment snapshot, or null when there is nothing worth
- * caching (no packages and no pinned ACP install). Package lists keep their
- * given order: it is the order the setup installs them in. Networking is not
- * part of the key (design §0.1 step 1).
- */
-export function environmentCacheKey(input: EnvironmentCacheKeyInput): string | null {
-  const packages = hasEnvironmentPackages(input.packages) ? input.packages! : undefined;
-  if (packages === undefined && input.acp === null) return null;
-  const pipIndexUrl = input.pipIndexUrl?.trim();
-  return sha256(JSON.stringify({
-    v: 2,
-    adapter: input.adapter,
-    image: input.image,
-    alias: input.imageAlias ?? null,
-    packages: {
-      apt: [...(packages?.apt ?? [])],
-      pip: [...(packages?.pip ?? [])],
-      npm: [...(packages?.npm ?? [])],
-      cargo: [...(packages?.cargo ?? [])],
-      go: [...(packages?.go ?? [])],
-    },
-    pipIndexUrl: pipIndexUrl ? sha256(pipIndexUrl) : null,
-    acp: input.acp === null ? null : { package: input.acp.package, version: input.acp.version, nodeMajor: input.acp.nodeMajor },
-    setup: input.setupVersion ?? ENVIRONMENT_CACHE_SETUP_VERSION,
-  }));
 }
 
 /** The pinned install for an ACP registry reference; throws for one that is
@@ -152,7 +97,7 @@ export class NodeEnvironmentCache {
         const wanted = setup();
         return this.#cache.acquire({
           scope, plan, signal, warn,
-          key: wanted === null ? null : this.#key(wanted, plan.from, scope.workspaceId),
+          key: wanted === null ? null : await this.#key(wanted, plan.from, scope.workspaceId),
           setup: wanted as EnvironmentCacheSetup,
           fields: { environmentId: scope.environmentId },
         });
@@ -161,7 +106,7 @@ export class NodeEnvironmentCache {
     };
   }
 
-  #key(setup: EnvironmentCacheSetup, from: { image: string } | object, workspaceId: string): string | null {
+  async #key(setup: EnvironmentCacheSetup, from: { image: string } | object, workspaceId: string): Promise<string | null> {
     if (!("image" in from)) return null;
     const { environment } = setup;
     const packages = environment.config.type === "cloud" ? environment.config.packages : undefined;

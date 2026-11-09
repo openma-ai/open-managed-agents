@@ -134,4 +134,10 @@ export {
   type EnvironmentCacheStore,
   type EnvironmentCacheWarning,
 } from "./session-sandbox-environment-cache";
+export {
+  ENVIRONMENT_CACHE_SETUP_VERSION,
+  environmentCacheKey,
+  type EnvironmentCacheAcpInstall,
+  type EnvironmentCacheKeyInput,
+} from "./session-sandbox-environment-cache-key";
 export { finalizeStaleTurns, type StaleToolUse, type StaleTurnFinalizerPort } from "./finalize-stale-turns";

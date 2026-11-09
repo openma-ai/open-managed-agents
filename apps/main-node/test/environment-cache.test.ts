@@ -4,7 +4,6 @@ import type { SandboxLifecyclePort, SandboxPlan, SandboxPort } from "@open-manag
 import {
   createNodeEnvironmentCache,
   environmentCacheAcpInstall,
-  environmentCacheKey,
   NodeEnvironmentCache,
   redact,
   type EnvironmentCacheSetup,
@@ -36,38 +35,11 @@ function lifecycle(snapshots = true) {
   return { port, froms };
 }
 
-const base = { adapter: "e2b", image: "base", packages: { pip: ["pandas"], apt: ["jq"] }, acp: null };
 const environment: EnvironmentCacheSetup["environment"] = { id: "env_1", config: { type: "cloud", packages: { pip: ["pandas"] } } };
 const scope = (sessionId: string) => ({ workspaceId: "ws_1", environmentId: "env_1", sessionId, workId: sessionId });
 const plan = (image: string) => ({ from: { image }, egress: null, stores: [], outputs: {}, idleMs: 1, labels: { workspaceId: "ws_1", sessionId: "s" } }) as unknown as SandboxPlan;
 
-describe("environmentCacheKey", () => {
-  it("is a stable content hash", () => {
-    expect(environmentCacheKey(base)).toMatch(/^[0-9a-f]{64}$/);
-    expect(environmentCacheKey(base)).toBe(environmentCacheKey({ ...base, packages: { apt: ["jq"], pip: ["pandas"] } }));
-  });
-
-  it("changes with the adapter, image digest, alias, packages, order, pip index, ACP pin and setup version", () => {
-    const keys = [
-      base,
-      { ...base, adapter: "other" },
-      { ...base, image: "base@sha256:2" },
-      { ...base, imageAlias: "analytics" },
-      { ...base, packages: { pip: ["numpy"], apt: ["jq"] } },
-      { ...base, packages: { pip: ["pandas", "numpy"], apt: ["jq"] } },
-      { ...base, packages: { pip: ["numpy", "pandas"], apt: ["jq"] } },
-      { ...base, pipIndexUrl: "https://mirror.example/simple" },
-      { ...base, acp: { package: "p", version: "1", nodeMajor: 22 } },
-      { ...base, setupVersion: "next" },
-    ].map((input) => environmentCacheKey(input));
-    expect(new Set(keys).size).toBe(keys.length);
-  });
-
-  it("is null with nothing to cache, and never contains the pip index", () => {
-    expect(environmentCacheKey({ adapter: "e2b", image: "base", acp: null })).toBeNull();
-    expect(environmentCacheKey({ ...base, pipIndexUrl: "https://user:secret@m.example/" })).not.toContain("secret");
-  });
-
+describe("environmentCacheAcpInstall", () => {
   it("pins ACP installs and refuses an unpinned one", () => {
     expect(environmentCacheAcpInstall(undefined)).toBeNull();
     expect(environmentCacheAcpInstall("claude-acp@0.94.0")).not.toBeNull();
