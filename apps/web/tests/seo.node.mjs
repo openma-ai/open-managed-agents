@@ -39,7 +39,7 @@ test("legacy Anthropic article URLs permanently redirect to the live Claude URLs
     ["/blog/claude-tag-alternative-open-source-slack-ai-teammate/", "/claude-tag-alternative/"],
     ["/blog/self-hosted-claude-tag-open-source/", "/self-hosted-claude-tag/"],
     ["/blog/self-host-claude-tag-style-slack-ai-agent/", "/self-hosted-claude-tag/"],
-    ["/blog/why-agent-as-a-service/", "/blog/"],
+    ["/blog/why-agent-as-a-service/", "/agent-as-a-service/"],
     ["/sitemap.xml", "/sitemap-index.xml"],
   ]);
 
@@ -91,6 +91,8 @@ test("managed-agents guide landings redirect to their trailing-slash canonical",
     "/open-source-ai-agents",
     "/open-source-managed-agents",
     "/ai-agent-platform",
+    "/agent-as-a-service",
+    "/compare",
   ]) {
     const response = await fetchFromWorker(`https://openma.ai${path}`);
     assert.equal(response.status, 301, path);
@@ -244,6 +246,7 @@ test("FAQ and breadcrumb JSON-LD parse and match visible page content", async ()
     "ai-agent-platform", "claude-managed-agents-alternative", "open-source-managed-agents",
     "self-hosted-ai-agents", "what-is-claude-managed-agents", "open-source-ai-agents",
     "claude-tag-alternative", "claude-tag-open-source", "self-hosted-claude-tag",
+    "agent-as-a-service", "compare",
   ];
   const posts = (await readdir(new URL("../src/content/blog/", import.meta.url)))
     .filter((f) => f.endsWith(".md")).map((f) => `blog/${f.replace(/\.md$/, "")}`);

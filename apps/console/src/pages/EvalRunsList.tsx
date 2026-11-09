@@ -1,131 +1,95 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { TrashIcon, XCircleIcon } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import { PopoverContent } from "@/components/ui/popover";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
-import { PopoverContent } from "@/components/ui/popover";
 import { useI18n } from "../i18n";
+import { NewEvalRunDialog } from "./evals/NewEvalRunDialog";
+import {
+  BENCHMARKS_BASE,
+  EVALS_BASE,
+  benchmarkApiPath,
+  StatusBadge,
+  durationStr,
+  formatReward,
+  isActiveStatus,
+  statusLabel,
+  timeAgo,
+  type AgentOption,
+  type EvalBenchmark,
+  type EvalRun,
+  type EvalRunStatus,
+} from "./evals/shared";
 
-interface EvalRunSummary {
-  id: string;
-  agent_id: string;
-  environment_id: string;
-  status: "pending" | "running" | "completed" | "failed";
-  started_at: string;
-  ended_at?: string;
-  error?: string;
-  task_count: number;
-  completed_count: number;
-  failed_count: number;
-  tasks: Array<{
-    id: string;
-    status: string;
-    trial_pass_count?: number;
-    trial_total?: number;
-  }>;
-}
+type StatusValue = "any" | EvalRunStatus;
 
-type StatusValue = "any" | "pending" | "running" | "completed" | "failed";
-
-const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
-  { value: "any", label: "All" },
-  { value: "pending", label: "Pending" },
-  { value: "running", label: "Running" },
-  { value: "completed", label: "Completed" },
-  { value: "failed", label: "Failed" },
-];
-
-function statusCls(s: string): string {
-  switch (s) {
-    case "completed": return "bg-success-subtle text-success";
-    case "failed":    return "bg-danger-subtle text-danger";
-    case "running":   return "bg-info-subtle text-info";
-    default:          return "bg-bg-surface text-fg-muted";
-  }
-}
-
-function timeAgo(iso?: string): string {
-  if (!iso) return "—";
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
-  return `${Math.round(ms / 86_400_000)}d ago`;
-}
-
-function durationStr(start?: string, end?: string): string {
-  if (!start) return "—";
-  const s = new Date(start).getTime();
-  const e = end ? new Date(end).getTime() : Date.now();
-  const sec = Math.round((e - s) / 1000);
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
-}
-
-function passRateStr(r: EvalRunSummary): string {
-  let pass = 0;
-  let total = 0;
-  for (const t of r.tasks) {
-    pass += t.trial_pass_count ?? 0;
-    total += t.trial_total ?? 0;
-  }
-  if (total === 0) return "—";
-  return `${pass}/${total}`;
-}
+const STATUS_VALUES: StatusValue[] = ["any", "pending", "running", "completed", "failed", "cancelled"];
 
 export function EvalRunsList() {
   const nav = useNavigate();
   const { api } = useApi();
   const { t } = useI18n();
+  const m = t.evals;
+  const [showCreate, setShowCreate] = useState(false);
 
-  // Server-driven status filter. "any" → omit the param entirely so the
-  // server returns all runs; anything else is whitelisted by the route's
-  // strict enum validator (400 on typo).
+  // Server-driven status filter. "any" omits the param entirely.
   const [status, setStatus] = useState<StatusValue>("any");
-
+  // ?benchmark=<id> (linked from a benchmark page) preselects the benchmark filter.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const benchmarkFilter = searchParams.get("benchmark") ?? "";
+  const setBenchmarkFilter = (id: string) =>
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (id) next.set("benchmark", id); else next.delete("benchmark");
+      return next;
+    }, { replace: true });
   const params = useMemo(
     () => ({
       limit: "100",
       ...(status !== "any" ? { status } : {}),
+      ...(benchmarkFilter ? { benchmark_id: benchmarkFilter } : {}),
     }),
-    [status],
+    [status, benchmarkFilter],
   );
 
-  // Auto-poll every 5s only while at least one run is still pending or
-  // running. TQ inspects the cached `data` on each tick to decide, so a
-  // run reaching a terminal state pauses the poll on its own — matches
-  // the previous `anyActive` guard without the manual setInterval +
-  // cancelled flag dance.
-  const { data: runsRes, isLoading: loading, refetch } = useApiQuery<{ data: EvalRunSummary[] }>(
-    "/v1/oma/evals/runs",
+  // Poll every 5s only while at least one run is still pending or running.
+  const { data: runsRes, isLoading: loading, refetch } = useApiQuery<{ data: EvalRun[] }>(
+    `${EVALS_BASE}/runs`,
     params,
     {
       refetchInterval: (query) => {
-        const data = query.state.data as { data: EvalRunSummary[] } | undefined;
-        const anyActive = !!data?.data.some(
-          (r) => r.status === "pending" || r.status === "running",
-        );
-        return anyActive ? 5_000 : false;
+        const data = query.state.data as { data: EvalRun[] } | undefined;
+        return data?.data.some((r) => isActiveStatus(r.status)) ? 5_000 : false;
       },
     },
   );
   const runs = runsRes?.data ?? [];
 
-  // TanStack column defs. Order, filtering, and search all flow through
-  // server params — no per-column sort/filter UI. Required columns (id,
-  // status) opt out of the Columns hide menu so the user can't end up
-  // with a table that has nothing identifying.
-  const columns = useMemo<ColumnDef<EvalRunSummary>[]>(
+  // Name lookups for the benchmark / agent columns.
+  const { data: benchmarksRes } = useApiQuery<{ data: EvalBenchmark[] }>(BENCHMARKS_BASE);
+  const agentsParams = useMemo(() => ({ limit: "200" }), []);
+  const { data: agentsRes } = useApiQuery<{ data: AgentOption[] }>("/v1/agents", agentsParams);
+  const benchmarkNames = useMemo(
+    () => new Map((benchmarksRes?.data ?? []).map((d) => [d.id, d.name])),
+    [benchmarksRes],
+  );
+  const agentNames = useMemo(
+    () => new Map((agentsRes?.data ?? []).map((a) => [a.id, a.name])),
+    [agentsRes],
+  );
+
+  const columns = useMemo<ColumnDef<EvalRun>[]>(
     () => [
       {
         id: "id",
         accessorKey: "id",
-        header: "ID",
+        header: t.common.id,
         cell: ({ row }) => (
           <span title={row.original.id} className="font-mono text-xs text-fg-muted">
             {row.original.id}
@@ -134,102 +98,163 @@ export function EvalRunsList() {
         enableHiding: false,
       },
       {
-        id: "status",
-        accessorKey: "status",
-        header: "Status",
-        cell: ({ row }) => (
-          <span
-            className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(row.original.status)}`}
-          >
-            {row.original.status}
-          </span>
-        ),
-        enableHiding: false,
+        id: "kind",
+        accessorKey: "kind",
+        header: m.kind,
+        cell: ({ row }) => <span className="text-xs text-fg-muted">{row.original.kind ?? "messages"}</span>,
       },
       {
-        id: "pass_rate",
-        accessorFn: (r) => passRateStr(r),
-        header: "Pass rate",
-        cell: ({ row }) => (
-          <span className="text-fg font-medium">{passRateStr(row.original)}</span>
-        ),
+        id: "benchmark",
+        accessorFn: (r) => r.benchmark_id ?? "",
+        header: m.benchmark,
+        cell: ({ row }) => {
+          const id = row.original.benchmark_id;
+          if (!id) return <span className="text-fg-subtle">—</span>;
+          const link = (
+            <Link
+              to={`/evals/benchmarks/${id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-brand hover:underline text-sm"
+              title={id}
+            >
+              {benchmarkNames.get(id) ?? id}
+            </Link>
+          );
+          const rev = row.original.benchmark_revision;
+          return rev != null ? (
+            <span className="inline-flex items-center gap-1.5">
+              {link}
+              <span className="text-xs text-fg-muted">{m.revisionN.replace("{n}", String(rev))}</span>
+            </span>
+          ) : link;
+        },
       },
       {
-        id: "tasks",
-        accessorFn: (r) => `${r.completed_count}/${r.task_count}`,
-        header: "Tasks",
+        id: "mode",
+        accessorFn: (r) => r.mode ?? "",
+        header: m.mode,
         cell: ({ row }) => (
-          <span className="text-fg-muted">
-            {row.original.completed_count}/{row.original.task_count}
-            {row.original.failed_count > 0 && (
-              <span className="text-danger ml-1">({row.original.failed_count} fail)</span>
-            )}
-          </span>
-        ),
-      },
-      {
-        id: "duration",
-        accessorFn: (r) => durationStr(r.started_at, r.ended_at),
-        header: "Duration",
-        cell: ({ row }) => (
-          <span className="text-fg-muted">
-            {durationStr(row.original.started_at, row.original.ended_at)}
-          </span>
-        ),
-      },
-      {
-        id: "started",
-        accessorFn: (r) => r.started_at,
-        header: "Started",
-        cell: ({ row }) => (
-          <span title={row.original.started_at} className="text-fg-muted">
-            {timeAgo(row.original.started_at)}
+          <span className="text-xs text-fg-muted">
+            {row.original.kind === "harbor"
+              ? row.original.mode === "oracle" ? m.modeOracle : m.modeAgent
+              : "—"}
           </span>
         ),
       },
       {
         id: "agent",
-        accessorKey: "agent_id",
-        header: "Agent",
+        accessorFn: (r) => r.agent_id ?? "",
+        header: m.agent,
+        cell: ({ row }) => {
+          const id = row.original.agent_id;
+          if (!id) return <span className="text-fg-subtle">—</span>;
+          return (
+            <span className="text-xs text-fg-muted" title={id}>
+              {agentNames.get(id) ?? <span className="font-mono">{id}</span>}
+            </span>
+          );
+        },
+      },
+      {
+        id: "status",
+        accessorKey: "status",
+        header: t.common.status,
+        cell: ({ row }) => <StatusBadge status={row.original.status} t={t} />,
+        enableHiding: false,
+      },
+      {
+        id: "progress",
+        accessorFn: (r) => `${r.completed_count + r.failed_count}/${r.task_count}`,
+        header: m.progress,
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
+            <span className="text-fg-muted tabular-nums">
+              {r.completed_count + r.failed_count}/{r.task_count}
+              {r.failed_count > 0 && (
+                <span className="text-danger ml-1">({r.failed_count} {m.failedSuffix})</span>
+              )}
+            </span>
+          );
+        },
+      },
+      {
+        id: "score",
+        accessorFn: (r) => r.score ?? null,
+        header: m.score,
         cell: ({ row }) => (
-          <span className="font-mono text-xs text-fg-muted">{row.original.agent_id}</span>
+          <span className="text-fg font-medium tabular-nums">{formatReward(row.original.score)}</span>
+        ),
+      },
+      {
+        id: "started",
+        accessorFn: (r) => r.started_at ?? r.created_at,
+        header: m.started,
+        cell: ({ row }) => {
+          const iso = row.original.started_at ?? row.original.created_at;
+          return <span title={iso} className="text-fg-muted">{timeAgo(iso)}</span>;
+        },
+      },
+      {
+        id: "duration",
+        accessorFn: (r) => durationStr(r.started_at, r.ended_at),
+        header: m.duration,
+        cell: ({ row }) => (
+          <span className="text-fg-muted">{durationStr(row.original.started_at, row.original.ended_at)}</span>
         ),
       },
     ],
-    [api, refetch],
+    [t, m, benchmarkNames, agentNames],
   );
 
-  // Active-filter chip display — kept null when matching the default so
-  // the chip reads "Status ▾" rather than "Status: All ▾". The clear-X
-  // only renders when the chip is in non-default state.
-  const statusDisplay =
-    status === "any" ? undefined : STATUS_OPTIONS.find((o) => o.value === status)?.label;
+  const statusOptions = STATUS_VALUES.map((value) => ({
+    value,
+    label: value === "any" ? t.common.all : statusLabel(t, value),
+  }));
 
+  const benchmarkOptions = [
+    { value: "", label: m.allBenchmarks },
+    ...(benchmarksRes?.data ?? []).map((b) => ({ value: b.id, label: b.name })),
+  ];
   const filters = (
+    <>
     <FilterChip
-      label="Status"
-      active={status !== "any"}
-      display={statusDisplay}
-      onClear={() => setStatus("any")}
+      label={m.benchmark}
+      active={benchmarkFilter !== ""}
+      display={benchmarkFilter ? benchmarkNames.get(benchmarkFilter) ?? benchmarkFilter : undefined}
+      onClear={() => setBenchmarkFilter("")}
     >
-      <PopoverContent
-        align="start"
-        sideOffset={4}
-        collisionPadding={8}
-        className="w-48 p-0"
-      >
+      <PopoverContent align="start" sideOffset={4} collisionPadding={8} className="w-56 p-0">
         <FacetedFilter
-          options={STATUS_OPTIONS}
-          value={status}
-          onValueChange={(v) => setStatus(v as StatusValue)}
-          searchPlaceholder="Status..."
+          options={benchmarkOptions}
+          value={benchmarkFilter}
+          onValueChange={(v) => setBenchmarkFilter(v)}
+          searchPlaceholder={m.benchmark}
         />
       </PopoverContent>
     </FilterChip>
+    <FilterChip
+      label={t.common.status}
+      active={status !== "any"}
+      display={status === "any" ? undefined : statusLabel(t, status)}
+      onClear={() => setStatus("any")}
+    >
+      <PopoverContent align="start" sideOffset={4} collisionPadding={8} className="w-48 p-0">
+        <FacetedFilter
+          options={statusOptions}
+          value={status}
+          onValueChange={(v) => setStatus(v as StatusValue)}
+          searchPlaceholder={t.common.status}
+        />
+      </PopoverContent>
+    </FilterChip>
+    </>
   );
 
   return (
-    <DataTable<EvalRunSummary>
+    <DataTable<EvalRun>
+      createLabel={m.newEvalRun}
+      onCreate={() => setShowCreate(true)}
       filters={filters}
       data={runs}
       loading={loading}
@@ -237,45 +262,39 @@ export function EvalRunsList() {
       onRowClick={(r) => nav(`/evals/${r.id}`)}
       rowActions={(run) => [
         {
-          label: "Cancel",
+          label: m.cancelRun,
           icon: <XCircleIcon className="size-4" />,
-          disabled: run.status !== "pending" && run.status !== "running",
+          disabled: !isActiveStatus(run.status),
           onSelect: async () => {
-            if (!confirm(`Cancel eval run ${run.id}? In-flight tasks will be marked failed.`)) return;
+            if (!confirm(m.confirmCancelRun)) return;
             try {
-              await api(`/v1/oma/evals/runs/${run.id}`, { method: "DELETE" });
+              await api(`${EVALS_BASE}/runs/${run.id}/cancel`, { method: "POST" });
               void refetch();
-            } catch {}
+            } catch { /* toasted by useApi */ }
           },
         },
         {
-          label: "Delete",
+          label: t.common.delete,
           icon: <TrashIcon className="size-4" />,
           destructive: true,
           onSelect: async () => {
-            if (!confirm(`Delete eval run ${run.id}? This can't be undone.`)) return;
+            if (!confirm(m.confirmDeleteRun)) return;
             try {
-              await api(`/v1/oma/evals/runs/${run.id}`, { method: "DELETE" });
+              await api(`${EVALS_BASE}/runs/${run.id}`, { method: "DELETE" });
               void refetch();
-            } catch {}
+            } catch { /* toasted by useApi */ }
           },
         },
       ]}
       columns={columns}
-      emptyTitle={status === "any" ? "No eval runs yet" : "No matching eval runs"}
+      emptyTitle={status === "any" && !benchmarkFilter ? m.noEvalRunsYet : m.noMatchingEvalRuns}
       emptyKind="eval"
-      emptySubtitle={
-        status === "any" ? (
-          <p>
-            Submit one with{" "}
-            <code className="px-1 py-0.5 bg-bg-surface rounded text-fg-muted">POST /v1/oma/evals/runs</code>{" "}
-            or{" "}
-            <code className="px-1 py-0.5 bg-bg-surface rounded text-fg-muted">npx tsx rl/tasks/terminal-bench/run-cloud.ts</code>.
-          </p>
-        ) : (
-          "Try clearing the status filter."
-        )
+      emptySubtitle={status === "any" && !benchmarkFilter ? m.noEvalRunsHint : m.tryClearingFilter}
+      emptyAction={
+        status === "any" && !benchmarkFilter && <Button onClick={() => setShowCreate(true)}>{m.newEvalRun}</Button>
       }
-    />
+    >
+      <NewEvalRunDialog open={showCreate} onClose={() => setShowCreate(false)} />
+    </DataTable>
   );
 }

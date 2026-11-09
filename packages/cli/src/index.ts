@@ -23,6 +23,7 @@ import { DEFAULT_API_BASE_URL, DEFAULT_BRIDGE_SERVER_URL } from "./bridge/lib/de
 import { currentProfile } from "./bridge/lib/platform.js";
 import { withNetworkCause } from "./network-error.js";
 import { parseAgentWrite } from "./agent-write.js";
+import { EVALS_COMMANDS, runEvalsCommand } from "./evals.js";
 
 // ─── Config ───
 
@@ -2175,7 +2176,42 @@ const commands: Cmd[] = [
       console.log(`Redacted version: ${v.id}`);
     },
   },
+  // Evals (implementation in ./evals.ts)
+  ...EVALS_COMMANDS.map((spec): Cmd => ({
+    group: "Evals",
+    ...spec,
+    run: (config, args) => evalsCommand(config, [...spec.match, ...args]),
+  })),
 ];
+
+async function evalsCommand(config: Config, args: string[]): Promise<void> {
+  const code = await runEvalsCommand({
+    request: <T,>(path: string, init?: RequestInit) => apiFetch<T>(config, path, init),
+    async upload(filename, bytes, contentType) {
+      const form = new FormData();
+      form.append("file", new Blob([new Uint8Array(bytes)], { type: contentType }), filename);
+      const res = await fetchWithRetry(`${config.baseUrl}/v1/files`, {
+        method: "POST",
+        body: form,
+        headers: {
+          "x-api-key": config.apiKey,
+          // The Files API has its own beta flag, required alongside ours.
+          "anthropic-beta": `${MANAGED_AGENTS_BETA},files-api-2025-04-14`,
+          "user-agent": "Mozilla/5.0 (compatible; OpenManagedAgents-CLI/0.1; +https://openma.ai)",
+        },
+      });
+      if (!res.ok) throw new Error(`File upload failed: ${res.status} ${res.statusText}: ${await res.text()}`);
+      const file = await res.json() as { id?: string };
+      if (!file.id) throw new Error("File upload failed: response has no file id");
+      return { id: file.id };
+    },
+    print: (text) => console.log(text),
+    error: (text) => console.error(text),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    json: config.json,
+  }, args);
+  if (code !== 0) process.exit(code);
+}
 
 // ─── API Endpoints not covered by CLI commands ───
 
@@ -2215,9 +2251,6 @@ const extraEndpoints: { group: string; http: string }[] = [
   { group: "Files", http: "GET    /v1/files/:id                           Get file metadata" },
   { group: "Files", http: "GET    /v1/files/:id/content                   Download file content" },
   { group: "Files", http: "DELETE /v1/files/:id                           Delete file" },
-  { group: "Evals", http: "POST   /v1/oma/evals/runs                          Create eval run {agent_id, environment_id, tasks:[...]}" },
-  { group: "Evals", http: "GET    /v1/oma/evals/runs                          List eval runs" },
-  { group: "Evals", http: "GET    /v1/oma/evals/runs/:id                      Get eval run results" },
   { group: "ClawHub", http: "GET    /v1/oma/clawhub/search?q=X                  Search ClawHub registry" },
 ];
 

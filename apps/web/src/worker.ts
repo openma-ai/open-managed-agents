@@ -72,7 +72,7 @@ const LEGACY_MARKETING_REDIRECTS: Record<string, string> = {
   "/blog/anthropic-managed-agents-vs-open-managed-agents/":
     "/blog/claude-managed-agents-vs-open-managed-agents/",
   // GSC dead URL — original post never shipped under this slug.
-  "/blog/why-agent-as-a-service/": "/blog/",
+  "/blog/why-agent-as-a-service/": "/agent-as-a-service/",
   // Astro emits sitemap-index.xml; crawlers still probe /sitemap.xml.
   "/sitemap.xml": "/sitemap-index.xml",
 };
@@ -91,6 +91,8 @@ const MARKETING_PATHS = new Set([
   "/open-source-ai-agents",
   "/open-source-managed-agents",
   "/ai-agent-platform",
+  "/agent-as-a-service",
+  "/compare",
   "/claude-tag-alternative",
   "/claude-tag-open-source",
   "/self-hosted-claude-tag",

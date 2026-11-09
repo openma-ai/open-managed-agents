@@ -40,7 +40,7 @@ import { listAuthProviders } from "@open-managed-agents/shared";
 
 import { buildAgentRoutes as buildLegacyAgentRoutes, buildVaultRoutes as buildLegacyVaultRoutes, buildModelCardRoutes, buildEnvironmentRoutes as buildLegacyEnvironmentRoutes, buildSessionRoutes, buildMemoryRoutes as buildLegacyMemoryRoutes, buildDreamRoutes, buildTenantRoutes, buildMeRoutes, buildApiKeyRoutes, buildEvalRoutes, buildIntegrationsRoutes, buildIntegrationsGatewayRoutes, buildSandboxImageRoutes, type InstallProxyForwarder, mintApiKeyOnStorage, sha256Hex } from "@open-managed-agents/http-routes";
 import { buildAgentRoutes as buildManagedAgentRoutes, buildManagedSessionsApi } from "@open-managed-agents/managed-agents-api";
-import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
+import { EMPTY_SANDBOX_IMAGE_CATALOG, isNoEnvironmentSandbox } from "@open-managed-agents/sandbox";
 import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService } from "@open-managed-agents/managed-agents-application";
 
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
@@ -72,6 +72,8 @@ import {
 } from "../lib/console-branding.js";
 
 import { buildNodeSkillsRoutes } from "../lib/node-skills-routes.js";
+import { nodeEvalDeps } from "../lib/node-eval-runtime.js";
+import { execManagedSandbox, ManagedSandboxExecError } from "../lib/managed-sandbox-exec.js";
 import { buildSkillSourcesRoutes, createSourceFetcher } from "../lib/skill-sources.js";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 
@@ -485,6 +487,40 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     return c.json({ cancelled: true, id: eventId, cancelled_at: cancelledAt }, 200);
   });
 
+  // Managed Session sandbox exec: runs a command in the sandbox the Session
+  // is bound to, from the control plane, while the Session is not running.
+  // Used by evaluation to grade in the same sandbox after the agent's turn.
+  // Legacy `/:id/exec` below stays on the retiring NodeSessionRouter.
+  v1.post("/oma/sessions/:sessionId/sandbox/exec", async (c) => {
+    const workspaceId = c.var.tenant_id;
+    const sessionId = c.req.param("sessionId");
+    const body = await c.req.json<{ command?: unknown; timeout_ms?: unknown }>().catch(() => null);
+    if (body === null || typeof body.command !== "string" || body.command.length === 0) {
+      return c.json({ error: "command is required" }, 400);
+    }
+    const timeoutMs = body.timeout_ms === undefined ? 60_000 : body.timeout_ms;
+    if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 3_600_000) {
+      return c.json({ error: "timeout_ms must be an integer between 1 and 3600000" }, 400);
+    }
+    const found = await managedSessionsComposition.portsFor(workspaceId).sessions.retrieveSession({ sessionId });
+    if (found.type !== "found" || found.session.archivedAt !== null) return c.json({ error: "Session not found" }, 404);
+    if (found.session.status === "running" || found.session.status === "rescheduling") {
+      return c.json({ error: `Session is ${found.session.status}; exec requires a session that is not running` }, 409);
+    }
+    const sandbox = managedRuntimeRunner.connectedSandbox({ workspaceId, sessionId });
+    if (sandbox === null || isNoEnvironmentSandbox(sandbox)) {
+      return c.json({ error: "Session has no connected sandbox" }, 409);
+    }
+    try {
+      return c.json(await execManagedSandbox(sandbox, body.command, timeoutMs));
+    } catch (error) {
+      return c.json({
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof ManagedSandboxExecError && error.output !== undefined ? { output: error.output } : {}),
+      }, 502);
+    }
+  });
+
   v1.route("/oma/sessions", buildSessionRoutes({
     services,
     router: sessionRouter,
@@ -575,11 +611,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     return user ? { name: user.name, email: user.email ?? undefined } : null;
   } }));
   v1.route("/oma/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
-  v1.route("/oma/evals", buildEvalRoutes({
-    evals: evalsService,
-    agents: agentStore,
-    environments: environmentsService,
-  }));
+  v1.route("/oma/evals", buildEvalRoutes({ evals: evalsService, ...nodeEvalDeps(runtime) }));
 
   async function countManagedPages(
     load: (cursor?: string) => Promise<{

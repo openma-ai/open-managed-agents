@@ -16,8 +16,12 @@ export interface SkillMountDescriptor {
   source?: "builtin" | "custom";
 }
 
+/** Platform-owned skill files live outside the task's working directory
+ * (ADR 0016), so the workspace is exactly what the image ships. */
+export const SKILLS_ROOT = "/oma/skills";
+
 export function skillMountRoot(skillId: string, requestedVersion: string): string {
-  return `/workspace/.openma/skills/${encodeURIComponent(skillId)}/${encodeURIComponent(requestedVersion)}/`;
+  return `${SKILLS_ROOT}/${encodeURIComponent(skillId)}/${encodeURIComponent(requestedVersion)}/`;
 }
 
 export function progressiveSkillReminder(descriptor: SkillMountDescriptor): string {
@@ -81,7 +85,7 @@ function safeLegacySkillName(value: string, fallback: string): string {
 /**
  * Return both the Managed Runtime canonical path and the historical
  * Cloudflare path. The latter is a compatibility mirror; new harnesses must
- * use the canonical /workspace path shared by Node and ACP runtimes.
+ * use the canonical {@link SKILLS_ROOT} path shared by Node and ACP runtimes.
  */
 export function skillFileMountPaths(
   skill: Pick<SkillFilesResult, "skillId" | "skillName" | "requestedVersion">,
@@ -93,7 +97,7 @@ export function skillFileMountPaths(
     ? path.slice(legacyName.length + 1)
     : path;
   return [
-    `/workspace/.openma/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(skill.requestedVersion)}/${path}`,
+    `${skillMountRoot(skill.skillId, skill.requestedVersion)}${path}`,
     `/home/user/.skills/${legacyName}/${legacyPath}`,
   ];
 }

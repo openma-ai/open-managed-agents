@@ -17,17 +17,19 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function sandbox(): Promise<SandboxExecutor> {
+async function sandbox(workspaceRoot?: "/app"): Promise<SandboxExecutor> {
   const root = await mkdtemp(join(tmpdir(), "oma-checkpoint-sandbox-"));
   roots.push(root);
   await mkdir(join(root, "workspace"));
   await mkdir(join(root, "tmp"));
   await mkdir(join(root, "var-tmp"));
+  await mkdir(join(root, "app"));
+  await mkdir(join(root, "oma"));
   // One pass: on Linux tmpdir() is /tmp, so chained replaces would rewrite
   // the already-rewritten root a second time.
-  const dirs: Record<string, string> = { "/workspace": "workspace", "/var/tmp": "var-tmp", "/tmp": "tmp" };
+  const dirs: Record<string, string> = { "/workspace": "workspace", "/var/tmp": "var-tmp", "/tmp": "tmp", "/app": "app", "/oma": "oma" };
   const rewrite = (text: string, anchored: boolean) => text.replace(
-    anchored ? /^(\/workspace|\/var\/tmp|\/tmp)\b/ : /(\/workspace|\/var\/tmp|\/tmp)\b/g,
+    anchored ? /^(\/workspace|\/var\/tmp|\/tmp|\/app|\/oma)\b/ : /(\/workspace|\/var\/tmp|\/tmp|\/app|\/oma)\b/g,
     (dir) => join(root, dirs[dir]!));
   const path = (name: string) => rewrite(name, true);
   return {
@@ -41,6 +43,7 @@ async function sandbox(): Promise<SandboxExecutor> {
     writeFile: async (name, content) => { await writeFile(path(name), content); return name; },
     writeFileBytes: async (name, content) => { await writeFile(path(name), content); return name; },
     destroy: async () => rm(root, { force: true, recursive: true }),
+    ...(workspaceRoot === undefined ? {} : { resolveWorkspaceRoot: async () => workspaceRoot }),
   } as SandboxExecutor;
 }
 
@@ -112,6 +115,53 @@ async function createCandidate(
     idempotencyKey: "candidate_1", signal: new AbortController().signal,
   });
 }
+
+async function restoreInto(
+  checkpoints: NodeManagedWorkspaceCheckpoints,
+  executor: SandboxExecutor,
+  fence: SessionExecutionFence,
+  candidate: Awaited<ReturnType<typeof createCandidate>>,
+) {
+  const port = checkpoints.port(executor);
+  const runtimeFence = checkpoints.runtimeFence(fence, scope.environmentId);
+  const binding = await port.materialize({
+    scope, fence: runtimeFence, strategy: "checkpoint_restore", activeCheckpoint: candidate,
+    idempotencyKey: "restore", signal: new AbortController().signal,
+  });
+  await port.attach({
+    scope, fence: runtimeFence, strategy: "checkpoint_restore", binding,
+    sandbox: { provider: "node", runtimeId: "sandbox_2" }, signal: new AbortController().signal,
+  });
+}
+
+describe("workspace root follows the image WORKDIR (ADR 0016)", () => {
+  it("checkpoints the image WORKDIR and platform harness state, not /workspace", async () => {
+    const { checkpoints, fence } = await fixture();
+    const source = await sandbox("/app");
+    await source.writeFile("/app/report.txt", "in workdir");
+    await source.writeFile("/workspace/stray.txt", "outside the root");
+    expect(await source.exec("mkdir -p /oma/harness-state/acp/s && echo native > /oma/harness-state/acp/s/state")).toBe("");
+    const candidate = await createCandidate(checkpoints, source, fence);
+    expect(candidate.metadata?.["openma.workspace.root.v1"]).toBe("/app");
+    const fresh = await sandbox("/app");
+    await restoreInto(checkpoints, fresh, fence, candidate);
+    expect(await fresh.readFile("/app/report.txt")).toBe("in workdir");
+    expect(await fresh.readFile("/oma/harness-state/acp/s/state")).toBe("native\n");
+    await expect(fresh.readFile("/workspace/stray.txt")).rejects.toThrow(/ENOENT/);
+  });
+
+  it("refuses to restore a checkpoint into a sandbox with a different workspace root", async () => {
+    const { checkpoints, fence } = await fixture();
+    const legacy = await sandbox();
+    await legacy.writeFile("/workspace/report.txt", "legacy");
+    const candidate = await createCandidate(checkpoints, legacy, fence);
+    const { ["openma.workspace.root.v1"]: _root, ...withoutRoot } = candidate.metadata ?? {};
+    const fresh = await sandbox("/app");
+    await expect(restoreInto(checkpoints, fresh, fence, { ...candidate, metadata: withoutRoot }))
+      .rejects.toThrow("Workspace checkpoint was taken at /workspace but this sandbox's workspace root is /app");
+    await expect(fresh.readFile("/app/report.txt")).rejects.toThrow(/ENOENT/);
+  });
+});
 
 describe("official Node Managed Session workspace checkpoints", () => {
   it("publishes a portable immutable checkpoint and restores it in a fresh sandbox / process", async () => {

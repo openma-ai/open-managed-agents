@@ -9,3 +9,4 @@
 export * from "./types";
 export * from "./harness";
 export * from "./runtime-pairing";
+export * from "./evals";

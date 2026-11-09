@@ -8,11 +8,19 @@
   },
   "dependencies": {
     "@open-managed-agents/shared": "workspace:*",
-    "@open-managed-agents/agent-store": "workspace:*",
+    "@open-managed-agents/api-types": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*",
     "@open-managed-agents/managed-agents-adapters-runtime": "workspace:*",
-    "@open-managed-agents/sessions-store": "workspace:*",
     "@open-managed-agents/evals-store": "workspace:*",
-    "@open-managed-agents/environments-store": "workspace:*",
-    "@open-managed-agents/kv-store": "workspace:*"
+    "@open-managed-agents/kv-store": "workspace:*",
+    "@open-managed-agents/harbor-tasks": "workspace:*"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.5",
+    "@types/node": "^26.6.6"
   }
 }

@@ -1,7 +1,10 @@
 import { posix } from "node:path";
 import { unzipSync } from "fflate";
 import {
+  DEFAULT_WORKSPACE_ROOT,
+  PLATFORM_ROOT,
   supportsSessionOutputMount,
+  workspaceRootOf,
   type SandboxExecutor,
 } from "@open-managed-agents/sandbox";
 import type {
@@ -161,7 +164,7 @@ export async function resolveNodeManagedSkillMounts(
       requestedVersion,
     );
     if (!resolved) continue;
-    const mountRoot = `/workspace/.openma/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/${resolved.directory}/`;
+    const mountRoot = `${PLATFORM_ROOT}/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/${resolved.directory}/`;
 
     let body: string | undefined;
     if (fetchBodies) {
@@ -202,7 +205,13 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-function shellWorkspacePath(value: string): string {
+/** A resource path as seen by `exec`, which runs in the workspace root.
+ * Only a /workspace root may be a provider-mapped directory (local
+ * subprocess), so only there is /workspace rewritten to a relative path;
+ * under an image WORKDIR (ADR 0016) the absolute path is what every other
+ * sandbox call (readFile, gitCheckout) uses too. */
+function shellWorkspacePath(value: string, workspaceRoot: string): string {
+  if (workspaceRoot !== DEFAULT_WORKSPACE_ROOT) return value;
   if (value === "/workspace") return ".";
   return value.startsWith("/workspace/")
     ? value.slice("/workspace/".length)
@@ -353,7 +362,7 @@ export class NodeManagedSessionInputPreparer {
         if (posix.basename(path) === "SKILL.md") foundManifest = true;
         await writeFileBytes!.call(
           input.sandbox,
-          `/workspace/.openma/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/${path}`,
+          `${PLATFORM_ROOT}/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/${path}`,
           content,
         );
       }
@@ -462,7 +471,7 @@ export class NodeManagedSessionInputPreparer {
     }
     if (!retained) return this.cloneRepository(sandbox, resource);
 
-    const repositoryDir = shellQuote(shellWorkspacePath(resource.mountPath));
+    const repositoryDir = shellQuote(shellWorkspacePath(resource.mountPath, await workspaceRootOf(sandbox)));
     const remoteCommand = `git -C ${repositoryDir} remote get-url origin`;
     const remote = commandStdout(
       remoteCommand,
@@ -504,12 +513,12 @@ export class NodeManagedSessionInputPreparer {
       const branch = resource.checkout?.type === "branch"
         ? `--branch ${shellQuote(resource.checkout.name)} `
         : "";
-      const command = `git clone ${branch}-- ${shellQuote(resource.url)} ${shellQuote(shellWorkspacePath(resource.mountPath))}`;
+      const command = `git clone ${branch}-- ${shellQuote(resource.url)} ${shellQuote(shellWorkspacePath(resource.mountPath, await workspaceRootOf(sandbox)))}`;
       const output = await sandbox.exec(command, 120_000);
       assertCommandSucceeded(command, output);
     }
     if (resource.checkout?.type === "commit") {
-      const command = `git -C ${shellQuote(shellWorkspacePath(resource.mountPath))} checkout --detach ${shellQuote(resource.checkout.sha)}`;
+      const command = `git -C ${shellQuote(shellWorkspacePath(resource.mountPath, await workspaceRootOf(sandbox)))} checkout --detach ${shellQuote(resource.checkout.sha)}`;
       const output = await sandbox.exec(command, 60_000);
       assertCommandSucceeded(command, output);
     }

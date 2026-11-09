@@ -11,6 +11,35 @@ import mdx from '@astrojs/mdx';
 const FONT_HREF =
   'https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap';
 
+// Default social card: public/og-default.png is a copy of
+// apps/web/public/og-default.png (1200×630). Starlight already emits
+// og:title/description/url and twitter:card; we add the image.
+const OG_IMAGE = 'https://docs.openma.ai/og-default.png';
+
+// Organization + WebSite JSON-LD. Organization fields match
+// apps/web/src/lib/seo.ts organizationSchema() so both hosts describe
+// the same entity; WebSite is the docs host itself.
+const STRUCTURED_DATA = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'Organization',
+      '@id': 'https://openma.ai/#organization',
+      name: 'Open Managed Agents',
+      url: 'https://openma.ai',
+      logo: 'https://openma.ai/logo.png',
+      sameAs: ['https://github.com/openma-ai/open-managed-agents'],
+    },
+    {
+      '@type': 'WebSite',
+      '@id': 'https://docs.openma.ai/#website',
+      name: 'Open Managed Agents Docs',
+      url: 'https://docs.openma.ai',
+      publisher: { '@id': 'https://openma.ai/#organization' },
+    },
+  ],
+};
+
 export default defineConfig({
   site: 'https://docs.openma.ai',
   integrations: [
@@ -55,6 +84,16 @@ export default defineConfig({
         {
           tag: 'noscript',
           content: `<link rel="stylesheet" href="${FONT_HREF}">`,
+        },
+        { tag: 'meta', attrs: { property: 'og:image', content: OG_IMAGE } },
+        { tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
+        { tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
+        { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: OG_IMAGE } },
+        {
+          tag: 'script',
+          attrs: { type: 'application/ld+json' },
+          content: JSON.stringify(STRUCTURED_DATA),
         },
       ],
       social: [
@@ -108,6 +147,7 @@ export default defineConfig({
             { label: 'Skills & Tools', slug: 'build/skills-and-tools' },
             { label: 'Vault & MCP', slug: 'build/vault-and-mcp' },
             { label: 'Custom Integrations', slug: 'build/integrations' },
+            { label: 'Evals', slug: 'build/evals' },
           ],
         },
         {
