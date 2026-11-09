@@ -88,8 +88,25 @@ const environmentWorkSchema = `
   INSERT INTO managed_environment_work VALUES ('w', 'e', 'x', 's', '{}', 'sealed', 1, 'worker', 2, 90, 5, 'active', 1);
 `;
 
-test("the Node SQLite Work-claim migration matches the D1 one", () => {
-  assert.equal(nodeSqliteWorkClaimPublicationMigration, workClaimPublicationMigration);
+test("D1 adds Work publication columns without dropping a cross-shard source", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(environmentWorkSchema); database.exec(runtimeResourceTablesMigration);
+  database.exec(workClaimPublicationMigration);
+  assert.equal(database.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'runtime_resource_fences'").get().n, 1);
+  database.close();
+});
+const retireFenceMigration = await readFile(new URL("../apps/main/migrations/0030_retire_resource_fences.sql", import.meta.url), "utf8");
+test("D1 refuses to drop a publication whose tenant-shard backfill is incomplete", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(environmentWorkSchema); database.exec(runtimeResourceTablesMigration);
+  database.exec("INSERT INTO runtime_resource_fences VALUES ('unmoved', 'sharded', 'e', 's', 'x', 1, 'o', 't', 9, '{}', 1, 1)");
+  database.exec(workClaimPublicationMigration);
+  assert.throws(() => database.exec(retireFenceMigration), /CHECK constraint/);
+  assert.equal(database.prepare("SELECT count(*) AS n FROM runtime_resource_fences WHERE publication_json IS NOT NULL").get().n, 1);
+  database.exec("UPDATE runtime_resource_fences SET publication_json = NULL");
+  database.exec(retireFenceMigration);
+  assert.equal(database.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'runtime_resource_fences'").get().n, 0);
+  database.close();
 });
 
 for (const [name, bootstrap, orphans] of [
@@ -104,6 +121,7 @@ for (const [name, bootstrap, orphans] of [
       if (bootstrap) database.exec(bootstrap);
       database.exec(runtimeResourceTablesMigration);
       database.exec(workClaimPublicationMigration);
+      database.exec(retireFenceMigration);
       assert.equal(
         database.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'runtime_resource_fences%'").get().n,
         0,
@@ -119,7 +137,7 @@ for (const [name, bootstrap, orphans] of [
   });
 }
 
-for (const [name, migration] of [["D1", workClaimPublicationMigration], ["Node SQLite", nodeSqliteWorkClaimPublicationMigration]]) {
+for (const [name, migration] of [["Node SQLite", nodeSqliteWorkClaimPublicationMigration]]) {
   test(`${name} preserves the legacy publication before dropping its fence`, () => {
     const database = new DatabaseSync(":memory:");
     const candidates = {

@@ -1,3 +1,4 @@
+export { backfillWorkPublications } from "./work-publication-backfill";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   ClaimAvailableEnvironmentWork,
