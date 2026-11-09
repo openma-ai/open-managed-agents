@@ -120,7 +120,7 @@ export async function nodeDefaults(
 async function loadSandboxFactory(config: NodeConfig): Promise<SandboxFactory> {
   const load = async (): Promise<SandboxFactory> => {
     const selection = resolveSandboxProviderForEnvironment(config.sandbox.environment);
-    await assertSandboxProviderSdk(selection);
+    assertSandboxProviderSdk(selection);
     const mod = (await import(selection.modulePath)) as { sandboxFactory: SandboxFactory };
     return mod.sandboxFactory;
   };

@@ -4,13 +4,16 @@ import {
   SANDBOX_PROVIDER_SDK_PACKAGES,
 } from "./sandbox-provider-sdk.js";
 
+const E2B = { provider: "e2b" as const, modulePath: "@open-managed-agents/sandbox-adapter-e2b" };
+
 describe("assertSandboxProviderSdk", () => {
-  it("probes the SDK the selected provider needs", async () => {
-    const loaded: string[] = [];
-    await assertSandboxProviderSdk({ provider: "e2b" }, async (specifier) => {
-      loaded.push(specifier);
+  it("resolves the SDK the selected provider needs, from the adapter's context", () => {
+    const calls: [string, string][] = [];
+    assertSandboxProviderSdk(E2B, (adapterModulePath, packageName) => {
+      calls.push([adapterModulePath, packageName]);
+      return "/somewhere/e2b/index.js";
     });
-    expect(loaded).toEqual(["e2b"]);
+    expect(calls).toEqual([["@open-managed-agents/sandbox-adapter-e2b", "e2b"]]);
   });
 
   it("maps every isolated provider to its vendor package", () => {
@@ -24,27 +27,35 @@ describe("assertSandboxProviderSdk", () => {
     });
   });
 
-  it("does not probe boxrun, which talks to boxlite over HTTP", async () => {
-    const loaded: string[] = [];
-    await assertSandboxProviderSdk({ provider: "boxrun" }, async (specifier) => {
-      loaded.push(specifier);
-    });
-    expect(loaded).toEqual([]);
+  it("does not resolve anything for boxrun, which talks to boxlite over HTTP", () => {
+    const calls: string[] = [];
+    assertSandboxProviderSdk(
+      { provider: "boxrun", modulePath: "@open-managed-agents/sandbox-adapter-boxrun" },
+      (_adapterModulePath, packageName) => {
+        calls.push(packageName);
+        return "";
+      },
+    );
+    expect(calls).toEqual([]);
   });
 
-  it("does not probe the local test adapter", async () => {
-    const loaded: string[] = [];
-    await assertSandboxProviderSdk({ provider: "test-local-subprocess" }, async (specifier) => {
-      loaded.push(specifier);
-    });
-    expect(loaded).toEqual([]);
+  it("does not resolve anything for the local test adapter", () => {
+    const calls: string[] = [];
+    assertSandboxProviderSdk(
+      { provider: "test-local-subprocess", modulePath: "@open-managed-agents/sandbox/adapters/local-subprocess" },
+      (_adapterModulePath, packageName) => {
+        calls.push(packageName);
+        return "";
+      },
+    );
+    expect(calls).toEqual([]);
   });
 
-  it("fails at startup with both install paths when the SDK is missing", async () => {
-    await expect(
-      assertSandboxProviderSdk({ provider: "e2b" }, async () => {
-        throw new Error("Cannot find package 'e2b'");
+  it("fails at startup with both install paths when the SDK cannot be resolved", () => {
+    expect(() =>
+      assertSandboxProviderSdk(E2B, () => {
+        throw new Error("Cannot find module 'e2b'");
       }),
-    ).rejects.toThrow(/requires the "e2b" SDK.*pnpm add -w e2b.*SANDBOX_PROVIDERS=e2b/s);
+    ).toThrow(/requires the "e2b" SDK.*pnpm add -w e2b.*SANDBOX_PROVIDERS=e2b/s);
   });
 });

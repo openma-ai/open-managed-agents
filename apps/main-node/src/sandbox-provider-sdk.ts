@@ -2,12 +2,16 @@
 // as an *optional* peer dependency: the monorepo install stays provider-neutral
 // (`autoInstallPeers: false` in pnpm-workspace.yaml) so a deployment installs
 // only the SDK for the adapter it selects. Nothing verified that the selected
-// adapter actually had its SDK, and the bundled image installs no peers — so
-// `SANDBOX_PROVIDER=e2b` booted happily and then failed on the *first session
-// turn* with three retried sandbox errors and `retries_exhausted`.
+// adapter actually had its SDK, and the bundled image installs none for most
+// providers — so `SANDBOX_PROVIDER=e2b` booted happily and then failed on the
+// *first session turn* with three retried sandbox errors and
+// `retries_exhausted`.
 //
-// Probe the SDK while the provider is resolved, so a missing one fails at
-// startup with the command that fixes it.
+// Resolve the SDK while the provider is resolved, so a missing one fails at
+// startup with the command that fixes it. Resolution only — importing would
+// load a vendor binary for no reason.
+
+import { createRequire } from "node:module";
 
 import type { NodeSandboxProvider } from "./sandbox-provider.js";
 
@@ -33,26 +37,30 @@ export function sandboxProviderSdkMissingMessage(provider: NodeSandboxProvider, 
     + `Provider SDKs are optional peers of the adapter packages, so no sandbox can start without one.`;
 }
 
-export type SandboxSdkImport = (specifier: string) => Promise<unknown>;
+/** How the SDK is located, given the adapter module the provider resolved to. */
+export type SandboxSdkResolver = (adapterModulePath: string, packageName: string) => string;
 
-const importSdk: SandboxSdkImport = (specifier) =>
-  // Same indirection the adapters use: keep the specifier a runtime value so
-  // bundlers never try to resolve a package the deployment may not install.
-  import(/* @vite-ignore */ specifier as string);
+const resolveFromAdapter: SandboxSdkResolver = (adapterModulePath, packageName) => {
+  const fromMainNode = createRequire(import.meta.url);
+  // pnpm nests dependencies per package, so resolving from this file would miss
+  // an SDK that lives in the adapter's own node_modules (or is a devDependency
+  // of it, as `@boxlite-ai/boxlite` and `@alibaba-group/opensandbox` are).
+  return createRequire(fromMainNode.resolve(adapterModulePath)).resolve(packageName);
+};
 
 /**
- * Throws when the selected provider needs a vendor SDK that cannot be loaded.
+ * Throws when the selected provider needs a vendor SDK that cannot be resolved.
  * Providers without an SDK (`boxrun`) and the local test adapter pass through.
  */
-export async function assertSandboxProviderSdk(
-  selection: { provider: NodeSandboxProvider | "test-local-subprocess" },
-  load: SandboxSdkImport = importSdk,
-): Promise<void> {
+export function assertSandboxProviderSdk(
+  selection: { provider: NodeSandboxProvider | "test-local-subprocess"; modulePath: string },
+  resolve: SandboxSdkResolver = resolveFromAdapter,
+): void {
   if (selection.provider === "test-local-subprocess") return;
   const packageName = SANDBOX_PROVIDER_SDK_PACKAGES[selection.provider];
   if (packageName === undefined) return;
   try {
-    await load(packageName);
+    resolve(selection.modulePath, packageName);
   } catch (cause) {
     throw new Error(sandboxProviderSdkMissingMessage(selection.provider, packageName, cause), { cause });
   }
