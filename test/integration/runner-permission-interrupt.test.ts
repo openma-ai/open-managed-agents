@@ -47,7 +47,7 @@ describe("interrupting a runner while its proxy is waiting for permission", () =
       room._ensurePrimaryThread();
       const history = new SqliteHistory(state.storage.sql, null);
       for (const event of actions) history.append(event as never);
-      history.append({ type: "session.status_idle", stop_reason: { type: "requires_action", action_type: "custom_tool_result", event_ids: ["primary-request"] } } as never);
+      history.append({ type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["primary-request"] } } as never);
       expect(room._threadAbortControllers.size).toBe(0);
       const socket = new RunnerSocket(complete);
       const originalEnv = room.env;

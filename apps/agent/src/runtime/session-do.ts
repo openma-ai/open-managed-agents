@@ -5111,7 +5111,7 @@ export class SessionDO extends DurableObject<Env> {
     if (remaining.length > 0) {
       const idleEvent: SessionEvent = {
         type: "session.status_idle",
-        stop_reason: requiresActionStopReason(this.resolvedPendingCalls(remaining), remaining.map((p) => p.toolCallId)),
+        stop_reason: requiresActionStopReason(remaining.map((p) => p.toolCallId)),
       } as SessionEvent;
       history.append(idleEvent);
       this.broadcastEvent(idleEvent, fence);
@@ -6362,7 +6362,7 @@ export class SessionDO extends DurableObject<Env> {
         parkedOnClient: storedPendingCalls.some((p) => awaitsCustomToolResult(p.toolName)) || pendingConfirmations.length > 0,
         budgetReached: budget?.reached === true,
       }, {
-        requiresAction: () => { stopReason = requiresActionStopReason(storedPendingCalls, pendingConfirmations); },
+        requiresAction: () => { stopReason = requiresActionStopReason(pendingConfirmations); },
         budgetReached: () => {
           // Thread idle → usage snapshot here; the session idle is emitted
           // below. Usage source on CF: every model span in this session's log.

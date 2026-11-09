@@ -101,18 +101,12 @@ export interface PendingToolCall {
   toolName: string;
 }
 
-/** The requires_action stop_reason announcing `eventIds`: custom_tool_result
- * when any pending call awaits a custom result, else tool_confirmation. */
-export function requiresActionStopReason(pending: readonly PendingToolCall[], eventIds: readonly string[]): {
+/** The official requires_action stop_reason announcing `eventIds`. */
+export function requiresActionStopReason(eventIds: readonly string[]): {
   type: "requires_action";
-  action_type: "custom_tool_result" | "tool_confirmation";
   event_ids: string[];
 } {
-  return {
-    type: "requires_action",
-    action_type: pending.some((call) => awaitsCustomToolResult(call.toolName)) ? "custom_tool_result" : "tool_confirmation",
-    event_ids: [...eventIds],
-  };
+  return { type: "requires_action", event_ids: [...eventIds] };
 }
 
 /** Pending calls still open after `answeredId` was answered. With a parallel

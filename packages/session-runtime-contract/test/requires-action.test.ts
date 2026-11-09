@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answeredToolCallIds,
+  awaitsCustomToolResult,
   knownToolCallIds,
   outstandingRequiresAction,
   rejectMessageForRequiresActionBatch,
@@ -95,11 +96,11 @@ describe("requires_action settle-only gate (CMA)", () => {
     ])].sort()).toEqual(["c", "m", "t"]);
   });
 
-  it("classifies the stop reason by what is still pending (CF SessionDO)", () => {
-    expect(requiresActionStopReason([{ toolCallId: "a", toolName: "lookup_ticket" }, { toolCallId: "b", toolName: "bash" }], ["a", "b"]))
-      .toEqual({ type: "requires_action", action_type: "custom_tool_result", event_ids: ["a", "b"] });
+  it("announces only the official fields and classifies what awaits a custom result", () => {
+    expect(requiresActionStopReason(["a", "b"])).toEqual({ type: "requires_action", event_ids: ["a", "b"] });
+    expect(awaitsCustomToolResult("lookup_ticket")).toBe(true);
     for (const name of ["bash", "web_search", "mcp_github_call", "call_agent_x", "memory_write"]) {
-      expect(requiresActionStopReason([{ toolCallId: "b", toolName: name }], ["b"]).action_type).toBe("tool_confirmation");
+      expect(awaitsCustomToolResult(name)).toBe(false);
     }
   });
 

@@ -512,8 +512,6 @@ export interface SessionStatusEvent extends EventBase {
   stop_reason?: {
     type: "end_turn" | "requires_action" | "retries_exhausted" | "budget_reached";
     event_ids?: string[];
-    // requires_action sub-type for SDK routing
-    action_type?: "tool_confirmation" | "custom_tool_result";
   };
 }
 

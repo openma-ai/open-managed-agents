@@ -2,11 +2,12 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
+import { toSessionEventResponse } from "../../packages/managed-agents-api/src/mappers/session-events";
 
 // Characterization (design §0.7 regression rule 1) of CF requires_action
 // bookkeeping, locked before it moved into packages/session-runtime: a
 // parallel batch re-announces only its outstanding ids (an open custom call
-// makes action_type custom_tool_result, otherwise tool_confirmation), a
+// or confirmation alike), a
 // duplicate answer is stored with no effect, and the batch resumes the model
 // with an empty resume message once every call has a result.
 function seed(room: any, sessionId: string, pending: Array<{ toolCallId: string; toolName: string }>) {
@@ -17,7 +18,34 @@ function seed(room: any, sessionId: string, pending: Array<{ toolCallId: string;
 }
 
 describe("CF requires_action batch bookkeeping", () => {
-  it("re-announces outstanding ids with the action type of what is still open", async () => {
+  // Node's runner emits the domain stop reason and the public mapper renders
+  // it; CF persists its wire form directly. The two must be the same object.
+  it.each([
+    ["custom tool", "lookup_user"],
+    ["tool confirmation", "bash"],
+  ])("stores the same stop_reason shape as Node renders (%s)", async (_label, toolName) => {
+    const sessionId = `requires_action_batch_${crypto.randomUUID()}`;
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      const room = instance as any;
+      seed(room, sessionId, [
+        { toolCallId: "call_a", toolName: "lookup_ticket" },
+        { toolCallId: "call_b", toolName },
+      ]);
+      const history = new SqliteHistory(state.storage.sql, null);
+      history.append({ type: "agent.custom_tool_use", id: "call_a", name: "lookup_ticket", input: {} } as never);
+      await room.resumeWhenToolBatchSettled("call_a", history);
+      const cf = (history.getEvents() as any[]).filter((e) => e.type === "session.status_idle").at(-1).stop_reason;
+      const node = (toSessionEventResponse({
+        id: "idle", type: "session.status_idle", processedAt: "2026-11-09T00:00:00.000Z",
+        stopReason: { type: "requires_action", eventIds: ["call_b"] },
+      } as never) as { stop_reason: unknown }).stop_reason;
+      expect(cf).toEqual(node);
+      expect(Object.keys(cf).sort()).toEqual(["event_ids", "type"]);
+    });
+  });
+
+  it("re-announces outstanding ids that are still open", async () => {
     const sessionId = `requires_action_batch_${crypto.randomUUID()}`;
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
     await runInDurableObject(stub, async (instance, state) => {
@@ -33,13 +61,13 @@ describe("CF requires_action batch bookkeeping", () => {
       const idles = () => (history.getEvents() as any[]).filter((e) => e.type === "session.status_idle");
 
       await room.resumeWhenToolBatchSettled("ctu_a", history);
-      expect(idles().at(-1).stop_reason).toEqual({ type: "requires_action", action_type: "tool_confirmation", event_ids: ["tu_mcp"] });
+      expect(idles().at(-1).stop_reason).toEqual({ type: "requires_action", event_ids: ["tu_mcp"] });
       expect(room.state.pending_tool_calls.map((p: any) => p.toolCallId)).toEqual(["tu_mcp"]);
       expect(resumed).toEqual([]);
     });
   });
 
-  it("keeps custom_tool_result while a custom call is open, then resumes once settled", async () => {
+  it("stays parked while a custom call is open, then resumes once settled", async () => {
     const sessionId = `requires_action_batch_${crypto.randomUUID()}`;
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
     await runInDurableObject(stub, async (instance, state) => {
@@ -56,7 +84,7 @@ describe("CF requires_action batch bookkeeping", () => {
       const idles = () => (history.getEvents() as any[]).filter((e) => e.type === "session.status_idle");
 
       await room.resumeWhenToolBatchSettled("ctu_a", history);
-      expect(idles().at(-1).stop_reason).toEqual({ type: "requires_action", action_type: "custom_tool_result", event_ids: ["ctu_b"] });
+      expect(idles().at(-1).stop_reason).toEqual({ type: "requires_action", event_ids: ["ctu_b"] });
 
       // ctu_a's echoed result counts as answered when the batch is re-read.
       history.append({ type: "agent.tool_result", tool_use_id: "ctu_a", content: "a" } as never);
