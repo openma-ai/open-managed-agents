@@ -1591,6 +1591,9 @@ importers:
       tar:
         specifier: 7.5.22
         version: 7.5.22
+      undici:
+        specifier: 7.30.1
+        version: 7.30.1
       zod:
         specifier: 4.3.6
         version: 4.3.6

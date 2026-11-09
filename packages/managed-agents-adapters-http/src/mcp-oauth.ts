@@ -131,9 +131,32 @@ export class HttpMcpOAuth implements McpOAuthPort {
     this.dependencies.log?.warn({ op, ...fields }, "MCP OAuth upstream call failed");
   }
 
+  private async fetch(url: string, init?: RequestInit): Promise<Response> {
+    let target = new URL(url);
+    const signal = init?.signal ?? AbortSignal.timeout(15_000);
+    for (let redirects = 0; ; redirects++) {
+      const hostname = target.hostname.replace(/\.$/, "");
+      // URL normalizes alternate IPv4 spellings and brackets IPv6 literals.
+      if (target.protocol !== "https:" || target.username || target.password
+        || hostname.startsWith("[") || /^\d+(?:\.\d+){3}$/.test(hostname)
+        || hostname === "localhost" || hostname.endsWith(".localhost")) {
+        throw new Error("MCP OAuth requires a public HTTPS hostname");
+      }
+      const response = await this.dependencies.fetch(target.href, { ...init, redirect: "manual", signal });
+      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+      const location = response.headers.get("Location");
+      await response.body?.cancel();
+      // Follow discovery redirects only. POSTs can carry OAuth credentials.
+      if (init?.method || location === null || redirects >= 4) {
+        throw new Error("MCP OAuth redirect refused");
+      }
+      target = new URL(location, target);
+    }
+  }
+
   private async firstJson<T>(candidates: string[]): Promise<T | null> {
     for (const candidate of candidates) {
-      const response = await this.dependencies.fetch(candidate);
+      const response = await this.fetch(candidate);
       if (response.ok) {
         try {
           return (await response.json()) as T;
@@ -148,6 +171,7 @@ export class HttpMcpOAuth implements McpOAuthPort {
 
   private async discoverOrThrow(mcpServerUrl: string): Promise<McpOAuthDiscoveryResult> {
     const url = new URL(mcpServerUrl);
+    if (url.username || url.password) throw new DiscoveryError("metadata_invalid");
     // RFC 9728 §3.1 path-based metadata first, then origin-only.
     const path = url.pathname.replace(/\/+$/, "");
     const resourceCandidates = [
@@ -229,7 +253,7 @@ export class HttpMcpOAuth implements McpOAuthPort {
     callbackUri: string,
   ): Promise<{ clientId: string; clientSecret?: string } | null> {
     try {
-      const response = await this.dependencies.fetch(registrationEndpoint, {
+      const response = await this.fetch(registrationEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -240,7 +264,10 @@ export class HttpMcpOAuth implements McpOAuthPort {
           token_endpoint_auth_method: "none",
         }),
       });
-      if (!response.ok) return null;
+      if (!response.ok) {
+        await response.body?.cancel();
+        return null;
+      }
       const data = (await response.json()) as { client_id?: string; client_secret?: string };
       if (!data.client_id) return null;
       return { clientId: data.client_id, ...(data.client_secret && { clientSecret: data.client_secret }) };
@@ -273,7 +300,7 @@ export class HttpMcpOAuth implements McpOAuthPort {
     if (input.client.clientSecret) body.set("client_secret", input.client.clientSecret);
     let response: Response;
     try {
-      response = await this.dependencies.fetch(input.tokenEndpoint, {
+      response = await this.fetch(input.tokenEndpoint, {
         method: "POST",
         // GitHub answers form-encoded unless JSON is requested.
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
@@ -324,7 +351,7 @@ export class HttpMcpOAuth implements McpOAuthPort {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
     try {
-      const response = await this.dependencies.fetch(mcpServerUrl, {
+      const response = await this.fetch(mcpServerUrl, {
         method: "POST",
         headers: {
           "content-type": "application/json",

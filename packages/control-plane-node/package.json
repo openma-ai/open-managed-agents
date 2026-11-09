@@ -97,6 +97,7 @@
     "hono": "^4.7.0",
     "nanoid": "^5.1.0",
     "tar": "7.5.22",
+    "undici": "7.30.1",
     "zod": "4.3.6",
     "@open-managed-agents/domain": "workspace:*"
   }

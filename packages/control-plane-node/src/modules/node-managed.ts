@@ -15,6 +15,7 @@
  * index.ts is the executable entrypoint (process.env, listen, signals).
  */
 
+import { fetchPublicMcpOAuth } from "../lib/mcp-oauth-fetch";
 import { createNodeManagedAcpCapabilities } from "../lib/node-managed-acp-capability.js";
 import { loadNodeManagedAcpRecoveryHistory } from "../lib/node-managed-acp-recovery.js";
 import { resolveProtocolEndpointsFromModelCard } from "@open-managed-agents/inference-proxy";
@@ -1416,7 +1417,7 @@ export async function createManagedNodeRuntime(
     ? null
     : secrets.cipherFor("managed.vault.mcp_oauth_state");
   const mcpOAuth = new HttpMcpOAuth({
-    fetch: (input, init) => globalThis.fetch(input, init),
+    fetch: fetchPublicMcpOAuth,
     clock: { now: () => new Date() },
     presets: config.mcpOAuthPresets,
     log: { warn: (fields, message) => logger.warn(fields, message) },
