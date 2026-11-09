@@ -41,6 +41,7 @@ class RecordingContainer {
     this.startOptions = options;
     this.log.push("start");
   }
+  async snapshotContainer() { this.log.push("container-snapshot"); return { id: "full-rootfs", size: 42 }; }
   async interceptAllOutboundHttp(): Promise<void> { this.log.push("catch-all"); }
   async interceptOutboundHttps(): Promise<void> { this.log.push("catch-all-https"); }
   async interceptOutboundHttp(host: string): Promise<void> { this.log.push(`route:${host}`); }
@@ -158,6 +159,17 @@ afterEach(() => {
 });
 
 describe("OmaSandbox on Sandbox SDK 1.0", () => {
+  it("captures the native container filesystem and starts a stopped container from its snapshot", async () => {
+    const box = sandbox();
+    await box.provision({ incarnation: "source", mounts: [] });
+    expect(await box.createContainerSnapshot()).toEqual({ id: "full-rootfs", size: 42 });
+    container.stop();
+    await Promise.resolve();
+    await box.provision({ incarnation: "restored", mounts: [], containerSnapshot: { id: "full-rootfs" } });
+    expect(container.startOptions).toMatchObject({ containerSnapshot: { id: "full-rootfs" } });
+    expect(container.startOptions).not.toHaveProperty("image");
+    expect(log).not.toContain("backup");
+  });
   it("attaches every planned mount before the catch-all outbound intercept", async () => {
     const box = sandbox();
     await box.mountBucket("files", "/mnt/session/outputs", { ...R2, prefix: "/t/x/session-outputs/s/" });

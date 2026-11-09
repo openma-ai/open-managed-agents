@@ -316,6 +316,7 @@ export class CloudflareSandbox
     incarnation: string;
     mounts: OmaMountBucketRequest[];
     autoStart?: boolean;
+    containerSnapshot?: ContainerSnapshotRestoreParams;
   }): Promise<OmaProvisionResult> {
     const sandbox = await this.getSandbox();
     if (typeof sandbox.provision !== "function") {
@@ -330,12 +331,19 @@ export class CloudflareSandbox
       incarnation: input.incarnation,
       mounts: input.mounts,
       autoStart: input.autoStart ?? false,
+      ...(input.containerSnapshot === undefined ? {} : { containerSnapshot: input.containerSnapshot }),
       // A new container starts with an empty process environment; warmup
       // publishes the current contract again.
       env: {},
     }) as OmaProvisionResult;
     if (result.started) this.processEnv = {};
     return result;
+  }
+
+  /** Native full filesystem snapshot; capability errors must reach the caller. */
+  async createContainerSnapshot(options?: ContainerSnapshotOptions): Promise<ContainerSnapshot> {
+    const sandbox = await this.getSandbox();
+    return sandbox.createContainerSnapshot(options);
   }
 
   /**

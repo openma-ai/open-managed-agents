@@ -5,19 +5,11 @@
 // CloudflareSandbox directly; this is the v2 composition of the same
 // primitives.
 //
-// Restore points and templates are /workspace backups (DirectoryBackup in
-// OmaSandbox, objects in BACKUP_BUCKET under backups/). A backup restores
-// into any sandbox of this deployment, so it also serves as a 1:n template;
-// discard deletes its objects through the binding.
-//
-// Gaps (§0.3): no rootfs snapshot API in Sandbox SDK 1.0, so a template
-// holds only /workspace (setup that installs outside it is not captured) and
-// pause = workspace backup + destroy (no pause in place: the backup is the
-// snapshot, kind "snapshot"); the idle timeout is per deployment
-// (OmaSandbox reads SANDBOX_IDLE_TIMEOUT_MS; plan.idleMs is not applied per
-// sandbox); there is no runtime firewall, so a limited policy is enforced
-// only on traffic the outbound handler sees; revoke reuses the handler's
-// deny binding.
+// Restore points use ctx.container.snapshotContainer(): the complete filesystem,
+// not a /workspace backup. Restore starts the container from its snapshot ID.
+// Requires durable_object scheduling. Snapshots are image-version-bound and
+// expire 30 days after creation/last restore; Cloudflare exposes no delete API.
+// https://developers.cloudflare.com/containers/guides/snapshots/
 
 import type { ResumeRef, SandboxHandle, SandboxLifecyclePort, SandboxPlan, TemplateRef } from "@open-managed-agents/sandbox";
 import { parseExecResult } from "@open-managed-agents/sandbox";
@@ -28,17 +20,10 @@ import type { CloudflareSandbox } from "./sandbox";
 /** The CloudflareSandbox surface this adapter uses. */
 export type CloudflareSandboxRuntime = Pick<
   CloudflareSandbox,
-  | "describeSandbox" | "provisionSandbox" | "createWorkspaceBackup" | "restoreWorkspaceBackup"
+  | "describeSandbox" | "provisionSandbox" | "createContainerSnapshot"
   | "memoryStoreMount" | "sessionOutputsMount" | "setOutboundContext" | "revokeOutboundContext"
   | "destroy" | "renewActivityTimeout" | "exec" | "writeFileBytes" | "setEnvVars"
 >;
-
-const BACKUP_TTL_SEC = 7 * 24 * 60 * 60;
-/** OmaSandbox's DirectoryBackup storage: `{ binding: "BACKUP_BUCKET", prefix:
- * "backups/" }` (oma-sandbox.ts), archive key `<prefix><id>.tar.zst`
- * (@cloudflare/sandbox DirectoryBackupRecord), expiry sidecar
- * `backups/<id>.meta.json` (oma-sandbox.ts metaKey). */
-export const backupObjectKeys = (id: string) => [`backups/${id}.tar.zst`, `backups/${id}.meta.json`];
 
 export function createCloudflareSandboxAdapter(input: {
   /** The DO-named sandbox of a Session: the handle is fixed. */
@@ -49,7 +34,6 @@ export function createCloudflareSandboxAdapter(input: {
   backups: Pick<R2Bucket, "delete">;
 }): SandboxAdapterPort<CloudflareSandboxRuntime> {
   const sandboxFor = input.sandbox;
-  const backups = input.backups;
   const handleFor = (scope: RuntimeResourceScope): SandboxHandle => ({ provider: "cloudflare", runtimeId: scope.sessionId });
   const mountsFor = (runtime: CloudflareSandboxRuntime, scope: RuntimeResourceScope, plan: SandboxPlan) => {
     const outputs = runtime.sessionOutputsMount({ tenantId: scope.workspaceId, sessionId: scope.sessionId });
@@ -58,9 +42,9 @@ export function createCloudflareSandboxAdapter(input: {
       ...plan.stores.map((store) => runtime.memoryStoreMount(store)),
     ];
   };
-  const provision = async (scope: RuntimeResourceScope, plan: SandboxPlan) => {
+  const provision = async (scope: RuntimeResourceScope, plan: SandboxPlan, containerSnapshot?: { id: string }) => {
     const runtime = sandboxFor(scope.sessionId);
-    await runtime.provisionSandbox({ incarnation: crypto.randomUUID().slice(0, 12), mounts: mountsFor(runtime, scope, plan), autoStart: false });
+    await runtime.provisionSandbox({ incarnation: crypto.randomUUID().slice(0, 12), mounts: mountsFor(runtime, scope, plan), autoStart: false, ...(containerSnapshot === undefined ? {} : { containerSnapshot }) });
     return { runtime, handle: handleFor(scope) };
   };
 
@@ -69,21 +53,13 @@ export function createCloudflareSandboxAdapter(input: {
     /** Containers have no continuous-run cap. */
     maxLifetimeMs: null,
 
-    /** From the deployment image, or from a template: provision, then
-     * restore its /workspace backup. An expired or deleted template → "gone". */
+    /** Restore the full filesystem before attaching the planned mounts. */
     async acquire(input) {
       input.signal.throwIfAborted();
-      const acquired = await provision(input.scope, input.plan);
-      if (!("template" in input.plan.from)) return acquired;
-      const raw = input.plan.from.template.metadata?.backup;
-      if (input.plan.from.template.provider !== "cloudflare" || typeof raw !== "string") {
-        await acquired.runtime.destroy();
-        throw new Error("Cloudflare adapter received a template it did not create");
-      }
-      const restored = await acquired.runtime.restoreWorkspaceBackup(JSON.parse(raw));
-      if (restored.ok) return acquired;
-      await acquired.runtime.destroy();
-      return "gone";
+      if (!("template" in input.plan.from)) return provision(input.scope, input.plan);
+      const template = input.plan.from.template;
+      if (template.provider !== "cloudflare" || template.metadata?.kind !== "container") throw new Error("Cloudflare adapter received a template it did not create");
+      return provision(input.scope, input.plan, { id: template.ref });
     },
 
     /** A stopped container would restart without its mounts: report gone so
@@ -104,9 +80,8 @@ export function createCloudflareSandboxAdapter(input: {
 
     async checkpoint(input): Promise<ResumeRef> {
       input.signal.throwIfAborted();
-      const backup = await input.runtime.createWorkspaceBackup({ ttlSec: BACKUP_TTL_SEC });
-      if (backup === null) throw new Error("Cloudflare workspace backup produced no archive");
-      return { provider: "cloudflare", ref: backup.id, kind: "snapshot", metadata: { kind: "backup", backup: JSON.stringify(backup) } };
+      const snapshot = await input.runtime.createContainerSnapshot();
+      return { provider: "cloudflare", ref: snapshot.id, kind: "snapshot", metadata: { kind: "container" } };
     },
 
     async pause(input) {
@@ -115,37 +90,24 @@ export function createCloudflareSandboxAdapter(input: {
       return ref;
     },
 
-    /** A fixed handle has nothing to wake: "self" is gone once attach was;
-     * a snapshot is a backup restored into a new container. */
+    /** Native start errors are surfaced; never restore only /workspace. */
     async resume(input) {
-      const raw = input.ref.metadata?.backup;
-      if (input.ref.kind === "self" || typeof raw !== "string") return "gone";
-      const acquired = await provision(input.scope, input.plan);
-      const restored = await acquired.runtime.restoreWorkspaceBackup(JSON.parse(raw));
-      if (restored.ok) return acquired;
-      await acquired.runtime.destroy();
-      return "gone";
+      input.signal.throwIfAborted();
+      if (input.ref.provider !== "cloudflare" || input.ref.kind !== "snapshot" || input.ref.metadata?.kind !== "container") return "gone";
+      return provision(input.scope, input.plan, { id: input.ref.ref });
     },
 
     async release(input) {
       await sandboxFor(input.handle.runtimeId).destroy();
     },
 
-    /** Backups and templates: delete their objects (deleting a missing key
-     * succeeds). A ref to the sandbox itself is a no-op. */
-    async discard(input) {
-      const kind = input.ref.metadata?.kind;
-      if (input.ref.provider !== "cloudflare" || (kind !== "backup" && kind !== "template")) return;
-      await backups.delete(backupObjectKeys(input.ref.ref));
-    },
+    /** No native delete API: unreferenced snapshots wait for the 30-day expiry. */
+    async discard() {},
 
-    /** A /workspace backup of the build sandbox. Restores into any sandbox of
-     * the deployment (1:n); it does not capture the rootfs. */
     async snapshotTemplate(input): Promise<TemplateRef> {
       input.signal.throwIfAborted();
-      const backup = await input.runtime.createWorkspaceBackup({ name: "template", ttlSec: BACKUP_TTL_SEC });
-      if (backup === null) throw new Error("Cloudflare template backup produced no archive");
-      return { provider: "cloudflare", ref: backup.id, metadata: { kind: "template", backup: JSON.stringify(backup) } };
+      const snapshot = await input.runtime.createContainerSnapshot({ name: "template" });
+      return { provider: "cloudflare", ref: snapshot.id, metadata: { kind: "container" } };
     },
 
     /** Fixed handles: a rebuild reuses the DO name, so there are no orphans. */

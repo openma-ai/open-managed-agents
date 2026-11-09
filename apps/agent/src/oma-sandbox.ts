@@ -572,6 +572,8 @@ export interface OmaProvisionRequest {
   /** Process environment. Replaces it for a new container, merges otherwise. */
   env?: Record<string, string>;
   autoStart?: boolean;
+  /** Full native filesystem snapshot, never a DirectoryBackup. */
+  containerSnapshot?: ContainerSnapshotRestoreParams;
 }
 
 export interface OmaProvisionResult {
@@ -890,12 +892,12 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     }
   }
 
-  private async startContainer(requestedIncarnation?: string): Promise<void> {
+  private async startContainer(requestedIncarnation?: string, containerSnapshot?: ContainerSnapshotRestoreParams): Promise<void> {
     const newContainer = !this.container.running;
     const plan = this.plan();
     if (newContainer) {
       this.container.start({
-        image: this.container.images.sandbox,
+        ...(containerSnapshot === undefined ? { image: this.container.images.sandbox } : { containerSnapshot }),
         instance: "standard-1",
         env: { ...CONTAINER_ENV, ...this.processEnv() },
         enableInternet: false,
@@ -928,9 +930,9 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     }
   }
 
-  private startSetup(incarnation?: string): Promise<void> {
+  private startSetup(incarnation?: string, containerSnapshot?: ContainerSnapshotRestoreParams): Promise<void> {
     this.setupPending = true;
-    const setup = this.startContainer(incarnation).then(
+    const setup = this.startContainer(incarnation, containerSnapshot).then(
       () => {
         this.setupPending = false;
       },
@@ -1053,9 +1055,15 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
         autoStart,
       });
       if (request.env) this.ctx.storage.kv.put(PROCESS_ENV_KEY, { ...request.env });
-      await this.startSetup(request.incarnation);
+      await this.startSetup(request.incarnation, request.containerSnapshot);
       return { incarnation: this.plan().incarnation!, started: true, pendingMounts: [] };
     });
+  }
+
+  /** Full filesystem only; memory/processes are not captured. Errors propagate. */
+  async createContainerSnapshot(options?: ContainerSnapshotOptions): Promise<ContainerSnapshot> {
+    if (!this.container.running) throw new Error("Cannot snapshot a stopped container");
+    return this.container.snapshotContainer(options);
   }
 
   async describe(): Promise<OmaSandboxDescription> {
