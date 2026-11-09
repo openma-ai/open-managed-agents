@@ -150,6 +150,7 @@ function cloudflareEnvironmentCache(
   return createCloudflareEnvironmentCache({
     lifecycle, sessionLifecycle,
     storeFor: (workspaceId) => ({
+      retiredKeys: async (prefix, cursor, limit) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).retiredKeys(prefix, cursor, limit),
       compareAndSwap: async (key, expected, value) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).compareAndSwap(key, expected, value),
       get: async (key) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).get(key),
       put: async (key, value) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).put(key, value),

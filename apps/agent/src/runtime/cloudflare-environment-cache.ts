@@ -48,6 +48,12 @@ export interface CloudflareEnvironmentSetup {
 /** kv_entries of the tenant's D1, scoped to one workspace. */
 export function d1EnvironmentCacheStore(db: D1Database, workspaceId: string): EnvironmentCacheStore {
   return {
+    async retiredKeys(prefix, cursor, limit) {
+      const page = await db.prepare("SELECT key FROM kv_entries WHERE tenant_id = ? AND substr(key, 1, ?) = ? AND key > ? ORDER BY key LIMIT ?")
+        .bind(workspaceId, prefix.length, prefix, cursor, limit).all<{ key: string }>();
+      const keys = page.results.map(row => row.key);
+      return { keys, cursor: keys.length === limit ? keys[keys.length - 1]! : "" };
+    },
     async compareAndSwap(key, expected, value) {
       const statement = expected === null
         ? db.prepare("INSERT INTO kv_entries (tenant_id, key, value, expires_at) VALUES (?, ?, ?, NULL) ON CONFLICT (tenant_id, key) DO NOTHING").bind(workspaceId, key, value)

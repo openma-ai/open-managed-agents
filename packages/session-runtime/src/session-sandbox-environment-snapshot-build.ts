@@ -15,6 +15,8 @@ const DEFAULT_BUILD_TIMEOUT_MS = 30 * 60_000;
 /** The cache's records (one workspace). */
 export interface EnvironmentCacheStore {
   get(key: string): Promise<string | null>;
+  /** One bounded page of retired-only keys; opaque cursor from the same store. */
+  retiredKeys(prefix: string, cursor: string, limit: number): Promise<{ keys: string[]; cursor: string }>;
   put(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
   /** Atomic exact-document CAS; null expected/value means absent/delete. */

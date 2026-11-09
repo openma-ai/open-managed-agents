@@ -80,7 +80,10 @@ export class NodeEnvironmentCache {
       lifecycle: options.lifecycle,
       storeFor: (workspaceId) => {
         const kv = options.kvFor(workspaceId);
-        return { get: key => kv.get(key), put: (key, value) => kv.put(key, value), delete: key => kv.delete(key),
+        return { retiredKeys: async (prefix, cursor, limit) => {
+          const page = await kv.list({ prefix, ...(cursor ? { cursor } : {}), limit });
+          return { keys: page.keys.map(key => key.name), cursor: page.list_complete ? "" : page.cursor ?? "" };
+        }, get: key => kv.get(key), put: (key, value) => kv.put(key, value), delete: key => kv.delete(key),
           compareAndSwap: (key, expected, value) => {
             if (!kv.compareAndSwap) throw new Error("Environment cache requires a strongly consistent CAS store");
             return kv.compareAndSwap(key, expected, value);

@@ -55,6 +55,7 @@ function harness(options: { failSnapshot?: boolean; failInstall?: boolean } = {}
   const adapter = createCloudflareSandboxAdapter({ sandbox: runtimeFor, backups: { async delete() {} } });
   const rows = new Map<string, string>();
   const store: EnvironmentCacheStore = {
+    retiredKeys: async (prefix, cursor, limit) => { const keys = [...rows.keys()].filter(k => k.startsWith(prefix) && k > cursor).sort().slice(0, limit); return { keys, cursor: keys.length === limit ? keys[keys.length - 1]! : "" }; },
     compareAndSwap: async (key, expected, value) => { if ((rows.get(key) ?? null) !== expected) return false; if (value === null) rows.delete(key); else rows.set(key, value); return true; },
     get: async (key) => rows.get(key) ?? null,
     put: async (key, value) => { rows.set(key, value); },
@@ -202,6 +203,12 @@ describe("Cloudflare environment cache", () => {
     expect(await a.get("k")).toBe("snap3");
     expect(await a.compareAndSwap("k", "snap3", null)).toBe(true);
     expect(await a.get("k")).toBeNull();
+    await a.put("k:retired:a", "ref-a");
+    await a.put("k:retired:b", "ref-b");
+    await a.put("other:retired:c", "not-this-key");
+    const page = await a.retiredKeys("k:retired:", "", 1);
+    expect(page).toEqual({ keys: ["k:retired:a"], cursor: "k:retired:a" });
+    expect(await b.retiredKeys("k:retired:", page.cursor, 20)).toEqual({ keys: ["k:retired:b"], cursor: "" });
   });
 
   it("stores records in the tenant D1 kv_entries, scoped to the workspace", async () => {

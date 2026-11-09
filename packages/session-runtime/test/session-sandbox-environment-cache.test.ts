@@ -76,7 +76,7 @@ function harness(options: {
     lifecycle,
     storeFor: (id) => {
       const map = storeOf(id);
-      return { compareAndSwap: async (k, expected, value) => { if (value && JSON.parse(value).state === "ready" && options.publishFails?.()) throw new Error("store put unavailable"); options.beforeCas?.(k, value, map); if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); if (options.publishResponseLost && value && JSON.parse(value).state === "ready") throw new Error("CAS response lost"); return true; }, get: async (k) => { if (options.readFails?.()) throw new Error("store unavailable"); return map.get(k) ?? null; }, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
+      return { retiredKeys: async (prefix, cursor, limit) => { const keys = [...map.keys()].filter(k => k.startsWith(prefix) && k > cursor).sort().slice(0, limit); return { keys, cursor: keys.length === limit ? keys[keys.length - 1]! : "" }; }, compareAndSwap: async (k, expected, value) => { if (value && JSON.parse(value).state === "ready" && options.publishFails?.()) throw new Error("store put unavailable"); options.beforeCas?.(k, value, map); if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); if (options.publishResponseLost && value && JSON.parse(value).state === "ready") throw new Error("CAS response lost"); return true; }, get: async (k) => { if (options.readFails?.()) throw new Error("store unavailable"); return map.get(k) ?? null; }, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
     },
     restrictEgress: async () => { setups.push("restricted"); await options.restrictEgress?.(); },
     setup: async (_runtime, setup) => { setups.push(setup); await options.setup?.(); },
@@ -352,6 +352,47 @@ describe("EnvironmentCache", () => {
     gone = true;
     await h.session("s2");
     expect(JSON.parse(h.data.get(h.storeKey)!).retired).toEqual([old]);
+  });
+
+  it("retries at most 20 persisted refs per acquire and advances past refused refs", async () => {
+    const data = new Map<string, string>();
+    const h = harness({ data, deleteSnapshot: async () => { throw new Error("in use"); } });
+    for (let n = 0; n < 25; n++) data.set(h.storeKey + ":retired:" + String(n).padStart(2, "0"), JSON.stringify({ state: "retired", retired: [{ adapter: "fake", ref: "pending-" + n }] }));
+    await h.acquire("s1");
+    expect(h.deleted).toHaveLength(20);
+    await h.acquire("s2");
+    expect(h.deleted).toHaveLength(25);
+    expect(h.deleted).toContain("pending-24");
+    expect(data.size).toBe(25);
+    const fresh = harness({ data });
+    await fresh.acquire("s3");
+    await fresh.acquire("s4");
+    expect(data.size).toBe(0);
+  });
+
+  it("ten cleanup CAS conflicts retain the loser durably and a fresh cache retries it", async () => {
+    const data = new Map<string, string>();
+    const key = "sandbox_prepared_base:v1:fake:k1";
+    let conflicts = 0;
+    const h = harness({ data, snapshot: async () => {
+      data.set(key, JSON.stringify({ state: "ready", snapshot: { adapter: "fake", ref: "winner" }, createdAtMs: 0 }));
+      return { adapter: "fake", ref: "own-loser" };
+    }, deleteSnapshot: async () => { throw new Error("in use"); }, beforeCas: (k, value, map) => {
+      if (k === key && value && JSON.parse(value).retired?.some((r: EnvironmentSnapshotRef) => r.ref === "own-loser")) {
+        const current = JSON.parse(map.get(k)!);
+        current.retired = [...(current.retired ?? []), { adapter: "fake", ref: "other-" + ++conflicts }];
+        map.set(k, JSON.stringify(current));
+      }
+    } });
+    await h.session("s1");
+    expect(conflicts).toBe(10);
+    const responsibilities = [...data.values()].flatMap(raw => JSON.parse(raw).retired ?? []);
+    expect(responsibilities).toEqual(expect.arrayContaining([{ adapter: "fake", ref: "own-loser" }]));
+    expect(JSON.parse(data.get(key)!).retired).toHaveLength(10);
+    const fresh = harness({ data });
+    await fresh.acquire("s2");
+    expect(fresh.deleted).toContain("own-loser");
+    expect([...data.values()].flatMap(raw => JSON.parse(raw).retired ?? [])).not.toEqual(expect.arrayContaining([{ adapter: "fake", ref: "own-loser" }]));
   });
 
   it("a cross-instance loser retains refused deletion with the winner and retries", async () => {

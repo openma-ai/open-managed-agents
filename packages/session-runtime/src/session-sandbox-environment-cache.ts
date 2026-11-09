@@ -21,7 +21,9 @@
 // deleted; the next Session rebuilds it. A delete the provider refuses (E2B:
 // sandboxes started from the snapshot still exist) keeps the ref in the
 // record's "retired" list, retried on hits at most hourly and by the next
-// build, so no snapshot is orphaned. Providers without a delete API skip it.
+// build. Cleanup is traffic-driven, not a timely TTL sweeper. A provider/DB
+// double failure can still leave an unrecorded snapshot (logged explicitly).
+// Providers without a delete API wait for their own retention.
 
 import type { Acquired, SandboxLifecyclePort, SandboxPlan } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
@@ -147,6 +149,7 @@ export class EnvironmentCache<R, Q> {
   /** Sessions started from the image whose own install has not finished. */
   readonly #pending = new Map<string, PendingBuild<Q>>();
   readonly #malformedLogged = new Set<string>();
+  readonly #cleanupCursor = new Map<string, string>();
   readonly #hitFailures = new Map<string, { ref: string; count: number }>();
   readonly #build: EnvironmentSnapshotBuildContext<R, Q>;
   #unsupportedLogged = false;
@@ -178,7 +181,11 @@ export class EnvironmentCache<R, Q> {
           const next = JSON.stringify({ ...(parsed ?? { state: "retired" }), retired });
           if (await store.compareAndSwap(storeKey, raw, next)) return;
         }
-        throw new Error("Environment snapshot cleanup CAS contention");
+        // Main-record contention is not a storage outage. Keep the same retired
+        // shape in a dedicated per-ref KV row: other losers cannot conflict.
+        // Identical ref writers only write identical responsibility documents.
+        const key = storeKey + ":retired:" + encodeURIComponent(snapshot.ref);
+        await store.put(key, JSON.stringify({ state: "retired", retired: [snapshot] } satisfies EnvironmentCacheRetiredRecord));
       },
       retired: async (store, storeKey) => {
         const raw = await store.get(storeKey);
@@ -220,6 +227,7 @@ export class EnvironmentCache<R, Q> {
       warn({ reason: "cache_unavailable", message: "The environment cache could not be read (" + text + "); packages are installed in this Session." });
       return cold();
     }
+    await this.#retryRetiredRows(store, storeKey, local, fields);
     let { entry, retired } = this.#parse(raw, local, fields);
     if (entry !== null && environmentSnapshotExpired(entry, this.#ttl, startMs)) {
       const expired = entry.snapshot;
@@ -348,6 +356,24 @@ export class EnvironmentCache<R, Q> {
       await store.compareAndSwap(storeKey, expected, JSON.stringify({ ...rest, lastUsedAtMs: now, ...(retired.length === 0 ? {} : { retired }) } satisfies EnvironmentCacheEntry));
     } catch (error) {
       this.#options.logger.warn({ ...fields, path: "record_failed", error: this.#errorText(error) }, "Recording the environment snapshot's use failed");
+    }
+  }
+
+  /** Retry a bounded page. Refusal keeps the row; CAS prevents a stale
+   * drain from deleting a rewritten responsibility. Cursor is only scheduling,
+   * never ownership: a fresh instance starts at the first persisted key. */
+  async #retryRetiredRows(store: EnvironmentCacheStore, storeKey: string, local: string, fields: Record<string, unknown>): Promise<void> {
+    const prefix = storeKey + ":retired:";
+    try {
+      const { keys, cursor } = await store.retiredKeys(prefix, this.#cleanupCursor.get(local) ?? "", 20);
+      this.#cleanupCursor.set(local, cursor);
+      for (const key of keys) {
+        const raw = await store.get(key);
+        const retired = this.#records(raw).retired;
+        if (retired.length > 0 && (await this.#retire(retired, fields)).length === 0) await store.compareAndSwap(key, raw, null);
+      }
+    } catch (error) {
+      this.#options.logger.warn({ ...fields, path: "delete_failed", error: this.#errorText(error) }, "Retrying persisted environment snapshot cleanup failed; responsibility is retained");
     }
   }
 
