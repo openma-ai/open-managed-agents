@@ -38,6 +38,7 @@ import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
 import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
+import { r2FilesCredentials } from "./r2-files-credentials";
 import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxIdleTimer, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 export interface E2BSandboxEnv {
@@ -134,30 +135,32 @@ function e2bExecutor(runtime: E2BSandboxExecutor): SessionSandboxExecutor {
   };
 }
 
-/** The one storage switch: native mounts when both bucket parent keys are
- * configured, the generic sync when neither is. A key for only one bucket
- * would leave Memory and outputs on different paths: rejected. */
+/** The one storage switch: native mounts when the R2 parent key is configured
+ * (one key for every bucket, or R2_FILES_* for the files bucket), the generic
+ * sync when no key is. A files key alone would leave Memory and outputs on
+ * different paths: rejected. */
 export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStorage: E2BObjectStorageOptions } | { kind: "sync"; memory: MemoryPrefixBucket; files: R2Bucket } {
   const memoryKey = Boolean(env.R2_ACCESS_KEY_ID || env.R2_SECRET_ACCESS_KEY);
   const filesKey = Boolean(env.R2_FILES_ACCESS_KEY_ID || env.R2_FILES_SECRET_ACCESS_KEY);
-  if (memoryKey !== filesKey) {
+  if (filesKey && !memoryKey) {
     throw new Error(
-      "SANDBOX_ADAPTER=e2b storage is half configured: native mounts need both the memory bucket key "
-        + "(R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) and the files bucket key (R2_FILES_ACCESS_KEY_ID, R2_FILES_SECRET_ACCESS_KEY); "
-        + "set both for mounts, or neither for the copy sync",
+      "SANDBOX_ADAPTER=e2b storage is half configured: R2_FILES_ACCESS_KEY_ID / R2_FILES_SECRET_ACCESS_KEY need "
+        + "R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY for the memory bucket; "
+        + "set R2_ACCESS_KEY_ID for mounts, or no R2 key for the copy sync",
     );
   }
   if (memoryKey) {
-    const required = ["CLOUDFLARE_ACCOUNT_ID", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MEMORY_BUCKET_NAME", "R2_FILES_ACCESS_KEY_ID", "R2_FILES_SECRET_ACCESS_KEY", "FILES_BUCKET_NAME"] as const;
+    const required = ["CLOUDFLARE_ACCOUNT_ID", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MEMORY_BUCKET_NAME", "FILES_BUCKET_NAME"] as const;
     const missing = required.filter((name) => !env[name]);
     if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b native storage requires ${missing.join(", ")}`);
+    const files = r2FilesCredentials(env);
     const parent = (bucket: string, accessKeyId: string, secretAccessKey: string) =>
       createR2TemporaryCredentials({ accountId: env.CLOUDFLARE_ACCOUNT_ID!, endpoint: env.R2_ENDPOINT!, bucket, accessKeyId, secretAccessKey });
     return {
       kind: "native",
       objectStorage: {
         memory: parent(env.MEMORY_BUCKET_NAME!, env.R2_ACCESS_KEY_ID!, env.R2_SECRET_ACCESS_KEY!),
-        outputs: parent(env.FILES_BUCKET_NAME!, env.R2_FILES_ACCESS_KEY_ID!, env.R2_FILES_SECRET_ACCESS_KEY!),
+        outputs: parent(env.FILES_BUCKET_NAME!, files.accessKeyId, files.secretAccessKey),
         outputsPrefix: (scope) => sessionOutputsPrefix(scope.workspaceId, scope.sessionId),
       },
     };
