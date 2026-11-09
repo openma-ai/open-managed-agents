@@ -574,12 +574,28 @@ describe("NodeManagedSessionInputPreparer", () => {
       ]);
     });
 
-    it("fails closed without a Bond source or when the Bond refuses", async () => {
+    it("clones anonymously, with no credential, when the deployment has no Bonds", async () => {
+      const sandbox = sandboxWith(false);
+      await preparerWith().prepare({
+        workspaceId: "workspace_inputs",
+        session: bondSession(),
+        sandbox: sandbox as unknown as SandboxExecutor,
+      });
+      expect(sandbox.registerCommandSecrets).toHaveBeenCalledWith("git", { GIT_TERMINAL_PROMPT: "0" });
+      expect(sandbox.exec.mock.calls.map(([command]) => command)).toContain("git clone -- 'https://gitlab.example.test/group/app.git' 'app' 2>&1");
+    });
+
+    it("reports a failed anonymous clone as a repository that may be private", async () => {
+      const sandbox = sandboxWith(false);
+      sandbox.exec = vi.fn(async (command: string) => command.startsWith("git clone") ? "exit=128\nfatal: Authentication failed" : "");
       await expect(preparerWith().prepare({
         workspaceId: "workspace_inputs",
         session: bondSession(),
-        sandbox: sandboxWith(false) as unknown as SandboxExecutor,
-      })).rejects.toThrow(/has no token, and this deployment has no Bonds/);
+        sandbox: sandbox as unknown as SandboxExecutor,
+      })).rejects.toThrow(/has no token.*private/s);
+    });
+
+    it("fails closed when the Bond refuses", async () => {
       const sandbox = sandboxWith(false);
       await expect(preparerWith({
         repositoryToken: async () => { throw new Error("No Bond credential for repository x: no GitLab Bond for this host"); },

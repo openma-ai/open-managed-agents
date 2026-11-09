@@ -73,9 +73,11 @@ export async function loadManagedSessionResources(
  * Authorization on every github.com / api.github.com request
  * (oma-sandbox.ts githubAuthHandler), so no token enters the container. Git
  * is set to fail fast instead of prompting when the proxy cannot resolve one:
- * no askpass, no credential helper, so the proxy is the only auth path. */
+ * no askpass, no credential helper, so the proxy is the only auth path. A
+ * repository without a token passes the proxy unauthenticated (anonymous). */
 export function proxiedRepositoryAccess(sandbox: Pick<SandboxExecutor, "exec">): RepositoryAccessPort {
   return {
+    anonymous: (repository) => repository.credentialSource === "bond",
     async prepare() {
       const command = `git config --global core.askpass /bin/true && `
         + `git config --global credential.helper "" && `

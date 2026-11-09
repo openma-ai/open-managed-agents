@@ -15,6 +15,8 @@ export type RepositorySandbox = Pick<SandboxExecutor, "exec" | "readFile" | "git
  * clone, with every repository of the Session. */
 export interface RepositoryAccessPort {
   prepare(repositories: readonly RepositoryMount[]): Promise<void>;
+  /** This repository reaches git with no credential on this host. */
+  anonymous?(repository: RepositoryMount): boolean;
 }
 
 export function shellQuote(value: string): string {
@@ -75,11 +77,22 @@ async function verifyRetained(sandbox: RepositorySandbox, repository: Repository
   }
 }
 
-async function cloneFresh(sandbox: RepositorySandbox, repository: RepositoryMount, dir: string): Promise<void> {
+async function clone(sandbox: RepositorySandbox, repository: RepositoryMount, dir: string): Promise<void> {
   if (sandbox.gitCheckout !== undefined) {
     await sandbox.gitCheckout(repository.url, { targetDir: repository.mountPath });
   } else {
     await run(sandbox, `git clone -- ${shellQuote(repository.url)} ${dir} 2>&1`, 120_000);
+  }
+}
+
+async function cloneFresh(sandbox: RepositorySandbox, repository: RepositoryMount, dir: string, anonymous: boolean): Promise<void> {
+  try {
+    await clone(sandbox, repository, dir);
+  } catch (err) {
+    if (!anonymous) throw err;
+    throw new Error(
+      `Repository ${repository.url} has no token, so it was cloned anonymously and the clone failed. If it is private, attach it with an authorization_token: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
   await run(sandbox, `git -C ${dir} config user.name "Agent" && git -C ${dir} config user.email "agent@managed-agents.dev"`, 10_000);
   const checkout = repository.checkout;
@@ -97,26 +110,34 @@ async function cloneFresh(sandbox: RepositorySandbox, repository: RepositoryMoun
   }
 }
 
-export async function checkoutRepository(sandbox: RepositorySandbox, repository: RepositoryMount): Promise<void> {
+export async function checkoutRepository(sandbox: RepositorySandbox, repository: RepositoryMount, anonymous = false): Promise<void> {
   const dir = shellQuote(execPath(repository.mountPath, await workspaceRootOf(sandbox)));
   if (await retainedClone(sandbox, repository.mountPath)) await verifyRetained(sandbox, repository, dir);
-  else await cloneFresh(sandbox, repository, dir);
+  else await cloneFresh(sandbox, repository, dir, anonymous);
 }
 
 /** RepositoryAccessPort for sandboxes that scope secrets to one command
  * prefix: each repository's token reaches only `git`, as an http
- * extraHeader in GIT_CONFIG_* env, never in a file or remote URL. */
+ * extraHeader in GIT_CONFIG_* env, never in a file or remote URL. An
+ * `anonymous` repository gets no credential; git must not prompt for one. */
 export function commandScopedRepositoryAccess(
   sandbox: Pick<SandboxExecutor, "registerCommandSecrets">,
   token: (repository: RepositoryMount) => Promise<string | null>,
+  anonymous: (repository: RepositoryMount) => boolean = () => false,
 ): RepositoryAccessPort {
   return {
-    async prepare(repositories) {
-      if (repositories.length === 0) return;
+    anonymous,
+    async prepare(all) {
+      const repositories = all.filter((repository) => !anonymous(repository));
+      const prompts: Record<string, string> = repositories.length < all.length ? { GIT_TERMINAL_PROMPT: "0" } : {};
+      if (repositories.length === 0) {
+        if (all.length > 0) sandbox.registerCommandSecrets?.("git", prompts);
+        return;
+      }
       if (sandbox.registerCommandSecrets === undefined) {
         throw new Error("Managed Session has GitHub repositories, but the selected sandbox cannot scope repository credentials");
       }
-      const env: Record<string, string> = { GIT_CONFIG_COUNT: String(repositories.length) };
+      const env: Record<string, string> = { ...prompts, GIT_CONFIG_COUNT: String(repositories.length) };
       for (const [index, repository] of repositories.entries()) {
         const value = await token(repository);
         if (value === null) {

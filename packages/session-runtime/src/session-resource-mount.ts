@@ -102,7 +102,7 @@ export async function mountSessionResources(
         await sandbox.writeFileBytes!(mount.mountPath, await ports.downloadFile!(mount.fileId));
         break;
       case "github_repository":
-        await checkoutRepository(sandbox, mount);
+        await checkoutRepository(sandbox, mount, ports.repositories.anonymous?.(mount) === true);
         break;
       case "memory_store":
         if (ports.memoryStores.mode === "native") await mountMemoryStore(sandbox, mount, ports.memoryStores.lookupName);

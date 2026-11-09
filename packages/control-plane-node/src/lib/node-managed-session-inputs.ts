@@ -29,7 +29,7 @@ import {
   skillMountsShouldFetchBodies,
 } from "@open-managed-agents/agent-harness";
 import { toLegacyHarnessAgentConfig } from "./node-managed-agent-codec.js";
-import { repositoryToken } from "./node-repository-egress.js";
+import { clonesAnonymously, repositoryToken } from "./node-repository-egress.js";
 
 type FileSource = Pick<FilesApplicationPort, "downloadFile">;
 type SkillVersionSource = Pick<
@@ -105,7 +105,7 @@ export interface NodeManagedSessionInputPreparerDependencies {
   files: FileSource;
   skillVersions: SkillVersionSource;
   repositoryCredentials: Pick<SessionResourceSecretSource, "findGithubToken">;
-  /** Unset: repositories without a token cannot be prepared. */
+  /** Unset: repositories without a token are cloned anonymously. */
   repositoryBonds?: RepositoryBondCredentialSource;
   /** What git authenticates with instead of the token; the egress relay
    * substitutes it (node-repository-egress). Unset: credentialed
@@ -273,7 +273,7 @@ export class NodeManagedSessionInputPreparer {
       },
       // git authenticates with a placeholder; only the egress relay holds the
       // token (node-repository-egress). No placeholder source: refused, never plaintext.
-      repositories: commandScopedRepositoryAccess(input.sandbox, (repository) => this.repositoryPlaceholder(input, repository)),
+      repositories: commandScopedRepositoryAccess(input.sandbox, (repository) => this.repositoryPlaceholder(input, repository), (repository) => clonesAnonymously(this.dependencies, repository)),
       // Attached by the sandbox storage Port on every open (prepareStorage).
       memoryStores: { mode: "storage" },
     });

@@ -53,6 +53,28 @@ describe("Node repository credential egress", () => {
     expect(elsewhere).toMatchObject({ ok: false, rule: "credential_host_mismatch" });
   });
 
+  describe("a repository without a token", () => {
+    const tokenless = { ...repository, credentialSource: "bond" } as unknown as Session["resources"][number];
+    const anonymousSession = { id: "sess_1", vaultIds: [], resources: [tokenless] } as unknown as Session;
+    const build = (secret: string | undefined, bonds: boolean) => createNodeRepositoryEgress({
+      secret,
+      repositoryCredentials: { findGithubToken: async () => { throw new Error("no stored token"); } },
+      ...(bonds ? { repositoryBonds: { repositoryToken: async () => "glpat-bond" } } : {}),
+      findSession: async () => anonymousSession,
+    });
+    const noVault = () => { throw new Error("no Vaults, no resolver"); };
+
+    it("needs no substitution, relay or root secret on a deployment without Bonds", async () => {
+      expect(await build(undefined, false).substitutions({ workspaceId: "ws_1", session: anonymousSession }, noVault)).toEqual([]);
+      const credentials = build("root-secret-for-tests", false).relayCredentials(resolver as never) as unknown as typeof resolver;
+      expect((await credentials.sandboxEgress(scope as never, "github.com")).substitutions).toEqual([]);
+    });
+
+    it("still goes through the Bond on a deployment that has them", async () => {
+      expect(await build("root-secret-for-tests", true).substitutions({ workspaceId: "ws_1", session: anonymousSession }, noVault)).toHaveLength(1);
+    });
+  });
+
   it("has no placeholders without the platform root secret", async () => {
     await expect(egress("").placeholder({ ...scope, resourceId: "res_repo" })).rejects.toThrow(/PLATFORM_ROOT_SECRET/);
   });

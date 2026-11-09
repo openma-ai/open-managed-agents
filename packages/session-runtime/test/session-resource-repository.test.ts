@@ -5,6 +5,7 @@ import {
   commandScopedRepositoryAccess,
   shellQuote,
 } from "../src/session-resource-repository";
+import { mountSessionResources } from "../src/session-resource-mount";
 
 const repo = { type: "github_repository" as const, id: "r1", url: "https://g/x.git", mountPath: "/workspace/x", checkout: null };
 
@@ -62,6 +63,49 @@ describe("commandScopedRepositoryAccess", () => {
     await expect(commandScopedRepositoryAccess({}, async () => "t").prepare([repo])).rejects.toThrow(/cannot scope repository credentials/);
     await expect(commandScopedRepositoryAccess({ registerCommandSecrets: vi.fn() }, async () => null).prepare([repo]))
       .rejects.toThrow(/credential for resource r1 was not found/);
+  });
+});
+
+describe("repositories cloned without a token", () => {
+  const anon = { ...repo, id: "anon", url: "https://g/public.git", mountPath: "/workspace/public", credentialSource: "bond" as const };
+  const isAnon = (mount: { credentialSource?: "bond" }) => mount.credentialSource === "bond";
+
+  it("registers no credential, and needs no command secrets when every repository is anonymous", async () => {
+    const token = vi.fn(async () => "t");
+    await commandScopedRepositoryAccess({}, token, isAnon).prepare([anon]);
+    expect(token).not.toHaveBeenCalled();
+  });
+
+  it("never lets git prompt, and keeps token repositories scoped alongside anonymous ones", async () => {
+    const registerCommandSecrets = vi.fn();
+    await commandScopedRepositoryAccess({ registerCommandSecrets }, async () => "ghp_private", isAnon).prepare([anon, repo]);
+    expect(registerCommandSecrets).toHaveBeenCalledWith("git", {
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.https://g/x.git.extraHeader",
+      GIT_CONFIG_VALUE_0: "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hwX3ByaXZhdGU=",
+    });
+  });
+
+  const failingClone = { exec: async (command: string) => command.startsWith("git clone") ? "exit=128\nfatal: could not read Username" : "exit=0\n", readFile: async () => { throw new Error("missing"); } };
+
+  it("says so when the clone fails, and leaves other clone failures as they were", async () => {
+    await expect(mountSessionResources(failingClone as never, [anon], {
+      repositories: { prepare: async () => undefined, anonymous: isAnon },
+      memoryStores: { mode: "storage" },
+    })).rejects.toThrow(/https:\/\/g\/public\.git has no token.*private.*could not read Username/s);
+    await expect(mountSessionResources(failingClone as never, [repo], {
+      repositories: { prepare: async () => undefined, anonymous: isAnon },
+      memoryStores: { mode: "storage" },
+    })).rejects.toThrow(/^Repository command failed/);
+  });
+
+  it("reports a failed native checkout the same way", async () => {
+    const sandbox = { ...failingClone, gitCheckout: async () => { throw new Error("Authentication required"); } };
+    await expect(mountSessionResources(sandbox as never, [anon], {
+      repositories: { prepare: async () => undefined, anonymous: isAnon },
+      memoryStores: { mode: "storage" },
+    })).rejects.toThrow(/has no token.*Authentication required/s);
   });
 });
 

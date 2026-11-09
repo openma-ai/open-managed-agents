@@ -18,8 +18,14 @@ type Repository = Extract<Session["resources"][number], { type: "github_reposito
 
 export interface RepositoryCredentialSources {
   repositoryCredentials: Pick<SessionResourceSecretSource, "findGithubToken">;
-  /** Unset: repositories without a token cannot be prepared. */
+  /** Unset: repositories without a token are cloned anonymously. */
   repositoryBonds?: RepositoryBondCredentialSource;
+}
+
+/** No token and no Bonds on this deployment: git gets no credential, so the
+ * repository needs no placeholder, substitution or relay. */
+export function clonesAnonymously(sources: Pick<RepositoryCredentialSources, "repositoryBonds">, resource: { credentialSource?: string }): boolean {
+  return resource.credentialSource === "bond" && sources.repositoryBonds === undefined;
 }
 
 /** The repository's token (stored with the resource, or the workspace's Bond). */
@@ -27,10 +33,7 @@ export async function repositoryToken(sources: RepositoryCredentialSources, inpu
   if (resource.credentialSource !== "bond") {
     return sources.repositoryCredentials.findGithubToken({ workspaceId: input.workspaceId, sessionId: input.sessionId, resourceId: resource.id });
   }
-  if (sources.repositoryBonds === undefined) {
-    throw new Error(`Managed Session repository ${resource.url} has no token, and this deployment has no Bonds to clone it with`);
-  }
-  return sources.repositoryBonds.repositoryToken({ workspaceId: input.workspaceId, url: resource.url });
+  return sources.repositoryBonds?.repositoryToken({ workspaceId: input.workspaceId, url: resource.url }) ?? null;
 }
 
 const NO_PLACEHOLDERS = "Repository credentials reach the sandbox only through credential egress, which needs PLATFORM_ROOT_SECRET";
@@ -61,7 +64,9 @@ export function createNodeRepositoryEgress(input: RepositoryCredentialSources & 
       const vaults = session.vaultIds.length === 0 ? [] : placeholderSubstitutions(
         await vault().placeholderEnvironment({ workspaceId, sessionId: session.id, vaultIds: session.vaultIds }), "vault");
       const repositories: Record<string, string> = {};
-      for (const resource of repositoriesOf(session)) repositories[envNameOf(resource)] = await placeholder({ workspaceId, sessionId: session.id }, resource.id);
+      for (const resource of repositoriesOf(session)) {
+        if (!clonesAnonymously(input, resource)) repositories[envNameOf(resource)] = await placeholder({ workspaceId, sessionId: session.id }, resource.id);
+      }
       return [...vaults, ...placeholderSubstitutions(repositories, "repository")];
     },
 
@@ -76,7 +81,7 @@ export function createNodeRepositoryEgress(input: RepositoryCredentialSources & 
           const secrets: VaultSubstitutionSecret[] = [];
           for (const resource of repositoriesOf(session)) {
             const host = hostOf(resource.url);
-            if (host === null) continue;
+            if (host === null || clonesAnonymously(input, resource)) continue;
             const value = await repositoryToken(input, scope, resource).catch(() => null);
             secrets.push({ value, substitution: {
               credentialId: `repository:${resource.id}`, envName: envNameOf(resource),
