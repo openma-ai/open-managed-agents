@@ -85,7 +85,7 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
 
   it("validates workspace, output, and working-directory paths", async () => {
     const ok = sseText("event: exit\ndata: {\"exit_code\":0}\n\n");
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => ok.clone());
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => String(url).endsWith("/process") ? Response.json({id:"p"}) : ok.clone());
     const instance = runtime(fetch);
 
     await expect(instance.readFile("/workspace/")).rejects.toThrow("file path is unsafe");
@@ -100,7 +100,7 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
 
     const process = await instance.spawnDuplexProcess({ command: "x" });
     await expect(consumeProcess(process)).resolves.toEqual(["", "", { code: 0, signal: null }]);
-    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetch.mock.calls.find(([url]) => String(url).endsWith("/process"))?.[1]?.body))).toEqual({
       argv: ["x"],
       cwd: "/workspace",
     });
@@ -150,7 +150,7 @@ data: {"exit_code":1}
       .mockResolvedValueOnce(new Response("bad", { status: 500 }))
       .mockResolvedValue(Response.json({ success: true }));
     await expect(runtime(execFails).spawnDuplexProcess({ command: "x", env: { KEY: "value" } })).rejects.toThrow("500: bad");
-    expect(urls(execFails)).toEqual(["POST /session", "POST /exec", expect.stringMatching(/^DELETE \/session\/oma-spawn-/)]);
+    expect(urls(execFails)).toEqual(["POST /session", "POST /process", expect.stringMatching(/^DELETE \/session\/oma-spawn-/)]);
     expect(String(execFails.mock.calls[1]?.[1]?.body)).not.toContain("value");
 
     const execThrows = vi.fn<typeof globalThis.fetch>()
@@ -285,7 +285,7 @@ data: {"exit_code":1}
   it("handles all duplex terminal events and stream framing", async () => {
     const cases: Array<{ response: Response; error: string }> = [
       { response: new Response("bad", { status: 500 }), error: "500: bad" },
-      { response: new Response(null), error: "200" },
+      { response: new Response(null), error: "did not return an SSE" },
       { response: sseText("", 200, "text/plain"), error: "did not return an SSE" },
       { response: sseText("event: exit\ndata: {}\n\n"), error: "invalid exit event" },
       { response: sseText("event: error\ndata: {\"code\":\"E_FAIL\",\"error\":\"failed\"}\n\n"), error: "(E_FAIL): failed" },
@@ -293,7 +293,7 @@ data: {"exit_code":1}
       { response: sseText("event: progress\ndata: ignored\n\n"), error: "without a terminal event" },
     ];
     for (const entry of cases) {
-      const instance = runtime(vi.fn<typeof globalThis.fetch>().mockResolvedValue(entry.response));
+      const instance = runtime(vi.fn<typeof globalThis.fetch>().mockImplementation(async url => String(url).endsWith("/process") ? Response.json({id:"p"}) : entry.response));
       if (!entry.response.ok || entry.response.body === null || !entry.response.headers.get("content-type")?.includes("text/event-stream")) {
         await expect(instance.spawnDuplexProcess({ command: "x" })).rejects.toThrow(entry.error);
       } else {
@@ -305,40 +305,23 @@ data: {"exit_code":1}
     const framed = sseText(
       "\r\nevent: stdout\r\ndata: YQ==\r\n\r\nevent: exit\r\ndata: {\"exit_code\":0}",
     );
-    const process = await runtime(vi.fn<typeof globalThis.fetch>().mockResolvedValue(framed))
+    const process = await runtime(vi.fn<typeof globalThis.fetch>().mockImplementation(async url => String(url).endsWith("/process") ? Response.json({id:"p"}) : framed))
       .spawnDuplexProcess({ command: "x" });
     await expect(consumeProcess(process)).resolves.toEqual(["a", "", { code: 0, signal: null }]);
 
-    const stdinProcess = await runtime(vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      sseText("event: exit\ndata: {\"exit_code\":0}\n\n"),
-    )).spawnDuplexProcess({ command: "x" });
-    const writer = stdinProcess.stdin.getWriter();
-    await expect(writer.write(encoder.encode("input"))).rejects.toThrow("has no stdin");
-    await consumeProcess(stdinProcess);
   });
 
-  it("uses SIGTERM by default when a duplex request is cancelled", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_input, init) =>
-      new Response(new ReadableStream({
-        start(controller) {
-          init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true });
-        },
-      }), { headers: { "content-type": "text/event-stream" } }),
-    );
-    const process = await runtime(fetch).spawnDuplexProcess({ command: "x" });
+  it("uses remote SIGTERM by default and checks confirmed exit payload", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async url => {
+      if(String(url).endsWith("/process")) return Response.json({id:"p"});
+      if(String(url).endsWith("/signal")) return Response.json({exit_code:143});
+      return sseText('event: exit\ndata: {"exit_code":143}\n\n');
+    });
+    const process = await runtime(fetch).spawnDuplexProcess({command:"x"});
+    const consumed = consumeProcess(process);
     await process.kill();
-    await expect(process.exited).resolves.toEqual({ code: null, signal: "SIGTERM" });
-
-    const closesOnAbort = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_input, init) =>
-      new Response(new ReadableStream({
-        start(controller) {
-          init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
-        },
-      }), { headers: { "content-type": "text/event-stream" } }),
-    );
-    const closing = await runtime(closesOnAbort).spawnDuplexProcess({ command: "x" });
-    await closing.kill("SIGKILL");
-    await expect(closing.exited).resolves.toEqual({ code: null, signal: "SIGKILL" });
+    expect(JSON.parse(String(fetch.mock.calls.find(([url]) => String(url).endsWith("/signal"))?.[1]?.body))).toEqual({signal:"SIGTERM"});
+    await expect(consumed).resolves.toEqual(["","",{code:143,signal:null}]);
   });
 
   it("handles command and output failures without hiding stderr", async () => {
@@ -411,6 +394,7 @@ data: {"exit_code":1}
       const url = String(input);
       if (url.endsWith("/v1/sandbox") && init?.method === "POST") return Response.json({ id: "sb-1" });
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.endsWith("/claim")) return new Response(null, {status:204});
       if (url.endsWith("/running")) return Response.json({ running: true });
       return new Response("unexpected", { status: 500 });
     });

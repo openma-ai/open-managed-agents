@@ -256,12 +256,9 @@ export class CloudflareBridgeRuntime
     return response;
   }
 
-  // The Bridge has no side-effect-free status route: every
-  // `/v1/sandbox/:id/*` request (including `GET /running`, which runs
-  // `exec("true")`) assigns and starts a container for that id. Probing a
-  // destroyed sandbox would therefore start a fresh, empty one. A destroy
-  // tombstone in the checkpoint store lets every attachment (not only the
-  // instance that destroyed it) answer "stopped" without touching the Bridge.
+  // Native /running is read-only and never starts a stopped container. Keep
+  // the shared explicit-destroy tombstone so other attachments also fail
+  // closed after an operator-requested deletion.
   get #tombstoneKey(): string {
     return `${this.#prefix}/${encodeURIComponent(this.#runtimeId)}.destroyed`;
   }
@@ -360,7 +357,6 @@ export class CloudflareBridgeRuntime
   }
 
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> {
-    const abort = new AbortController();
     const stdout = new TransformStream<Uint8Array, Uint8Array>();
     const stderr = new TransformStream<Uint8Array, Uint8Array>();
     const stdoutWriter = stdout.writable.getWriter();
@@ -395,27 +391,34 @@ export class CloudflareBridgeRuntime
     }
     let response: Response;
     try {
-      response = await this.#request("/exec", {
+      response = await this.#request("/process", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           ...(sessionId === null ? {} : { "session-id": sessionId }),
         },
         body: JSON.stringify({ argv: [spec.command, ...(spec.args ?? [])], cwd }),
-        signal: abort.signal,
       });
     } catch (error) {
       await deleteSession();
       throw error;
     }
-    if (!response.ok || response.body === null) {
-      await deleteSession();
-      throw await responseError(response);
+    if (!response.ok) { await deleteSession(); throw await responseError(response); }
+    const createdProcess = await response.json() as { id?: unknown };
+    if (typeof createdProcess.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(createdProcess.id)) {
+      await deleteSession(); throw new Error("Cloudflare Bridge returned an invalid process id");
     }
-    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-      throw new Error("Cloudflare Bridge exec did not return an SSE stream");
+    const processPath = "/process/" + encodeURIComponent(createdProcess.id);
+    const requestProcess = async (path: string, init?: RequestInit) => {
+      const result = await this.#request(processPath + path, init);
+      if (!result.ok) throw await responseError(result);
+      return result;
+    };
+    try { response = await requestProcess("/events"); }
+    catch (error) { await deleteSession(); throw error; }
+    if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+      await deleteSession(); throw new Error("Cloudflare Bridge process did not return an SSE stream");
     }
-    let killedSignal: "SIGTERM" | "SIGKILL" | null = null;
     const exited = (async () => {
       try {
         for await (const message of parseSse(response.body!)) {
@@ -438,15 +441,7 @@ export class CloudflareBridgeRuntime
             );
           }
         }
-        if (killedSignal !== null) {
-          return { code: null, signal: killedSignal };
-        }
-        throw new Error("Cloudflare Bridge exec stream ended without a terminal event");
-      } catch (error) {
-        if (killedSignal !== null) {
-          return { code: null, signal: killedSignal };
-        }
-        throw error;
+        throw new Error("Cloudflare Bridge process stream ended without a terminal event");
       } finally {
         await Promise.allSettled([
           stdoutWriter.close(),
@@ -457,15 +452,18 @@ export class CloudflareBridgeRuntime
     })();
     return {
       stdin: new WritableStream<Uint8Array>({
-        write() {
-          throw new Error("Cloudflare Bridge exec has no stdin; use the PTY API for interactive processes");
+        async write(bytes) {
+          await requestProcess("/stdin", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes });
         },
+        async close() { await requestProcess("/stdin", { method: "DELETE" }); },
+        async abort() { await requestProcess("/stdin", { method: "DELETE" }); },
       }),
       stdout: stdout.readable,
       stderr: stderr.readable,
       async kill(signal = "SIGTERM") {
-        killedSignal = signal;
-        abort.abort(new DOMException(`Process killed with ${signal}`, "AbortError"));
+        const response = await requestProcess("/signal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal }) });
+        const result = await response.json() as { exit_code?: unknown };
+        if (!Number.isSafeInteger(result.exit_code)) throw new Error("Cloudflare Bridge signal did not confirm a real process exit");
       },
       exited,
     };
@@ -634,7 +632,22 @@ export function createCloudflareBridgeProvider(
     if (typeof body.id !== "string" || body.id === "") {
       throw new Error("Cloudflare Sandbox Bridge returned an invalid sandbox id");
     }
-    return attach(body.id);
+    const runtime = attach(body.id);
+    try {
+      const recorded = await options.checkpointStore.put(
+        safePrefix(options.checkpointKeyPrefix) + "/allocations/" + encodeURIComponent(body.id) + ".json",
+        JSON.stringify(runtime.runtimeHandle()),
+      );
+      if (!recorded) throw new Error("Cloudflare Bridge allocation handle was not persisted");
+      const claimed = await fetch(baseUrl + "/v1/sandbox/" + encodeURIComponent(body.id) + "/claim", {
+        method: "POST", headers: { authorization: "Bearer " + options.apiKey },
+      });
+      if (!claimed.ok) throw await responseError(claimed);
+      return runtime;
+    } catch (error) {
+      await runtime.destroy().catch(() => undefined);
+      throw error;
+    }
   };
   return {
     create,
