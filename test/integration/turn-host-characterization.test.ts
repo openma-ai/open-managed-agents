@@ -79,6 +79,21 @@ describe("characterization: SessionDO interrupt and lane drain", () => {
     expect(lifecycle(await events(id))).toEqual(["session.status_running", "idle:end_turn", "user.interrupt"]);
   }, 30_000);
 
+  it("a message queued before an interrupt still runs as the next turn", async () => {
+    const id = await createSession("hang-until-abort");
+    texts.length = 0;
+    await send(id, message("hang"));
+    await until(id, (e) => e.some((x) => x.type === "agent.message"));
+    await send(id, message("finish"));
+    await send(id, { type: "user.interrupt" });
+    await until(id, (e) => e.filter((x) => x.type === "session.status_idle").length >= 2);
+    expect(texts).toEqual(["hang", "finish"]);
+    expect(lifecycle(await events(id))).toEqual([
+      "session.status_running", "user.interrupt", "idle:end_turn",
+      "session.status_running", "idle:end_turn",
+    ]);
+  }, 30_000);
+
   it("drains queued messages one turn at a time, in order", async () => {
     const id = await createSession("record-order");
     texts.length = 0;

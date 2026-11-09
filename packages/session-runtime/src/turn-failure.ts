@@ -11,6 +11,7 @@ import {
   ModelError,
   PaymentRequiredError,
 } from "@open-managed-agents/shared";
+import { abortableDelay } from "@open-managed-agents/session-runtime-contract";
 
 export type TurnFailureClass =
   /** Worth another attempt while the budget lasts. */
@@ -100,6 +101,47 @@ export async function settleTurnFailure(
   reportTurnFailure(plan, input.message, input.events);
   if (plan.type === "retry") await input.wait(plan.delayMs);
   return plan;
+}
+
+export type TurnAttemptsResult =
+  | { type: "completed" }
+  | { type: "cancelled" | "exhausted" | "terminal"; error: Error };
+
+/** Runs a harness attempt under the shared retry policy. Every failure is
+ * announced here; the caller only ends the turn from the result. A value that
+ * is not an Error is rethrown for the caller's own failure path. */
+export async function runTurnAttempts(input: {
+  run(): Promise<void>;
+  agentEventCount(): number;
+  isCancelled(error: Error): boolean;
+  classify(error: Error, producedAgentEvents: boolean): TurnFailureClass;
+  retry: { attempts: number; delayMs(attempt: number): number };
+  signal: AbortSignal;
+  events: TurnFailureEventsPort;
+  describe(error: Error): string;
+}): Promise<TurnAttemptsResult> {
+  for (let attempt = 1; ; attempt += 1) {
+    const agentEventsBefore = input.agentEventCount();
+    try {
+      await input.run();
+      return { type: "completed" };
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const plan = await settleTurnFailure({
+        cancelled: input.isCancelled(error),
+        failureClass: input.classify(error, input.agentEventCount() !== agentEventsBefore),
+        attempt,
+        maxAttempts: input.retry.attempts,
+        delayMs: input.retry.delayMs,
+        message: input.describe(error),
+        events: input.events,
+        // An interrupt during the backoff ends the wait at once.
+        wait: (ms) => abortableDelay(ms, input.signal),
+      });
+      if (plan.type !== "retry") return { type: plan.type, error };
+      if (input.signal.aborted) return { type: "cancelled", error };
+    }
+  }
 }
 
 const CANCELLATION_ERROR_NAMES = new Set([

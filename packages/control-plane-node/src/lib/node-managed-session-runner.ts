@@ -1,19 +1,21 @@
 import {
   classifyTurnFailure,
+  classifyTurnInput,
   finishTurn,
+  interruptTurn,
+  planRequiresActionAnswers,
   reportTurnFailure,
-  settleTurnFailure,
+  runTurnAttempts,
   TURN_RETRY,
   SessionSandboxRuntime,
   type SessionSandboxMode,
   type TurnFailureClass,
   type TurnFailureEventsPort,
 } from "@open-managed-agents/session-runtime";
-import { abortableDelay, abortedError, linkAbort, untilAborted } from "@open-managed-agents/session-runtime-contract";
+import { abortedError, linkAbort, untilAborted } from "@open-managed-agents/session-runtime-contract";
 import {
   answeredToolCallIds,
   asWireEvents,
-  outstandingRequiresAction,
   stillPending,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
 import {
@@ -28,7 +30,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
-  type HarnessContext, type HarnessInterface, interruptRequiresActionClosure,
+  type HarnessContext, type HarnessInterface,
 } from "@open-managed-agents/agent-harness";
 import type {
   Environment,
@@ -48,7 +50,7 @@ import {
 } from "./node-managed-session-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
-import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { encodeRuntimeHistoryEvent, encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/api-types";
 import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import {
@@ -656,76 +658,22 @@ export class DefaultNodeManagedSessionRunner
   }
 
   async accept(input: NodeManagedSessionRunnerAcceptInput): Promise<void> {
-    if (input.events.some((event) => event.type === "user.interrupt")) {
-      const active = this.abortControllers.get(input);
-      active?.abort(INTERRUPT_REQUESTED);
-      if (active === undefined) {
-        // Official CMA: interrupt against an already-idle session is a no-op
-        // (including idle requires_action). interruptRequiresActionClosure
-        // returns no frames; pending event_ids stay outstanding.
-        const wire = input.historyEvents.map((event) => encodeRuntimeHistoryEvent(event) as SessionEvent);
-        for (const frame of interruptRequiresActionClosure(wire)) {
-          await input.output({
-            ...frame,
-            id: this.dependencies.ids.nextEventId(),
-            processed_at: (this.dependencies.sessionClocks ?? processSessionClocks)
-              .forSession(input.workspaceId, input.sessionId)
-              .stampIso(this.dependencies.clock.now().getTime()),
-          });
-        }
-      }
+    const turnInput = classifyTurnInput(input.events);
+    if (turnInput.type === "interrupt") {
+      await this.interrupt(input);
       return;
     }
-    const event = findLastMatching(
-      input.events,
-      (candidate) => candidate.type !== "system.message",
-    );
-    if (event === undefined) {
-      throw new Error("Managed Node runner received no actionable event");
-    }
-    if (
-      event.type !== "user.message" &&
-      event.type !== "user.custom_tool_result" &&
-      event.type !== "user.tool_result" &&
-      event.type !== "user.tool_confirmation" &&
-      event.type !== "user.define_outcome" &&
-      // A budget update that lifted a budget_reached pause: continue the
-      // harness from history with no new user input.
-      !(event.type === "session.updated" && event.resume === true)
-    ) {
-      throw new Error(
-        `Managed Node runner does not yet support ${event.type}`,
-      );
-    }
+    const event = turnInput.trigger;
     if (input.committedTerminal !== undefined && input.executionFence !== undefined) {
       await this.finishCommittedExecution(input, input.executionFence, input.committedTerminal);
       return;
     }
-    // requires_action answers (CMA): only answers to the parked idle's
-    // outstanding calls have effect. A late answer to a closed call is a
-    // no-effect (already stamped processed_at on accept); a partial batch
-    // re-announces the remaining ids without sampling.
-    let remainingAfterAnswers: string[] | null = null;
-    const actionable = input.events.filter((candidate) => candidate.type !== "system.message");
-    if (actionable.length > 0 && actionable.every((candidate) =>
-      candidate.type === "user.custom_tool_result" || candidate.type === "user.tool_confirmation")) {
-      const batchIds = new Set(input.events.map((candidate) => candidate.id));
-      const priorWire = asWireEvents(input.historyEvents
-        .filter((candidate) => !batchIds.has(candidate.id))
-        .map((candidate) => encodeRuntimeHistoryEvent(candidate)));
-      const before = outstandingRequiresAction(priorWire);
-      const closedBefore = answeredToolCallIds(priorWire);
-      const answeredNow = new Set(actionable.map((candidate) =>
-        candidate.type === "user.custom_tool_result" ? candidate.customToolUseId
-          : candidate.type === "user.tool_confirmation" ? candidate.toolUseId : ""));
-      // Every call in the batch was already closed (interrupt/steer/earlier
-      // answer): no effect, nothing resumes.
-      if ([...answeredNow].every((id) => closedBefore.has(id))) return;
-      if (before !== null) {
-        if (![...answeredNow].some((id) => before.includes(id))) return;
-        remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
-      }
-    }
+    const answers = planRequiresActionAnswers(
+      asWireEvents(input.events.map((candidate) => encodeRuntimeSessionEvent(candidate) as { type?: string })),
+      () => asWireEvents(input.historyEvents.map((candidate) => encodeRuntimeHistoryEvent(candidate))),
+    );
+    if (answers.type === "no_effect") return;
+    const remainingAfterAnswers = answers.remaining;
     const deferred = this.canOverlapSandboxStartup(input);
     // Only the three execution primitives are needed by Pi's host-side tools.
     // Capability inspection must not allocate a provider resource.
@@ -993,31 +941,19 @@ export class DefaultNodeManagedSessionRunner
         // Harness-in-sandbox inference-proxy meters via the same gate.
         registerNodeSessionBudgetGate(input.session.id, budgetGate);
         const retry = this.dependencies.harnessRetry ?? TURN_RETRY;
-        for (let attempt = 1; ; attempt += 1) {
-          const agentEventsBefore = runtime.agentEventCount;
-          try {
-            await this.dependencies.buildHarness().run(harnessContext);
-            return;
-          } catch (error) {
-            if (!(error instanceof Error)) throw error;
-            const sideEffectFree = runtime.agentEventCount === agentEventsBefore;
-            const plan = await settleTurnFailure({
-              cancelled: abortController.signal.aborted,
-              failureClass: nodeTurnFailureClass(error, !sideEffectFree),
-              attempt,
-              maxAttempts: retry.attempts,
-              delayMs: retry.delayMs,
-              message: error.message,
-              events: nodeTurnFailureEvents(runtime),
-              wait: (ms) => abortableDelay(ms, abortController.signal),
-            });
-            if (plan.type !== "retry") {
-              failureReported = plan.type === "exhausted";
-              throw error;
-            }
-            if (abortController.signal.aborted) throw error;
-          }
-        }
+        const result = await runTurnAttempts({
+          run: () => this.dependencies.buildHarness().run(harnessContext),
+          agentEventCount: () => runtime.agentEventCount,
+          isCancelled: () => abortController.signal.aborted,
+          classify: nodeTurnFailureClass,
+          retry,
+          signal: abortController.signal,
+          events: nodeTurnFailureEvents(runtime),
+          describe: (error) => error.message,
+        });
+        if (result.type === "completed") return;
+        failureReported = result.type === "exhausted";
+        throw result.error;
       };
       if (!parkedStill) await runHarness();
       if (event.type === "user.define_outcome") {
@@ -1205,6 +1141,25 @@ export class DefaultNodeManagedSessionRunner
         finalWorkspace.trusted = true;
       }
     }
+  }
+
+  /** The running turn is aborted and emits its own idle; everything durable
+   * (the interrupt row, fencing) is the execution worker's. Without a turn in
+   * this process the lane is idle, so the interrupt changes nothing. */
+  private async interrupt(input: { workspaceId: string; sessionId: string }): Promise<void> {
+    await interruptTurn({
+      activeTurn: () => {
+        const active = this.abortControllers.get(input);
+        return active === undefined ? null : { abort: async () => { active.abort(INTERRUPT_REQUESTED); } };
+      },
+      lastStatus: () => "idle",
+      requestDurableInterrupt: async () => undefined,
+      ownInterruptedIdle: () => undefined,
+      settlePendingActions: async () => 0,
+      recordInterrupt: () => undefined,
+      closeOpenToolUses: () => 0,
+      emitIdle: () => undefined,
+    });
   }
 
   /** The `user.define_outcome` grader loop (#545 §0.7: one implementation in
