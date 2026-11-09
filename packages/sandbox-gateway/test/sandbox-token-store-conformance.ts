@@ -9,7 +9,7 @@ import type { SessionExecutionFence, SessionExecutionStorePort } from "@open-man
 import {
   authenticateSandboxEgress, authenticateSandboxToken, authenticateSandboxTokenRequest, generateSandboxToken,
   issueSandboxToken, sandboxBasicCredential, sandboxTokenRandomPart, sha256Hex,
-  type SandboxTokenChannel, type SandboxTokenStore,
+  type SandboxGatewayStore, type SandboxTokenChannel, type SandboxTokenStore,
 } from "../src/index";
 import { seedSandboxGatewaySessionRows, type SandboxGatewaySessionSeed } from "./gateway-store-conformance";
 
@@ -19,6 +19,8 @@ export interface StatementGate {
   reset(): void;
   /** The next statement whose SQL matches waits; `reached` resolves when it is held. */
   holdNext(pattern: RegExp): { reached: Promise<void>; release(): void };
+  /** The next matching statement runs, then its result is held: `reached` = it has read. */
+  holdAfter(pattern: RegExp): { reached: Promise<void>; release(): void };
   failNext(pattern: RegExp, error?: Error): void;
 }
 
@@ -37,6 +39,7 @@ interface GateStatement {
 export function gatedSql<T extends GateSql>(sql: T): { sql: T; gate: StatementGate } {
   let count = 0;
   let holds: Array<{ pattern: RegExp; reached: () => void; released: Promise<void> }> = [];
+  let afterHolds: Array<{ pattern: RegExp; reached: () => void; released: Promise<void> }> = [];
   let failures: Array<{ pattern: RegExp; error: Error }> = [];
   const before = async (query: string) => {
     count++;
@@ -45,12 +48,25 @@ export function gatedSql<T extends GateSql>(sql: T): { sql: T; gate: StatementGa
     const hold = holds.find((candidate) => candidate.pattern.test(query));
     if (hold !== undefined) { holds = holds.filter((candidate) => candidate !== hold); hold.reached(); await hold.released; }
   };
+  const after = async (query: string) => {
+    const hold = afterHolds.find((candidate) => candidate.pattern.test(query));
+    if (hold !== undefined) { afterHolds = afterHolds.filter((candidate) => candidate !== hold); hold.reached(); await hold.released; }
+  };
+  const gated = async <R>(query: string, execute: () => Promise<R>): Promise<R> => {
+    await before(query); const result = await execute(); await after(query); return result;
+  };
   const wrap = (query: string, statement: GateStatement): GateStatement => ({
     bind: (...values) => wrap(query, statement.bind(...values)),
-    run: async () => { await before(query); return statement.run(); },
-    first: async () => { await before(query); return statement.first(); },
-    all: async () => { await before(query); return statement.all(); },
+    run: () => gated(query, () => statement.run()),
+    first: () => gated(query, () => statement.first()),
+    all: () => gated(query, () => statement.all()),
   });
+  const deferred = () => {
+    let reached!: () => void; let release!: () => void;
+    const reachedPromise = new Promise<void>((resolve) => { reached = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    return { reached, reachedPromise, released, release };
+  };
   const proxy = Object.create(sql) as T;
   proxy.prepare = ((query: string) => wrap(query, sql.prepare(query))) as T["prepare"];
   return {
@@ -59,11 +75,12 @@ export function gatedSql<T extends GateSql>(sql: T): { sql: T; gate: StatementGa
       count: () => count,
       reset: () => { count = 0; },
       holdNext(pattern) {
-        let reached!: () => void; let release!: () => void;
-        const reachedPromise = new Promise<void>((resolve) => { reached = resolve; });
-        const released = new Promise<void>((resolve) => { release = resolve; });
-        holds.push({ pattern, reached, released });
-        return { reached: reachedPromise, release };
+        const d = deferred(); holds.push({ pattern, reached: d.reached, released: d.released });
+        return { reached: d.reachedPromise, release: d.release };
+      },
+      holdAfter(pattern) {
+        const d = deferred(); afterHolds.push({ pattern, reached: d.reached, released: d.released });
+        return { reached: d.reachedPromise, release: d.release };
       },
       failNext(pattern, error = new Error("database unavailable")) { failures.push({ pattern, error }); },
     },
@@ -75,6 +92,10 @@ export interface SandboxTokenStoreFixture {
   /** The adapter under test, over the gated client. */
   store: SandboxTokenStore;
   gate: StatementGate;
+  /** The same database, ungated (fixture writes such as a resource detach). */
+  raw: GateSql;
+  /** The fence-bound store the pre-#561 credentials verify against, over the gated client. */
+  gatewayStore: SandboxGatewayStore;
   executions: SessionExecutionStorePort;
   seedSession(session: SandboxGatewaySessionSeed & { document?: Record<string, unknown> }): Promise<void>;
   /** Overwrites sandbox_token_hashes (to plant malformed entries). */
@@ -86,14 +107,14 @@ export interface SandboxTokenStoreTestHarness {
   withStore<T>(fixtureId: string, run: (fixture: SandboxTokenStoreFixture) => Promise<T>): Promise<T>;
 }
 
-const at = (seconds: number) => new Date(Date.UTC(2026, 10, 8, 12, 0, seconds)).toISOString();
-const clock = (seconds: number) => () => Date.parse(at(seconds));
-const sessionIdOf = (fixture: SandboxTokenStoreFixture, name: string) => `${fixture.workspaceId}_${name}`;
-const seed = (id: string, overrides: Partial<SandboxGatewaySessionSeed> = {}): SandboxGatewaySessionSeed => ({
+export const at = (seconds: number) => new Date(Date.UTC(2026, 10, 8, 12, 0, seconds)).toISOString();
+export const clock = (seconds: number) => () => Date.parse(at(seconds));
+export const sessionIdOf = (fixture: SandboxTokenStoreFixture, name: string) => `${fixture.workspaceId}_${name}`;
+export const seed = (id: string, overrides: Partial<SandboxGatewaySessionSeed> = {}): SandboxGatewaySessionSeed => ({
   id, environmentId: `env_${id}`, vaultIds: ["vlt_01"], agent: { id: "agent_01", version: 3 }, archivedAt: null, ...overrides,
 });
 
-async function claim(fixture: SandboxTokenStoreFixture, sessionId: string, attemptId: string, claimedAt: number, leaseTtlMs = 30_000): Promise<SessionExecutionFence> {
+export async function claim(fixture: SandboxTokenStoreFixture, sessionId: string, attemptId: string, claimedAt: number, leaseTtlMs = 30_000): Promise<SessionExecutionFence> {
   const id = `execution_${sessionId}_${attemptId}`;
   await fixture.executions.admit({
     execution: { id, workspaceId: fixture.workspaceId, sessionId, admittedAt: at(0), events: [{ id, type: "user.message", content: [{ type: "text", text: id }], processedAt: at(0) }] },
@@ -103,14 +124,14 @@ async function claim(fixture: SandboxTokenStoreFixture, sessionId: string, attem
   return claimed.fence;
 }
 
-const verify = (store: SandboxTokenStore, sessionId: string, token: string, channel: SandboxTokenChannel, seconds = 2) =>
+export const verify = (store: SandboxTokenStore, sessionId: string, token: string, channel: SandboxTokenChannel, seconds = 2) =>
   authenticateSandboxToken(store, { sessionId, token, channel }, clock(seconds)).then((decision) => decision.type);
 
-const api = (store: SandboxTokenStore, request: { path: string; method?: string; authorization?: string | null; apiKey?: string | null }, seconds = 2) =>
+export const api = (store: SandboxTokenStore, request: { path: string; method?: string; authorization?: string | null; apiKey?: string | null }, seconds = 2) =>
   authenticateSandboxTokenRequest(store, { method: request.method ?? "POST", path: request.path, authorization: request.authorization ?? null, apiKey: request.apiKey ?? null }, clock(seconds))
     .then((decision) => decision.type);
 
-const egress = (store: SandboxTokenStore, authorization: string | null, seconds = 2) =>
+export const egress = (store: SandboxTokenStore, authorization: string | null, seconds = 2) =>
   authenticateSandboxEgress(store, authorization, { now: clock(seconds) }).then((decision) => decision.type);
 
 export function sandboxTokenStoreConformance(adapterName: string, harness: SandboxTokenStoreTestHarness): void {

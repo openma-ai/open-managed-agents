@@ -4,9 +4,10 @@ import { createNodeManagedAcpCapabilities } from "../../../packages/control-plan
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { createSqlSessionRuntimeReaders } from "@open-managed-agents/session-runtime-sql";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql/coordination";
-import { createSqlSandboxTokenStore } from "../../../packages/sandbox-gateway-sql/src/index";
+import { createSqlSandboxGatewayStore, createSqlSandboxTokenStore } from "../../../packages/sandbox-gateway-sql/src/index";
 import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
-import { gatedSql, sandboxTokenStoreConformance } from "../../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
+import { gatedSql, sandboxTokenStoreConformance, type SandboxTokenStoreTestHarness } from "../../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
+import { sandboxTokenRaceConformance } from "../../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
 
 async function database() {
   const sql = await createBetterSqlite3SqlClient(":memory:");
@@ -107,13 +108,13 @@ sandboxGatewayStoreConformance("Node managed ACP stores (better-sqlite3)", {
   },
 });
 
-sandboxTokenStoreConformance("sandbox-gateway-sql (Node better-sqlite3)", {
+const sqliteTokenHarness: SandboxTokenStoreTestHarness = {
   async withStore(fixtureId, run) {
     const raw = await database();
     const { sql, gate } = gatedSql(raw);
     const workspaceId = `ws_${fixtureId}`;
     return run({
-      workspaceId, gate,
+      workspaceId, gate, raw, gatewayStore: createSqlSandboxGatewayStore(sql),
       store: createSqlSandboxTokenStore(sql),
       executions: new SqlSessionExecutionCoordinator(raw),
       seedSession: (session) => seedSandboxGatewaySessionRows(raw, workspaceId, session),
@@ -125,4 +126,6 @@ sandboxTokenStoreConformance("sandbox-gateway-sql (Node better-sqlite3)", {
       },
     });
   },
-});
+};
+sandboxTokenStoreConformance("sandbox-gateway-sql (Node better-sqlite3)", sqliteTokenHarness);
+sandboxTokenRaceConformance("sandbox-gateway-sql (Node better-sqlite3)", sqliteTokenHarness);

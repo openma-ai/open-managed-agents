@@ -15,7 +15,8 @@ import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from ".
 import { describe, expect, it } from "vitest";
 import { authenticateSandboxBearer, authenticateSandboxToken } from "../../packages/sandbox-gateway/src/index";
 import { createSqlSandboxTokenStore } from "../../packages/sandbox-gateway-sql/src/index";
-import { gatedSql, sandboxTokenStoreConformance } from "../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
+import { gatedSql, sandboxTokenStoreConformance, type SandboxTokenStoreTestHarness } from "../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
+import { sandboxTokenRaceConformance } from "../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
 import { sealedExecutionSessionsToken } from "../../packages/managed-agents-adapters-runtime/src/environment-work-session-token";
 import { WebCryptoAesGcm } from "../../packages/integrations-adapters-cf/src/index";
 import { cfAcpExecutionAuthority, issueCfAcpExecutionChannels } from "../../apps/main/src/lib/cf-acp-execution-capability";
@@ -52,13 +53,13 @@ sandboxGatewayStoreConformance("sandbox-gateway-sql (CF tenant D1)", {
   },
 });
 
-sandboxTokenStoreConformance("sandbox-gateway-sql (CF tenant D1, workerd)", {
+const d1TokenHarness: SandboxTokenStoreTestHarness = {
   async withStore(fixtureId, run) {
     const raw = sqlClientFromD1(env.MAIN_DB);
     const { sql, gate } = gatedSql(raw);
     const workspaceId = `ws_token_${fixtureId}_${runId}`.replace(/[^A-Za-z0-9_]/gu, "_");
     return run({
-      workspaceId, gate,
+      workspaceId, gate, raw, gatewayStore: createSqlSandboxGatewayStore(sql),
       store: createSqlSandboxTokenStore(sql),
       executions: new SqlSessionExecutionStore(raw),
       seedSession: (session) => seedSandboxGatewaySessionRows(raw, workspaceId, session),
@@ -70,7 +71,9 @@ sandboxTokenStoreConformance("sandbox-gateway-sql (CF tenant D1, workerd)", {
       },
     });
   },
-});
+};
+sandboxTokenStoreConformance("sandbox-gateway-sql (CF tenant D1, workerd)", d1TokenHarness);
+sandboxTokenRaceConformance("sandbox-gateway-sql (CF tenant D1, workerd)", d1TokenHarness);
 
 async function claimedSession(name: string) {
   const sql = sqlClientFromD1(env.MAIN_DB);

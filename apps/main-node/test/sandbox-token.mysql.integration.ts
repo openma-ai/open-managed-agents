@@ -4,6 +4,7 @@ import { afterAll, beforeAll } from "vitest";
 import type { NodeDatabase } from "@open-managed-agents/node-database";
 import { openNodeDatabase } from "../src/database.js";
 import { sandboxTokenStoreConformance } from "../../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
+import { sandboxTokenRaceConformance } from "../../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
 import { sandboxTokenHarness } from "./helpers/sandbox-token-sql";
 
 let container: StartedMySqlContainer;
@@ -19,4 +20,6 @@ afterAll(async () => {
   await container?.stop();
 }, 60_000);
 
-sandboxTokenStoreConformance("sandbox-gateway-sql (MySQL 8.4, migrated schema)", sandboxTokenHarness(() => database.sql, randomUUID().slice(0, 8)));
+const harness = sandboxTokenHarness(() => database.sql, randomUUID().slice(0, 8));
+sandboxTokenStoreConformance("sandbox-gateway-sql (MySQL 8.4, migrated schema)", harness);
+sandboxTokenRaceConformance("sandbox-gateway-sql (MySQL 8.4, migrated schema)", harness);
