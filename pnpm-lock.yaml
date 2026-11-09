@@ -132,6 +132,9 @@ importers:
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../../packages/managed-agents-domain
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/environment-work-store-sql
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../../packages/environments-store
@@ -3150,6 +3153,9 @@ importers:
 
   packages/managed-runtime-node:
     dependencies:
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../environment-work-store-sql
       '@open-managed-agents/managed-runtime-host':
         specifier: workspace:*
         version: link:../managed-runtime-host

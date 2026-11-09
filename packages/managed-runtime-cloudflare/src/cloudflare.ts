@@ -15,14 +15,12 @@ import {
   type ProviderRuntimeEnvironment,
 } from "@open-managed-agents/managed-runtime-sandbox";
 import type {
+  EnvironmentWorkClaimPort,
   ManagedRuntimeProviderDriverPort,
   RuntimeCheckpointPort,
   SessionInputMaterializerPort,
 } from "@open-managed-agents/runtime-resource-contract";
-import {
-  SqlRuntimeOrphanPort,
-  SqlRuntimeResourceFencePort,
-} from "@open-managed-agents/runtime-resource-fence-sql";
+import { SqlRuntimeOrphanPort } from "@open-managed-agents/sandbox-orphan-store-sql";
 import {
   supportsSessionOutputMount,
   type SandboxCheckpointHandle,
@@ -74,6 +72,10 @@ export interface CloudflareManagedRuntimeHostOptions
   extends CloudflareManagedRuntimeOptions {
   /** Stable identity of this SessionDO/worker instance; never a user token. */
   ownerId: string;
+  /** The Environment Work claim the host is authorized by (ADR 0005). The
+   * Work rows live in the tenant database, which this package cannot
+   * resolve; the application supplies the Port. */
+  claims: EnvironmentWorkClaimPort;
   heartbeatIntervalMs?: number;
   /** Safe-point target for checkpoint_restore; mount strategy never snapshots. */
   checkpointIntervalMs?: number;
@@ -367,20 +369,16 @@ export function createCloudflareManagedRuntimeHost(
   options: CloudflareManagedRuntimeHostOptions,
 ) {
   const runtime = createCloudflareManagedRuntime(env, options);
-  const sql = new CfD1SqlClient(env.MAIN_DB);
-  const fences = new SqlRuntimeResourceFencePort(sql);
-  const orphans = new SqlRuntimeOrphanPort(sql);
+  const orphans = new SqlRuntimeOrphanPort(new CfD1SqlClient(env.MAIN_DB));
   const harnessDriver = composeSandboxHarnessDrivers(
     runtime.harness,
     new SupervisedSandboxHarnessDriver({ transport: runtime.supervisorTransport }),
   );
-  const leaseTtlMs = options.leaseTtlMs ?? 90_000;
   const host = createManagedRuntimeHost({
     ownerId: options.ownerId,
-    leaseTtlMs,
     heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30_000,
     ...(options.checkpointIntervalMs === undefined ? {} : { checkpointIntervalMs: options.checkpointIntervalMs }),
-    fences,
+    claims: options.claims,
     sandbox: runtime.sandbox,
     workspace: runtime.workspace,
     outputs: runtime.outputs,
@@ -398,7 +396,7 @@ export function createCloudflareManagedRuntimeHost(
   });
   return {
     ...runtime,
-    fences,
+    claims: options.claims,
     orphans,
     harnessDriver,
     host,

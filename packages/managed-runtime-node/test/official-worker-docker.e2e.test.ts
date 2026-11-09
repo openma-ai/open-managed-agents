@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { MemoryEnvironmentWorkClaimPort } from "@open-managed-agents/managed-runtime-host/testing";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import {
   environmentWorkView,
@@ -158,8 +159,17 @@ describe("official EnvironmentWorker in Docker", () => {
       id: "work_docker_official_01",
       environmentId,
       data: { type: "session" as const, id: sessionView.id },
-      secret: { sessionsToken, apiBaseUrl: "http://set-after-listen" },
+      secret: { sessionsToken, claimGeneration: 1, apiBaseUrl: "http://set-after-listen" },
     };
+    // The served Work Port is a fixture, so its claim is mirrored here: the
+    // Runtime Host is authorized by generation 1 with the Work's sessions_token.
+    const claims = new MemoryEnvironmentWorkClaimPort();
+    claims.claim({
+      workspaceId: "workspace_docker_official",
+      environmentId,
+      sessionId: sessionView.id,
+      workId: activeWork.id,
+    }, sessionsToken);
     const api = buildManagedAgentsTestApi({
       environmentWork: makeEnvironmentWorkPort({
         pollEnvironmentWork: async () => {
@@ -414,9 +424,9 @@ describe("official EnvironmentWorker in Docker", () => {
       runtime: {
         rootDir,
         sql,
-        initializeFenceSchema: true,
+        initializeOrphanSchema: true,
+        claims,
         ownerId: "official-worker-docker-host",
-        leaseTtlMs: 20_000,
         heartbeatIntervalMs: 1_000,
         image: process.env.OMA_RUNTIME_NODE_IMAGE ?? "node:24-alpine",
         additionalMounts: [{

@@ -8,7 +8,10 @@ import {
   type CloudflareManagedRuntimeHostOptions as CoreHostOptions,
   type CloudflareManagedRuntimeOptions as CoreRuntimeOptions,
 } from "@open-managed-agents/managed-runtime-cloudflare";
+import { SqlEnvironmentWorkClaimPort } from "@open-managed-agents/environment-work-store-sql";
+import { buildCfTenantDbProvider } from "@open-managed-agents/services";
 import type { Env } from "@open-managed-agents/shared";
+import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 
 import { CloudflareSandbox } from "./sandbox";
 
@@ -18,8 +21,9 @@ export interface CloudflareManagedRuntimeOptions
 }
 
 export interface CloudflareManagedRuntimeHostOptions
-  extends Omit<CoreHostOptions, "createSandbox"> {
+  extends Omit<CoreHostOptions, "createSandbox" | "claims"> {
   createSandbox?: CoreRuntimeOptions["createSandbox"];
+  claims?: CoreHostOptions["claims"];
 }
 
 export interface CloudflareManagedRuntimeDriverOptions
@@ -39,6 +43,21 @@ function withSdkSandbox<Options extends CloudflareManagedRuntimeOptions>(
     ...options,
     createSandbox: options.createSandbox
       ?? ((runtimeEnv: Env, runtimeId: string) => new CloudflareSandbox(runtimeEnv, runtimeId)),
+  };
+}
+
+/** The Work claim Port over each workspace's tenant D1 (ADR 0005): the
+ * same managed_environment_work rows the Work API claims and heartbeats. */
+function withTenantWorkClaims(
+  env: Env,
+  options: CloudflareManagedRuntimeHostOptions,
+): CloudflareManagedRuntimeHostOptions & Pick<CoreHostOptions, "claims"> {
+  const tenantDb = buildCfTenantDbProvider(env);
+  return {
+    ...options,
+    claims: options.claims ?? new SqlEnvironmentWorkClaimPort(
+      async (workspaceId) => new CfD1SqlClient(await tenantDb.resolve(workspaceId)),
+    ),
   };
 }
 
@@ -63,7 +82,7 @@ export function createCloudflareManagedRuntimeHost(
   env: Env,
   options: CloudflareManagedRuntimeHostOptions,
 ) {
-  return createCoreHost(env, withSdkSandbox(options));
+  return createCoreHost(env, withSdkSandbox(withTenantWorkClaims(env, options)));
 }
 
 export function createCloudflareManagedEnvironmentWorker(
@@ -72,6 +91,6 @@ export function createCloudflareManagedEnvironmentWorker(
 ) {
   return createCoreEnvironmentWorker(env, {
     ...options,
-    runtime: withSdkSandbox(options.runtime),
+    runtime: withSdkSandbox(withTenantWorkClaims(env, options.runtime)),
   });
 }

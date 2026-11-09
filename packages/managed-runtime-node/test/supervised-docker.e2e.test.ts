@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { MemoryEnvironmentWorkClaimPort } from "@open-managed-agents/managed-runtime-host/testing";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { createNodeManagedRuntime } from "../src/index";
+import { openClaim, runClaim } from "./work-claim";
 
 describe("openma_supervised in Docker", () => {
   const roots: string[] = [];
@@ -80,13 +82,13 @@ describe("openma_supervised in Docker", () => {
       target: "node24",
       outfile: fixtureBundle,
     });
-    const sql = await createBetterSqlite3SqlClient(":memory:");
+    const claims = new MemoryEnvironmentWorkClaimPort();
     const runtime = await createNodeManagedRuntime({
       rootDir,
-      sql,
-      initializeFenceSchema: true,
+      sql: await createBetterSqlite3SqlClient(":memory:"),
+      initializeOrphanSchema: true,
+      claims,
       ownerId: "supervised-docker-host",
-      leaseTtlMs: 10_000,
       heartbeatIntervalMs: 100,
       image: process.env.OMA_RUNTIME_NODE_IMAGE ?? "node:24-alpine",
       additionalMounts: [{
@@ -98,6 +100,7 @@ describe("openma_supervised in Docker", () => {
 
     await expect(runtime.host.run({
       scope,
+      claim: runClaim(claims.claim(scope)),
       profile: {
         workspace: { requirement: "durable" },
         outputs: { requirement: "durable" },
@@ -117,12 +120,8 @@ describe("openma_supervised in Docker", () => {
       },
     })).resolves.toEqual({ type: "completed", revision: 1 });
 
-    const verifier = await runtime.fences.acquire({
-      scope,
-      ownerId: "supervised-docker-verifier",
-      ttlMs: 10_000,
-    });
-    if (verifier.type !== "acquired" || verifier.publication === null) {
+    const verifier = await openClaim(claims, claims.claim(scope), "supervised-docker-verifier");
+    if (verifier.publication === null) {
       throw new Error("expected supervised runtime publication");
     }
     const restored = await runtime.workspace.materialize({
