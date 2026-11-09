@@ -1,7 +1,12 @@
 FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
 
-RUN npm install --global @earendil-works/pi-coding-agent@1.1.0
-RUN npm install --global @openma/pi-acp@0.1.8 \
+# Pi 1.1 uses caret ranges internally; 1.5 removed exports it still imports.
+# Keep the complete SDK family aligned (validated in E2B Linux).
+RUN mkdir -p /opt/openma-pi-acp \
+    && printf '%s' '{"private":true,"dependencies":{"@openma/pi-acp":"0.1.8","@earendil-works/pi-coding-agent":"1.1.0"},"overrides":{"@earendil-works/chord":"1.1.0","@earendil-works/pi-agent-core":"1.1.0","@earendil-works/pi-ai":"1.1.0","@earendil-works/pi-coding-agent":"1.1.0","@earendil-works/pi-codemode":"1.1.0","@earendil-works/pi-mcp":"1.1.0","@earendil-works/pi-tui":"1.1.0","@earendil-works/pi-schema":"1.1.0","@earendil-works/pi-telemetry":"1.1.0"}}' > /opt/openma-pi-acp/package.json \
+    && npm install --prefix /opt/openma-pi-acp --omit=dev \
+    && ln -sf /opt/openma-pi-acp/node_modules/.bin/openma-pi-acp /usr/local/bin/openma-pi-acp \
+    && ln -sf /opt/openma-pi-acp/node_modules/.bin/pi /usr/local/bin/pi \
     && npm cache clean --force
 
 WORKDIR /workspace

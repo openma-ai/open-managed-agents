@@ -41,7 +41,7 @@ try {
   await stage("renew Sprite keepalive", sandbox.renewLease({ ttlMs: 5 * 60_000 }));
   await stage("install Pi ACP", execOk(
     sandbox,
-    "npm install --global @earendil-works/pi-coding-agent@1.1.0 @openma/pi-acp@0.1.8 >/tmp/openma-npm-install.log 2>&1",
+    "prefix=$(npm prefix --global); root=\"$prefix/lib/openma-pi-acp\"; mkdir -p \"$root\" \"$prefix/bin\" && printf '%s' '{\"private\":true,\"dependencies\":{\"@openma/pi-acp\":\"0.1.8\",\"@earendil-works/pi-coding-agent\":\"1.1.0\"},\"overrides\":{\"@earendil-works/chord\":\"1.1.0\",\"@earendil-works/pi-agent-core\":\"1.1.0\",\"@earendil-works/pi-ai\":\"1.1.0\",\"@earendil-works/pi-coding-agent\":\"1.1.0\",\"@earendil-works/pi-codemode\":\"1.1.0\",\"@earendil-works/pi-mcp\":\"1.1.0\",\"@earendil-works/pi-tui\":\"1.1.0\",\"@earendil-works/pi-schema\":\"1.1.0\",\"@earendil-works/pi-telemetry\":\"1.1.0\"}}' > \"$root/package.json\" && npm install --prefix \"$root\" --omit=dev >/tmp/openma-npm-install.log 2>&1 && ln -sf \"$root/node_modules/.bin/openma-pi-acp\" \"$prefix/bin/openma-pi-acp\" && ln -sf \"$root/node_modules/.bin/pi\" \"$prefix/bin/pi\"",
     5 * 60_000,
   ), 6 * 60_000);
   const npmPrefix = (await stage(
