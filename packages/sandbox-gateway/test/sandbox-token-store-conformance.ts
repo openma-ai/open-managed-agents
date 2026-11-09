@@ -233,7 +233,7 @@ export function sandboxTokenStoreConformance(adapterName: string, harness: Sandb
         const first = await claim(f, id, "a1", 1, 5_000);
         const old = await issueSandboxToken(f.store, first, { scope: "all", now: clock(1) });
         expect(await verify(f.store, id, old, "api", 7)).toBe("rejected"); // lease expired, not yet taken over
-        const second = await f.executions.claim({ workspaceId: f.workspaceId, sessionId: id, ownerId: "owner_a2", attemptId: "a2", claimedAt: at(8), leaseTtlMs: 30_000 });
+        const second = await f.executions.claim({ workspaceId: f.workspaceId, sessionId: id, ownerId: "owner_a1", attemptId: "a2", excludeAttemptIds: [], claimedAt: at(8), leaseTtlMs: 30_000 });
         if (second.type !== "claimed") throw new Error("expected take-over");
         expect(await verify(f.store, id, old, "egress", 9)).toBe("rejected"); // take-over reset the set
         const current = await issueSandboxToken(f.store, second.fence, { scope: "all", now: clock(9) });
