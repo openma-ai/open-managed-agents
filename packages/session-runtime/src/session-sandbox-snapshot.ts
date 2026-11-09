@@ -19,7 +19,7 @@
 // empty sandbox.
 
 import type { ResumeRef, SandboxHandle } from "@open-managed-agents/sandbox";
-import { errorText, type LiveSessionSandbox } from "./session-sandbox-live";
+import { errorText, sameHandle, type LiveSessionSandbox } from "./session-sandbox-live";
 import type { SessionSandboxExecution } from "./session-sandbox-options";
 import { isSnapshotRef, type SessionSandboxState, type SnapshotRef } from "./session-sandbox-state";
 
@@ -43,7 +43,7 @@ export function snapshotInGap<R>(state: LiveSessionSandbox<R>, open: { runtime: 
 
 /** Snapshot `open` if it changed since the last snapshot and publish it
  * under `execution`'s fence (undefined = between executions), against
- * `expected` (omitted = the record read when publishing). Never throws. */
+ * `expected` (omitted = the record read before checkpointing). Never throws. */
 export async function takeSnapshot<R>(
   state: LiveSessionSandbox<R>,
   open: { runtime: R; handle: SandboxHandle },
@@ -51,6 +51,9 @@ export async function takeSnapshot<R>(
   expected?: SessionSandboxState,
 ): Promise<SnapshotOutcome> {
   if (!state.dirty || state.snapshotsUnsupported) return expected;
+  // Bind the checkpoint to the version AND sandbox observed before the vendor call.
+  expected ??= await state.load();
+  if (expected.phase !== "running" || !sameHandle(expected.handle, open.handle)) return "conflict";
   const { ports } = await state.compose();
   const scope = state.scope();
   // Calls during the snapshot mark the sandbox changed again; a live duplex
