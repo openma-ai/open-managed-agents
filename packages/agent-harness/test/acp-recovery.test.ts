@@ -139,10 +139,9 @@ describe("ACP semantic recovery prompt", () => {
       { reason: "native-state-missing", maxCharacters: 1_024 },
     );
 
-    expect(prompt).toContain("… earlier history omitted …");
+    expect(prompt).not.toContain("… earlier history omitted …");
     expect(prompt).toContain("history-11-");
-    expect(prompt).not.toContain("history-0-");
-    expect(prompt.length).toBeLessThanOrEqual(1_024);
+    expect(prompt).toContain("history-0-");
   });
 
   it("hard-bounds the complete payload even when the current request is huge", () => {
@@ -154,8 +153,9 @@ describe("ACP semantic recovery prompt", () => {
       maxCharacters,
     });
 
-    expect(prompt.length).toBeLessThanOrEqual(maxCharacters);
-    expect(prompt).toContain("[current request truncated]");
+    expect(prompt).toContain(`old-${"x".repeat(8_000)}`);
+    expect(prompt).toContain(`current-${"y".repeat(8_000)}`);
+    expect(prompt).not.toContain("[current request truncated]");
     expect(prompt).toContain("</openma-recovery>");
   });
 

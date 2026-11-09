@@ -1,3 +1,4 @@
+export * from "./harness-context-state";
 export type * from "./context";
 export type * from "./coordination";
 export { sessionExecutionId } from "./coordination";
