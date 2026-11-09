@@ -1,11 +1,5 @@
 FROM docker.io/openma/sandbox-base:435c9aa272b7444f6aaa36f3ecc10475ec7648c51186b8dfe58256e2e7f2c11e
 
 # Keep the pi-acp harness id; use the OpenMA adapter with HTTP MCP support.
-# Pi 1.1 uses caret ranges internally; 1.5 removed exports it still imports.
-# Keep the complete SDK family aligned (validated in E2B Linux).
-RUN mkdir -p /opt/openma-pi-acp \
-    && printf '%s' '{"private":true,"dependencies":{"@openma/pi-acp":"0.1.8","@earendil-works/pi-coding-agent":"1.1.0"},"overrides":{"@earendil-works/chord":"1.1.0","@earendil-works/pi-agent-core":"1.1.0","@earendil-works/pi-ai":"1.1.0","@earendil-works/pi-coding-agent":"1.1.0","@earendil-works/pi-codemode":"1.1.0","@earendil-works/pi-mcp":"1.1.0","@earendil-works/pi-tui":"1.1.0","@earendil-works/pi-schema":"1.1.0","@earendil-works/pi-telemetry":"1.1.0"}}' > /opt/openma-pi-acp/package.json \
-    && npm install --prefix /opt/openma-pi-acp --omit=dev \
-    && ln -sf /opt/openma-pi-acp/node_modules/.bin/openma-pi-acp /usr/local/bin/openma-pi-acp \
-    && ln -sf /opt/openma-pi-acp/node_modules/.bin/pi /usr/local/bin/pi \
+RUN npm install --global @openma/pi-acp@0.1.8 \
     && npm cache clean --force

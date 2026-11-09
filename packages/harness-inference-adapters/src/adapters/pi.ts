@@ -5,7 +5,7 @@ import { matchesAgentIdentity } from "../match.js";
 import { proxyUrl } from "../helpers.js";
 
 /**
- * @openma/pi-acp 0.1.8 uses Pi 1.1 ModelRuntime, reading models.json and
+ * @openma/pi-acp 0.1.8 uses Pi 1.5 ModelRuntime, reading models.json and
  * settings.json under PI_CODING_AGENT_DIR (or its --agent-dir override).
  * - models.json `apiKey` interpolates `$VAR` / `${VAR}`; any other string is
  *   a literal key, so the gateway would get it as the bearer.

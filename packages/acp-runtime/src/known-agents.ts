@@ -200,7 +200,7 @@ export const OMA_OVERLAY_AGENTS: KnownAgentEntry[] = [
     wraps: "pi",
     install: { kind: "npm", package: "@openma/pi-acp@0.1.8" },
     installHint:
-      "root=\"$HOME/.local/share/oma/pi-acp\"; mkdir -p \"$root\" \"$HOME/.local/bin\" && printf '%s' '{\"private\":true,\"dependencies\":{\"@openma/pi-acp\":\"0.1.8\",\"@earendil-works/pi-coding-agent\":\"1.1.0\"},\"overrides\":{\"@earendil-works/chord\":\"1.1.0\",\"@earendil-works/pi-agent-core\":\"1.1.0\",\"@earendil-works/pi-ai\":\"1.1.0\",\"@earendil-works/pi-coding-agent\":\"1.1.0\",\"@earendil-works/pi-codemode\":\"1.1.0\",\"@earendil-works/pi-mcp\":\"1.1.0\",\"@earendil-works/pi-tui\":\"1.1.0\",\"@earendil-works/pi-schema\":\"1.1.0\",\"@earendil-works/pi-telemetry\":\"1.1.0\"}}' > \"$root/package.json\" && npm install --prefix \"$root\" --omit=dev && ln -sf \"$root/node_modules/.bin/openma-pi-acp\" \"$HOME/.local/bin/openma-pi-acp\"",
+      "npm install -g @openma/pi-acp@0.1.8",
     homepage: "https://github.com/openma-ai/pi-acp",
   },
   // MiniMax Code already exposes a native ACP server (`mcode acp`) but has
