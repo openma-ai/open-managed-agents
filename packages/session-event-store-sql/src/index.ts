@@ -98,7 +98,7 @@ export class SqlSessionEventStore
     const executionOutbox = typeof this.options.executionOutbox === "function"
       ? await this.options.executionOutbox({ workspaceId: input.workspaceId, environmentId: input.nextSession.environmentId })
       : this.options.executionOutbox;
-    if (executionOutbox === true && input.events.length > 0) {
+    if (executionOutbox === true && (input.events.length > 0 || (input.executionEvents?.length ?? 0) > 0)) {
       return this.appendWithExecutionOutbox(input);
     }
     const eventStatements = input.events.map((event, index) =>
@@ -146,7 +146,7 @@ export class SqlSessionEventStore
       `UPDATE managed_sessions SET revision = revision
         WHERE workspace_id = ? AND id = ? AND revision = ?`,
     ).bind(input.workspaceId, input.sessionId, input.expectedRevision);
-    const results = await this.client.batch([revisionGuard, ...eventStatements, update]);
+    const results = await this.client.batch([revisionGuard, ...eventStatements, ...await this.replacements(input), update]);
     const updateResult = results[results.length - 1];
     if (updateResult === undefined) {
       throw new Error("Session event append returned no Session update result");
@@ -178,10 +178,25 @@ export class SqlSessionEventStore
     };
   }
 
+  private async replacements(input: AppendSessionEvents) {
+    const statements = [];
+    for (const event of input.replaceEvents ?? []) {
+      const row = await this.client.prepare('SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ? AND id = ?')
+        .bind(input.workspaceId, input.sessionId, event.id).first<{ document: string }>();
+      if (!row) throw new Error("Deferred canonical input disappeared");
+      const old = decodeSessionEventDocument(row.document);
+      if (!old.position) throw new Error("Deferred canonical input has no source position");
+      statements.push(this.client.prepare(
+        'UPDATE managed_session_events SET document = ? WHERE workspace_id = ? AND session_id = ? AND id = ? AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND revision = ?)',
+      ).bind(encodeSessionEventDocument(event, old.position, old.executionId ?? input.executionEvents?.[0]?.id, old.consumedByExecutionId), input.workspaceId, input.sessionId, event.id, input.workspaceId, input.sessionId, input.expectedRevision));
+    }
+    return statements;
+  }
+
   private async appendWithExecutionOutbox(
     input: AppendSessionEvents,
   ): Promise<AppendSessionEventsResult> {
-    const executionBatches = sessionExecutionEventBatches(input.events);
+    const executionBatches = sessionExecutionEventBatches(input.executionEvents ?? input.events);
     const controlTimestamp = sortTime(input.events[0]!, input.nextSession.updatedAt);
     const policy = this.options.executionPolicy ?? {
       maxAttempts: 10,
@@ -338,6 +353,7 @@ export class SqlSessionEventStore
     const results = await this.client.batch([
       revisionGuard,
       ...eventStatements,
+      ...await this.replacements(input),
       ...interrupt,
       ...outbox,
       update,

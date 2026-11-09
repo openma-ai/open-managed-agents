@@ -38,7 +38,7 @@ import { sessionInputIdentityPrefix } from "@openma/common/protocol/managed";
 export { sessionInputIdentityPrefix };
 
 function inputPayload(event: SentSessionEvent): string {
-  const { id: _id, processedAt: _time, ...body } = event;
+  const { id: _id, processedAt: _time, deferredUntilToolResults: _deferred, continuationToolUseIds: _continuation, cancelled_at_ms: _cancelled, ...body } = event;
   if ("outcomeId" in body) delete (body as {outcomeId?: string}).outcomeId;
   const normalize = (value: unknown): unknown => Array.isArray(value) ? value.map(normalize)
     : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, normalize(child)])) : value;
@@ -272,6 +272,8 @@ export class SessionEventsApplicationService
       // settle helpers + #401 budget pause (cap vs consumed lifts the pause;
       // an interrupt at the budget cap is accepted, ignored, not persisted).
       let acceptedEvents = events;
+      let replaceEvents: SentSessionEvent[] = [];
+      let executionEvents: SentSessionEvent[] | undefined;
       {
         const recent = await this.dependencies.store.list({
           workspaceId: this.dependencies.workspaceId,
@@ -291,7 +293,7 @@ export class SessionEventsApplicationService
         }
         if (reason !== null) {
           const bad = nonSettleEventTypes(command.events);
-          if (bad.length > 0) {
+          if (bad.length > 0 && !(command.deferUntilToolResults && reason === "requires_action" && events.every(event => event.type === "user.message"))) {
             return {
               type: "invalid_request",
               message: settleOnlyRejectMessage(reason, bad),
@@ -301,6 +303,33 @@ export class SessionEventsApplicationService
             acceptedEvents = events.filter((event) => event.type !== "user.interrupt");
             if (acceptedEvents.length === 0) return { type: "accepted", events: [] };
           }
+        }
+      }
+      if (command.deferUntilToolResults || command.events.some(event => event.type === "user.custom_tool_result" || event.type === "user.tool_result" || event.type === "user.tool_confirmation" || event.type === "user.interrupt")) {
+        const history: SessionEventView[] = [];
+        let position: { processedAt: string; eventId: string } | undefined;
+        for (;;) {
+          const rows = await this.dependencies.store.list({ workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId, limit: 100, order: "asc", ...(position ? { position } : {}) });
+          history.push(...rows);
+          if (rows.length < 100) break;
+          const last = rows.at(-1)!; const stamp = sessionEventSortTime(last);
+          if (!stamp) throw new Error("Canonical deferred admission requires ordered history");
+          position = { processedAt: stamp, eventId: last.id };
+        }
+        const interrupted = command.events.some(event => event.type === "user.interrupt");
+        const answered = new Set(history.concat(acceptedEvents).flatMap(event => event.type === "user.custom_tool_result" ? [event.customToolUseId] : event.type === "user.tool_result" || event.type === "user.tool_confirmation" ? [event.toolUseId] : []));
+        if (command.deferUntilToolResults) {
+          if (command.expectedRevision === undefined || !events.every(event => event.type === "user.message")) return { type: "invalid_request", message: "Deferred messages require a revision-bound message batch" };
+          const idle = [...history].reverse().find(event => event.type.startsWith("session.status_"));
+          const stop = idle && "stopReason" in idle ? idle.stopReason : undefined;
+          const ids = stop?.type === "requires_action" && "eventIds" in stop ? stop.eventIds.filter((id: string) => !answered.has(id)) : [];
+          if (!ids.length) return { type: "version_conflict", message: "The deferred input Turn is no longer waiting" };
+          acceptedEvents = events.map(event => ({ ...event, deferredUntilToolResults: ids }));
+          executionEvents = [];
+        } else {
+          replaceEvents = history.filter((event): event is SentSessionEvent => "deferredUntilToolResults" in event && Array.isArray(event.deferredUntilToolResults) && event.deferredUntilToolResults.length > 0 && (interrupted || event.deferredUntilToolResults.every(id => answered.has(id))))
+            .map(event => { const { deferredUntilToolResults: _binding, ...released } = event; return interrupted ? { ...released, cancelled_at_ms: Date.parse(acceptedAt) } as SentSessionEvent : { ...released, continuationToolUseIds: _binding } as SentSessionEvent; });
+          if (replaceEvents.length) executionEvents = [...acceptedEvents, ...(interrupted ? [] : replaceEvents)];
         }
       }
       // Host admission hook for existing-Session work. Runs after the
@@ -346,15 +375,18 @@ export class SessionEventsApplicationService
         expectedRevision: execution.revision,
         events: accepted,
         nextSession: applyAcceptedEvents(execution.session, accepted, acceptedAt),
+        ...(replaceEvents.length ? { replaceEvents } : {}),
+        ...(executionEvents === undefined ? {} : { executionEvents }),
       });
       if (appended.type === "not_found") return { type: "not_found" };
       if (appended.type === "revision_conflict") continue;
+      if (executionEvents?.length === 0) return { type: "accepted", events: appended.events };
       await this.dependencies.dispatch.sessionEventsAccepted({
         workspaceId: this.dependencies.workspaceId,
         sessionId: command.sessionId,
         session: appended.session,
         environment: execution.environment,
-        events: appended.events,
+        events: executionEvents ?? appended.events,
       });
       return { type: "accepted", events: appended.events };
     }

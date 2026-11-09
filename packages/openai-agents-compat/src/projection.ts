@@ -296,6 +296,7 @@ function reduceManagedEvents(previous: ProjectionState, managedEvents: readonly 
     const source = record(raw.source_position);
     const admittedExecution = context.executionId ?? str(source.execution_id) ?? undefined;
     const consumer = context.consumedByExecutionId ?? str(source.consumed_by_execution_id) ?? undefined;
+    if (event.deferredUntilToolResults !== undefined || event.cancelled_at_ms != null) continue;
     const isInput = event.type.startsWith('user.') || event.type === 'session.updated';
     // B2 input rows are mutable until consumed. Do not commit a public item or
     // dedupe identity before that fact exists; polling must revisit the row.
@@ -342,6 +343,10 @@ function reduceManagedEvents(previous: ProjectionState, managedEvents: readonly 
         }
       }
     } else if (event.type === 'user.message') {
+      const continuationCalls = Array.isArray(event.continuationToolUseIds) ? event.continuationToolUseIds : [];
+      const continuationTurns = continuationCalls.map(callId => typeof callId === 'string' ? own(state.calls, callId)?.turnId : undefined);
+      const continuation = continuationTurns.length && continuationTurns.every(turnId => turnId === continuationTurns[0]) ? own(state.turns, continuationTurns[0] ?? '') : undefined;
+      if (continuation && !isTerminal(continuation)) indexExecutionTurn(state, execution, continuation);
       const turn = startTurn(name, id, at, consumer !== undefined); put(state.inputTurns, id, turn.id);
       saveItem({ id, type: 'message', turn_id: turn.id, role: 'user', content: inputContent(event.content), phase: null, status: 'completed' }, name, id, false);
     } else if (event.type === 'user.custom_tool_result' || event.type === 'user.tool_result' || event.type === 'agent.tool_result' || event.type === 'agent.mcp_tool_result') {

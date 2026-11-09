@@ -61,6 +61,71 @@ describe("SqlSessionEventStore queued input processing", () => {
     store = new SqlSessionEventStore(client);
   });
 
+  it("parks canonical deferred input without outbox and atomically releases it with the result", async () => {
+    const coordinator = await coordinated();
+    const staged = { ...message("deferred"), deferredUntilToolResults: ["call"] };
+    expect((await store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 1,
+      events: [staged], executionEvents: [], nextSession: session(at(1)) })).type).toBe("appended");
+    expect(await coordinator.listQueued({ workspaceId: "w", sessionId: "session_01", laneId: "sthr_primary" })).toEqual([]);
+    const before = await facts("deferred");
+    const result = { id: "result", type: "user.custom_tool_result" as const, customToolUseId: "call", content: [{ type: "text" as const, text: "answer" }], processedAt: at(2) };
+    const released = message("deferred");
+    expect((await store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 2,
+      events: [result], replaceEvents: [released], executionEvents: [result, released], nextSession: session(at(2)) })).type).toBe("appended");
+    expect((await facts("deferred")).position).toEqual(before.position);
+    expect((await facts("deferred")).event.processedAt).toBeNull();
+    expect((await facts("deferred")).event).not.toHaveProperty("deferredUntilToolResults");
+    expect(await coordinator.find({ workspaceId: "w", executionId: "result" })).toMatchObject({ events: [{ id: "result" }, { id: "deferred" }] });
+    // A stale cancel loses the same revision guard: no replacement or outbox leaks.
+    expect((await store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 2,
+      events: [], replaceEvents: [{ ...released, cancelled_at_ms: 1 }], executionEvents: [], nextSession: session(at(3)) })).type).toBe("revision_conflict");
+    expect((await facts("deferred")).event).not.toHaveProperty("cancelled_at_ms");
+  });
+
+  it("keeps identical deferred input IDs isolated across workspaces", async () => {
+    await coordinated();
+    await client.prepare("INSERT INTO managed_sessions (workspace_id,id,document,revision,status,updated_at) VALUES ('other', 'session_01', '{}', 1, 'running', 0)").run();
+    const staged = { ...message("same-id"), deferredUntilToolResults: ["call"] };
+    for (const workspaceId of ["w", "other"]) await store.append({ workspaceId, sessionId: "session_01", expectedRevision: 1, events: [staged], executionEvents: [], nextSession: session(at(1)) });
+    const cancel = { id: "cancel", type: "user.interrupt" as const, processedAt: at(2) };
+    await store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 2, events: [cancel], replaceEvents: [{ ...message("same-id"), cancelled_at_ms: 2 }], nextSession: session(at(2)) });
+    expect(await store.list({ workspaceId: "w", sessionId: "session_01", eventIds: ["same-id"], limit: 1, order: "asc" })).toMatchObject([{ cancelled_at_ms: 2 }]);
+    expect(await store.list({ workspaceId: "other", sessionId: "session_01", eventIds: ["same-id"], limit: 1, order: "asc" })).toMatchObject([{ deferredUntilToolResults: ["call"], processedAt: null }]);
+  });
+
+  it("rolls back release, result and outbox together when the transaction aborts", async () => {
+    const coordinator = await coordinated();
+    const staged = { ...message("rollback"), deferredUntilToolResults: ["call"] };
+    await store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 1, events: [staged], executionEvents: [], nextSession: session(at(1)) });
+    const before = await facts("rollback");
+    await client.exec("CREATE TRIGGER reject_execution BEFORE INSERT ON managed_session_executions BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END;");
+    const result = { id: "failed-result", type: "user.custom_tool_result" as const, customToolUseId: "call", processedAt: at(2), content: [{ type: "text" as const, text: "answer" }] };
+    await expect(store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 2, events: [result], replaceEvents: [message("rollback")], executionEvents: [result, message("rollback")], nextSession: session(at(2)) })).rejects.toThrow("injected outbox failure");
+    expect(await facts("rollback")).toEqual(before);
+    expect(await store.list({ workspaceId: "w", sessionId: "session_01", eventIds: [result.id], limit: 10, order: "asc" })).toEqual([]);
+    expect(await coordinator.find({ workspaceId: "w", executionId: result.id })).toBeNull();
+    const row = await client.prepare("SELECT revision FROM managed_sessions WHERE workspace_id = 'w' AND id = 'session_01'").first<{ revision: number }>();
+    expect(row!.revision).toBe(2);
+  });
+
+  it("recovers a released result and steer from durable outbox after dispatch never ran", async () => {
+    await coordinated();
+    const staged = { ...message("recovered-steer"), deferredUntilToolResults: ["call"] };
+    await store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 1, events: [staged], executionEvents: [], nextSession: session(at(1)) });
+    const released = { ...message("recovered-steer"), continuationToolUseIds: ["call"] };
+    const result = { id: "recovered-result", type: "user.custom_tool_result" as const, customToolUseId: "call", processedAt: at(2), content: [{ type: "text" as const, text: "answer" }] };
+    await store.append({ workspaceId: "w", sessionId: "session_01", expectedRevision: 2, events: [result], replaceEvents: [released], executionEvents: [result, released], nextSession: session(at(2)) });
+    // Process reconstruction: no dispatch callback occurs between append and claim.
+    const restarted = new SqlSessionExecutionStore(client);
+    const claimed = await restarted.claim({ workspaceId: "w", sessionId: "session_01", ownerId: "recovered-owner", attemptId: "restart", claimedAt: at(3), leaseTtlMs: 30000 });
+    if (claimed.type !== "claimed") throw new Error("atomic released outbox missing");
+    expect(claimed.execution.events.map(event => event.id)).toEqual([result.id, released.id]);
+    await consume(claimed.execution.events, claimed.execution.id, at(4));
+    expect(await facts(released.id)).toMatchObject({ executionId: result.id, consumedByExecutionId: result.id, event: { processedAt: at(4) } });
+    await restarted.settle({ fence: claimed.fence, settledAt: at(5), outcome: "completed" });
+    expect((await restarted.claim({ workspaceId: "w", sessionId: "session_01", ownerId: "recovered-owner", attemptId: "again", claimedAt: at(6), leaseTtlMs: 30000 })).type).toBe("empty");
+  });
+
   it("keeps a queued input null at its acceptance position, then stamps and repositions it once", async () => {
     await append([{ id: "q1", type: "user.message", content: [{ type: "text", text: "queued" }], processedAt: null }],
       "2026-08-26T01:00:00.000Z");

@@ -198,3 +198,20 @@ describe("normalizeInterruptedToolCalls: user.message cannot split tool_use/tool
     expect(JSON.stringify(results[0])).not.toContain("interrupted: the execution was lost before this tool finished; it was not re-run automatically");
   });
 });
+
+it("pairs canonical released continuation with its real result before sampling the steer", () => {
+  const events: any[] = [
+    { type: "agent.custom_tool_use", id: "c1", name: "run", input: {} },
+    { type: "user.message", id: "steer", continuation_tool_use_ids: ["c1"], content: [{ type: "text", text: "STEER" }] },
+    { type: "agent.tool_result", tool_use_id: "c1", content: [{ type: "text", text: "REAL_RANDOM_RESULT" }] },
+  ];
+  const before = structuredClone(events);
+  const out = normalizeInterruptedToolCalls(events as never) as any[];
+  expect(out.map(event => event.type)).toEqual(["agent.custom_tool_use", "agent.tool_result", "user.message"]);
+  expect(JSON.stringify(out)).toContain("REAL_RANDOM_RESULT");
+  expect(JSON.stringify(out)).not.toContain("interrupted:");
+  expect(events).toEqual(before);
+  const messages = eventsToMessages(events as never);
+  expect(messages.map(message => message.role)).toEqual(["assistant", "tool", "user"]);
+  expect(JSON.stringify(messages)).toContain("REAL_RANDOM_RESULT");
+});

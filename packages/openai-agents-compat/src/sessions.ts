@@ -1,4 +1,3 @@
-import { deferredSteers, type DeferredSteerStore } from "./deferred-steers";
 import type { AgentSession } from "openai/resources/beta/agents/agents";
 import type { SessionsApplicationPort, SessionView, CreateSessionCommand } from "@open-managed-agents/managed-agents-application/ports/sessions";
 import type { SessionEventsApplicationPort, SendableSessionEvent } from "@open-managed-agents/managed-agents-application/ports/session-events";
@@ -21,7 +20,6 @@ export interface SessionSemanticDependencies {
   /** Existing Files/output implementations own artifact bytes and publication. */
   resources?: OpenAIAgentsProtocolPort;
   pollMs?: number;
-  deferredSteerStore?: DeferredSteerStore;
 }
 const missing = (): never => { throw new OpenAIAgentsProtocolError(404, "Resource not found"); };
 const invalid = (message: string, param?: string): never => { throw new OpenAIAgentsProtocolError(400, message, param); };
@@ -42,15 +40,9 @@ function waitForPoll(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms); signal.addEventListener("abort",done,{once:true});
   });
 }
-/** Process-local staging for OpenAI Agents deferred steers while
- *  `requires_action` (live api.openai.com agents=v1: message → 202, actions
- *  unchanged, steer applied same-turn after tool_result). Not a CMA pending
- *  inbox — only this compat surface stages until settle. */
 type DeferredSteer = Extract<SendableSessionEvent, { type: "user.message" }>;
-const deferredSteersBySession = new Map<string, { key?: string; steers: DeferredSteer[] }>();
 
 export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAIAgentsProtocolPort {
-  const durableSteers = deps.deferredSteerStore ? deferredSteers(deps.deferredSteerStore) : undefined;
   async function nativeSession(sessionId: string): Promise<SessionView> {
     const found = await deps.sessions.retrieveSession({sessionId});
     return found.type === "found" ? found.session : missing();
@@ -98,13 +90,14 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
       await waitForPoll(deps.pollMs ?? 100,signal);
     }
   }
-  async function commit(sessionId: string, events: SendableSessionEvent[], key: string | undefined, expectedRevision: number | undefined) {
+  async function commit(sessionId: string, events: SendableSessionEvent[], key: string | undefined, expectedRevision: number | undefined, deferUntilToolResults = false) {
     if (!events.length) return;
     const result = await deps.sessionEvents.sendSessionEvents({
       sessionId,
       events,
       ...(key !== undefined && { idempotencyKey: key }),
       ...(expectedRevision !== undefined && { expectedRevision }),
+      ...(deferUntilToolResults && { deferUntilToolResults }),
     });
     if (result.type === "not_found") return missing();
     if (result.type === "invalid_request") return invalid(result.message);
@@ -155,8 +148,6 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
         // native settle-only gate while the no-op idle interrupt leaves RA.
       } else if (body.type === "agent.session.input.cancel") {
         cancelSeen = true;
-        deferredSteersBySession.delete(sessionId);
-        await durableSteers?.clear(sessionId);
         stagedNow.length = 0;
         justMapped.push({ type: "user.interrupt" });
         settleEvents.push({ type: "user.interrupt" });
@@ -201,45 +192,14 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     if (validatedCalls.size && !previouslyAccepted && current.found.revision === undefined) {
       throw new OpenAIAgentsProtocolError(409, "This history source cannot bind function validation to a Session revision", undefined, "history_revision_unavailable");
     }
-    // Message-only while parked: stage in-process and accept. Actions untouched.
+    // Message-only while parked: atomically stage in canonical admission. Actions untouched.
     if (parked && stagedNow.length && !settleEvents.length && !forwardMessages.length) {
-      if (durableSteers) {
-        const turnId = current.state.requiredActions.find(action => action.type === "function_call")?.turn_id;
-        if (!turnId) throw new OpenAIAgentsProtocolError(409, "Deferred steer requires an original Turn");
-        await durableSteers.stage(sessionId, { id: key ?? crypto.randomUUID(), turnId, steers: stagedNow });
-        return { status: 202 };
-      }
-      const prior = deferredSteersBySession.get(sessionId);
-      if (key !== undefined && prior?.key === key) return { status: 202 }; // idempotent retry
-      deferredSteersBySession.set(sessionId, {
-        key,
-        steers: [...(prior?.steers ?? []), ...stagedNow],
-      });
+      await commit(sessionId, stagedNow, key, current.found.revision, true);
       return { status: 202 };
     }
     const revision = validatedCalls.size && current.found.revision !== undefined ? current.found.revision : undefined;
     if (settleEvents.length) {
-      await commit(sessionId, settleEvents, key, revision);
-      // After settle (or cancel), flush steers that belong to the unfinished turn.
-      // Skip flush after cancel — the turn is cancelled; steers were cleared.
-      if (!cancelSeen) {
-        const turnId = current.state.requiredActions.find(action => action.type === "function_call")?.turn_id;
-        // Partial settlement keeps the durable steers parked.
-        if (durableSteers && turnId && validatedState.requiredActions.length === 0) {
-          await durableSteers.flush(sessionId, turnId, (steers, identity) => commit(sessionId, steers, identity, undefined));
-        }
-        const flushed = [
-          ...(deferredSteersBySession.get(sessionId)?.steers ?? []),
-          ...stagedNow,
-          ...forwardMessages,
-        ];
-        deferredSteersBySession.delete(sessionId);
-        if (flushed.length) {
-          await commit(sessionId, flushed, key !== undefined ? `${key}:steer` : undefined, undefined);
-        }
-      } else {
-        deferredSteersBySession.delete(sessionId);
-      }
+      await commit(sessionId, [...settleEvents, ...stagedNow, ...forwardMessages], key, revision);
       return { status: 202 };
     }
     if (forwardMessages.length) {

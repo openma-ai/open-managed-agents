@@ -957,7 +957,7 @@ export function planRequiresActionQueue(
     return { defer: [], release: [] };
   }
   const release = primary.filter((event) =>
-    event.type === "user.message" && !batchIds.has(event.id) &&
+    event.type === "user.message" && !("deferredUntilToolResults" in event) && !("cancelled_at_ms" in event) && !batchIds.has(event.id) &&
     (event.processedAt === null || event.processedAt === undefined));
   return { defer: [], release: release as unknown as AcceptNodeManagedSessionEvents["events"] };
 }

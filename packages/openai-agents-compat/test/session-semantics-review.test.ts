@@ -24,6 +24,7 @@ function fixture() {
       append: async (input: any) => {
         if (input.expectedRevision !== revision) return { type: "revision_conflict", actualRevision: revision };
         revision++;
+        for (const replacement of input.replaceEvents ?? []) { const index = facts.findIndex(event => event.id === replacement.id); if (index >= 0) facts[index] = structuredClone(replacement); }
         facts.push(...structuredClone(input.events));
         Object.assign(native, input.nextSession);
         return { type: "appended", events: input.events, session: input.nextSession };
@@ -128,7 +129,7 @@ describe("Session semantic review regressions", () => {
     const mid = await f.client.beta.agents.sessions.retrieve("session");
     expect(mid.status).toBe("requires_action");
     expect(mid.required_actions).toEqual(before.required_actions);
-    expect(f.facts.filter(event => event.type === "user.message")).toHaveLength(0);
+    expect(f.facts.filter(event => event.type === "user.message")).toEqual([expect.objectContaining({ processedAt: null, deferredUntilToolResults: ["call"] })]);
     await f.client.beta.agents.sessions.events.create("session", { events: [result], "Idempotency-Key": "settle-after-steer" });
     expect(f.facts.filter(event => event.type === "user.custom_tool_result")).toHaveLength(1);
     const steers = f.facts.filter(event => event.type === "user.message");

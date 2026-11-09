@@ -60,6 +60,24 @@ export function interruptRequiresActionClosure(
 //   4) duplicate agent.tool_result for an already-answered id → drop.
 // See packages/agent-harness/test/history/interrupted-tool-calls.test.ts.
 export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEvent[] {
+  // Canonical RA messages retain their admission source position, before the
+  // settlement rows. Only the model sample places these proven continuations
+  // after their real answers; ordinary intervening messages still interrupt.
+  const delayed = new Map<number, SessionEvent[]>();
+  const sample: SessionEvent[] = [];
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
+    const binding = (event as unknown as { continuation_tool_use_ids?: string[] }).continuation_tool_use_ids;
+    const answers = event.type === "user.message" && binding?.length ? binding.map(id => events.findIndex(row =>
+      (row.type === "agent.tool_result" && (row as { tool_use_id?: string }).tool_use_id === id) ||
+      (row.type === "agent.mcp_tool_result" && (row as { mcp_tool_use_id?: string }).mcp_tool_use_id === id))) : [];
+    if (answers.length && answers.every(position => position >= 0) && Math.max(...answers) > index) {
+      const target = Math.max(...answers);
+      delayed.set(target, [...(delayed.get(target) ?? []), event]);
+    } else sample.push(event);
+    sample.push(...(delayed.get(index) ?? []));
+  }
+  if (delayed.size) events = sample;
   const laterResultAt = new Map<string, number>();
   for (let i = 0; i < events.length; i++) {
     const e = events[i];

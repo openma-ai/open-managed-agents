@@ -95,6 +95,11 @@ export type SendableSessionEvent =
   | { type: "system.message"; content: TextContentBlock[] };
 
 interface SentEventBase {
+  /** Internal OAI RA input binding; not a public SDK field. */
+  deferredUntilToolResults?: string[];
+  /** Original call provenance after atomic release, preserving source order. */
+  continuationToolUseIds?: string[];
+  cancelled_at_ms?: number;
   id: string;
   processedAt?: string | null;
   /** Exhausted hold: unprocessed mid-run input retained; not withdrawable;

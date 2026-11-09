@@ -1042,10 +1042,6 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
         history: new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),
         mapping: createManagedSessionMapping({ agents, environments, resources, secrets: openAIAgentsSecrets, runtime: runtime.mapping }),
         resources: { execute: artifacts },
-        deferredSteerStore: (() => {
-          const store = new SqlKvStore({ db: drizzleDb, tenantId: workspaceId });
-          return { get: (key: string) => store.get(key), compareAndSwap: (key: string, expected: string | null, value: string | null) => store.compareAndSwap(key, expected, value) };
-        })(),
       });
       return { execute: request => request.operation.startsWith("sessions.") ? sessions.execute(request) : resources(request) };
     },
