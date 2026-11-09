@@ -83,6 +83,13 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe("E2BSandboxExecutor boundaries", () => {
+  it("marks loss of a dispatched command without a terminal result as unknown", async () => {
+    let effects=0;
+    const sdkBox=remote({commands:{run:async()=>{effects++;throw new Error("transport lost after commit");}}});
+    const executor=new E2BSandboxExecutor(sdkBox as never,{});
+    await expect(executor.exec("effect")).rejects.toMatchObject({outcome:"dispatched_unknown"});
+    expect(effects).toBe(1);
+  });
   it("provides isolated cold allocations without reconnecting or killing the next SDK instance", async () => {
     const old = remote({ sandboxId: "sandbox-a" }); const fresh = remote({ sandboxId: "sandbox-b" });
     sdk.create.mockResolvedValueOnce(old).mockResolvedValueOnce(fresh);

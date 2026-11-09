@@ -54,7 +54,7 @@ const at = (ms: number) => new Date(Date.parse(T0) + ms).toISOString();
 
 /** Harness that, when `park` is set, emits the given custom/ask tool uses and
  * leaves them pending (as the CF default loop does). */
-async function setup(park: Array<{ id: string; type: "agent.custom_tool_use" | "agent.tool_use" }> = [], failure?: Error) {
+async function setup(park: Array<{ id: string; type: "agent.custom_tool_use" | "agent.tool_use" }> = [], failure?: Error, unknownConfirmation = false) {
   let runs = 0;
   let nextId = 0;
   const executions: string[] = [];
@@ -65,7 +65,7 @@ async function setup(park: Array<{ id: string; type: "agent.custom_tool_use" | "
     confirmedTools: {
       execute: async (input: { toolUse: { id: string } }) => {
         executions.push(input.toolUse.id);
-        return { content: [{ type: "text", text: "ok" }], isError: false };
+        return unknownConfirmation ? {content:[{type:"text",text:"may have committed"}],isError:true,outcome:"dispatched_unknown"} : { content: [{ type: "text", text: "ok" }], isError: false };
       },
     },
     buildSandbox: async () => ({}) as SandboxExecutor,
@@ -117,7 +117,9 @@ function decode(f: Frame): SessionEventView {
     case "agent.tool_result":
       return { ...base, type: f.type, toolUseId: f.tool_use_id, content: f.content, isError: f.is_error } as SessionEventView;
     case "agent.tool_use":
-      return { ...base, type: f.type, name: "tool", input: {}, evaluatedPermission: "ask" } as SessionEventView;
+      return { ...base, type: f.type, name: f.name, input: f.input, evaluatedPermission: f.evaluated_permission } as SessionEventView;
+    case "session.warning":
+      return { ...base, type:f.type, source:f.source, message:f.message, details:f.details } as SessionEventView;
     case "agent.custom_tool_use":
       return { ...base, type: f.type, name: "tool", input: {} } as SessionEventView;
     default:
@@ -130,7 +132,39 @@ const customResult = (id: string, callId: string): Ev => ({ id, type: "user.cust
 const confirm = (id: string, callId: string, result: "allow" | "deny"): Ev => ({ id, type: "user.tool_confirmation", toolUseId: callId, result, processedAt: at(-500) } as Ev);
 const idleOf = (out: Frame[]) => out.filter((f) => f.type === "session.status_idle").map((f) => f.stop_reason);
 const types = (out: Frame[]) => out.map((f) => f.type);
+it("an explicitly confirmed retry that becomes unknown parks on a fresh request without sampling again", async()=>{
+  const t=await setup([{id:"retry:original",type:"agent.tool_use"}],undefined,true);
+  await t.send([msg("go")]);
+  const out=await t.send([confirm("allow","retry:original","allow")]);
+  expect(t.executions).toEqual(["retry:original"]);
+  expect(t.runs()).toBe(1);
+  expect(idleOf(out)).toContainEqual({type:"requires_action",event_ids:["retry:retry:original"]});
+  expect(out).toContainEqual(expect.objectContaining({type:"agent.tool_use",id:"retry:retry:original",input:{}}));
+});
 
+it("keeps a new unknown retry alongside still-pending parallel approvals",async()=>{
+  const t=await setup([{id:"first",type:"agent.tool_use"},{id:"other",type:"agent.tool_use"}],undefined,true);
+  await t.send([msg("go")]);
+  const out=await t.send([confirm("allow","first","allow")]);
+  expect(idleOf(out)).toContainEqual({type:"requires_action",event_ids:["other","retry:first"]});
+  expect(t.executions).toEqual(["first"]);
+  expect(t.runs()).toBe(1);
+});
+it("duplicate approvals in one admitted batch consume a retry exactly once", async()=>{
+  const t=await setup([{id:"retry:original",type:"agent.tool_use"}]);
+  await t.send([msg("go")]);
+  await t.send([confirm("allow-1","retry:original","allow"),confirm("allow-2","retry:original","allow")]);
+  expect(t.executions).toEqual(["retry:original"]);
+});
+it("approval of the closed original cannot consume a fresh unknown retry", async()=>{
+  const t=await setup([{id:"original",type:"agent.tool_use"}],undefined,true);
+  await t.send([msg("go")]);
+  await t.send([confirm("allow-1","original","allow")]);
+  const out=await t.send([confirm("allow-2","original","allow")]);
+  expect(t.executions).toEqual(["original"]);
+  expect(t.runs()).toBe(1);
+  expect(out).toEqual([]);
+});
 describe("Node managed runner requires_action (CMA parity, #398)", () => {
   it("preserves typed execution loss without publishing a failed or idle turn", async () => {
     const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");

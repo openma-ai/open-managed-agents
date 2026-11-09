@@ -1,3 +1,4 @@
+import { isDispatchedUnknown, parkUnknownToolRetry, requestUnknownToolRetry } from "./unknown-tool-retry";
 import { budgetExhausted } from "./budget";
 import { streamText, stepCountIs, wrapLanguageModel } from "ai";
 import type { ContentPart, ModelMessage, LanguageModel, SystemModelMessage } from "ai";
@@ -154,6 +155,8 @@ function emitToolResultEvent(
       : ((part as any).output ?? (part as any).result);
 
   const content = normalizeToolOutputForWire(raw);
+  const unknown = part.type === "tool-error" && isDispatchedUnknown((part as {error?:unknown}).error);
+  if (unknown) requestUnknownToolRetry(runtime,toolCallId);
 
   if (isMcpTool(toolName)) {
     runtime.broadcast({
@@ -256,6 +259,7 @@ export class DefaultHarness implements HarnessInterface {
 
   async run(ctx: HarnessContext): Promise<void> {
     const { agent, userMessage, runtime, tools, model, systemPrompt } = ctx;
+    if (parkUnknownToolRetry(runtime)) return;
     warnAiSdkHarnessDeprecatedOnce(ctx.session_id ?? "unknown", (event) => { runtime.broadcast(event); });
     // Pre-request budget gate (turn entry only; the deprecated AI SDK loop
     // runs its multi-step tool loop inside one streamText call).
@@ -450,6 +454,7 @@ export class DefaultHarness implements HarnessInterface {
       providerOptions,
       stopWhen: [
         stepCountIs(100),
+        () => parkUnknownToolRetry(runtime),
         // Client-parked tools (always_ask / custom with execute stripped) must
         // end the streamText loop. Continuing samples again with the unpaired
         // tool_use still in context and emits agent.message text that lands
@@ -867,6 +872,12 @@ export class DefaultHarness implements HarnessInterface {
     if (result.toolCalls?.length) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const resultedIds = new Set((result.toolResults as any[])?.map((r: any) => r.toolCallId) ?? []);
+      // AI SDK excludes tool-error parts from toolResults; canonical error
+      // results already closed those ids and must not be reconfirmed.
+      for (const event of runtime.history.getEvents()) {
+        if (event.type === "agent.tool_result") resultedIds.add(event.tool_use_id);
+        if (event.type === "agent.mcp_tool_result") resultedIds.add(event.mcp_tool_use_id);
+      }
       const pending = result.toolCalls
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .filter((c: any) => !resultedIds.has(c.toolCallId))

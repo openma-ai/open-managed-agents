@@ -30,7 +30,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { SessionExecutionLostError, SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
-  type HarnessContext, type HarnessInterface,
+  parkUnknownToolRetry, requestUnknownToolRetry, type HarnessContext, type HarnessInterface,
 } from "@open-managed-agents/agent-harness";
 import type {
   Environment,
@@ -128,6 +128,7 @@ export interface ExecuteManagedNodeConfirmedTool {
 }
 
 export interface ManagedNodeConfirmedToolExecutionResult {
+  outcome?: "dispatched_unknown";
   content?: ToolResultContentBlock[];
   isError?: boolean | null;
 }
@@ -805,12 +806,14 @@ export class DefaultNodeManagedSessionRunner
     // user.interrupt ended the turn (abort reason INTERRUPT_REQUESTED).
     let interrupted = false;
     try {
+      const batchConfirmations = new Set(input.events.filter(event => event.type === "user.tool_confirmation").map(event => event.id));
+      const consumed = answeredToolCallIds(asWireEvents(input.historyEvents
+        .filter(candidate => !batchConfirmations.has(candidate.id))
+        .map(candidate => encodeRuntimeHistoryEvent(candidate))));
       for (const event of input.events) {
         if (event.type !== "user.tool_confirmation") continue;
-        if (remainingAfterAnswers !== null && answeredToolCallIds(asWireEvents(input.historyEvents
-          .filter((candidate) => candidate.id !== event.id)
-          .map((candidate) => encodeRuntimeHistoryEvent(candidate))))
-          .has(event.toolUseId)) continue;
+        if (consumed.has(event.toolUseId)) continue;
+        consumed.add(event.toolUseId);
         const toolUse = findLastMatching(
           input.historyEvents,
           (candidate): candidate is ManagedNodeConfirmableToolUse =>
@@ -840,6 +843,7 @@ export class DefaultNodeManagedSessionRunner
               toolUse,
               abortSignal: abortController.signal,
             });
+        if (result.outcome === "dispatched_unknown") requestUnknownToolRetry(runtime,toolUse.id);
         runtime.broadcastProducedEvent(
           toolUse.type === "agent.mcp_tool_use"
             ? {
@@ -963,7 +967,7 @@ export class DefaultNodeManagedSessionRunner
         failureReported = result.type === "exhausted";
         throw result.error;
       };
-      if (!parkedStill) await runHarness();
+      if (!parkedStill && !parkUnknownToolRetry(runtime)) await runHarness();
       if (event.type === "user.define_outcome") {
         await this.evaluateOutcome({
           input, event, runtime, runHarness, abortSignal: abortController.signal,
@@ -1094,8 +1098,8 @@ export class DefaultNodeManagedSessionRunner
       }
       if (!leaseLost) {
         const failed = runFailed || finalizationError !== undefined;
-        const parkIds = failed || interrupted ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
-          runtime.pendingConfirmations,
+        const parkIds = failed || interrupted ? [] : stillPending(
+          [...(parkedStill ? remainingAfterAnswers! : []), ...runtime.pendingConfirmations],
           asWireEvents(runtime.history.getEvents()),
         );
         if (failed) {

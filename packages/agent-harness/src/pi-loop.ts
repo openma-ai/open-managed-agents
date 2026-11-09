@@ -1,3 +1,4 @@
+import { parkUnknownToolRetry, requestUnknownToolRetry } from "./unknown-tool-retry";
 import { gateExhausted, meterPiRuntime } from "./budget";
 import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
 import {
@@ -80,6 +81,7 @@ export class PiHarness implements HarnessInterface {
   constructor(private readonly options: PiHarnessOptions = {}) {}
 
   async run(ctx: HarnessContext): Promise<void> {
+    if (parkUnknownToolRetry(ctx.runtime)) return;
     if (!ctx.pi) {
       throw new ModelError("Pi harness requires a tenant-scoped Pi model runtime");
     }
@@ -516,7 +518,8 @@ async function translatePiEvent(
   }
 
   if (event.type === "tool_execution_end") {
-    const details = event.result?.details as { openmaPendingConfirmation?: boolean } | undefined;
+    const details = event.result?.details as { openmaPendingConfirmation?: boolean; openmaDispatchedUnknown?: boolean } | undefined;
+    if (details?.openmaDispatchedUnknown) requestUnknownToolRetry(runtime,event.toolCallId);
     if (!details?.openmaPendingConfirmation) {
       const content = piContentToWire(event.result?.content ?? []);
       if (isMcpTool(event.toolName)) {
@@ -524,14 +527,14 @@ async function translatePiEvent(
           type: "agent.mcp_tool_result",
           mcp_tool_use_id: event.toolCallId,
           content,
-          ...(event.isError && { is_error: true }),
+          ...((event.isError || details?.openmaDispatchedUnknown) && { is_error: true }),
         } as SessionEvent);
       } else {
         runtime.broadcast({
           type: "agent.tool_result",
           tool_use_id: event.toolCallId,
           content,
-          is_error: event.isError,
+          is_error: event.isError || details?.openmaDispatchedUnknown,
         } as SessionEvent);
       }
     }

@@ -1,3 +1,4 @@
+import { isDispatchedUnknown } from "./unknown-tool-retry";
 import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { z } from "zod";
@@ -27,12 +28,14 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
             terminate: true,
           };
         }
-        const value = await tool.execute(params, {
-          toolCallId,
-          messages: [],
-          abortSignal: signal,
-        });
-        return { content: valueToPiContent(value), details: value };
+        try {
+          const value = await tool.execute(params, { toolCallId, messages: [], abortSignal: signal });
+          return { content: valueToPiContent(value), details: value };
+        } catch (error) {
+          if (!isDispatchedUnknown(error)) throw error;
+          return { content: [{type:"text",text:"Tool outcome unknown: the operation may have committed; explicit authorization is required before retry."}],
+            details: {openmaDispatchedUnknown:true}, terminate:true };
+        }
       },
     };
   });

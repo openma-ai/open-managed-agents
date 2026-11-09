@@ -25,6 +25,7 @@
  *     false / no-op.
  */
 
+import { parkUnknownToolRetry } from "./unknown-tool-retry";
 import type { HarnessInterface, HarnessContext, HarnessRuntime, HarnessPendingInterruptContext, RunnerRelayPort, RunnerRelaySocket } from "./interface";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import { AcpTranslator } from "./acp-translate";
@@ -83,6 +84,7 @@ export class AcpProxyHarness implements HarnessInterface {
 
   async run(ctx: HarnessContext): Promise<void> {
     const runtime = ctx.runtime;
+    if (parkUnknownToolRetry(runtime)) return;
     const binding = ctx.agent.runtime_binding;
     if (!binding) {
       this.#emitError(runtime, "AcpProxyHarness requires agent.runtime_binding to be set");

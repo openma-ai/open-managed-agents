@@ -101,6 +101,16 @@ function context(port: unknown, acp: Record<string, unknown> = {}): HarnessConte
 }
 
 describe("acp-sandbox child lifetime", () => {
+  it("does not start a native agent while an unknown retry waits for authorization", async () => {
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.runtime.broadcast({id:"effect",type:"agent.tool_use",name:"bash",input:{command:"effect"}});
+    ctx.runtime.broadcast({type:"session.warning",source:"tool_outcome_unknown",message:"may have committed",details:{outcome:"dispatched_unknown",tool_use_id:"effect",retry_request_id:"retry:effect"}});
+    ctx.runtime.broadcast({id:"retry:effect",type:"agent.tool_use",name:"bash",input:{command:"effect"},evaluated_permission:"ask"});
+    await new AcpSandboxHarness().run(ctx);
+    expect(started).toHaveLength(0);
+    expect(prompts).toHaveLength(0);
+    expect(ctx.runtime.pendingConfirmations).toEqual(["retry:effect"]);
+  });
   it.each(["missing", "corrupt", "unreadable"])("rebuilds recorded context after a %s checkpoint, never silently blank", async (failure) => {
     const s = sandbox(false), ctx = context(s.port);
     ctx.runtime.broadcast({ type: "user.message", content: [{type:"text",text:"Remember passphrase amber-otter"}] });

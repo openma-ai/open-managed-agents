@@ -60,6 +60,22 @@ async function consumeProcess(process: Awaited<ReturnType<CloudflareBridgeRuntim
 }
 
 describe("Cloudflare Sandbox Bridge boundary contracts", () => {
+  it.each(["transport", "no-exit", "invalid-exit"])("marks dispatched exec %s as unknown and never dispatches again", async failure => {
+    let effects = 0;
+    const instance = runtime(async () => {
+      effects++;
+      if (failure === "transport") throw new Error("disconnected");
+      return sseText(failure === "no-exit" ? "event: stdout\ndata: b2s=\n\n" : "event: exit\ndata: {\"exit_code\":null}\n\n");
+    });
+    await expect(instance.exec("effect")).rejects.toMatchObject({outcome:"dispatched_unknown"});
+    expect(effects).toBe(1);
+  });
+  it("keeps an explicit nonzero terminal exit an ordinary failure", async () => {
+    const instance = runtime(async () => sseText("event: exit\ndata: {\"exit_code\":2}\n\n"));
+    const error = await instance.exec("exit 2").catch(error => error);
+    expect(error.message).toContain("exited with 2");
+    expect(error.outcome).toBeUndefined();
+  });
   it("validates constructor, checkpoint prefix, and hydrate limits", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const required = { checkpointStore: new InMemoryBlobStore(), fetch };

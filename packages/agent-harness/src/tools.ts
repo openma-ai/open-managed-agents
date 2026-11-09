@@ -215,7 +215,7 @@ function safe<T>(
     } catch (err) {
       // Already carries its model-facing text (thrown by the execute
       // itself for an in-band failure); do not re-wrap or re-prefix it.
-      if (err instanceof ToolFailureError) throw err;
+      if (err instanceof ToolFailureError || (err !== null && typeof err === "object" && "outcome" in err && err.outcome === "dispatched_unknown")) throw err;
       const msg = modelFacingError(err);
       // Stack traces and the full cause chain are for operators, not the
       // model: it cannot act on server source locations.

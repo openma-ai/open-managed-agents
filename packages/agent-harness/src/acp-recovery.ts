@@ -160,7 +160,7 @@ function eventToRecoveryLines(
         ? event.content
         : contentToText(event.content);
       return result.trim()
-        ? [`Completed tool ${toolNames.get(event.tool_use_id) ?? "unknown"}: ${result.trim()}`]
+        ? [`${event.is_error ? "Failed" : "Completed"} tool ${toolNames.get(event.tool_use_id) ?? "unknown"}: ${result.trim()}`]
         : [];
     }
     case "agent.mcp_tool_result": {

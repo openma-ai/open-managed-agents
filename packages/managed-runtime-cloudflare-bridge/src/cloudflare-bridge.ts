@@ -537,43 +537,48 @@ export class CloudflareBridgeRuntime
     argv: readonly string[],
     input: { cwd: string; timeoutMs?: number },
   ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
-    const response = await this.#request("/exec", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        argv,
-        ...(input.timeoutMs === undefined ? {} : { timeout_ms: input.timeoutMs }),
-        cwd: safeWorkspaceDirectory(input.cwd),
-      }),
-    });
-    if (!response.ok || response.body === null) throw await responseError(response);
-    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-      throw new Error("Cloudflare Bridge exec did not return an SSE stream");
-    }
-    const output: Uint8Array[] = [];
-    const errors: Uint8Array[] = [];
-    let exitCode: number | null = null;
-    for await (const message of parseSse(response.body)) {
-      if (message.event === "stdout") output.push(decodeBase64(message.data));
-      if (message.event === "stderr") errors.push(decodeBase64(message.data));
-      if (message.event === "exit") {
-        const payload = JSON.parse(message.data) as { exit_code?: unknown };
-        if (!Number.isSafeInteger(payload.exit_code)) {
-          throw new Error("Cloudflare Bridge exec returned an invalid exit event");
+    const cwd = safeWorkspaceDirectory(input.cwd);
+    try {
+      const response = await this.#request("/exec", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          argv,
+          ...(input.timeoutMs === undefined ? {} : { timeout_ms: input.timeoutMs }),
+          cwd,
+        }),
+      });
+      if (!response.ok || response.body === null) throw await responseError(response);
+      if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+        throw new Error("Cloudflare Bridge exec did not return an SSE stream");
+      }
+      const output: Uint8Array[] = [];
+      const errors: Uint8Array[] = [];
+      let exitCode: number | null = null;
+      for await (const message of parseSse(response.body)) {
+        if (message.event === "stdout") output.push(decodeBase64(message.data));
+        if (message.event === "stderr") errors.push(decodeBase64(message.data));
+        if (message.event === "exit") {
+          const payload = JSON.parse(message.data) as { exit_code?: unknown };
+          if (!Number.isSafeInteger(payload.exit_code)) {
+            throw new Error("Cloudflare Bridge exec returned an invalid exit event");
+          }
+          exitCode = Number(payload.exit_code);
         }
-        exitCode = Number(payload.exit_code);
+        if (message.event === "error") {
+          const payload = JSON.parse(message.data) as { error?: unknown; code?: unknown };
+          throw new Error(
+            `Cloudflare Bridge exec failed${
+              typeof payload.code === "string" ? ` (${payload.code})` : ""
+            }: ${String(payload.error ?? "unknown")}`,
+          );
+        }
       }
-      if (message.event === "error") {
-        const payload = JSON.parse(message.data) as { error?: unknown; code?: unknown };
-        throw new Error(
-          `Cloudflare Bridge exec failed${
-            typeof payload.code === "string" ? ` (${payload.code})` : ""
-          }: ${String(payload.error ?? "unknown")}`,
-        );
-      }
+      if (exitCode === null) throw new Error("Cloudflare Bridge exec stream ended without an exit event");
+      return { stdout: joinBytes(output), stderr: joinBytes(errors), exitCode };
+    } catch (cause) {
+      throw Object.assign(new Error(cause instanceof Error ? cause.message : String(cause), { cause }), { outcome: "dispatched_unknown" });
     }
-    if (exitCode === null) throw new Error("Cloudflare Bridge exec stream ended without an exit event");
-    return { stdout: joinBytes(output), stderr: joinBytes(errors), exitCode };
   }
 
   async exec(command: string, timeout = 10_000): Promise<string> {

@@ -81,6 +81,70 @@ function makeContext(responses: ReturnType<typeof fauxAssistantMessage>[]) {
 }
 
 describe("PiHarness", () => {
+  it("does not sample a new call ID while a durable unknown retry request is awaiting confirmation", async () => {
+    const {ctx,events,echo}=makeContext([
+      fauxAssistantMessage([fauxToolCall("echo",{value:"repeat-effect"},{id:"new-call"})]),
+      fauxAssistantMessage("done"),
+    ]);
+    events.push(
+      {id:"original",type:"agent.tool_use",name:"echo",input:{value:"original-effect"}},
+      {type:"agent.tool_result",tool_use_id:"original",is_error:true,content:"Outcome unknown; may have committed"},
+      {type:"session.warning",source:"tool_outcome_unknown",message:"Explicit retry authorization required",details:{tool_use_id:"original",retry_request_id:"retry-original",outcome:"dispatched_unknown"}},
+      {id:"retry-original",type:"agent.tool_use",name:"echo",input:{value:"original-effect"},evaluated_permission:"ask"},
+      {type:"session.status_idle",stop_reason:{type:"requires_action",event_ids:["retry-original"]}},
+    );
+    await new PiHarness().run(ctx);
+    expect(echo).not.toHaveBeenCalled();
+    expect(ctx.runtime.pendingConfirmations).toEqual(["retry-original"]);
+    expect(events.some(e=>e.type==="agent.tool_use"&&e.id==="new-call")).toBe(false);
+  });
+  it("parks a dispatched-unknown transport result before the model can retry with a new ID", async () => {
+    const {ctx,events}=makeContext([
+      fauxAssistantMessage([fauxToolCall("bash",{command:"external-effect"},{id:"first"})]),
+      fauxAssistantMessage([fauxToolCall("bash",{command:"external-effect"},{id:"second"})]),
+      fauxAssistantMessage("done"),
+    ]);
+    let effects=0;
+    ctx.tools={bash:{description:"exec",inputSchema:z.object({command:z.string()}),execute:async()=>{
+      effects++;
+      if(effects===1)throw Object.assign(new Error("transport lost"),{outcome:"dispatched_unknown"});
+      return "exit=0";
+    }}};
+    await new PiHarness().run(ctx);
+    expect(effects).toBe(1);
+    const warning=events.find(e=>e.type==="session.warning"&&e.source==="tool_outcome_unknown");
+    expect(warning).toMatchObject({details:{tool_use_id:"first",outcome:"dispatched_unknown"}});
+    expect(ctx.runtime.pendingConfirmations).toHaveLength(1);
+    expect(events.some(e=>e.type==="agent.tool_use"&&e.id==="second")).toBe(false);
+  });
+
+  it("persists the unknown authorization boundary before closing its original tool result", async () => {
+    const {ctx,events}=makeContext([
+      fauxAssistantMessage([fauxToolCall("bash",{command:"external-effect"},{id:"first"})]),fauxAssistantMessage("done"),
+    ]);
+    ctx.tools={bash:{description:"exec",inputSchema:z.object({command:z.string()}),execute:async()=>{throw Object.assign(new Error("lost"),{outcome:"dispatched_unknown"});}}};
+    const broadcast=ctx.runtime.broadcast;
+    ctx.runtime.broadcast=event=>{
+      if(event.type==="agent.tool_result"&&event.tool_use_id==="first") throw Error("process stopped before result append");
+      broadcast(event);
+    };
+    await new PiHarness().run(ctx).catch(()=>undefined);
+    expect(events).toContainEqual(expect.objectContaining({type:"session.warning",source:"tool_outcome_unknown",details:expect.objectContaining({retry_request_id:"retry:first"})}));
+  });
+
+  it("does not permit model egress after an unknown retry settles under an exhausted budget", async () => {
+    const {createSessionBudgetGate,memoryListCostPicoStore}=await import("../src/budget");
+    const {ctx,events,echo}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"new"},{id:"second"})])]);
+    ctx.budget=createSessionBudgetGate({amount:"1",currency:"USD"},{version:1,currency:"USD",input_per_mtok:"1",output_per_mtok:"1"},memoryListCostPicoStore("10000000000"));
+    events.push({id:"first",type:"agent.tool_use",name:"echo",input:{value:"effect"}},
+      {type:"session.warning",source:"tool_outcome_unknown",message:"unknown",details:{outcome:"dispatched_unknown",tool_use_id:"first",retry_request_id:"retry:first"}},
+      {id:"retry:first",type:"agent.tool_use",name:"echo",input:{value:"effect"}},
+      {type:"agent.tool_result",tool_use_id:"retry:first",content:"ok"});
+    await new PiHarness().run(ctx);
+    expect(echo).not.toHaveBeenCalled();
+    expect(ctx.budget?.reached).toBe(true);
+  });
+
   it("keeps thinking off by default even when the model supports reasoning", async () => {
     const { ctx, faux } = makeContext([]);
     ctx.pi!.model = { ...ctx.pi!.model, reasoning: true };

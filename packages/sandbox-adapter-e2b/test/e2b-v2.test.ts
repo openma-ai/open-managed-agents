@@ -112,6 +112,14 @@ function adapter(fake: ReturnType<typeof fakeSdk>, extra: Partial<Parameters<typ
 }
 
 describe("E2B v2 lifecycle", () => {
+  it.each(["SandboxNotRunningError", "RateLimitError", "TransportError"])("preserves unknown certainty through vendor exec for %s without another dispatch", async name => {
+    const fake = fakeSdk();
+    const ports = adapter(fake);
+    const acquired = await ports.lifecycle.acquire({scope,plan,signal});
+    if (acquired === "gone") throw new Error("unexpected gone");
+    fake.errors.command = apiError(name, name === "RateLimitError" ? 429 : undefined);
+    await expect(ports.vendor.exec(acquired.runtime, "effect")).rejects.toMatchObject({outcome:"dispatched_unknown"});
+  });
   it("acquires with session labels, the lease timeout and pause-on-timeout, then runs setup as root", async () => {
     const fake = fakeSdk();
     const lifecycle = adapter(fake, { setup: "command -v s3fs || apt-get install -y s3fs" }).lifecycle;

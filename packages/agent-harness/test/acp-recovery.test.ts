@@ -4,6 +4,15 @@ import { describe, expect, it } from "vitest";
 import { buildAcpSemanticRecoveryPrompt } from "../src/acp-recovery";
 
 describe("ACP semantic recovery prompt", () => {
+  it("does not describe a failed builtin outcome as completed during native recovery", () => {
+    const prompt=buildAcpSemanticRecoveryPrompt([
+      {id:"effect",type:"agent.tool_use",name:"bash",input:{command:"secret-input"}},
+      {type:"agent.tool_result",tool_use_id:"effect",content:"outcome unknown; may have committed",is_error:true},
+    ],user("continue"),{reason:"execution-lost"});
+    expect(prompt).not.toContain("Completed tool bash");
+    expect(prompt).toContain("Failed tool bash");
+    expect(prompt).not.toContain("secret-input");
+  });
   it("uses only consumed non-cancelled CF inputs while retaining all legal history", () => {
     const current = user("current legal input", "current");
     const events = [user("consumed original request"), {...user("future pending instruction"), _queued:true}, {...user("cancelled instruction"),cancelled_at_ms:1}, user("consumed later reply"), current] as SessionEvent[];

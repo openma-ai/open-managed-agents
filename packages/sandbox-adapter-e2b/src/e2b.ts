@@ -227,7 +227,9 @@ export class E2BSandboxExecutor
       timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
       envs: { ...(opts.sessionEnv === false ? {} : this.buildCommandEnv(command)), ...opts.envs },
       ...(opts.user === undefined ? this.user : { user: opts.user }),
-    }) as Promise<E2BCommandResult>);
+    }) as Promise<E2BCommandResult>).catch(cause => {
+      throw Object.assign(new Error("Dispatched command outcome is unknown", { cause }), { outcome: "dispatched_unknown" });
+    });
   }
 
   /** Binary-safe read; `null` when the file does not exist. */
@@ -358,7 +360,11 @@ export class E2BSandboxExecutor
       cwd: "/workspace",
       timeoutMs: timeout ?? this.defaultTimeoutMs,
       ...this.user,
-    }) as Promise<E2BCommandResult>);
+    }) as Promise<E2BCommandResult>).catch(cause => {
+      // The request was dispatched and the SDK supplied no terminal exit.
+      // Do not infer non-commit from a transport/auth/timeout error string.
+      throw Object.assign(new Error("Dispatched command outcome is unknown", {cause}), {outcome:"dispatched_unknown"});
+    });
     // Match @cloudflare/sandbox's behaviour: combined stdout+stderr,
     // newline-trimmed, plus an exit-code suffix.
     const separator = result.stdout.length > 0 && !result.stdout.endsWith("\n") ? "\n" : "";

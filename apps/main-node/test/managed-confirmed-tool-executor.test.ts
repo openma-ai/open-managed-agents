@@ -47,6 +47,29 @@ const environment: Environment = {
 };
 
 describe("NodeManagedConfirmedToolExecutor", () => {
+  it("preserves dispatched-unknown on an explicitly authorized retry result", async () => {
+    const executor=new NodeManagedConfirmedToolExecutor({buildExecutableTools:async()=>({bash:{execute:async()=>{throw Object.assign(new Error("transport lost"),{outcome:"dispatched_unknown"});}}})});
+    const result=await executor.execute({workspaceId:"ws",session,environment,sandbox:{} as SandboxExecutor,
+      confirmation:{id:"allow",type:"user.tool_confirmation",result:"allow",toolUseId:"retry:original",processedAt:"2026-08-26T01:00:00Z"},
+      toolUse:{id:"retry:original",type:"agent.tool_use",name:"bash",input:{command:"effect"},processedAt:"2026-08-26T00:00:00Z"},abortSignal:new AbortController().signal});
+    expect(result).toMatchObject({isError:true,outcome:"dispatched_unknown"});
+  });
+  it("never turns an old execution fence loss into a settled ordinary failure", async () => {
+    const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");
+    const lost=new SessionExecutionLostError("old fence");
+    const executor=new NodeManagedConfirmedToolExecutor({buildExecutableTools:async()=>({bash:{execute:async()=>{throw lost;}}})});
+    await expect(executor.execute({workspaceId:"ws",session,environment,sandbox:{} as SandboxExecutor,
+      confirmation:{id:"allow",type:"user.tool_confirmation",result:"allow",toolUseId:"retry:original",processedAt:"2026-08-26T01:00:00Z"},
+      toolUse:{id:"retry:original",type:"agent.tool_use",name:"bash",input:{command:"effect"},processedAt:"2026-08-26T00:00:00Z"},abortSignal:new AbortController().signal})).rejects.toBe(lost);
+  });
+  it("does not dispatch a confirmed retry after interrupt has already aborted its execution", async () => {
+    let effects=0;const abort=new AbortController();abort.abort("interrupt");
+    const executor=new NodeManagedConfirmedToolExecutor({buildExecutableTools:async()=>({bash:{execute:async()=>{effects++;return "ok";}}})});
+    await executor.execute({workspaceId:"ws",session,environment,sandbox:{} as SandboxExecutor,
+      confirmation:{id:"allow",type:"user.tool_confirmation",result:"allow",toolUseId:"retry:original",processedAt:"2026-08-26T01:00:00Z"},
+      toolUse:{id:"retry:original",type:"agent.tool_use",name:"bash",input:{command:"effect"},processedAt:"2026-08-26T00:00:00Z"},abortSignal:abort.signal}).catch(()=>undefined);
+    expect(effects).toBe(0);
+  });
   it("executes the confirmed tool with its original input and abort signal", async () => {
     const calls: unknown[] = [];
     const executor = new NodeManagedConfirmedToolExecutor({

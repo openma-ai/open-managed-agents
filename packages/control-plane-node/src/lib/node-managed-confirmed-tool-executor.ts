@@ -1,3 +1,4 @@
+import { SessionExecutionLostError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { JsonObject } from "@open-managed-agents/managed-agents-application";
 import type {
   ManagedNodeConfirmedToolExecutionPort,
@@ -51,6 +52,7 @@ export class NodeManagedConfirmedToolExecutor
   async execute(
     input: ExecuteManagedNodeConfirmedTool,
   ): Promise<ManagedNodeConfirmedToolExecutionResult> {
+    input.abortSignal.throwIfAborted();
     const tools = await this.dependencies.buildExecutableTools({
       workspaceId: input.workspaceId,
       session: input.session,
@@ -64,6 +66,7 @@ export class NodeManagedConfirmedToolExecutor
         true,
       );
     }
+    input.abortSignal.throwIfAborted();
     try {
       const value = await tool.execute(input.toolUse.input, {
         abortSignal: input.abortSignal,
@@ -72,6 +75,10 @@ export class NodeManagedConfirmedToolExecutor
       });
       return successfulResult(value);
     } catch (error) {
+      if (error instanceof SessionExecutionLostError || input.abortSignal.aborted) throw error;
+      if (error !== null && typeof error === "object" && "outcome" in error && error.outcome === "dispatched_unknown") {
+        return {...textResult("Tool outcome unknown: operation may have committed; another attempt requires explicit authorization.",true),outcome:"dispatched_unknown"};
+      }
       return textResult(
         error instanceof Error ? error.message : String(error),
         true,

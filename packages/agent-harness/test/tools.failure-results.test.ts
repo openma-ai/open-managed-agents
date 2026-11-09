@@ -64,6 +64,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("preserves explicit dispatched-unknown certainty through built-in safe wrapper", async () => {
+ const tools=await buildTools({id:"agent",model:"test",tools:[{type:"agent_toolset_20260401"}]} as never,
+   {exec:async()=>{throw Object.assign(new Error("transport lost"),{outcome:"dispatched_unknown"});},readFile:async()=>"",writeFile:async()=>""} as never,{});
+ await expect(tools.bash!.execute!({command:"external-effect"},{toolCallId:"call",messages:[]} as never)).rejects.toMatchObject({outcome:"dispatched_unknown"});
+});
+
 describe("tool failure results (Pi harness)", () => {
   async function runPiTool(toolName: string, args: Record<string, unknown>, tools: Record<string, any>) {
     const faux = fauxProvider({ tokensPerSecond: 100_000 });
@@ -149,6 +155,21 @@ describe("tool failure results (Pi harness)", () => {
 });
 
 describe("tool failure results (default harness)", () => {
+  it("stops after typed unknown instead of executing a new model call ID", async () => {
+    const model=createScriptedLanguageModel([
+      streamStep([...toolCallChunks({id:"first",toolName:"bash",inputDeltas:['{"command":"effect"}']}),finishChunk("tool-calls")]),
+      streamStep([...toolCallChunks({id:"second",toolName:"bash",inputDeltas:['{"command":"effect"}']}),finishChunk("tool-calls")]),
+      streamStep([...textChunks("done",["done"]),finishChunk("stop")]),
+    ]);
+    let effects=0;
+    const tools=await buildTools({id:"agent",model:"test",tools:[{type:"agent_toolset_20260401"}]} as never,
+      {exec:async()=>{effects++;if(effects===1)throw Object.assign(new Error("transport lost"),{outcome:"dispatched_unknown"});return "exit=0";},readFile:async()=>"",writeFile:async()=>""} as never,{});
+    const events:SessionEvent[]=[{type:"user.message",content:[{type:"text",text:"go"}]}];const runtime=makeRuntime(events);
+    await new DefaultHarness().run({agent:{id:"agent",model:{id:model.model.modelId}},userMessage:events[0],session_id:"s",tools,model:model.model,systemPrompt:"",env:{},runtime} as HarnessContext);
+    expect(effects).toBe(1);
+    expect(runtime.pendingConfirmations).toEqual(["retry:first"]);
+    expect(events.some(e=>e.type==="agent.tool_use"&&e.id==="second")).toBe(false);
+  });
   it("marks an aborted bash execution is_error with the original error text", async () => {
     const model = createScriptedLanguageModel([
       streamStep([
