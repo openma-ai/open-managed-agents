@@ -513,8 +513,11 @@ export function loginCommand(command: string, env: Record<string, string>): stri
   return env.PATH === undefined ? command : `export PATH='${env.PATH.replaceAll("'", "'\\''")}'; ${command}`;
 }
 
+// OpenSSL clients (python urllib, curl builds without a compiled-in path)
+// read SSL_CERT_FILE; the bundle already carries the container CA.
 const CONTAINER_ENV = {
   NODE_EXTRA_CA_CERTS: CA,
+  SSL_CERT_FILE: BUNDLE,
   REQUESTS_CA_BUNDLE: BUNDLE,
 };
 const DEFAULT_BACKUP_TTL_SECONDS = BACKUP_TTL_SEC;
