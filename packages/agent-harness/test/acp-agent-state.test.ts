@@ -4,7 +4,9 @@ import { ACP_NATIVE_STATE_PROFILES, bindAcpAgentState } from "../src/acp-agent-s
 
 describe("ACP agent-native session state", () => {
   it("covers Harbor-derived native state profiles available through ACP or an OMA overlay", () => {
-    expect(ACP_NATIVE_STATE_PROFILES.map((profile) => profile.id).sort()).toEqual([
+    // Profiles describe frozen executables; canonical checkpoint IDs are a
+    // namespace inventory, not a promise of one profile per executable family.
+    expect([...new Set(ACP_NATIVE_STATE_PROFILES.map((profile) => profile.id))].sort()).toEqual([
       "aider",
       "claude-code",
       "codex",
@@ -33,6 +35,22 @@ describe("ACP agent-native session state", () => {
       for (const artifact of profile.sessionArtifacts("/native")) {
         expect(artifact.path, profile.id).toMatch(/^\/native(?:\/|$)/);
       }
+    }
+  });
+
+  it("selects disjoint legacy and OMA Pi artifacts while retaining the canonical checkpoint namespace", () => {
+    const profiles=ACP_NATIVE_STATE_PROFILES.filter(profile=>profile.id==="pi");
+    expect(profiles.map(profile=>profile.provenance)).toEqual(["harbor","oma"]);
+    for(const [command,want] of [["pi-acp","harbor"],["openma-pi-acp","oma"]] as const){
+      const agent={id:"pi-acp",command};
+      expect(profiles.filter(profile=>profile.matches(agent)).map(profile=>profile.provenance)).toEqual([want]);
+      const binding=bindAcpAgentState({sessionId:"pi-migration",agent});
+      expect(binding.adapterId).toBe("pi");
+      expect(binding.rootPath).toBe("/workspace/.openma/harness-state/acp/pi-migration/pi/v1");
+      expect(binding.sessionArtifacts.map(artifact=>artifact.path)).toEqual([
+        "/workspace/.openma/harness-state/acp/pi-migration/pi/v1/native/home/.pi/agent/sessions",
+        ...(want==="harbor"?["/workspace/.openma/harness-state/acp/pi-migration/pi/v1/native/home/.pi/pi-acp/session-map.json"]:[]),
+      ]);
     }
   });
 
