@@ -1,4 +1,4 @@
-import { answeredToolCallIds, asWireEvents } from "@open-managed-agents/session-runtime-contract/requires-action";
+import { asWireEvents } from "@open-managed-agents/session-runtime-contract/requires-action";
 import type { HarnessRuntime } from "./interface";
 
 /** Typed transport certainty, never inferred from arbitrary error text. */
@@ -32,7 +32,6 @@ export function requestUnknownToolRetry(runtime: HarnessRuntime, toolUseId: stri
  * Hosts supply lane-scoped history; an explicit lane never depends on the last event. */
 export function parkUnknownToolRetry(runtime: HarnessRuntime, laneId = runtime.sessionThreadId ?? "sthr_primary"): boolean {
   const events = asWireEvents(runtime.history.getEvents()).filter(event => (event.session_thread_id ?? "sthr_primary") === laneId);
-  const answered = answeredToolCallIds(events);
   const pending: string[] = [];
   let denied = false;
   for (let index = 0; index < events.length; index++) {
@@ -41,11 +40,25 @@ export function parkUnknownToolRetry(runtime: HarnessRuntime, laneId = runtime.s
     const details = event.details as Record<string, unknown> | undefined;
     const id = details?.retry_request_id;
     if (typeof id !== "string" || details?.outcome !== "dispatched_unknown") continue;
-    const verdict = events.findLast(row => row.type === "user.tool_confirmation" && row.tool_use_id === id);
-    if (verdict?.result === "deny") { denied = true; continue; }
-    if (answered.has(id)) continue;
-    // Interrupt cancels authorization. It must not be resurrected by restart.
-    if (events.slice(index + 1).some(row => row.type === "user.interrupt")) continue;
+    // Consume in canonical order. A later raw allow is no authority once a
+    // denial, interrupt or closing result consumed the request.
+    let allowed = false;
+    let confirmed = false;
+    let closed = false;
+    let terminal = false;
+    for (const row of events.slice(index + 1)) {
+      if (row.type === "user.interrupt") { closed = true; break; }
+      if (row.type === "user.tool_confirmation" && row.tool_use_id === id && !confirmed) {
+        confirmed = true;
+        allowed = row.result === "allow";
+        if (!allowed) { closed = true; break; }
+      }
+      if ((row.type === "agent.tool_result" && row.tool_use_id === id)
+        || (row.type === "agent.mcp_tool_result" && row.mcp_tool_use_id === id)) { terminal = true; closed = true; break; }
+    }
+    if (allowed && terminal) continue;
+    if (confirmed && !closed) { denied = true; continue; }
+    if (closed) { denied = true; continue; }
     const request = events.find(row => row.id === id && (row.type === "agent.tool_use" || row.type === "agent.mcp_tool_use"));
     if (request === undefined && typeof details.tool_use_id === "string") requestUnknownToolRetry(runtime, details.tool_use_id);
     pending.push(id);

@@ -223,13 +223,10 @@ export class E2BSandboxExecutor
     command: string,
     opts: { envs?: Record<string, string>; timeoutMs?: number; user?: string; sessionEnv?: false } = {},
   ): Promise<E2BCommandResult> {
-    return settleCommand(this.sandbox.commands.run(command, {
+    return runCommand(this.sandbox, command, {
       timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
       envs: { ...(opts.sessionEnv === false ? {} : this.buildCommandEnv(command)), ...opts.envs },
       ...(opts.user === undefined ? this.user : { user: opts.user }),
-    }) as Promise<E2BCommandResult>).catch(cause => {
-      if (isRejectedCommandStart(cause)) throw cause;
-      throw Object.assign(new Error("Dispatched command outcome is unknown", { cause }), { outcome: "dispatched_unknown" });
     });
   }
 
@@ -357,15 +354,10 @@ export class E2BSandboxExecutor
 
   async exec(command: string, timeout?: number): Promise<string> {
     const wrapped = this.applyEnv(command);
-    const result = await settleCommand(this.sandbox.commands.run(wrapped, {
+    const result = await runCommand(this.sandbox, wrapped, {
       cwd: "/workspace",
       timeoutMs: timeout ?? this.defaultTimeoutMs,
       ...this.user,
-    }) as Promise<E2BCommandResult>).catch(cause => {
-      if (isRejectedCommandStart(cause)) throw cause;
-      // The request was dispatched and the SDK supplied no terminal exit.
-      // Do not infer non-commit from a transport/auth/timeout error string.
-      throw Object.assign(new Error("Dispatched command outcome is unknown", {cause}), {outcome:"dispatched_unknown"});
     });
     // Match @cloudflare/sandbox's behaviour: combined stdout+stderr,
     // newline-trimmed, plus an exit-code suffix.
@@ -733,8 +725,24 @@ export class E2BSandboxExecutor
   }
 }
 
-// E2B maps start RPC InvalidArgument/Unauthenticated responses to these
-// concrete SDK errors before a process handle exists. Never parse messages.
+/** Split start from wait: the SDK uses the SAME error types in both stages.
+ * A PID-bearing handle proves dispatch even if its stream failed immediately. */
+async function runCommand(sandbox: E2BSandboxLike, command: string, options: E2BCommandOptions): Promise<E2BCommandResult> {
+  let started = false;
+  try {
+    const result = await settleCommand(sandbox.commands.run(command, { ...options, background: true }) as Promise<E2BCommandResult>);
+    if ("exitCode" in result && typeof result.exitCode === "number") return result;
+    started = true;
+    const handle = result as unknown as E2BCommandHandle;
+    if (!handle.pid || handle.wait === undefined) throw new Error("SDK supplied no waitable command handle");
+    return await settleCommand(handle.wait());
+  } catch (cause) {
+    if (!started && isRejectedCommandStart(cause)) throw cause;
+    throw Object.assign(new Error("Dispatched command outcome is unknown", { cause }), { outcome: "dispatched_unknown" });
+  }
+}
+
+// Only used in the explicit start stage, never to classify wait errors.
 function isRejectedCommandStart(error: unknown): boolean {
   const name = error !== null && typeof error === "object" && "name" in error ? error.name : undefined;
   return name === "AuthenticationError" || name === "InvalidArgumentError";

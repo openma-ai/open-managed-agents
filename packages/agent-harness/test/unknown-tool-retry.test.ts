@@ -47,7 +47,7 @@ it("does not resurrect an interrupted retry request after restart", () => {
     {type:"session.warning",source:"tool_outcome_unknown",details:{outcome:"dispatched_unknown",tool_use_id:"effect",retry_request_id:"retry:effect"}},
     {id:"retry:effect",type:"agent.tool_use",name:"bash",input:{command:"effect"}}, {type:"user.interrupt"}];
   const runtime={history:{getEvents:()=>events},broadcast:(event:unknown)=>events.push(event as never)} as unknown as HarnessRuntime;
-  expect(parkUnknownToolRetry(runtime)).toBe(false);
+  expect(parkUnknownToolRetry(runtime)).toBe(true);
   expect(runtime.pendingConfirmations).toBeUndefined();
 });
 it("repairs a missing frozen retry request before parking", () => {
@@ -58,4 +58,13 @@ it("repairs a missing frozen retry request before parking", () => {
   const runtime={history:{getEvents:()=>events},broadcast:(event:unknown)=>events.push(event as never)} as unknown as HarnessRuntime;
   expect(parkUnknownToolRetry(runtime)).toBe(true);
   expect(events).toContainEqual(expect.objectContaining({id:"retry:effect",type:"agent.tool_use",input:{command:"effect"}}));
+});
+
+it("does not treat an unconsumed allow as a terminal retry", () => {
+  const events=[{id:"o",type:"agent.tool_use",name:"bash",input:{command:"effect"}},
+    {type:"session.warning",source:"tool_outcome_unknown",details:{outcome:"dispatched_unknown",tool_use_id:"o",retry_request_id:"retry:o"}},
+    {id:"retry:o",type:"agent.tool_use",name:"bash",input:{command:"effect"}},
+    {type:"user.tool_confirmation",tool_use_id:"retry:o",result:"allow"}];
+  const runtime={history:{getEvents:()=>events},broadcast:()=>{}} as unknown as HarnessRuntime;
+  expect(parkUnknownToolRetry(runtime)).toBe(true);
 });

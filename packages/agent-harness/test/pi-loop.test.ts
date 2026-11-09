@@ -81,13 +81,39 @@ function makeContext(responses: ReturnType<typeof fauxAssistantMessage>[]) {
 }
 
 describe("PiHarness", () => {
+  it.each(["AuthenticationError", "InvalidArgumentError"] as const)("parks actual SDK post-PID %s instead of resampling a new effect", async name => {
+    const sdk = await import("../../../apps/main-node/node_modules/e2b/dist/index.mjs");
+    const { E2BSandboxExecutor } = await import("../../sandbox-adapter-e2b/src/e2b");
+    const {ctx,events}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"first"})]),fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"second"})]),fauxAssistantMessage("done")]);
+    let effects=0;
+    const native = new sdk.Sandbox({ sandboxId:"offline",envdVersion:"0.3.0",apiKey:"offline-placeholder" });
+    Object.assign(native.commands,{rpc:{start:()=> (async function*(){effects++;yield {event:{event:{case:"start",value:{pid:123}}}};throw new sdk[name]("post-PID stream failure");})()}});
+    const executor=new E2BSandboxExecutor(native as never,{});
+    ctx.tools.echo.metadata={openmaBuiltin:true};
+    ctx.tools.echo.execute=async()=>executor.exec("effect");
+    await new PiHarness().run(ctx);
+    expect(effects).toBe(1);
+    expect(ctx.runtime.pendingConfirmations).toEqual(["retry:first"]);
+    expect(events.some(event=>event.type==="agent.tool_use"&&event.id==="second")).toBe(false);
+  });
+  it("permits fresh model work after an effective explicit allow and terminal retry", async () => {
+    const {ctx,events}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"fresh"},{id:"fresh"})]),fauxAssistantMessage("done")]);
+    let effects=2;ctx.tools.echo.execute=async()=>{effects++;return "ok";};
+    events.push({id:"original",type:"agent.tool_use",name:"echo",input:{value:"effect"}},
+      {type:"agent.tool_result",tool_use_id:"original",is_error:true,content:"unknown"},
+      {type:"session.warning",source:"tool_outcome_unknown",message:"unknown",details:{outcome:"dispatched_unknown",tool_use_id:"original",retry_request_id:"retry:original"}},
+      {id:"retry:original",type:"agent.tool_use",name:"echo",input:{value:"effect"},evaluated_permission:"ask"},
+      {type:"user.tool_confirmation",tool_use_id:"retry:original",result:"allow"},
+      {type:"agent.tool_result",tool_use_id:"retry:original",is_error:false,content:"ok"});
+    await new PiHarness().run(ctx);expect(effects).toBe(3);
+  });
   it("does not let ordinary queued steering bypass an unknown tool park",async()=>{
     const {ctx}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"first"})]),fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"second"})]),fauxAssistantMessage("done")]);
     let effects=0,taken=false;ctx.tools.echo.execute=async()=>{effects++;if(effects===1)throw Object.assign(new Error("lost"),{outcome:"dispatched_unknown"});return "ok";};
     ctx.runtime.takeSteeringInputs=async()=>{if(taken)return [];taken=true;return [{type:"user.message",content:[{type:"text",text:"ordinary input"}]}];};
     await new PiHarness().run(ctx);expect(effects).toBe(1);
   });
-  it.each(["child","deny"])("never resamples an unknown effect after %s",async mode=>{
+  it.each(["child","deny","interrupt","late-allow"])("never resamples an unknown effect after %s",async mode=>{
     const {ctx,events}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"new"})]),fauxAssistantMessage("done")]);
     let effects=1;ctx.tools.echo.execute=async()=>{effects++;return "ok";};
     const lane=mode==="child"?{session_thread_id:"sthr_child"}:{};
@@ -96,7 +122,9 @@ describe("PiHarness", () => {
       {type:"agent.tool_result",tool_use_id:"original",is_error:true,content:"unknown",...lane},
       {type:"session.warning",source:"tool_outcome_unknown",message:"unknown",details:{outcome:"dispatched_unknown",tool_use_id:"original",retry_request_id:"retry:original"},...lane},
       {id:"retry:original",type:"agent.tool_use",name:"echo",input:{value:"effect"},evaluated_permission:"ask",...lane}] as SessionEvent[]));
-    if(mode==="deny")events.push({type:"user.tool_confirmation",tool_use_id:"retry:original",result:"deny"},{type:"agent.tool_result",tool_use_id:"retry:original",is_error:true,content:"Denied"});
+    if(mode==="deny" || mode==="late-allow")events.push({type:"user.tool_confirmation",tool_use_id:"retry:original",result:"deny"},{type:"agent.tool_result",tool_use_id:"retry:original",is_error:true,content:"Denied"});
+    if(mode==="late-allow")events.push({type:"user.tool_confirmation",tool_use_id:"retry:original",result:"allow"});
+    if(mode==="interrupt")events.push({type:"user.interrupt"},{type:"user.message",content:[{type:"text",text:"ordinary input, not authorization"}]});
     await new PiHarness().run(ctx);expect(effects).toBe(1);
   });
   it("does not sample a new call ID while a durable unknown retry request is awaiting confirmation", async () => {
@@ -157,6 +185,7 @@ describe("PiHarness", () => {
     events.push({id:"first",type:"agent.tool_use",name:"echo",input:{value:"effect"}},
       {type:"session.warning",source:"tool_outcome_unknown",message:"unknown",details:{outcome:"dispatched_unknown",tool_use_id:"first",retry_request_id:"retry:first"}},
       {id:"retry:first",type:"agent.tool_use",name:"echo",input:{value:"effect"}},
+      {type:"user.tool_confirmation",tool_use_id:"retry:first",result:"allow"},
       {type:"agent.tool_result",tool_use_id:"retry:first",content:"ok"});
     await new PiHarness().run(ctx);
     expect(echo).not.toHaveBeenCalled();
