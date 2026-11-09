@@ -657,6 +657,11 @@ function modelMessagesToPi(
                 return [{ type: "image", data: image, mimeType: part.mediaType ?? "image/png" }];
               }
             }
+            if (part.type === "file" && part.mediaType.toLowerCase().startsWith("text/")
+              && part.data instanceof Uint8Array) {
+              const title = part.filename ? `[${part.filename}]\n` : "";
+              return [{ type: "text", text: title + new TextDecoder().decode(part.data) }];
+            }
             return [{ type: "text", text: `[${part.type} attachment]` }];
           });
       return [{ role: "user", content, timestamp }];

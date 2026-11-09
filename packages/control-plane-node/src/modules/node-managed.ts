@@ -752,6 +752,15 @@ export async function createManagedNodeRuntime(
       return {
         agent,
         acpRecoveryHistory,
+        fileFetcher: async (fileId) => {
+          const result = await managedPlatform.app({ workspaceId: input.workspaceId })
+            .port(managedAgentsPortTokens.files).downloadFile({ fileId });
+          return result.type === "found" ? {
+            bytes: result.file.content,
+            mediaType: result.file.mimeType,
+            filename: result.file.filename ?? fileId,
+          } : null;
+        },
         // History may already include later queued executions. Consume only
         // this execution's accepted messages, in order, without dropping any.
         userMessage: {
