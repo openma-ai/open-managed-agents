@@ -7792,8 +7792,7 @@ export class SessionDO extends DurableObject<Env> {
 
   private async _finalizeStaleTurnsInner(): Promise<void> {
     if (!this._state) return;
-    // Ensure events table exists (alarm() runs without going through
-    // fetchInner's ensureSchema). Cheap idempotent CREATE IF NOT EXISTS.
+    // Ensure schema for alarm() too; CREATE IF NOT EXISTS is idempotent.
     try { this.ensureSchema(); } catch { /* schema already up-to-date */ }
 
     // Let the cold-start recovery scan (started by ensureSchema) finish
@@ -7819,6 +7818,7 @@ export class SessionDO extends DurableObject<Env> {
       parkedCallIds: () => (this.state.pending_tool_calls ?? []).map((pending) => pending.toolCallId),
       append: async (event) => { await this.runtimeAdapter.eventLog.append(event); },
       broadcast: (event) => this.broadcastEvent(event),
+      hasEvent: (id) => this.runtimeAdapter.eventLog.getEvents().some(event => event.id === id),
       listOrphanTurns: () => this.runtimeAdapter.listOrphanTurns(this.state.session_id),
       endTurn: (turnId) => this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle"),
       isTurnActive: (turnId) => this._activeTurnIds.has(turnId),

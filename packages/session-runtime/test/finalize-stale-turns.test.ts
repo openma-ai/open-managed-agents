@@ -21,6 +21,7 @@ function port(overrides: Partial<StaleTurnFinalizerPort> = {}) {
     parkedCallIds: () => [],
     append: async (event) => { appended.push(event as never); },
     broadcast: () => undefined,
+    hasEvent: id => appended.some(event => event.id === id),
     listOrphanTurns: async () => [],
     endTurn: async (id) => { ended.push(id); },
     isTurnActive: () => false,
@@ -39,7 +40,7 @@ const types = (events: Array<Record<string, unknown>>) => events.map((event) => 
 const dangling = { type: "session.status_running", ts: (NOW - 120_000) / 1000 };
 
 function settled(state: "failed" | "completed", settledAtMs: number, failure: string | null = null) {
-  return { state, settledAt: new Date(settledAtMs).toISOString(), failure } as never;
+  return { id: "execution-1", attemptCount: 1, state, settledAt: new Date(settledAtMs).toISOString(), failure } as never;
 }
 function records(active: unknown[], last: ReturnType<typeof settled> | null) {
   return {
@@ -52,8 +53,8 @@ describe("deadExecutionFailure", () => {
   const scope = { workspaceId: "w", sessionId: "s" };
   const turnAt = 10_000;
   it("reads the failure the sweep settled after the turn started", async () => {
-    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt + 1, "lease expired")), ...scope }, turnAt)).toBe("lease expired");
-    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt, null)), ...scope }, turnAt)).toBe("execution failed");
+    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt + 1, "lease expired")), ...scope }, turnAt)).toEqual({ message: "lease expired", executionId: "execution-1", attempt: 1 });
+    expect(await deadExecutionFailure({ store: records([], settled("failed", turnAt, null)), ...scope }, turnAt)).toEqual({ message: "execution failed", executionId: "execution-1", attempt: 1 });
   });
   it("is null while an execution is queued or running, or with no store", async () => {
     expect(await deadExecutionFailure({ store: records([{}], settled("failed", turnAt + 1)), ...scope }, turnAt)).toBeNull();
@@ -67,6 +68,34 @@ describe("deadExecutionFailure", () => {
 });
 
 describe("finalizeStaleTurns", () => {
+  it.each(["session.error", "session.status_idle"])("retries a failed %s write without duplicate error or phantom broadcasts", async failedType => {
+    const persisted: Record<string, unknown>[] = [];
+    const broadcast: Record<string, unknown>[] = [];
+    let fail = true;
+    let status = dangling;
+    const store = records([], settled("failed", NOW - 1_000, "lease expired"));
+    const { value } = port({
+      latestSessionStatus: () => status,
+      clearMarkerlessTurn: async () => false,
+      executions: async () => ({ store, workspaceId: "w", sessionId: "s" }),
+      hasEvent: id => persisted.some(event => event.id === id),
+      append: async event => {
+        if (event.type === failedType && fail) { fail = false; throw new Error("storage unavailable"); }
+        persisted.push(event as never);
+        if (event.type === "session.status_idle") status = { type: event.type, ts: NOW / 1000 };
+      },
+      broadcast: event => { broadcast.push(event as never); },
+    });
+    await expect(finalizeStaleTurns(value)).rejects.toThrow("storage unavailable");
+    expect(types(broadcast)).toEqual(types(persisted));
+    expect(types(persisted)).toEqual(failedType === "session.error" ? [] : ["session.error"]);
+    // Reconstruct the port like a new host; deduplication must be durable.
+    await finalizeStaleTurns({ ...value });
+    await finalizeStaleTurns({ ...value });
+    expect(types(persisted)).toEqual(["session.error", "session.status_idle"]);
+    expect(types(broadcast)).toEqual(types(persisted));
+    expect(status.type).toBe("session.status_idle");
+  });
   it("closes unpaired calls by kind, keeps the thread, skips answered and parked ones", async () => {
     const { value, appended } = port({
       listToolUses: () => [
@@ -145,6 +174,7 @@ describe("finalizeStaleTurns", () => {
     expect(store.latestSettled).toHaveBeenCalledWith({ workspaceId: "w", sessionId: "s" });
     expect(appended).toEqual([
       {
+        id: "stale:execution-1:1:session.error",
         type: "session.error",
         error: {
           type: "unknown_error",
@@ -152,7 +182,7 @@ describe("finalizeStaleTurns", () => {
           retry_status: { type: "exhausted" },
         },
       },
-      { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } },
+      { id: "stale:execution-1:1:session.status_idle", type: "session.status_idle", stop_reason: { type: "retries_exhausted" } },
     ]);
   });
 

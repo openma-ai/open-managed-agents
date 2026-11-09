@@ -6,6 +6,7 @@
 import type { SessionExecution } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { OrphanTurn, TurnId } from "./ports";
+import { reportTurnFailure } from "./turn-failure";
 
 export interface StaleToolUse {
   id: string;
@@ -31,6 +32,8 @@ export interface StaleTurnFinalizerPort {
   parkedCallIds(): string[];
   append(event: SessionEvent): Promise<void>;
   broadcast(event: SessionEvent): void;
+  /** Durable event-id lookup; recovery passes are serialized by the host. */
+  hasEvent(id: string): boolean;
   listOrphanTurns(): Promise<OrphanTurn[]>;
   endTurn(turnId: TurnId): Promise<void>;
   isTurnActive(turnId: TurnId): boolean;
@@ -53,14 +56,14 @@ export interface StaleTurnFinalizerPort {
 export async function deadExecutionFailure(
   executions: { store: SessionExecutionRecords | null; workspaceId: string; sessionId: string },
   statusAtMs: number,
-): Promise<string | null> {
+): Promise<{ message: string; executionId: string; attempt: number } | null> {
   const { store, ...scope } = executions;
   if (store === null) return null;
   if ((await store.listActive(scope)).length > 0) return null;
   const last = await store.latestSettled(scope);
   if (last === null || last.state !== "failed" || last.settledAt === null) return null;
   if (Date.parse(last.settledAt) < statusAtMs) return null;
-  return last.failure ?? "execution failed";
+  return { message: last.failure ?? "execution failed", executionId: last.id, attempt: last.attemptCount };
 }
 
 export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<void> {
@@ -250,21 +253,27 @@ export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<
       // durable evidence: the sweep settled it failed when the owner died.
       const failure = rowChanged ? null : await deadExecutionFailure(await port.executions(), startedAtMs);
       if (failure !== null) {
-        // The turn failed like any other on Node: session.error{exhausted},
-        // then idle retries_exhausted (no rescheduled on a final failure).
-        const errorEvent = {
-          type: "session.error",
-          error: {
-            type: "unknown_error",
-            message: `The agent runtime stopped during the turn (${failure}). Send a new message to continue.`,
-            retry_status: { type: "exhausted" },
-          },
-        } as unknown as SessionEvent;
-        const idleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } } as unknown as SessionEvent;
-        try { await port.append(errorEvent); } catch {}
-        try { port.broadcast(errorEvent); } catch {}
-        try { await port.append(idleEvent); } catch {}
-        try { port.broadcast(idleEvent); } catch {}
+        // Reuse the Node failure decision and ordering. Stable execution/attempt
+        // event ids survive a host restart between error and idle. A failed
+        // append aborts this pass: the running status remains the retry anchor.
+        const events: SessionEvent[] = [];
+        reportTurnFailure({ type: "exhausted" },
+          `The agent runtime stopped during the turn (${failure.message}). Send a new message to continue.`,
+          {
+            sessionError: (message, retryStatus) => { events.push({
+              type: "session.error",
+              error: { type: "unknown_error", message, retry_status: { type: retryStatus } },
+            } as unknown as SessionEvent); },
+            rescheduled: () => { throw new Error("Dead executions cannot be retried"); },
+          });
+        events.push({ type: "session.status_idle", stop_reason: { type: "retries_exhausted" } } as unknown as SessionEvent);
+        for (const event of events) {
+          const id = `stale:${failure.executionId}:${failure.attempt}:${event.type}`;
+          if (port.hasEvent(id)) continue;
+          Object.assign(event, { id });
+          await port.append(event);
+          port.broadcast(event);
+        }
         markerlessEnded = 1;
         port.log("finalize.candidate", {
           decision: "end",

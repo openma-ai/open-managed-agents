@@ -18,8 +18,8 @@ export class SandboxAcpUnsupportedError extends Error {
   }
 }
 
-/** How long stdout may keep delivering after the process exit is reported.
- * Bytes the agent wrote before it exited still arrive through the bridge. */
+/** Silence allowed on a pending output read after exit (not a total drain
+ * deadline). Backpressure and already-buffered bytes never start this clock. */
 export const STDOUT_DRAIN_AFTER_EXIT_MS = 2_000;
 
 /** Host-neutral ACP spawner. Local, Cloudflare, E2B, and future sandbox
@@ -46,14 +46,14 @@ function toChildHandle(
   process: SandboxDuplexProcess,
   onDiagnosticLine?: (line: string) => void,
 ): ChildHandle {
-  let stderr = process.stderr;
+  let stderr = endingWithProcess(process.stderr, process.exited);
   if (onDiagnosticLine !== undefined) {
     const branches = stderr.tee();
     stderr = branches[0];
-    void consumeDiagnosticLines(branches[1], onDiagnosticLine);
+    void consumeDiagnosticLines(branches[1], onDiagnosticLine).catch(() => undefined);
   }
   return {
-    stdin: process.stdin,
+    stdin: inputEndingWithProcess(process.stdin, process.exited),
     stdout: endingWithProcess(process.stdout, process.exited),
     stderr,
     exited: process.exited,
@@ -61,53 +61,88 @@ function toChildHandle(
   };
 }
 
-/** A child's stdout ends when the child does: the ACP engine learns that the
- * agent is gone only from stdout EOF (Node pipes guarantee it). A sandbox
- * stdio bridge can report the exit while its stdout stays open (Cloudflare
- * RPC stdio, e2e cf-container-acp-mm-r1: pi-acp exited mid-turn and the turn
- * waited forever), so after the drain window the stream ends here and the
- * engine fails the turn as it does on Node. */
+/** Exit is not transport EOF. Read only on demand, preserving backpressure.
+ * A bridge that never sends EOF is cancelled only after a pending source read
+ * has seen no bytes for the quiet period following exit. Every delivered chunk
+ * clears that timer; slow consumers may drain arbitrarily long. Packets arriving
+ * after a full quiet period cannot be distinguished from a dead bridge. */
 function endingWithProcess(
-  stdout: ReadableStream<Uint8Array>,
+  source: ReadableStream<Uint8Array>,
   exited: Promise<unknown>,
 ): ReadableStream<Uint8Array> {
-  const reader = stdout.getReader();
+  const reader = source.getReader();
   let ended = false;
+  let hasExited = false;
+  let pending: ReadableStreamDefaultController<Uint8Array> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const end = (controller: ReadableStreamDefaultController<Uint8Array>, error?: unknown) => {
-    if (ended) return;
-    ended = true;
+  const clearTimer = () => {
     if (timer !== undefined) clearTimeout(timer);
-    if (error === undefined) controller.close();
-    else controller.error(error);
+    timer = undefined;
   };
+  const arm = () => {
+    if (!hasExited || pending === undefined || ended) return;
+    timer = setTimeout(() => {
+      if (ended || pending === undefined) return;
+      ended = true;
+      pending.close();
+      pending = undefined;
+      void reader.cancel().catch(() => undefined);
+    }, STDOUT_DRAIN_AFTER_EXIT_MS);
+  };
+  void exited.then(() => undefined, () => undefined).then(() => {
+    hasExited = true;
+    arm();
+  });
   return new ReadableStream<Uint8Array>({
-    start(controller) {
-      void exited.then(() => undefined, () => undefined).then(() => {
-        if (ended) return;
-        timer = setTimeout(() => {
-          end(controller);
-          void reader.cancel().catch(() => undefined);
-        }, STDOUT_DRAIN_AFTER_EXIT_MS);
-      });
-    },
     async pull(controller) {
-      let item: Awaited<ReturnType<typeof reader.read>>;
+      pending = controller;
+      arm();
       try {
-        item = await reader.read();
+        const item = await reader.read();
+        clearTimer();
+        pending = undefined;
+        if (ended) return;
+        if (item.done) { ended = true; controller.close(); }
+        else controller.enqueue(item.value);
       } catch (error) {
-        end(controller, error);
-        return;
+        clearTimer();
+        pending = undefined;
+        if (!ended) { ended = true; controller.error(error); }
       }
-      if (ended) return;
-      if (item.done) end(controller);
-      else controller.enqueue(item.value);
     },
     cancel(reason) {
       ended = true;
-      if (timer !== undefined) clearTimeout(timer);
+      pending = undefined;
+      clearTimer();
       return reader.cancel(reason);
     },
+  }, { highWaterMark: 0 });
+}
+
+/** Own the writer so an exit can terminate even a locked or blocked stdin.
+ * Abort is best effort at the transport; the exposed writer ends immediately. */
+function inputEndingWithProcess(
+  source: WritableStream<Uint8Array>,
+  exited: Promise<unknown>,
+): WritableStream<Uint8Array> {
+  const writer = source.getWriter();
+  const error = new Error("agent process exited; stdin is closed");
+  let stop!: () => void;
+  const stopped = new Promise<void>(resolve => { stop = resolve; });
+  return new WritableStream<Uint8Array>({
+    start(controller) {
+      void exited.then(() => undefined, () => undefined).then(() => {
+        controller.error(error);
+        stop();
+        void writer.abort(error).catch(() => undefined);
+      });
+      void writer.closed.catch(reason => { controller.error(reason); stop(); });
+    },
+    write(chunk) {
+      return Promise.race([writer.write(chunk), stopped.then(() => { throw error; })]);
+    },
+    close: () => writer.close(),
+    abort: reason => writer.abort(reason),
   });
 }
 

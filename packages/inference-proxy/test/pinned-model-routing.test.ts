@@ -10,6 +10,14 @@ async function sendPlan({ fetcher, ...input }: HostedInferenceRequestInput & { f
 
 const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
 describe("pinned hosted model routing", () => {
+  it.each(["https://private-model.test/anthropic", "https://api.minimaxi.com.evil.test/anthropic", "https://api.minimaxi.com/custom"])("requires explicit protocol endpoints for a custom MiniMax base: %s", baseUrl => {
+    expect(() => resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl })).toThrow(/protocolEndpoints/);
+    const explicit = [{ protocol: "openai-chat" as const, proxyPathSegment: "openai/v1", upstreamBaseUrl: baseUrl }];
+    expect(resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl, protocolEndpoints: explicit })).toEqual(explicit);
+  });
+  it.each([null, "https://api.minimaxi.com", "https://api.minimaxi.com/v1/", "https://api.minimaxi.com/anthropic/"])("maps only known official MiniMax bases: %s", baseUrl => {
+    expect(resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl }).map(e => e.upstreamBaseUrl)).toEqual(["https://api.minimaxi.com/v1", "https://api.minimaxi.com/anthropic"]);
+  });
   it("routes a MiniMax China card's chat calls to its OpenAI endpoint, not the card's Anthropic base", async () => {
     const baseUrl = "https://api.minimaxi.com/anthropic";
     expect(resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl }).map((e) => [e.protocol, e.upstreamBaseUrl])).toEqual([
