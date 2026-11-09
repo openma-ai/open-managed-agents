@@ -308,6 +308,7 @@ export class AcpSandboxHarness implements HarnessInterface {
     } catch (error) {
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       if (!runtime.abortSignal?.aborted) {
+        if (error instanceof Error && (error.name === "AcpTurnTimeoutError" || error.name === "AcpPromptCancellationTimeoutError")) throw error;
         this.#emitError(
           runtime,
           error instanceof Error ? error.message : String(error),

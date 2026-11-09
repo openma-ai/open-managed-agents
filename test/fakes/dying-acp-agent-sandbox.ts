@@ -7,6 +7,8 @@
  */
 export interface DyingAcpAgentStdio {
   stdoutEndsOnExit: boolean;
+  /** Cooperative deadline fixture: remain alive until session/cancel. */
+  timeout?: boolean;
 }
 
 export const DYING_ACP_AGENT = { id: "parity-acp-agent", command: "parity-acp-agent", cwd: "/workspace" } as const;
@@ -31,6 +33,7 @@ export function dyingAcpAgentSandbox(stdio: DyingAcpAgentStdio) {
       };
       const send = (message: unknown) => output.enqueue(encoder.encode(`${JSON.stringify(message)}\n`));
       let buffered = "";
+      let promptId: number | undefined;
       return {
         stdout: new ReadableStream<Uint8Array>({ start: (controller) => { output = controller; } }),
         stderr: new ReadableStream<Uint8Array>(),
@@ -47,7 +50,10 @@ export function dyingAcpAgentSandbox(stdio: DyingAcpAgentStdio) {
               else if (request.method === "session/new") result({ sessionId: "pi-session" });
               else if (request.method === "session/prompt") {
                 send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "pi-session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "working" } } } });
-                setTimeout(() => die(137), 10);
+                promptId = request.id;
+                if (!stdio.timeout) setTimeout(() => die(137), 10);
+              } else if (request.method === "session/cancel" && stdio.timeout) {
+                send({ jsonrpc: "2.0", id: promptId, result: { stopReason: "cancelled" } });
               } else if (request.id !== undefined) send({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } });
             }
           },

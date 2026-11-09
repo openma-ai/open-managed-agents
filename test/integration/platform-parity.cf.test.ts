@@ -13,6 +13,7 @@ import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import {
   ACP_CHILD_EXIT_HARNESS,
+  ACP_TIMEOUT_HARNESS,
   PARITY_HARNESS,
   PARITY_MODEL,
   PARITY_SCENARIOS,
@@ -39,6 +40,9 @@ registerHarness(PARITY_HARNESS, () => {
 // cf-container-acp-mm-r1 run saw the exit reported while stdout stayed open.
 registerHarness(ACP_CHILD_EXIT_HARNESS, () =>
   acpChildExitHarness(() => new AcpSandboxHarness(), { stdoutEndsOnExit: false }));
+
+registerHarness(ACP_TIMEOUT_HARNESS, () =>
+  acpChildExitHarness(() => new AcpSandboxHarness(), { stdoutEndsOnExit: false, timeout: true }));
 
 const AUTH = { "x-api-key": "test-key" };
 

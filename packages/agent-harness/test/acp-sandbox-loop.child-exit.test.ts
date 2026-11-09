@@ -9,10 +9,10 @@ import { DYING_ACP_AGENT, dyingAcpAgentSandbox } from "../../../test/fakes/dying
 // Node's pipe ends stdout when the child dies, so the ACP SDK fails the
 // prompt with "ACP connection closed"; Cloudflare's RPC stdio can report the
 // exit while stdout stays open. Both must end the turn with session.error.
-async function runTurn(stdoutEndsOnExit: boolean) {
+async function runTurn(stdoutEndsOnExit: boolean, timeout = false) {
   const events: Array<Record<string, unknown>> = [];
   const runtime = {
-    sandbox: dyingAcpAgentSandbox({ stdoutEndsOnExit }),
+    sandbox: dyingAcpAgentSandbox({ stdoutEndsOnExit, timeout }),
     history: { getEvents: () => [] },
     broadcast: (event: Record<string, unknown>) => events.push(event),
     broadcastStreamStart: async () => {},
@@ -25,7 +25,7 @@ async function runTurn(stdoutEndsOnExit: boolean) {
   const harness = new AcpSandboxHarness();
   try {
     await harness.run({
-      agent: { model: "minimax-m31-flash", acp: { agent: DYING_ACP_AGENT } },
+      agent: { model: "minimax-m31-flash", acp: { agent: DYING_ACP_AGENT, ...(timeout ? { per_turn_timeout_ms: 20 } : {}) } },
       session_id: "session_child_exit",
       userMessage: { type: "user.message", content: [{ type: "text", text: "hello" }] },
       systemPrompt: "",
@@ -45,6 +45,9 @@ const EXIT_ERROR = {
 };
 
 describe("AcpSandboxHarness when the ACP child exits mid-turn", () => {
+  it.each([true, false])("rejects the turn on deadline with stdoutEndsOnExit=%s", async (stdio) => {
+    await expect(runTurn(stdio, true)).rejects.toThrow("turn deadline");
+  });
   it("ends the turn with session.error when stdout closes with the child (Node pipes)", async () => {
     expect(await runTurn(true)).toEqual([EXIT_ERROR]);
   });

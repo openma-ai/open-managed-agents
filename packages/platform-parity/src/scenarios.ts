@@ -4,7 +4,7 @@ import {
   textChunks,
   toolCallChunks,
 } from "../../../test/fakes/scripted-language-model";
-import { ACP_CHILD_EXIT_HARNESS } from "./acp-child-exit";
+import { ACP_CHILD_EXIT_HARNESS, ACP_TIMEOUT_HARNESS } from "./acp-child-exit";
 import type { ParityScenario, ScenarioContext } from "./context";
 import type { ParityModelStep } from "./models";
 
@@ -271,6 +271,16 @@ export const acpChildExit: ParityScenario = {
   },
 };
 
+export const acpTimeout: ParityScenario = {
+  name: "acp-timeout",
+  covers: "ACP 每轮超时: session.error and retries_exhausted, never a silent end_turn",
+  async run(context) {
+    await simpleSession(context, {}, { _oma: { harness: ACP_TIMEOUT_HARNESS } });
+    await context.message("Start.");
+    await context.waitIdle(1, "retries_exhausted");
+  },
+};
+
 /** The scenario set every platform runner executes (order = report order). */
 export const PARITY_SCENARIOS: ParityScenario[] = [
   oneTurn,
@@ -284,4 +294,5 @@ export const PARITY_SCENARIOS: ParityScenario[] = [
   interrupt,
   contextBuildFailure,
   acpChildExit,
+  acpTimeout,
 ];

@@ -196,12 +196,14 @@ async function* supervisedPrompt(
   if (options?.abortSignal?.aborted) forwardAbort();
   else options?.abortSignal?.addEventListener("abort", forwardAbort, { once: true });
 
+  let deadlineError: Error | undefined;
   const timeout = turnTimeoutMs === undefined
     ? undefined
     : setTimeout(
-        () => turnController.abort(
-          new Error(`ACP prompt exceeded its ${turnTimeoutMs}ms turn deadline`),
-        ),
+        () => {
+          deadlineError = Object.assign(new Error(`ACP prompt exceeded its ${turnTimeoutMs}ms turn deadline`), { name: "AcpTurnTimeoutError" });
+          turnController.abort(deadlineError);
+        },
         turnTimeoutMs,
       );
 
@@ -240,6 +242,7 @@ async function* supervisedPrompt(
       }
       if (item.done) {
         completed = true;
+        if (deadlineError) throw deadlineError;
         break;
       }
       yield item.value;

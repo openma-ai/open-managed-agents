@@ -5,6 +5,7 @@ import {
 } from "../../../test/fakes/dying-acp-agent-sandbox";
 
 /** Harness id both runners register for the acp-child-exit scenario. */
+export const ACP_TIMEOUT_HARNESS = "platform-parity-acp-timeout";
 export const ACP_CHILD_EXIT_HARNESS = "platform-parity-acp-child-exit";
 
 interface AcpHarness<C> {
@@ -34,7 +35,7 @@ export function acpChildExitHarness<C extends { runtime: object; agent: object }
       });
       const acp = createAcp();
       try {
-        await acp.run({ ...ctx, runtime, agent: { ...ctx.agent, acp: { agent: DYING_ACP_AGENT } } } as C);
+        await acp.run({ ...ctx, runtime, agent: { ...ctx.agent, acp: { agent: DYING_ACP_AGENT, ...(stdio.timeout ? { per_turn_timeout_ms: 20 } : {}) } } } as C);
       } finally {
         await acp.dispose("destroy");
       }
