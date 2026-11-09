@@ -7,8 +7,9 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 OpenMA separates **where a harness runs** from **how its files survive**. A
 sandbox owns compute lifetime. Workspace persistence owns the mutable coding
-workspace. Session output owns user-visible deliverables. A resource fence is
-the only component allowed to make a new workspace or output revision active.
+workspace. Session output owns user-visible deliverables. Only the execution's one lease—the
+Session execution attempt, or on a self-hosted Environment the Work claim—can make
+a new workspace or output revision active.
 
 The [execution backend contract](/self-host/sandbox-backend/) is the plug-in
 guide for a new compute backend. This page is the persistence and fencing
@@ -75,9 +76,10 @@ SessionExecution claim              official Environment Work claim
 
 These are mutually exclusive execution paths. A self-hosted, in-sandbox run
 does not also claim the Session execution queue. Its one Environment Work
-claim owns the combined sandbox+harness attempt. `RuntimeResourceFencePort`
-below it controls only which immutable workspace/checkpoint/output candidates
-become active; the supervisor heartbeat controls only process health.
+claim owns the combined sandbox+harness attempt, and the same claim decides
+which immutable workspace/checkpoint/output candidates become active
+(`EnvironmentWorkClaimPort`, a compare-and-set on the Work row). There is no
+separate resource fence; the supervisor heartbeat controls only process health.
 
 The two schedulers share a protocol-neutral lease controller internally, so
 lease loss, transient renewal failure, graceful stop and cancellation have the
@@ -121,7 +123,7 @@ downgrades `durable` to ephemeral storage.
 | `ManagedSandboxPort` | acquire, observe, heartbeat, suspend, terminate and orphan reap of isolated compute | Canonical files or Session state |
 | `WorkspacePersistencePort` | materialize `/workspace` and attach it; create immutable restore candidates only for checkpoint strategies | User-visible final deliverables |
 | `SessionOutputPort` | prepare `/mnt/session/outputs`, collect files and create an immutable manifest | The mutable coding workspace |
-| `RuntimeResourceFencePort` | generation lease and atomic publication of active candidate pointers | Provider process management |
+| `EnvironmentWorkClaimPort` | the Work claim check and atomic publication of active candidate pointers on the Work row | Provider process management |
 
 A sandbox lease is deliberately serializable so an orphan reaper can reconnect
 after a host crash:
@@ -346,11 +348,11 @@ successful fenced publication.
 
 The normal transaction is:
 
-1. acquire a monotonically increasing resource-fence generation;
+1. open the Work claim (its `claim_generation` is the generation);
 2. materialize workspace and output bindings;
 3. acquire compute, attach bindings and run the selected driver;
-4. keep the resource fence alive through run, drain, checkpoint and output
-   finalization;
+4. keep checking the claim through run, drain, checkpoint and output
+   finalization (the Work heartbeat keeps it alive; a `412` ends it);
 5. for `checkpoint_restore`, write an immutable workspace candidate; for `durable_mount`, record only the mount identity; finalize any output candidate independently;
 6. atomically publish the candidate pointers under the current generation (this does not make mount writes transactional);
 7. terminate or suspend compute, then release temporary bindings.
@@ -362,7 +364,7 @@ Failure behavior is intentionally asymmetric:
 | Before candidate creation | Last active workspace/output pointers remain unchanged |
 | During upload | Partial candidate stays inactive and may be garbage-collected |
 | After upload, before pointer CAS | Retry with the same idempotency key; a stale generation is rejected |
-| Lost Work lease or resource fence | Abort cooperatively, then hard-kill; late events and publications are rejected |
+| Lost Work claim (heartbeat `412`, reclaim, stop) | Abort cooperatively, then hard-kill; late events, publications and the sandbox token are rejected |
 | Sandbox disappears | Cold acquire, restore last active workspace, replay Session events |
 | Hard kill fails | Persist token-free orphan and retry idempotent provider reap |
 | Published checkpoint is missing or corrupt | Fail closed; never silently replace an existing workspace with an empty one. Selecting an older verified revision requires an explicit recovery operation |
@@ -412,10 +414,9 @@ output strategy; it does not pretend local output files are persisted.
     ```ts
     const runtime = await createNodeManagedRuntime({
       rootDir: "/var/lib/openma/runtime",
-      sql,
-      initializeFenceSchema: true,
+      sql, // the control plane database: Work claims and the orphan queue
+      initializeOrphanSchema: true,
       ownerId: `runtime-host:${process.pid}`,
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
       image: "my-worker:latest",
     });
@@ -430,7 +431,8 @@ output strategy; it does not pretend local output files are persisted.
     });
     ```
 
-    The full preset uses `MAIN_DB` for fences/orphans, `SANDBOX` for compute
+    The full preset checks Work claims in each workspace's tenant D1, keeps
+    orphans in `MAIN_DB`, and uses `SANDBOX` for compute
     and `FILES_BUCKET` for outputs. Applying the SQL schema remains an operator
     migration. Optional `workspaceDurableMount: true` advertises a live
     `/workspace` R2 mount only when `WORKSPACE_BUCKET`, its bucket name and

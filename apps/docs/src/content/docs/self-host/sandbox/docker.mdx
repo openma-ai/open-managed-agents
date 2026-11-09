@@ -32,20 +32,25 @@ Docker is composed as the preinstalled Node runtime, not via
 ```ts
 const runtime = await createNodeManagedRuntime({
   rootDir: "/var/lib/openma",
-  sql,                       // SqlClient — SQLite/Postgres/MySQL
-  initializeFenceSchema: true,
+  sql,                       // SqlClient — SQLite/Postgres/MySQL, the control plane database
+  initializeOrphanSchema: true,
   ownerId: processId,
-  leaseTtlMs: 90_000,
   heartbeatIntervalMs: 30_000,
   image: "node:22-slim",
 });
 ```
 
-The full option set: `rootDir`, `sql`, `initializeFenceSchema`, `ownerId`,
-`leaseTtlMs`, `heartbeatIntervalMs`, `checkpointIntervalMs`, `image`,
+The full option set: `rootDir`, `sql`, `initializeOrphanSchema`, `claims`,
+`ownerId`, `heartbeatIntervalMs`, `checkpointIntervalMs`, `image`,
 `network`, `docker`, `additionalMounts` (source/destination/readOnly),
-`extraHosts`, `scheduler`, `fence`, `runtimeCheckpoint`,
-`credentialEgress`, and `sessionInputs`.
+`extraHosts`, `scheduler`, `runtimeCheckpoint`, `credentialEgress`, and
+`sessionInputs`.
+
+The host is authorized by the Environment Work claim (ADR 0005). By default
+`claims` is `SqlEnvironmentWorkClaimPort` over `sql`, which reads
+`managed_environment_work`; that requires the host to share the control plane
+database. A host that reaches the control plane only over the Work API must
+pass its own `EnvironmentWorkClaimPort`.
 
 ## Capabilities
 
