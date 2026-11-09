@@ -75,6 +75,8 @@ export class Sandbox extends DurableObject {
     }
     return { stdout: "", stderr: "", exitCode: 0, success: true };
   }
+  // No digest-pinned container image is available in the workerd test double.
+  async sandboxImage() { return null; }
   async renewActivityTimeout() {}
   async destroy() {
     this.incarnation = null;

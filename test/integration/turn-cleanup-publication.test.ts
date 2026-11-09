@@ -11,7 +11,7 @@ import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 const post = (path: string, body: any) =>
   exports.default.fetch(new Request(`http://localhost${path}`, { method: "POST", headers: H, body: JSON.stringify(body) }));
-const stubOf = (id: string) => env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+const stubOf = (id: string) => env.SESSION_DO.get(env.SESSION_DO.idFromName(JSON.stringify(["default", id])));
 const texts: string[] = [];
 
 beforeAll(async () => {
@@ -36,8 +36,8 @@ beforeAll(async () => {
 
 async function createSession(harness: string, extra = {}) {
   const a = await post("/v1/oma/agents", { name: `host-${crypto.randomUUID()}`, model: "claude-sonnet-4-6", _oma: { harness }, ...extra });
-  const e = await post("/v1/oma/environments", { name: `env-${crypto.randomUUID()}`, config: { type: "cloud" } });
-  const s = await post("/v1/oma/sessions", { agent: ((await a.json()) as any).id, environment_id: ((await e.json()) as any).id });
+  const e = await post("/v1/environments", { name: `env-${crypto.randomUUID()}`, config: { type: "cloud" } });
+  const s = await post("/v1/sessions", { agent: ((await a.json()) as any).id, environment_id: ((await e.json()) as any).id });
   const id = ((await s.json()) as any).id as string;
   await runInDurableObject(stubOf(id), (instance: any) => instance._sandboxWarm);
   return id;
@@ -52,7 +52,7 @@ async function until(id: string, pred: (e: any[]) => boolean) {
   }
   return events(id);
 }
-const send = (id: string, event: any) => post(`/v1/oma/sessions/${id}/events`, { events: [event] });
+const send = (id: string, event: any) => post(`/v1/sessions/${id}/events`, { events: [event] });
 const message = (text: string) => ({ type: "user.message", content: [{ type: "text", text }] });
 const lifecycle = (seen: any[]) => seen
   .filter((e) => e.type === "user.interrupt" || e.type === "session.status_running" || e.type === "session.status_idle")
