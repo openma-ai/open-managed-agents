@@ -63,6 +63,7 @@ const schemaStatements = [
     settled_at_ms BIGINT,
     failure TEXT,
     held_after_exhausted_ms BIGINT,
+    sandbox_token_hashes TEXT,
     revision BIGINT NOT NULL DEFAULT 1,
     PRIMARY KEY (workspace_id, id)
   )`,
@@ -210,6 +211,7 @@ export async function ensureSessionExecutionCoordinatorSchema(
       ["settled_at_ms", "BIGINT"],
       ["failure", "TEXT"],
       ["held_after_exhausted_ms", "BIGINT"],
+      ["sandbox_token_hashes", "TEXT"],
       ["revision", "BIGINT NOT NULL DEFAULT 1"],
     ];
     for (const [name, definition] of additions) {
@@ -897,7 +899,8 @@ export class SqlSessionExecutionStore
              claimed_at_ms = ?,
              lease_expires_at_ms = CASE
                WHEN ? < deadline_at_ms THEN ? ELSE deadline_at_ms END,
-             settled_at_ms = NULL, failure = NULL, revision = revision + 1
+             settled_at_ms = NULL, failure = NULL, sandbox_token_hashes = NULL,
+             revision = revision + 1
        WHERE workspace_id = ? AND id = ? AND revision = ?
          AND (state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND state = 'running'
            AND lease_expires_at_ms <= ? AND owner_id <> ?))
@@ -1025,6 +1028,7 @@ export class SqlSessionExecutionStore
                    THEN COALESCE(failure, 'interrupted during execution')
                  ELSE ?
                END,
+               sandbox_token_hashes = NULL,
                revision = revision + 1
          WHERE workspace_id = ? AND id = ? AND session_id = ?
            AND state = 'running' AND attempt_id = ? AND owner_id = ?
@@ -1485,6 +1489,7 @@ export class SqlSessionExecutionStore
                claimed_at_ms = NULL, lease_expires_at_ms = NULL,
                settled_at_ms = NULL,
                failure = 'requeued after owner lease expired',
+               sandbox_token_hashes = NULL,
                revision = revision + 1
          WHERE workspace_id = ? AND id = ? AND revision = ?
            AND state = 'running'
@@ -1517,6 +1522,7 @@ export class SqlSessionExecutionStore
       const result = await this.sql.prepare(`
         UPDATE managed_session_executions
            SET state = 'failed', settled_at_ms = ?, failure = ?,
+               sandbox_token_hashes = NULL,
                revision = revision + 1
          WHERE workspace_id = ? AND id = ? AND revision = ?
            AND ${condition}

@@ -75,6 +75,12 @@ const runtimeResourceTablesMigration = {
   toSnapshot: "a569ec0b-0d55-4c2a-bd30-401b50191e4b",
 } as const;
 
+/** Sandbox token hashes on the execution attempt row (#561). */
+const sandboxTokenHashesMigration = {
+  fromSnapshot: runtimeResourceTablesMigration.toSnapshot,
+  toSnapshot: "b328314c-2463-496b-9428-8396e54e5a8c",
+} as const;
+
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -140,6 +146,7 @@ export async function migrateNodeMysqlSchema(
       modelCardPricingMigration.toSnapshot,
       heldAfterExhaustedMigration.toSnapshot,
       runtimeResourceTablesMigration.toSnapshot,
+      sandboxTokenHashesMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -179,6 +186,11 @@ export async function migrateNodeMysqlSchema(
         }
         if (installed.snapshot_id === runtimeResourceTablesMigration.fromSnapshot) {
           installed = { snapshot_id: runtimeResourceTablesMigration.toSnapshot };
+          continue;
+        }
+        if (installed.snapshot_id === sandboxTokenHashesMigration.fromSnapshot) {
+          await ensureMysqlNullableColumn(sql, "managed_session_executions", "sandbox_token_hashes", "TEXT");
+          installed = { snapshot_id: sandboxTokenHashesMigration.toSnapshot };
           continue;
         }
       }

@@ -403,8 +403,9 @@ export async function authenticateEnvironmentWorkSessionBearer(
   }
 }
 
-/** Seals an execution sessions_token for `session` bound to the authorized
- * claim (the `mint` of sandbox-gateway issueExecutionSessionsToken). */
+/** Seals a pre-#561 execution sessions_token. Nothing issues these any more
+ * (#561: the sandbox token replaced them); kept only so the deploy-transition
+ * verify path is tested against the real sealing. Remove with that path. */
 export function sealedExecutionSessionsToken(
   crypto: EnvironmentWorkSessionTokenCrypto,
   now: () => Date,
