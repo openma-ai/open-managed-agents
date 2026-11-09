@@ -8,7 +8,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   type HarnessContext, AcpSandboxHarness, DefaultHarness, registerHarness,
 } from "@open-managed-agents/agent-harness";
@@ -16,8 +16,10 @@ import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
 import { nodeDefaults } from "../src/components";
 import {
+  revisionJudgeResponse,
   ACP_CHILD_EXIT_HARNESS,
   ACP_TIMEOUT_HARNESS,
+  ACP_REVISION_TIMEOUT_HARNESS,
   PARITY_HARNESS,
   PARITY_MODEL,
   PARITY_SCENARIOS,
@@ -114,3 +116,20 @@ registerParityRunner({ describe, test, expect }, {
     return observation;
   },
 });
+
+registerHarness(ACP_REVISION_TIMEOUT_HARNESS, () => {
+  const acp = acpChildExitHarness<HarnessContext>(() => new AcpSandboxHarness(), { stdoutEndsOnExit: true, timeout: true });
+  return { async run(ctx: HarnessContext) {
+    if (JSON.stringify(ctx.runtime.history.getEvents()).includes("<outcome_feedback")) await acp.run(ctx);
+    else ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "First attempt." }] });
+  } };
+});
+
+const originalFetch = globalThis.fetch;
+beforeAll(() => {
+  vi.stubGlobal("fetch", async (input, init) => {
+    if (String(init?.body).includes("parity-revision-timeout")) return revisionJudgeResponse();
+    return originalFetch(input, init);
+  });
+});
+afterAll(() => vi.unstubAllGlobals());

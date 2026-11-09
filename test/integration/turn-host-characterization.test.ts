@@ -3,10 +3,9 @@
 // and the DO event log, before they move behind Ports.
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
-import { TurnInvocation } from "../../apps/agent/src/runtime/turn-invocation";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
@@ -35,8 +34,8 @@ beforeAll(async () => {
   }));
 });
 
-async function createSession(harness: string) {
-  const a = await post("/v1/oma/agents", { name: `host-${crypto.randomUUID()}`, model: "claude-sonnet-4-6", _oma: { harness } });
+async function createSession(harness: string, extra = {}) {
+  const a = await post("/v1/oma/agents", { name: `host-${crypto.randomUUID()}`, model: "claude-sonnet-4-6", _oma: { harness }, ...extra });
   const e = await post("/v1/oma/environments", { name: `env-${crypto.randomUUID()}`, config: { type: "cloud" } });
   const s = await post("/v1/oma/sessions", { agent: ((await a.json()) as any).id, environment_id: ((await e.json()) as any).id });
   const id = ((await s.json()) as any).id as string;
@@ -60,27 +59,6 @@ const lifecycle = (seen: any[]) => seen
   .map((e) => e.type === "session.status_idle" ? `idle:${e.stop_reason?.type}` : e.type);
 
 describe("characterization: SessionDO interrupt and lane drain", () => {
-  it("keeps the alarm open until its turn finishes and errors before its wall-time budget", async () => {
-    const id = await createSession("hang-until-abort");
-    // Replace the infrastructure budget only; exercise the real alarm, drain,
-    // harness and public error settlement without waiting thirteen minutes.
-    await runInDurableObject(stubOf(id), (instance: any) => {
-      const alarm = instance.runAlarm.bind(instance);
-      instance.alarm = async () => {
-        const invocation = instance._turnInvocation = new TurnInvocation(1000);
-        try { await alarm(); }
-        finally { invocation.close(); instance._turnInvocation = null; }
-      };
-    });
-    await send(id, message("hang"));
-    const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
-    expect(seen.some(e => e.type === "session.error" && JSON.stringify(e).includes("wall-time budget"))).toBe(true);
-    expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["retries_exhausted"]);
-    await send(id, message("finish"));
-    const second = await until(id, e => e.filter(x => x.type === "session.status_idle").length === 2);
-    expect(second.filter(e => e.type === "session.status_idle").at(-1).stop_reason.type).toBe("end_turn");
-  }, 30_000);
-
   it("interrupting a running turn ends it once with idle end_turn", async () => {
     const id = await createSession("hang-until-abort");
     await send(id, message("hang"));
@@ -129,3 +107,109 @@ describe("characterization: SessionDO interrupt and lane drain", () => {
     ]);
   }, 30_000);
 });
+
+
+it("starts accepted input without waiting for an alarm invocation", async () => {
+  const id = await createSession("record-order");
+  await runInDurableObject(stubOf(id), instance => { instance.alarm = async () => {}; });
+  await send(id, message("detached drain"));
+  const seen = await until(id, events => events.some(event => event.type === "session.status_idle"));
+  expect(seen.filter(event => event.type === "session.status_idle").map(event => event.stop_reason.type)).toEqual(["end_turn"]);
+  expect(seen.filter(event => event.type === "session.error")).toEqual([]);
+}, 20000);
+
+it("keeps normal cleanup attached to the execution fence without an alarm model timer", async () => {
+  const id = await createSession("record-order");
+  const order = [];
+  await runInDurableObject(stubOf(id), instance => {
+    instance.alarm = async () => {};
+    instance.synchronizeManagedMemoryStores = async fence => {
+      order.push("sync");
+      await new Promise(resolve => setTimeout(resolve, 550));
+      expect(fence).toBeDefined();
+    };
+  });
+  await send(id, message("cleanup"));
+  const seen = await until(id, events => events.some(event => event.type === "session.status_idle"));
+  expect(order).toEqual(["sync"]);
+  expect(seen.filter(event => event.type === "session.error")).toEqual([]);
+  expect(seen.filter(event => event.type === "session.status_idle").map(event => event.stop_reason.type)).toEqual(["end_turn"]);
+}, 20000);
+
+const settledExecutionLong = id => settledExecution(id, 800);
+async function settledExecution(id, polls = 150) {
+  for (let n = 0; n < polls; n++) {
+    const rows = await env.MAIN_DB.prepare("SELECT state,failure FROM managed_session_executions WHERE session_id=?").bind(id).all();
+    if (rows.results.length && rows.results.every(row => ["completed", "failed", "cancelled"].includes(row.state))) return rows.results;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error("execution did not settle");
+}
+
+
+  it("renews the same attempt through successful cleanup and releases only after publication", async () => {
+    const id = await createSession("record-order");
+    const observation = { before: null, after: null, order: [] };
+    await runInDurableObject(stubOf(id), instance => {
+      instance.synchronizeManagedMemoryStores = async fence => {
+        observation.order.push("sync");
+        observation.before = await env.MAIN_DB.prepare("SELECT attempt_id,generation,lease_expires_at_ms FROM managed_session_executions WHERE session_id=?").bind(id).first();
+        await new Promise(r => setTimeout(r, 30_700));
+        observation.after = await env.MAIN_DB.prepare("SELECT attempt_id,generation,lease_expires_at_ms FROM managed_session_executions WHERE session_id=?").bind(id).first();
+      };
+      instance.publishAgentsApiArtifacts = async () => { observation.order.push("publish"); };
+      const prepare = instance.doWarmUpSandbox.bind(instance);
+      instance.doWarmUpSandbox = async () => { await prepare(); instance.portsSandbox = { endExecution: async () => { observation.order.push("release"); } }; };
+    });
+    await send(id, message("start"));
+    const settled = await settledExecutionLong(id);
+    expect(settled[0].state, JSON.stringify({ settled, observation, events: await events(id) })).toBe("completed");
+    expect(observation.order).toEqual(["sync", "publish", "release"]);
+    expect(observation.after.attempt_id).toBe(observation.before.attempt_id);
+    expect(observation.after.generation).toBe(observation.before.generation);
+    expect(observation.after.lease_expires_at_ms).toBeGreaterThan(observation.before.lease_expires_at_ms);
+    expect((await events(id)).filter(e => e.type === "session.error")).toEqual([]);
+  }, 50_000);
+  it.each(["cancel", "lost", "failure"])("does not publish or release a successful terminal after cleanup %s", async kind => {
+    const id = await createSession("record-order");
+    const order: string[] = [];
+    let entered = false;
+    await runInDurableObject(stubOf(id), instance => {
+      instance.synchronizeManagedMemoryStores = async () => {
+        entered = true;
+        if (kind === "lost") {
+          await env.MAIN_DB.prepare("UPDATE managed_session_executions SET generation=generation+1,owner_id='replacement' WHERE session_id=? AND state='running'").bind(id).run();
+          instance._executionFences.clear();
+          throw Object.assign(new Error("fence lost"), { name: "ExecutionFenceLostError" });
+        }
+        if (kind === "failure") throw new Error("memory publish failed");
+        await new Promise(r => setTimeout(r, 550));
+      };
+      instance.publishAgentsApiArtifacts = async () => { order.push("publish"); };
+      const prepare = instance.doWarmUpSandbox.bind(instance);
+      instance.doWarmUpSandbox = async () => { await prepare(); instance.portsSandbox = { endExecution: async () => { order.push("release"); } }; };
+    });
+    await send(id, message("start"));
+    for (let n = 0; n < 100 && !entered; n++) await new Promise(r => setTimeout(r, 25));
+    expect(entered).toBe(true);
+    if (kind === "cancel") await send(id, { type: "user.interrupt" });
+    if (kind === "lost") for (let n = 0; n < 100; n++) {
+      if (!await runInDurableObject(stubOf(id), instance => instance._executionActiveLanes.has("sthr_primary"))) break;
+      await new Promise(r => setTimeout(r, 25));
+    }
+    const settled = kind === "lost" ? (await env.MAIN_DB.prepare("SELECT state,generation,owner_id FROM managed_session_executions WHERE session_id=?").bind(id).all()).results : await settledExecution(id);
+    const seen = await events(id);
+    expect(order).toEqual([]);
+    if (kind === "cancel") {
+      expect(settled[0].state).toBe("cancelled");
+      expect(seen.filter(e => e.type === "session.error")).toEqual([]);
+      expect(seen.filter(e => e.type === "session.status_idle")).toHaveLength(1);
+    } else if (kind === "lost") {
+      expect(settled[0]).toMatchObject({ state: "running", generation: 2, owner_id: "replacement" });
+      expect(seen.filter(e => e.type === "session.error" || e.type === "session.status_idle")).toEqual([]);
+    } else {
+      expect(settled[0].state).toBe("failed");
+      expect(seen.filter(e => e.type === "session.error")).toHaveLength(1);
+      expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["retries_exhausted"]);
+    }
+  }, 30_000);

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { describe, it, expect, beforeAll } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
 import { SPEC_EVENT_TYPES } from "../../packages/api-types/src/types";
@@ -50,12 +51,12 @@ async function createFullSession(opts?: { agentOverrides?: Record<string, unknow
 }
 
 // Helper: post a user message
-function postMessage(sessionId: string, text: string) {
+function postMessage(sessionId: string, text: string, inputId = `sevt_${crypto.randomUUID()}`) {
   return api(`/v1/oma/sessions/${sessionId}/events`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
-      events: [{ type: "user.message", content: [{ type: "text", text }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text }] }],
     }),
   });
 }
@@ -851,8 +852,9 @@ describe("SSE endpoint matrix", () => {
 
   it("Last-Event-ID header: replays only events with seq > N", async () => {
     const { session } = await createFullSession();
-    await postMessage(session.id, "before cursor");
-    await postMessage(session.id, "after cursor");
+    const inputIds = [crypto.randomUUID(), crypto.randomUUID()];
+    await postMessage(session.id, "before cursor", inputIds[0]);
+    await postMessage(session.id, "after cursor", inputIds[1]);
     const histData = await waitForUserMessages(session.id, 2);
 
     const allUsers = histData.filter((row) => {
@@ -860,7 +862,9 @@ describe("SSE endpoint matrix", () => {
       return t === "user.message";
     });
     expect(allUsers.length).toBeGreaterThanOrEqual(2);
-    const cursorSeq = allUsers[0].seq;
+    await waitForSessionExecution(session.id, inputIds);
+    const completed = await waitForUserMessages(session.id, 2);
+    const cursorSeq = completed.filter(row => (row.data?.type ?? row.type) === "user.message")[0].seq;
 
     const streamRes = await api(`/v1/oma/sessions/${session.id}/events/stream`, {
       headers: {

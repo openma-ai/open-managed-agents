@@ -7,6 +7,7 @@
 // changes is asserted separately in the converged-code tests and listed in
 // the convergence report.
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { beforeAll, describe, expect, it } from "vitest";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { ensureModelCards } from "./_model-cards";
@@ -64,14 +65,7 @@ function stub(sessionId: string) {
   return env.SESSION_DO!.get(env.SESSION_DO!.idFromName(sessionId));
 }
 
-async function waitForIdle(sessionId: string, maxWaitMs = 10_000) {
-  for (let waited = 0; waited < maxWaitMs; waited += 200) {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const body = await (await stub(sessionId).fetch(new Request("http://internal/status"))).json() as any;
-    if (body.status === "idle") return;
-  }
-  throw new Error(`session ${sessionId} did not become idle`);
-}
+const waitForIdle = waitForSessionExecution;
 
 async function events(sessionId: string): Promise<any[]> {
   const res = await stub(sessionId).fetch(new Request("http://internal/events", { headers: { Accept: "application/json" } }));
@@ -80,10 +74,12 @@ async function events(sessionId: string): Promise<any[]> {
 }
 
 async function sendMessage(sessionId: string, text: string) {
+  const inputId = `sevt_${crypto.randomUUID()}`;
   const res = await post(`/v1/oma/sessions/${sessionId}/events`, {
-    events: [{ type: "user.message", content: [{ type: "text", text }] }],
+    events: [{ id: inputId, type: "user.message", content: [{ type: "text", text }] }],
   });
   expect([200, 202]).toContain(res.status);
+  return inputId;
 }
 
 describe("characterization: Cloudflare subagent delegation", () => {
@@ -104,8 +100,8 @@ describe("characterization: Cloudflare subagent delegation", () => {
     const environment = await createEnvironment();
     const session = await json(await post("/v1/oma/sessions", { agent: parent.id, environment_id: environment.id }));
 
-    await sendMessage(session.id, "delegate please");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "delegate please");
+    await waitForIdle(session.id, [inputId]);
     const log = await events(session.id);
 
     const parentTexts = log
@@ -166,8 +162,8 @@ describe("characterization: Cloudflare outcome evaluation", () => {
   it("evaluates after the turn and records a satisfied verdict", async () => {
     const session = await outcomeSession("charz-outcome-writer");
     await defineOutcome(session.id, 3);
-    await sendMessage(session.id, "go");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "go");
+    await waitForIdle(session.id, [inputId]);
     const log = await events(session.id);
 
     const ends = log.filter((event) => event.type === "span.outcome_evaluation_end");
@@ -185,8 +181,8 @@ describe("characterization: Cloudflare outcome evaluation", () => {
   it("feeds a needs_revision verdict back as a user turn and re-evaluates", async () => {
     const session = await outcomeSession("charz-outcome-reviser");
     await defineOutcome(session.id, 3);
-    await sendMessage(session.id, "go");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "go");
+    await waitForIdle(session.id, [inputId]);
     const log = await events(session.id);
 
     const ends = log.filter((event) => event.type === "span.outcome_evaluation_end");
@@ -205,8 +201,8 @@ describe("characterization: Cloudflare outcome evaluation", () => {
   it("stops at max_iterations with max_iterations_reached", async () => {
     const session = await outcomeSession("charz-sub-child");
     await defineOutcome(session.id, 2);
-    await sendMessage(session.id, "go");
-    await waitForIdle(session.id);
+    const inputId = await sendMessage(session.id, "go");
+    await waitForIdle(session.id, [inputId]);
     const ends = (await events(session.id)).filter((event) => event.type === "span.outcome_evaluation_end");
     expect(ends.map((event) => [event.result, event.iteration])).toEqual([
       ["needs_revision", 0],

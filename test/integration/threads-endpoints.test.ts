@@ -506,8 +506,7 @@ describe("threads HTTP endpoints", () => {
         adds.push(item);
         return originalAdd(item);
       };
-      await (instance as { drainEventQueue: (t: string) => Promise<void> })
-        .drainEventQueue("sthr_subA");
+      await (instance as { drainEventQueue: (t: string) => Promise<void> }).drainEventQueue("sthr_subA");
       drainSet.delete("sthr_primary"); // cleanup
       return { adds };
     });

@@ -482,6 +482,8 @@ export default defineConfig({
       "scripts/check-test-wiring.test.mjs",
       // Session structure ratchets (node:test); run by test:architecture.
       "scripts/check-session-ratchets.test.mjs",
+      // Node git subprocess test; executed by test:architecture in both CI jobs.
+      "scripts/record-worker-source.test.mjs",
       // Needs full git history and tags. The release-check CI job runs it;
       // workerd cannot import node:child_process from this file.
       "scripts/release-check.history.test.mjs",

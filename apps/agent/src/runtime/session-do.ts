@@ -1,4 +1,6 @@
-import { TurnInvocation } from "./turn-invocation";
+import { waitForAlarmMaintenance } from "./alarm-maintenance";
+import { publishAgentsApiArtifacts } from "./artifact-publication";
+import { readSandboxFileBytes } from "./sandbox-output";
 import { appendStaleTurnEvent, backfillStaleTurnEvents } from "./stale-turn-settlement";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
@@ -646,7 +648,7 @@ export class SessionDO extends DurableObject<Env> {
           try {
             await this.schedule(5, "recoverEventQueue" as keyof this);
           } catch {}
-          await this._armLeaseWake("wakeup");
+          await this.dispatchEventQueue();
         },
       },
       clock: { now: () => new Date() },
@@ -871,7 +873,7 @@ export class SessionDO extends DurableObject<Env> {
    * the same execution twice.
    */
   private _recoveryRun: Promise<void> | null = null;
-  private _turnInvocation: TurnInvocation | null = null;
+  private readonly _reportedTurnErrors = new WeakSet<Error>();
   /** Consecutive failed recovery passes. */
   private _recoveryFailures = 0;
   /** Earliest epoch ms the next recovery retry may run (backoff horizon). */
@@ -958,30 +960,7 @@ export class SessionDO extends DurableObject<Env> {
     const start = new Promise<void>((resolve) => { release = resolve; });
     const run = start
       .then(() => this._runRecoveryInner(reason))
-      .catch(async (err) => {
-        this._recoveryFailures += 1;
-        const backoffMs = Math.min(
-          RECOVERY_BACKOFF_BASE_MS * 2 ** (this._recoveryFailures - 1),
-          RECOVERY_BACKOFF_MAX_MS,
-        );
-        this._recoveryRetryAtMs = this.processedClock.nowMs() + backoffMs;
-        sdoLog("recovery.failed", {
-          session_id: this._state?.session_id,
-          reason,
-          attempt: this._recoveryFailures,
-          backoff_ms: backoffMs,
-          retry_at_ms: this._recoveryRetryAtMs,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        // Retain the wake through the single alarm slot. Never rethrow into
-        // the request/alarm caller: the next wake retries the same hook.
-        try {
-          await this._multiplexAlarm({
-            reason: "recovery_retry",
-            atMs: this._recoveryRetryAtMs,
-          });
-        } catch { /* the persisted schedule/lease wake still covers us */ }
-      })
+      .catch((err) => this._recordRecoveryFailure(reason, err))
       .finally(() => {
         if (this._recoveryRun === run) this._recoveryRun = null;
       });
@@ -990,7 +969,33 @@ export class SessionDO extends DurableObject<Env> {
     return run;
   }
 
+  private async _recordRecoveryFailure(reason: string, err: unknown): Promise<void> {
+    this._recoveryFailures += 1;
+    const backoffMs = Math.min(
+      RECOVERY_BACKOFF_BASE_MS * 2 ** (this._recoveryFailures - 1),
+      RECOVERY_BACKOFF_MAX_MS,
+    );
+    this._recoveryRetryAtMs = this.processedClock.nowMs() + backoffMs;
+    sdoLog("recovery.failed", {
+      session_id: this._state?.session_id,
+      reason,
+      attempt: this._recoveryFailures,
+      backoff_ms: backoffMs,
+      retry_at_ms: this._recoveryRetryAtMs,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    // Retain the wake through the single alarm slot. Never rethrow into
+    // the request/alarm caller: the next wake retries the same hook.
+    try {
+      await this.runAlarmMaintenance("recovery_retry", () => this._multiplexAlarm({
+        reason: "recovery_retry",
+        atMs: this._recoveryRetryAtMs ?? undefined,
+      }));
+    } catch { /* the persisted schedule/lease wake still covers us */ }
+  }
+
   private async _runRecoveryInner(reason: "cold_start" | "alarm"): Promise<void> {
+    this._recoveryDispatchedLanes.clear();
     const nowMs = this.processedClock.nowMs();
     if (this._recoveryRetryAtMs !== null && nowMs < this._recoveryRetryAtMs) {
       // Backing off: do not re-run (and re-fail) the hook before the horizon.
@@ -1000,23 +1005,17 @@ export class SessionDO extends DurableObject<Env> {
         reason,
         retry_at_ms: this._recoveryRetryAtMs,
       });
-      await this._multiplexAlarm({ reason: "recovery_backoff" });
+      await this.runAlarmMaintenance("recovery_rearm", () => this._multiplexAlarm({ reason: "recovery_backoff" }));
       return;
     }
     // alarm() can reach here before any fetch() warmed the in-memory schema.
     this.ensureSchema();
+    await this._multiplexAlarm({ reason: "recovery_start", backstop: true });
     // Join a request-level cold-start finalizer that is already in flight.
     // Without this the fetch()/onStart pass can finish and clear its
     // single-flight guard before this hook reaches finalization, causing a
     // second pass over the same orphans.
     const inFlightFinalize = this._finalizePromise;
-    if (this._recoveryPromise !== null) {
-      try {
-        await this._recoveryPromise;
-      } catch (err) {
-        console.warn(`[recovery] cold-start stream scan failed:`, err);
-      }
-    }
     sdoLog("recovery.start", {
       session_id: this._state?.session_id,
       reason,
@@ -1024,22 +1023,30 @@ export class SessionDO extends DurableObject<Env> {
     // The shared lease/sweep hook: expired owners are requeued (input
     // provably unapplied) or finalized-interrupted (applied work / unpaired
     // tool call) from canonical-stream evidence, then live leases renew.
-    await this._sweepExpiredLeases(nowMs);
-    await this._applyPolicyLeaseRenewals(nowMs);
-    // Finalize dangling turns, then drain/claim whatever the policy exposes.
-    if (inFlightFinalize !== null) {
-      await inFlightFinalize;
-    } else {
-      await this._finalizeStaleTurns();
+    // Bound each phase's wait, retaining its RPC singleflight until settlement.
+    // An unavailable sweep/renew must not hold unrelated lease or queue work.
+    const failures = this._recoveryFailures;
+    const phase = (key: string, work: () => Promise<void>) =>
+      this.runAlarmMaintenance(key, work, err => this._recordRecoveryFailure(reason, err));
+    await phase("recovery_sweep", async () => {
+      if (this._recoveryPromise) {
+        try { await this._recoveryPromise; }
+        catch (err) { console.warn(`[recovery] cold-start stream scan failed:`, err); }
+      }
+      await this._sweepExpiredLeases(nowMs);
+    });
+    await phase("recovery_renew", () => this._applyPolicyLeaseRenewals(nowMs));
+    await phase("recovery_finalize", () => inFlightFinalize ?? this._finalizeStaleTurns());
+    await this.recoverExecutionQueue();
+    if (this._recoveryFailures === failures && !["recovery_sweep", "recovery_renew", "recovery_finalize"].some(key => this._maintenanceRuns.has(key))) {
+      this._recoveryFailures = 0;
+      this._recoveryRetryAtMs = null;
     }
-    if (reason === "alarm") await this.recoverExecutionQueue();
-    this._recoveryFailures = 0;
-    this._recoveryRetryAtMs = null;
     sdoLog("recovery.done", {
       session_id: this._state?.session_id,
       reason,
     });
-    await this._multiplexAlarm({ reason: `recovery_${reason}` });
+    await this.runAlarmMaintenance("recovery_rearm", () => this._multiplexAlarm({ reason: `recovery_${reason}` }));
   }
 
   /**
@@ -1051,10 +1058,15 @@ export class SessionDO extends DurableObject<Env> {
    * running work or any queue row is still present.
    */
   private async _multiplexAlarm(
-    hint: { reason?: string; atMs?: number } = {},
+    hint: { reason?: string; atMs?: number; backstop?: boolean } = {},
   ): Promise<void> {
     try {
       const nowMs = this.processedClock.nowMs();
+      if (hint.backstop) {
+        const current = await this.ctx.storage.getAlarm();
+        await this.ctx.storage.setAlarm(Math.min(current ?? Infinity, nowMs + KEEP_ALIVE_INTERVAL_MS));
+        return; // Storage-only heartbeat before any failable external maintenance.
+      }
       const scheduleNextMs = this._nextScheduleWakeMs(nowMs);
       const queuedInputs = this._localQueuedInputs();
       let executions: ExecutionLeaseRecord[] = [];
@@ -1091,7 +1103,8 @@ export class SessionDO extends DurableObject<Env> {
         policy.actions.some((action) => action.type === "requeue");
       const hasBlocked = policy.blockedQueuedRows > 0;
       const hasRunning =
-        executions.some((e) => e.state === "running") || activeTurns.length > 0;
+        executions.some((e) => e.state === "running") || activeTurns.length > 0 || this._dispatchedLanes.size > 0 ||
+        ["recovery_sweep", "recovery_renew", "recovery_finalize"].some(key => this._maintenanceRuns.has(key));
       const hasSchedule = scheduleNextMs !== null;
       // Hard invariant: queued or running work always keeps a wake armed.
       // Blocked/held rows still keep the slot, but only at a slow safety net.
@@ -1455,10 +1468,14 @@ export class SessionDO extends DurableObject<Env> {
    * thread that's already draining returns immediately.
    */
   async recoverEventQueue(): Promise<void> {
+    await this.runAlarmMaintenance("event_queue", () => this.recoverEventQueueInner());
+  }
+
+  private async recoverEventQueueInner(): Promise<void> {
     this.ensureSchema();
     // Single-table queue: active queued inputs are events rows with
     // processed_at IS NULL. Cancelled rows are excluded.
-    const threads = this.queue.threadsWithQueueInputs();
+    const threads = [...new Set(this._localQueuedInputs().filter(input => !input.heldAfterExhausted && !input.blocked).map(input => input.laneId))];
     if (threads.length === 0) {
       // Nothing pending anywhere. Do not invoke drainEventQueue just to
       // discover an empty queue: the central execution path arms a lease
@@ -1466,7 +1483,7 @@ export class SessionDO extends DurableObject<Env> {
       // session (and makes alarm() look like it has live work).
       return;
     }
-    await Promise.all(threads.map((t) => this.drainEventQueue(t)));
+    await Promise.all(threads.map((t) => this.dispatchEventQueue(t)));
   }
 
   /**
@@ -1716,7 +1733,7 @@ export class SessionDO extends DurableObject<Env> {
     );
 
     if (decision.continue) {
-      await this.drainEventQueue();
+      await this.dispatchEventQueue();
     }
   }
 
@@ -2038,12 +2055,59 @@ export class SessionDO extends DurableObject<Env> {
     return out;
   }
 
+  private readonly _maintenanceRuns = new Map<string, Promise<void>>();
+  private async runAlarmMaintenance(key: string, work: () => Promise<void>, onError?: (error: unknown) => Promise<void>): Promise<void> {
+    let run = this._maintenanceRuns.get(key);
+    if (!run) {
+      run = Promise.resolve().then(work).catch(async error => {
+        if (onError) await onError(error);
+        else console.error("[session_do] alarm maintenance failed", { key, error });
+      }).finally(() => { this._maintenanceRuns.delete(key); });
+      this._maintenanceRuns.set(key, run);
+    }
+    try { await waitForAlarmMaintenance(run); }
+    catch (error) { console.warn("[session_do] alarm maintenance still pending", { key, error }); }
+  }
+
+  private readonly _dispatchedLanes = new Set<string>();
+  private readonly _recoveryDispatchedLanes = new Set<string>();
+
+  /** Short platform dispatch; never return the long drain promise to an alarm. */
+  private async dispatchEventQueue(threadId = "sthr_primary"): Promise<void> {
+    if (this._dispatchedLanes.has(threadId) || this._draining.has(threadId)) return;
+    if (this._recoveryRun && this._recoveryDispatchedLanes.has(threadId)) return;
+    if (this._recoveryRun) this._recoveryDispatchedLanes.add(threadId);
+    this._dispatchedLanes.add(threadId);
+    try {
+      // Persist before starting claim/model/tool work, including synchronous failures.
+      const safety = await this.schedule(5, "recoverEventQueue");
+      void Promise.resolve().then(async () => {
+        const before = this._queueProgressToken([], this._localQueuedInputs());
+        await this.drainEventQueue(threadId);
+        const after = this._queueProgressToken([], this._localQueuedInputs());
+        if (before !== after) this._resetQueueDrainBackoff();
+        else this._recordQueueDrainNoProgress({ queued: this.queue.listQueue(threadId).length, blocked: 0, running: 0 });
+      })
+        .catch(error => {
+          this._recordQueueDrainNoProgress({ queued: this.queue.listQueue(threadId).length, blocked: 0, running: 0 });
+          console.error("[session_do] detached lane failed", { threadId, error });
+        })
+        .finally(async () => {
+          this._dispatchedLanes.delete(threadId);
+          this.ctx.storage.sql.exec("DELETE FROM cf_agents_schedules WHERE id = ?", safety.id);
+          try { await this._multiplexAlarm({ reason: "lane_settled" }); }
+          catch (error) { console.error("[session_do] settlement wake failed", error); }
+        });
+    } catch (error) {
+      this._dispatchedLanes.delete(threadId);
+      throw error;
+    }
+  }
+
   private async drainEventQueue(threadId: string = "sthr_primary"): Promise<void> {
     // Sync re-entry mutex per thread — two callers for the same thread
     // can't both reach the SQL pending lookup before either marks a
     // row as processed.
-    if (this._turnInvocation === null) { await this._armLeaseWake("deferred_drain"); return; }
-    if (this._turnInvocation.signal.aborted) return;
     if (this._draining.has(threadId)) return;
     if (this.deriveStatus() === "terminated") return;
     this._draining.add(threadId);
@@ -2116,6 +2180,7 @@ export class SessionDO extends DurableObject<Env> {
           // atomic D1 outbox row and takes the claim path directly.
           admitUnclaimed: () => this.admitQueueFallback(executionStore, threadId),
           failed: (error) => {
+            if (this._reportedTurnErrors.has(error) || isTurnCancellationError(error)) return; // only suppress an error actually emitted
             const errorEvent: SessionEvent = { type: "session.error", error: error.message };
             history.append(errorEvent);
             this.broadcastEvent(errorEvent);
@@ -2348,15 +2413,17 @@ export class SessionDO extends DurableObject<Env> {
       // be rejected as stale.  This is the commit barrier between the
       // harness side effects and execution settlement.
       await this._managedProjectionChain;
-      // Node parity (runner `afterExecution`): terminal facts are
-      // committed and this attempt still holds its fence, so completed
-      // root-turn outputs become Agents API artifacts before settle.
       if (threadId === "sthr_primary" && !signal.aborted) {
-        await this.publishAgentsApiArtifacts(fence);
+        try { await this.publishAgentsApiArtifacts(fence); }
+        catch (error) { logWarn({ op: "session_do.openai_agents.artifact_publication_failed", session_id: this.state.session_id, execution_id: fence.executionId, err: this.describeError(error) }, "Completed Session output could not be published as an Agents API artifact"); }
       }
+      signal.throwIfAborted();
+      if (this.portsSandbox !== null) await this.portsSandbox.endExecution();
       return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
     } catch (err) {
       turnFailed = true;
+      await this._managedProjectionChain;
+      if ((err as { holdQueuedOnLane?: boolean }).holdQueuedOnLane) this.setExhaustedAt(threadId, Date.now());
       throw err;
     } finally {
       const currentFence = this._executionFences.get(threadId);
@@ -2635,7 +2702,9 @@ export class SessionDO extends DurableObject<Env> {
           reason: "bootstrap_execution",
           atMs: Date.now() + ENQUEUE_WAKE_DELAY_MS,
         });
-
+        void this.recoverExecutionQueue().catch(error => {
+          console.error("[session_do] bootstrap execution wakeup failed", error);
+        });
       }
 
       // Warm at creation (§0.0 rule 10): acquire + record only; the first execution attaches it.
@@ -2846,8 +2915,8 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        // Only the alarm owns turn execution; enqueue never starts background work.
-        if (enqueued) await this._armLeaseWake("enqueue");
+        // Start detached work after durable admission; schedule/alarm remains the recovery safety net.
+        if (enqueued) await this.dispatchEventQueue(umThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2916,7 +2985,7 @@ export class SessionDO extends DurableObject<Env> {
         }
         // Queued inputs survive the interrupt (same as Node): the next one
         // starts the lane's next turn.
-        await this._armLeaseWake("interrupt_queue");
+        await this.dispatchEventQueue(targetThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2925,7 +2994,7 @@ export class SessionDO extends DurableObject<Env> {
         // event and its continuation execution are already in D1 (store
         // append + outbox); just wake the primary lane to claim it.
         if ((body as unknown as { resume?: boolean }).resume === true) {
-          await this._armLeaseWake("budget_resume");
+          await this.dispatchEventQueue("sthr_primary");
         }
         return new Response(null, { status: 202 });
       }
@@ -2946,7 +3015,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        if (enqueued) await this._armLeaseWake("answer_enqueue");
+        if (enqueued) await this.dispatchEventQueue(tcThread);
         return new Response(null, { status: 202 });
       }
 
@@ -2976,7 +3045,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        if (enqueued) await this._armLeaseWake("answer_enqueue");
+        if (enqueued) await this.dispatchEventQueue(ctrThread);
         return new Response(null, { status: 202 });
       }
 
@@ -4240,39 +4309,8 @@ export class SessionDO extends DurableObject<Env> {
     }
   }
 
-  /** Agents API artifact publication for an execution whose terminal just
-   * committed. Main owns the sealed Session mapping, Files and the fence
-   * check (shared publisher, idempotent by path + content); this DO only
-   * serves its sandbox outputs. A copy failure is reported and never turns
-   * the completed execution into a failure. */
   private async publishAgentsApiArtifacts(executionFence: SessionExecutionFence): Promise<void> {
-    const binding = this.env.MAIN_MCP;
-    const tenantId = this.state.tenant_id;
-    const sessionId = this.state.session_id;
-    if (binding?.publishManagedSessionArtifacts === undefined || !tenantId || !sessionId) return;
-    try {
-      await binding.publishManagedSessionArtifacts({
-        tenantId,
-        sessionId,
-        executionFence,
-        outputManifest: async () => sandboxStdout(
-          await this.getOrCreateSandbox(),
-          "cd /workspace && if test -d ./outputs; then find ./outputs -type f -print0 | base64 -w0; fi",
-          30_000,
-        ),
-        readOutput: async (path: string) => readSandboxFileBytes(await this.getOrCreateSandbox(), path, 60_000),
-      });
-    } catch (error) {
-      logWarn(
-        {
-          op: "session_do.openai_agents.artifact_publication_failed",
-          session_id: sessionId,
-          execution_id: executionFence.executionId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        "Completed Session output could not be published as an Agents API artifact",
-      );
-    }
+    await publishAgentsApiArtifacts(this.env.MAIN_MCP, this.state, executionFence, () => this.getOrCreateSandbox());
   }
 
   /** Commit writable canonical Memory mounts before the public idle boundary.
@@ -4413,6 +4451,7 @@ export class SessionDO extends DurableObject<Env> {
     const eventDocument = JSON.stringify(event);
     this._managedProjectionChain = this._managedProjectionChain
       .then(async () => {
+        if (executionFence && !this.isExecutionFenceCurrent(executionFence)) return;
         const result = await binding.managedSessionEventProduced({
           workspaceId,
           sessionId,
@@ -5221,7 +5260,7 @@ export class SessionDO extends DurableObject<Env> {
             this._broadcastPendingFrame(notifEvent, "sthr_primary");
           }
           this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
-          await this.drainEventQueue();
+          await this.dispatchEventQueue();
           continue;
         }
 
@@ -5267,7 +5306,7 @@ export class SessionDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
 
         // Re-trigger harness
-        await this.drainEventQueue();
+        await this.dispatchEventQueue();
       } catch (err) {
         anyPending = true;
         logWarn(
@@ -5638,14 +5677,9 @@ export class SessionDO extends DurableObject<Env> {
       activeFence,
     );
 
-    // Status-pair invariant: every status_running emit (line ~3889
-    // below) MUST be followed by exactly one status_idle emit before
-    // this function returns. The success path emits at line ~4067; the
-    // error paths historically didn't, leaving Console showing
-    // "Running" forever even after adapter.endTurn flipped the D1 row
-    // to 'idle' (Console derives the pill from SSE events, not D1
-    // polling). Tracked via this flag — finally emits if no earlier
-    // path did.
+    // Pair running with one public terminal, only after bounded cleanup.
+    let terminalError: Error | undefined;
+    let terminalReported = false;
     let idleEmitted = false;
     let managedMemorySynchronized = false;
     // A successful turn knows its precise stop reason before tool disposal,
@@ -5654,7 +5688,6 @@ export class SessionDO extends DurableObject<Env> {
     // has finished closing so clients cannot observe idle while resources are
     // still live.
     let completedIdleEvent: SessionEvent | undefined;
-    // How the harness attempts ended, when they did not complete.
     let failedAttempts: Exclude<TurnAttemptsResult, { type: "completed" }> | undefined;
 
     // Reuse session-level sandbox (singleton) — files persist across turns.
@@ -5754,6 +5787,7 @@ export class SessionDO extends DurableObject<Env> {
     this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
     const unlinkParentAbort = linkAbort(parentSignal, abortController);
+    // The parent execution signal covers tools, delegation, harness and outcome.
     const effectiveAbortSignal = abortController.signal;
     sandbox = this.bindSandboxToExecution(
       sandbox,
@@ -6015,6 +6049,8 @@ export class SessionDO extends DurableObject<Env> {
     // Official CMA ordering: session.error{retrying} then status_rescheduled.
     const failureEvents: TurnFailureEventsPort = {
       sessionError: (message, retry_status) => {
+        if (retry_status !== "retrying" && terminalReported) return;
+        if (retry_status !== "retrying") terminalReported = true;
         const event = {
           type: "session.error",
           error: { type: "unknown_error", message, retry_status },
@@ -6161,22 +6197,26 @@ export class SessionDO extends DurableObject<Env> {
         this.broadcastEvent(runningEvent, activeFence);
       }
 
-      const attempts = await runTurnAttempts({
-        run: () => this._turnInvocation!.run(() => harness.run({ ...ctx, runtime: { ...ctx.runtime, abortSignal: AbortSignal.any([effectiveAbortSignal, this._turnInvocation!.signal]) } })),
-        agentEventCount: () => countAgentEvents(history.getEvents()),
-        // A lost execution fence is a cancellation too: the replacement owner
-        // runs the turn, so this one must neither retry nor report.
-        isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
-        classify: (error, produced) => this._turnInvocation?.signal.aborted ? "turn_dead" : classifyTurnFailure(error, produced),
-        retry: TURN_RETRY,
-        signal: abortController.signal,
-        events: failureEvents,
-        describe: (error) => this.describeError(error),
-      });
-      if (attempts.type !== "completed") {
-        failedAttempts = attempts;
-        throw attempts.error;
-      }
+      const runHarness = async (userMessage = ctx.userMessage) => {
+        const attempts = await runTurnAttempts({
+          run: () => harness.run({ ...ctx, userMessage }),
+          agentEventCount: () => countAgentEvents(history.getEvents()),
+          // A lost execution fence is a cancellation too: the replacement owner
+          // runs the turn, so this one must neither retry nor report.
+          isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
+          classify: classifyTurnFailure,
+          retry: TURN_RETRY,
+          signal: effectiveAbortSignal,
+          events: failureEvents,
+          describe: (error) => this.describeError(error),
+        });
+        if (attempts.type !== "completed") {
+          failedAttempts = attempts;
+          if (attempts.type !== "cancelled") this._reportedTurnErrors.add(attempts.error);
+          throw attempts.error;
+        }
+      };
+      await runHarness();
 
       // A parked call can already be closed by the time the run returns
       // (steer/interrupt closed it with a tool_result, or the client answered
@@ -6245,99 +6285,84 @@ export class SessionDO extends DurableObject<Env> {
         const outcomeModelId =
           typeof agent.model === "string" ? agent.model : agent.model?.id;
         const judgeModel = ctx.model;
-        try {
-          await runOutcomeSupervisor({
-            outcome,
-            initialIteration: this.state.outcome_iteration ?? 0,
-            tenantId: this.state.tenant_id,
-            filesBucket: this.env.FILES_BUCKET ?? null,
-            abortSignal: effectiveAbortSignal,
-            judgeModelId: outcomeModelId,
-            getEvents: () => history.getEvents(),
-            appendAndBroadcast: (event) => {
-              history.append(event);
-              this.broadcastEvent(event, activeFence);
+        await runOutcomeSupervisor({
+          outcome,
+          initialIteration: this.state.outcome_iteration ?? 0,
+          tenantId: this.state.tenant_id,
+          filesBucket: this.env.FILES_BUCKET ?? null,
+          abortSignal: effectiveAbortSignal,
+          judgeModelId: outcomeModelId,
+          getEvents: () => history.getEvents(),
+          appendAndBroadcast: (event) => {
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          },
+          persistState: (delta) => {
+            const next = { ...this.state };
+            if ("outcome" in delta) next.outcome = delta.outcome ?? null;
+            if (typeof delta.outcome_iteration === "number") {
+              next.outcome_iteration = delta.outcome_iteration;
+            }
+            if (delta.outcome_evaluations) {
+              next.outcome_evaluations = delta.outcome_evaluations;
+            }
+            this.setState(next);
+          },
+          readEvaluations: () => this.state.outcome_evaluations ?? [],
+          makeVerifierContext: () => ({
+            sessionId: this.state.session_id,
+            runExec: async (cmd, opts) => {
+              const raw = await sandbox.exec(cmd, opts?.timeoutMs ?? 600_000);
+              // sandbox.exec returns "exit=N\n<merged-output>"
+              const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
+              return m
+                ? { exit_code: parseInt(m[1], 10), output: m[2] }
+                : { exit_code: -1, output: raw };
             },
-            persistState: (delta) => {
-              const next = { ...this.state };
-              if ("outcome" in delta) next.outcome = delta.outcome ?? null;
-              if (typeof delta.outcome_iteration === "number") {
-                next.outcome_iteration = delta.outcome_iteration;
-              }
-              if (delta.outcome_evaluations) {
-                next.outcome_evaluations = delta.outcome_evaluations;
-              }
-              this.setState(next);
-            },
-            readEvaluations: () => this.state.outcome_evaluations ?? [],
-            makeVerifierContext: () => ({
-              sessionId: this.state.session_id,
-              runExec: async (cmd, opts) => {
-                const sb = await this.getOrCreateSandbox();
-                const raw = await sb.exec(cmd, opts?.timeoutMs ?? 600_000);
-                // sandbox.exec returns "exit=N\n<merged-output>"
-                const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
-                return m
-                  ? { exit_code: parseInt(m[1], 10), output: m[2] }
-                  : { exit_code: -1, output: raw };
-              },
-            }),
-            makeJudgeFn: () => async (prompt, signal) => {
-              const result = await generateText({
-                model: judgeModel,
-                system: prompt.system,
-                messages: [{ role: "user", content: prompt.user }],
-                maxOutputTokens: 800,
-                abortSignal: signal,
-              });
-              const text =
-                result.text ||
-                extractTextFromContent(
-                  (result as unknown as { content?: unknown }).content,
-                );
-              const u = (result as unknown as {
-                usage?: {
-                  inputTokens?: number;
-                  outputTokens?: number;
-                  cachedInputTokens?: number;
-                  cacheReadInputTokens?: number;
-                  cacheCreationInputTokens?: number;
-                };
-              }).usage;
-              const usage = u
-                ? {
-                    input_tokens: u.inputTokens ?? 0,
-                    output_tokens: u.outputTokens ?? 0,
-                    cache_creation_input_tokens:
-                      u.cacheCreationInputTokens ?? u.cachedInputTokens,
-                    cache_read_input_tokens: u.cacheReadInputTokens,
-                  }
-                : undefined;
-              return { text, usage };
-            },
-            runHarnessTurn: async (msg) => {
-              await harness.run({ ...ctx, userMessage: msg });
-            },
-          });
-        } catch (err) {
-          // Supervisor itself blew up (e.g. a persistState callback
-          // threw). Surface as a session warning — the supervisor's own
-          // failure path already handled verifier-internal errors and
-          // emitted a `failed` end span.
-          logWarn(
-            { op: "outcome.supervisor", session_id: this.state.session_id, err },
-            "outcome supervisor crashed",
-          );
-        }
+          }),
+          makeJudgeFn: () => async (prompt, signal) => {
+            const result = await generateText({
+              model: judgeModel,
+              system: prompt.system,
+              messages: [{ role: "user", content: prompt.user }],
+              maxOutputTokens: 800,
+              abortSignal: signal,
+            });
+            const text =
+              result.text ||
+              extractTextFromContent(
+                (result as unknown as { content?: unknown }).content,
+              );
+            const u = (result as unknown as {
+              usage?: {
+                inputTokens?: number;
+                outputTokens?: number;
+                cachedInputTokens?: number;
+                cacheReadInputTokens?: number;
+                cacheCreationInputTokens?: number;
+              };
+            }).usage;
+            const usage = u
+              ? {
+                  input_tokens: u.inputTokens ?? 0,
+                  output_tokens: u.outputTokens ?? 0,
+                  cache_creation_input_tokens:
+                    u.cacheCreationInputTokens ?? u.cachedInputTokens,
+                  cache_read_input_tokens: u.cacheReadInputTokens,
+                }
+              : undefined;
+            return { text, usage };
+          },
+          runHarnessTurn: runHarness,
+        });
       }
 
-      // Execution end before the Memory barrier: egress revoked, then a copy
-      // sync publishes the sandbox's Memory edits. A failed publish fails the step.
-      if (this.portsSandbox !== null) await this.portsSandbox.endExecution();
+      abortController.signal.throwIfAborted();
       // Memory mutations are part of turn completion, not an asynchronous
       // afterthought. This barrier precedes status_idle and execution settle.
       await this.synchronizeManagedMemoryStores(activeFence);
       managedMemorySynchronized = true;
+      abortController.signal.throwIfAborted();
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
@@ -6379,8 +6404,8 @@ export class SessionDO extends DurableObject<Env> {
       // An interrupt or a lost execution fence ends the turn elsewhere: the
       // interrupt emits its idle, a replacement owner runs the turn.
       if (failedAttempts?.type === "cancelled" || isTurnCancellationError(err) || abortController.signal.aborted) {
-        idleEmitted = true;
-        return;
+        idleEmitted = true; terminalError = err instanceof Error ? err : new Error(String(err));
+        throw err;
       }
       if (failedAttempts?.type === "terminal") {
         // Official CMA: retry_status terminal → session transitions to terminated.
@@ -6395,21 +6420,23 @@ export class SessionDO extends DurableObject<Env> {
         idleEmitted = true;
         return;
       }
-      // A failure outside the harness attempts is the turn's last one (same as
-      // Node); the attempts already announced their own exhaustion.
-      if (failedAttempts === undefined) {
-        reportTurnFailure({ type: "exhausted" }, this.describeError(err), failureEvents);
-      }
-      // Official CMA exhausted: idle retries_exhausted. Owner lock: retain
-      // mid-run queued inputs (holdQueuedOnLane), do not flush them.
+      terminalError = err instanceof Error ? err : new Error(String(err));
+      // Attempts already announced their failure; report only preparation/cleanup here.
+      if (failedAttempts === undefined) reportTurnFailure({ type: "exhausted" }, this.describeError(err), failureEvents);
+      // Exhaustion retains mid-run queued inputs for the client to resume.
       holdQueuedOnLane = true;
       completedIdleEvent = {
         type: "session.status_idle",
         stop_reason: { type: "retries_exhausted" },
       };
     } finally {
-      await disposeTools(allTools);
-      if (!managedMemorySynchronized) {
+      try { await disposeTools(allTools); }
+      catch (error) {
+        terminalError ??= error instanceof Error ? error : new Error(String(error));
+        reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
+        completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+      }
+      if (!managedMemorySynchronized && !abortController.signal.aborted && !isTurnCancellationError(terminalError)) {
         try {
           // Error/cancel rescue pass. Reconciliation is idempotent, so a
           // partially committed prior attempt is safe to retry here.
@@ -6417,37 +6444,30 @@ export class SessionDO extends DurableObject<Env> {
           managedMemorySynchronized = true;
         } catch (error) {
           if (!(error instanceof Error && error.name === "ExecutionFenceLostError")) {
-            logWarn(
-              {
-                op: "session_do.memory_sync.rescue",
-                session_id: this.state.session_id,
-                error: error instanceof Error ? error.message : String(error),
-              },
-              "writable Managed Memory rescue sync failed",
-            );
+            terminalError ??= error instanceof Error ? error : new Error(String(error));
+            reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
+            completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+            logWarn({ op: "session_do.memory_sync.rescue", session_id: this.state.session_id,
+              error: error instanceof Error ? error.message : String(error) }, "writable Managed Memory rescue sync failed");
           }
         }
       }
-      // Only delete if it's still ours — a sub-agent run within the same
-      // thread may have temporarily replaced it. Same-thread re-entry is
-      // mutex'd by _draining so this is theoretical safety only.
-      if (this._threadAbortControllers.get(turnThreadId) === abortController) {
-        this._threadAbortControllers.delete(turnThreadId);
+      try {
+        abortController.signal.throwIfAborted();
+        if (!activeFence && !terminalError && this.portsSandbox !== null) await this.portsSandbox.endExecution();
+      } catch (error) {
+        if (!abortController.signal.aborted && !isTurnCancellationError(error)) {
+          terminalError ??= error instanceof Error ? error : new Error(String(error));
+          reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
+          completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+        }
       }
-      this._turnSettled.delete(abortController);
-      resolveTurnSettled();
-      unlinkParentAbort();
-      // Emit status_idle only after turn-scoped resources have settled. On a
-      // successful turn this preserves its precise stop_reason; error paths
-      // use the generic event because they have no meaningful stop reason.
-      // This also pairs with status_running so Console never remains stuck at
-      // "Running" after a model/tool failure.
-      // A user.interrupt already emitted this turn's status_idle; emitting
-      // the catch-all one too produced two idles per interrupt.
+      if (terminalError && terminalReported) this._reportedTurnErrors.add(terminalError);
+      // Interrupt owns its idle; a lost fence cannot append through guarded history.
       const interruptOwnsIdle = abortController.signal.aborted &&
         this._interruptIdleOwned.delete(turnThreadId);
       if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence, turnThreadId);
-      if (!idleEmitted && !interruptOwnsIdle) {
+      if (!idleEmitted && !interruptOwnsIdle && !abortController.signal.aborted) {
         try {
           const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);
@@ -6456,12 +6476,14 @@ export class SessionDO extends DurableObject<Env> {
           console.warn(`[processUserMessage] catch-all idle emit failed:`, err);
         }
       }
-      // Status auto-derives — Workspace backup is fired by
-      // OmaSandbox.onActivityExpired when the container's sleepAfter
-      // elapses (see oma-sandbox.ts) — exactly one snapshot per quiet
-      // period. Explicit /destroy snapshots eagerly via
-      // sandbox.snapshotWorkspaceNow(). Per-turn backup is intentionally off.
+      if (this._threadAbortControllers.get(turnThreadId) === abortController) {
+        this._threadAbortControllers.delete(turnThreadId);
+      }
+      this._turnSettled.delete(abortController);
+      resolveTurnSettled();
+      unlinkParentAbort();
     }
+    if (terminalError) throw Object.assign(terminalError, { holdQueuedOnLane: true });
     return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
   }
 
@@ -7499,6 +7521,10 @@ export class SessionDO extends DurableObject<Env> {
    * inside SessionExecutionStorePort.
    */
   private async recoverExecutionQueue(): Promise<void> {
+    await this.runAlarmMaintenance("execution_queue", () => this.recoverExecutionQueueInner());
+  }
+
+  private async recoverExecutionQueueInner(): Promise<void> {
     // alarm() can reach this before any fetch()/init has warmed the in-memory
     // schema. Without this, drainEventQueue later dereferences a null queue
     // repo and the cold-started lane is never re-driven.
@@ -7537,36 +7563,9 @@ export class SessionDO extends DurableObject<Env> {
       return;
     }
     const laneIds = [...lanes];
-    const before = this._queueProgressToken(executions, queuedInputs);
-    sdoLog("recover.execution_queue", {
-      session_id: this.state.session_id,
-      lanes: laneIds.length,
-      lane_ids: laneIds,
-      blocked: policy.blockedQueuedRows,
-    });
-    await Promise.all(laneIds.map((lane) => this.drainEventQueue(lane)));
-
-    let afterExecutions: ExecutionLeaseRecord[];
-    try {
-      afterExecutions = await this._executionLeaseRecords();
-    } catch {
-      // Unknown post-drain state: do not manufacture a backoff from a read
-      // failure. The next alarm/recovery read will decide.
-      this._resetQueueDrainBackoff();
-      return;
-    }
-    const afterInputs = this._localQueuedInputs();
-    const after = this._queueProgressToken(afterExecutions, afterInputs);
-    if (after !== before) {
-      // A row drained, an execution was claimed/settled, or a turn started.
-      this._resetQueueDrainBackoff();
-      return;
-    }
-    this._recordQueueDrainNoProgress({
-      queued: queuedInputs.length + executions.filter((e) => e.state === "queued").length,
-      blocked: policy.blockedQueuedRows,
-      running: executions.filter((e) => e.state === "running").length,
-    });
+    sdoLog("recover.execution_queue", { session_id: this.state.session_id, lane_ids: laneIds });
+    await Promise.all(laneIds.map(lane => this.dispatchEventQueue(lane)));
+    // Pending dispatch is not failure; only its settled progress updates backoff.
   }
 
   /**
@@ -7575,12 +7574,6 @@ export class SessionDO extends DurableObject<Env> {
    * (orphan-fiber recovery), then re-arms the next alarm.
    */
   async alarm(): Promise<void> {
-    const invocation = this._turnInvocation = new TurnInvocation();
-    try { await this.runAlarm(); }
-    finally { invocation.close(); this._turnInvocation = null; }
-  }
-
-  private async runAlarm(): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1000);
     const due = this.ctx.storage.sql
       .exec<{
@@ -7601,6 +7594,9 @@ export class SessionDO extends DurableObject<Env> {
       due_schedules: due.length,
       reason: due.length > 0 ? "schedule" : "lease_or_queue",
     });
+    if (due.length || this._dispatchedLanes.size || this._localQueuedInputs().length) {
+      await this.runAlarmMaintenance("prearm", () => this._multiplexAlarm({ reason: "alarm_start" }));
+    }
     for (const row of due) {
       // Skip interval rows whose previous execution is still running unless
       // it's been hung past the timeout (then forcibly reset).
@@ -7632,14 +7628,12 @@ export class SessionDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`DELETE FROM cf_agents_schedules WHERE id = ?`, row.id);
         continue;
       }
-      try {
-        await (callback as (p: unknown, r: unknown) => Promise<unknown>).call(this, parsedPayload, row);
-      } catch (err) {
-        console.error(`[schedule] callback "${row.callback}" (${row.id}) threw:`, err);
-        // Don't crash the alarm — log and continue. cf-agents has retry options
-        // but we don't use them in any current callsite.
-      }
-
+      await this.runAlarmMaintenance(`schedule:${row.id}`, async () => {
+        try {
+          await (callback as (p: unknown, r: unknown) => Promise<unknown>).call(this, parsedPayload, row);
+        } catch (err) {
+          console.error(`[schedule] callback "${row.callback}" (${row.id}) threw:`, err);
+        } finally {
       // Reschedule cron / interval, delete one-shots
       if (row.type === "cron" && row.cron) {
         try {
@@ -7659,6 +7653,8 @@ export class SessionDO extends DurableObject<Env> {
       } else {
         this.ctx.storage.sql.exec(`DELETE FROM cf_agents_schedules WHERE id = ?`, row.id);
       }
+        }
+      });
     }
 
     // The persisted alarm is the FALLBACK recovery path. Cold start (first
@@ -7676,16 +7672,18 @@ export class SessionDO extends DurableObject<Env> {
         .exec("SELECT 1 FROM background_tasks LIMIT 1")
         .toArray();
       if (rows.length > 0) {
+        await this.runAlarmMaintenance("container_keepalive", async () => {
         const sb = await this.getOrCreateSandbox();
         if (typeof (sb as { renewActivityTimeout?: () => Promise<void> }).renewActivityTimeout === "function") {
           await (sb as { renewActivityTimeout: () => Promise<void> }).renewActivityTimeout();
         }
+        });
       }
     } catch {
       // background_tasks table missing or container down — alarm continues
     }
 
-    await this._multiplexAlarm({ reason: "alarm" });
+    await this.runAlarmMaintenance("rearm", () => this._multiplexAlarm({ reason: "alarm" }));
   }
 
   // ── Stale-turn finalization ──────────────────────────────────────────
@@ -7860,17 +7858,3 @@ function countAgentEvents(events: readonly SessionEvent[]): number {
   return events.filter((event) => event.type.startsWith("agent.")).length;
 }
 
-/** Stdout of a CF sandbox command (`exit=N\n<stdout>`); throws on failure. */
-async function sandboxStdout(sandbox: SandboxExecutor, command: string, timeoutMs: number): Promise<string> {
-  const out = await sandbox.exec(command, timeoutMs);
-  const match = out.match(/^exit=(\d+)\n([\s\S]*)$/);
-  if (!match || match[1] !== "0") throw new Error(out.slice(0, 300));
-  return match[2]!;
-}
-
-/** Binary-safe file read: SandboxExecutor.readFile is UTF-8 only, so the
- * sandbox base64-encodes and this side decodes. */
-async function readSandboxFileBytes(sandbox: SandboxExecutor, path: string, timeoutMs: number): Promise<Uint8Array> {
-  const encoded = (await sandboxStdout(sandbox, `base64 -w0 -- '${path.replace(/'/g, "'\\''")}' 2>&1`, timeoutMs)).trim();
-  return Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-}

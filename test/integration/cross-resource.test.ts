@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
@@ -603,13 +604,14 @@ describe("Cross-entity lifecycle", () => {
     const session = (await sRes.json()) as any;
 
     // Post event
+    const inputId = `sevt_${crypto.randomUUID()}`;
     const evtRes = await post(`/v1/oma/sessions/${session.id}/events`, {
-      events: [{ type: "user.message", content: [{ type: "text", text: "trigger flow" }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text: "trigger flow" }] }],
     });
     expect(evtRes.status).toBe(202);
 
-    // Wait for harness
-    await new Promise((r) => setTimeout(r, 500));
+    // Wait for the accepted input and its durable execution to finish.
+    await waitForSessionExecution(session.id, [inputId]);
 
     // Verify events
     const events = await collectReplayedEvents(session.id, 100);

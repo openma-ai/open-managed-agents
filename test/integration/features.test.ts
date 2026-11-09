@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { runInDurableObject } from "cloudflare:test";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 import { describe, it, expect, beforeAll } from "vitest";
@@ -560,19 +561,12 @@ describe("Session harness status flow", () => {
     });
     const session = (await s.json()) as any;
 
+    const inputId = `sevt_${crypto.randomUUID()}`;
     await post(`/v1/oma/sessions/${session.id}/events`, {
-      events: [{ type: "user.message", content: [{ type: "text", text: "go" }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text: "go" }] }],
     });
 
-    // Wait for processing
-    for (let i = 0; i < 20; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-      const doId = env.SESSION_DO!.idFromName(session.id);
-      const stub = env.SESSION_DO!.get(doId);
-      const statusRes = await stub.fetch(new Request("http://internal/status"));
-      const st = (await statusRes.json()) as any;
-      if (st.status === "idle") break;
-    }
+    await waitForSessionExecution(session.id, [inputId]);
 
     // Check events include status events
     const doId = env.SESSION_DO!.idFromName(session.id);
@@ -602,10 +596,11 @@ describe("Session harness status flow", () => {
     });
     const session = (await s.json()) as any;
 
+    const inputId = `sevt_${crypto.randomUUID()}`;
     await post(`/v1/oma/sessions/${session.id}/events`, {
-      events: [{ type: "user.message", content: [{ type: "text", text: "test" }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text: "test" }] }],
     });
-    await new Promise((r) => setTimeout(r, 500));
+    await waitForSessionExecution(session.id, [inputId]);
 
     const doId = env.SESSION_DO!.idFromName(session.id);
     const stub = env.SESSION_DO!.get(doId);

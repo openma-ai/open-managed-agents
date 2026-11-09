@@ -1,6 +1,7 @@
 // @ts-nocheck
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env, exports } from "cloudflare:workers";
+import { waitForSessionExecution } from "./_session-execution";
 import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
@@ -72,21 +73,14 @@ async function createSessionWith(harnessName: string, extra?: Record<string, unk
 }
 
 async function postAndWait(sessionId: string, text: string, waitMs = 400) {
+  const inputId = `sevt_${crypto.randomUUID()}`;
   await post(`/v1/oma/sessions/${sessionId}/events`, {
-    events: [{ type: "user.message", content: [{ type: "text", text }] }],
+    events: [{ id: inputId, type: "user.message", content: [{ type: "text", text }] }],
   });
-  await new Promise((r) => setTimeout(r, waitMs));
+  await waitForSessionExecution(sessionId, [inputId]);
 }
 
-async function waitForIdle(sessionId: string, maxWaitMs = 5000) {
-  const polls = Math.ceil(maxWaitMs / 200);
-  for (let i = 0; i < polls; i++) {
-    await new Promise((r) => setTimeout(r, 200));
-    const statusRes = await getDoStatus(sessionId);
-    const body = (await statusRes.json()) as any;
-    if (body.status === "idle") return;
-  }
-}
+
 
 // ============================================================
 // Harness execution flow
@@ -95,7 +89,6 @@ describe("Harness execution flow", () => {
   it("multi-message harness produces all 3 messages in replay", async () => {
     const sessionId = await createSessionWith("multi-msg");
     await postAndWait(sessionId, "go");
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const agentMsgs = events.filter((e) => e.type === "agent.message");
     expect(agentMsgs.length).toBe(3);
@@ -107,7 +100,6 @@ describe("Harness execution flow", () => {
   it("thinking harness emits thinking event + message in replay", async () => {
     const sessionId = await createSessionWith("thinking-harness");
     await postAndWait(sessionId, "think");
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const types = events.map((e) => e.type);
     expect(types).toContain("agent.thinking");
@@ -120,7 +112,6 @@ describe("Harness execution flow", () => {
   it("tool harness emits tool_use, tool_result, message in correct order", async () => {
     const sessionId = await createSessionWith("tool-harness");
     await postAndWait(sessionId, "use tool");
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const types = events.map((e) => e.type);
     expect(types).toContain("agent.tool_use");
@@ -138,7 +129,6 @@ describe("Harness execution flow", () => {
   it("requires_action idle lists only calls still open after the run", async () => {
     const sessionId = await createSessionWith("stale-pending-partial");
     await postAndWait(sessionId, "go");
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const idle = events.filter((e) => e.type === "session.status_idle").at(-1);
     expect(idle?.stop_reason).toMatchObject({ type: "requires_action", event_ids: ["ctu_b"] });
@@ -147,7 +137,6 @@ describe("Harness execution flow", () => {
   it("all pending calls closed during the run -> end_turn, not requires_action", async () => {
     const sessionId = await createSessionWith("stale-pending-all");
     await postAndWait(sessionId, "go");
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const idle = events.filter((e) => e.type === "session.status_idle").at(-1);
     expect(idle?.stop_reason?.type).toBe("end_turn");
@@ -156,7 +145,6 @@ describe("Harness execution flow", () => {
   it("delayed harness completes and session returns to idle", async () => {
     const sessionId = await createSessionWith("delayed-harness");
     await postAndWait(sessionId, "wait", 500);
-    await waitForIdle(sessionId);
     const statusRes = await getDoStatus(sessionId);
     const body = (await statusRes.json()) as any;
     expect(body.status).toBe("idle");
@@ -169,7 +157,6 @@ describe("Harness execution flow", () => {
   it("events broadcast sequentially have ordering preserved", async () => {
     const sessionId = await createSessionWith("multi-msg");
     await postAndWait(sessionId, "order test");
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const agentTexts = events
       .filter((e) => e.type === "agent.message")
@@ -180,7 +167,6 @@ describe("Harness execution flow", () => {
   it("crash harness emits error event with message", async () => {
     const sessionId = await createSessionWith("crash-sh");
     await postAndWait(sessionId, "crash", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const errorEvent = events.find((e) => e.type === "session.error");
     expect(errorEvent).toBeTruthy();
@@ -190,7 +176,6 @@ describe("Harness execution flow", () => {
   it("partial crash harness emits message AND error event both in replay", async () => {
     const sessionId = await createSessionWith("partial-crash");
     await postAndWait(sessionId, "partial", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const agentMsg = events.find((e) => e.type === "agent.message");
     expect(agentMsg).toBeTruthy();
@@ -203,7 +188,6 @@ describe("Harness execution flow", () => {
   it("session recovers after error and new message works", async () => {
     const sessionId = await createSessionWith("partial-crash");
     await postAndWait(sessionId, "crash first", 600);
-    await waitForIdle(sessionId);
 
     // Verify idle state
     const statusRes = await getDoStatus(sessionId);
@@ -220,9 +204,7 @@ describe("Harness execution flow", () => {
   it("multiple messages grow history (history-reader harness)", async () => {
     const sessionId = await createSessionWith("history-reader");
     await postAndWait(sessionId, "first", 600);
-    await waitForIdle(sessionId);
     await postAndWait(sessionId, "second", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const counts = events
       .filter((e) => e.type === "agent.message")
@@ -241,7 +223,6 @@ describe("Harness context access", () => {
   it("config-reader harness reads agent.system correctly", async () => {
     const sessionId = await createSessionWith("config-reader", { system: "my-custom-system" });
     await postAndWait(sessionId, "read config", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const msg = events.find((e) => e.type === "agent.message");
     expect(msg).toBeTruthy();
@@ -251,7 +232,6 @@ describe("Harness context access", () => {
   it("system prompt includes authenticated command guidance", async () => {
     const sessionId = await createSessionWith("system-prompt-reader", { system: "base-system" });
     await postAndWait(sessionId, "read prompt", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const msg = events.find((e) => e.type === "agent.message");
     expect(msg).toBeTruthy();
@@ -263,9 +243,7 @@ describe("Harness context access", () => {
   it("history-reader first message sees count >= 1, second message sees higher count", async () => {
     const sessionId = await createSessionWith("history-reader");
     await postAndWait(sessionId, "first msg", 600);
-    await waitForIdle(sessionId);
     await postAndWait(sessionId, "second msg", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const responses = events
       .filter((e) => e.type === "agent.message")
@@ -283,8 +261,6 @@ describe("Harness context access", () => {
     const sid2 = await createSessionWith("thinking-harness");
     await postAndWait(sid1, "go");
     await postAndWait(sid2, "go");
-    await waitForIdle(sid1);
-    await waitForIdle(sid2);
     const events1 = await collectReplayedEvents(sid1);
     const events2 = await collectReplayedEvents(sid2);
     const msgs1 = events1.filter((e) => e.type === "agent.message");
@@ -297,7 +273,6 @@ describe("Harness context access", () => {
   it("harness receives userMessage content correctly", async () => {
     const sessionId = await createSessionWith("echo-user-input");
     await postAndWait(sessionId, "hello world", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const reply = events.find(
       (e) => e.type === "agent.message" && e.content[0].text === "echo: hello world",
@@ -313,7 +288,6 @@ describe("Status transitions", () => {
   it("normal flow: running and idle events present", async () => {
     const sessionId = await createSessionWith("multi-msg");
     await postAndWait(sessionId, "status test", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const types = events.map((e) => e.type);
     expect(types).toContain("session.status_running");
@@ -323,7 +297,6 @@ describe("Status transitions", () => {
   it("crash flow: running and error events present, status returns to idle", async () => {
     const sessionId = await createSessionWith("partial-crash");
     await postAndWait(sessionId, "crash", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const types = events.map((e) => e.type);
     expect(types).toContain("session.status_running");
@@ -338,9 +311,7 @@ describe("Status transitions", () => {
   it("multiple messages each have running/idle pair", async () => {
     const sessionId = await createSessionWith("sh-noop");
     await postAndWait(sessionId, "msg1", 600);
-    await waitForIdle(sessionId);
     await postAndWait(sessionId, "msg2", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const runningCount = events.filter((e) => e.type === "session.status_running").length;
     const idleCount = events.filter((e) => e.type === "session.status_idle").length;
@@ -351,7 +322,6 @@ describe("Status transitions", () => {
   it("DO /status returns idle after processing", async () => {
     const sessionId = await createSessionWith("multi-msg");
     await postAndWait(sessionId, "check status", 600);
-    await waitForIdle(sessionId);
     const res = await getDoStatus(sessionId);
     const body = (await res.json()) as any;
     expect(body.status).toBe("idle");
@@ -377,7 +347,6 @@ describe("Token usage tracking", () => {
   it("usage-reporter harness reports usage visible in /status", async () => {
     const sessionId = await createSessionWith("usage-reporter");
     await postAndWait(sessionId, "report usage", 600);
-    await waitForIdle(sessionId);
     const res = await getDoStatus(sessionId);
     const body = (await res.json()) as any;
     expect(body.usage).toBeDefined();
@@ -388,9 +357,7 @@ describe("Token usage tracking", () => {
   it("multiple messages with usage accumulates", async () => {
     const sessionId = await createSessionWith("usage-reporter");
     await postAndWait(sessionId, "report 1", 600);
-    await waitForIdle(sessionId);
     await postAndWait(sessionId, "report 2", 600);
-    await waitForIdle(sessionId);
     const res = await getDoStatus(sessionId);
     const body = (await res.json()) as any;
     expect(body.usage.input_tokens).toBeGreaterThanOrEqual(200);
@@ -421,7 +388,6 @@ describe("WebSocket behavior", () => {
   it("new WebSocket gets full event replay", async () => {
     const sessionId = await createSessionWith("multi-msg");
     await postAndWait(sessionId, "ws test", 600);
-    await waitForIdle(sessionId);
     // Open a new WS connection that should replay all events
     const events = await collectReplayedEvents(sessionId);
     expect(events.length).toBeGreaterThanOrEqual(3); // user.message + 3 agent.messages minimum
@@ -430,7 +396,6 @@ describe("WebSocket behavior", () => {
   it("two WebSocket clients both receive replayed events", async () => {
     const sessionId = await createSessionWith("multi-msg");
     await postAndWait(sessionId, "dual ws", 600);
-    await waitForIdle(sessionId);
 
     // Both should get events via independent replay connections
     const events1 = await collectReplayedEvents(sessionId, 200);
@@ -445,7 +410,6 @@ describe("WebSocket behavior", () => {
   it("WebSocket replay includes status events", async () => {
     const sessionId = await createSessionWith("sh-noop");
     await postAndWait(sessionId, "status ws", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const types = events.map((e) => e.type);
     expect(types).toContain("session.status_running");
@@ -460,7 +424,6 @@ describe("Harness integration — additional scenarios", () => {
   it("tool harness tool_use event has correct fields", async () => {
     const sessionId = await createSessionWith("tool-harness");
     await postAndWait(sessionId, "check fields", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const toolUse = events.find((e) => e.type === "agent.tool_use");
     expect(toolUse).toBeTruthy();
@@ -472,7 +435,6 @@ describe("Harness integration — additional scenarios", () => {
   it("tool harness tool_result event has correct fields", async () => {
     const sessionId = await createSessionWith("tool-harness");
     await postAndWait(sessionId, "check result", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const toolResult = events.find((e) => e.type === "agent.tool_result");
     expect(toolResult).toBeTruthy();
@@ -483,7 +445,6 @@ describe("Harness integration — additional scenarios", () => {
   it("noop harness produces only status events (no agent messages)", async () => {
     const sessionId = await createSessionWith("sh-noop");
     await postAndWait(sessionId, "noop", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const agentMsgs = events.filter((e) => e.type === "agent.message");
     expect(agentMsgs.length).toBe(0);
@@ -495,7 +456,6 @@ describe("Harness integration — additional scenarios", () => {
   it("session with echo harness returns expected text", async () => {
     const sessionId = await createSessionWith("exact-echo-sh");
     await postAndWait(sessionId, "hello world", 600);
-    await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const agentMsg = events.find((e) => e.type === "agent.message");
     expect(agentMsg).toBeTruthy();
@@ -504,14 +464,14 @@ describe("Harness integration — additional scenarios", () => {
 
   it("harness can access userMessage content blocks count", async () => {
     const sessionId = await createSessionWith("content-reader-sh");
+    const inputId = `sevt_${crypto.randomUUID()}`;
     await post(`/v1/oma/sessions/${sessionId}/events`, {
-      events: [{ type: "user.message", content: [
+      events: [{ id: inputId, type: "user.message", content: [
         { type: "text", text: "b1" },
         { type: "text", text: "b2" },
       ] }],
     });
-    await new Promise(r => setTimeout(r, 600));
-    await waitForIdle(sessionId);
+    await waitForSessionExecution(sessionId, [inputId]);
     const events = await collectReplayedEvents(sessionId);
     const msg = events.find((e) => e.type === "agent.message");
     expect(msg).toBeTruthy();
@@ -549,7 +509,6 @@ describe("Harness integration — additional scenarios", () => {
     const sessionId = await createSessionWith("tool-harness");
     // Turn 1: triggers tool_use + tool_result + agent.message
     await postAndWait(sessionId, "use tool", 600);
-    await waitForIdle(sessionId);
 
     // Verify turn 1 has tool events
     const events1 = await collectReplayedEvents(sessionId);
@@ -558,7 +517,6 @@ describe("Harness integration — additional scenarios", () => {
 
     // Turn 2: replay history including tool events — must not throw schema error
     await postAndWait(sessionId, "follow up question", 600);
-    await waitForIdle(sessionId);
 
     const events2 = await collectReplayedEvents(sessionId);
     // Should have 2 user messages
@@ -574,9 +532,7 @@ describe("Harness integration — additional scenarios", () => {
   it("multi-turn with multi-msg harness: second turn adds more events", async () => {
     const sessionId = await createSessionWith("multi-msg");
     await postAndWait(sessionId, "first turn", 600);
-    await waitForIdle(sessionId);
     await postAndWait(sessionId, "second turn", 600);
-    await waitForIdle(sessionId);
 
     const events = await collectReplayedEvents(sessionId);
     // multi-msg harness emits 3 agent.messages per turn → 6 total
@@ -591,11 +547,9 @@ describe("Harness integration — additional scenarios", () => {
   it("multi-turn after crash: second message processes without schema error", async () => {
     const sessionId = await createSessionWith("partial-crash");
     await postAndWait(sessionId, "crash it", 600);
-    await waitForIdle(sessionId);
 
     // Turn 2 should work despite error in history
     await postAndWait(sessionId, "retry after crash", 600);
-    await waitForIdle(sessionId);
 
     const events = await collectReplayedEvents(sessionId);
     const userMsgs = events.filter((e) => e.type === "user.message");
