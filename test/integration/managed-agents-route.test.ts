@@ -613,6 +613,8 @@ describe("Cloudflare official Managed Agents route", () => {
     expect(decodeWorkSecret(polledWork.secret!)).toEqual({
       sessions_token: expect.stringMatching(/^sk-ant-req-/),
       api_base_url: "http://localhost",
+      // The Runtime Host's Work-claim reference (ADR 0005); the SDK ignores it.
+      claim_generation: 1,
     });
     expect(
       await client.beta.environments.work.retrieve(polledWork.id, {
