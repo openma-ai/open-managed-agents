@@ -296,6 +296,7 @@ export class AcpSandboxHarness implements HarnessInterface {
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       this.#semanticRecoveryReason = null;
     } catch (error) {
+      if (!runtime.abortSignal?.aborted) await translator.consume({type:"promptError",error:error instanceof Error ? error.message : String(error)});
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       if (!runtime.abortSignal?.aborted) {
         this.#emitError(

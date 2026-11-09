@@ -141,6 +141,7 @@ describe("acp-sandbox child lifetime", () => {
     failPrompt = true;
     await new AcpSandboxHarness().run(ctx);
     expect(s.files.size).toBe(0);
+    expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"span.model_request_end",is_error:true}));
     expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({source:"oma.acp_context", details:expect.objectContaining({state:"started",acp_session_id:"acp_1"})}));
     failPrompt = false;
     const recovered = context(s.port);
