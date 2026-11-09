@@ -99,6 +99,7 @@ export {
   planTurnFailure,
   reportTurnFailure,
   settleTurnFailure,
+  TURN_RETRY,
   type PlanTurnFailureInput,
   type TurnFailureClass,
   type TurnFailureEventsPort,

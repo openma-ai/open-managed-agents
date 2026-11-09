@@ -3,6 +3,7 @@ import {
   finishTurn,
   reportTurnFailure,
   settleTurnFailure,
+  TURN_RETRY,
   SessionSandboxRuntime,
   type SessionSandboxMode,
   type TurnFailureClass,
@@ -991,8 +992,7 @@ export class DefaultNodeManagedSessionRunner
         subagentContext.subagents?.setBudgetGate?.(budgetGate);
         // Harness-in-sandbox inference-proxy meters via the same gate.
         registerNodeSessionBudgetGate(input.session.id, budgetGate);
-        const retry = this.dependencies.harnessRetry ??
-          { attempts: 3, delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)) };
+        const retry = this.dependencies.harnessRetry ?? TURN_RETRY;
         for (let attempt = 1; ; attempt += 1) {
           const agentEventsBefore = runtime.agentEventCount;
           try {

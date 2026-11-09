@@ -63,6 +63,7 @@ import {
   type LaneStatus,
   openTurnMarker,
   settleTurnFailure,
+  TURN_RETRY,
   type RuntimeAdapter,
   type TurnRuntimeAgent,
   type RecoveryDecision,
@@ -79,7 +80,7 @@ import {
 } from "@open-managed-agents/session-runtime-contract/requires-action";
 import { SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
-import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
+import { abortableDelay, interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -2924,22 +2925,6 @@ export class SessionDO extends DurableObject<Env> {
             }
           },
           ownInterruptedIdle: () => { this._interruptIdleOwned.add(targetThread); },
-          cancelQueuedInputs: () => {
-            // Same events rows get cancelled_at (processed_at stays NULL, so
-            // they never promote). DELETE /pending/:event_id cancels one row.
-            const cancelTs = Date.now();
-            const cancelledRows = this.queue.cancelQueueForThread(targetThread, cancelTs);
-            for (const row of cancelledRows) {
-              this.broadcastEventIgnoringExecutionFence({
-                type: "system.user_message_cancelled",
-                pending_seq: row.seq,
-                event_id: row.event_id,
-                session_thread_id: row.session_thread_id,
-                cancelled_at: cancelTs,
-              } as SystemUserMessageCancelledEvent);
-            }
-            return cancelledRows.length;
-          },
           settlePendingActions: () => this.settleInterruptedRunnerActions(history, targetThread),
           recordInterrupt: () => {
             const interruptAt = this.processedClock.nowIso();
@@ -2967,6 +2952,9 @@ export class SessionDO extends DurableObject<Env> {
           return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "Runner interrupt was not confirmed. The pending action is still available; reconnect and try again." } }),
             { status: 503, headers: { "content-type": "application/json" } });
         }
+        // Queued inputs survive the interrupt (same as Node): the next one
+        // starts the lane's next turn.
+        this.drainEventQueue(targetThread);
         return new Response(null, { status: 202 });
       }
 
@@ -6432,9 +6420,8 @@ export class SessionDO extends DurableObject<Env> {
           agentEventsBeforeRun !== null && countAgentEvents(history.getEvents()) > agentEventsBeforeRun,
         ),
         attempt: retryCount + 1,
-        maxAttempts: 3,
-        // Exponential backoff: 1s, 2s
-        delayMs: (attempt) => 1000 * Math.pow(2, attempt - 1),
+        maxAttempts: TURN_RETRY.attempts,
+        delayMs: TURN_RETRY.delayMs,
         message: errorMessage,
         // Official CMA ordering: session.error{retrying} then status_rescheduled.
         events: {
@@ -6452,7 +6439,8 @@ export class SessionDO extends DurableObject<Env> {
             this.broadcastEvent(event, activeFence);
           },
         },
-        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        // An interrupt during the backoff ends the wait at once (same as Node).
+        wait: (ms) => abortableDelay(ms, abortController.signal),
       });
 
       if (plan.type === "retry") {

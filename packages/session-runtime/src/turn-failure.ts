@@ -39,6 +39,13 @@ export type TurnFailurePlan =
   | { type: "exhausted" }
   | { type: "terminal" };
 
+/** Retry budget of a failed turn attempt, the same on every host: three
+ * attempts, 2s then 4s apart, capped at 30s. */
+export const TURN_RETRY = {
+  attempts: 3,
+  delayMs: (attempt: number): number => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),
+} as const;
+
 export interface PlanTurnFailureInput {
   /** The turn was cancelled, so the failure is not reported at all. */
   cancelled: boolean;
