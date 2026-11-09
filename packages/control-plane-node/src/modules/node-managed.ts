@@ -640,8 +640,7 @@ export async function createManagedNodeRuntime(
     ownerId: config.execution.ownerId,
     clock: { now: () => new Date() },
     ids: { nextAttemptId: () => `attempt_${nanoid()}` },
-    leaseTtlMs: 30_000,
-    heartbeatIntervalMs: 10_000,
+    leaseTtlMs: config.execution.leaseTtlMs,
     maxConcurrent: config.execution.concurrency,
     eventProcessing: {
       storeFor: () => new SqlSessionEventPersistence(sql),

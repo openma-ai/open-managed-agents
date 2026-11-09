@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS } from "@open-managed-agents/session-runtime";
 // The only place the Node control plane reads environment variables.
 //
 // loadNodeConfig(env) turns the flat string bag into typed data once, applies
@@ -198,6 +199,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     execution: {
       ownerId: env.OMA_SESSION_EXECUTION_OWNER_ID ?? `node:${process.pid}:${nanoid()}`,
       concurrency: integer("OMA_SESSION_EXECUTION_CONCURRENCY", 8, { min: 1 }),
+      leaseTtlMs: integer("OMA_SESSION_EXECUTION_LEASE_TTL_MS", DEFAULT_SESSION_EXECUTION_LEASE_TTL_MS, { min: 3 }),
     },
     workspace: {
       strategy: workspaceStrategy === "checkpoint_restore" ? "checkpoint_restore" : "ephemeral",

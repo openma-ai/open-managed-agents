@@ -9,6 +9,11 @@ import { loadNodeConfig, redactNodeConfig, type NodeConfig } from "../src/config
 const minimal = { NODE_ENV: "test" };
 
 describe("loadNodeConfig", () => {
+  it("configures the shared execution lease TTL with a 90 second default", () => {
+    expect(loadNodeConfig(minimal).execution.leaseTtlMs).toBe(90_000);
+    expect(loadNodeConfig({ ...minimal, OMA_SESSION_EXECUTION_LEASE_TTL_MS: "12000" }).execution.leaseTtlMs).toBe(12000);
+    expect(() => loadNodeConfig({ ...minimal, OMA_SESSION_EXECUTION_LEASE_TTL_MS: "0" })).toThrow();
+  });
   it("applies the self-host defaults when nothing is set", () => {
     const config = loadNodeConfig(minimal);
 
@@ -127,7 +132,7 @@ describe("loadNodeConfig", () => {
     expect(config.feishuWsRunner).toBe(true);
     expect(config.memoryQueue).toBe("disabled");
     expect(config.dreamCurator).toBe("dedup");
-    expect(config.execution).toEqual({ concurrency: 3, ownerId: "replica-a" });
+    expect(config.execution).toEqual({ concurrency: 3, ownerId: "replica-a", leaseTtlMs: 90_000 });
     expect(config.email).toEqual({ host: "smtp", port: 465, secure: true, user: "u", pass: "p", fromAddress: "noreply@x" });
     expect(config.http.gatewayOrigin).toBe("https://gw");
     expect(config.http.publicBaseUrl).toBe("https://pub");

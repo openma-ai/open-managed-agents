@@ -1,3 +1,4 @@
+import { sessionExecutionLeaseTtlMs } from "./execution-config";
 import type {
   ClaimSessionExecutionResult,
   SessionExecution,
@@ -74,8 +75,8 @@ export class SessionExecutionHost {
   readonly #heartbeatIntervalMs: number;
 
   constructor(private readonly dependencies: SessionExecutionHostDependencies) {
-    this.#leaseTtlMs = dependencies.leaseTtlMs ?? 30_000;
-    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? 10_000;
+    this.#leaseTtlMs = sessionExecutionLeaseTtlMs(dependencies.leaseTtlMs);
+    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? Math.floor(this.#leaseTtlMs / 3);
     if (!Number.isSafeInteger(this.#leaseTtlMs) || this.#leaseTtlMs <= 0) {
       throw new Error("Session Execution leaseTtlMs must be a positive integer");
     }

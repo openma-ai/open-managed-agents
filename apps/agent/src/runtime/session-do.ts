@@ -84,7 +84,7 @@ import {
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
-import { decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
+import { sessionExecutionLeaseTtlMs, decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
@@ -396,8 +396,8 @@ const STATE_ROW_ID = "cf_state_row_id";
  * heartbeat + the alarm's policy renewal). The alarm is not itself the lease
  * authority: if it is lost, a replacement DO reclaims after expiry.
  */
-const KEEP_ALIVE_INTERVAL_MS = 30_000;
-const EXECUTION_LEASE_TTL_MS = KEEP_ALIVE_INTERVAL_MS * 3;
+const EXECUTION_LEASE_TTL_MS = sessionExecutionLeaseTtlMs();
+const KEEP_ALIVE_INTERVAL_MS = Math.floor(EXECUTION_LEASE_TTL_MS / 3);
 /** Wake promptly when a queue row / claimable execution exists. */
 const QUEUE_WAKE_DELAY_MS = 1_000;
 /** Admission must arm the alarm before the synchronous drain can be lost. */
@@ -1076,7 +1076,7 @@ export class SessionDO extends DurableObject<Env> {
         queuedInputs,
         activeTurns,
         schedules,
-        heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+        heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
         queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
         ...(queueBackoffAtMs === undefined
           ? {}
@@ -2071,8 +2071,8 @@ export class SessionDO extends DurableObject<Env> {
         ownerId: this._executionOwnerId,
         clock: { now: () => new Date() },
         ids: { nextAttemptId: () => `attempt_${nanoid()}` },
-        leaseTtlMs: EXECUTION_LEASE_TTL_MS,
-        heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+        leaseTtlMs: sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS),
+        heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
         onFenceChanged: (fence) => {
           const previous = this._executionFences.get(threadId);
           this._executionFences.set(threadId, fence);
@@ -7432,7 +7432,7 @@ export class SessionDO extends DurableObject<Env> {
     const policy = evaluateCoordinationPolicy({
       nowMs,
       executions: active.map((execution) => this._leaseRecordFor(execution)),
-      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+      heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
       queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
     });
     for (const action of policy.actions) {
@@ -7453,14 +7453,14 @@ export class SessionDO extends DurableObject<Env> {
       const renewal = decideLeaseRenewal(
         this._leaseRecordFor(execution),
         nowMs,
-        { leaseTtlMs: EXECUTION_LEASE_TTL_MS },
+        { leaseTtlMs: sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) },
       );
       if (renewal === null) continue;
       try {
         const renewed = await store.renew({
           fence,
           renewedAt: new Date(nowMs).toISOString(),
-          leaseTtlMs: EXECUTION_LEASE_TTL_MS,
+          leaseTtlMs: sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS),
         });
         if (renewed.type === "renewed") {
           this._executionFences.set(laneId, renewed.fence);
@@ -7517,7 +7517,7 @@ export class SessionDO extends DurableObject<Env> {
       nowMs,
       executions,
       queuedInputs,
-      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+      heartbeatIntervalMs: Math.floor(sessionExecutionLeaseTtlMs(this.env.OMA_SESSION_EXECUTION_LEASE_TTL_MS) / 3),
       queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
     });
     const lanes = new Set<string>();
