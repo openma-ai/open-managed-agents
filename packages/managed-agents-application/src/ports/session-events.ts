@@ -19,6 +19,8 @@ export interface SendSessionEventsCommand {
   requireRunningInterrupt?: boolean;
   /** Internal OAI compatibility: park message input under this validated Session revision. */
   deferUntilToolResults?: boolean;
+  /** Internal OAI batch: allow messages only after all pending results settle atomically. */
+  allowMessagesAfterToolResults?: boolean;
 }
 
 export interface ListSessionEventsQuery {

@@ -293,7 +293,10 @@ export class SessionEventsApplicationService
         }
         if (reason !== null) {
           const bad = nonSettleEventTypes(command.events);
-          if (bad.length > 0 && !(command.deferUntilToolResults && reason === "requires_action" && events.every(event => event.type === "user.message"))) {
+          const completeOaiSettlement = command.allowMessagesAfterToolResults && command.expectedRevision !== undefined && reason === "requires_action"
+            && command.events.every(event => event.type === "user.message" || event.type === "user.custom_tool_result")
+            && settleOnlyReason([...chronological, ...events] as Array<{ type?: string; [key: string]: unknown }>) === null;
+          if (bad.length > 0 && !completeOaiSettlement && !(command.deferUntilToolResults && reason === "requires_action" && events.every(event => event.type === "user.message"))) {
             return {
               type: "invalid_request",
               message: settleOnlyRejectMessage(reason, bad),
@@ -316,7 +319,8 @@ export class SessionEventsApplicationService
           if (!stamp) throw new Error("Canonical deferred admission requires ordered history");
           position = { processedAt: stamp, eventId: last.id };
         }
-        const interrupted = command.events.some(event => event.type === "user.interrupt");
+        const interrupts = command.events.filter(event => event.type === "user.interrupt");
+        const cancelled = (event: SentSessionEvent) => interrupts.some(interrupt => interrupt.sessionThreadId == null || interrupt.sessionThreadId === (("sessionThreadId" in event ? event.sessionThreadId : undefined) ?? "sthr_primary"));
         const answered = new Set(history.concat(acceptedEvents).flatMap(event => event.type === "user.custom_tool_result" ? [event.customToolUseId] : event.type === "user.tool_result" || event.type === "user.tool_confirmation" ? [event.toolUseId] : []));
         if (command.deferUntilToolResults) {
           if (command.expectedRevision === undefined || !events.every(event => event.type === "user.message")) return { type: "invalid_request", message: "Deferred messages require a revision-bound message batch" };
@@ -327,9 +331,9 @@ export class SessionEventsApplicationService
           acceptedEvents = events.map(event => ({ ...event, deferredUntilToolResults: ids }));
           executionEvents = [];
         } else {
-          replaceEvents = history.filter((event): event is SentSessionEvent => "deferredUntilToolResults" in event && Array.isArray(event.deferredUntilToolResults) && event.deferredUntilToolResults.length > 0 && (interrupted || event.deferredUntilToolResults.every(id => answered.has(id))))
-            .map(event => { const { deferredUntilToolResults: _binding, ...released } = event; return interrupted ? { ...released, cancelled_at_ms: Date.parse(acceptedAt) } as SentSessionEvent : { ...released, continuationToolUseIds: _binding } as SentSessionEvent; });
-          if (replaceEvents.length) executionEvents = [...acceptedEvents, ...(interrupted ? [] : replaceEvents)];
+          replaceEvents = history.filter((event): event is SentSessionEvent => "deferredUntilToolResults" in event && Array.isArray(event.deferredUntilToolResults) && event.deferredUntilToolResults.length > 0 && (cancelled(event as SentSessionEvent) || event.deferredUntilToolResults.every(id => answered.has(id))))
+            .map(event => { const { deferredUntilToolResults: _binding, ...released } = event; return cancelled(event) ? { ...released, cancelled_at_ms: Date.parse(acceptedAt) } as SentSessionEvent : { ...released, continuationToolUseIds: _binding } as SentSessionEvent; });
+          if (replaceEvents.length) executionEvents = [...acceptedEvents, ...replaceEvents.filter(event => event.cancelled_at_ms == null)];
         }
       }
       // Host admission hook for existing-Session work. Runs after the

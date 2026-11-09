@@ -414,10 +414,28 @@ export class CloudflareBridgeRuntime
       if (!result.ok) throw await responseError(result);
       return result;
     };
+    const cleanupFailedStart = async (failure: unknown): Promise<never> => {
+      try {
+        const killed = await requestProcess("/signal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal: "SIGKILL" }) });
+        const result = await killed.json() as { exit_code?: unknown };
+        if (!Number.isSafeInteger(result.exit_code)) throw new Error("Process exit was not confirmed");
+      } catch (cleanupFailure) {
+        const identity = { provider: providerName, runtimeId: this.#runtimeId, processId: createdProcess.id, state: "cleanup_unconfirmed" };
+        let recorded = false;
+        try {
+          recorded = await this.#store.put(this.#prefix + "/processes/" + encodeURIComponent(this.#runtimeId) + "/" + encodeURIComponent(String(createdProcess.id)) + ".json", JSON.stringify(identity)) !== null;
+        } catch { /* The thrown identity still lets the lifecycle owner recover. */ }
+        await deleteSession();
+        throw Object.assign(new Error("Cloudflare Bridge process cleanup unconfirmed"), { ...identity, recorded, cause: failure, cleanupFailure });
+      }
+      await deleteSession();
+      throw failure;
+    };
     try { response = await requestProcess("/events"); }
-    catch (error) { await deleteSession(); throw error; }
+    catch (error) { return cleanupFailedStart(error); }
     if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
-      await deleteSession(); throw new Error("Cloudflare Bridge process did not return an SSE stream");
+      await response.body?.cancel().catch(() => undefined);
+      return cleanupFailedStart(new Error("Cloudflare Bridge process did not return an SSE stream"));
     }
     const exited = (async () => {
       try {

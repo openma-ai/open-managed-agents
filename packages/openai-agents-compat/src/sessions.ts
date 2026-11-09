@@ -90,7 +90,7 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
       await waitForPoll(deps.pollMs ?? 100,signal);
     }
   }
-  async function commit(sessionId: string, events: SendableSessionEvent[], key: string | undefined, expectedRevision: number | undefined, deferUntilToolResults = false) {
+  async function commit(sessionId: string, events: SendableSessionEvent[], key: string | undefined, expectedRevision: number | undefined, deferUntilToolResults = false, allowMessagesAfterToolResults = false) {
     if (!events.length) return;
     const result = await deps.sessionEvents.sendSessionEvents({
       sessionId,
@@ -98,6 +98,7 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
       ...(key !== undefined && { idempotencyKey: key }),
       ...(expectedRevision !== undefined && { expectedRevision }),
       ...(deferUntilToolResults && { deferUntilToolResults }),
+      ...(allowMessagesAfterToolResults && { allowMessagesAfterToolResults }),
     });
     if (result.type === "not_found") return missing();
     if (result.type === "invalid_request") return invalid(result.message);
@@ -199,7 +200,7 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     }
     const revision = validatedCalls.size && current.found.revision !== undefined ? current.found.revision : undefined;
     if (settleEvents.length) {
-      await commit(sessionId, [...settleEvents, ...stagedNow, ...forwardMessages], key, revision);
+      await commit(sessionId, [...settleEvents, ...stagedNow, ...forwardMessages], key, revision, false, validatedCalls.size > 0 && stagedNow.length + forwardMessages.length > 0);
       return { status: 202 };
     }
     if (forwardMessages.length) {

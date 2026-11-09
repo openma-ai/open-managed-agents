@@ -188,3 +188,51 @@ it("CMA admission still rejects messages during required action without the OAI 
   expect(f.facts).toEqual(before);
   expect(f.dispatched).toEqual([]);
 });
+
+it("child interrupt cannot cancel deferred root input", async () => {
+ const f=fixture(); await f.pendingResult();
+ await f.client.beta.agents.sessions.events.create("session",{events:[message("ROOT_KEEP")]});
+ const {toSendableSessionEvent}=await import("../../managed-agents-api/src/mappers/session-events");
+ await f.service.sendSessionEvents({sessionId:"session",events:[toSendableSessionEvent({type:"user.interrupt",session_thread_id:"child"})]});
+ expect(texts(f.facts)[0]).not.toHaveProperty("cancelled_at_ms");
+ expect(texts(f.facts)[0].deferredUntilToolResults).toEqual(["call"]);
+});
+it("OAI final result and message are accepted atomically after full RA settlement", async () => {
+ const f=fixture(), result=await f.pendingResult();
+ await f.client.beta.agents.sessions.events.create("session",{events:[result,message("SUFFIX")],"Idempotency-Key":"atomic-final"});
+ expect(f.facts.filter(row=>row.type==="user.custom_tool_result")).toHaveLength(1);
+ expect(texts(f.facts)).toHaveLength(1);
+ expect(f.dispatched).toHaveLength(1);
+ expect(f.dispatched[0].events.map((row:any)=>row.type)).toEqual(["user.custom_tool_result","user.message"]);
+});
+it("timestamped self-hosted stage stays invisible through runtime wire encoding", async () => {
+ const f=fixture(); await f.pendingResult();
+ (f.service as any).dependencies.execution.find=async()=>({session:f.native,environment:{config:{type:"self_hosted"}},revision:1});
+ await f.client.beta.agents.sessions.events.create("session",{events:[message("SELF_HOSTED_HIDDEN")]});
+ const {encodeRuntimeHistoryEvent}=await import("../../managed-agents-adapters-runtime/src/index");
+ const {eventsToMessages}=await import("../../agent-harness/src/history/events-to-messages");
+ const staged=texts(f.facts)[0];
+ expect(staged.processedAt).toBeTypeOf("string");
+ expect(JSON.stringify(eventsToMessages([encodeRuntimeHistoryEvent(staged)] as never))).not.toContain("SELF_HOSTED_HIDDEN");
+});
+
+it("partial result with a message cannot bypass RA or partially persist the batch", async()=>{
+ const f=fixture();await f.pendingResult();
+ f.facts.splice(1,0,{id:"call2",type:"agent.custom_tool_use",name:"lookup",input:{}});
+ f.facts.find(row=>row.id==="wait").stopReason.eventIds=["call","call2"];
+ const action=(await f.client.beta.agents.sessions.retrieve("session")).required_actions.find(row=>row.type==="function_call")!;
+ if(action.type!=="function_call")throw Error("expected call");
+ const before=structuredClone(f.facts);
+ await expect(f.client.beta.agents.sessions.events.create("session",{events:[{type:"agent.session.input.tool_result",call_id:action.call_id,turn_id:action.turn_id,success:true,output:"partial"},message("NO_EARLY")] })).rejects.toMatchObject({status:400});
+ expect(f.facts).toEqual(before);
+});
+it("CMA mixed final result and message retains settle-only 400 without OAI opt-in",async()=>{
+ const f=fixture();await f.pendingResult();const before=structuredClone(f.facts);
+ expect((await f.service.sendSessionEvents({sessionId:"session",events:[{type:"user.custom_tool_result",customToolUseId:"call",content:[{type:"text",text:"answer"}]},{type:"user.message",content:[{type:"text",text:"CMA_REJECT"}]}]})).type).toBe("invalid_request");
+ expect(f.facts).toEqual(before);
+});
+it("explicit primary interrupt invalidates root deferred input",async()=>{
+ const f=fixture();await f.pendingResult();await f.client.beta.agents.sessions.events.create("session",{events:[message("ROOT_CANCEL")]});
+ await f.service.sendSessionEvents({sessionId:"session",events:[{type:"user.interrupt",sessionThreadId:"sthr_primary"}]});
+ expect(texts(f.facts)[0].cancelled_at_ms).toBeTypeOf("number");
+});

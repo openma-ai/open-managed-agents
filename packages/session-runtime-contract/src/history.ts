@@ -77,10 +77,10 @@ export function decodeSessionEventDocument(document: string): {
 /** The existing event-log visibility rule for all model/recovery projections.
  * Raw CF history includes queued/cancelled rows for UI reconciliation. */
 export function isRuntimeHistoryEventVisible(event: object): boolean {
-  const row = event as { deferredUntilToolResults?: string[]; _queued?: boolean; cancelled_at_ms?: number; processed_at?: string | null; processedAt?: string | null };
+  const row = event as { deferredUntilToolResults?: string[]; deferred_until_tool_results?: string[]; _queued?: boolean; cancelled_at_ms?: number; processed_at?: string | null; processedAt?: string | null };
   // Missing stamps remain valid for legacy/in-memory events; explicit null
   // is the canonical accepted-but-not-consumed marker on both wire shapes.
-  return row.deferredUntilToolResults === undefined && row._queued !== true && row.cancelled_at_ms == null && row.processed_at !== null && row.processedAt !== null;
+  return row.deferredUntilToolResults === undefined && row.deferred_until_tool_results === undefined && row._queued !== true && row.cancelled_at_ms == null && row.processed_at !== null && row.processedAt !== null;
 }
 
 /** Model-facing result for a dispatched tool whose completion cannot be confirmed.

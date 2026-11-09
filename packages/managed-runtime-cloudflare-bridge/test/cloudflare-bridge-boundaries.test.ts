@@ -293,7 +293,7 @@ data: {"exit_code":1}
       { response: sseText("event: progress\ndata: ignored\n\n"), error: "without a terminal event" },
     ];
     for (const entry of cases) {
-      const instance = runtime(vi.fn<typeof globalThis.fetch>().mockImplementation(async url => String(url).endsWith("/process") ? Response.json({id:"p"}) : entry.response));
+      const instance = runtime(vi.fn<typeof globalThis.fetch>().mockImplementation(async url => String(url).endsWith("/process") ? Response.json({id:"p"}) : String(url).endsWith("/signal") ? Response.json({exit_code:137}) : entry.response));
       if (!entry.response.ok || entry.response.body === null || !entry.response.headers.get("content-type")?.includes("text/event-stream")) {
         await expect(instance.spawnDuplexProcess({ command: "x" })).rejects.toThrow(entry.error);
       } else {

@@ -62,3 +62,25 @@ it("persists the runtime handle before acknowledging allocation ownership", asyn
   await provider.create({sessionId:"session",workdir:"/workspace"},{});
   expect(claims).toBe(1);
 });
+
+it.each(["http", "not-sse"])("kills allocated process if events connection fails: %s", async failure => {
+ let running=false;
+ const store=new InMemoryBlobStore();
+ const runtime=new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:store,fetch:async(input,init)=>{
+   const path=new URL(String(input)).pathname;
+   if(path.endsWith("/process")){running=true;return Response.json({id:"orphan"});}
+   if(path.endsWith("/events"))return new Response("failed",{status:failure==="http"?503:200,headers:{"content-type":"text/plain"}});
+   if(path.endsWith("/signal")){expect(JSON.parse(String(init?.body))).toEqual({signal:"SIGKILL"});running=false;return Response.json({exit_code:137});}
+   return new Response(null,{status:204});
+ }});
+ await expect(runtime.spawnDuplexProcess({command:"sleep",args:["120"]})).rejects.toThrow();
+ expect(running).toBe(false);
+});
+it("retains recoverable process identity when events and cleanup both fail", async () => {
+ const store=new InMemoryBlobStore();
+ const runtime=new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:store,fetch:async(input)=>String(input).endsWith("/process")?Response.json({id:"unconfirmed"}):new Response("unavailable",{status:503})});
+ await expect(runtime.spawnDuplexProcess({command:"sleep"})).rejects.toThrow("cleanup unconfirmed");
+ const record=await store.get("cloudflare-bridge-workspaces/processes/sandbox/unconfirmed.json");
+ expect(record).not.toBeNull();
+ expect(JSON.parse(await record!.text())).toMatchObject({runtimeId:"sandbox",processId:"unconfirmed",state:"cleanup_unconfirmed"});
+});
