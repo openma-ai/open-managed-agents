@@ -5,7 +5,7 @@ import type {
   SessionExecutionStorePort,
   SettleSessionExecutionResult,
 } from "@open-managed-agents/session-runtime-contract/coordination";
-import { errorHoldsQueuedOnLane } from "@open-managed-agents/session-runtime-contract/coordination";
+import { SessionExecutionLostError, errorHoldsQueuedOnLane } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
   ExecutionLeaseController,
   type ExecutionLeaseTimers,
@@ -172,6 +172,7 @@ export class SessionExecutionHost {
         const runResult = await run(claimed.execution, claimed.fence, lease.signal);
         holdQueuedOnLane = runResult?.holdQueuedOnLane === true;
       } catch (caught) {
+        if (caught instanceof SessionExecutionLostError) return { type: "lost", execution: claimed.execution, fence: claimed.fence };
         error = asError(caught);
         holdQueuedOnLane = errorHoldsQueuedOnLane(caught);
       }

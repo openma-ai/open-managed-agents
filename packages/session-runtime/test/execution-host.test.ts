@@ -97,6 +97,15 @@ function manualTimers() {
 }
 
 describe("SessionExecutionHost", () => {
+  it("leaves a confirmed execution loss reclaimable instead of settling failed", async () => {
+    const { SessionExecutionLostError } = await import("@open-managed-agents/session-runtime-contract/coordination");
+    const persistence = store();
+    const host = new SessionExecutionHost({ store: persistence, scope: { workspaceId: "workspace_01", sessionId: "session_01" },
+      ownerId: "owner_01", clock: { now: () => new Date(now) }, ids: { nextAttemptId: () => "attempt_01" } });
+    const result = await host.runOne(async () => { throw new SessionExecutionLostError("sandbox_gone"); });
+    expect(result.type).toBe("lost");
+    expect(persistence.settle).not.toHaveBeenCalled();
+  });
   it("claims only its configured lane, proves ownership before commit, and settles", async () => {
     const persistence = store();
     const host = new SessionExecutionHost({
