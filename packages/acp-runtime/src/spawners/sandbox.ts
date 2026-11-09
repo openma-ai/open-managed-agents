@@ -18,6 +18,10 @@ export class SandboxAcpUnsupportedError extends Error {
   }
 }
 
+/** How long stdout may keep delivering after the process exit is reported.
+ * Bytes the agent wrote before it exited still arrive through the bridge. */
+export const STDOUT_DRAIN_AFTER_EXIT_MS = 2_000;
+
 /** Host-neutral ACP spawner. Local, Cloudflare, E2B, and future sandbox
  * adapters all converge on SandboxDuplexProcessPort; the shared ACP
  * runtime above this class owns exactly one session/event loop. */
@@ -50,11 +54,61 @@ function toChildHandle(
   }
   return {
     stdin: process.stdin,
-    stdout: process.stdout,
+    stdout: endingWithProcess(process.stdout, process.exited),
     stderr,
     exited: process.exited,
     kill: (signal) => process.kill(signal),
   };
+}
+
+/** A child's stdout ends when the child does: the ACP engine learns that the
+ * agent is gone only from stdout EOF (Node pipes guarantee it). A sandbox
+ * stdio bridge can report the exit while its stdout stays open (Cloudflare
+ * RPC stdio, e2e cf-container-acp-mm-r1: pi-acp exited mid-turn and the turn
+ * waited forever), so after the drain window the stream ends here and the
+ * engine fails the turn as it does on Node. */
+function endingWithProcess(
+  stdout: ReadableStream<Uint8Array>,
+  exited: Promise<unknown>,
+): ReadableStream<Uint8Array> {
+  const reader = stdout.getReader();
+  let ended = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const end = (controller: ReadableStreamDefaultController<Uint8Array>, error?: unknown) => {
+    if (ended) return;
+    ended = true;
+    if (timer !== undefined) clearTimeout(timer);
+    if (error === undefined) controller.close();
+    else controller.error(error);
+  };
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      void exited.then(() => undefined, () => undefined).then(() => {
+        if (ended) return;
+        timer = setTimeout(() => {
+          end(controller);
+          void reader.cancel().catch(() => undefined);
+        }, STDOUT_DRAIN_AFTER_EXIT_MS);
+      });
+    },
+    async pull(controller) {
+      let item: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        item = await reader.read();
+      } catch (error) {
+        end(controller, error);
+        return;
+      }
+      if (ended) return;
+      if (item.done) end(controller);
+      else controller.enqueue(item.value);
+    },
+    cancel(reason) {
+      ended = true;
+      if (timer !== undefined) clearTimeout(timer);
+      return reader.cancel(reason);
+    },
+  });
 }
 
 async function consumeDiagnosticLines(

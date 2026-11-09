@@ -165,7 +165,7 @@ import {
 import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
-import { ensureEnvironmentPackages } from "@open-managed-agents/sandbox";
+import { ensureEnvironmentPackages, environmentCommandPath } from "@open-managed-agents/sandbox";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory } from "./sqlite-history";
@@ -4138,6 +4138,10 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
 
+      // Same PATH as Node (environmentCommandPath): installed tools, then the
+      // image PATH that bash -l's /etc/profile would otherwise drop.
+      await sandbox.setEnvVars?.({ PATH: await environmentCommandPath({ exec: (cmd: string, timeout?: number) => sandbox.exec(cmd, timeout) }) });
+
       // Mount FILES_BUCKET at /mnt/session/outputs/ so any file the agent
       // writes there immediately appears via the caller-facing
       // GET /v1/sessions/:id/outputs endpoint. Mirrors AMA's `/mnt/session
@@ -6026,97 +6030,6 @@ export class SessionDO extends DurableObject<Env> {
         )
       : undefined;
 
-    // --- Harness receives a fully-prepared context ---
-    const ctx: HarnessContext = {
-      agent,
-      budget: await this.resolveBudgetGate(effectiveHandle),
-      userMessage,
-      session_id: this.state.session_id,
-      tenant_id: this.state.tenant_id,
-      ...(acpSessionStartCwd ? { acpSessionStartCwd } : {}),
-      // RunnerRelayPort over the cross-script RuntimeRoom DO binding, so
-      // AcpProxyHarness attaches to the user's runner directly (no HTTP hop
-      // through main). Non-acp harnesses don't read it.
-      runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM),
-      tools: allTools,
-      model,
-      pi: piRuntime,
-      systemPrompt,
-      rawSystemPrompt,
-      platformReminders,
-      ...(skillMounts.length > 0 ? { skillMounts } : {}),
-      // file_id → bytes resolver for ImageBlock/DocumentBlock content blocks
-      // whose `source.type === "file"`. Default-loop's eventsToMessagesAsync
-      // dedupes via a per-derive Promise cache, so the same file referenced
-      // across multiple turns of one projection only hits R2 once. Null
-      // returns are treated as "unavailable" — the derive layer emits a
-      // placeholder text part instead of crashing the turn.
-      fileFetcher: this.buildFileFetcher(this.state.tenant_id),
-      env: {
-        ...delegationCredentials(creds),
-        ANTHROPIC_MODEL: this.env.ANTHROPIC_MODEL,
-        TAVILY_API_KEY: this.env.TAVILY_API_KEY,
-        CONFIG_KV: this.env.CONFIG_KV,
-        memoryStoreIds,
-        environmentConfig,
-        // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
-        ...(resolvedHarnessName === "acp-sandbox" && activeFence && this.env.MAIN_MCP?.issueManagedAcpExecutionChannels ? { ANTHROPIC_API_KEY: "", ...await this.env.MAIN_MCP.issueManagedAcpExecutionChannels({ tenantId: this.state.tenant_id!, sessionId: this.state.session_id!, executionFence: activeFence }) } : {}),
-        // LLM full-body logging context. default-loop wraps each model
-        // call in middleware that PUTs request + response to R2 keyed
-        // by the per-step span event id. The matching
-        // span.model_request_end event grows a body_r2_key field
-        // pointing to the same key. r2 = null disables capture
-        // (test harnesses, env without FILES_BUCKET).
-        ...(this.env.LLM_LOGS_DISABLED === "1"
-          ? {}
-          : {
-              llmLog: {
-                tenant_id: this.state.tenant_id,
-                session_id: this.state.session_id,
-                r2: this.env.FILES_BUCKET ?? null,
-              },
-            }),
-        delegateToAgent: async (agentId: string, message: string) => {
-          return this.runSubAgent(agentId, message, history, sandbox, turnThreadId, effectiveAbortSignal);
-        },
-        watchBackgroundTask: (taskId: string, pid: string, outputFile: string, proc: ProcessHandle | null) => {
-          this.watchBackgroundTask(taskId, pid, outputFile, proc, sandbox);
-        },
-      },
-      runtime: {
-        history,
-        sandbox,
-        ...(agentAdvertisesSteering(agent)
-          ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId) }
-          : {}),
-        broadcast: (event) => {
-          history.append(event);
-          this.broadcastEvent(event, activeFence);
-          this.fanOutToHooks(event);
-          const cacheUsage = reportModelSpanUsage(this.usageMeter, turnThreadId, event, this.activeBudgetGate);
-          if (cacheUsage !== null) this.publishSessionUsage(cacheUsage, history, activeFence);
-        },
-        ...this.buildStreamRuntimeMethods(turnThreadId, activeFence),
-        reportUsage: async (input_tokens: number, output_tokens: number) => {
-          this.publishSessionUsage(
-            reportSessionUsage(this.usageMeter, turnThreadId, { input_tokens, output_tokens }, this.activeBudgetGate),
-            history, activeFence,
-          );
-        },
-        pendingConfirmations: [],
-        consumePendingConfirmation: (requestId) => {
-          if (activeFence !== undefined && !this.isExecutionFenceCurrent(activeFence)) {
-            const error = new Error("session execution fence is no longer valid");
-            error.name = "ExecutionFenceLostError";
-            throw error;
-          }
-          this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => pending.toolCallId !== requestId) });
-        },
-        abortSignal: effectiveAbortSignal,
-        keepAliveWhile: <T>(fn: () => Promise<T>) => fn(),
-      },
-    };
-
     // Official CMA ordering: session.error{retrying} then status_rescheduled.
     const failureEvents: TurnFailureEventsPort = {
       sessionError: (message, retry_status) => {
@@ -6133,7 +6046,91 @@ export class SessionDO extends DurableObject<Env> {
         this.broadcastEvent(event, activeFence);
       },
     };
+    // Context construction failures must settle the turn too.
+    let ctx!: HarnessContext;
     try {
+      // --- Harness receives a fully-prepared context ---
+      ctx = {
+        agent,
+        budget: await this.resolveBudgetGate(effectiveHandle),
+        userMessage,
+        session_id: this.state.session_id,
+        tenant_id: this.state.tenant_id,
+        ...(acpSessionStartCwd ? { acpSessionStartCwd } : {}),
+        // RunnerRelayPort over the cross-script RuntimeRoom DO binding, so
+        // AcpProxyHarness attaches to the user's runner directly (no HTTP hop
+        // through main). Non-acp harnesses don't read it.
+        runnerRelay: createRuntimeRoomRelay(this.env.RUNTIME_ROOM),
+        tools: allTools,
+        model,
+        pi: piRuntime,
+        systemPrompt,
+        rawSystemPrompt,
+        platformReminders,
+        ...(skillMounts.length > 0 ? { skillMounts } : {}),
+        // file_id → bytes for "file" image/document blocks (null = placeholder text).
+        fileFetcher: this.buildFileFetcher(this.state.tenant_id),
+        env: {
+          ...delegationCredentials(creds),
+          ANTHROPIC_MODEL: this.env.ANTHROPIC_MODEL,
+          TAVILY_API_KEY: this.env.TAVILY_API_KEY,
+          CONFIG_KV: this.env.CONFIG_KV,
+          memoryStoreIds,
+          environmentConfig,
+          // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
+          ...(resolvedHarnessName === "acp-sandbox" && activeFence && this.env.MAIN_MCP?.issueManagedAcpExecutionChannels ? { ANTHROPIC_API_KEY: "", ...await this.env.MAIN_MCP.issueManagedAcpExecutionChannels({ tenantId: this.state.tenant_id!, sessionId: this.state.session_id!, executionFence: activeFence }) } : {}),
+          // Full-body LLM logs to R2, keyed by span event id (body_r2_key);
+          // r2 = null disables capture.
+          ...(this.env.LLM_LOGS_DISABLED === "1"
+            ? {}
+            : {
+                llmLog: {
+                  tenant_id: this.state.tenant_id,
+                  session_id: this.state.session_id,
+                  r2: this.env.FILES_BUCKET ?? null,
+                },
+              }),
+          delegateToAgent: async (agentId: string, message: string) => {
+            return this.runSubAgent(agentId, message, history, sandbox, turnThreadId, effectiveAbortSignal);
+          },
+          watchBackgroundTask: (taskId: string, pid: string, outputFile: string, proc: ProcessHandle | null) => {
+            this.watchBackgroundTask(taskId, pid, outputFile, proc, sandbox);
+          },
+        },
+        runtime: {
+          history,
+          sandbox,
+          ...(agentAdvertisesSteering(agent)
+            ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId) }
+            : {}),
+          broadcast: (event) => {
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+            this.fanOutToHooks(event);
+            const cacheUsage = reportModelSpanUsage(this.usageMeter, turnThreadId, event, this.activeBudgetGate);
+            if (cacheUsage !== null) this.publishSessionUsage(cacheUsage, history, activeFence);
+          },
+          ...this.buildStreamRuntimeMethods(turnThreadId, activeFence),
+          reportUsage: async (input_tokens: number, output_tokens: number) => {
+            this.publishSessionUsage(
+              reportSessionUsage(this.usageMeter, turnThreadId, { input_tokens, output_tokens }, this.activeBudgetGate),
+              history, activeFence,
+            );
+          },
+          pendingConfirmations: [],
+          consumePendingConfirmation: (requestId) => {
+            if (activeFence !== undefined && !this.isExecutionFenceCurrent(activeFence)) {
+              const error = new Error("session execution fence is no longer valid");
+              error.name = "ExecutionFenceLostError";
+              throw error;
+            }
+            this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => pending.toolCallId !== requestId) });
+          },
+          abortSignal: effectiveAbortSignal,
+          keepAliveWhile: <T>(fn: () => Promise<T>) => fn(),
+        },
+      };
+
       // Run harness.onSessionInit exactly once per session, BEFORE the first
       // running status. Default impl writes <system-reminder> user.message
       // events for skills/memory/appendable_prompts; custom harnesses can
@@ -7769,7 +7766,6 @@ export class SessionDO extends DurableObject<Env> {
     return ids;
   }
 
-  /** Scoped to turn_id IS NULL so it can never clobber a fresh beginTurn. */
   private async _clearMarkerlessTurn(now: number): Promise<boolean> {
     try {
       const update = await this.runtimeAdapter.sql
@@ -7835,6 +7831,7 @@ export class SessionDO extends DurableObject<Env> {
       hasLiveWork: () => this._activeTurnIds.size > 0 || this._executionActiveLanes.size > 0 || this._draining.size > 0,
       latestSessionStatus: () => this._latestSessionStatusEvent(),
       clearMarkerlessTurn: (now) => this._clearMarkerlessTurn(now),
+      executions: async () => ({ store: await this.getExecutionStore(), workspaceId: this.state.tenant_id, sessionId: this.state.session_id }),
       scheduleGraceRetry: (atMs) => this._multiplexAlarm({ reason: "turn_grace_retry", atMs }),
       log: (event, fields) => sdoLog(event, { session_id: this.state.session_id, ...fields }),
     });

@@ -1,0 +1,106 @@
+{
+  "event_types": [
+    "user.message",
+    "session.status_running",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.error",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "working",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "session.error": [
+      {
+        "error": {
+          "message": "The agent process exited before it could accept the prompt (parity-acp-agent, exit code 137). Reopen the task to restart it, or check this agent's setup and sign-in.",
+          "retry_status": {
+            "type": "exhausted"
+          },
+          "type": "unknown_error"
+        },
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.error"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": true,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Start.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {}
+  },
+  "reads": {
+    "message_status": 200,
+    "session_create_status": 201
+  },
+  "models": {},
+  "timeouts": []
+}

@@ -58,6 +58,18 @@ it("canonical recovery interrupts a tool whose outcome is unknown", async () => 
   expect(await a.find({ workspaceId: "w", executionId: "A" })).toMatchObject({ state: "failed" });
 });
 
+it("after the sweep interrupts a dead owner, the Session's latest settled execution carries the failure", async () => {
+  const { a } = await setup();
+  const scope = { workspaceId: "w", sessionId: "session_a" };
+  expect(await a.latestSettled(scope)).toBeNull();
+  await a.sweepExpired(Date.parse(at(5)), { decideForRecord: evidenceDecision });
+  expect(await a.listActive(scope)).toEqual([]);
+  expect(await a.latestSettled(scope)).toMatchObject({
+    id: "A", state: "failed", settledAt: at(5), failure: "execution interrupted on unpaired tool call",
+  });
+  expect(await a.latestSettled({ workspaceId: "w", sessionId: "session_b" })).toBeNull();
+});
+
 it("another session's claim and renew cannot bypass canonical recovery", async () => {
   const { a, b } = await setup();
   const claimed = await b.claim({

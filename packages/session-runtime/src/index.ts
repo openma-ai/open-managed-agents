@@ -139,4 +139,4 @@ export {
   type TemplateLogger,
   type TemplateStore,
 } from "./session-sandbox-template-cache";
-export { finalizeStaleTurns, type StaleToolUse, type StaleTurnFinalizerPort } from "./finalize-stale-turns";
+export { finalizeStaleTurns, type SessionExecutionRecords, type StaleToolUse, type StaleTurnFinalizerPort } from "./finalize-stale-turns";

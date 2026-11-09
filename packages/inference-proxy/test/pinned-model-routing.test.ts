@@ -10,6 +10,24 @@ async function sendPlan({ fetcher, ...input }: HostedInferenceRequestInput & { f
 
 const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
 describe("pinned hosted model routing", () => {
+  it("routes a MiniMax China card's chat calls to its OpenAI endpoint, not the card's Anthropic base", async () => {
+    const baseUrl = "https://api.minimaxi.com/anthropic";
+    expect(resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl }).map((e) => [e.protocol, e.upstreamBaseUrl])).toEqual([
+      ["openai-chat", "https://api.minimaxi.com/v1"],
+      ["anthropic-messages", baseUrl],
+    ]);
+    const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(url, init);
+      expect(request.url).toBe("https://api.minimaxi.com/v1/chat/completions");
+      expect(request.headers.get("authorization")).toBe("Bearer private-key");
+      expect(await request.json()).toEqual({ model: "MiniMax-M3.1-Flash", messages: [] });
+      return new Response("ok");
+    });
+    const response = await sendPlan({ upstream: { wireModel: "MiniMax-M3.1-Flash", apiKey: "private-key", provider: "minimax-cn", baseURL: baseUrl, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl }) }, method: "POST", subPath: "openai/v1/chat/completions", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle", messages: [] }), fetcher });
+    expect(response.status).toBe(200);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("keeps custom DeepSeek credentials on the explicitly configured chat upstream", async () => {
     const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(url, init);

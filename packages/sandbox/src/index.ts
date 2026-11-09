@@ -110,6 +110,7 @@ export {
   buildAptScript,
   buildFullSetupScript,
   ENVIRONMENT_PACKAGE_PATHS,
+  environmentCommandPath,
   ensureEnvironmentPackages,
   hasEnvironmentPackages,
   parseExecResult,

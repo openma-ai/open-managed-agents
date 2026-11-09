@@ -40,6 +40,15 @@ export const DEFAULT_INFERENCE_ENDPOINT_CONTRIBUTORS: readonly InferenceEndpoint
     ],
   },
   {
+    providerIds: ["minimax-cn"],
+    // MiniMax China serves both protocols. A card's base is its Anthropic
+    // endpoint (…/anthropic), so the OpenAI one is the fixed public /v1.
+    endpoints: ({ baseUrl }) => [
+      endpoint("openai-chat", "https://api.minimaxi.com/v1"),
+      endpoint("anthropic-messages", baseUrl ?? "https://api.minimaxi.com/anthropic"),
+    ],
+  },
+  {
     providerIds: ["anthropic", "ant", "ant-compatible"],
     endpoints: ({ baseUrl }) => [
       endpoint(

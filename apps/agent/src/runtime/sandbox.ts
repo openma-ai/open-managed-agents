@@ -11,6 +11,7 @@ import type {
   ProcessHandle,
 } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
+import { r2FilesCredentials } from "./r2-files-credentials";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { cloudflareWorkspaceMountPrefix } from "@open-managed-agents/managed-runtime-cloudflare";
 import type {
@@ -523,21 +524,19 @@ export class CloudflareSandbox
     const prefix = `/${sessionOutputsPrefix(opts.tenantId, opts.sessionId)}`;
     const fuse = this.fuseR2ConfigOrNull();
     if (fuse) {
-      // An R2 key reaches only its own bucket: outputs need the files bucket
-      // and its key (the memory key is AccessDenied there, which the shim
-      // reports as "cannot verify the new FUSE connection").
-      const missing = (["FILES_BUCKET_NAME", "R2_FILES_ACCESS_KEY_ID", "R2_FILES_SECRET_ACCESS_KEY"] as const)
-        .filter((name) => !this.env[name]);
-      if (missing.length > 0) {
-        throw new Error(`Session outputs mount requires ${missing.join(", ")} (the files bucket and its R2 key)`);
+      // A key scoped to another bucket is AccessDenied here, which the shim
+      // reports as "cannot verify the new FUSE connection".
+      if (!this.env.FILES_BUCKET_NAME) {
+        throw new Error("Session outputs mount requires FILES_BUCKET_NAME (the files bucket name)");
       }
+      const credentials = r2FilesCredentials(this.env);
       return {
         bucket: this.env.FILES_BUCKET_NAME!,
         mountPath,
         options: {
           endpoint: fuse.endpoint,
           provider: "r2",
-          credentials: { accessKeyId: this.env.R2_FILES_ACCESS_KEY_ID!, secretAccessKey: this.env.R2_FILES_SECRET_ACCESS_KEY! },
+          credentials,
           prefix,
           readOnly: false,
         },
