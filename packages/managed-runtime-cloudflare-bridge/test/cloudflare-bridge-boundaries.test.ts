@@ -108,6 +108,35 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
     await consumeProcess(processWithEnv);
   });
 
+  it("writes binary Session outputs through exec without broadening file access", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(sseText(`event: exit
+data: {"exit_code":0}
+
+`));
+    const instance = runtime(fetch);
+    await expect(instance.writeFileBytes("/mnt/session/outputs/a b/data.bin", Uint8Array.of(0, 255, 10)))
+      .resolves.toBe("/mnt/session/outputs/a b/data.bin");
+    const body = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    expect(body.argv).toEqual([
+      "sh", "-c", 'mkdir -p -- "$(dirname -- "$2")" && printf %s "$1" | base64 -d > "$2"',
+      "oma-output-write", "AP8K", "/mnt/session/outputs/a b/data.bin",
+    ]);
+    expect(body.cwd).toBe("/workspace");
+    for (const path of ["/mnt/other/file", "/mnt/session/outputs/../secret", "/mnt/session/outputs/"]) {
+      await expect(instance.writeFileBytes(path, Uint8Array.of(1))).rejects.toThrow();
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fetch.mockResolvedValue(sseText(`event: stderr
+data: ZGVuaWVk
+
+event: exit
+data: {"exit_code":1}
+
+`));
+    await expect(instance.writeFileBytes("/mnt/session/outputs/fail", Uint8Array.of(1)))
+      .rejects.toThrow("output write exited with 1: denied");
+  });
+
   it("cleans up the per-process env session when session creation or exec fails", async () => {
     const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([url, init]) => `${init?.method ?? "GET"} ${String(url).replace(/.*\/v1\/sandbox\/[^/]+/, "")}`);
     const createFails = vi.fn<typeof globalThis.fetch>()

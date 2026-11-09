@@ -550,6 +550,23 @@ export class CloudflareBridgeRuntime
   }
 
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
+    if (path.startsWith("/mnt/")) {
+      safeOutputPath(path);
+      // The official file route is workspace-only. Keep the same narrow
+      // Session-output exception as reads, with data/path as argv operands.
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const result = await this.#execute([
+        "sh", "-c", 'mkdir -p -- "$(dirname -- "$2")" && printf %s "$1" | base64 -d > "$2"',
+        "oma-output-write", btoa(binary), path,
+      ], { cwd: "/workspace" });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Cloudflare Bridge output write exited with ${result.exitCode}: ${new TextDecoder().decode(result.stderr)}`,
+        );
+      }
+      return path;
+    }
     const response = await this.#request(`/file/${encodeWorkspacePath(path)}`, {
       method: "PUT",
       headers: { "content-type": "application/octet-stream" },
