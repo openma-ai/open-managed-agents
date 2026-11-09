@@ -136,6 +136,14 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     return { accept, events, projectionCalls, driver };
   }
 
+  it("never persists an empty startup session.error and includes its error cause", async () => {
+    const { accept, events } = startFailureDriver(async () => { throw new Error("", { cause: new TypeError("socket closed") }); });
+    await expect(accept()).rejects.toThrow();
+    const errors = events().filter((event) => event.type === "session.error") as Array<{ error: { message: string } }>;
+    expect(errors.length).toBe(3);
+    for (const { error } of errors) expect(error.message).toBe("sandbox.start: Error: (empty message); caused by TypeError: socket closed");
+  });
+
   it("retries sandbox startup like Claude Managed Agents, then reports exhausted retries and goes idle", async () => {
     let starts = 0;
     const { accept, events, projectionCalls } = startFailureDriver(async () => { starts++; throw new Error("sprite preparation failed"); });

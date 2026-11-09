@@ -1,3 +1,4 @@
+import { sessionErrorMessage } from "@open-managed-agents/session-runtime";
 import type {
   ArchivedSessionThread,
   SessionThreadEventStreamPort,
@@ -586,7 +587,8 @@ export class DefaultNodeManagedSessionRuntimeDriver
         type: "session.error",
         error: {
           type: "unknown_error",
-          message: error instanceof Error ? error.message : String(error),
+          message: error instanceof Error && error.message.trim() !== "" && error.cause === undefined
+            ? error.message : sessionErrorMessage(error, "sandbox.start"),
           retry_status: retryStatus,
         },
         processed_at: this.nextEventStamp(input),
