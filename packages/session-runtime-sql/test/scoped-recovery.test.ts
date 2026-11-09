@@ -47,26 +47,24 @@ function evidenceDecision(record: ExecutionLeaseRecord): CoordinationAction | nu
     ? decideExpiredExecution(record, Date.parse(at(5)))
     : {
         type: "finalize-interrupted", executionId: record.executionId, laneId: record.laneId,
-        reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+        reason: decision.reason,
         attemptCount: record.attemptCount, maxAttempts: record.maxAttempts,
       };
 }
 
-it("canonical recovery interrupts a tool whose outcome is unknown", async () => {
+it("canonical recovery requeues with unknown tool outcome preserved", async () => {
   const { a } = await setup();
   await a.sweepExpired(Date.parse(at(5)), { decideForRecord: evidenceDecision });
-  expect(await a.find({ workspaceId: "w", executionId: "A" })).toMatchObject({ state: "failed" });
+  expect(await a.find({ workspaceId: "w", executionId: "A" })).toMatchObject({ state: "queued" });
 });
 
-it("after the sweep interrupts a dead owner, the Session's latest settled execution carries the failure", async () => {
+it("a recoverable lost owner stays active rather than becoming a terminal failure", async () => {
   const { a } = await setup();
   const scope = { workspaceId: "w", sessionId: "session_a" };
   expect(await a.latestSettled(scope)).toBeNull();
   await a.sweepExpired(Date.parse(at(5)), { decideForRecord: evidenceDecision });
-  expect(await a.listActive(scope)).toEqual([]);
-  expect(await a.latestSettled(scope)).toMatchObject({
-    id: "A", state: "failed", settledAt: at(5), failure: "execution interrupted on unpaired tool call",
-  });
+  expect(await a.listActive(scope)).toMatchObject([{ id: "A", state: "queued" }]);
+  expect(await a.latestSettled(scope)).toBeNull();
   expect(await a.latestSettled({ workspaceId: "w", sessionId: "session_b" })).toBeNull();
 });
 
@@ -85,7 +83,7 @@ it("another session's claim and renew cannot bypass canonical recovery", async (
     decideForRecord(record) { calls++; return evidenceDecision(record); },
   });
   expect(calls).toBe(1);
-  expect(await a.find({ workspaceId: "w", executionId: "A" })).toMatchObject({ state: "failed" });
+  expect(await a.find({ workspaceId: "w", executionId: "A" })).toMatchObject({ state: "queued" });
 });
 
 it("scoped claim cannot take over its own expired execution without recovery", async () => {
@@ -124,7 +122,7 @@ it("explicit recovery can still requeue a provably unapplied input", async () =>
 
 // Full eviction boundary: the old owner cannot renew, canonical tool evidence
 // forbids replay, and the same SQL row feeds the public finalizer.
-it("settles an evicted applied turn with session.error and idle, never running", async () => {
+it("an evicted recoverable turn closes its tool result without terminal events", async () => {
   const { a } = await setup();
   const { finalizeStaleTurns } = await import("../../session-runtime/src/finalize-stale-turns");
   await a.sweepExpired(Date.parse(at(5)), { decideForRecord: evidenceDecision });
@@ -140,9 +138,7 @@ it("settles an evicted applied turn with session.error and idle, never running",
     executions: async () => ({ store: a, workspaceId: "w", sessionId: "session_a" }),
     scheduleGraceRetry: async () => {}, log: () => {},
   });
-  expect(events.map(e => e.type)).toEqual(["agent.tool_result", "session.error", "session.status_idle"]);
-  expect(events[1]).toMatchObject({ error: { retry_status: { type: "exhausted" } } });
-  expect(events[2]).toMatchObject({ stop_reason: { type: "retries_exhausted" } });
-  expect(status.type).toBe("session.status_idle");
-  expect(await a.listActive({ workspaceId: "w", sessionId: "session_a" })).toEqual([]);
+  expect(events.map(e => e.type)).toEqual(["agent.tool_result"]);
+  expect(status.type).toBe("session.status_running");
+  expect(await a.listActive({ workspaceId: "w", sessionId: "session_a" })).toMatchObject([{ id: "A", state: "queued" }]);
 });

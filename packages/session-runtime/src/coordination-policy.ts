@@ -106,7 +106,8 @@ export type LeaseSweepReason =
   /** An unpaired tool call survived the dead owner: interrupt, never rerun. */
   | "unpaired_tool_call"
   /** Nothing was persisted and the single re-dispatch allowance is spent. */
-  | "redispatch_exhausted";
+  | "redispatch_exhausted"
+  | "retries_exhausted";
 
 export type CoordinationAction =
   | {
@@ -298,73 +299,19 @@ export interface CanonicalTurnEvidence {
 }
 
 export type RecoveryStreamDecision =
-  /** Persisted output is complete enough to keep; never rerun it. */
-  | { type: "reuse"; reason: "completed_output"; reuseCompletedOutputs: true }
-  /** Applied but unfinished, or an unpaired tool call: abort, don't rerun. */
-  | {
-      type: "interrupt";
-      reason: "unpaired_tool_call" | "input_applied" | "redispatch_exhausted";
-      reuseCompletedOutputs: boolean;
-    }
-  /** Input provably never applied: safe to re-dispatch once. */
-  | { type: "requeue"; reason: "input_unapplied" };
+  | { type: "requeue"; reason: "continue_from_history" }
+  | { type: "interrupt"; reason: "retries_exhausted"; reuseCompletedOutputs: boolean };
 
-/**
- * Flue-style recovery classification from the canonical event stream.
- *
- *   - a tool call without a durable result is interrupted (an aborted
- *     `agent.tool_result` is appended; the tool is never rerun);
- *   - persisted turn output means the input was applied: reuse it and
- *     interrupt instead of re-dispatching the provider;
- *   - only an input with *no* persisted work is requeued, and only while
- *     the single provider re-dispatch allowance remains.
- */
+/** Durable output is context, not proof of completion. Never rerun tools:
+ * close their unknown outcomes and let the next attempt continue from history. */
 export function decideRecoveryFromCanonicalStream(
   evidence: CanonicalTurnEvidence,
-  options: { maxProviderRedispatches?: number } = {},
+  options: { maxAttempts?: number } = {},
 ): RecoveryStreamDecision {
-  if (!Number.isSafeInteger(evidence.inputAtMs) || evidence.inputAtMs < 0) {
-    throw new Error("inputAtMs must be a non-negative safe integer");
-  }
-  if (!Number.isSafeInteger(evidence.providerDispatches) || evidence.providerDispatches < 0) {
-    throw new Error("providerDispatches must be a non-negative safe integer");
-  }
-  const maxRedispatches = nonNegativeInteger(
-    options.maxProviderRedispatches,
-    1,
-    "maxProviderRedispatches",
-  );
-  const reuseCompletedOutputs = evidence.completedOutputCount > 0;
-
-  if (evidence.unpairedToolUseCount > 0) {
-    return {
-      type: "interrupt",
-      reason: "unpaired_tool_call",
-      reuseCompletedOutputs,
-    };
-  }
-  if (evidence.eventsAfterInput.length === 0) {
-    if (evidence.providerDispatches <= maxRedispatches) {
-      return { type: "requeue", reason: "input_unapplied" };
-    }
-    return {
-      type: "interrupt",
-      reason: "redispatch_exhausted",
-      reuseCompletedOutputs: false,
-    };
-  }
-  if (reuseCompletedOutputs) {
-    return {
-      type: "reuse",
-      reason: "completed_output",
-      reuseCompletedOutputs: true,
-    };
-  }
-  return {
-    type: "interrupt",
-    reason: "input_applied",
-    reuseCompletedOutputs: false,
-  };
+  if (!Number.isSafeInteger(evidence.providerDispatches) || evidence.providerDispatches < 0) throw new Error("Invalid providerDispatches");
+  return evidence.providerDispatches >= (options.maxAttempts ?? 10)
+    ? { type: "interrupt", reason: "retries_exhausted", reuseCompletedOutputs: evidence.completedOutputCount > 0 }
+    : { type: "requeue", reason: "continue_from_history" };
 }
 
 /**

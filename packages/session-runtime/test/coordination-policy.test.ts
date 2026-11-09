@@ -329,46 +329,12 @@ describe("canonical-stream recovery policy", () => {
     };
   }
 
-  it("requeues only when nothing was persisted, and only once", () => {
-    expect(decideRecoveryFromCanonicalStream(evidence()))
-      .toEqual({ type: "requeue", reason: "input_unapplied" });
-    // Second unapplied expiry is the single re-dispatch allowance spent.
-    expect(decideRecoveryFromCanonicalStream(evidence({ providerDispatches: 2 })))
-      .toEqual({
-        type: "interrupt",
-        reason: "redispatch_exhausted",
-        reuseCompletedOutputs: false,
-      });
-    expect(decideRecoveryFromCanonicalStream(
-      evidence({ providerDispatches: 2 }),
-      { maxProviderRedispatches: 2 },
-    )).toEqual({ type: "requeue", reason: "input_unapplied" });
+  it.each([[], [{ type: "agent.tool_use" }], [{ type: "agent.message" }]])("continues canonical history without rerunning tools: %j", eventsAfterInput => {
+    expect(decideRecoveryFromCanonicalStream(evidence({ eventsAfterInput, unpairedToolUseCount: 1, completedOutputCount: 1, providerDispatches: 2 }), { maxAttempts: 3 }))
+      .toMatchObject({ type: "requeue", reason: "continue_from_history" });
   });
-
-  it("interrupts an unpaired tool call instead of rerunning it", () => {
-    expect(decideRecoveryFromCanonicalStream(evidence({
-      eventsAfterInput: [{ type: "agent.tool_use" }],
-      unpairedToolUseCount: 1,
-    }))).toEqual({
-      type: "interrupt",
-      reason: "unpaired_tool_call",
-      reuseCompletedOutputs: false,
-    });
-  });
-
-  it("reuses persisted output after an applied-but-unfinished input", () => {
-    expect(decideRecoveryFromCanonicalStream(evidence({
-      eventsAfterInput: [{ type: "agent.message" }, { type: "agent.tool_result" }],
-      completedOutputCount: 2,
-    }))).toEqual({
-      type: "reuse",
-      reason: "completed_output",
-      reuseCompletedOutputs: true,
-    });
-    // Applied, but only non-output work was persisted: interrupt, don't rerun.
-    expect(decideRecoveryFromCanonicalStream(evidence({
-      eventsAfterInput: [{ type: "agent.tool_use" }],
-      unpairedToolUseCount: 0,
-    }))).toMatchObject({ type: "interrupt", reason: "input_applied" });
+  it("exhausts the execution attempt budget, not an independent redispatch budget", () => {
+    expect(decideRecoveryFromCanonicalStream(evidence({ providerDispatches: 3 }), { maxAttempts: 3 }))
+      .toMatchObject({ type: "interrupt", reason: "retries_exhausted" });
   });
 });

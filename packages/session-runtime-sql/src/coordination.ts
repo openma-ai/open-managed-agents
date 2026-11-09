@@ -1307,8 +1307,8 @@ export class SqlSessionExecutionStore
              interrupt_requested_at_ms = COALESCE(interrupt_requested_at_ms, ?),
              failure = 'interrupted after owner lease expired',
              revision = revision + 1
-       WHERE workspace_id = ? AND session_id = ? AND state = 'running'
-         AND lease_expires_at_ms <= ?
+       WHERE workspace_id = ? AND session_id = ?
+         AND ((state = 'running' AND lease_expires_at_ms <= ?) OR (state = 'queued' AND attempt_count > 0))
          AND (? = 1 OR lane_id = ?)
     `).bind(
       requestedAt,
@@ -1546,7 +1546,7 @@ export class SqlSessionExecutionStore
     }
     if (decision.type === "finalize-interrupted") {
       const deadline = decision.reason === "deadline_exceeded";
-      const exhausted = decision.reason === "lease_expired_attempts_exhausted";
+      const exhausted = decision.reason === "lease_expired_attempts_exhausted" || decision.reason === "retries_exhausted";
       // Stream-decided interrupts (`input_applied` / `unpaired_tool_call` /
       // `redispatch_exhausted`) finalize a still-running, expired owner even
       // when attempt budget remains: rerunning applied work would duplicate

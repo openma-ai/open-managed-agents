@@ -1626,7 +1626,7 @@ describe("SessionDO recovery — DO-level", () => {
     expect(outcomes[1]).toEqual(outcomes[0]);
   });
 
-  it("applied-but-unfinished turn is interrupted from the canonical stream, not requeued", async () => {
+  it("applied-but-unfinished turn requeues and preserves canonical output for continuation", async () => {
     const sessionId = await newSessionDirect("stream_applied");
     const now = Date.now();
     const eventId = `sevt_${crypto.randomUUID()}`;
@@ -1681,8 +1681,8 @@ describe("SessionDO recovery — DO-level", () => {
       `SELECT state, failure FROM managed_session_executions
         WHERE workspace_id='default' AND id=?`,
     ).bind(eventId).first<{ state: string; failure: string }>();
-    expect(execution?.state).toBe("failed");
-    expect(execution?.failure).toBe("execution interrupted after applied input");
+    expect(execution?.state).toBe("queued");
+    expect(execution?.failure).toBe("requeued after owner lease expired");
 
     // Completed output is reused, never duplicated or re-dispatched.
     const ev = await stub.fetch(new Request("http://internal/events"));
@@ -1742,11 +1742,9 @@ describe("SessionDO recovery — DO-level", () => {
       `SELECT state, failure FROM managed_session_executions
         WHERE workspace_id='default' AND id=?`,
     ).bind(eventId).first<{ state: string; failure: string }>();
-    expect(execution?.state).toBe("failed");
-    // The cold-start stream scan pairs the tool_use with a synthetic aborted
-    // result before the sweep decides, so the stream says "applied work was
-    // persisted" — either way it is interrupted, never re-dispatched.
-    expect(execution?.failure).toMatch(/^execution interrupted /);
+    expect(execution?.state).toBe("queued");
+    // Pair the unknown tool outcome, then continue the model from history.
+    expect(execution?.failure).toBe("requeued after owner lease expired");
 
     const ev = await stub.fetch(new Request("http://internal/events"));
     const { data } = await ev.json() as {

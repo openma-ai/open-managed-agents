@@ -76,4 +76,4 @@ export function decodeSessionEventDocument(document: string): {
 
 /** Model-facing result for a dispatched tool whose completion cannot be confirmed.
  * Keep the ordinary tool-result envelope; unknown is not a success or a retry instruction. */
-export const UNKNOWN_TOOL_RESULT_TEXT = "Execution outcome is unknown: execution was interrupted, so completion cannot be confirmed. The operation may have taken effect. Verify the current state before repeating it.";
+export const UNKNOWN_TOOL_RESULT_TEXT = "interrupted: the execution was lost before this tool finished; it was not re-run automatically";

@@ -561,6 +561,16 @@ describe("SqlSessionExecutionCoordinator", () => {
     })).resolves.toEqual({ type: "lost" });
   });
 
+  it("keeps a user interrupt cancelled after sweep requeues and before reclaim", async () => {
+    await coordinator.admit(admitted("execution_01", "session_01", at(1)));
+    await coordinator.claim({ ownerId: "same", attemptId: "a", claimedAt: at(2), leaseTtlMs: 1000 });
+    await coordinator.sweepExpired(Date.parse(at(4)));
+    expect((await coordinator.find({ workspaceId: "workspace_01", executionId: "execution_01" }))?.state).toBe("queued");
+    await coordinator.requestInterrupt({ workspaceId: "workspace_01", sessionId: "session_01", requestedAt: at(5) });
+    expect(await coordinator.claim({ ownerId: "same", attemptId: "b", claimedAt: at(6), leaseTtlMs: 1000 })).toEqual({ type: "empty" });
+    expect((await coordinator.find({ workspaceId: "workspace_01", executionId: "execution_01" }))?.state).toBe("cancelled");
+  });
+
   it("never lets one live worker reclaim its own expired in-flight attempt", async () => {
     await coordinator.admit(admitted("execution_01", "session_01", at(1)));
     await coordinator.claim({
@@ -728,7 +738,7 @@ describe("SqlSessionExecutionCoordinator", () => {
           type: "finalize-interrupted",
           executionId: record.executionId,
           laneId: record.laneId,
-          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          reason: decision.reason,
           attemptCount: record.attemptCount,
           maxAttempts: record.maxAttempts,
         };
@@ -739,16 +749,16 @@ describe("SqlSessionExecutionCoordinator", () => {
       workspaceId: "workspace_01",
       executionId: "applied_stream",
     })).resolves.toMatchObject({
-      state: "failed",
-      failure: "execution interrupted after applied input",
-      settledAt: at(5),
+      state: "queued",
+      failure: "requeued after owner lease expired",
+      settledAt: null,
     });
     await expect(coordinator.claim({
       ownerId: "replacement",
       attemptId: "attempt_replacement",
       claimedAt: at(6),
       leaseTtlMs: 30_000,
-    })).resolves.toEqual({ type: "empty" });
+    })).resolves.toMatchObject({ type: "claimed" });
   });
 
   it("owner dies mid-turn: an unpaired tool call is finalized as interrupted", async () => {
@@ -783,7 +793,7 @@ describe("SqlSessionExecutionCoordinator", () => {
           type: "finalize-interrupted",
           executionId: record.executionId,
           laneId: record.laneId,
-          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          reason: decision.reason,
           attemptCount: record.attemptCount,
           maxAttempts: record.maxAttempts,
         };
@@ -794,9 +804,9 @@ describe("SqlSessionExecutionCoordinator", () => {
       workspaceId: "workspace_01",
       executionId: "unpaired_stream",
     })).resolves.toMatchObject({
-      state: "failed",
-      failure: "execution interrupted on unpaired tool call",
-      settledAt: at(5),
+      state: "queued",
+      failure: "requeued after owner lease expired",
+      settledAt: null,
     });
   });
 
@@ -863,7 +873,7 @@ describe("SqlSessionExecutionCoordinator", () => {
           type: "finalize-interrupted",
           executionId: record.executionId,
           laneId: record.laneId,
-          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          reason: decision.reason,
           attemptCount: record.attemptCount,
           maxAttempts: record.maxAttempts,
         };
@@ -873,8 +883,8 @@ describe("SqlSessionExecutionCoordinator", () => {
       workspaceId: "workspace_01",
       executionId: "unapplied_stream",
     })).resolves.toMatchObject({
-      state: "failed",
-      failure: "execution redispatch limit exhausted",
+      state: "queued",
+      failure: "requeued after owner lease expired",
     });
   });
 

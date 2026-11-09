@@ -1473,3 +1473,23 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     await iteratorB.return?.();
   });
 });
+
+it("reclaimed Node attempt persists interrupted tools before reloading canonical context", async () => {
+  const events: any[] = [{ id: "tool_lost", type: "agent.tool_use", name: "bash", input: {}, processedAt: "2026-01-01T00:00:00Z" }];
+  let accepted: any;
+  const engine = new runtimeModule.ApplicationBackedNodeManagedSessionRuntimeEngine({
+    historyFor: () => ({ loadSessionRuntimeHistory: async () => ({ type: "loaded", initialEvents: [], events: [...events] }) }) as never,
+    runner: { start: async () => {}, stop: async () => {}, archiveThread: async () => {}, accept: async input => { accepted = input; } },
+  });
+  const { decodeRuntimeProducedSessionEvent } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+  await engine.start({ workspaceId: "w", sessionId: "s", session, environment, initialEvents: [] } as never, async frame => {
+    const event = decodeRuntimeProducedSessionEvent(frame);
+    expect(event).not.toBeNull(); events.push(event);
+  });
+  await engine.accept({ workspaceId: "w", sessionId: "s", session, environment, events: [{ id: "input", type: "user.message", content: [] }],
+    executionFence: { ...executionFence, generation: 2 } } as never);
+  expect(accepted.historyEvents).toMatchObject([
+    { id: "tool_lost" }, { type: "agent.tool_result", toolUseId: "tool_lost", isError: true },
+    { type: "session.warning", source: "execution_resumed", details: { attempt: 2, reason: "lease_lost" } },
+  ]);
+});

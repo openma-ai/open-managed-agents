@@ -84,7 +84,7 @@ import {
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
-import { sessionExecutionLeaseTtlMs, decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
+import { executionContinuationEvents, sessionExecutionLeaseTtlMs, decideExpiredExecution, decideLeaseRenewal, decideRecoveryFromCanonicalStream, evaluateCoordinationPolicy, type ActiveTurnRecord, type CanonicalTurnEvidence, type CoordinationAction, type ExecutionLeaseRecord, type QueuedInputRecord, type ScheduleWakeRecord, SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
@@ -2124,7 +2124,7 @@ export class SessionDO extends DurableObject<Env> {
           lost: (execution) => { console.warn(`[drain] execution ${execution.id} lost its lease`); },
         });
       } finally {
-        this._executionActiveLanes.delete(threadId);
+        this._executionActiveLanes.delete(threadId); this._executionFences.delete(threadId);
       }
       return;
     }
@@ -2316,6 +2316,7 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
     try {
+      for (const event of executionContinuationEvents(history.getEvents() as never, { executionId: execution.id, attempt: execution.attemptCount, laneId: threadId })) { executionHistory.append(event as never); this.broadcastEvent(event as never); }
       const broadcastIds = await this.consumeAcceptedInputs(execution.events, execution.id, this.processedClock.nowIso());
       const turnInput = classifyTurnInput(execution.events);
       // user.interrupt is applied on receipt (POST /event), never as an execution.
@@ -7356,15 +7357,15 @@ export class SessionDO extends DurableObject<Env> {
     if (base === null || base.type !== "requeue") return base;
     const evidence = this._canonicalTurnEvidence(record);
     const decision = decideRecoveryFromCanonicalStream(evidence, {
-      maxProviderRedispatches: 1,
+      maxAttempts: record.maxAttempts,
     });
     if (decision.type === "requeue") return base;
-    const reason = decision.type === "reuse" ? "input_applied" : decision.reason;
+    const reason = decision.reason;
     sdoLog("recovery.stream", {
       session_id: this._state?.session_id,
       lane_id: record.laneId ?? "sthr_primary",
       execution_id: record.executionId,
-      decision: decision.type === "reuse" ? "reuse_outputs" : "interrupt",
+      decision: "interrupt",
       reason,
       applied_events: evidence.eventsAfterInput.length,
       completed_outputs: evidence.completedOutputCount,
