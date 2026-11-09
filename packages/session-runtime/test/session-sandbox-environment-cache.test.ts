@@ -33,6 +33,8 @@ function harness(options: {
   noSnapshots?: boolean;
   data?: Map<string, string>;
   publishFails?: () => boolean;
+  publishResponseLost?: boolean;
+  beforeCas?(key: string, value: string | null, map: Map<string, string>): void;
   readFails?: () => boolean;
   buildTimeoutMs?: number;
 } = {}) {
@@ -74,7 +76,7 @@ function harness(options: {
     lifecycle,
     storeFor: (id) => {
       const map = storeOf(id);
-      return { compareAndSwap: async (k, expected, value) => { if (value && JSON.parse(value).state === "ready" && options.publishFails?.()) throw new Error("store put unavailable"); if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); return true; }, get: async (k) => { if (options.readFails?.()) throw new Error("store unavailable"); return map.get(k) ?? null; }, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
+      return { compareAndSwap: async (k, expected, value) => { if (value && JSON.parse(value).state === "ready" && options.publishFails?.()) throw new Error("store put unavailable"); options.beforeCas?.(k, value, map); if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); if (options.publishResponseLost && value && JSON.parse(value).state === "ready") throw new Error("CAS response lost"); return true; }, get: async (k) => { if (options.readFails?.()) throw new Error("store unavailable"); return map.get(k) ?? null; }, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
     },
     restrictEgress: async () => { setups.push("restricted"); await options.restrictEgress?.(); },
     setup: async (_runtime, setup) => { setups.push(setup); await options.setup?.(); },
@@ -287,6 +289,30 @@ describe("EnvironmentCache", () => {
     fail = false;
     await h.session("s2");
     expect(JSON.parse(h.data.get(h.storeKey)!).state).toBe("ready");
+  });
+
+  it("a pre-publication read outage still deletes the unpublished snapshot without another DB read", async () => {
+    let reads = 0;
+    const h = harness({ readFails: () => ++reads >= 3 });
+    await h.session("s1");
+    expect(h.deleted).toHaveLength(1);
+    expect(reasons(h)).toEqual(["snapshot_build_failed"]);
+  });
+
+  it("a committed CAS whose response is lost never deletes the published winner", async () => {
+    const h = harness({ publishResponseLost: true });
+    await h.session("s1");
+    expect(JSON.parse(h.data.get(h.storeKey)!).state).toBe("ready");
+    expect(h.deleted).toEqual([]);
+  });
+
+  it("a failed build preflight read warns the Session instead of silently swallowing it", async () => {
+    let reads = 0;
+    const h = harness({ readFails: () => ++reads === 2 });
+    await h.session("s1");
+    expect(reasons(h)).toEqual(["snapshot_build_failed"]);
+    expect(h.logs).toContain("build_failed");
+    expect(h.builds()).toHaveLength(0);
   });
 
   it("a failed retired read cannot publish a snapshot that drops existing cleanup refs", async () => {

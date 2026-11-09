@@ -281,7 +281,11 @@ export class EnvironmentCache<R, Q> {
     this.#waiters.set(local, waiters);
     waiters.add(pending.warn);
     if (this.#inflight.has(local)) return;
-    const run = this.#runBuild(pending, waiters).catch(() => undefined).finally(() => {
+    const run = this.#runBuild(pending, waiters).catch((error: unknown) => {
+      const text = this.#errorText(error);
+      this.#options.logger.warn({ ...pending.fields, path: "build_failed", error: text }, "Environment cache build preflight failed");
+      for (const warn of waiters) warn({ reason: "snapshot_build_failed", message: "Building the environment cache failed (" + text + "); this Session is unaffected and the next Session tries again." });
+    }).finally(() => {
       this.#inflight.delete(local);
       this.#waiters.delete(local);
     });

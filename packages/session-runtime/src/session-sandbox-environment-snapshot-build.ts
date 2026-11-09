@@ -97,6 +97,7 @@ export async function buildEnvironmentSnapshot<R, Q>(
 
   let builder: Acquired<R> | undefined;
   let unpublished: EnvironmentSnapshotRef | undefined;
+  let publicationUncertain = false;
   const cleanup = async (snapshot: EnvironmentSnapshotRef, publicationUncertain = false) => {
     try {
       // Only a failed CAS response can mean a committed winner. A late result
@@ -151,9 +152,12 @@ export async function buildEnvironmentSnapshot<R, Q>(
     const snapshot = await Promise.race([steps, abortedPromise]);
     unpublished = snapshot;
     const retired = await context.retired(input.store, input.storeKey);
-    const published = await input.store.compareAndSwap(input.storeKey, input.expected, JSON.stringify({
+    const record = JSON.stringify({
       state: "ready", snapshot, createdAtMs: context.now(), ...(retired.length === 0 ? {} : { retired }),
-    } satisfies EnvironmentCacheEntry));
+    } satisfies EnvironmentCacheEntry);
+    publicationUncertain = true;
+    const published = await input.store.compareAndSwap(input.storeKey, input.expected, record);
+    publicationUncertain = false;
     if (!published) {
       await cleanup(snapshot);
       unpublished = undefined;
@@ -163,7 +167,7 @@ export async function buildEnvironmentSnapshot<R, Q>(
     logger.info({ ...fields, path: "build_ok", snapshotRef: snapshot.ref, durationMs: context.now() - startMs }, "Environment snapshot built");
     return { outcome: "built" };
   } catch (error) {
-    if (unpublished !== undefined) await cleanup(unpublished, true);
+    if (unpublished !== undefined) await cleanup(unpublished, publicationUncertain);
     const text = context.errorText(error);
     if (error instanceof BuildAborted) {
       logger.warn({ ...fields, path: "build_failed", reason: "shutdown", error: text, durationMs: context.now() - startMs }, "Environment snapshot build aborted by shutdown");
