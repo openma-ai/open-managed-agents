@@ -255,7 +255,7 @@ async function advanceMessagesTrial(ctx: EvalRunnerContext, runtime: EvalSession
         if (spec.setup_files?.length) await writeSetupFiles(runtime, sessionId, spec.setup_files);
         if (spec.setup_script?.trim()) await execOrThrow(runtime, sessionId, spec.setup_script, 30 * 60 * 1000, "setup_script");
       }
-      trial.message_event_id = await runtime.sendUserMessage(sessionId, spec.messages[0]!);
+      trial.message_event_id = await runtime.sendUserMessage(sessionId, spec.messages[0]!, JSON.stringify(["eval-message", run.id, task.id, trial.trial_index, 0]));
       trial.phase = "agent";
       return true;
     } catch (err) {
@@ -280,7 +280,7 @@ async function advanceMessagesTrial(ctx: EvalRunnerContext, runtime: EvalSession
   const nextIndex = (trial.current_message_index ?? 0) + 1;
   if (nextIndex < spec.messages.length) {
     try {
-      trial.message_event_id = await runtime.sendUserMessage(sessionId, spec.messages[nextIndex]!);
+      trial.message_event_id = await runtime.sendUserMessage(sessionId, spec.messages[nextIndex]!, JSON.stringify(["eval-message", run.id, task.id, trial.trial_index, nextIndex]));
       trial.current_message_index = nextIndex;
     } catch (err) {
       await failMessagesTrial(ctx, runtime, run, task, trial, errorText(err), "failure", now);
