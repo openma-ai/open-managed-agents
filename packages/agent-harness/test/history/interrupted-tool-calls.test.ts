@@ -3,7 +3,7 @@ import { eventsToMessages } from "../../src/history/events-to-messages";
 import { normalizeInterruptedToolCalls } from "../../src/history/interrupted-tool-calls";
 
 describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
-  it.each([{ _queued: true }, { cancelled_at_ms: 1 }])("ignores invisible inputs before pairing real tool results: %j", async (marker) => {
+  it.each([{ _queued: true }, { cancelled_at_ms: 1 }, { processed_at: null }])("ignores invisible inputs before pairing real tool results: %j", async (marker) => {
     const events: any[] = [
       { type: "agent.tool_use", id: "visible-tool", name: "bash", input: {} },
       { type: "user.message", id: "hidden-input", content: [{ type: "text", text: "HIDDEN" }], ...marker },
