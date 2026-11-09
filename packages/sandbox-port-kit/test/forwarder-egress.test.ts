@@ -2,6 +2,8 @@ import { attemptSandboxTokens } from "../../sandbox-gateway/src/attempt-sandbox-
 import { describe, expect, it } from "vitest";
 import type { EgressPolicy } from "@open-managed-agents/sandbox";
 import { createForwarderEgress } from "../src/forwarder-egress";
+import { createSandboxPorts } from "../src/create-sandbox-ports";
+import { attemptOfFence } from "@open-managed-agents/session-runtime/session-sandbox-fence";
 import { repositoryChannels, type FirewallRules } from "../src/firewall";
 import type { SandboxEgressDepsPort, SandboxVendorPort } from "../src/ports";
 
@@ -60,9 +62,11 @@ describe("relay pass binding (design §0.0 rule 10)", () => {
     };
     let issued = 0;
     const holder = attemptSandboxTokens();
-    const egress = createForwarderEgress({ ...vendor([]), asSandboxPort: () => runtime }, {
-      gateway: { ...deps.gateway, issueToken: async ({ attempt, sandbox }) => holder.relayDelivery(attempt!, async () => "token-" + ++issued, sandbox) },
-    });
+    const issue = async () => "token-" + ++issued;
+    const harnessEnv = async () => ({ ANTHROPIC_AUTH_TOKEN: await holder.token(attemptOfFence(fence)!, issue) });
+    const { ports: { egress } } = createSandboxPorts({ name: "consumer-test", lifecycle: {} as never, vendor: { ...vendor([]), asSandboxPort: () => runtime } }, { storage: {} as never, egress: {
+      gateway: { ...deps.gateway, issueToken: async ({ attempt, sandbox }) => holder.relayDelivery(attempt!, issue, sandbox) },
+    } });
     const policy = { ...limited, substitutions: [{ credentialId: "vault:TOKEN", envName: "TOKEN", placeholder: "oma_ph_1", hosts: [], inject: { header: true, body: false } }] };
     const input = { runtime, scope, fence, policy, signal };
     await egress.attach(input);
@@ -70,8 +74,10 @@ describe("relay pass binding (design §0.0 rule 10)", () => {
     await egress.update({ ...input, changedCredentialIds: ["vault:TOKEN"] });
     expect(new Set(bindings)).toEqual(new Set(["token-1"]));
     expect(issued).toBe(1);
+    expect((await harnessEnv()).ANTHROPIC_AUTH_TOKEN).toBe(bindings.at(-1));
     await egress.attach({ ...input, runtime: { ...runtime } });
     expect(bindings.at(-1)).toBe("token-2");
+    expect((await harnessEnv()).ANTHROPIC_AUTH_TOKEN).toBe(bindings.at(-1));
     await egress.attach({ ...input, fence: { ...fence, token: "next-attempt" } });
     expect(bindings.at(-1)).toBe("token-3");
   });

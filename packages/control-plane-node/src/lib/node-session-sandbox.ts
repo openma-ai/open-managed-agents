@@ -107,6 +107,8 @@ export interface NodeSessionSandboxOptions {
   };
   /** The Session's sandbox substitutions (Vault environment_variable / cap_cli placeholders). */
   substitutions(context: NodeSessionSandboxContext): Promise<Substitution[]>;
+  /** Shared token authority, independent of Vault/relay configuration. */
+  token(attempt: SessionExecutionAttemptRef, harness: string | null | undefined, sandbox?: object | string): Promise<string>;
   /** Sandbox token issuer (#561) for an attempt — `harness` is the Session
    * agent's harness name, which fixes the scope — and the control plane's
    * public HTTPS origin; null = not configured. */
@@ -287,11 +289,9 @@ export class NodeSessionSandbox implements SandboxPort {
             gateway: {
               endpoint: { url: options.relay()?.endpoint ?? "https://unavailable.invalid" },
               issueToken: async ({ attempt, sandbox }) => {
-                const relay = options.relay();
-                if (relay === null || !nodeCredentialEgress(relay)) throw new Error(NO_CREDENTIAL_EGRESS);
                 // Warm-up (no attempt): a value every gateway refuses.
                 if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
-                return relay.issue(attempt, this.context.session.agent.openma?.harness, sandbox);
+                return options.token(attempt, this.context.session.agent.openma?.harness, sandbox);
               },
               authenticate: async () => null,
               handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),

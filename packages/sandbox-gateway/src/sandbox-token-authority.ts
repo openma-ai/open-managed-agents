@@ -66,9 +66,9 @@ export interface ExpectedSandboxSession {
   agent: { id: string; version: number };
 }
 
-/** A new token for the running attempt `fence` names; the attempt's other
- * tokens stay valid (the harness env and in-flight forwarder requests keep
- * theirs). `expected` is the ACP pin (Session environment and agent). */
+/** Atomically replace the running attempt's sole token hash: every prior
+ * token is immediately invalid, with no grace period. `expected` is the
+ * ACP pin (Session environment and agent). */
 export async function issueSandboxToken(
   store: SandboxTokenStore,
   fence: SessionExecutionAttemptRef | null | undefined,

@@ -153,6 +153,11 @@ export function createCloudflareSandboxAdapter(input: {
     name: "cloudflare",
     lifecycle,
     vendor: {
+      sandboxIdentity: async runtime => {
+        const incarnation = (await runtime.describeSandbox()).incarnation;
+        if (!incarnation) throw new Error("Sandbox token requires a physical container incarnation");
+        return incarnation;
+      },
       async exec(runtime, cmd, opts) {
         let command = cmd;
         if (opts?.stdin !== undefined) {

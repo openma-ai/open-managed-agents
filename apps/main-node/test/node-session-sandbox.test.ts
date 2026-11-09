@@ -18,7 +18,7 @@ import {
 const IDLE_MS = 60_000;
 const context = {
   workspaceId: "ws_1",
-  session: { id: "sess_1", resources: [], vaultIds: [] },
+  session: { id: "sess_1", resources: [], vaultIds: [], agent: { id: "agent", version: 1 } },
   environment: { id: "env_1", config: { type: "cloud", networking: { type: "unrestricted" } } },
 } as unknown as Parameters<NodeSessionSandboxes["build"]>[0];
 
@@ -73,6 +73,7 @@ function setup(overrides: Partial<NodeSessionSandboxOptions> = {}) {
       },
     },
     substitutions: async () => [],
+    token: async () => "test-token",
     relay: () => null,
     isFenceActive: async () => fenceActive,
     idlePauseMs: IDLE_MS,

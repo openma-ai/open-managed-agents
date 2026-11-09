@@ -34,7 +34,7 @@ export interface SandboxAdapterPort<R> {
 /** The only provider primitives the generic implementations use. */
 export interface SandboxVendorPort<R> {
   /** Physical sandbox identity, stable across wrapper reattachment. */
-  sandboxIdentity?(runtime: R): string;
+  sandboxIdentity?(runtime: R): string | Promise<string>;
   exec(runtime: R, cmd: string, opts?: { stdin?: string; timeoutMs?: number }): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   /** `null` when the file does not exist. */
   readFile(runtime: R, path: string): Promise<Uint8Array | null>;

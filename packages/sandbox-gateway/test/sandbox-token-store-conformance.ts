@@ -258,7 +258,7 @@ export function sandboxTokenStoreConformance(adapterName: string, harness: Sandb
         expect(await verify(f.store, id, kept, "egress", 3)).toBe("rejected");
       }));
 
-    it("race: two re-signs interleave on one attempt — CAS keeps both hashes, both with the attempt's scope", () =>
+    it("race: two re-signs interleave — only the last committed hash remains, with the attempt's scope", () =>
       harness.withStore("race-replace-replace", async (f) => {
         const id = sessionIdOf(f, "s"); await f.seedSession(seed(id));
         const fence = await claim(f, id, "a1", 1);

@@ -68,8 +68,15 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
         ...adapter,
         lifecycle: withSessionContext(adapter.lifecycle, sandbox, deps.session),
         native: { ...adapter.native, egress: () => ({ port: executionEgress(deps) }) },
-      // Both are native, so the generic implementations' deps are never read.
-      }, { storage: {} as never, egress: {} as never });
+      }, { storage: {} as never, egress: { gateway: {
+        endpoint: { url: deps.env.PUBLIC_BASE_URL ?? "https://unconfigured.invalid" },
+        issueToken: ({ attempt, sandbox }) => {
+          if (attempt === null) throw new Error("Sandbox token requires a running attempt");
+          return deps.relayToken(attempt, sandbox);
+        },
+        authenticate: async () => null,
+        handle: async () => new Response(null, { status: 404 }),
+      } } });
       return { ports };
     },
     executor: () => sandbox,

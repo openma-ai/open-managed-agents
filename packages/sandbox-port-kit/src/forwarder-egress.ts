@@ -63,7 +63,7 @@ export function createForwarderEgress<R extends object>(
         vaultIds: [...new Set(substitutions.map((item) => item.credentialId))],
       },
       relay: { endpoint: deps.gateway.endpoint.url },
-      issueToken: () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence), sandbox: vendor.sandboxIdentity?.(input.runtime) ?? input.runtime }),
+      issueToken: async () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence), sandbox: await vendor.sandboxIdentity?.(input.runtime) ?? input.runtime }),
       placeholders: async () => placeholders,
     });
     input.signal.throwIfAborted();

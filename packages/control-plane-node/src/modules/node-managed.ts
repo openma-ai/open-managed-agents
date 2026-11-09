@@ -297,6 +297,7 @@ export async function createManagedNodeRuntime(
     // Vault environment_variable / cap_cli credentials reach the sandbox only
     // as placeholders (design §0.5, §8.8): the relay substitutes them.
     substitutions: (context) => repositoryEgress.substitutions(context, () => managedCredentialResolver),
+    token: (attempt, harness, sandbox) => managedAcpCapabilities.issueEgress(attempt, harness, sandbox),
     relay: () => !platformRootSecret || !config.http.publicBaseUrl ? null
       : { issue: (attempt, harness, sandbox) => managedAcpCapabilities.issueEgress(attempt, harness, sandbox), endpoint: config.http.publicBaseUrl },
     isFenceActive: isManagedSessionExecutionFenceActive,

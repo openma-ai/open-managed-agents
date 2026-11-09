@@ -9,7 +9,8 @@
 //     HTTPS /v1/oma/egress ingress with a sandbox token (#561) bound to the
 //     Session execution attempt (design §0.0 rule 10; none between turns):
 //     SessionDO's relayToken, the attempt's one token (shared with an
-//     in-sandbox harness) on the first delivery, a re-sign after. Real
+//     in-sandbox consumer), reused on the same physical sandbox and rotated
+//     immediately on rebuild, even without Vault or a relay. Real
 //     credentials never enter the sandbox. The token does not expire on its
 //     own (it dies with the attempt), so egress is re-attached only when the
 //     attempt changes (execution) or after a revoke;
@@ -228,7 +229,6 @@ export function createE2BSessionSandbox(input: {
             // token, its scope and the Session itself.
             endpoint: { url: gateway ?? "https://egress-unconfigured.invalid" },
             issueToken: async ({ attempt, sandbox }) => {
-              if (gateway === undefined) throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PUBLIC_BASE_URL");
               // Warm-up (no attempt): a value the gateway always refuses.
               if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
               return input.relayToken(attempt, sandbox);
