@@ -37,7 +37,17 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
 
   async exec(command: string, timeout?: number): Promise<string> { return this.call((e) => e.exec(command, timeout)); }
   startProcess(command: string) { return this.call((e) => e.startProcess(command)); }
-  spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> { return this.call((e) => e.spawnDuplexProcess(spec)); }
+  /** Counted until it exits: it changes the sandbox without calls (session-sandbox-snapshot). */
+  spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> {
+    const state = this.state;
+    return this.call(async (e) => {
+      const process = await e.spawnDuplexProcess(spec);
+      state.liveProcesses += 1;
+      const exited = () => { state.liveProcesses -= 1; };
+      process.exited.then(exited, exited);
+      return process;
+    });
+  }
   readFile(path: string) { return this.call((e) => e.readFile(path), false); }
   writeFile(path: string, content: string) { return this.call((e) => e.writeFile(path, content)); }
   writeFileBytes(path: string, bytes: Uint8Array) { return this.call((e) => e.writeFileBytes(path, bytes)); }

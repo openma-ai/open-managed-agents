@@ -46,9 +46,11 @@ export function renewAtExecBoundary<R>(state: LiveSessionSandbox<R>, open: OpenS
   })().finally(() => { state.maintaining = null; });
 }
 
-/** The host's heartbeat: renewLease on the open sandbox while an execution
- * holds it. Between executions, or with nothing open, it does nothing: a
- * recorded or paused sandbox is not attached and not kept alive. */
+/** The host's heartbeat while an execution holds the open sandbox: keepAlive,
+ * then the exec-boundary renewals (a long tool call makes no boundary; the
+ * Cloudflare alarm is the only clock). Between executions, or with nothing
+ * open, it does nothing: a recorded or paused sandbox is not attached and
+ * not kept alive (design §0.0b A.10). */
 export async function renewActivityTimeout<R>(state: LiveSessionSandbox<R>): Promise<void> {
   await state.quiesce();
   const open = state.current;
@@ -57,7 +59,9 @@ export async function renewActivityTimeout<R>(state: LiveSessionSandbox<R>): Pro
     await renewLease(state, open);
   } catch (error) {
     if (!(error instanceof SandboxGoneError)) throw error;
+    return;
   }
+  await renewAtExecBoundary(state, open);
 }
 
 /** sandbox.keepAlive inside an execution only; between executions the

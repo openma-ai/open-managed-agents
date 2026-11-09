@@ -7,6 +7,8 @@ import type { SessionSandboxExecution, SessionSandboxExecutor } from "../src/ses
 import { initialSandboxState, type SessionSandboxState } from "../src/session-sandbox-state";
 
 export const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
+/** The tool-call-gap snapshot interval of a fake with `snapshots`. */
+export const SNAPSHOT_EVERY_MS = 60_000;
 export const attempt: SessionSandboxExecution = { executionId: "exec_1", attemptId: "att_1", ownerId: "owner_1", generation: 3, expiresAt: "2030-01-01T00:00:00.000Z" };
 
 /** A record of a Session whose sandbox `runtimeId` is running. */
@@ -23,6 +25,10 @@ export function fakeSessionSandbox(opts: {
   attachGone?: boolean;
   /** Runs inside egress.attach (after it is logged): gate it, or issue a real token. */
   egressAttach?: (fence: unknown) => Promise<void>;
+  /** The adapter takes snapshots (checkpoint:snap-N); tool-call-gap snapshots every SNAPSHOT_EVERY_MS. */
+  snapshots?: boolean;
+  /** Refs resume starts a sandbox from (runtimeId from-<ref>); any other ref is gone. */
+  resumable?: string[];
 } = {}) {
   const log: string[] = [];
   const fences: unknown[] = [];
@@ -34,6 +40,9 @@ export function fakeSessionSandbox(opts: {
   let execution: SessionSandboxExecution | undefined = attempt;
   let current = true;
   let acquired = 0;
+  let snapshots = 0;
+  /** Exits every duplex process started so far. */
+  const exits: Array<() => void> = [];
   const executor = {
     async exec(command: string) {
       const written = /^echo (\S+) > /.exec(command);
@@ -43,6 +52,11 @@ export function fakeSessionSandbox(opts: {
       return "exit=0\n";
     },
     async setEnvVars() {},
+    async readFile(path: string) { log.push(`read:${path}`); return ""; },
+    async spawnDuplexProcess({ command }: { command: string }) {
+      log.push(`spawn:${command}`);
+      return { exited: new Promise((resolve) => { exits.push(() => resolve({ code: 0, signal: null })); }) };
+    },
   } as unknown as SessionSandboxExecutor;
   const ports = {
     sandbox: {
@@ -52,7 +66,10 @@ export function fakeSessionSandbox(opts: {
         log.push(`attach:${handle.runtimeId}`);
         return opts.attachGone === true ? "gone" : { runtime: {}, handle };
       },
-      async resume({ ref }: { ref: { ref: string } }) { log.push(`resume:${ref.ref}`); return "gone"; },
+      async resume({ ref }: { ref: { ref: string } }) {
+        log.push(`resume:${ref.ref}`);
+        return opts.resumable?.includes(ref.ref) === true ? { runtime: {}, handle: { provider: "fake", runtimeId: `from-${ref.ref}` } } : "gone";
+      },
       async acquire() {
         acquired += 1;
         log.push("acquire");
@@ -62,6 +79,9 @@ export function fakeSessionSandbox(opts: {
       async release({ handle }: { handle: { runtimeId: string } }) { log.push(`release:${handle.runtimeId}`); },
       async discard({ ref }: { ref: { ref: string } }) { log.push(`discard:${ref.ref}`); },
       async keepAlive() { log.push("keepAlive"); return opts.keepAliveGone === true ? "gone" : "alive"; },
+      ...(opts.snapshots === true ? {
+        async checkpoint() { snapshots += 1; log.push(`checkpoint:snap-${snapshots}`); return { provider: "fake", ref: `snap-${snapshots}`, kind: "snapshot" }; },
+      } : {}),
     },
     storage: {
       async attach({ fence }: { fence: unknown }) { log.push("storage.attach"); fences.push(fence); },
@@ -96,6 +116,7 @@ export function fakeSessionSandbox(opts: {
     execution: () => execution,
     isCurrent: async () => current,
     ...(opts.keepAliveMs === undefined ? {} : { keepAliveMs: opts.keepAliveMs }),
+    ...(opts.snapshots === true ? { snapshotIntervalMs: SNAPSHOT_EVERY_MS } : {}),
     idle: {
       pauseMs: 300_000,
       schedule: (delayMs) => { timers.push(`schedule:${delayMs}`); },
@@ -108,5 +129,6 @@ export function fakeSessionSandbox(opts: {
     advance: (ms: number) => { now += ms; },
     setExecution: (next: SessionSandboxExecution | undefined) => { execution = next; },
     loseFence: () => { current = false; },
+    exitProcesses: () => { for (const exit of exits.splice(0)) exit(); },
   };
 }

@@ -4,7 +4,8 @@
 // started again from the latest snapshot instead.
 //
 // When: only after a call that may change the sandbox ran since the last
-// snapshot (exec, process start, file writes; reads do not count), at every
+// snapshot (exec, process start, file writes; reads do not count) or while a
+// duplex process it started (an ACP harness child) is alive, at every
 // execution end, before the idle pause, and in a tool-call gap (the model is
 // thinking) at most every `snapshotIntervalMs` (default SNAPSHOT_INTERVAL_MS);
 // calls wait for a gap snapshot in progress.
@@ -52,8 +53,9 @@ export async function takeSnapshot<R>(
   if (!state.dirty || state.snapshotsUnsupported) return expected;
   const { ports } = await state.compose();
   const scope = state.scope();
-  // Calls during the snapshot mark the sandbox changed again.
-  state.dirty = false;
+  // Calls during the snapshot mark the sandbox changed again; a live duplex
+  // process keeps changing it after the snapshot.
+  state.dirty = state.liveProcesses > 0;
   const started = state.now();
   let ref: ResumeRef;
   try {

@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
 import { SessionSandboxFenceLostError } from "../src/session-sandbox-fence";
+import { SandboxRestoreError } from "../src/session-sandbox-open";
 import type { SessionSandboxExecutor } from "../src/session-sandbox-options";
-import type { SessionSandboxState } from "../src/session-sandbox-state";
+import { initialSandboxState, type SessionSandboxState } from "../src/session-sandbox-state";
 import { attempt, fakeSessionSandbox, runningRecord } from "./fake-session-sandbox-ports";
 
 // Opening the Session's sandbox (research/sandbox-sdk-v2-design.md §0.1
@@ -16,6 +17,70 @@ describe("Session sandbox open under the fence", () => {
     await expect(h.sandbox.exec("first")).rejects.toBeInstanceOf(SessionSandboxFenceLostError);
     expect(h.log).toEqual(["acquire", "release:r1"]);
     expect(h.stored()).toBeUndefined();
+  });
+});
+
+describe("Session sandbox recovery order (design §0.0b A.4)", () => {
+  const snap0 = { provider: "fake", ref: "snap-0", kind: "snapshot" as const };
+  const latest = { status: "taken" as const, ref: snap0 };
+  const paused = (): SessionSandboxState => ({
+    ...initialSandboxState(), phase: "paused", handle: { provider: "fake", runtimeId: "r0" },
+    pauseRef: { provider: "fake", ref: "pause-r0", kind: "self" }, latestSnapshot: latest, version: 4,
+  });
+
+  it("the recorded handle first: a sandbox still there is reused, nothing resumed or acquired", async () => {
+    const h = fakeSessionSandbox({ saved: runningRecord("r0", { latestSnapshot: latest, version: 4 }) });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
+  });
+
+  it("handle gone: the pause point is resumed", async () => {
+    const h = fakeSessionSandbox({ saved: paused(), attachGone: true, resumable: ["pause-r0"] });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "egress.attach", "exec:x"]);
+    expect(h.stored()).toMatchObject({ phase: "running", handle: { runtimeId: "from-pause-r0" }, latestSnapshot: latest });
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
+  });
+
+  it("pause point gone too: a new sandbox from the latest snapshot, not an error", async () => {
+    const h = fakeSessionSandbox({ saved: paused(), attachGone: true, resumable: ["snap-0"] });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0", "egress.attach", "exec:x"]);
+    expect(h.stored()).toMatchObject({ phase: "running", handle: { runtimeId: "from-snap-0" }, latestSnapshot: latest });
+    expect(h.sandbox.restoredFromSnapshot()).toBe(true);
+    expect(h.log).not.toContain("acquire");
+  });
+
+  it("the latest snapshot gone too: SandboxRestoreError, never an empty sandbox; the record forgets the handle", async () => {
+    const h = fakeSessionSandbox({ saved: paused(), attachGone: true });
+    await expect(h.sandbox.exec("x")).rejects.toBeInstanceOf(SandboxRestoreError);
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0"]);
+    expect(h.stored()).toMatchObject({ phase: "lost", latestSnapshot: latest });
+  });
+
+  it("a changed sandbox whose snapshot failed (missing): SandboxRestoreError, nothing acquired", async () => {
+    const h = fakeSessionSandbox({ saved: runningRecord("r0", { latestSnapshot: { status: "missing" }, version: 4 }), attachGone: true });
+    await expect(h.sandbox.exec("x")).rejects.toThrow("there is no snapshot to start it from");
+    expect(h.log).toEqual(["attach:r0", "release:r0"]);
+  });
+
+  it("nothing ever published (or no snapshots in the adapter): a new sandbox, with a warning", async () => {
+    const h = fakeSessionSandbox({ saved: runningRecord("r0", { version: 4 }), attachGone: true });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "acquire", "egress.attach", "exec:x"]);
+    expect(h.warnings.some((w) => w.startsWith("sandbox_started_empty"))).toBe(true);
+  });
+
+  it("a sandbox with no handle to find again (A.7): every open, in every process, starts from the latest snapshot", async () => {
+    const first = fakeSessionSandbox({ saved: runningRecord("r0", { latestSnapshot: latest, version: 4 }), attachGone: true, resumable: ["snap-0"] });
+    await first.sandbox.exec("x");
+    expect(first.log).toEqual(["attach:r0", "release:r0", "resume:snap-0", "egress.attach", "exec:x"]);
+    // A new process with the persisted record: the handle cannot be found again either.
+    const second = fakeSessionSandbox({ saved: first.stored(), attachGone: true, resumable: ["snap-0"] });
+    await second.sandbox.exec("y");
+    expect(second.log).toEqual(["attach:from-snap-0", "release:from-snap-0", "resume:snap-0", "egress.attach", "exec:y"]);
+    expect(second.sandbox.restoredFromSnapshot()).toBe(true);
   });
 });
 

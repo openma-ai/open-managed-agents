@@ -43,6 +43,9 @@ export class LiveSessionSandbox<R> {
   restored = false;
   /** A call that may change the sandbox ran since the last snapshot. */
   dirty = false;
+  /** Duplex processes (an ACP harness child) started and not yet exited: they
+   * change the sandbox without a call the core sees, so it stays changed. */
+  liveProcesses = 0;
   /** The adapter's checkpoint returned the sandbox itself: it has no snapshots
    * (a bare v1 factory), so none are attempted again in this instance. */
   snapshotsUnsupported = false;
