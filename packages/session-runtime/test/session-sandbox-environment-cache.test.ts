@@ -211,7 +211,7 @@ describe("EnvironmentCache", () => {
     expect(h.sessionFroms().at(-1)).toEqual(snapshotFrom(rebuilt));
   });
 
-  it("a transient start failure keeps the record, warns and does not build; three in a row count as gone", async () => {
+  it("repeated transient 503 failures preserve the valid ref and never rebuild", async () => {
     let failing = false;
     const h = harness({ acquire: (from) => failing && "environmentSnapshot" in from ? new Error("503") : undefined });
     await h.session("s1");
@@ -222,8 +222,9 @@ describe("EnvironmentCache", () => {
     expect(h.builds()).toHaveLength(1);
     expect(reasons(h)).toEqual(["snapshot_start_failed", "snapshot_start_failed"]);
     await h.session("s4");
-    expect(reasons(h).at(-1)).toBe("snapshot_gone");
-    expect(h.builds()).toHaveLength(2);
+    expect(reasons(h).at(-1)).toBe("snapshot_start_failed");
+    expect(h.builds()).toHaveLength(1);
+    expect(JSON.parse(h.data.get(h.storeKey)!).state).toBe("ready");
   });
 
   it("snapshot failure: the Session is fine, every waiter is warned, nothing is recorded and the next Session retries", async () => {

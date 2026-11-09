@@ -42,8 +42,6 @@ export const ENVIRONMENT_CACHE_USED_TTL_MS = 14 * 24 * 60 * 60_000;
 /** A hit renews the used window; the store is written at most this often. */
 const USAGE_RECORD_INTERVAL_MS = 60 * 60_000;
 const DEFAULT_DISPOSE_TIMEOUT_MS = 10_000;
-/** Consecutive failures to start from one snapshot that count as "ref gone". */
-const HIT_FAILURES_BEFORE_GONE = 3;
 /** A Session that never finished its install does not keep its pending build. */
 const PENDING_BUILD_MAX_AGE_MS = 60 * 60_000;
 /** A stored record before validation. */
@@ -235,15 +233,10 @@ export class EnvironmentCache<R, Q> {
         const text = this.#errorText(error);
         const previous = this.#hitFailures.get(local);
         const count = (previous?.ref === snapshot.ref ? previous.count : 0) + 1;
-        if (count >= HIT_FAILURES_BEFORE_GONE) {
-          // A permanent error that is not "not found" would keep a dead ref forever.
-          await gone(count + " consecutive failures: " + text);
-        } else {
-          this.#hitFailures.set(local, { ref: snapshot.ref, count });
-          build = false;
-          logger.warn({ ...fields, path: "start_failed", snapshotRef: snapshot.ref, consecutiveFailures: count, error: text, durationMs: this.#now() - startMs }, "Starting from the environment snapshot failed; starting from the image");
-          warn({ reason: "snapshot_start_failed", message: "Starting from the cached environment failed (" + text + "); packages are installed in this Session." });
-        }
+        this.#hitFailures.set(local, { ref: snapshot.ref, count });
+        build = false;
+        logger.warn({ ...fields, path: "start_failed", snapshotRef: snapshot.ref, consecutiveFailures: count, error: text, durationMs: this.#now() - startMs }, "Starting from the environment snapshot failed; starting from the image");
+        warn({ reason: "snapshot_start_failed", message: "Starting from the cached environment failed (" + text + "); packages are installed in this Session." });
       }
     }
 
