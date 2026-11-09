@@ -289,6 +289,15 @@ describe("EnvironmentCache", () => {
     expect(JSON.parse(h.data.get(h.storeKey)!).state).toBe("ready");
   });
 
+  it("a failed retired read cannot publish a snapshot that drops existing cleanup refs", async () => {
+    let reads = 0;
+    const h = harness({ readFails: () => ++reads === 3, deleteSnapshot: async () => { throw new Error("in use"); } });
+    h.data.set(h.storeKey, JSON.stringify({ state: "retired", retired: [{ adapter: "fake", ref: "older" }] }));
+    await h.session("s1");
+    expect(JSON.parse(h.data.get(h.storeKey)!).retired).toEqual(expect.arrayContaining([{ adapter: "fake", ref: "older" }]));
+    expect(reasons(h)).toContain("snapshot_build_failed");
+  });
+
   it("a late unpublished snapshot still attempts provider deletion during a store outage", async () => {
     let finish!: (ref: EnvironmentSnapshotRef) => void;
     let down = false;

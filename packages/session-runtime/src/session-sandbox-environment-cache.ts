@@ -181,7 +181,7 @@ export class EnvironmentCache<R, Q> {
         throw new Error("Environment snapshot cleanup CAS contention");
       },
       retired: async (store, storeKey) => {
-        const raw = await store.get(storeKey).catch(() => null);
+        const raw = await store.get(storeKey);
         return this.#retire(this.#records(raw).retired, {});
       },
     };
