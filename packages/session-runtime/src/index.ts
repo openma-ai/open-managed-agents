@@ -65,6 +65,7 @@ export {
 
 export { SessionSandboxRuntime, type SessionSandboxMode } from "./session-sandbox";
 export { PortsSessionSandbox } from "./ports-session-sandbox";
+export { sessionSandboxWarningEvent } from "./session-warning";
 export type {
   PortsSessionSandboxOptions,
   SessionSandboxExecution,
