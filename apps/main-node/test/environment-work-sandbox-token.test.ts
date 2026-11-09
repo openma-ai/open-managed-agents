@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { createBetterSqlite3SqlClient, type SqlClient } from "@open-managed-agents/sql-client";
 import { createAuthMiddleware } from "../../../packages/auth/src/index";
+import { isCurrentEnvironmentWorkClaim } from "../../../packages/environment-work-store/src/index";
 import { SqlEnvironmentWorkStore } from "../../../packages/environment-work-store-sql/src/index";
 import { EnvironmentWorkApplicationService } from "../../../packages/managed-agents-application/src/environment-work/application";
 import { issueSandboxToken, sandboxTokenAuthDecision } from "../../../packages/sandbox-gateway/src/index";
@@ -90,8 +91,8 @@ async function fixture() {
   hono.all("*", (c) => c.json({ credential: c.get("auth_credential" as never) ?? null }));
   const status = async (token: string) =>
     (await hono.request(mcp, { method: "POST", headers: { authorization: `Bearer ${token}` } })).status;
-  const claim = async () => {
-    const polled = await work.pollEnvironmentWork({ environmentId, reclaimOlderThanMilliseconds: 0, workerId: "worker" });
+  const claim = async (workerId = "worker") => {
+    const polled = await work.pollEnvironmentWork({ environmentId, reclaimOlderThanMilliseconds: 0, workerId });
     if (polled.type !== "work") throw new Error("expected a claim");
     const stored = (await store.find({ workspaceId, environmentId, workId }))!;
     return stored.claim!.generation;
@@ -119,28 +120,42 @@ describe("self-hosted sandbox token follows the Environment Work claim", () => {
     expect(await f.status(token)).toBe(200); // the heartbeat extended the claim's lease
   });
 
-  it("returns 401 for the token once the Work heartbeat answers 412 (lease expired)", async () => {
-    const f = await fixture();
-    const token = await f.issue(await f.claim());
-    await f.ack();
-    expect(await f.status(token)).toBe(200);
-    f.clock.now += 90_000;
-    await expect(f.work.heartbeatEnvironmentWork({ environmentId, workId }))
-      .resolves.toMatchObject({ type: "precondition_failed" });
-    expect(await f.status(token)).toBe(401);
-  });
-
-  it("returns 401 for the old token after another worker reclaims; the new claim signs a new token", async () => {
+  it("returns 401 for the token once the Work heartbeat answers 412 (lease expired); the re-claim signs a working token", async () => {
     const f = await fixture();
     const first = await f.claim();
     const old = await f.issue(first);
     await f.ack();
-    f.clock.now += 90_001;
-    const second = await f.claim();
+    expect(await f.status(old)).toBe(200);
+    f.clock.now += 90_000;
+    await expect(f.work.heartbeatEnvironmentWork({ environmentId, workId }))
+      .resolves.toMatchObject({ type: "precondition_failed" });
+    expect(await f.status(old)).toBe(401);
+    const second = await f.claim("worker-b");
     expect(second).toBe(first + 1);
+    await expect(f.issue(first)).rejects.toThrow(/stale/u);
+    const current = await f.issue(second);
+    await f.ack();
+    expect(await f.status(current)).toBe(200);
+    expect(await f.status(old)).toBe(401);
+  });
+
+  it("returns 401 for the old token after another worker reclaims; the new claim signs a new token", async () => {
+    const f = await fixture();
+    const first = await f.claim("worker-a");
+    const old = await f.issue(first);
+    await f.ack();
+    f.clock.now += 90_001;
+    const second = await f.claim("worker-b");
+    expect(second).toBe(first + 1);
+    expect((await f.store.find({ workspaceId, environmentId, workId }))!.claim!.workerId).toBe("worker-b");
     // Rewind inside the old lease window: the reclaim alone revokes it.
     f.clock.now -= 60_000;
     expect(await f.status(old)).toBe(401);
+    // The previous holder's Work bearer is fenced from the Work API as well.
+    await expect(isCurrentEnvironmentWorkClaim({ store: f.store, now: () => new Date(f.clock.now) }, {
+      workspaceId, environmentId, sessionId, workId, claimedAt: "", generation: first, token: "work-bearer",
+      method: "POST", path: `/v1/environments/${environmentId}/work/${workId}/heartbeat`,
+    })).resolves.toBe(false);
     await expect(f.issue(first)).rejects.toThrow(/stale/u);
     const current = await f.issue(second);
     await f.ack();
