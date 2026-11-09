@@ -52,10 +52,14 @@ try{
   let killed=false,completed=false,seen=[];
   for(let i=0;i<160;i++){
    await sleep(3000);seen=(await events(sid)).slice(before);
-   if(!killed&&seen.some(e=>e.type==='agent.tool_use')){
+   if(!killed&&context(seen).some(e=>e.details?.state==='started')){
     const boxes=await sessionSandboxes(sid);if(!boxes[0])throw Error('No in-flight box to kill');
-    save(kind+'-inflight-before-kill',{sid,at:new Date().toISOString(),box:boxes[0],events:seen});
-    await Sandbox.kill(boxes[0].sandboxId,{apiKey:e2bSecret});killed=true;
+    const box=await Sandbox.connect(boxes[0].sandboxId,{apiKey:e2bSecret});
+    const active=await box.commands.run('pgrep -x sleep',{user:'root'}).catch(()=>null);
+    if(active?.exitCode===0&&active.stdout.trim()){
+     save(kind+'-inflight-before-kill',{sid,at:new Date().toISOString(),box:boxes[0],sleepPids:active.stdout.trim(),events:seen});
+     await Sandbox.kill(boxes[0].sandboxId,{apiKey:e2bSecret});killed=true;
+    }
    }
    if(killed&&seen.some(e=>e.type==='session.status_idle')){completed=true;break;}
   }
