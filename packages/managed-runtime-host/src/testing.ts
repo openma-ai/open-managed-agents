@@ -47,7 +47,10 @@ function sameRuntimeCheckpoint(
   left: RuntimeResourcePublication["runtimeCheckpoint"],
   right: RuntimeResourcePublication["runtimeCheckpoint"],
 ): boolean {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  // An omitted checkpoint differs from an explicit null, as in the SQL Port's
+  // stable-JSON comparison of the publication fields.
+  return (left === undefined) === (right === undefined)
+    && JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
 /**
@@ -67,12 +70,13 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
     this.#ttlMs = options.ttlMs ?? 90_000;
   }
 
-  /** A worker claims the Work (first claim or reclaim). */
-  claim(scope: RuntimeResourceScope): EnvironmentWorkClaim {
+  /** A worker claims the Work (first claim or reclaim). `token` stands in
+   * for the Work's sessions_token when a test serves a real Work secret. */
+  claim(scope: RuntimeResourceScope, token?: string): EnvironmentWorkClaim {
     const key = scopeKey(scope);
     const record = this.#records.get(key);
     const generation = (record?.generation ?? 0) + 1;
-    const token = `work-token-${generation}`;
+    token ??= `work-token-${generation}`;
     this.#records.set(key, {
       generation,
       token,
