@@ -1,3 +1,4 @@
+import { sessionExecutionLeaseTtlMs } from "./execution-config";
 import type {
   ClaimSessionExecutionResult,
   SessionExecution,
@@ -69,12 +70,13 @@ function asError(error: unknown): Error {
  * authority after the store rejects the fence.
  */
 export class SessionExecutionHost {
+  readonly #liveAttemptIds = new Set<string>();
   readonly #leaseTtlMs: number;
   readonly #heartbeatIntervalMs: number;
 
   constructor(private readonly dependencies: SessionExecutionHostDependencies) {
-    this.#leaseTtlMs = dependencies.leaseTtlMs ?? 30_000;
-    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? 10_000;
+    this.#leaseTtlMs = sessionExecutionLeaseTtlMs(dependencies.leaseTtlMs);
+    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? Math.floor(this.#leaseTtlMs / 3);
     if (!Number.isSafeInteger(this.#leaseTtlMs) || this.#leaseTtlMs <= 0) {
       throw new Error("Session Execution leaseTtlMs must be a positive integer");
     }
@@ -93,13 +95,16 @@ export class SessionExecutionHost {
       ...this.dependencies.scope,
       ...(options.continuationsOnly ? { continuationsOnly: true } : {}),
       ownerId: this.dependencies.ownerId,
+      excludeAttemptIds: [...this.#liveAttemptIds],
       attemptId: this.dependencies.ids.nextAttemptId(),
       claimedAt: this.dependencies.clock.now().toISOString(),
       leaseTtlMs: this.#leaseTtlMs,
     });
     if (claimed.type === "empty") return { type: "empty" };
     this.dependencies.onFenceChanged?.(claimed.fence);
-    return this.#runClaimed(claimed, run);
+    this.#liveAttemptIds.add(claimed.fence.attemptId);
+    try { return await this.#runClaimed(claimed, run); }
+    finally { this.#liveAttemptIds.delete(claimed.fence.attemptId); }
   }
 
   /**
@@ -129,6 +134,8 @@ export class SessionExecutionHost {
   ): Promise<SessionExecutionHostResult> {
     const lease = new ExecutionLeaseController({
       fence: claimed.fence,
+      now: () => this.dependencies.clock.now().getTime(),
+      leaseExpiresAt: fence => Date.parse(fence.expiresAt),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       ...(this.dependencies.timers === undefined
         ? {}
@@ -155,7 +162,7 @@ export class SessionExecutionHost {
               : { reason: new Error("session execution interrupted") }),
           };
         } catch (error) {
-          return { type: "lost" as const, reason: asError(error) };
+          return { type: "retry" as const, error: asError(error) };
         }
       },
       onFenceChanged: this.dependencies.onFenceChanged,

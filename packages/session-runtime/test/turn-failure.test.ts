@@ -4,10 +4,41 @@ import {
   isTurnCancellationError,
   planTurnFailure,
   reportTurnFailure,
+  runTurnAttempts,
   settleTurnFailure,
+  settleDeadExecutionFailure,
   type PlanTurnFailureInput,
   type TurnFailurePlan,
 } from "../src/turn-failure";
+
+it.each(["session.error", "session.status_idle"])("durably retries dead execution settlement after %s fails", async failType => {
+  const events: Array<{ id?: string; type: string }> = [];
+  let fail = true;
+  const port = {
+    hasEvent: async (id: string) => events.some(e => e.id === id),
+    append: async (event: { id?: string; type: string }) => {
+      if (fail && event.type === failType) { fail = false; throw new Error("disk"); }
+      events.push(event);
+    },
+    broadcast: () => {},
+  };
+  const failure = { executionId: "dead", attempt: 2, message: "expired" };
+  await expect(settleDeadExecutionFailure(failure, port)).rejects.toThrow("disk");
+  await settleDeadExecutionFailure(failure, port);
+  await settleDeadExecutionFailure(failure, port);
+  expect(events.map(e => e.type)).toEqual(["session.error", "session.status_idle"]);
+});
+
+it("stops dead-owner settlement immediately when its atomic attempt check rejects", async () => {
+  const attempted: string[] = [], published: string[] = [];
+  await settleDeadExecutionFailure({ executionId: "old", attempt: 1, message: "dead" }, {
+    hasEvent: () => false,
+    append: async event => { attempted.push(event.type); return false; },
+    broadcast: event => { published.push(event.type); },
+  });
+  expect(attempted).toEqual(["session.error"]);
+  expect(published).toEqual([]);
+});
 
 const base: PlanTurnFailureInput = {
   cancelled: false,
@@ -104,5 +135,78 @@ describe("settleTurnFailure", () => {
   it("does not wait on a final failure and stays silent on cancellation", async () => {
     expect((await settle({ attempt: 3 })).log).toEqual(["error:exhausted"]);
     expect((await settle({ cancelled: true })).log).toEqual([]);
+  });
+});
+
+describe("runTurnAttempts", () => {
+  function attempts(failures: Array<Error | unknown>, options: { cancelled?: boolean; agentEvents?: number; abort?: AbortController } = {}) {
+    const log: string[] = [];
+    let runs = 0;
+    let count = 0;
+    const result = runTurnAttempts({
+      run: async () => {
+        const failure = failures[runs];
+        runs += 1;
+        count += options.agentEvents ?? 0;
+        if (failure !== undefined) throw failure;
+      },
+      agentEventCount: () => count,
+      isCancelled: () => options.cancelled === true,
+      classify: (error, produced) => classifyTurnFailure(error, produced),
+      retry: { attempts: 3, delayMs: () => 0 },
+      signal: (options.abort ?? new AbortController()).signal,
+      events: {
+        sessionError: (_message, status) => { log.push(`error:${status}`); },
+        rescheduled: () => { log.push("rescheduled"); },
+      },
+      describe: (error) => error.message,
+    });
+    return { result, log, runs: () => runs };
+  }
+  const blip = new Error("blip");
+
+  it("retries a side-effect-free failure until it completes", async () => {
+    const a = attempts([blip]);
+    expect(await a.result).toEqual({ type: "completed" });
+    expect(a.runs()).toBe(2);
+    expect(a.log).toEqual(["error:retrying", "rescheduled"]);
+  });
+
+  it("exhausts the budget and hands back the last error", async () => {
+    const a = attempts([blip, blip, blip]);
+    expect(await a.result).toEqual({ type: "exhausted", error: blip });
+    expect(a.log).toEqual(["error:retrying", "rescheduled", "error:retrying", "rescheduled", "error:exhausted"]);
+  });
+
+  it("never re-runs an attempt that produced agent events", async () => {
+    const a = attempts([blip], { agentEvents: 1 });
+    expect(await a.result).toEqual({ type: "exhausted", error: blip });
+    expect(a.runs()).toBe(1);
+  });
+
+  it("reports a session-terminal failure once, without a retry", async () => {
+    const auth = new Error("401 unauthorized");
+    const a = attempts([auth]);
+    expect(await a.result).toEqual({ type: "terminal", error: auth });
+    expect(a.runs()).toBe(1);
+    expect(a.log).toEqual(["error:terminal"]);
+  });
+
+  it("stays silent on cancellation", async () => {
+    const a = attempts([blip], { cancelled: true });
+    expect(await a.result).toEqual({ type: "cancelled", error: blip });
+    expect(a.log).toEqual([]);
+  });
+
+  it("stops after a backoff the signal ended", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const a = attempts([blip], { abort });
+    expect(await a.result).toEqual({ type: "cancelled", error: blip });
+    expect(a.runs()).toBe(1);
+  });
+
+  it("rethrows a value that is not an Error", async () => {
+    await expect(attempts(["text"]).result).rejects.toBe("text");
   });
 });

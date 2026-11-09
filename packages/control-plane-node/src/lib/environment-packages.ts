@@ -1,8 +1,7 @@
 import {
-  ENVIRONMENT_PACKAGE_PATHS,
+  environmentCommandPath,
   ensureEnvironmentPackages,
   hasEnvironmentPackages,
-  parseExecResult,
   type EnvironmentPackages,
   type EnvironmentPackagesPath,
   type SandboxExecutor,
@@ -44,8 +43,5 @@ export async function installEnvironmentPackages(
   }
   options.log?.(result);
   if (sandbox.setEnvVars === undefined) return;
-  const current = parseExecResult(await sandbox.exec(`printf '%s' "$PATH"`, 15_000));
-  const base = current.exitCode === 0 && current.stdout.trim() !== "" ? current.stdout.trim() : "/usr/local/bin:/usr/bin:/bin";
-  const extra = ENVIRONMENT_PACKAGE_PATHS.filter((dir) => !base.split(":").includes(dir));
-  await sandbox.setEnvVars({ PATH: [...extra, base].join(":") });
+  await sandbox.setEnvVars({ PATH: await environmentCommandPath(sandbox) });
 }

@@ -57,6 +57,12 @@ beforeEach(async () => {
 });
 
 describe("Mysql2SqlClient", () => {
+  it("rolls back every write when checked admission rejects before commit", async () => {
+    await expect(client.batchChecked([
+      client.prepare("INSERT INTO adapter_audit (item_name) VALUES ('old')"),
+    ], () => { throw new Error("fence lost"); })).rejects.toThrow("fence lost");
+    expect((await client.prepare("SELECT * FROM adapter_audit").all()).results).toEqual([]);
+  });
   it("maps prepared mutations and generated ids to the SqlClient result shape", async () => {
     const inserted = await client
       .prepare("INSERT INTO adapter_items (name, created_at_ms) VALUES (?, ?)")

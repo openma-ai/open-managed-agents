@@ -128,6 +128,27 @@ describe("sandbox ACP runtime", () => {
     await expect.poll(() => session.isAlive()).toBe(false);
   });
 
+  it.each(["local", "sandbox"] as const)("rejects a cooperative %s prompt on deadline instead of silently ending", async (placement) => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-acp-deadline-"));
+    temporaryDirectories.push(workdir);
+    const sandbox = new LocalSubprocessSandbox({ workdir });
+    const runtime = createAcpRuntime(placement === "local"
+      ? { type: "local", spawner: new NodeSpawner() }
+      : { type: "sandbox", sandbox });
+    const source = cancellationIgnoringAcpAgentSource
+      .replace('// Intentionally never resolve this request.', 'globalThis.pending = request.id;')
+      .replace('// Ignore the notification and keep the prompt running forever.',
+        'send({ jsonrpc: "2.0", id: globalThis.pending, result: { stopReason: "cancelled" } });');
+    const session = await runtime.start({
+      agent: { command: process.execPath, args: ["-e", source], cwd: placement === "local" ? workdir : "/workspace" },
+      perTurnTimeoutMs: 20,
+    });
+    try {
+      await expect((async () => { for await (const _event of session.prompt("sleep")) {} })())
+        .rejects.toThrow("exceeded its 20ms turn deadline");
+    } finally { await session.dispose(); }
+  });
+
   it("hard-kills an ACP child that ignores cancellation after the turn deadline", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-stuck-cancel-"));
     temporaryDirectories.push(workdir);

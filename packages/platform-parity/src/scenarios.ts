@@ -4,6 +4,7 @@ import {
   textChunks,
   toolCallChunks,
 } from "../../../test/fakes/scripted-language-model";
+import { ACP_CHILD_EXIT_HARNESS, ACP_TIMEOUT_HARNESS } from "./acp-child-exit";
 import type { ParityScenario, ScenarioContext } from "./context";
 import type { ParityModelStep } from "./models";
 
@@ -248,6 +249,38 @@ export const interrupt: ParityScenario = {
   },
 };
 
+export const contextBuildFailure: ParityScenario = {
+  name: "context-build-failure",
+  covers: "构建上下文失败: an ACP sandbox turn whose model channel cannot be issued (no PUBLIC_BASE_URL) settles session.error exhausted, then idle",
+  async run(context) {
+    await simpleSession(context, {}, {
+      _oma: { harness: "acp-sandbox", acp: { agent: { command: "parity-acp-agent" } } },
+    });
+    await context.message("Start.");
+    await context.waitIdle(1);
+  },
+};
+
+export const acpChildExit: ParityScenario = {
+  name: "acp-child-exit",
+  covers: "ACP 子进程中途退出: the in-sandbox agent process exits mid-prompt; the turn ends with session.error and the Session goes idle, not running",
+  async run(context) {
+    await simpleSession(context, {}, { _oma: { harness: ACP_CHILD_EXIT_HARNESS } });
+    await context.message("Start.");
+    await context.waitIdle(1);
+  },
+};
+
+export const acpTimeout: ParityScenario = {
+  name: "acp-timeout",
+  covers: "ACP 每轮超时: session.error and retries_exhausted, never a silent end_turn",
+  async run(context) {
+    await simpleSession(context, {}, { _oma: { harness: ACP_TIMEOUT_HARNESS } });
+    await context.message("Start.");
+    await context.waitIdle(1, "retries_exhausted");
+  },
+};
+
 /** The scenario set every platform runner executes (order = report order). */
 export const PARITY_SCENARIOS: ParityScenario[] = [
   oneTurn,
@@ -259,4 +292,7 @@ export const PARITY_SCENARIOS: ParityScenario[] = [
   budgetUsage,
   requiresAction,
   interrupt,
+  contextBuildFailure,
+  acpChildExit,
+  acpTimeout,
 ];

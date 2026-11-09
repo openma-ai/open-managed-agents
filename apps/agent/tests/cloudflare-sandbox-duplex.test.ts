@@ -188,6 +188,26 @@ describe("CloudflareSandbox duplex process", () => {
     await expect(child.exited).resolves.toEqual({ code: null, signal: "SIGTERM" });
   });
 
+  it("does not treat RPC process exit as stdout EOF or discard a delayed transport tail", async () => {
+    let output!: ReadableStreamDefaultController<Uint8Array>;
+    let exit!: (code: number) => void;
+    const stdout = new ReadableStream<Uint8Array>({ start(c) { output = c; } });
+    const exited = new Promise<number>(resolve => { exit = resolve; });
+    setCloudflareSandboxForTest({ spawnDuplex: async () => ({
+      stdin: Promise.resolve(new WritableStream()), stdout: Promise.resolve(stdout),
+      stderr: Promise.resolve(new ReadableStream({ start(c) { c.close(); } })),
+      wait: () => exited, kill: async () => {},
+    }) });
+    const child = await new CloudflareSandbox({ SANDBOX: {} } as never, "late-tail").spawnDuplexProcess({ command: "agent" });
+    exit(0);
+    await child.exited;
+    const received = readAll(child.stdout);
+    await new Promise(resolve => setTimeout(resolve, 2_200));
+    output.enqueue(new TextEncoder().encode("tail"));
+    output.close();
+    await expect(received).resolves.toBe("tail");
+  });
+
   it("settles exit and cleans up when kill has no callback", async () => {
     const commands: string[] = [];
     setCloudflareSandboxForTest({

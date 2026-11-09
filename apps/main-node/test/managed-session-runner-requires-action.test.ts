@@ -173,6 +173,15 @@ describe("Node managed runner requires_action (CMA parity, #398)", () => {
     expect(s.runs()).toBe(2);
   });
 
+  it("a late answer to a closed call has no effect", async () => {
+    const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }]);
+    await s.send([msg("u1")]);
+    await s.send([customResult("u2", "c1")]);
+    expect(s.runs()).toBe(2);
+    expect(await s.send([customResult("u3", "c1")])).toEqual([]);
+    expect(s.runs()).toBe(2);
+  });
+
   it("interrupt while parked is a no-op: pending event_ids stay, no synthetic tool_results", async () => {
     // Official CMA: "Against an already-idle session an interrupt is normally
     // a no-op." Accept it; do not clear requires_action.

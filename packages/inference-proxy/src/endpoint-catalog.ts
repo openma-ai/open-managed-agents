@@ -40,6 +40,25 @@ export const DEFAULT_INFERENCE_ENDPOINT_CONTRIBUTORS: readonly InferenceEndpoint
     ],
   },
   {
+    providerIds: ["minimax-cn"],
+    endpoints: ({ baseUrl }) => {
+      // Only known official bases imply official sibling protocols. Never send
+      // a private upstream's credentials to the public service by inference.
+      const base = baseUrl?.replace(/\/$/, "");
+      if (base != null && ![
+        "https://api.minimaxi.com",
+        "https://api.minimaxi.com/v1",
+        "https://api.minimaxi.com/anthropic",
+      ].includes(base)) {
+        throw new Error("Custom minimax-cn baseUrl requires explicit protocolEndpoints");
+      }
+      return [
+        endpoint("openai-chat", "https://api.minimaxi.com/v1"),
+        endpoint("anthropic-messages", "https://api.minimaxi.com/anthropic"),
+      ];
+    },
+  },
+  {
     providerIds: ["anthropic", "ant", "ant-compatible"],
     endpoints: ({ baseUrl }) => [
       endpoint(

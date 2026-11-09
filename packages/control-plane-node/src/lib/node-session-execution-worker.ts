@@ -1,3 +1,4 @@
+import { sessionExecutionLeaseTtlMs } from "@open-managed-agents/session-runtime";
 import type {
   AcceptedSessionEvents,
   SessionEventDispatchPort,
@@ -105,8 +106,8 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
   constructor(
     private readonly dependencies: NodeSessionExecutionWorkerDependencies,
   ) {
-    this.#leaseTtlMs = dependencies.leaseTtlMs ?? 30_000;
-    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? 10_000;
+    this.#leaseTtlMs = sessionExecutionLeaseTtlMs(dependencies.leaseTtlMs);
+    this.#heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? Math.floor(this.#leaseTtlMs / 3);
     this.#pollIntervalMs = dependencies.pollIntervalMs ?? 1_000;
     this.#maxConcurrent = dependencies.maxConcurrent ?? 8;
     if (this.#heartbeatIntervalMs >= this.#leaseTtlMs) {
@@ -289,6 +290,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       const claimedAt = this.dependencies.clock.now().toISOString();
       const claimed = await this.dependencies.coordinator.claim({
         ownerId: this.dependencies.ownerId,
+        excludeAttemptIds: [...this.#active.values()].map(active => active.fence.attemptId),
         attemptId: this.dependencies.ids.nextAttemptId(),
         claimedAt,
         leaseTtlMs: this.#leaseTtlMs,

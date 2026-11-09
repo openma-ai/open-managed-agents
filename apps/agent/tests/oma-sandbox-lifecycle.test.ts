@@ -4,6 +4,7 @@
 import { DirectoryBackup, S3Mount } from "@cloudflare/sandbox";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  loginCommand,
   OmaSandbox,
   OMA_SANDBOX_IDLE_TIMEOUT_MS,
   OMA_SANDBOX_WARM_MARKER_PATH,
@@ -313,6 +314,28 @@ describe("OmaSandbox on Sandbox SDK 1.0", () => {
     state.storage.kv.put("oma_last_activity_ms", 0);
     await box.alarm();
     expect(container.running).toBe(false);
+  });
+
+  it("exports a set PATH after bash -l's /etc/profile for duplex processes", async () => {
+    container.exec = (async (argv: string[], options?: { env?: Record<string, string> }) => {
+      container.execs.push({ argv, env: options?.env });
+      return {
+        stdin: new WritableStream(), stdout: new ReadableStream(), stderr: new ReadableStream(),
+        exitCode: Promise.resolve(0),
+        output: async () => ({ stdout: encoder.encode(""), stderr: new Uint8Array(), exitCode: 0 }),
+      };
+    }) as never;
+    const box = sandbox();
+    await box.setEnvVars({ PATH: "/workspace/.npm-global/bin:/opt/venv/bin:/usr/bin" });
+    await (await box.spawnDuplex({ command: "exec pi-acp" })).wait();
+    expect(container.execs.at(-1)?.argv).toEqual([
+      "/bin/bash", "-lc", "export PATH='/workspace/.npm-global/bin:/opt/venv/bin:/usr/bin'; exec pi-acp",
+    ]);
+  });
+
+  it("quotes PATH for the shell and leaves a command without PATH unchanged", () => {
+    expect(loginCommand("ls", {})).toBe("ls");
+    expect(loginCommand("ls", { PATH: "/a b:/it's" })).toBe("export PATH='/a b:/it'\\''s'; ls");
   });
 
   it("reads the idle timeout from SANDBOX_IDLE_TIMEOUT_MS", async () => {

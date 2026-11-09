@@ -41,6 +41,13 @@ const driver = createCloudflareManagedRuntimeDriver(env, {
 
 选项：`createSandbox`（必需——应用自己的封装，因此该包从不导入应用）、`leaseTtlMs`、`controlPlaneBaseUrl`、`runtimeEnvironment`，以及 `workspaceDurableMount`（需要 `WORKSPACE_BUCKET`、`WORKSPACE_BUCKET_NAME`、`R2_ENDPOINT` 和 `R2_*` 凭证）。
 
+### 挂载用的 R2 key
+
+设置了 `R2_ENDPOINT` 时，Session 输出从 `FILES_BUCKET_NAME` 指定的桶挂载（必填，缺失时挂载报错并写明变量名）。key 有两种配置方式，选其一：
+
+- **一把 key 访问所有桶：** 设置 `R2_ACCESS_KEY_ID` 和 `R2_SECRET_ACCESS_KEY`，记忆和输出都用它。
+- **每个桶各一把 key：** 再为 files 桶设置 `R2_FILES_ACCESS_KEY_ID` 和 `R2_FILES_SECRET_ACCESS_KEY`。两个要么都设，要么都不设，只设一个会报错。
+
 **`cloudflare-bridge`** 变体改为通过 HTTP 接入运维方部署的官方 Cloudflare Sandbox Bridge。其工厂 `createCloudflareBridgeManagedRuntime` 接受 `baseUrl`、`apiKey`（Bridge 的 `SANDBOX_API_KEY`，绝不进入沙箱）、用于可移植 `/workspace` tar 归档的 `checkpointStore` BlobStore，以及 `checkpointKeyPrefix`、`checkpointExcludes`、`maxHydrateBytes` 和 `fetch`。
 
 ## 能力

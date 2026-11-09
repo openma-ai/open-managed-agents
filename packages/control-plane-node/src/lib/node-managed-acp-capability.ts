@@ -47,7 +47,7 @@ export function createNodeManagedAcpCapabilities(dependencies: {
     tokens,
     /** The in-sandbox ACP harness's channels: scope `all`. */
     async issue(input: { workspaceId: string; session: Session; environment: Environment; executionFence?: SessionExecutionFence }) {
-      if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for Node ACP sandbox capabilities (must be reachable from the sandbox)");
+      if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)");
       const fence = input.executionFence;
       if (fence !== undefined && (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.session.id)) {
         throw new Error("Sandbox token fence does not name this Session");

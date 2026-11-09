@@ -1,3 +1,4 @@
+import { decideExpiredExecution, decideRecoveryFromCanonicalStream, type CoordinationAction, type ExecutionLeaseRecord } from "../../session-runtime/src/coordination-policy";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,13 +18,9 @@ import {
   SqlSessionExecutionCoordinator,
 } from "../src/coordination";
 import {
-  decideExpiredExecution,
-  decideRecoveryFromCanonicalStream,
   sessionExecutionEventBatches,
   sessionExecutionId,
   takeQueuedSteeringInputs,
-  type CoordinationAction,
-  type ExecutionLeaseRecord,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import { sessionExecutionStoreConformance } from
   "../../session-runtime-contract/test/execution-store-conformance";
@@ -136,6 +133,23 @@ describe("SqlSessionExecutionCoordinator", () => {
     expect((await coordinator.claim({ ...parked, attemptId: "a2", claimedAt: at(5) })).type).toBe("empty");
     const normal = await coordinator.claim({ ownerId: "do", attemptId: "a3", claimedAt: at(6), leaseTtlMs: 10_000 });
     expect(normal.type === "claimed" && normal.execution.id).toBe("queued_msg");
+  });
+
+  it("retries failed-session projection on later sweeps even after the execution is failed", async () => {
+    let failures = 0;
+    let succeed = false;
+    const recovering = new SqlSessionExecutionCoordinator(sql, {
+      onFailedExecution: async () => { failures++; if (!succeed) throw new Error("projection offline"); },
+    });
+    await sql.exec("CREATE TABLE IF NOT EXISTS managed_sessions (workspace_id TEXT, id TEXT, status TEXT)");
+    await sql.prepare("INSERT INTO managed_sessions (workspace_id, id, status) VALUES (?, ?, 'running')").bind("workspace_01", "session_01").run();
+    await recovering.admit({ ...admitted("dead", "session_01", at(1)), policy: { maxAttempts: 1, timeoutMs: 60_000 } });
+    await recovering.claim({ ownerId: "gone", attemptId: "a", claimedAt: at(2), leaseTtlMs: 1_000 });
+    await expect(recovering.sweepExpired(Date.parse(at(5)))).rejects.toThrow("projection offline");
+    expect((await recovering.find({ workspaceId: "workspace_01", executionId: "dead" }))?.state).toBe("failed");
+    succeed = true;
+    await recovering.sweepExpired(Date.parse(at(6)));
+    expect(failures).toBe(2);
   });
 
   it("claims a default-mode Session without preparing the optional checkpoint-only lock table", async () => {
@@ -547,6 +561,16 @@ describe("SqlSessionExecutionCoordinator", () => {
     })).resolves.toEqual({ type: "lost" });
   });
 
+  it("keeps a user interrupt cancelled after sweep requeues and before reclaim", async () => {
+    await coordinator.admit(admitted("execution_01", "session_01", at(1)));
+    await coordinator.claim({ ownerId: "same", attemptId: "a", claimedAt: at(2), leaseTtlMs: 1000 });
+    await coordinator.sweepExpired(Date.parse(at(4)));
+    expect((await coordinator.find({ workspaceId: "workspace_01", executionId: "execution_01" }))?.state).toBe("queued");
+    await coordinator.requestInterrupt({ workspaceId: "workspace_01", sessionId: "session_01", requestedAt: at(5) });
+    expect(await coordinator.claim({ ownerId: "same", attemptId: "b", claimedAt: at(6), leaseTtlMs: 1000 })).toEqual({ type: "empty" });
+    expect((await coordinator.find({ workspaceId: "workspace_01", executionId: "execution_01" }))?.state).toBe("cancelled");
+  });
+
   it("never lets one live worker reclaim its own expired in-flight attempt", async () => {
     await coordinator.admit(admitted("execution_01", "session_01", at(1)));
     await coordinator.claim({
@@ -559,18 +583,29 @@ describe("SqlSessionExecutionCoordinator", () => {
     await expect(coordinator.claim({
       ownerId: "node_live",
       attemptId: "attempt_duplicate",
+      excludeAttemptIds: ["attempt_old"],
       claimedAt: at(5),
       leaseTtlMs: 30_000,
     })).resolves.toEqual({ type: "empty" });
     await expect(coordinator.claim({
-      ownerId: "node_replacement",
+      ownerId: "node_live",
       attemptId: "attempt_replacement",
+      excludeAttemptIds: [],
       claimedAt: at(5),
       leaseTtlMs: 30_000,
     })).resolves.toMatchObject({
       type: "claimed",
-      fence: { ownerId: "node_replacement", generation: 2 },
+      fence: { ownerId: "node_live", generation: 2 },
     });
+  });
+
+  it("no-deadline execution cannot stay running after repeated lease loss", async () => {
+    await coordinator.admit({ ...admitted("forever", "session_01", at(1)), policy: { maxAttempts: 2, timeoutMs: 253402300799999 - Date.parse(at(1)) } });
+    await coordinator.claim({ ownerId: "same", attemptId: "a", claimedAt: at(2), leaseTtlMs: 1 });
+    await Promise.all([coordinator.sweepExpired(Date.parse(at(3))), coordinator.sweepExpired(Date.parse(at(3)))]);
+    await coordinator.claim({ ownerId: "same", attemptId: "b", claimedAt: at(4), leaseTtlMs: 1 });
+    await Promise.all([coordinator.sweepExpired(Date.parse(at(5))), coordinator.sweepExpired(Date.parse(at(5)))]);
+    expect(await coordinator.find({ workspaceId: "workspace_01", executionId: "forever" })).toMatchObject({ state: "failed", attemptCount: 2, deadlineAt: "9999-12-31T23:59:59.999Z" });
   });
 
   it("terminalizes poison work after its attempt budget is exhausted", async () => {
@@ -712,7 +747,7 @@ describe("SqlSessionExecutionCoordinator", () => {
           type: "finalize-interrupted",
           executionId: record.executionId,
           laneId: record.laneId,
-          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          reason: decision.reason,
           attemptCount: record.attemptCount,
           maxAttempts: record.maxAttempts,
         };
@@ -723,16 +758,16 @@ describe("SqlSessionExecutionCoordinator", () => {
       workspaceId: "workspace_01",
       executionId: "applied_stream",
     })).resolves.toMatchObject({
-      state: "failed",
-      failure: "execution interrupted after applied input",
-      settledAt: at(5),
+      state: "queued",
+      failure: "requeued after owner lease expired",
+      settledAt: null,
     });
     await expect(coordinator.claim({
       ownerId: "replacement",
       attemptId: "attempt_replacement",
       claimedAt: at(6),
       leaseTtlMs: 30_000,
-    })).resolves.toEqual({ type: "empty" });
+    })).resolves.toMatchObject({ type: "claimed" });
   });
 
   it("owner dies mid-turn: an unpaired tool call is finalized as interrupted", async () => {
@@ -767,7 +802,7 @@ describe("SqlSessionExecutionCoordinator", () => {
           type: "finalize-interrupted",
           executionId: record.executionId,
           laneId: record.laneId,
-          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          reason: decision.reason,
           attemptCount: record.attemptCount,
           maxAttempts: record.maxAttempts,
         };
@@ -778,9 +813,9 @@ describe("SqlSessionExecutionCoordinator", () => {
       workspaceId: "workspace_01",
       executionId: "unpaired_stream",
     })).resolves.toMatchObject({
-      state: "failed",
-      failure: "execution interrupted on unpaired tool call",
-      settledAt: at(5),
+      state: "queued",
+      failure: "requeued after owner lease expired",
+      settledAt: null,
     });
   });
 
@@ -847,7 +882,7 @@ describe("SqlSessionExecutionCoordinator", () => {
           type: "finalize-interrupted",
           executionId: record.executionId,
           laneId: record.laneId,
-          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          reason: decision.reason,
           attemptCount: record.attemptCount,
           maxAttempts: record.maxAttempts,
         };
@@ -857,8 +892,8 @@ describe("SqlSessionExecutionCoordinator", () => {
       workspaceId: "workspace_01",
       executionId: "unapplied_stream",
     })).resolves.toMatchObject({
-      state: "failed",
-      failure: "execution redispatch limit exhausted",
+      state: "queued",
+      failure: "requeued after owner lease expired",
     });
   });
 

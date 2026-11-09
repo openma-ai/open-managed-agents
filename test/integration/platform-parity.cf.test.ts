@@ -8,14 +8,18 @@
 // (packages/platform-parity/platforms.mjs).
 import { exports } from "cloudflare:workers";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { AcpSandboxHarness } from "../../packages/agent-harness/src/acp-sandbox-loop";
 import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import {
+  ACP_CHILD_EXIT_HARNESS,
+  ACP_TIMEOUT_HARNESS,
   PARITY_HARNESS,
   PARITY_MODEL,
   PARITY_SCENARIOS,
   ScenarioContext,
   UNREACHABLE_MODEL_BASE_URL,
+  acpChildExitHarness,
   errorSignature,
   installLeakCapture,
   parityModels,
@@ -32,6 +36,14 @@ registerHarness(PARITY_HARNESS, () => {
   };
 });
 
+// OmaSandbox.spawnDuplex streams stdout over Workers RPC; the e2e
+// cf-container-acp-mm-r1 run saw the exit reported while stdout stayed open.
+registerHarness(ACP_CHILD_EXIT_HARNESS, () =>
+  acpChildExitHarness(() => new AcpSandboxHarness(), { stdoutEndsOnExit: false }));
+
+registerHarness(ACP_TIMEOUT_HARNESS, () =>
+  acpChildExitHarness(() => new AcpSandboxHarness(), { stdoutEndsOnExit: false, timeout: true }));
+
 const AUTH = { "x-api-key": "test-key" };
 
 // Rejections this platform leaks while the scenarios run. They are product
@@ -46,6 +58,17 @@ const leaks = installLeakCapture([
   errorSignature("packages/agent-harness/src/pi-ai-sdk.ts:62 (outcome evaluator retries)", {
     message: "Connection error.",
     stack: ["generateWithPi"],
+  }),
+  // context-build-failure: not a product leak. In this single test isolate the
+  // MAIN_MCP service binding runs through the vitest-plugin entrypoint wrapper
+  // (@cloudflare/vitest-plugin test-internal.mjs:468), which reports the RPC
+  // callee's rejection as unhandled even when the caller catches it (checked
+  // 2026-11-09: a bare try/catch around env.MAIN_MCP.issueManagedAcpExecutionChannels
+  // still fires unhandledRejection). SessionDO awaits it inside the turn try and
+  // settles session.error exhausted (golden). In deploys main is its own worker.
+  errorSignature("apps/main/src/lib/cf-acp-execution-capability.ts:33 (RPC callee, test isolate)", {
+    message: "PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)",
+    stack: ["issueCfAcpExecutionChannels"],
   }),
   // user.interrupt aborts the in-flight turn; the abort reason rejects a
   // promise nobody awaits (apps/agent/src/runtime/session-do.ts:2986).
@@ -139,6 +162,16 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
       + "(apps/agent/src/runtime/session-do.ts user.interrupt handler, INTERRUPT_GRACE_MS: CMA \"the interrupt can take "
       + "longer to apply while tool calls are running\", processed_at null until applied). CF is the contract side here; "
       + "Node needs its accepted-input stamping and listing order reworked (Session inputs, wave 2)",
+  },
+  {
+    scenario: "context-build-failure",
+    title: "no status_running before a context-build failure",
+    paths: ["/events/session.status_running"],
+    eventTypes: ["session.status_running"],
+    cause: "golden (Node) emits session.status_running before buildHarnessContext "
+      + "(packages/control-plane-node/src/lib/node-managed-session-runner.ts runHarness); CF emits it after the "
+      + "HarnessContext is built (apps/agent/src/runtime/session-do.ts runningEvent in the turn try), so a context "
+      + "that fails to build goes user.message -> session.error -> idle. Both settle exhausted + retries_exhausted; kept",
   },
 ];
 

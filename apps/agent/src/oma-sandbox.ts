@@ -512,8 +512,17 @@ export const OMA_SANDBOX_LEGACY_BACKUP = "LEGACY_BACKUP";
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
 const SYSTEM_CA = "/etc/ssl/certs/ca-certificates.system.crt";
+/** bash -l rereads /etc/profile, which resets PATH: a PATH set through
+ * setEnvVars is exported again after it. No PATH leaves the command as is. */
+export function loginCommand(command: string, env: Record<string, string>): string {
+  return env.PATH === undefined ? command : `export PATH='${env.PATH.replaceAll("'", "'\\''")}'; ${command}`;
+}
+
+// OpenSSL clients (python urllib, curl builds without a compiled-in path)
+// read SSL_CERT_FILE; the bundle already carries the container CA.
 const CONTAINER_ENV = {
   NODE_EXTRA_CA_CERTS: CA,
+  SSL_CERT_FILE: BUNDLE,
   REQUESTS_CA_BUNDLE: BUNDLE,
 };
 const DEFAULT_BACKUP_TTL_SECONDS = BACKUP_TTL_SEC;
@@ -1085,7 +1094,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
       await this.ensureRunning();
       const env = { ...CONTAINER_ENV, ...this.processEnv(), ...(options?.env ?? {}) };
       const timeoutMs = options?.timeout;
-      const argv = ["/bin/bash", "-lc", command];
+      const argv = ["/bin/bash", "-lc", loginCommand(command, env)];
       const proc = await this.container.exec(argv, {
         cwd: options?.cwd ?? "/workspace",
         env,
@@ -1495,9 +1504,10 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     this.recordActivity(false);
     let process: ExecProcess;
     try {
-      process = await this.container.exec(["/bin/bash", "-lc", spec.command], {
+      const env = { ...CONTAINER_ENV, ...this.processEnv(), ...(spec.env ?? {}) };
+      process = await this.container.exec(["/bin/bash", "-lc", loginCommand(spec.command, env)], {
         cwd: spec.cwd ?? "/workspace",
-        env: { ...CONTAINER_ENV, ...this.processEnv(), ...(spec.env ?? {}) },
+        env,
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
@@ -1537,7 +1547,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     const dir = `/tmp/oma-proc-${id}`;
     const env = { ...CONTAINER_ENV, ...this.processEnv(), ...(options?.env ?? {}) };
     await this.exec(
-      `mkdir -p ${dir} && nohup /bin/bash -lc ${JSON.stringify(command)} >${dir}/stdout 2>${dir}/stderr & echo $! >${dir}/pid`,
+      `mkdir -p ${dir} && nohup /bin/bash -lc ${JSON.stringify(loginCommand(command, env))} >${dir}/stdout 2>${dir}/stderr & echo $! >${dir}/pid`,
       { timeout: 30_000, cwd: options?.cwd ?? "/workspace", env },
     );
     const pidText = await this.readFile(`${dir}/pid`);

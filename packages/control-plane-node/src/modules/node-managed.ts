@@ -200,8 +200,7 @@ export async function createManagedNodeRuntime(
   const repositorySources = { repositoryCredentials: managedSessionResourceSecrets, ...(config.http.matter ? { repositoryBonds: matterRepositoryCredentials(config.http.matter) } : {}) };
   const repositoryEgress = createNodeRepositoryEgress({ ...repositorySources, secret: platformRootSecret, findSession: async (s) => (await managedRuntimeReaders.executionContext.find(s))?.session ?? null });
 
-  // Drizzle baseline may predate held_after_exhausted_ms; additive ensure is
-  // idempotent and required before claim SQL references the column.
+  // Ensure held_after_exhausted_ms before claim SQL (older Drizzle baselines).
   await ensureSessionExecutionCoordinatorSchema(sql, foundation.dialect);
   if (config.workspace.strategy === "checkpoint_restore") {
     await ensureSessionExecutionClaimLockSchema(sql, foundation.dialect);
@@ -209,6 +208,7 @@ export async function createManagedNodeRuntime(
   const managedSessionExecutionCoordinator = new SqlSessionExecutionCoordinator(sql, {
     serializeSessionClaims: config.workspace.strategy === "checkpoint_restore",
     sweepIntervalMs: 5_000,
+    onFailedExecution: execution => managedRuntimeDriver.finalizeDeadExecution(execution),
     onError: (error, op) => logger.error(
       { err: error, op },
       "session execution sweep failed",
@@ -640,8 +640,7 @@ export async function createManagedNodeRuntime(
     ownerId: config.execution.ownerId,
     clock: { now: () => new Date() },
     ids: { nextAttemptId: () => `attempt_${nanoid()}` },
-    leaseTtlMs: 30_000,
-    heartbeatIntervalMs: 10_000,
+    leaseTtlMs: config.execution.leaseTtlMs,
     maxConcurrent: config.execution.concurrency,
     eventProcessing: {
       storeFor: () => new SqlSessionEventPersistence(sql),

@@ -795,8 +795,13 @@ export class Mysql2SqlClient implements SqlClient {
     return retryMysql(() => this.batchOnce<T>(statements), { sql });
   }
 
+  batchChecked<T = unknown>(statements: SqlStatement[], validate: (results: Array<SqlRunResult<T>>) => void): Promise<Array<SqlRunResult<T>>> {
+    return retryMysql(() => this.batchOnce(statements, validate));
+  }
+
   private async batchOnce<T = unknown>(
     statements: SqlStatement[],
+    validate?: (results: Array<SqlRunResult<T>>) => void,
   ): Promise<Array<SqlRunResult<T>>> {
     const connection = await this.pool.getConnection();
     try {
@@ -813,6 +818,7 @@ export class Mysql2SqlClient implements SqlClient {
         }
         results.push(await statement.executeRunIn<T>(connection));
       }
+      validate?.(results);
       await connection.commit();
       return results;
     } catch (error) {

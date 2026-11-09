@@ -3,13 +3,21 @@
  * nothing is running under, and a status_running with no marker at all.
  */
 
+import type { SessionExecution } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { OrphanTurn, TurnId } from "./ports";
+import { settleDeadExecutionFailure, failedExecutionSettlementFence } from "./turn-failure";
 
 export interface StaleToolUse {
   id: string;
   type: string;
   thread?: string | null;
+}
+
+/** The execution lease store, read for one Session. */
+export interface SessionExecutionRecords {
+  listActive(scope: { workspaceId: string; sessionId: string }): Promise<readonly unknown[]>;
+  latestSettled(scope: { workspaceId: string; sessionId: string }): Promise<SessionExecution | null>;
 }
 
 export interface StaleTurnFinalizerPort {
@@ -22,8 +30,10 @@ export interface StaleTurnFinalizerPort {
   listToolResultIds(): string[];
   /** Calls parked on the client: unpaired by design. */
   parkedCallIds(): string[];
-  append(event: SessionEvent): Promise<void>;
+  append(event: SessionEvent, fence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence): Promise<void | boolean>;
   broadcast(event: SessionEvent): void;
+  /** Durable event-id lookup; recovery passes are serialized by the host. */
+  hasEvent(id: string): boolean;
   listOrphanTurns(): Promise<OrphanTurn[]>;
   endTurn(turnId: TurnId): Promise<void>;
   isTurnActive(turnId: TurnId): boolean;
@@ -33,8 +43,27 @@ export interface StaleTurnFinalizerPort {
   latestSessionStatus(): { type: string; ts: number } | null;
   /** Ends a running row that has no turn id; false when nothing changed. */
   clearMarkerlessTurn(now: number): Promise<boolean>;
+  /** This Session's execution lease records; store null where the host
+   * keeps none. */
+  executions(): Promise<{ store: SessionExecutionRecords | null; workspaceId: string; sessionId: string }>;
   scheduleGraceRetry(atMs: number): Promise<void>;
   log(event: string, fields: Record<string, unknown>): void;
+}
+
+/** Failure the lease sweep settled for the dead owner of a turn that
+ * started at `statusAtMs`; null while an execution of the Session is still
+ * queued or running, or when none failed since then. */
+export async function deadExecutionFailure(
+  executions: { store: SessionExecutionRecords | null; workspaceId: string; sessionId: string },
+  statusAtMs: number,
+): Promise<{ message: string; executionId: string; attempt: number; fence: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence } | null> {
+  const { store, ...scope } = executions;
+  if (store === null) return null;
+  if ((await store.listActive(scope)).length > 0) return null;
+  const last = await store.latestSettled(scope);
+  if (last === null || last.state !== "failed" || last.settledAt === null) return null;
+  if (Date.parse(last.settledAt) < statusAtMs) return null;
+  return { message: last.failure ?? "execution failed", executionId: last.id, attempt: last.attemptCount, fence: failedExecutionSettlementFence(last) };
 }
 
 export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<void> {
@@ -219,7 +248,20 @@ export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<
       // Best-effort row cleanup for the markerless shape. Scoped to
       // turn_id IS NULL so it can never clobber a fresh beginTurn.
       const rowChanged = await port.clearMarkerlessTurn(now);
-      if (!rowChanged) {
+      // A host whose sessions row carries no turn marker (Cloudflare keeps
+      // the Session in managed_sessions) has the execution lease as its only
+      // durable evidence: the sweep settled it failed when the owner died.
+      const failure = rowChanged ? null : await deadExecutionFailure(await port.executions(), startedAtMs);
+      if (failure !== null) {
+        await settleDeadExecutionFailure(failure, port);
+        markerlessEnded = 1;
+        port.log("finalize.candidate", {
+          decision: "end",
+          reason: "dead_execution",
+          status_ts: startedAtMs,
+          failure,
+        });
+      } else if (!rowChanged) {
         // Nothing to end (a concurrent beginTurn won the race, or the
         // row was already settled). Do not emit a terminal idle for a
         // turn that is still live.

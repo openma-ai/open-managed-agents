@@ -2076,6 +2076,18 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     return { type: "published" };
   }
 
+  async managedSessionCanonicalEvents(opts: { workspaceId: string; sessionId: string }): Promise<import("@open-managed-agents/shared").SessionEvent[]> {
+    const db = await buildCfTenantDbProvider(this.env).resolve(opts.workspaceId);
+    const history = await new SqlSessionRuntimeHistorySource(new CfD1SqlClient(db)).load(opts);
+    if (history === null) return [];
+    const { encodeRuntimeHistoryEvent } = await import("@open-managed-agents/managed-agents-adapters-runtime");
+    // Only consumed facts are runtime context. Unconsumed/cancelled queue
+    // inputs remain in the canonical outbox and are never promoted by recovery.
+    return (history.orderedEvents?.map(row => row.event) ?? history.events)
+      .filter(event => event.processedAt != null)
+      .map(event => encodeRuntimeHistoryEvent(event) as import("@open-managed-agents/shared").SessionEvent);
+  }
+
   async managedSessionEventProduced(opts: {
     workspaceId: string;
     sessionId: string;
@@ -2085,6 +2097,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     | { type: "recorded" }
     | { type: "ignored" }
     | { type: "not_found" }
+    | { type: "execution_fence_lost" }
     | { type: "version_conflict" }
   > {
     let raw: unknown;
@@ -2114,7 +2127,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       });
       if (result.type === "recorded") return { type: "recorded" };
       if (result.type === "not_found") return { type: "not_found" };
-      if (result.type === "execution_fence_lost") return { type: "version_conflict" };
+      if (result.type === "execution_fence_lost") return { type: "execution_fence_lost" };
       // Shared keep-first semantics: the first recorded body stands and the
       // replay is a no-op (persistence already logged the collision).
       if (result.type === "event_id_collision") return { type: "ignored" };

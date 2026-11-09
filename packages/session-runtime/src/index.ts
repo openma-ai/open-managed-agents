@@ -116,12 +116,18 @@ export {
   isTurnCancellationError,
   planTurnFailure,
   reportTurnFailure,
+  runTurnAttempts,
   settleTurnFailure,
+  TURN_RETRY,
   type PlanTurnFailureInput,
+  type TurnAttemptsResult,
   type TurnFailureClass,
   type TurnFailureEventsPort,
   type TurnFailurePlan,
 } from "./turn-failure";
+export { settleDeadExecutionFailure, failedExecutionSettlementFence } from "./turn-failure";
+export { classifyTurnInput, type TurnInput } from "./turn-input";
+export { planRequiresActionAnswers, type RequiresActionAnswerPlan } from "./turn-answers";
 export { openTurnMarker, type TurnMarker, type TurnMarkerHooks } from "./turn-marker";
 export {
   interruptTurn,
@@ -152,4 +158,9 @@ export {
   type TemplateLogger,
   type TemplateStore,
 } from "./session-sandbox-template-cache";
-export { finalizeStaleTurns, type StaleToolUse, type StaleTurnFinalizerPort } from "./finalize-stale-turns";
+export { finalizeStaleTurns, type SessionExecutionRecords, type StaleToolUse, type StaleTurnFinalizerPort } from "./finalize-stale-turns";
+
+export * from "./execution-state";
+export * from "./coordination-policy";
+export * from "./execution-config";
+export * from "./execution-continuation";

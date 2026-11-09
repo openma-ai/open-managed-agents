@@ -575,12 +575,12 @@ describe("threads HTTP endpoints", () => {
     expect(texts).toEqual(new Set(["burst-1", "burst-2", "burst-3", "burst-4", "burst-5"]));
   });
 
-  // ─── End-to-end interrupt: AMA "queued inputs are flushed" ─────────
+  // ─── End-to-end interrupt: queued inputs survive (same as Node) ────
   // Seed a session with 3 pending user.messages on primary, POST
-  // user.interrupt, observe: queue flushed (cancelled_at on all 3),
-  // user.interrupt + session.status_idle appended, no session.error,
-  // /events round-trip returns the cancelled events with metadata.
-  it("user.interrupt flushes pending queue + writes idle, no session.error", async () => {
+  // user.interrupt, observe: none cancelled (the lane drains them as its
+  // next turns), user.interrupt + session.status_idle appended, no
+  // session.error.
+  it("user.interrupt keeps the pending queue + writes idle, no session.error", async () => {
     const stub = freshDoStub("interrupt_e2e");
     await seedSchemaAndState(stub);
 
@@ -624,7 +624,7 @@ describe("threads HTTP endpoints", () => {
     expect([200, 202]).toContain(res.status);
 
     const after = await runInDurableObject(stub, (_inst, state) => {
-      // Pending count after — should be zero (all 3 cancelled).
+      // Pending count after: the drain may already have taken some.
       let pending = 0;
       for (const row of state.storage.sql.exec(
         `SELECT COUNT(*) AS n FROM events
@@ -633,7 +633,7 @@ describe("threads HTTP endpoints", () => {
       )) {
         pending = row.n as number;
       }
-      // Cancelled count — should be 3.
+      // Cancelled count: none, the queue survives the interrupt.
       let cancelled = 0;
       for (const row of state.storage.sql.exec(
         `SELECT COUNT(*) AS n FROM events
@@ -653,20 +653,19 @@ describe("threads HTTP endpoints", () => {
       }
       return { pending, cancelled, lifecycle };
     });
-    expect(after.pending).toBe(0);
-    expect(after.cancelled).toBe(3);
-    // Interrupt + idle should be there. session.error must NOT —
-    // user.interrupt is control flow, not error.
+    expect(after.cancelled).toBe(0);
+    // No turn was running, so the interrupt is only recorded (no idle of
+    // its own, same as Node). session.error must NOT appear — user.interrupt
+    // is control flow, not error.
     expect(after.lifecycle).toContain("user.interrupt");
-    expect(after.lifecycle).toContain("session.status_idle");
     expect(after.lifecycle).not.toContain("session.error");
   });
 
-  // ─── Cross-thread flush isolation (data-level) ─────────────────────
+  // ─── Cross-thread interrupt isolation (data-level) ─────────────────
   // The earlier "user.interrupt with session_thread_id aborts only
   // the matching turn" test covers AbortController scoping. This one
-  // covers the SQL UPDATE: cancelling sthr_X must not touch sthr_Y's
-  // pending rows.
+  // covers the queue: interrupting sthr_X cancels no queued row on any
+  // thread and leaves sthr_Y's pending rows untouched.
   it("user.interrupt on sthr_X leaves sthr_Y pending events untouched", async () => {
     const stub = freshDoStub("interrupt_cross_data");
     await seedSchemaAndState(stub);
@@ -715,7 +714,7 @@ describe("threads HTTP endpoints", () => {
       }
       return counts;
     });
-    expect(state.sthr_subA).toEqual({ pending: 0, cancelled: 2 });
+    expect(state.sthr_subA.cancelled).toBe(0);
     expect(state.sthr_subB).toEqual({ pending: 2, cancelled: 0 });
   });
 

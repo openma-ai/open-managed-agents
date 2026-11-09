@@ -65,6 +65,26 @@ export const ENVIRONMENT_PACKAGE_PATHS = [
   "/workspace/.go/bin",
 ] as const;
 
+/**
+ * PATH for every later command: the installed tools first, then the image's
+ * own PATH. The image PATH is read from PID 1 (the container's configured
+ * env): a login shell resets PATH through /etc/profile, which drops image
+ * entries such as /opt/venv/bin. Falls back to the shell's PATH, then a
+ * minimal default. One implementation for every control plane.
+ */
+export async function environmentCommandPath(sandbox: PackageSandbox): Promise<string> {
+  const probe = parseExecResult(await sandbox.exec(
+    `p=$(tr '\\0' '\\n' < /proc/1/environ 2>/dev/null | sed -n 's/^PATH=//p'); printf '%s\\n%s' "$p" "$PATH"`,
+    15_000,
+  ));
+  const [image = "", shell = ""] = probe.exitCode === 0 ? probe.stdout.split("\n") : [];
+  const seen = new Set<string>();
+  const dirs = [...ENVIRONMENT_PACKAGE_PATHS, ...image.split(":"), ...shell.split(":")]
+    .map((dir) => dir.trim())
+    .filter((dir) => dir !== "" && !seen.has(dir) && (seen.add(dir), true));
+  return dirs.length > ENVIRONMENT_PACKAGE_PATHS.length ? dirs.join(":") : [...ENVIRONMENT_PACKAGE_PATHS, "/usr/local/bin", "/usr/bin", "/bin"].join(":");
+}
+
 const WARM_MARKER = "/tmp/.oma-setup-warm";
 const RESTORED_MARKER = "/workspace/.oma-setup-restored";
 

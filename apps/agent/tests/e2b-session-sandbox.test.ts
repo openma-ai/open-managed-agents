@@ -208,12 +208,23 @@ describe("createE2BSessionSandbox", () => {
     for (const bad of ["0", "-1", "1.5", "invalid"]) expect(build(bad)).toThrow("SANDBOX_IDLE_PAUSE_MS must be a positive integer");
   });
 
-  it("chooses native only with both bucket keys, sync with neither, and rejects half", () => {
+  it("chooses native with the general key alone or with a files key, sync with no key, and rejects a partial setup", () => {
     const native = { CLOUDFLARE_ACCOUNT_ID: "acct", R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com", MEMORY_BUCKET_NAME: "memory", FILES_BUCKET_NAME: "files" };
     expect(storageConfig({ ...native, R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "t" }).kind).toBe("native");
     expect(storageConfig({ MEMORY_BUCKET: bucket, FILES_BUCKET: bucket }).kind).toBe("sync");
-    expect(() => storageConfig({ ...native, R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", MEMORY_BUCKET: bucket, FILES_BUCKET: bucket })).toThrow(/half configured/);
+    expect(storageConfig({ ...native, R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s" }).kind).toBe("native");
+    expect(() => storageConfig({ ...native, R2_ACCESS_KEY_ID: "a", R2_SECRET_ACCESS_KEY: "s", R2_FILES_ACCESS_KEY_ID: "b" })).toThrow(/must be set together; R2_FILES_SECRET_ACCESS_KEY is missing/);
     expect(() => storageConfig({ ...native, R2_FILES_ACCESS_KEY_ID: "b", R2_FILES_SECRET_ACCESS_KEY: "t", MEMORY_BUCKET: bucket, FILES_BUCKET: bucket })).toThrow(/half configured/);
+  });
+
+  it("native storage mints outputs credentials from the general key when no files key is set", async () => {
+    const config = storageConfig({
+      CLOUDFLARE_ACCOUNT_ID: "acct", R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com", MEMORY_BUCKET_NAME: "memory", FILES_BUCKET_NAME: "files",
+      R2_ACCESS_KEY_ID: "general-key", R2_SECRET_ACCESS_KEY: "general-secret",
+    });
+    if (config.kind !== "native") throw new Error("unexpected");
+    const outputs = await config.objectStorage.outputs.issue({ prefix: "t/ws/session-outputs/sess/", access: "read_write", ttlSeconds: 60 });
+    expect([outputs.bucket, outputs.accessKeyId]).toEqual(["files", "general-key"]);
   });
 
   it("native storage mints outputs credentials from the files key and Memory credentials from the memory key", async () => {

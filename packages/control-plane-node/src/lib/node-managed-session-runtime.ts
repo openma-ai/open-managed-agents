@@ -41,6 +41,8 @@ import type {
   SessionRealtimeHub,
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
+import { executionContinuationEvents, settleDeadExecutionFailure, failedExecutionSettlementFence } from "@open-managed-agents/session-runtime";
+import type { SessionExecution } from "@open-managed-agents/session-runtime-contract/coordination";
 import { randomUUID } from "node:crypto";
 import {
   abortableDelay,
@@ -249,6 +251,15 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
     const committedTerminal = executionFence === undefined
       ? null
       : committedExecutionTerminal(history.orderedEvents, executionFence.executionId);
+    if (executionFence !== undefined && executionFence.generation > 1 && committedTerminal === null) {
+      const resumed = executionContinuationEvents(history.events.map(event => encodeRuntimeHistoryEvent(event as never)) as never,
+        { executionId: executionFence.executionId, attempt: executionFence.generation, laneId: managedEventThread(input.events[0] as never) });
+      for (const event of resumed) await output({ ...event, processed_at: new Date().toISOString() });
+      // Reload the canonical log after the fenced writes; never rebuild from
+      // a stale local snapshot or replay an unfinished tool operation.
+      const refreshed = await this.dependencies.historyFor(input.workspaceId).loadSessionRuntimeHistory({ sessionId: input.sessionId });
+      if (refreshed.type !== "not_found") history.events = refreshed.events;
+    }
     await this.dependencies.runner.accept({
       ...input,
       ...(executionFence !== undefined ? { executionFence } : {}),
@@ -677,6 +688,25 @@ export class DefaultNodeManagedSessionRuntimeDriver
     return subscription;
   }
 
+  /** Dead-owner recovery uses the same business settlement as CF. The SQL
+   * projection owns CAS + event-id uniqueness; publish only after durability. */
+  async finalizeDeadExecution(execution: SessionExecution): Promise<void> {
+    await settleDeadExecutionFailure({
+      executionId: execution.id, attempt: execution.attemptCount,
+      message: execution.failure ?? "execution failed", fence: failedExecutionSettlementFence(execution),
+    }, {
+      // The projection's event-id collision path is the indexed keep-first CAS.
+      hasEvent: () => false,
+      append: async (event, fence) => {
+        try { await this.enqueueOutput(execution.workspaceId, execution.sessionId, {
+          ...event, session_thread_id: execution.laneId, processed_at: this.nextEventStamp(execution),
+        }, fence); }
+        catch (error) { if (error instanceof Error && error.name === "ExecutionFenceLostError") return false; throw error; }
+      },
+      broadcast: () => {}, // enqueueOutput publishes only a successful projection.
+    });
+  }
+
   private async handleOutput(
     workspaceId: string,
     sessionId: string,
@@ -697,6 +727,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
         // Keep-first: the original event is already recorded and published.
         if (projected.type === "event_id_collision") return;
         if (projected.type === "execution_fence_lost") {
+          if (executionFence?.settlement !== undefined) throw Object.assign(new Error("Dead execution settlement superseded"), { name: "ExecutionFenceLostError" });
           throw new Error(
             `Session ${workspaceId}/${sessionId} execution fence was lost`,
           );
