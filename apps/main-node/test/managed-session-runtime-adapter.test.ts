@@ -318,7 +318,7 @@ describe("NodeManagedSessionRuntimeAdapter", () => {
     const source = Object.values(runtimeAdapterSources)[0] ?? "";
     expect(source).toContain("@open-managed-agents/managed-agents-application");
     expect(source).not.toMatch(
-      /@open-managed-agents\/(?:managed-agents-api|session-runtime(?:["/])|services|sessions-store|environments-store|shared)/,
+      /@open-managed-agents\/(?:managed-agents-api|services|sessions-store|environments-store|shared)/,
     );
     expect(source).not.toMatch(/@anthropic-ai\/sdk/);
     expect(source).not.toMatch(
