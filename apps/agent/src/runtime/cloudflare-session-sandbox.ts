@@ -26,7 +26,7 @@ import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources } from "./managed-session-resources";
 import { durableObjectSandboxState, type SessionSandboxStateStorage } from "./session-sandbox-do-state";
-import { initialSandboxState, memoryStoreMountTarget, PortsSessionSandbox, type SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
+import { sandboxIdlePauseMs, initialSandboxState, memoryStoreMountTarget, PortsSessionSandbox, type SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
 
 export interface CloudflareSessionSandboxDeps {
   env: Env;
@@ -50,11 +50,11 @@ export const sandboxExecutionFenceKey = (fence: SandboxExecutionFence | undefine
   fence === undefined ? "" : `${fence.executionId}/${fence.attemptId}/${fence.ownerId}/${fence.generation}`;
 
 /** idlePauseMs; OmaSandbox's idle backstop (OMA_SANDBOX_IDLE_TIMEOUT_MS) is longer. */
-const IDLE_MS = 5 * 60_000;
 const START_ATTEMPTS = 3;
 const STATE_KEY = "cloudflare_sandbox_state";
 
 export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDeps): PortsSessionSandbox<CloudflareSandboxRuntime> {
+  const idleMs = sandboxIdlePauseMs((deps.env as { SANDBOX_IDLE_PAUSE_MS?: string }).SANDBOX_IDLE_PAUSE_MS);
   const sandbox = new CloudflareSandbox(deps.env, deps.sandboxId, deps.sandboxImage);
   const scope = () => {
     const s = deps.session();
@@ -88,7 +88,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
         egress: null,
         stores: session.sessionId ? await managedStores(deps.env, session, generation) : [],
         outputs: { bindingId: `outputs:${s.sessionId}`, mountPath: "/mnt/session/outputs" },
-        idleMs: IDLE_MS,
+        idleMs,
         labels: { workspaceId: s.workspaceId, sessionId: s.sessionId },
       };
     },
@@ -101,7 +101,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     egressRenewMs: null,
     execution: () => deps.fence?.(),
     isCurrent: async (execution) => sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
-    idle: { pauseMs: IDLE_MS, ...deps.idleTimer },
+    idle: { pauseMs: idleMs, ...deps.idleTimer },
   });
 }
 

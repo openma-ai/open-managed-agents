@@ -1,3 +1,4 @@
+export { DEFAULT_SANDBOX_IDLE_PAUSE_MS, sandboxIdlePauseMs } from "./session-sandbox-config";
 // Public surface of @open-managed-agents/session-runtime.
 //
 // Phase 2 of the unified-runtime refactor: SessionStateMachine + the

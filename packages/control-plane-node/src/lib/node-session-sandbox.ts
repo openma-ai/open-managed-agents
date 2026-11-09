@@ -72,16 +72,8 @@ import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "./node-sandbo
 import { SqlSessionSandboxRecords, type NodeSessionSandboxRecords } from "./node-session-sandbox-records.js";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 
-/** idlePauseMs (design §0.0 rule 11) when SANDBOX_IDLE_PAUSE_MS is unset. */
-export const DEFAULT_SANDBOX_IDLE_PAUSE_MS = 5 * 60_000;
-
-/** SANDBOX_IDLE_PAUSE_MS (a positive integer of milliseconds), else the default. */
-export function sandboxIdlePauseMs(value: string | undefined): number {
-  if (value === undefined || value === "") return DEFAULT_SANDBOX_IDLE_PAUSE_MS;
-  const ms = Number(value);
-  if (!Number.isInteger(ms) || ms <= 0) throw new Error(`SANDBOX_IDLE_PAUSE_MS must be a positive integer of milliseconds, got ${JSON.stringify(value)}`);
-  return ms;
-}
+export { DEFAULT_SANDBOX_IDLE_PAUSE_MS, sandboxIdlePauseMs } from "@open-managed-agents/session-runtime";
+import { DEFAULT_SANDBOX_IDLE_PAUSE_MS } from "@open-managed-agents/session-runtime";
 
 /** SANDBOX_SNAPSHOT_INTERVAL_MS (a positive integer of milliseconds); unset = the core default. */
 export function sandboxSnapshotIntervalMs(value: string | undefined): number | undefined {

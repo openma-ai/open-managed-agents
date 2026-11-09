@@ -36,7 +36,7 @@ export function createSessionSandbox(adapter: string | undefined, deps: SessionS
     return createCloudflareSessionSandbox(deps) as PortsSessionSandbox<unknown>;
   }
   if (name === "e2b") {
-    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, harness: deps.harness, idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
+    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, harness: deps.harness, warn: deps.warn, idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
   }
   throw new Error(`Unknown SANDBOX_ADAPTER: ${name}`);
 }

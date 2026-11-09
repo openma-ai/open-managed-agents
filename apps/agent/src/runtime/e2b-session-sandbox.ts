@@ -41,10 +41,11 @@ import { UNFENCED_SANDBOX_TOKEN } from "@open-managed-agents/sandbox-gateway";
 import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
-import { PortsSessionSandbox, type PortsSessionSandboxOptions, type SessionSandboxExecutor, type SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
+import { sandboxIdlePauseMs, DEFAULT_SANDBOX_IDLE_PAUSE_MS, PortsSessionSandbox, type PortsSessionSandboxOptions, type SessionSandboxExecutor, type SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
 import { durableObjectSandboxState, type SessionSandboxStateStorage } from "./session-sandbox-do-state";
 
 export interface E2BSandboxEnv {
+  SANDBOX_IDLE_PAUSE_MS?: string;
   E2B_API_KEY?: string;
   E2B_TEMPLATE?: string;
   E2B_DOMAIN?: string;
@@ -77,7 +78,7 @@ export interface E2BSandboxEnv {
   };
 }
 
-const IDLE_MS = 5 * 60_000;
+const IDLE_MS = DEFAULT_SANDBOX_IDLE_PAUSE_MS;
 /** E2B's own timeout: idlePauseMs + margin (design §0.0b A.10), so a sandbox
  * whose idle pause never ran stops within idle start + lease. */
 const LEASE_MS = IDLE_MS + SANDBOX_LEASE_MARGIN_MS;
@@ -85,6 +86,8 @@ assertLeaseCoversIdle("SANDBOX_ADAPTER=e2b", LEASE_MS, IDLE_MS);
 const STATE_KEY = "e2b_sandbox_state";
 
 export interface E2BSessionSandboxOptions {
+  warn?(message: string): void;
+  leaseMs?: number;
   compose(): Promise<{ ports: SandboxPorts<E2BSandboxExecutor>; vendor: SandboxVendorPort<E2BSandboxExecutor> }>;
   /** The handle record; every write is a compare-and-set on its version. */
   state: PortsSessionSandboxOptions<E2BSandboxExecutor>["state"];
@@ -110,16 +113,16 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       // E2B paused sandboxes are found again by attach; there is no
       // separately published restore point on this path.
       resumeRef: async () => null,
-      warn: () => undefined,
+      warn: options.warn ?? (() => undefined),
       outputDurability: () => ({ durability: "best_effort" }),
       // The sandbox token dies with its attempt; nothing to renew on a timer.
       egressRenewMs: null,
       // The E2B timeout is renewed at exec boundaries inside an execution only.
-      keepAliveMs: Math.floor(LEASE_MS / 3),
+      keepAliveMs: Math.floor((options.leaseMs ?? LEASE_MS) / 3),
       ...(options.idle === undefined ? {} : { idle: options.idle }),
       ...(options.fence === undefined ? {} : {
         execution: () => options.fence!(),
-        isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(options.fence!()) === sandboxExecutionFenceKey(execution),
+        isCurrent: async (execution) => sandboxExecutionFenceKey(options.fence!()) === sandboxExecutionFenceKey(execution),
       }),
       now: options.now,
     });
@@ -178,6 +181,7 @@ export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStora
  * the variable names. The e2b SDK is imported only when a sandbox opens. */
 export function createE2BSessionSandbox(input: {
   env: E2BSandboxEnv;
+  warn?(message: string): void;
   storage: SessionSandboxStateStorage;
   scope(): RuntimeResourceScope;
   networking(): Promise<SessionNetworking | undefined>;
@@ -191,17 +195,21 @@ export function createE2BSessionSandbox(input: {
   const { env } = input;
   const missing = (["E2B_API_KEY", "E2B_TEMPLATE", "E2B_MAX_LIFETIME_MS"] as const).filter((name) => !env[name]);
   if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b requires ${missing.join(", ")}`);
-  const maxLifetimeMs = parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!);
+  const idleMs = sandboxIdlePauseMs(env.SANDBOX_IDLE_PAUSE_MS);
+  const leaseMs = idleMs + SANDBOX_LEASE_MARGIN_MS;
+  assertLeaseCoversIdle("SANDBOX_ADAPTER=e2b", leaseMs, idleMs);
+  const maxLifetimeMs = parseMaxLifetime(env.E2B_MAX_LIFETIME_MS!, idleMs);
   const storage = storageConfig(env);
   const template = env.E2B_TEMPLATE!;
   const gateway = env.PUBLIC_BASE_URL;
   return new E2BSessionSandbox({
+    warn: input.warn, leaseMs,
     async compose() {
       const sdk = await loadE2BModule();
       const adapter = createE2BV2Adapter({
         sdk,
         connection: e2bConnection(env),
-        leaseMs: LEASE_MS,
+        leaseMs,
         maxLifetimeMs,
         user: "root",
         ...(storage.kind === "native"
@@ -258,13 +266,13 @@ export function createE2BSessionSandbox(input: {
         egress: sessionEgressPolicy(scope, await input.networking(), await capCliSubstitutions(env, scope)),
         stores,
         outputs: outputsBinding(scope),
-        idleMs: IDLE_MS,
+        idleMs,
         labels: { workspaceId: scope.workspaceId, sessionId: scope.sessionId },
       };
     },
     now: Date.now,
     fence: input.fence,
-    ...(input.idleTimer === undefined ? {} : { idle: { pauseMs: IDLE_MS, ...input.idleTimer } }),
+    ...(input.idleTimer === undefined ? {} : { idle: { pauseMs: idleMs, ...input.idleTimer } }),
   });
 }
 
@@ -288,12 +296,12 @@ function e2bConnection(env: E2BSandboxEnv) {
 
 /** E2B_MAX_LIFETIME_MS → ms. The idle window must fit inside it (design
  * §0.0 rule 11), checked here at assembly with the deployment's idle time. */
-export function parseMaxLifetime(value: string): number {
+export function parseMaxLifetime(value: string, idleMs = DEFAULT_SANDBOX_IDLE_PAUSE_MS): number {
   const ms = Number(value);
   if (!Number.isSafeInteger(ms) || ms <= 0) {
     throw new Error("E2B_MAX_LIFETIME_MS must be a positive integer of milliseconds (the E2B plan's continuous-run cap: Hobby 3600000, Pro 86400000)");
   }
-  if (IDLE_MS >= ms) throw new Error(`E2B_MAX_LIFETIME_MS (${ms}) must exceed the idle pause window (${IDLE_MS} ms)`);
+  if (idleMs >= ms) throw new Error(`E2B_MAX_LIFETIME_MS (${ms}) must exceed the idle pause window (${idleMs} ms)`);
   return ms;
 }
 

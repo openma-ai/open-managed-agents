@@ -5,9 +5,10 @@ import { setCloudflareSandboxForTest } from "../src/runtime/sandbox";
 
 afterEach(() => setCloudflareSandboxForTest(undefined));
 
-it("CF recovery uses only the CAS record, never a D1 workspace backup pointer", async () => {
+it.each([undefined, "60000"])("CF recovery uses only CAS with idle setting %s", async (idleMs) => {
   let d1Reads = 0;
   const restored: unknown[] = [];
+  const scheduled: number[] = [];
   setCloudflareSandboxForTest({
     describe: async () => ({ running: false, incarnation: null, mounts: [] }),
     provision: async (request: unknown) => { restored.push(request); return { started: true, incarnation: "new", pendingMounts: [] }; },
@@ -20,14 +21,16 @@ it("CF recovery uses only the CAS record, never a D1 workspace backup pointer", 
     latestSnapshot: { status: "taken", ref: { provider: "cloudflare", ref: "cas-snapshot", kind: "snapshot", metadata: { kind: "container" } } },
   }]]);
   const sandbox = createCloudflareSessionSandbox({
-    env: { MAIN_DB: { prepare: () => { d1Reads++; throw new Error("D1 pointer must not be read"); } } } as never,
+    env: { SANDBOX_IDLE_PAUSE_MS: idleMs, MAIN_DB: { prepare: () => { d1Reads++; throw new Error("D1 pointer must not be read"); } } } as never,
     sandboxId: "sandbox", sandboxImage: null,
     storage: { kv: { get: (k: string) => kv.get(k), put: (k: string, v: unknown) => { kv.set(k, v); } } } as never,
     session: () => ({ tenantId: "ws", environmentId: "env", sessionId: "", agentId: null }),
     fence: () => undefined, warn: () => undefined,
-    idleTimer: { schedule: () => undefined, cancel: () => undefined },
+    idleTimer: { schedule: (at: number) => { scheduled.push(at); }, cancel: () => undefined },
   });
   await sandbox.prepare();
+  await sandbox.endExecution();
+  expect(scheduled.at(-1)).toBe(Number(idleMs ?? 300000));
   expect(d1Reads).toBe(0);
   expect(restored[0]).toMatchObject({ containerSnapshot: { id: "cas-snapshot" } });
 });

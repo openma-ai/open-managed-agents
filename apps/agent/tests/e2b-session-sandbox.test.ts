@@ -60,7 +60,9 @@ function harness(saved?: SessionSandboxState) {
     },
   } as unknown as SandboxPorts<E2BSandboxExecutor>;
   const timers: string[] = [];
+  const warnings: string[] = [];
   const sandbox = new E2BSessionSandbox({
+    warn: (message: string) => warnings.push(message),
     compose: async () => ({ ports, vendor: {} as never }),
     idle: { pauseMs: 300_000, schedule: (ms) => { timers.push(`schedule:${ms}`); }, cancel: () => { timers.push("cancel"); } },
     state: {
@@ -74,7 +76,7 @@ function harness(saved?: SessionSandboxState) {
     }),
     now: () => clock.now,
   });
-  return { sandbox, log, clock, timers, stored: () => stored, goneOnAttach: () => { attachGone = true; }, failSync: (error: Error) => { syncFails = error; } };
+  return { sandbox, log, clock, timers, warnings, stored: () => stored, goneOnAttach: () => { attachGone = true; }, failSync: (error: Error) => { syncFails = error; } };
 }
 
 describe("E2BSessionSandbox", () => {
@@ -100,6 +102,7 @@ describe("E2BSessionSandbox", () => {
     await h.sandbox.exec("true");
     expect(h.log).toEqual(["attach:old", "release:old", "acquire", "egress.attach:open"]);
     expect(h.stored()).toMatchObject({ handle: { runtimeId: "new" } });
+    expect(h.warnings.some(message => message.startsWith("sandbox_recreated:"))).toBe(true);
   });
 
   it("mounts stores and outputs, publishes at turn end and releases on destroy", async () => {
@@ -193,6 +196,16 @@ describe("createE2BSessionSandbox", () => {
     expect(build("300000")).toThrow(/must exceed the idle pause window/);
     expect(build("3600000")()).toBeInstanceOf(E2BSessionSandbox);
     expect(parseMaxLifetime("86400000")).toBe(86_400_000);
+  });
+
+  it("validates the configured idle window instead of a hard-coded default", () => {
+    const build = (idle: string) => () => createE2BSessionSandbox({
+      env: { E2B_API_KEY: "k", E2B_TEMPLATE: "t", E2B_MAX_LIFETIME_MS: "120000", SANDBOX_IDLE_PAUSE_MS: idle, MEMORY_BUCKET: bucket as never, FILES_BUCKET: bucket },
+      storage: {} as never, scope: () => scope, networking: async () => undefined, fence: () => undefined, harness: () => null,
+    });
+    expect(build("60000")()).toBeInstanceOf(E2BSessionSandbox);
+    expect(build("120000")).toThrow("must exceed the idle pause window (120000 ms)");
+    for (const bad of ["0", "-1", "1.5", "invalid"]) expect(build(bad)).toThrow("SANDBOX_IDLE_PAUSE_MS must be a positive integer");
   });
 
   it("chooses native only with both bucket keys, sync with neither, and rejects half", () => {
