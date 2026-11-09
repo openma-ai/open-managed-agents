@@ -50,7 +50,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       return { ...process, confirmSandboxGone: async () => {
         const { ports } = await state.compose();
         const open = spawnedIn;
-        if (open === null || (state.current !== null && state.current !== open) || state.execution() !== spawnedExecution || spawnedExecution === undefined) return false;
+        if (open === null || (state.current !== null && state.current !== open) || spawnedExecution === undefined || state.execution()?.attemptId !== spawnedExecution.attemptId || state.execution()?.generation !== spawnedExecution.generation) return false;
         const result = await ports.sandbox.keepAlive(open);
         if (result !== "gone") return false;
         state.markLost();
