@@ -228,6 +228,7 @@ export class E2BSandboxExecutor
       envs: { ...(opts.sessionEnv === false ? {} : this.buildCommandEnv(command)), ...opts.envs },
       ...(opts.user === undefined ? this.user : { user: opts.user }),
     }) as Promise<E2BCommandResult>).catch(cause => {
+      if (isRejectedCommandStart(cause)) throw cause;
       throw Object.assign(new Error("Dispatched command outcome is unknown", { cause }), { outcome: "dispatched_unknown" });
     });
   }
@@ -361,6 +362,7 @@ export class E2BSandboxExecutor
       timeoutMs: timeout ?? this.defaultTimeoutMs,
       ...this.user,
     }) as Promise<E2BCommandResult>).catch(cause => {
+      if (isRejectedCommandStart(cause)) throw cause;
       // The request was dispatched and the SDK supplied no terminal exit.
       // Do not infer non-commit from a transport/auth/timeout error string.
       throw Object.assign(new Error("Dispatched command outcome is unknown", {cause}), {outcome:"dispatched_unknown"});
@@ -729,6 +731,13 @@ export class E2BSandboxExecutor
     }
     return env;
   }
+}
+
+// E2B maps start RPC InvalidArgument/Unauthenticated responses to these
+// concrete SDK errors before a process handle exists. Never parse messages.
+function isRejectedCommandStart(error: unknown): boolean {
+  const name = error !== null && typeof error === "object" && "name" in error ? error.name : undefined;
+  return name === "AuthenticationError" || name === "InvalidArgumentError";
 }
 
 class E2BProcessHandle implements ProcessHandle {

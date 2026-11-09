@@ -193,9 +193,10 @@ export class PiHarness implements HarnessInterface {
     const pollSteeringOnce = async () => {
       const take = ctx.runtime.takeSteeringInputs;
       const pi = ctx.pi;
-      if (!take || !pi) return;
+      if (!take || !pi || parkUnknownToolRetry(ctx.runtime)) return;
       try {
         const steered = await take();
+        if (parkUnknownToolRetry(ctx.runtime)) return;
         if (steered.length > 0) {
           const converted = modelMessagesToPi(
             await eventsToMessagesAsync(steered, ctx.fileFetcher),
@@ -223,7 +224,7 @@ export class PiHarness implements HarnessInterface {
           steerTimer = undefined;
           await steerPolling;
           await pollSteering();
-          while (agent.hasQueuedMessages() && !ctx.runtime.abortSignal?.aborted) {
+          while (agent.hasQueuedMessages() && !ctx.runtime.abortSignal?.aborted && !parkUnknownToolRetry(ctx.runtime)) {
             await agent.continue();
           }
         }

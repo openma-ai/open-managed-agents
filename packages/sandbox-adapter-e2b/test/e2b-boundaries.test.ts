@@ -83,6 +83,12 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe("E2BSandboxExecutor boundaries", () => {
+  it.each(["AuthenticationError","InvalidArgumentError"])("keeps typed start rejection %s as not dispatched",async name=>{
+    const rejected=Object.assign(new Error("rejected before process start"),{name});
+    const executor=new E2BSandboxExecutor(remote({commands:{run:async()=>{throw rejected;}}}) as never,{});
+    await expect(executor.exec("effect")).rejects.toBe(rejected);
+    await expect(executor.run("effect")).rejects.toBe(rejected);
+  });
   it("marks loss of a dispatched command without a terminal result as unknown", async () => {
     let effects=0;
     const sdkBox=remote({commands:{run:async()=>{effects++;throw new Error("transport lost after commit");}}});

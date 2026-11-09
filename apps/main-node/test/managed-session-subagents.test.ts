@@ -93,6 +93,7 @@ describe("Managed Node native subagents", () => {
         expect(result).toMatchObject({ timedOut: false, subagents: [{ threadId: childId, status: "completed", output: "Found answer" }] });
         expect(JSON.stringify(runtime.history.getMessages())).not.toContain("Found answer");
       } else {
+        expect(runtime.sessionThreadId).toBe(childId);
         expect(active.agent.system).toBe("Inspect files");
         expect(active.agent.model.id).toBe("local-model");
         expect(await sandbox.exec("pwd")).toMatchObject({ stdout: "shared" });

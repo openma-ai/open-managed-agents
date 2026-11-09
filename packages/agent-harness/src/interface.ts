@@ -158,6 +158,8 @@ export interface HarnessInterface {
 }
 
 export interface HarnessRuntime {
+  /** Explicit execution lane; hosts set this for primary and child runtimes. */
+  sessionThreadId?: string;
   history: HistoryStore;
 
   /**

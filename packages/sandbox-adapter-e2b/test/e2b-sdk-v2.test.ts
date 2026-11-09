@@ -180,7 +180,7 @@ describe("E2B SDK v2 adapter", () => {
 
   it("still surfaces transport failures from exec as errors", async () => {
     const sandbox = makeSdkSandbox("transport");
-    sandbox.commands.run.mockRejectedValueOnce(new Error("[unauthenticated] invalid username: 'user'"));
+    sandbox.commands.run.mockRejectedValueOnce(Object.assign(new Error("[unauthenticated] invalid username: 'user'"), { name: "AuthenticationError" }));
     const adapter = new E2BSandboxExecutor(sandbox as never, {});
 
     await expect(adapter.exec("id")).rejects.toThrow("invalid username");

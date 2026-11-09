@@ -23,7 +23,8 @@ export function executionContinuationEvents(history: readonly Event[], input: { 
     if (!ids.has("unknown:" + id)) events.push({id:"unknown:"+id,type:"session.warning",source:"tool_outcome_unknown",session_thread_id:input.laneId,
       message:"Tool may have committed. Explicit authorization is required for another attempt.",
       details:{outcome:"dispatched_unknown",tool_use_id:id,retry_request_id:retryId}});
-    events.push({...use,id:retryId,input:structuredClone(use.input),evaluated_permission:"ask",session_thread_id:input.laneId});
+    events.push({type:use.type,id:retryId,name:use.name,input:structuredClone(use.input),
+      ...(use.type === "agent.mcp_tool_use" ? {mcp_server_name:use.mcp_server_name}: {evaluated_permission:"ask"}),session_thread_id:input.laneId});
     ids.add(retryId);
   };
   for (let index = 0; index < history.length; index++) {

@@ -13,7 +13,7 @@ export function requestUnknownToolRetry(runtime: HarnessRuntime, toolUseId: stri
   if (original === undefined || (original.type !== "agent.tool_use" && original.type !== "agent.mcp_tool_use")) return null;
   const id = "retry:" + toolUseId;
   if (!history.some(event => event.id === id)) {
-    const threadId = asWireEvents([original])[0]?.session_thread_id;
+    const threadId = asWireEvents([original])[0]?.session_thread_id ?? runtime.sessionThreadId;
     if (!history.some(event => event.type === "session.warning" && event.source === "tool_outcome_unknown" && event.details?.retry_request_id === id)) {
       const warning = {type:"session.warning" as const,source:"tool_outcome_unknown",message:"Tool may have committed. Explicit authorization is required for another attempt.",
         ...(typeof threadId === "string" ? {session_thread_id:threadId}:{}),
@@ -30,23 +30,27 @@ export function requestUnknownToolRetry(runtime: HarnessRuntime, toolUseId: stri
 
 /** Rebuild the existing pending-confirmation projection from canonical events.
  * Hosts supply lane-scoped history; an explicit lane never depends on the last event. */
-export function parkUnknownToolRetry(runtime: HarnessRuntime, laneId = "sthr_primary"): boolean {
+export function parkUnknownToolRetry(runtime: HarnessRuntime, laneId = runtime.sessionThreadId ?? "sthr_primary"): boolean {
   const events = asWireEvents(runtime.history.getEvents()).filter(event => (event.session_thread_id ?? "sthr_primary") === laneId);
   const answered = answeredToolCallIds(events);
   const pending: string[] = [];
+  let denied = false;
   for (let index = 0; index < events.length; index++) {
     const event = events[index];
     if (event?.type !== "session.warning" || event.source !== "tool_outcome_unknown") continue;
     const details = event.details as Record<string, unknown> | undefined;
     const id = details?.retry_request_id;
-    if (typeof id !== "string" || details?.outcome !== "dispatched_unknown" || answered.has(id)) continue;
+    if (typeof id !== "string" || details?.outcome !== "dispatched_unknown") continue;
+    const verdict = events.findLast(row => row.type === "user.tool_confirmation" && row.tool_use_id === id);
+    if (verdict?.result === "deny") { denied = true; continue; }
+    if (answered.has(id)) continue;
     // Interrupt cancels authorization. It must not be resurrected by restart.
     if (events.slice(index + 1).some(row => row.type === "user.interrupt")) continue;
     const request = events.find(row => row.id === id && (row.type === "agent.tool_use" || row.type === "agent.mcp_tool_use"));
     if (request === undefined && typeof details.tool_use_id === "string") requestUnknownToolRetry(runtime, details.tool_use_id);
     pending.push(id);
   }
-  if (pending.length === 0) return false;
+  if (pending.length === 0) return denied;
   runtime.pendingConfirmations = [...new Set([...(runtime.pendingConfirmations ?? []), ...pending])];
   return true;
 }

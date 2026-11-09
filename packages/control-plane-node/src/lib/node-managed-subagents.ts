@@ -284,7 +284,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     const log = this.threadLog(thread.id);
     const before = log.length;
     const sandbox = withSandboxExecutionGuard(this.input.sandbox, { signal: abortSignal });
-    const runtime = new ManagedNodeHarnessRuntime({ initialEvents: [], events: childHistory(log),
+    const runtime = new ManagedNodeHarnessRuntime({ sessionThreadId: thread.id, initialEvents: [], events: childHistory(log),
       sandbox, abortSignal, clock: this.input.clock, ids: this.input.ids,
       output: (raw) => {
         const frame = raw as Record<string, unknown>;

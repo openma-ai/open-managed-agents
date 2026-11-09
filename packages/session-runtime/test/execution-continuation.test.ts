@@ -44,6 +44,10 @@ it("repairs a crash between the unknown warning and its retry request", () => {
   const repaired=executionContinuationEvents(partial,{executionId:"e",attempt:3,laneId:"sthr_primary"});
   expect(repaired).toContainEqual(expect.objectContaining({id:"retry:effect",type:"agent.tool_use",input:{command:"external-effect"}}));
 });
+it("does not inherit original event timestamps on a recovered retry",()=>{
+  const result=executionContinuationEvents([{id:"effect",type:"agent.tool_use",name:"bash",input:{command:"effect"},processed_at:"2026-01-01"}],{executionId:"e",attempt:2,laneId:"sthr_primary"});
+  expect(result.find(event=>event.id==="retry:effect")).not.toHaveProperty("processed_at");
+});
 it("never creates a retry after an authorized call was interrupted by the user", () => {
   const history=[{id:"effect",type:"agent.tool_use",name:"bash",input:{command:"external-effect"}}];
   const resumed=executionContinuationEvents(history,{executionId:"e",attempt:2,laneId:"sthr_primary"});

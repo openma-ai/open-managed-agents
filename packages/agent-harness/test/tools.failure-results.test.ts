@@ -155,6 +155,19 @@ describe("tool failure results (Pi harness)", () => {
 });
 
 describe("tool failure results (default harness)", () => {
+  it.each(["child","deny"])("does not dispatch after an unknown %s barrier",async mode=>{
+    const model=createScriptedLanguageModel([streamStep([...toolCallChunks({id:"new",toolName:"bash",inputDeltas:['{"command":"effect"}']}),finishChunk("tool-calls")])]);
+    let effects=1;const tools=await buildTools({id:"agent",model:"test",tools:[{type:"agent_toolset_20260401"}]} as never,{exec:async()=>{effects++;return "ok";},readFile:async()=>"",writeFile:async()=>""} as never,{});
+    const lane=mode==="child"?{session_thread_id:"sthr_child"}:{};
+    const events=[{type:"user.message",content:[{type:"text",text:"go"}]},
+      {id:"original",type:"agent.tool_use",name:"bash",input:{command:"effect"},...lane},
+      {type:"session.warning",source:"tool_outcome_unknown",message:"unknown",details:{outcome:"dispatched_unknown",tool_use_id:"original",retry_request_id:"retry:original"},...lane},
+      {id:"retry:original",type:"agent.tool_use",name:"bash",input:{command:"effect"},...lane}] as SessionEvent[];
+    if(mode==="deny")events.push({type:"user.tool_confirmation",tool_use_id:"retry:original",result:"deny"},{type:"agent.tool_result",tool_use_id:"retry:original",content:"Denied",is_error:true});
+    const runtime=makeRuntime(events);if(mode==="child")runtime.sessionThreadId="sthr_child";
+    await new DefaultHarness().run({agent:{id:"a",model:"m"},userMessage:events[0],tools,model:model.model,systemPrompt:"",env:{},runtime} as HarnessContext);
+    expect(effects).toBe(1);
+  });
   it("stops after typed unknown instead of executing a new model call ID", async () => {
     const model=createScriptedLanguageModel([
       streamStep([...toolCallChunks({id:"first",toolName:"bash",inputDeltas:['{"command":"effect"}']}),finishChunk("tool-calls")]),

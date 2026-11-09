@@ -1,10 +1,11 @@
-import { isDispatchedUnknown } from "./unknown-tool-retry";
+import { isDispatchedUnknown, parkUnknownToolRetry, requestUnknownToolRetry } from "./unknown-tool-retry";
 import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { z } from "zod";
 import type { HarnessContext } from "./interface";
 
 export function toolsToPi(ctx: HarnessContext): AgentTool[] {
+  let unknownObserved = false;
   return Object.entries(ctx.tools).map(([name, raw]) => {
     const tool = raw as {
       description?: string;
@@ -19,6 +20,7 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
       description: tool.description ?? name,
       parameters: Type.Unsafe<Record<string, unknown>>(schema),
       execute: async (toolCallId, params, signal) => {
+        if (unknownObserved || parkUnknownToolRetry(ctx.runtime)) return {content:[{type:"text",text:"Execution is parked pending explicit unknown-outcome authorization."}],details:{openmaPendingConfirmation:true},terminate:true};
         if (!tool.execute) {
           ctx.runtime.pendingConfirmations ??= [];
           ctx.runtime.pendingConfirmations.push(toolCallId);
@@ -33,6 +35,8 @@ export function toolsToPi(ctx: HarnessContext): AgentTool[] {
           return { content: valueToPiContent(value), details: value };
         } catch (error) {
           if (!isDispatchedUnknown(error)) throw error;
+          unknownObserved = true;
+          requestUnknownToolRetry(ctx.runtime, toolCallId);
           return { content: [{type:"text",text:"Tool outcome unknown: the operation may have committed; explicit authorization is required before retry."}],
             details: {openmaDispatchedUnknown:true}, terminate:true };
         }

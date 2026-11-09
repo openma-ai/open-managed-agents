@@ -237,6 +237,7 @@ function toHarnessToolResultContent(
 }
 
 export interface ManagedNodeHarnessRuntimeInput {
+  sessionThreadId?: string;
   initialEvents: SessionBootstrapEvent[];
   events: SessionEventView[];
   sandbox: SandboxExecutor;
@@ -276,6 +277,7 @@ export function createStrictlyIncreasingEventStamp(
 
 export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   readonly history: HistoryStore;
+  readonly sessionThreadId: string;
   readonly sandbox: SandboxExecutor;
   readonly abortSignal?: AbortSignal;
   private readonly applicationHistoryEvents: SessionEventView[];
@@ -292,6 +294,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   readonly takeSteeringInputs?: () => Promise<SessionEvent[]>;
 
   constructor(private readonly input: ManagedNodeHarnessRuntimeInput) {
+    this.sessionThreadId = input.sessionThreadId ?? "sthr_primary";
     const take = input.takeSteeringInputs;
     if (take !== undefined) {
       this.takeSteeringInputs = async () => {
@@ -356,6 +359,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
       id?: string;
       processed_at?: string;
     };
+    if (this.sessionThreadId !== "sthr_primary") Object.assign(frame, { session_thread_id: this.sessionThreadId });
     if (typeof frame.id !== "string") frame.id = this.input.ids.nextEventId();
     if (typeof frame.processed_at !== "string") {
       frame.processed_at = this.stamp();

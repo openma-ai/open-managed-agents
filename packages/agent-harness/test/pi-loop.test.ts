@@ -81,6 +81,24 @@ function makeContext(responses: ReturnType<typeof fauxAssistantMessage>[]) {
 }
 
 describe("PiHarness", () => {
+  it("does not let ordinary queued steering bypass an unknown tool park",async()=>{
+    const {ctx}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"first"})]),fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"second"})]),fauxAssistantMessage("done")]);
+    let effects=0,taken=false;ctx.tools.echo.execute=async()=>{effects++;if(effects===1)throw Object.assign(new Error("lost"),{outcome:"dispatched_unknown"});return "ok";};
+    ctx.runtime.takeSteeringInputs=async()=>{if(taken)return [];taken=true;return [{type:"user.message",content:[{type:"text",text:"ordinary input"}]}];};
+    await new PiHarness().run(ctx);expect(effects).toBe(1);
+  });
+  it.each(["child","deny"])("never resamples an unknown effect after %s",async mode=>{
+    const {ctx,events}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"new"})]),fauxAssistantMessage("done")]);
+    let effects=1;ctx.tools.echo.execute=async()=>{effects++;return "ok";};
+    const lane=mode==="child"?{session_thread_id:"sthr_child"}:{};
+    if(mode==="child")ctx.runtime.sessionThreadId="sthr_child";
+    events.push(...([{id:"original",type:"agent.tool_use",name:"echo",input:{value:"effect"},...lane},
+      {type:"agent.tool_result",tool_use_id:"original",is_error:true,content:"unknown",...lane},
+      {type:"session.warning",source:"tool_outcome_unknown",message:"unknown",details:{outcome:"dispatched_unknown",tool_use_id:"original",retry_request_id:"retry:original"},...lane},
+      {id:"retry:original",type:"agent.tool_use",name:"echo",input:{value:"effect"},evaluated_permission:"ask",...lane}] as SessionEvent[]));
+    if(mode==="deny")events.push({type:"user.tool_confirmation",tool_use_id:"retry:original",result:"deny"},{type:"agent.tool_result",tool_use_id:"retry:original",is_error:true,content:"Denied"});
+    await new PiHarness().run(ctx);expect(effects).toBe(1);
+  });
   it("does not sample a new call ID while a durable unknown retry request is awaiting confirmation", async () => {
     const {ctx,events,echo}=makeContext([
       fauxAssistantMessage([fauxToolCall("echo",{value:"repeat-effect"},{id:"new-call"})]),
