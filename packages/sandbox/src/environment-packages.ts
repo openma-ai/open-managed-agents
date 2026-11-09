@@ -307,11 +307,21 @@ export async function ensureEnvironmentPackages(
   // Workspace-only restores can retain the marker but exclude node_modules.
   // Even a prepared-base /tmp marker is not proof that the restored packages exist.
   if (state !== "fresh" && packages?.npm?.length) {
-    const command = "npm ls --global --prefix /workspace/.npm-global --depth=0 " + packages.npm.map(shellQuote).join(" ");
-    try {
-      if (parseExecResult(await sandbox.exec(command, 30_000)).exitCode !== 0) state = "fresh";
-    } catch {
-      state = "fresh";
+    // npm ls with multiple filters succeeds when ANY filter matches. Query
+    // each declared spec separately: npm applies its own version/range filter,
+    // and we also require that spec's dependency in the machine-readable tree.
+    for (const spec of packages.npm) {
+      const name = /^(?:(@[^/]+\/[^@]+)|([^@/]+))(?:@.*)?$/.exec(spec)?.slice(1).find(Boolean);
+      if (!name) { state = "fresh"; break; }
+      try {
+        const result = parseExecResult(await sandbox.exec("npm ls --global --prefix /workspace/.npm-global --depth=0 --json " + shellQuote(spec), 30_000));
+        const tree = JSON.parse(result.stdout) as {dependencies?: Record<string, {version?: string; missing?: boolean; invalid?: unknown}>};
+        const installed = tree.dependencies?.[name];
+        if (result.exitCode !== 0 || !installed?.version || installed.missing || installed.invalid) { state = "fresh"; break; }
+      } catch {
+        state = "fresh";
+        break;
+      }
     }
   }
   if (state === "warm") {
