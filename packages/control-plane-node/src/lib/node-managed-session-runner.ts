@@ -955,7 +955,7 @@ export class DefaultNodeManagedSessionRunner
           describe: (error) => error.message,
         });
         if (result.type === "completed") return;
-        failureReported = result.type === "exhausted";
+        failureReported = result.type === "exhausted" || result.type === "deadline";
         throw result.error;
       };
       if (!parkedStill) await runHarness();

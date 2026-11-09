@@ -91,7 +91,36 @@ async function shortenInvocation(id) {
   });
 }
 
+registerHarness("deadline-backoff", () => ({ async run() { throw new Error("temporary outage"); } }));
 describe("characterization: SessionDO interrupt and lane drain", () => {
+  it("reports a deadline during retry backoff before idle, never silent cancellation", async () => {
+    const id = await createSession("deadline-backoff");
+    await shortenInvocation(id);
+    await send(id, message("start"));
+    const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
+    expect(seen.filter(e => e.type === "session.error").map(e => e.error.retry_status?.type ?? e.error.retry_status)).toEqual(["retrying", "exhausted"]);
+    expect(JSON.stringify(seen.findLast(e => e.type === "session.error"))).toContain("invocation_deadline");
+    expect(seen.at(-1).type).toBe("session.status_idle");
+    expect(seen.at(-1).stop_reason.type).toBe("retries_exhausted");
+    const settled = await env.MAIN_DB.prepare("SELECT state FROM managed_session_executions WHERE session_id=?").bind(id).all();
+    expect(settled.results.length).toBeGreaterThan(0);
+    expect(settled.results.every(e => e.state === "failed")).toBe(true);
+  }, 30_000);
+  it("bounds a hung cleanup RPC and still reports error before idle", async () => {
+    const id = await createSession("record-order");
+    await runInDurableObject(stubOf(id), instance => {
+      const alarm = instance.runAlarm.bind(instance);
+      instance.synchronizeManagedMemoryStores = () => instance._turnInvocation.cleanup(() => new Promise(() => {}));
+      instance.alarm = async () => {
+        const invocation = instance._turnInvocation = new TurnInvocation(1000, 100);
+        try { await alarm(); } finally { invocation.close(); instance._turnInvocation = null; }
+      };
+    });
+    await send(id, message("start"));
+    const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
+    expect(seen.filter(e => e.type === "session.error").some(e => JSON.stringify(e).includes("cleanup_deadline"))).toBe(true);
+    expect(seen.at(-1).stop_reason.type).toBe("retries_exhausted");
+  }, 30_000);
   it.each(["revision", "child", "judge", "tool"])("cancels %s with the invocation and reports deadline before idle", async (kind) => {
     cancelled.delete(kind);
     let extra = kind === "tool" ? { tools: [{ type: "agent_toolset_20260401", default_config: { enabled: true } }] } : {};

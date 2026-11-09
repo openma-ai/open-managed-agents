@@ -101,6 +101,8 @@ export {
   runTurnAttempts,
   settleTurnFailure,
   TURN_RETRY,
+  TurnDeadlineError,
+  type TurnDeadlineReason,
   type PlanTurnFailureInput,
   type TurnAttemptsResult,
   type TurnFailureClass,

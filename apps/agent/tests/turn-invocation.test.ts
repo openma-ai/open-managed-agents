@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { runTurnAttempts } from "@open-managed-agents/session-runtime";
 import { TurnInvocation } from "../src/runtime/turn-invocation";
 
 describe("TurnInvocation", () => {
@@ -21,6 +22,34 @@ describe("TurnInvocation", () => {
       await expect(invocation.run(async () => { throw new Error("must not start another turn"); }))
         .rejects.toThrow("invocation wall-time budget");
       invocation.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it("settles a backoff deadline through shared attempts under workerd", async () => {
+    const invocation = new TurnInvocation(30);
+    const events: string[] = [];
+    try {
+      const result = await runTurnAttempts({
+        run: async () => { throw new Error("temporary outage"); },
+        agentEventCount: () => 0, isCancelled: () => false, classify: () => "transient",
+        retry: { attempts: 3, delayMs: () => 1000 }, signal: invocation.signal,
+        events: { sessionError: (_message, status) => events.push(status), rescheduled: () => events.push("rescheduled") },
+        describe: error => error.message,
+      });
+      expect(result.type).toBe("deadline");
+      expect(result).toMatchObject({ reason: "invocation_deadline" });
+      expect(events).toEqual(["retrying", "rescheduled", "exhausted"]);
+    } finally { invocation.close(); }
+  });
+  it("bounds cleanup even when an RPC never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const invocation = new TurnInvocation(100, 20);
+      const cleanup = invocation.cleanup(() => new Promise<void>(() => {}));
+      const rejection = expect(cleanup).rejects.toThrow("cleanup");
+      await vi.advanceTimersByTimeAsync(120);
+      await rejection;
+      invocation.close();
+      expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
   });
   it("does not keep a timer after a successful invocation", async () => {

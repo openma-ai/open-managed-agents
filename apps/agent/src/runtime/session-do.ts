@@ -2124,6 +2124,7 @@ export class SessionDO extends DurableObject<Env> {
           // atomic D1 outbox row and takes the claim path directly.
           admitUnclaimed: () => this.admitQueueFallback(executionStore, threadId),
           failed: (error) => {
+            if (error.name === "TurnDeadlineError") return; // already reported before idle
             const errorEvent: SessionEvent = { type: "session.error", error: error.message };
             history.append(errorEvent);
             this.broadcastEvent(errorEvent);
@@ -2343,6 +2344,7 @@ export class SessionDO extends DurableObject<Env> {
         // A budget resume continues from history with no new user input.
         const trigger = turnInput.trigger.type === "session.updated" ? null : batch.at(-1) ?? null;
         const turn = await this.runAcceptedTurn(trigger, batch, executionHistory, signal, fence);
+        this._turnInvocation!.signal.throwIfAborted();
         if (turn?.holdQueuedOnLane) {
           holdQueuedOnLane = true;
           this.setExhaustedAt(threadId, Date.now());
@@ -4303,12 +4305,12 @@ export class SessionDO extends DurableObject<Env> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const result = await binding.synchronizeManagedMemorySnapshots({
+        const result = await this._turnInvocation!.cleanup(() => binding.synchronizeManagedMemorySnapshots({
           tenantId,
           sessionId,
           runtimeGeneration,
           executionFence,
-        });
+        }));
         if (result.type === "fence_lost") {
           const error = new Error("Managed Memory synchronization lost its execution fence");
           error.name = "ExecutionFenceLostError";
@@ -6330,7 +6332,7 @@ export class SessionDO extends DurableObject<Env> {
       this._turnInvocation!.signal.throwIfAborted();
       // Execution end before the Memory barrier: egress revoked, then a copy
       // sync publishes the sandbox's Memory edits. A failed publish fails the step.
-      if (this.portsSandbox !== null) await this.portsSandbox.endExecution();
+      if (this.portsSandbox !== null) await this._turnInvocation!.cleanup(() => this.portsSandbox!.endExecution());
       // Memory mutations are part of turn completion, not an asynchronous
       // afterthought. This barrier precedes status_idle and execution settle.
       await this.synchronizeManagedMemoryStores(activeFence);
@@ -6405,7 +6407,11 @@ export class SessionDO extends DurableObject<Env> {
         stop_reason: { type: "retries_exhausted" },
       };
     } finally {
-      await disposeTools(allTools);
+      try { await this._turnInvocation!.cleanup(() => disposeTools(allTools)); }
+      catch (error) {
+        reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
+        completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+      }
       if (!managedMemorySynchronized) {
         try {
           // Error/cancel rescue pass. Reconciliation is idempotent, so a
@@ -6414,6 +6420,8 @@ export class SessionDO extends DurableObject<Env> {
           managedMemorySynchronized = true;
         } catch (error) {
           if (!(error instanceof Error && error.name === "ExecutionFenceLostError")) {
+            reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
+            completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
             logWarn(
               {
                 op: "session_do.memory_sync.rescue",
@@ -6425,9 +6433,6 @@ export class SessionDO extends DurableObject<Env> {
           }
         }
       }
-      // Only delete if it's still ours — a sub-agent run within the same
-      // thread may have temporarily replaced it. Same-thread re-entry is
-      // mutex'd by _draining so this is theoretical safety only.
       if (this._threadAbortControllers.get(turnThreadId) === abortController) {
         this._threadAbortControllers.delete(turnThreadId);
       }
@@ -6453,11 +6458,6 @@ export class SessionDO extends DurableObject<Env> {
           console.warn(`[processUserMessage] catch-all idle emit failed:`, err);
         }
       }
-      // Status auto-derives — Workspace backup is fired by
-      // OmaSandbox.onActivityExpired when the container's sleepAfter
-      // elapses (see oma-sandbox.ts) — exactly one snapshot per quiet
-      // period. Explicit /destroy snapshots eagerly via
-      // sandbox.snapshotWorkspaceNow(). Per-turn backup is intentionally off.
     }
     return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
   }
