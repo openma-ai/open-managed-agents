@@ -11,6 +11,7 @@ export function memorySandboxTokens(options: { sessionId?: string; workspaceId?:
   let state: "running" | "settled" = "running";
   let archived = false;
   let failing = false;
+  const seenTokens: string[] = [];
   const store: SandboxTokenStore = {
     async find(input) {
       if (failing) throw new Error("database unavailable");
@@ -34,9 +35,17 @@ export function memorySandboxTokens(options: { sessionId?: string; workspaceId?:
   return {
     store, sessionId, fence,
     issue: (scope: SandboxTokenScope = "egress") => issueSandboxToken(store, fence, { scope }),
-    authenticate: (authorization: string | null) => authenticateSandboxEgress(store, authorization),
+    authenticate: (authorization: string | null) => {
+      const basic = /^Basic (\S+)$/u.exec(authorization ?? "")?.[1];
+      if (basic !== undefined) seenTokens.push(atob(basic).split(":").slice(1).join(":"));
+      return authenticateSandboxEgress(store, authorization);
+    },
+    /** The sandbox tokens the gateway was shown, in order. */
+    seenTokens,
     /** The attempt ends (settle / take-over): every token of it is refused. */
     settle() { state = "settled"; entries = []; },
+    /** A new attempt claims the execution: an empty token set, running again. */
+    claimNext() { state = "running"; entries = []; },
     archive() { archived = true; },
     /** The database cannot be read: 503, the forwarder stays up. */
     fail(value = true) { failing = value; },

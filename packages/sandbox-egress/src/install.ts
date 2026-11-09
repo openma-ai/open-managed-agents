@@ -72,14 +72,15 @@ const log=fs.openSync(path.join(dir,'relay.log'),'a');const child=cp.spawn(proce
 (async()=>{let r=read();let pid=r&&r.pid;let restarts=0;
 if(!await healthy(r))pid=await start(r);
 const t=Date.now();for(;;){r=read();const consumed=!fs.existsSync(bindingFile);
-if(r&&consumed&&r.bindingId===id&&await healthy(r)){process.stdout.write('EGRESS_READY:'+JSON.stringify({pid:r.pid,port:r.port,caFile:r.caFile,caBundleFile:r.caBundleFile})+String.fromCharCode(10));process.exit(0)}
+if(r&&consumed&&r.bindingId===id&&await healthy(r)){process.stdout.write('EGRESS_READY:'+JSON.stringify({pid:r.pid,port:r.port,caFile:r.caFile,caBundleFile:r.caBundleFile,restarts})+String.fromCharCode(10));process.exit(0)}
 if(r&&consumed&&r.bindingId!==id&&r.bindingError)fail(String(r.bindingError));
 if(!consumed&&delivered()!==null&&delivered()!==id)fail('superseded by a newer delivery');
 if(!consumed&&pid&&!alive(pid)){if(++restarts>2)fail('relay exited before it took the binding');pid=await start(null)}
 if(Date.now()-t>8000)fail(consumed?'relay did not report this delivery':'binding was not consumed');
 await sleep(50)}})().catch(e=>fail(e&&e.message||'error'))`;
 
-export interface PreparedSandboxEgress { pid?: number; port?: number; caFile?: string }
+/** `restarts`: relays replaced while waiting for this delivery (non-secret, for diagnosis). */
+export interface PreparedSandboxEgress { pid?: number; port?: number; caFile?: string; restarts?: number }
 export async function clearSandboxEgress(sandbox: SandboxPort): Promise<void> {
   if (supportsCredentialEgress(sandbox)) await sandbox.clearCredentialEgress();
   const previous = installed.get(sandbox) ?? [];
@@ -158,7 +159,7 @@ export async function prepareSandboxEgress(input: {
   if (failed) throw new Error(`Sandbox credential relay did not take its binding: ${failed[1]}`);
   const matched = /EGRESS_READY:(\{[^\n]+\})/u.exec(output);
   if (!matched) throw new Error("Sandbox credential relay installation/readiness failed");
-  const state = JSON.parse(matched[1]!) as { pid: number; port: number; caFile: string; caBundleFile: string };
+  const state = JSON.parse(matched[1]!) as { pid: number; port: number; caFile: string; caBundleFile: string; restarts?: number };
   if (!Number.isSafeInteger(state.pid) || !Number.isSafeInteger(state.port)) throw new Error("Invalid sandbox relay readiness");
   const proxy = `http://127.0.0.1:${state.port}`;
   await replace({ ...placeholders, HTTPS_PROXY: proxy, https_proxy: proxy, HTTP_PROXY: proxy, http_proxy: proxy,
