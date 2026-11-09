@@ -51,18 +51,6 @@ describe("sandbox credential egress installation boundary", () => {
     }
   });
 
-  it("uses native outbound capability without installing a Node process or local CA", async () => {
-    const env: Record<string, string> = {};
-    const native = { exec: vi.fn(async () => ""), readFile: async () => "", writeFile: vi.fn(async path => path), setEnvVars: async values => { Object.assign(env, values); }, prepareCredentialEgress: vi.fn(async () => {}), clearCredentialEgress: vi.fn(async () => {}) };
-    await prepareSandboxEgress(input(native));
-    expect(native.prepareCredentialEgress).toHaveBeenCalledWith({ endpoint: "https://control.example", sessionId: "session", token: "session-token" });
-    expect(native.writeFile).not.toHaveBeenCalled(); expect(native.exec).not.toHaveBeenCalled();
-    expect(env).toEqual({ GITHUB_TOKEN: "__cap_managed__" });
-    await clearSandboxEgress(native);
-    expect(native.clearCredentialEgress).toHaveBeenCalledOnce(); expect(env.GITHUB_TOKEN).toBe("");
-    expect(native.exec).not.toHaveBeenCalled();
-  });
-
   it.each(["node missing", "health check failed"])("fails explicitly instead of installing proxy env when %s", async reason => {
     const setEnvVars = vi.fn();
     const sandbox: SandboxPort = { exec: async command => command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : reason, readFile: async () => "", writeFile: async path => path, setEnvVars };

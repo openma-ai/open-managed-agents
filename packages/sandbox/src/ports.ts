@@ -217,22 +217,6 @@ export function supportsSessionOutputMount(
   }
 }
 
-export interface SandboxCredentialEgressBinding {
-  endpoint: string;
-  /** The Session id sent with the token (Basic username / SOCKS5 user). */
-  sessionId: string;
-  token: string;
-}
-/** Native interception or a sandbox-resident relay implement the same capability. */
-export interface SandboxCredentialEgressPort {
-  prepareCredentialEgress(binding: SandboxCredentialEgressBinding): Promise<void>;
-  clearCredentialEgress(): Promise<void>;
-}
-export function supportsCredentialEgress(value: unknown): value is SandboxCredentialEgressPort {
-  const port = value as Partial<SandboxCredentialEgressPort> | null;
-  return port !== null && typeof port === "object" && typeof port.prepareCredentialEgress === "function" && typeof port.clearCredentialEgress === "function";
-}
-
 /** Fallback workspace root for images that declare no WORKDIR (ADR 0016). */
 export const DEFAULT_WORKSPACE_ROOT = "/workspace";
 /** Fixed root for platform-owned files (skills, harness state, agent homes).

@@ -53,10 +53,10 @@ describe("relay pass binding (design §0.0 rule 10)", () => {
   it("repeated attach and policy update on one runtime and attempt share one issuance; a replacement runtime reissues", async () => {
     const bindings: string[] = [];
     const runtime = {
-      exec: async () => "", readFile: async () => "", writeFile: async (path: string) => path,
+      exec: async (command: string) => command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":123,"port":18080,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}' : "",
+      readFile: async () => "",
+      writeFile: async (path: string, content: string) => { if (path.endsWith(".next.json")) bindings.push(JSON.parse(content).token); return path; },
       setEnvVars: async () => {},
-      prepareCredentialEgress: async (binding: { token: string }) => { bindings.push(binding.token); },
-      clearCredentialEgress: async () => {},
     };
     let issued = 0;
     const holder = attemptSandboxTokens();

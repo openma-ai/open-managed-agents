@@ -1,5 +1,4 @@
 import type { SandboxPort } from "@open-managed-agents/sandbox";
-import { supportsCredentialEgress } from "@open-managed-agents/sandbox";
 import type { CredentialEgressRevokeReason, RuntimeResourceScope, RuntimeResourceFence } from "@open-managed-agents/runtime-resource-contract";
 import { RELAY_BUNDLE_GZIP_BASE64 } from "./relay-bundle.generated";
 import { RELAY_PROTOCOL } from "./relay-protocol";
@@ -84,24 +83,23 @@ await sleep(50)}})().catch(e=>fail(e&&e.message||'error'))`;
 /** `restarts`: relays replaced while waiting for this delivery (non-secret, for diagnosis). */
 export interface PreparedSandboxEgress { pid?: number; port?: number; caFile?: string; restarts?: number }
 export async function clearSandboxEgress(sandbox: SandboxPort): Promise<void> {
-  if (supportsCredentialEgress(sandbox)) await sandbox.clearCredentialEgress();
   const previous = installed.get(sandbox) ?? [];
   if (previous.length) {
     if (!sandbox.setEnvVars) throw new Error("Sandbox cannot clear credential environment");
     await sandbox.setEnvVars(Object.fromEntries(previous.map(name => [name, ""])));
     installed.delete(sandbox);
   }
-  if (!supportsCredentialEgress(sandbox)) await sandbox.exec("if [ -f .oma-egress/ready.json ]; then node -e 'try { process.kill(JSON.parse(require(\"fs\").readFileSync(\".oma-egress/ready.json\")).pid, \"SIGTERM\") } catch {}'; fi");
+  await sandbox.exec("if [ -f .oma-egress/ready.json ]; then node -e 'try { process.kill(JSON.parse(require(\"fs\").readFileSync(\".oma-egress/ready.json\")).pid, \"SIGTERM\") } catch {}'; fi");
 }
-/** Provider-neutral lifecycle. Native adapters own interception; otherwise the
- * sandbox owns its bundled local process, CA files, readiness and cleanup. */
+/** Bundled-relay lifecycle: the sandbox owns its process, CA files, readiness
+ * and cleanup. Native interception uses SandboxEgressPort directly. */
 export async function prepareSandboxEgress(input: {
   sandbox: SandboxPort;
   scope: { workspaceId: string; sessionId: string; vaultIds: readonly string[] };
   relay: { endpoint: string; ca?: string; upstreamCa?: string };
   /** Managed hosts own cleanup separately from the revoked execution view. */
   registerCleanup?(cleanup: (sandbox: SandboxPort) => Promise<void>): void;
-  /** A new sandbox token for this execution (the attempt's earlier ones stay valid). */
+  /** The shared issuer supplies the token for this physical sandbox. */
   issueToken(): Promise<string>;
   placeholders(scope: { workspaceId: string; sessionId: string; vaultIds: readonly string[] }): Promise<Record<string, string>>;
 }): Promise<PreparedSandboxEgress> {
@@ -119,9 +117,6 @@ export async function prepareSandboxEgress(input: {
   const port = await sandbox.egressRelayPort?.() ?? SANDBOX_RELAY_PORT;
   const binding = { ...input.relay, ...(port === SANDBOX_RELAY_PORT ? {} : { port }), sessionId: scope.sessionId, token: await input.issueToken(), ...(inspect ? { inspect } : {}) };
   if (new URL(binding.endpoint).protocol !== "https:") throw new Error("Credential relay endpoint must use HTTPS");
-  if (supportsCredentialEgress(sandbox)) {
-    await sandbox.prepareCredentialEgress(binding); await replace(placeholders); return {};
-  }
   // No provider daemon API is assumed: exec + files work even on adapters
   // without startProcess. A bounded probe distinguishes failure from success.
   const source = await relayBundle();

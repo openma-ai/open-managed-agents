@@ -273,20 +273,21 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let now = 1_000;
     let boundPass: string | undefined;
     const sandbox = {
-      exec: async () => "",
+      exec: async (command: string) => {
+        if (command.includes("if [ -f .oma-egress/ready.json")) { boundPass = undefined; return ""; }
+        return command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : command.includes("echo EGRESS_DELIVERED") ? "EGRESS_DELIVERED" : command.includes("EGRESS_READY:") ? 'EGRESS_READY:{"pid":123,"port":18080,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}' : "";
+      },
       readFile: async () => "",
       destroy: async () => {},
-      writeFile: async (path: string) => path,
-      prepareCredentialEgress: async (binding: { token: string }) => { boundPass = binding.token; },
-      clearCredentialEgress: async () => { boundPass = undefined; },
+      writeFile: async (path: string, content: string) => { if (path.endsWith(".next.json")) boundPass = JSON.parse(content).token; return path; },
       setEnvVars: async (values: Record<string, string>) => { Object.assign(env, values); },
     };
     const runner = new DefaultNodeManagedSessionRunner({
       buildSandbox: async () => { builds++; return sandbox; },
       prepareSandbox: async () => { preparations++; },
-      refreshSandboxEnvironment: async ({ workspaceId, session, sandbox }) => {
+      refreshSandboxEnvironment: async ({ workspaceId, session, sandbox, registerCleanup }) => {
         await prepareSandboxEgress({
-          sandbox,
+          sandbox, registerCleanup,
           scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
           placeholders: async (scope) => scope.vaultIds.includes("vlt_a")
             ? { GITHUB_TOKEN: "__cap_managed__" } : { GITLAB_TOKEN: "__cap_managed__" },
