@@ -8,28 +8,12 @@
 // inside the sandbox here, so the token's scope must be `all`.
 
 import type { Env } from "@open-managed-agents/shared";
-import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 import { resolveProtocolEndpointsFromModelCard } from "@open-managed-agents/inference-proxy";
-import { sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
-import { authenticateSandboxToken, type SandboxBearerAuthority, type SandboxGatewayStores } from "@open-managed-agents/sandbox-gateway";
-import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
+import { authenticateSandboxToken } from "@open-managed-agents/sandbox-gateway";
 import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { cfSandboxTokenStore } from "./cf-sandbox-token-store";
-
-/** Not Node's purpose: a token sealed by one platform never opens on the other. */
-const EXECUTION_TOKEN_PURPOSE = "managed.cf-acp.execution-token";
-
-const cfGatewayStores = (env: Env): SandboxGatewayStores =>
-  async (workspaceId) => createSqlSandboxGatewayStore(new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(workspaceId)));
-
-/** DEPLOY TRANSITION ONLY (verify, never issue; remove in the next release):
- * authMiddleware's check of a pre-#561 sealed execution token, on the proxy
- * routes, while its attempt is still the running one. */
-export function cfAcpExecutionAuthority(env: Env, secret: string): SandboxBearerAuthority["execution"] {
-  return { codec: sealedSandboxBearerCodec(new WebCryptoAesGcm(secret, EXECUTION_TOKEN_PURPOSE), () => new Date()), stores: cfGatewayStores(env) };
-}
 
 /** One execution's ACP channels (HarnessContext.env mcpProxy + hostedInference)
  * over `sessionsToken`, that execution's sandbox token. */

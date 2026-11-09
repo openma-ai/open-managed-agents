@@ -9,7 +9,7 @@ import type { SessionExecutionFence, SessionExecutionStorePort } from "@open-man
 import {
   authenticateSandboxEgress, authenticateSandboxToken, authenticateSandboxTokenRequest, generateSandboxToken,
   issueSandboxToken, sandboxBasicCredential, sandboxTokenRandomPart, sha256Hex,
-  type SandboxGatewayStore, type SandboxTokenChannel, type SandboxTokenStore,
+  type SandboxTokenChannel, type SandboxTokenStore,
 } from "../src/index";
 import { seedSandboxGatewaySessionRows, type SandboxGatewaySessionSeed } from "./gateway-store-conformance";
 
@@ -94,8 +94,6 @@ export interface SandboxTokenStoreFixture {
   gate: StatementGate;
   /** The same database, ungated (fixture writes such as a resource detach). */
   raw: GateSql;
-  /** The fence-bound store the pre-#561 credentials verify against, over the gated client. */
-  gatewayStore: SandboxGatewayStore;
   executions: SessionExecutionStorePort;
   seedSession(session: SandboxGatewaySessionSeed & { document?: Record<string, unknown> }): Promise<void>;
   /** Overwrites sandbox_token_hashes (to plant malformed entries). */

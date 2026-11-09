@@ -155,6 +155,7 @@ describe("isolated Cloudflare managed runtime package", () => {
       leaseTtlMs: 1234,
       controlPlaneBaseUrl: "https://control",
       createSandbox,
+      sandboxTokenSha256: async ({ scope: bound, generation }) => `sha-${bound.workId}-${generation}`,
     });
     const scope = { workspaceId: "tenant", environmentId: "environment", sessionId: "session", workId: "work" };
     const fence = { ...scope, ownerId: "owner", generation: 3, token: "fence", expiresAt: "2026-09-07T12:00:00.000Z" };
@@ -174,8 +175,9 @@ describe("isolated Cloudflare managed runtime package", () => {
     await runtime.outputs.attach({ scope, fence, strategy: "durable_mount", binding: outputs, sandbox: lease, signal });
     await runtime.credentialEgress!.attach({ scope, fence, binding: egress!, sandbox: lease, signal });
     await runtime.credentialEgress!.revoke({ scope, fence, binding: egress!, reason: "completed" });
+    // The sandbox token's digest is bound; the fence is never an authority (design §0.0b B.2).
     expect(sandbox.setOutboundContext).toHaveBeenCalledWith({
-      tenantId: "tenant", environmentId: "environment", sessionId: "session", workId: "work", ownerId: "owner", generation: 3, fenceToken: "fence", required: true, controlPlaneBaseUrl: "https://control",
+      tenantId: "tenant", environmentId: "environment", sessionId: "session", workId: "work", tokenSha256: "sha-work-3", required: true, controlPlaneBaseUrl: "https://control",
     });
     expect(sandbox.mountSessionOutputs).toHaveBeenCalledWith({ tenantId: "tenant", sessionId: "session" });
     expect(sandbox.revokeOutboundContext).toHaveBeenCalledWith({ workId: "work", generation: 3, reason: "completed" });
@@ -195,7 +197,13 @@ describe("isolated Cloudflare managed runtime package", () => {
     const lease = await runtime.sandbox.acquire({ scope, fence, plan: { workspaceStrategy: "checkpoint_restore", outputStrategy: null, runtimeCheckpoint: null, driver: { type: "ama_worker", process: { command: "worker" } } }, workspace, outputs: null, credentialEgress: egress, signal });
     await runtime.credentialEgress!.attach({ scope, fence, binding: egress!, sandbox: lease, signal });
     expect(sandbox.setOutboundContext).toHaveBeenCalledWith(expect.not.objectContaining({ controlPlaneBaseUrl: expect.anything() }));
-    expect(sandbox.setOutboundContext).toHaveBeenCalledWith(expect.objectContaining({ required: false }));
+    // best_effort without a token source: bound without a token (no injection), never the fence.
+    expect(sandbox.setOutboundContext).toHaveBeenCalledWith({ tenantId: "tenant", environmentId: "environment", sessionId: "session", workId: "work", required: false });
+    // required without a token source: refused at attach, nothing bound.
+    sandbox.setOutboundContext.mockClear();
+    const required = await runtime.credentialEgress!.prepare({ scope, fence, requirement: "required", idempotencyKey: "egress-required", signal });
+    await expect(runtime.credentialEgress!.attach({ scope, fence, binding: required!, sandbox: lease, signal })).rejects.toThrow(/sandbox token source/);
+    expect(sandbox.setOutboundContext).not.toHaveBeenCalled();
 
     const withoutMount = new FakeSandbox();
     Object.defineProperty(withoutMount, "mountSessionOutputs", { value: undefined });

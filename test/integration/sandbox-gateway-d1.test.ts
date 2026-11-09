@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Cloudflare adapters of the Session execution Ports on the tenant D1 they
-// run on in production (apps/main cfSandboxGatewayStores): the shared
+// run on in production (apps/main cfSandboxTokenStore): the shared
 // conformance suites (design §0.7 测试门禁 2). Node runs the same suites in
 // packages/session-runtime-sql/test/execution-lease.test.ts and
 // apps/main-node/test/node-managed-acp-capability.test.ts.
@@ -9,17 +9,14 @@ import { beforeAll } from "vitest";
 import { sqlClientFromD1 } from "../../packages/sql-client/src/adapters/cf-d1";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionStore } from "../../packages/session-runtime-sql/src/coordination";
 import { createSqlSessionExecutionLeases } from "../../packages/session-runtime-sql/src/execution-lease";
-import { createSqlSandboxGatewayStore } from "../../packages/sandbox-gateway-sql/src/index";
 import { sessionExecutionLeasesConformance } from "../../packages/session-runtime/test/execution-lease-conformance";
-import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from "../../packages/sandbox-gateway/test/gateway-store-conformance";
+import { seedSandboxGatewaySessionRows } from "../../packages/sandbox-gateway/test/gateway-store-conformance";
 import { describe, expect, it } from "vitest";
-import { attemptSandboxTokens, authenticateSandboxBearer, authenticateSandboxToken } from "../../packages/sandbox-gateway/src/index";
+import { attemptSandboxTokens, authenticateSandboxToken } from "../../packages/sandbox-gateway/src/index";
 import { createSqlSandboxTokenStore } from "../../packages/sandbox-gateway-sql/src/index";
 import { gatedSql, sandboxTokenStoreConformance, type SandboxTokenStoreTestHarness } from "../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
 import { sandboxTokenRaceConformance } from "../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
-import { sealedExecutionSessionsToken } from "../../packages/managed-agents-adapters-runtime/src/environment-work-session-token";
-import { WebCryptoAesGcm } from "../../packages/integrations-adapters-cf/src/index";
-import { cfAcpExecutionAuthority, cfAcpExecutionChannels } from "../../apps/main/src/lib/cf-acp-execution-capability";
+import { cfAcpExecutionChannels } from "../../apps/main/src/lib/cf-acp-execution-capability";
 import { cfSandboxTokenStore, cfTenantDatabases } from "../../apps/main/src/lib/cf-sandbox-token-store";
 
 // D1 is shared by the whole file: every fixture gets its own workspace.
@@ -40,26 +37,13 @@ sessionExecutionLeasesConformance("SQL row reader (CF tenant D1)", {
   },
 });
 
-sandboxGatewayStoreConformance("sandbox-gateway-sql (CF tenant D1)", {
-  async withStore(fixtureId, run) {
-    const sql = sqlClientFromD1(env.MAIN_DB);
-    const workspaceId = `ws_gateway_${fixtureId}_${runId}`;
-    return run({
-      workspaceId,
-      executions: new SqlSessionExecutionStore(sql),
-      store: createSqlSandboxGatewayStore(sql),
-      seedSession: (session) => seedSandboxGatewaySessionRows(sql, workspaceId, session),
-    });
-  },
-});
-
 const d1TokenHarness: SandboxTokenStoreTestHarness = {
   async withStore(fixtureId, run) {
     const raw = sqlClientFromD1(env.MAIN_DB);
     const { sql, gate } = gatedSql(raw);
     const workspaceId = `ws_token_${fixtureId}_${runId}`.replace(/[^A-Za-z0-9_]/gu, "_");
     return run({
-      workspaceId, gate, raw, gatewayStore: createSqlSandboxGatewayStore(sql),
+      workspaceId, gate, raw,
       store: createSqlSandboxTokenStore(sql),
       executions: new SqlSessionExecutionStore(raw),
       seedSession: (session) => seedSandboxGatewaySessionRows(raw, workspaceId, session),
@@ -101,26 +85,6 @@ describe("Cloudflare sandbox token store", () => {
     const egressToken = await issueSandboxToken(store, s.fence, { scope: sandboxTokenScopeFor(sandboxHarnessPlacement("default")) });
     expect((await authenticateSandboxToken(store, { sessionId: s.sessionId, token: egressToken, channel: "egress" })).type).toBe("accepted");
     expect((await authenticateSandboxToken(store, { sessionId: s.sessionId, token: egressToken, channel: "api" })).type).toBe("rejected");
-  });
-});
-
-// Deploy transition: a pre-#561 sealed execution token (minted here the way
-// the removed issuer did) still opens on the proxy routes while its attempt
-// runs, and never after it settles. Verify-only; removed in the next release.
-describe("characterization (transition): Cloudflare pre-#561 execution sessions_token", () => {
-  it("opens on the proxy routes while the attempt runs, never after it settles", async () => {
-    const s = await claimedSession("legacy");
-    const secret = "test-platform-root-secret-0123456789";
-    const authority = cfAcpExecutionAuthority(env, secret);
-    const session = { id: s.sessionId, agent: { id: "agent_01", version: 3, skills: [] }, resources: [] };
-    const mint = sealedExecutionSessionsToken(new WebCryptoAesGcm(secret, "managed.cf-acp.execution-token"), () => new Date(), { workspaceId: s.workspaceId, session, environmentId: s.environmentId });
-    const execution = await s.executions.find({ workspaceId: s.workspaceId, executionId: s.fence.executionId });
-    const token = await mint({ executionId: s.fence.executionId, claimedAt: execution!.attempt!.claimedAt, generation: s.fence.generation });
-    const open = async (path: string) => (await authenticateSandboxBearer({ execution: authority, work: null }, { token, method: "POST", path }));
-    await expect(open(`/v1/oma/inference-proxy/${s.sessionId}/v1/messages`)).resolves.toMatchObject({ type: "resolved", resolution: { workspaceId: s.workspaceId, sessionId: s.sessionId } });
-    await expect(open(`/v1/sessions/${s.sessionId}`)).resolves.toEqual({ type: "none" });
-    await s.executions.settle({ fence: s.fence, settledAt: new Date().toISOString(), outcome: "completed" });
-    await expect(open(`/v1/oma/inference-proxy/${s.sessionId}/v1/messages`)).resolves.toEqual({ type: "none" });
   });
 });
 

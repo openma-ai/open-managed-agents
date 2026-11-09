@@ -133,8 +133,7 @@ import {
 } from "@open-managed-agents/managed-agents-adapters-sql";
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import { authenticateSandboxEgress, authenticateSandboxEgressSha256, issueSandboxToken, legacyRelayPassCheck, sandboxHarnessPlacement, sandboxTokenScopeFor, type SandboxGatewayStores, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
-import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
+import { authenticateSandboxEgress, authenticateSandboxEgressSha256, issueSandboxToken, sandboxHarnessPlacement, sandboxTokenScopeFor, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { cfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
 import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
 import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
@@ -312,10 +311,8 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   if (!env.PLATFORM_ROOT_SECRET) throw new Error("Credential relay is not configured");
   const { createCredentialEgressRelay } = await import("@open-managed-agents/managed-credential-resolver");
   const store = cfSandboxTokenStore(env);
-  // DEPLOY TRANSITION ONLY: pre-#561 HMAC relay passes, verify-only, next release removes.
-  const legacyPass = legacyRelayPassCheck(env.PLATFORM_ROOT_SECRET, cfSandboxGatewayStores(env));
   return createCredentialEgressRelay({
-    authenticate: authorization => authenticateSandboxEgress(store, authorization, { legacyPass }),
+    authenticate: authorization => authenticateSandboxEgress(store, authorization),
     credentials: {
       outboundTarget: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).outboundTarget(scope, hostname),
       forward: async (workspaceId, target, send) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(workspaceId)).forward(workspaceId, target, send),
@@ -1720,11 +1717,6 @@ export default {
 // DO classes must be re-exported from the worker entry so wrangler can find
 // them by class_name in durable_objects.bindings + migrations.
 export { RuntimeRoom } from "./runtime-room";
-
-/** Tenant D1 behind @open-managed-agents/sandbox-gateway (design §0.7). */
-function cfSandboxGatewayStores(env: Env): SandboxGatewayStores {
-  return async (workspaceId) => createSqlSandboxGatewayStore(new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(workspaceId)));
-}
 
 /** True while `fence` still owns its running execution in tenant D1. Main
  * revalidates this before every fenced mutation requested by a SessionDO.

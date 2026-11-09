@@ -1,24 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  authenticateSandboxBearer, authenticateSandboxEgress, authenticateSandboxTokenRequest, authorizeSandboxEgress,
-  generateSandboxToken, isSandboxTokenScope, legacyRelayPassCheck, parseSandboxBasicCredential, sandboxBasicCredential,
+  authenticateSandboxBearer, authenticateSandboxEgress, authenticateSandboxTokenRequest,
+  generateSandboxToken, isSandboxTokenScope, parseSandboxBasicCredential, sandboxBasicCredential,
   sandboxHarnessPlacement, sandboxTokenRandomPart, sandboxTokenScopeAdmits, sandboxTokenScopeFor, SANDBOX_TOKEN_LENGTH,
   UNFENCED_SANDBOX_TOKEN,
-  type SandboxBearerCodec, type SandboxGatewaySession, type SandboxTokenStore, type SessionExecutionLease,
+  type SandboxBearerCodec, type SandboxTokenStore,
 } from "../src/index";
 
 const NOW = Date.UTC(2026, 10, 8, 12);
 const now = () => NOW;
-function fixture() {
-  const lease: SessionExecutionLease = { executionId: "exe", sessionId: "sess", state: "running", attemptId: "att", ownerId: "owner", generation: 2, claimedAtMs: NOW - 1000, leaseExpiresAtMs: NOW + 1000 };
-  const session: SandboxGatewaySession = { archivedAt: null, environmentId: "env", vaultIds: ["vlt"], agent: { id: "agent", version: 7 } };
-  const stores = async (workspaceId: string) => ({
-    leases: { find: async (input: { executionId: string }) => workspaceId === "ws" && input.executionId === "exe" ? lease : null },
-    findSession: async (input: { sessionId: string }) => workspaceId === "ws" && input.sessionId === "sess" ? session : null,
-  });
-  const fence = { workspaceId: "ws", sessionId: "sess", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 2, expiresAt: new Date(NOW - 1).toISOString() };
-  return { lease, session, stores, fence };
-}
 
 describe("sandbox token format", () => {
   it("is oma_sbx_ + 43 base62 + 6 base62 CRC32, 57 chars, random each time", () => {
@@ -89,17 +79,18 @@ describe("sandbox token presentation (no store reads for a malformed request)", 
     expect(await authenticateSandboxTokenRequest(null, { method: "POST", path: "/v1/oma/mcp-proxy/a/s", authorization: `Bearer ${generateSandboxToken()}`, apiKey: null }))
       .toMatchObject({ type: "unavailable" });
   });
-  it("egress takes Basic only (Bearer = legacy pass); a store error is unavailable", async () => {
+  it("egress takes the sandbox token as Basic only: any Bearer (a pre-#561 relay pass included) is rejected unread; a store error is unavailable", async () => {
     const failing: SandboxTokenStore = { ...untouched(), find: async () => { throw new Error("db down"); } };
     expect(await authenticateSandboxEgress(failing, sandboxBasicCredential("s", generateSandboxToken()), { now })).toMatchObject({ type: "unavailable" });
-    expect(await authenticateSandboxEgress(failing, `Bearer ${generateSandboxToken()}`, { now })).toEqual({ type: "rejected" });
-    expect(await authenticateSandboxEgress(failing, null, { now })).toEqual({ type: "rejected" });
+    const store = untouched();
+    for (const header of [`Bearer ${generateSandboxToken()}`, "Bearer eyJ3b3Jrc3BhY2VJZCI6IndzIn0.c2ln", "Bearer sk-ant-req-v1.sealed", null]) {
+      expect(await authenticateSandboxEgress(store, header, { now })).toEqual({ type: "rejected" });
+    }
+    expect(store.find).not.toHaveBeenCalled();
   });
 });
 
-// ---- DEPLOY TRANSITION (verify-only; removed in the next release) ----
-
-/** Token = "<kind>:" + JSON claim; stands in for the sealed codecs. */
+/** Token = "<kind>:" + JSON claim; stands in for the sealed codec. */
 const codec = (kind: string): SandboxBearerCodec => ({
   async open(request, isCurrent) {
     if (!request.token.startsWith(`${kind}:`)) return null;
@@ -107,73 +98,27 @@ const codec = (kind: string): SandboxBearerCodec => ({
     return await isCurrent({ ...claim, ...request }) ? claim : null;
   },
 });
-const claim = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "exe", claimedAt: new Date(NOW - 1000).toISOString(), generation: 2 };
+const claim = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "work", claimedAt: new Date(NOW - 1000).toISOString(), generation: 2 };
 
-describe("characterization (transition): pre-#561 sealed execution token", () => {
-  it("opens on proxy routes only while its attempt runs, then the Work token", async () => {
-    const f = fixture();
+describe("sealed bearer: the ADR 0005 Work token only (design §0.0b B.4)", () => {
+  it("opens a Work token while its claim is current, on any route the codec admits", async () => {
     const isCurrentClaim = vi.fn(async () => true);
-    const authority = { execution: { codec: codec("exec"), stores: f.stores }, work: { codec: codec("work"), isCurrentClaim }, now };
-    const token = `exec:${JSON.stringify(claim)}`;
-    expect(await authenticateSandboxBearer(authority, { token, method: "POST", path: "/v1/oma/inference-proxy/sess/v1/messages" })).toEqual({ type: "resolved", resolution: claim });
-    expect(await authenticateSandboxBearer(authority, { token, method: "POST", path: "/v1/oma/mcp-proxy/sess/server" })).toEqual({ type: "resolved", resolution: claim });
-    expect(await authenticateSandboxBearer(authority, { token, method: "GET", path: "/v1/sessions/sess" })).toEqual({ type: "none" });
+    const token = `work:${JSON.stringify(claim)}`;
+    for (const path of ["/v1/oma/inference-proxy/sess/v1/messages", "/v1/oma/mcp-proxy/sess/server", "/v1/sessions/sess"]) {
+      expect(await authenticateSandboxBearer({ work: { codec: codec("work"), isCurrentClaim } }, { token, method: "POST", path })).toEqual({ type: "resolved", resolution: claim });
+    }
+    isCurrentClaim.mockResolvedValue(false);
+    expect(await authenticateSandboxBearer({ work: { codec: codec("work"), isCurrentClaim } }, { token, method: "POST", path: "/v1/sessions/sess" })).toEqual({ type: "none" });
+    expect(await authenticateSandboxBearer({ work: null }, { token, method: "GET", path: "/x" })).toEqual({ type: "none" });
+  });
+  it("there is no execution-token branch: a token the Work codec does not open is none on the proxy routes", async () => {
+    const isCurrentClaim = vi.fn(async () => true);
+    const executionToken = `exec:${JSON.stringify({ ...claim, workId: "exe" })}`;
+    expect(await authenticateSandboxBearer({ work: { codec: codec("work"), isCurrentClaim } }, { token: executionToken, method: "POST", path: "/v1/oma/inference-proxy/sess/v1/messages" })).toEqual({ type: "none" });
     expect(isCurrentClaim).not.toHaveBeenCalled();
-    const work = `work:${JSON.stringify({ ...claim, workId: "work" })}`;
-    expect(await authenticateSandboxBearer(authority, { token: work, method: "GET", path: "/v1/oma/mcp-proxy/sess/server" })).toMatchObject({ type: "resolved", resolution: { workId: "work" } });
-    expect(await authenticateSandboxBearer({ execution: null, work: null }, { token: work, method: "GET", path: "/x" })).toEqual({ type: "none" });
   });
-  it.each(["completed", "generation", "claim", "lease", "archived", "environment"] as const)("refuses it when %s", async (reason) => {
-    const f = fixture();
-    if (reason === "completed") f.lease.state = "completed";
-    if (reason === "generation") f.lease.generation = 3;
-    if (reason === "claim") f.lease.claimedAtMs = NOW;
-    if (reason === "lease") f.lease.leaseExpiresAtMs = NOW;
-    if (reason === "archived") f.session.archivedAt = "2026-11-08T00:00:00Z";
-    if (reason === "environment") f.session.environmentId = "other";
-    const authority = { execution: { codec: codec("exec"), stores: f.stores }, work: null, now };
-    expect(await authenticateSandboxBearer(authority, { token: `exec:${JSON.stringify(claim)}`, method: "POST", path: "/v1/oma/mcp-proxy/sess/s" })).toEqual({ type: "none" });
-  });
-  it("a database error while checking is unavailable, not a rejection", async () => {
-    const f = fixture();
-    const broken = async () => ({ leases: { find: async () => { throw new Error("db down"); } }, findSession: f.stores });
-    const authority = { execution: { codec: codec("exec"), stores: broken as never }, work: null, now };
-    expect(await authenticateSandboxBearer(authority, { token: `exec:${JSON.stringify(claim)}`, method: "POST", path: "/v1/oma/mcp-proxy/sess/s" })).toMatchObject({ type: "unavailable" });
-  });
-});
-
-const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-/** The pre-#561 signer (credential-relay.v2), reproduced: nothing issues these any more. */
-async function legacyPass(secret: string, claims: Record<string, unknown>) {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`credential-relay.v2:${secret}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const payload = b64url(new TextEncoder().encode(JSON.stringify(claims)));
-  return `${payload}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))}`;
-}
-
-describe("characterization (transition): pre-#561 HMAC relay pass", () => {
-  const claims = { workspaceId: "ws", sessionId: "sess", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 2, expiresAt: NOW + 60_000 };
-  it("verifies only while its attempt is the running one, checked on every request", async () => {
-    const f = fixture();
-    const check = legacyRelayPassCheck("root", f.stores, now);
-    const pass = await legacyPass("root", claims);
-    expect(await check(pass)).toEqual({ type: "accepted", scope: { workspaceId: "ws", sessionId: "sess", vaultIds: ["vlt"] } });
-    expect(await authenticateSandboxEgress({} as SandboxTokenStore, `Bearer ${pass}`, { legacyPass: check, now })).toMatchObject({ type: "accepted" });
-    f.lease.state = "completed";
-    expect(await check(pass)).toEqual({ type: "rejected" });
-    expect(await check(await legacyPass("other-secret", claims))).toEqual({ type: "rejected" });
-    expect(await check(await legacyPass("root", { ...claims, expiresAt: NOW }))).toEqual({ type: "rejected" });
-  });
-});
-
-describe("authorizeSandboxEgress (native egress binding, fence-checked)", () => {
-  it("scopes egress to the current attempt and denies without one", async () => {
-    const f = fixture();
-    expect(await authorizeSandboxEgress(f.stores, f.fence, now)).toEqual({ workspaceId: "ws", sessionId: "sess", vaultIds: ["vlt"] });
-    expect(await authorizeSandboxEgress(f.stores, null, now)).toBeNull();
-    expect(await authorizeSandboxEgress(f.stores, { ...f.fence, ownerId: "other" }, now)).toBeNull();
-    f.lease.state = "completed";
-    expect(await authorizeSandboxEgress(f.stores, f.fence, now)).toBeNull();
-    f.lease.state = "running"; f.session.archivedAt = "x";
-    expect(await authorizeSandboxEgress(f.stores, f.fence, now)).toBeNull();
+  it("a database error while checking the claim is unavailable, not a rejection", async () => {
+    const isCurrentClaim = vi.fn(async () => { throw new Error("db down"); });
+    expect(await authenticateSandboxBearer({ work: { codec: codec("work"), isCurrentClaim } }, { token: `work:${JSON.stringify(claim)}`, method: "POST", path: "/v1/oma/mcp-proxy/sess/s" })).toMatchObject({ type: "unavailable" });
   });
 });

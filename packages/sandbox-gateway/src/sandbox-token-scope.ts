@@ -7,8 +7,7 @@
 //   egress — the harness runs outside; the sandbox only needs the egress relay.
 // Re-signing an attempt keeps its scope (the store refuses a different one).
 // A missing or unknown scope on a stored entry is a definite rejection: there
-// is no default that widens. Pre-#561 transition credentials (sealed
-// sk-ant-req-v1. tokens, HMAC relay passes) carry no scope and are unaffected.
+// is no default that widens.
 
 export type SandboxTokenScope = "all" | "egress";
 

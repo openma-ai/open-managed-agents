@@ -15,6 +15,4 @@ export * from "./sandbox-token-scope";
 export * from "./sandbox-token-routes";
 export * from "./sandbox-token-request";
 export * from "./sandbox-egress-credential";
-export * from "./sandbox-execution-credential";
 export * from "./sandbox-bearer";
-export * from "./legacy-relay-pass";

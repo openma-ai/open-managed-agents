@@ -96,7 +96,7 @@ describe("createSessionSandbox", () => {
     expect(cf.calls.find(([op]) => op === "provision")?.[1]).toEqual(["/mnt/session/outputs"]);
     expect(cf.calls.find(([op]) => op === "outbound")?.[1]).toEqual({
       method: "inject_vault_creds",
-      params: { tenantId: "ws", environmentId: undefined, sessionId: "sess", workId: undefined, ownerId: undefined, generation: undefined, fenceToken: undefined, required: false },
+      params: { tenantId: "ws", environmentId: undefined, sessionId: "sess", workId: undefined, tokenSha256: undefined, required: false },
     });
     expect(cf.calls.find(([op]) => op === "backupContext")?.[1]).toEqual({ tenantId: "ws", environmentId: "env", sessionId: "sess" });
     expect(cf.calls.find(([op]) => op === "billingContext")?.[1]).toEqual({ tenantId: "ws", sessionId: "sess", agentId: "agent" });

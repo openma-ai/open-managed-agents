@@ -5,15 +5,15 @@ afterEach(() => vi.restoreAllMocks());
 import { sandboxBasicCredential, sandboxTokenSha256 } from "../../packages/sandbox-gateway/src/index";
 
 const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-/** The pre-#561 HMAC relay pass, signed the way the removed issuer did (deploy transition only). */
+/** A pre-#561 HMAC relay pass, signed the way the removed issuer did: refused (design §0.0b B.4). */
 async function legacyPass(claims: Record<string, unknown>) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`credential-relay.v2:${env.PLATFORM_ROOT_SECRET}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const payload = b64url(new TextEncoder().encode(JSON.stringify(claims)));
   return `${payload}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))}`;
 }
 
-/** A running execution attempt for `sessionId`: Session sandbox credentials
- * (relay pass, native egress) are bound to it (design §0.0 rule 10). */
+/** A running execution attempt for `sessionId`: the Session sandbox token
+ * (relay and native egress) is bound to it (design §0.0 rule 10). */
 async function runningAttempt(sessionId: string) {
   const executionId = `exe-${crypto.randomUUID()}`; const now = Date.now();
   await env.MAIN_DB.prepare(`INSERT INTO managed_session_executions
@@ -143,9 +143,9 @@ describe("Cloudflare production Session relay route", () => {
       expect((await call("Bearer unfenced")).status).toBe(401);
       expect((await call(`Bearer ${token}`)).status).toBe(401); // token without its Session id
       expect((await call(sandboxBasicCredential(`${id}-other`, token))).status).toBe(401);
-      // Deploy transition: a pre-#561 pass verifies only for the running attempt.
-      expect((await call(`Bearer ${legacy}`)).status).toBe(200);
-      expect((await call(`Bearer ${staleLegacy}`)).status).toBe(401); // was 403: a definite rejection is now 401 (the forwarder exits on it)
+      // No compatibility: a pre-#561 relay pass is refused even for the running attempt (design §0.0b B.4).
+      expect((await call(`Bearer ${legacy}`)).status).toBe(401);
+      expect((await call(`Bearer ${staleLegacy}`)).status).toBe(401);
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=? WHERE workspace_id='default' AND id=?").bind(Date.now(), id).run();
       expect((await call(valid)).status).toBe(401);
       await env.MAIN_DB.prepare("UPDATE managed_sessions SET archived_at=NULL WHERE workspace_id='default' AND id=?").bind(id).run();

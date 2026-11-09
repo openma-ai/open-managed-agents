@@ -204,11 +204,11 @@ rejected, with no permissive default. A re-issue keeps the attempt's scope.
 A store error is `503` (retryable); only a definite rejection is `401`. The
 egress forwarder holds the token in memory only and exits only on `401`.
 
-Transition: HMAC relay passes and sealed `sk-ant-req-v1.` execution
-`sessions_token`s are no longer issued. They are still verified while their
-attempt is running, with the lease checked on every request, and they have no
-scope. Remove that path in the next release. The official self-hosted Work
-`sessions_token` above is unchanged.
+No compatibility path: the pre-#561 HMAC relay passes and sealed
+`sk-ant-req-v1.` execution `sessions_token`s are neither issued nor
+accepted. A sealed `sk-ant-req-v1.` bearer is accepted only as the official
+self-hosted Work `sessions_token` above, checked against the current Work
+claim.
 
 ## Provider mapping
 

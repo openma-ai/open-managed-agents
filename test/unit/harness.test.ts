@@ -729,6 +729,7 @@ describe("Sandbox lifecycle", () => {
       {
         createSandbox: () => fakeSandbox as any,
         controlPlaneBaseUrl: "https://api.openma.test/v1",
+        sandboxTokenSha256: async ({ generation }) => `sha-${generation}`,
       },
     );
     const scope = {
@@ -799,9 +800,7 @@ describe("Sandbox lifecycle", () => {
       environmentId: "environment-1",
       sessionId: "session-1",
       workId: "work-1",
-      ownerId: "worker-1",
-      generation: 7,
-      fenceToken: "secret-fence",
+      tokenSha256: "sha-7",
       required: true,
       controlPlaneBaseUrl: "https://api.openma.test/v1",
     }]);

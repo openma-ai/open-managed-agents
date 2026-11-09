@@ -403,25 +403,6 @@ export async function authenticateEnvironmentWorkSessionBearer(
   }
 }
 
-/** Seals a pre-#561 execution sessions_token. Nothing issues these any more
- * (#561: the sandbox token replaced them); kept only so the deploy-transition
- * verify path is tested against the real sealing. Remove with that path. */
-export function sealedExecutionSessionsToken(
-  crypto: EnvironmentWorkSessionTokenCrypto,
-  now: () => Date,
-  subject: { workspaceId: string; session: IssueEnvironmentWorkSessionCredential["session"]; environmentId: string },
-) {
-  const issuer = new SealedEnvironmentWorkSessionCredentialIssuer({ crypto, now });
-  return async (lease: { executionId: string; claimedAt: string; generation: number }): Promise<string> => {
-    // The sealed claims read only the environment's id.
-    const environment = { id: subject.environmentId } as IssueEnvironmentWorkSessionCredential["environment"];
-    const issued = await issuer.issue({ workspaceId: subject.workspaceId, session: subject.session, environment, workId: lease.executionId });
-    if (issued.type !== "issued") throw new Error(issued.message);
-    const bound = await issuer.bindToClaim({ secret: issued.secret, claimedAt: lease.claimedAt, generation: lease.generation });
-    return bound.secret.sessionsToken;
-  };
-}
-
 /** The sealed bearer as a @open-managed-agents/sandbox-gateway SandboxBearerCodec
  * (structural): the same envelope, crypto purpose chosen by the caller. */
 export function sealedSandboxBearerCodec(crypto: EnvironmentWorkSessionTokenCrypto, now: () => Date) {

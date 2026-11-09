@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import { createNodeManagedAcpCapabilities } from "../../../packages/control-plane-node/src/lib/node-managed-acp-capability";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
-import { createSqlSessionRuntimeReaders } from "@open-managed-agents/session-runtime-sql";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql/coordination";
-import { createSqlSandboxGatewayStore, createSqlSandboxTokenStore } from "../../../packages/sandbox-gateway-sql/src/index";
-import { sandboxGatewayStoreConformance, seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
+import { createSqlSandboxTokenStore } from "../../../packages/sandbox-gateway-sql/src/index";
+import { seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
 import { gatedSql, sandboxTokenStoreConformance, type SandboxTokenStoreTestHarness } from "../../../packages/sandbox-gateway/test/sandbox-token-store-conformance";
 import { sandboxTokenRaceConformance } from "../../../packages/sandbox-gateway/test/sandbox-token-race-conformance";
 
@@ -26,13 +25,10 @@ async function database() {
 async function fixture(harness: string | null = "acp-sandbox") {
   const sql = await database();
   const executions = new SqlSessionExecutionCoordinator(sql);
-  const readers = createSqlSessionRuntimeReaders(sql);
   const now = new Date();
   const capabilities = createNodeManagedAcpCapabilities({
-    crypto: null, gatewayBaseUrl: "https://service.test", now: () => new Date(),
+    gatewayBaseUrl: "https://service.test", now: () => new Date(),
     tokens: createSqlSandboxTokenStore(sql),
-    findExecution: (input) => executions.find(input),
-    findSession: async (input) => (await readers.executionContext.find(input))?.session ?? null,
   });
   await seedSandboxGatewaySessionRows(sql, "tenant", { id: "session", environmentId: "env", vaultIds: [], agent: { id: "agent", version: 7 }, archivedAt: null });
   await executions.admit({ execution: { id: "exec", workspaceId: "tenant", sessionId: "session", admittedAt: now.toISOString(), events: [{ id: "evt", type: "user.message", content: [], processedAt: now.toISOString() }] } });
@@ -118,32 +114,13 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
   });
 });
 
-// Node's native egress binding store (fence-checked, unchanged by #561).
-sandboxGatewayStoreConformance("Node managed ACP stores (better-sqlite3)", {
-  async withStore(_fixtureId, run) {
-    const sql = await database();
-    const executions = new SqlSessionExecutionCoordinator(sql);
-    const readers = createSqlSessionRuntimeReaders(sql);
-    const capabilities = createNodeManagedAcpCapabilities({
-      crypto: null, now: () => new Date(), tokens: createSqlSandboxTokenStore(sql),
-      findExecution: (input) => executions.find(input),
-      findSession: async (input) => (await readers.executionContext.find(input))?.session ?? null,
-    });
-    const workspaceId = "workspace_01";
-    return run({
-      workspaceId, executions, store: await capabilities.stores(workspaceId),
-      seedSession: (session) => seedSandboxGatewaySessionRows(sql, workspaceId, session),
-    });
-  },
-});
-
 const sqliteTokenHarness: SandboxTokenStoreTestHarness = {
   async withStore(fixtureId, run) {
     const raw = await database();
     const { sql, gate } = gatedSql(raw);
     const workspaceId = `ws_${fixtureId}`;
     return run({
-      workspaceId, gate, raw, gatewayStore: createSqlSandboxGatewayStore(sql),
+      workspaceId, gate, raw,
       store: createSqlSandboxTokenStore(sql),
       executions: new SqlSessionExecutionCoordinator(raw),
       seedSession: (session) => seedSandboxGatewaySessionRows(raw, workspaceId, session),

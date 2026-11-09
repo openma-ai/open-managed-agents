@@ -76,9 +76,6 @@ export default {
         environmentId: "certification",
         sessionId: body.sandbox_id,
         workId: "certification",
-        ownerId: "certification",
-        generation: 1,
-        fenceToken: "certification-fence",
         required: false,
       });
       if (body.action === "create") {
