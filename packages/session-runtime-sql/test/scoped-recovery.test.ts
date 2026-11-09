@@ -121,3 +121,28 @@ it("explicit recovery can still requeue a provably unapplied input", async () =>
     attemptId: "new", claimedAt: at(6), leaseTtlMs: 1_000,
   })).type).toBe("claimed");
 });
+
+// Full eviction boundary: the old owner cannot renew, canonical tool evidence
+// forbids replay, and the same SQL row feeds the public finalizer.
+it("settles an evicted applied turn with session.error and idle, never running", async () => {
+  const { a } = await setup();
+  const { finalizeStaleTurns } = await import("../../session-runtime/src/finalize-stale-turns");
+  await a.sweepExpired(Date.parse(at(5)), { decideForRecord: evidenceDecision });
+  const events: Array<Record<string, unknown>> = [];
+  let status = { type: "session.status_running", ts: Date.parse(at(2)) / 1000 };
+  await finalizeStaleTurns({
+    unknownToolResultText: "interrupted", instanceStartedAt: Date.parse(at(6)), now: () => Date.parse(at(10)),
+    listToolUses: () => [{ id: "tool", type: "agent.tool_use" }], listToolResultIds: () => [], parkedCallIds: () => [],
+    append: async event => { events.push(event as unknown as Record<string, unknown>); if (event.type === "session.status_idle") status = { type: event.type, ts: Date.parse(at(10)) / 1000 }; },
+    broadcast: () => {}, listOrphanTurns: async () => [], endTurn: async () => {},
+    isTurnActive: () => false, hasLiveWork: () => false, latestSessionStatus: () => status,
+    clearMarkerlessTurn: async () => false,
+    executions: async () => ({ store: a, workspaceId: "w", sessionId: "session_a" }),
+    scheduleGraceRetry: async () => {}, log: () => {},
+  });
+  expect(events.map(e => e.type)).toEqual(["agent.tool_result", "session.error", "session.status_idle"]);
+  expect(events[1]).toMatchObject({ error: { retry_status: { type: "exhausted" } } });
+  expect(events[2]).toMatchObject({ stop_reason: { type: "retries_exhausted" } });
+  expect(status.type).toBe("session.status_idle");
+  expect(await a.listActive({ workspaceId: "w", sessionId: "session_a" })).toEqual([]);
+});

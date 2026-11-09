@@ -1,3 +1,4 @@
+import { TurnInvocation } from "./turn-invocation";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -653,7 +654,7 @@ export class SessionDO extends DurableObject<Env> {
           try {
             await this.schedule(5, "recoverEventQueue" as keyof this);
           } catch {}
-          this.drainEventQueue();
+          await this._armLeaseWake("wakeup");
         },
       },
       clock: { now: () => new Date() },
@@ -878,6 +879,7 @@ export class SessionDO extends DurableObject<Env> {
    * the same execution twice.
    */
   private _recoveryRun: Promise<void> | null = null;
+  private _turnInvocation: TurnInvocation | null = null;
   /** Consecutive failed recovery passes. */
   private _recoveryFailures = 0;
   /** Earliest epoch ms the next recovery retry may run (backoff horizon). */
@@ -1038,7 +1040,7 @@ export class SessionDO extends DurableObject<Env> {
     } else {
       await this._finalizeStaleTurns();
     }
-    await this.recoverExecutionQueue();
+    if (reason === "alarm") await this.recoverExecutionQueue();
     this._recoveryFailures = 0;
     this._recoveryRetryAtMs = null;
     sdoLog("recovery.done", {
@@ -2048,6 +2050,8 @@ export class SessionDO extends DurableObject<Env> {
     // Sync re-entry mutex per thread — two callers for the same thread
     // can't both reach the SQL pending lookup before either marks a
     // row as processed.
+    if (this._turnInvocation === null) { await this._armLeaseWake("deferred_drain"); return; }
+    if (this._turnInvocation.signal.aborted) return;
     if (this._draining.has(threadId)) return;
     if (this.deriveStatus() === "terminated") return;
     this._draining.add(threadId);
@@ -2638,9 +2642,7 @@ export class SessionDO extends DurableObject<Env> {
           reason: "bootstrap_execution",
           atMs: Date.now() + ENQUEUE_WAKE_DELAY_MS,
         });
-        void this.recoverExecutionQueue().catch(error => {
-          console.error("[session_do] bootstrap execution wakeup failed", error);
-        });
+
       }
 
       // Warm at creation (§0.0 rule 10): acquire + record only; the first execution attaches it.
@@ -2851,20 +2853,8 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        // Fire-and-forget the drain. ctx.waitUntil is a no-op inside DO classes
-        // (Workers Context API is stateless-only — see CF docs), so don't try
-        // to use it. The DO is kept alive instead by:
-        //   (a) the unified RuntimeAdapter's hintTurnInFlight callback —
-        //       wired in this DO's constructor to setAlarm(now+30s). The
-        //       alarm() handler rearms itself while a turn is still in
-        //       flight (sessions row status='running'), AND
-        //   (b) the keepAliveWhile no-op the harness still receives in
-        //       its HarnessRuntime — purely a stub today; the alarm-
-        //       rearm path covers what it used to defend.
-        // The 5s recoverEventQueue schedule above is the safety-net
-        // re-trigger if this background promise dies before drain runs.
-        console.log(`[post /event] user.message enqueued (thread=${umThread}), firing drainEventQueue`);
-        if (enqueued) this.drainEventQueue(umThread);
+        // Only the alarm owns turn execution; enqueue never starts background work.
+        if (enqueued) await this._armLeaseWake("enqueue");
         return new Response(null, { status: 202 });
       }
 
@@ -2933,7 +2923,7 @@ export class SessionDO extends DurableObject<Env> {
         }
         // Queued inputs survive the interrupt (same as Node): the next one
         // starts the lane's next turn.
-        this.drainEventQueue(targetThread);
+        await this._armLeaseWake("interrupt_queue");
         return new Response(null, { status: 202 });
       }
 
@@ -2942,7 +2932,7 @@ export class SessionDO extends DurableObject<Env> {
         // event and its continuation execution are already in D1 (store
         // append + outbox); just wake the primary lane to claim it.
         if ((body as unknown as { resume?: boolean }).resume === true) {
-          this.drainEventQueue("sthr_primary");
+          await this._armLeaseWake("budget_resume");
         }
         return new Response(null, { status: 202 });
       }
@@ -2963,8 +2953,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        console.log("[post /event] tool_confirmation enqueued, firing drainEventQueue (no await)");
-        if (enqueued) this.drainEventQueue(tcThread);
+        if (enqueued) await this._armLeaseWake("answer_enqueue");
         return new Response(null, { status: 202 });
       }
 
@@ -2994,8 +2983,7 @@ export class SessionDO extends DurableObject<Env> {
             await this.schedule(5, "recoverEventQueue");
           } catch {}
         }
-        console.log("[post /event] custom_tool_result enqueued, firing drainEventQueue (no await)");
-        if (enqueued) this.drainEventQueue(ctrThread);
+        if (enqueued) await this._armLeaseWake("answer_enqueue");
         return new Response(null, { status: 202 });
       }
 
@@ -6180,12 +6168,12 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       const attempts = await runTurnAttempts({
-        run: () => harness.run(ctx),
+        run: () => this._turnInvocation!.run(() => harness.run({ ...ctx, runtime: { ...ctx.runtime, abortSignal: AbortSignal.any([effectiveAbortSignal, this._turnInvocation!.signal]) } })),
         agentEventCount: () => countAgentEvents(history.getEvents()),
         // A lost execution fence is a cancellation too: the replacement owner
         // runs the turn, so this one must neither retry nor report.
         isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
-        classify: classifyTurnFailure,
+        classify: (error, produced) => this._turnInvocation?.signal.aborted ? "turn_dead" : classifyTurnFailure(error, produced),
         retry: TURN_RETRY,
         signal: abortController.signal,
         events: failureEvents,
@@ -7593,6 +7581,12 @@ export class SessionDO extends DurableObject<Env> {
    * (orphan-fiber recovery), then re-arms the next alarm.
    */
   async alarm(): Promise<void> {
+    const invocation = this._turnInvocation = new TurnInvocation();
+    try { await this.runAlarm(); }
+    finally { invocation.close(); this._turnInvocation = null; }
+  }
+
+  private async runAlarm(): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1000);
     const due = this.ctx.storage.sql
       .exec<{
