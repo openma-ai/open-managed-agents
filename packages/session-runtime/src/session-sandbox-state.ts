@@ -49,6 +49,9 @@ export type SessionSandboxState = SandboxPhase & {
   latestSnapshot: LatestSnapshot;
   /** Durable retry queue. Old records without it mean an empty queue. */
   pendingDiscards?: SnapshotRef[];
+  /** Provider-assigned allocations retired by record CAS. Tombstones survive
+   * successful release so no later publisher can resurrect a deleted handle. */
+  retiredHandles?: Array<{ handle: SandboxHandle; released: boolean }>;
   /** What is attached; not lifecycle, so it changes with any write. */
   stores: MemoryStoreBinding[];
   outputs: boolean;
@@ -77,7 +80,9 @@ export type SandboxAction =
   | { type: "release" }
   /** Acknowledges successful vendor deletions, under the same version CAS. */
   | { type: "discarded"; refs: SnapshotRef[] }
-  | { type: "queueDiscard"; ref: SnapshotRef };
+  | { type: "queueDiscard"; ref: SnapshotRef }
+  | { type: "retireHandle"; handle: SandboxHandle }
+  | { type: "handleReleased"; handle: SandboxHandle };
 
 export type SandboxActionType = SandboxAction["type"];
 
@@ -129,6 +134,8 @@ export const SANDBOX_TRANSITIONS: Rules = {
   lose: { running: lost, paused: lost },
   release: { none: released, running: released, paused: released, lost: released },
   queueDiscard: { none: (state) => state, running: (state) => state, paused: (state) => state, lost: (state) => state, released: (state) => state },
+  retireHandle: { none: (s) => s, running: (s) => s, paused: (s) => s, lost: (s) => s, released: (s) => s },
+  handleReleased: { none: (s) => s, running: (s) => s, paused: (s) => s, lost: (s) => s, released: (s) => s },
   discarded: { none: (state) => state, running: (state) => state, paused: (state) => state, lost: (state) => state, released: (state) => state },
 };
 
@@ -137,7 +144,16 @@ export function transition(state: SessionSandboxState, action: SandboxAction): S
   const rule = SANDBOX_TRANSITIONS[action.type][state.phase] as Rule<SandboxAction> | undefined;
   const next = rule?.(state, action) ?? null;
   if (next === null) throw new SessionSandboxTransitionError(state.phase, action.type);
+  const retired = state.retiredHandles ?? [];
+  const refers = (handle: SandboxHandle | undefined, other: SandboxHandle) => handle?.provider === other.provider && handle.runtimeId === other.runtimeId;
+  // Retirement and publication race on the SAME record version. Exactly one
+  // can win; every subsequent publication must retain the tombstone.
+  if (action.type === "retireHandle" && refers(recordedHandle(state), action.handle)) throw new SessionSandboxTransitionError(state.phase, action.type);
+  if (retired.some(entry => refers(recordedHandle(next as SessionSandboxState), entry.handle))) throw new SessionSandboxTransitionError(state.phase, action.type);
   const result: SessionSandboxState = { ...next, stores: state.stores, outputs: state.outputs, version: state.version + 1 };
+  if (retired.length > 0) result.retiredHandles = retired;
+  if (action.type === "retireHandle" && !retired.some(entry => refers(entry.handle, action.handle))) result.retiredHandles = [...retired, { handle: action.handle, released: false }];
+  if (action.type === "handleReleased") result.retiredHandles = retired.map(entry => refers(entry.handle, action.handle) ? { ...entry, released: true } : entry);
   const pending = [...(state.pendingDiscards ?? [])];
   for (const ref of droppedSnapshots(state, result)) {
     if (!pending.some((other) => sameRef(other, ref))) pending.push(ref);

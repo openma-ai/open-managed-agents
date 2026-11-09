@@ -156,7 +156,7 @@ export class LiveSessionSandbox<R> {
       this.options.warn(`sandbox_state_conflict expected_version=${current.version} action=${action.type}: another writer changed the Session sandbox record; this result is dropped`);
       return null;
     }
-    return this.retryDiscards(next);
+    return this.retryDiscards(await this.retryReleases(next));
   }
 
   /** Lost publication results are queued too: a failed discard cannot disappear. */
@@ -211,17 +211,48 @@ export class LiveSessionSandbox<R> {
     return this.apply(saved, { type: "attach", handle: open.handle, at: open.runStartedAt });
   }
 
-  /** Cleans up a sandbox this writer started but could not record: released,
-   * unless the record names it (the winner holds it). */
-  async releaseOwn(handle: SandboxHandle, execution = this.execution()): Promise<void> {
+  /** Retirement is an atomic claim against publication, not a read/fence
+   * heuristic. Only provider-assigned handles can be permanently retired. */
+  async releaseOwn(handle: SandboxHandle, execution = this.execution()): Promise<{ before: SessionSandboxState; after: SessionSandboxState } | undefined> {
     const { ports } = await this.compose();
-    if (!await this.isCurrent(execution)) { this.abandon(); return; }
-    const saved = await this.load().catch(() => undefined);
-    if (saved === undefined || sameHandle(recordedHandle(saved), handle)) return;
-    if (!await this.isCurrent(execution)) { this.abandon(); return; }
-    await ports.sandbox.release({ scope: this.scope(), handle }).catch((error) => {
-      this.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
-    });
+    if (ports.sandbox.handle !== "changes") return;
+    for (;;) {
+      if (!await this.isCurrent(execution)) { this.abandon(); return; }
+      const saved = await this.load();
+      if (sameHandle(recordedHandle(saved), handle)) return;
+      if (!await this.isCurrent(execution)) { this.abandon(); return; }
+      const next = transition(saved, { type: "retireHandle", handle });
+      if (!await this.options.state.save(next, saved.version)) continue;
+      const after = await this.retryReleases(next, execution);
+      // A warm adoption may account for OUR two cleanup writes, never an
+      // intervening lifecycle writer. Its initial v1 witness stays strict.
+      if (after.version === saved.version + 2) return { before: saved, after };
+      return;
+    }
+  }
+
+  /** Same durable record as snapshots; failures and a fence loss leave the
+   * pending allocation for a new owner. Release is idempotent at the Port. */
+  async retryReleases(record: SessionSandboxState, execution = this.execution()): Promise<SessionSandboxState> {
+    let saved = record;
+    const { ports } = await this.compose();
+    for (const entry of record.retiredHandles ?? []) {
+      if (entry.released) continue;
+      if (!await this.isCurrent(execution)) { this.abandon(); return saved; }
+      try {
+        await ports.sandbox.release({ scope: this.scope(), handle: entry.handle });
+      } catch (error) {
+        this.options.warn(`sandbox_release_failed runtime=${entry.handle.runtimeId} error=${errorText(error)}`);
+        continue;
+      }
+      // Acknowledge on a fresh version; all lifecycle writes preserve claims.
+      for (;;) {
+        const current = await this.load();
+        const next = transition(current, { type: "handleReleased", handle: entry.handle });
+        if (await this.options.state.save(next, current.version)) { saved = next; break; }
+      }
+    }
+    return saved;
   }
 
   /** Waits for a lifetime refresh or a gap snapshot in progress (neither rejects). */

@@ -81,7 +81,8 @@ export async function rollbackOpen<R>(state: LiveSessionSandbox<R>, opened: Pick
     if (await state.apply(record, { type: "lose" }).catch(() => null) === null) return;
   }
   if (!await current()) return;
-  await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
+  if (ports.sandbox.handle === "changes") await state.releaseOwn(opened.handle, execution);
+  else await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
 }
 
 function conflict(what: string): SessionSandboxStateConflictError {
@@ -151,12 +152,13 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
         if (next === null) {
           const lost = opened;
           opened = "gone";
-          await state.releaseOwn(lost.handle);
+          const cleanup = await state.releaseOwn(lost.handle);
           // Only the initial acquire can converge on a completed creation
           // warm-up. Attach once, never retry allocation or overwrite the
           // winner; all later transitions retain their ordinary CAS failure.
           const winner = await state.load();
-          if (record.phase !== "none" || winner.phase !== "running" || winner.version !== 1
+          if (record.phase !== "none" || winner.phase !== "running" || cleanup === undefined
+            || cleanup.before.version !== 1 || winner.version !== cleanup.after.version
             || winner.latestSnapshot.status !== "none" || !await state.isCurrent(execution)) {
             throw conflict("its sandbox was opened");
           }

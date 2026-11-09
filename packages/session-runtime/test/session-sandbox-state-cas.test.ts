@@ -149,11 +149,11 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     const a = w.core({ execution: attempt });
     w.store.intrude(winner("theirs"));
     await expect(a.sandbox.exec("x")).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
-    expect(w.store.writes).toEqual(["won@v0", "lost@v0"]);
+    expect(w.store.writes).toEqual(["won@v0", "lost@v0", "won@v1", "won@v2"]);
     // One attach probes the winner; without its completed warm marker it
     // must still fail, without allocating again or touching that runtime.
     expect(w.log).toEqual(["acquire:r1", "release:r1", "attach:theirs"]);
-    expect(w.store.get()).toEqual({ ...winner("theirs"), version: 1 });
+    expect(w.store.get()).toEqual({ ...winner("theirs"), version: 3, retiredHandles: [{ handle: fake("r1"), released: true }] });
   });
 
   it("failed startup cleanup without an acquired sandbox leaves the other writer's runtime intact", async () => {
@@ -173,8 +173,8 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     await execution.sandbox.failExecution();
     await execution.sandbox.failExecution();
     expect(w.log).toEqual(["acquire:r1", "release:r1", "attach:warm-owner"]);
-    expect(w.store.writes).toEqual(["won@v0", "lost@v0"]);
-    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("warm-owner"), version: 1 });
+    expect(w.store.writes).toEqual(["won@v0", "lost@v0", "won@v1", "won@v2"]);
+    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("warm-owner"), version: 3 });
   });
 
   it("a first acquire loser attaches the completed warm winner without another allocation or execution failure", async () => {
@@ -195,7 +195,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     expect(w.log.filter(entry=>entry.startsWith("release:"))).toEqual(["release:r1"]);
     expect(w.log).toContain("attach:r2");
     expect(w.log.at(-1)).toBe("exec:work@r2");
-    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("r2"), version: 2 });
+    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("r2"), version: 4 });
   });
 
   it.each(["advanced", "released", "gone", "fence-lost"])("initial acquire convergence refuses an unsafe winner: %s", async mode => {
@@ -216,7 +216,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     expect(w.log.filter(entry=>entry.startsWith("acquire:"))).toEqual(["acquire:r1","acquire:r2"]);
     expect(w.log.filter(entry=>entry.startsWith("release:"))).toEqual(["release:r1"]);
     expect(w.log.some(entry=>entry.startsWith("exec:"))).toBe(false);
-    expect(w.store.get()?.version).toBe(mode === "advanced" || mode === "released" ? 2 : 1);
+    expect(w.store.get()?.version).toBe(mode === "fence-lost" ? 1 : mode === "advanced" || mode === "released" ? 4 : 3);
   });
 
   it("does not adopt or release a warm winner changed while attaching", async () => {
@@ -228,13 +228,13 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     const opening = execution.sandbox.exec("must-not-run");
     await acquiring.promise;
     await w.core().sandbox.warm();
-    w.gates.onAttach = async () => { await w.store.state.save({...w.store.get()!,version:2},1); };
+    w.gates.onAttach = async () => { const saved=w.store.get()!; await w.store.state.save({...saved,version:saved.version+1},saved.version); };
     finishAcquire.resolve();
     await expect(opening).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
     await execution.sandbox.failExecution();
     expect(w.log.filter(entry=>entry.startsWith("release:"))).toEqual(["release:r1"]);
     expect(w.log.some(entry=>entry.startsWith("exec:"))).toBe(false);
-    expect(w.store.get()).toMatchObject({phase:"running",handle:fake("r2"),version:2});
+    expect(w.store.get()).toMatchObject({phase:"running",handle:fake("r2"),version:4});
   });
 
   it.each([false, true])("adoption storage fence loss cannot execute or release the winner (throws=%s)", async throws => {
@@ -251,7 +251,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     await a.sandbox.failExecution();
     expect(w.log.filter(x=>x.startsWith("release:"))).toEqual(["release:r1"]);
     expect(w.log.some(x=>x.startsWith("exec:STALE_WORK"))).toBe(false);
-    expect(w.store.get()).toEqual(saved);
+    expect(w.store.get()).toEqual({ ...saved, version: saved!.version + 2, retiredHandles: [{ handle: fake("r1"), released: true }] });
   });
 
   it.each([false, true])("adoption restores winner memory bindings and generation plan (winnerOnly=%s)", async winnerOnly => {
@@ -277,7 +277,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     w.gates.onRevoke=async()=>{a.setExecution(undefined);};
     release.resolve();await expect(pending).rejects.toThrow();
     expect(w.log.filter(x=>x.startsWith("release:"))).toEqual(["release:r1"]);
-    expect(w.store.get()).toEqual(saved);
+    expect(w.store.get()).toEqual({ ...saved, version: saved!.version + 2, retiredHandles: [{ handle: fake("r1"), released: true }] });
   });
 
   it.each([false,true])("adoption cannot roll back a same-handle newer record during replan (throws=%s)", async throws => {
@@ -321,7 +321,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     const a = w.core();
     w.store.intrude(winner("theirs"));
     await expect(a.sandbox.warm()).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
-    expect(w.store.writes).toEqual(["won@v0", "lost@v0"]);
+    expect(w.store.writes).toEqual(["won@v0", "lost@v0", "won@v1", "won@v2"]);
     expect(w.log).toEqual(["acquire:r1", "release:r1"]);
     expect(w.store.get()).toMatchObject({ handle: fake("theirs") });
   });
@@ -332,10 +332,10 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     const a = w.core({ execution: attempt });
     w.store.intrude(winner("theirs", taken(snapshotRef)));
     await expect(a.sandbox.exec("x")).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
-    expect(w.store.writes).toEqual(["won@v3", "lost@v3"]);
+    expect(w.store.writes).toEqual(["won@v3", "lost@v3", "won@v4", "won@v5"]);
     expect(w.log).toEqual(["attach:r0", "release:r0", "resume:snap-0", "release:from-snap-0"]);
     expect(w.log).not.toContain("discard:snap-0");
-    expect(w.store.get()).toMatchObject({ handle: fake("theirs"), latestSnapshot: taken(snapshotRef), version: 4 });
+    expect(w.store.get()).toMatchObject({ handle: fake("theirs"), latestSnapshot: taken(snapshotRef), version: 6 });
   });
 
   it("publishing a snapshot: the loser discards only the snapshot it took; the previous one is not discarded", async () => {
