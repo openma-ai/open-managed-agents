@@ -49,6 +49,31 @@ describe("createForwarderEgress firewall today (characterization)", () => {
 });
 
 describe("relay pass binding (design §0.0 rule 10)", () => {
+  it("repeated attach and policy update on one runtime and attempt share one issuance; a replacement runtime reissues", async () => {
+    const bindings: string[] = [];
+    const runtime = {
+      exec: async () => "", readFile: async () => "", writeFile: async (path: string) => path,
+      setEnvVars: async () => {},
+      prepareCredentialEgress: async (binding: { token: string }) => { bindings.push(binding.token); },
+      clearCredentialEgress: async () => {},
+    };
+    let issued = 0;
+    const egress = createForwarderEgress({ ...vendor([]), asSandboxPort: () => runtime }, {
+      gateway: { ...deps.gateway, issueToken: async () => "token-" + ++issued },
+    });
+    const policy = { ...limited, substitutions: [{ credentialId: "vault:TOKEN", envName: "TOKEN", placeholder: "oma_ph_1", hosts: [], inject: { header: true, body: false } }] };
+    const input = { runtime, scope, fence, policy, signal };
+    await egress.attach(input);
+    await Promise.all([egress.attach(input), egress.attach(input)]);
+    await egress.update({ ...input, changedCredentialIds: ["vault:TOKEN"] });
+    expect(new Set(bindings)).toEqual(new Set(["token-1"]));
+    expect(issued).toBe(1);
+    await egress.attach({ ...input, runtime: { ...runtime } });
+    expect(bindings.at(-1)).toBe("token-2");
+    await egress.attach({ ...input, fence: { ...fence, token: "next-attempt" } });
+    expect(bindings.at(-1)).toBe("token-3");
+  });
+
   const withVault: EgressPolicy = {
     ...limited,
     substitutions: [{ envName: "TOKEN", placeholder: "__p__", credentialId: "vault", hosts: ["api.example.com"] }] as never,

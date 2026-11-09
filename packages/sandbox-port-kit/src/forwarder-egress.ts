@@ -24,6 +24,10 @@ export function createForwarderEgress<R extends object>(
   deps: SandboxEgressDepsPort,
 ): SandboxEgressPort<R> {
   const views = new WeakMap<R, SandboxPort>();
+  // attach/update are re-entrant. Re-delivering a policy to the same live
+  // runtime must not ask the authority to rotate the attempt token. A new
+  // runtime (sandbox replacement), attempt, or revoke starts a new delivery.
+  const tokens = new WeakMap<R, { key: string; token: Promise<string> }>();
   const view = (runtime: R) => {
     const own = vendor.asSandboxPort?.(runtime);
     if (own !== undefined) return own;
@@ -63,7 +67,16 @@ export function createForwarderEgress<R extends object>(
         vaultIds: [...new Set(substitutions.map((item) => item.credentialId))],
       },
       relay: { endpoint: deps.gateway.endpoint.url },
-      issueToken: () => deps.gateway.issueToken({ scope: input.scope, attempt: attemptOfFence(input.fence) }),
+      issueToken: () => {
+        const attempt = attemptOfFence(input.fence);
+        const key = JSON.stringify([input.scope.workspaceId, input.scope.sessionId, attempt]);
+        const held = tokens.get(input.runtime);
+        if (held?.key === key) return held.token;
+        const entry = { key, token: deps.gateway.issueToken({ scope: input.scope, attempt }) };
+        tokens.set(input.runtime, entry);
+        entry.token.catch(() => { if (tokens.get(input.runtime) === entry) tokens.delete(input.runtime); });
+        return entry.token;
+      },
       placeholders: async () => placeholders,
     });
     input.signal.throwIfAborted();
@@ -74,6 +87,7 @@ export function createForwarderEgress<R extends object>(
       await configure({ ...input, signal: new AbortController().signal });
     },
     async revoke(input) {
+      tokens.delete(input.runtime);
       await clearSandboxEgress(view(input.runtime));
     },
   };
