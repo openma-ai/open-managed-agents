@@ -303,7 +303,17 @@ export async function ensureEnvironmentPackages(
   const markers = `echo "${full}" > ${WARM_MARKER}; mkdir -p /workspace; echo "${lang}" > ${RESTORED_MARKER}`;
 
   const probe = await probeSetupState(sandbox, full, lang);
-  const state = probe.path;
+  let state = probe.path;
+  // Workspace-only restores can retain the marker but exclude node_modules.
+  // Even a prepared-base /tmp marker is not proof that the restored packages exist.
+  if (state !== "fresh" && packages?.npm?.length) {
+    const command = "npm ls --global --prefix /workspace/.npm-global --depth=0 " + packages.npm.map(shellQuote).join(" ");
+    try {
+      if (parseExecResult(await sandbox.exec(command, 30_000)).exitCode !== 0) state = "fresh";
+    } catch {
+      state = "fresh";
+    }
+  }
   if (state === "warm") {
     onProgress?.({ kind: "done", path: "warm", durationMs: Date.now() - startMs });
     return { path: "warm", durationMs: Date.now() - startMs };
