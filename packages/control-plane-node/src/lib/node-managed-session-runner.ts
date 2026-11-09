@@ -1,3 +1,4 @@
+import { sessionErrorMessage } from "@open-managed-agents/session-runtime";
 import {
   classifyTurnFailure,
   finishTurn,
@@ -1011,7 +1012,7 @@ export class DefaultNodeManagedSessionRunner
               attempt,
               maxAttempts: retry.attempts,
               delayMs: retry.delayMs,
-              message: error.message,
+              message: sessionErrorMessage(error, "harness.run"),
               events: nodeTurnFailureEvents(runtime),
               wait: (ms) => abortableDelay(ms, abortController.signal),
             });
@@ -1053,12 +1054,12 @@ export class DefaultNodeManagedSessionRunner
         if (!failureReported) {
           reportTurnFailure(
             { type: "exhausted" },
-            error instanceof Error ? error.message : String(error),
+            sessionErrorMessage(error, "turn.execution"),
             nodeTurnFailureEvents(runtime),
           );
         }
         throw new SessionRetriesExhaustedError(
-          error instanceof Error ? error.message : String(error),
+          sessionErrorMessage(error, "turn.execution"),
         );
       }
     } finally {
@@ -1070,7 +1071,7 @@ export class DefaultNodeManagedSessionRunner
         if (runFailed) abortController.abort();
         await subagents?.drain();
       } catch (error) {
-        finalizationError = error instanceof Error ? error : new Error(String(error));
+        finalizationError = new Error(sessionErrorMessage(error, "subagents.drain"), { cause: error });
       } finally {
         if (this.subagentExecutions.get(input) === subagents) this.subagentExecutions.delete(input);
       }
@@ -1079,7 +1080,7 @@ export class DefaultNodeManagedSessionRunner
           await this.dependencies.disposeTools?.(turnTools);
         }
       } catch (error) {
-        finalizationError = error instanceof Error ? error : new Error(String(error));
+        finalizationError = new Error(sessionErrorMessage(error, "tools.dispose"), { cause: error });
       }
       try {
         const barrier = executionFailed
@@ -1103,7 +1104,7 @@ export class DefaultNodeManagedSessionRunner
           });
         }
       } catch (error) {
-        finalizationError ??= error instanceof Error ? error : new Error(String(error));
+        finalizationError ??= new Error(sessionErrorMessage(error, "sandbox.turn_end"), { cause: error });
       }
       // Turn completion is a safe point: all harness/subagent activity has
       // drained. The interval is a target between such points, not a timer
@@ -1133,7 +1134,7 @@ export class DefaultNodeManagedSessionRunner
             workspace.activeId = candidate.id;
           }
         } catch (error) {
-          finalizationError = error instanceof Error ? error : new Error(String(error));
+          finalizationError = new Error(sessionErrorMessage(error, "workspace.checkpoint"), { cause: error });
         }
       }
       const leaseLost = abortController.signal.reason === "lease_lost";
@@ -1142,9 +1143,7 @@ export class DefaultNodeManagedSessionRunner
           type: "session.error",
           error: {
             type: "unknown_error",
-            message: finalizationError instanceof Error
-              ? finalizationError.message
-              : String(finalizationError),
+            message: sessionErrorMessage(finalizationError, "turn.finalization"),
             retryStatus: "exhausted",
           },
         });
@@ -1363,7 +1362,7 @@ function nodeTurnFailureEvents(runtime: ManagedNodeHarnessRuntime): TurnFailureE
     sessionError: (message, retryStatus) => {
       runtime.broadcastProducedEvent({
         type: "session.error",
-        error: { type: "unknown_error", message, retryStatus },
+        error: { type: "unknown_error", message: message.trim() || "turn.execution: Error: (empty message)", retryStatus },
       });
     },
     rescheduled: () => {

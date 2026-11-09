@@ -3,6 +3,7 @@
 // failure is only a warning) and storage (Memory Stores and outputs attached
 // on open; written back at turn end / before stop).
 
+import { sessionErrorMessage } from "./session-error-message";
 import { SandboxGoneError, type SandboxPlan } from "@open-managed-agents/sandbox";
 import { errorText, type LiveSessionSandbox, type OpenSandbox } from "./session-sandbox-live";
 
@@ -48,6 +49,10 @@ export async function syncStorage<R>(state: LiveSessionSandbox<R>, reason: "turn
   if (open === null || !state.attachesStorage) return;
   const { ports } = await state.compose();
   const scope = state.scope();
-  await ports.storage.sync({ runtime: open.runtime, scope, fence: state.fence(scope), stores: state.stores, outputs: open.plan.outputs, reason, signal: new AbortController().signal });
+  try {
+    await ports.storage.sync({ runtime: open.runtime, scope, fence: state.fence(scope), stores: state.stores, outputs: open.plan.outputs, reason, signal: new AbortController().signal });
+  } catch (error) {
+    throw new Error(sessionErrorMessage(error, `storage.sync:${reason}`), { cause: error });
+  }
   state.storageSyncedAt = state.now();
 }

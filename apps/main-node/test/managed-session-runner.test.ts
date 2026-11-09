@@ -1120,7 +1120,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       runtime.broadcast({ type: "agent.tool_use", id: "tool_01", name: "bash", input: { command: "touch x" } });
       throw new Error("model unavailable");
     });
-    expect((result as Error).message).toBe("model unavailable");
+    expect((result as Error).message).toBe("turn.execution: Error: model unavailable");
     expect(runs).toBe(1);
     expect(summary).toEqual(["session.status_running", "agent.tool_use", "error:exhausted", "idle:retries_exhausted"]);
   });
@@ -1142,7 +1142,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
 
   it("reports exhausted after the side-effect-free retries run out", async () => {
     const { result, runs, summary } = await failingHarnessTurn(async () => { throw new Error("model unavailable"); });
-    expect((result as Error).message).toBe("model unavailable");
+    expect((result as Error).message).toBe("turn.execution: Error: model unavailable");
     expect(runs).toBe(3);
     expect(summary).toEqual([
       "session.status_running",
@@ -1217,7 +1217,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
         type: "session.error",
         error: {
           type: "unknown_error",
-          message: "final collect failed",
+          message: "turn.finalization: Error: sandbox.turn_end: Error: final collect failed; caused by Error: final collect failed",
           retry_status: "exhausted",
         },
         processed_at: "2026-08-26T03:15:00.001Z",
