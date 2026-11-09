@@ -53,7 +53,7 @@ export async function openSandbox<R>(state: LiveSessionSandbox<R>): Promise<Open
 /** Undo an open: revoke egress, the lose transition when the record names this
  * sandbox, release it. A writer that changed the record meanwhile keeps it:
  * nothing is released. */
-export async function rollbackOpen<R>(state: LiveSessionSandbox<R>, opened: Pick<OpenSandbox<R>, "runtime" | "handle">, record: SessionSandboxState, execution = state.execution()): Promise<void> {
+export async function rollbackOpen<R>(state: LiveSessionSandbox<R>, opened: Pick<OpenSandbox<R>, "runtime" | "handle">, record: SessionSandboxState, execution = state.execution(), allocatedHere = false): Promise<void> {
   state.current = null;
   const current = async () => {
     if (await state.isCurrent(execution)) return true;
@@ -69,7 +69,14 @@ export async function rollbackOpen<R>(state: LiveSessionSandbox<R>, opened: Pick
   if (!await current()) return;
   // A matching handle is not ownership: another core can advance the same
   // runtime to a newer record while this open is awaiting a failing step.
-  if (saved === undefined || saved.version !== record.version) return;
+  if (saved === undefined) return;
+  if (saved.version !== record.version) {
+    // Only this open can own a newly allocated, provider-assigned handle.
+    // An adopted/attached runtime is never cleanup authority. Recheck the
+    // durable reference and original execution again at the release boundary.
+    if (allocatedHere && !sameHandle(recordedHandle(saved), opened.handle)) await state.releaseOwn(opened.handle, execution);
+    return;
+  }
   if (sameHandle(recordedHandle(record), opened.handle)) {
     if (await state.apply(record, { type: "lose" }).catch(() => null) === null) return;
   }
@@ -181,7 +188,7 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
     }
   } catch (error) {
     if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
-    if (opened !== "gone") await rollbackOpen(state, opened, record, execution);
+    if (opened !== "gone") await rollbackOpen(state, opened, record, execution, !reused);
     throw error;
   }
   const open: OpenSandbox<R> = { ...opened, executor: state.options.executor(opened.runtime), generation, plan, runStartedAt };
@@ -204,7 +211,7 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
   } catch (error) {
     if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
     if (!(error instanceof SessionSandboxStateConflictError)) {
-      await rollbackOpen(state, open, record, execution);
+      await rollbackOpen(state, open, record, execution, !reused);
       throw error;
     }
     // Lost the record: drop this open; a sandbox it started is cleaned up.

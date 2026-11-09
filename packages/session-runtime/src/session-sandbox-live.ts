@@ -213,10 +213,12 @@ export class LiveSessionSandbox<R> {
 
   /** Cleans up a sandbox this writer started but could not record: released,
    * unless the record names it (the winner holds it). */
-  async releaseOwn(handle: SandboxHandle): Promise<void> {
-    const saved = await this.load().catch(() => undefined);
-    if (saved !== undefined && sameHandle(recordedHandle(saved), handle)) return;
+  async releaseOwn(handle: SandboxHandle, execution = this.execution()): Promise<void> {
     const { ports } = await this.compose();
+    if (!await this.isCurrent(execution)) { this.abandon(); return; }
+    const saved = await this.load().catch(() => undefined);
+    if (saved === undefined || sameHandle(recordedHandle(saved), handle)) return;
+    if (!await this.isCurrent(execution)) { this.abandon(); return; }
     await ports.sandbox.release({ scope: this.scope(), handle }).catch((error) => {
       this.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
     });

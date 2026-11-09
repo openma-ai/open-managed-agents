@@ -147,7 +147,10 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     if (opening) return;
     const execution = state.execution();
     const record = await state.record(open);
-    if (record === null) throw new SessionSandboxStateConflictError("Another writer changed the Session sandbox record while storage was mounted");
+    if (record === null) {
+      state.abandon();
+      throw new SessionSandboxStateConflictError("Another writer changed the Session sandbox record while storage was mounted");
+    }
     try {
       await attachStorage(state, open, new AbortController().signal);
     } catch (error) {

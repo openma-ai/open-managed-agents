@@ -301,6 +301,21 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     expect(w.log.some(x=>x.startsWith("exec:must-not-run"))).toBe(false);
   });
 
+  it("mount CAS conflict abandons cached runtime before the next call", async()=>{
+    const w=world();const a=w.core({execution:attempt});await a.sandbox.exec("before");
+    w.store.intrude(pausedWinner("r1"));
+    await expect(a.sandbox.mountSessionOutputs()).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
+    const at=w.log.length;await a.sandbox.exec("after");
+    expect(w.log.slice(at)).toContain("attach:r1");
+    expect(w.log.filter(x=>x.startsWith("release:"))).toEqual([]);
+  });
+  it("failed fresh allocation is cleaned when a newer record names another runtime",async()=>{
+    const w=world();w.gates.generationStores=true;const a=w.core({execution:attempt});
+    w.gates.onStorage=async()=>{const saved=w.store.get()!;await w.store.state.save({...winner("other"),version:saved.version+1},saved.version);throw Error("storage");};
+    await expect(a.sandbox.exec("NO")).rejects.toThrow();await a.sandbox.failExecution();
+    expect(w.log.filter(x=>x.startsWith("release:"))).toEqual(["release:r1"]);
+    expect(w.store.get()).toMatchObject({handle:fake("other")});
+  });
   it("warm acquire: the loser releases the sandbox it warmed", async () => {
     const w = world();
     const a = w.core();
