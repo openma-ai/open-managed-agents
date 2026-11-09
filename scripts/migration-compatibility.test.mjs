@@ -118,3 +118,33 @@ for (const [name, bootstrap, orphans] of [
     }
   });
 }
+
+for (const [name, migration] of [["D1", workClaimPublicationMigration], ["Node SQLite", nodeSqliteWorkClaimPublicationMigration]]) {
+  test(`${name} preserves the legacy publication before dropping its fence`, () => {
+    const database = new DatabaseSync(":memory:");
+    const candidates = {
+      workspaceCandidate: { id: "workspace", contentHash: "sha256:workspace", revision: 7 },
+      outputCandidate: { id: "outputs", contentHash: "sha256:outputs" },
+      runtimeCheckpoint: { provider: "test", checkpointId: "snapshot", kind: "filesystem",
+        sourceRuntimeId: "runtime", sessionId: "s", workGeneration: 3, workspaceRevision: 7,
+        harnessVersion: "1", runtimeIdentity: "test" },
+    };
+    try {
+      database.exec(environmentWorkSchema);
+      database.exec(runtimeResourceTablesMigration);
+      // Fence and Work generations were independent. Preserve the publication's
+      // generation even after a later fence acquisition, not the current fence's.
+      database.prepare("INSERT INTO runtime_resource_fences VALUES (?, 'w', 'e', 's', 'x', 9, 'o', 't', 0, ?, 3, 7)")
+        .run("matching", JSON.stringify(candidates));
+      database.prepare("INSERT INTO runtime_resource_fences VALUES (?, 'w', 'other', 's', 'x', 9, 'o', 't', 0, ?, 4, 8)")
+        .run("wrong-environment", JSON.stringify({ ...candidates, workspaceCandidate: { id: "wrong", contentHash: "wrong" } }));
+      database.exec(migration);
+      const work = database.prepare("SELECT runtime_publication_json, revision FROM managed_environment_work").get();
+      assert.deepEqual(JSON.parse(work.runtime_publication_json), { ...candidates, generation: 3, revision: 7 });
+      assert.equal(work.revision, 5);
+      assert.equal(database.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'runtime_resource_fences'").get().n, 0);
+    } finally {
+      database.close();
+    }
+  });
+}
