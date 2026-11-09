@@ -4,8 +4,10 @@
  *
  * Against an already-idle lane an interrupt is a no-op that is only recorded,
  * including idle requires_action: event_ids, pending calls and stop_reason
- * stay untouched. Otherwise the running turn is aborted, queued inputs are
- * flushed, still-open tool calls are closed, and the lane ends idle end_turn.
+ * stay untouched. Otherwise the running turn is aborted, still-open tool calls
+ * are closed, and the lane ends idle end_turn. Queued inputs survive: CMA has
+ * the message sent after an interrupt start the next turn, so the host drains
+ * the lane again once the interrupt returns.
  */
 
 export type LaneStatus = "running" | "idle";
@@ -27,8 +29,6 @@ export interface TurnInterruptPort {
   requestDurableInterrupt(): Promise<void>;
   /** The interrupt emits the aborted turn's idle; the turn must not. */
   ownInterruptedIdle(): void;
-  /** Flushes the lane's queued inputs; returns how many were cancelled. */
-  cancelQueuedInputs(): number;
   /** Settles calls parked on a runner while no turn runs; returns how many
    * were settled, or null when the runner did not confirm. */
   settlePendingActions(): Promise<number | null>;
@@ -59,7 +59,6 @@ export async function interruptTurn(port: TurnInterruptPort): Promise<TurnInterr
     port.ownInterruptedIdle();
     await active.abort();
   }
-  const cancelled = port.cancelQueuedInputs();
   let settled = 0;
   if (active === null) {
     const count = await port.settlePendingActions();
@@ -70,7 +69,7 @@ export async function interruptTurn(port: TurnInterruptPort): Promise<TurnInterr
   const closed = port.closeOpenToolUses();
   const running = port.lastStatus() === "running";
   // A no-op interrupt right after a natural end must not add a second idle.
-  if (closed > 0 || settled > 0 || cancelled > 0 || active !== null || running) {
+  if (closed > 0 || settled > 0 || active !== null || running) {
     // A zombie turn whose finally still runs must not emit its own idle.
     if (running || active !== null) port.ownInterruptedIdle();
     port.emitIdle();

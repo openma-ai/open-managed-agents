@@ -98,12 +98,17 @@ export {
   isTurnCancellationError,
   planTurnFailure,
   reportTurnFailure,
+  runTurnAttempts,
   settleTurnFailure,
+  TURN_RETRY,
   type PlanTurnFailureInput,
+  type TurnAttemptsResult,
   type TurnFailureClass,
   type TurnFailureEventsPort,
   type TurnFailurePlan,
 } from "./turn-failure";
+export { classifyTurnInput, type TurnInput } from "./turn-input";
+export { planRequiresActionAnswers, type RequiresActionAnswerPlan } from "./turn-answers";
 export { openTurnMarker, type TurnMarker, type TurnMarkerHooks } from "./turn-marker";
 export {
   interruptTurn,
