@@ -14,9 +14,8 @@
 // transition (compare-and-set against the record read before, design §0.0b
 // A.10), which discards the previous snapshot once it is written. A lost
 // fence or a lost compare-and-set discards only the snapshot just taken. A
-// failure is a warning; the Session keeps running, and with no earlier
-// snapshot the record says it is missing, so a later loss is an error, not an
-// empty sandbox.
+// failure is a warning; the Session keeps running. No published snapshot means
+// the initial creation path is used again after loss, with a warning.
 
 import type { ResumeRef, SandboxHandle } from "@open-managed-agents/sandbox";
 import { errorText, sameHandle, type LiveSessionSandbox } from "./session-sandbox-live";
@@ -66,7 +65,7 @@ export async function takeSnapshot<R>(
   } catch (error) {
     state.dirty = true;
     state.options.warn(`sandbox_snapshot_failed runtime=${open.handle.runtimeId} error=${errorText(error)}`);
-    return recordFailure(state, execution, expected);
+    return expected;
   }
   state.snapshotAt = state.now();
   if (!isSnapshotRef(ref)) {
@@ -115,17 +114,3 @@ export async function publishSnapshot<R>(
   }
 }
 
-/** No snapshot could be published. With an earlier one the record stays (it
- * can still restore); with none, losing this changed sandbox is an error from
- * now on. */
-async function recordFailure<R>(state: LiveSessionSandbox<R>, execution: SessionSandboxExecution | undefined, expected: SessionSandboxState | undefined): Promise<SnapshotOutcome> {
-  try {
-    if (!await state.isCurrent(execution)) return expected;
-    const saved = expected ?? await state.load();
-    if (saved.phase !== "running" || saved.latestSnapshot.status !== "none") return saved;
-    return await state.apply(saved, { type: "snapshotFailed" }) ?? "conflict";
-  } catch (error) {
-    state.options.warn(`sandbox_snapshot_failed error=${errorText(error)}`);
-    return expected;
-  }
-}

@@ -23,7 +23,6 @@ const snap = (ref: string): SnapshotRef => ({ provider: "fake", ref, kind: "snap
 const self = { provider: "fake", ref: "r1", kind: "self" as const };
 const none: LatestSnapshot = { status: "none" };
 const taken = (ref: string): LatestSnapshot => ({ status: "taken", ref: snap(ref) });
-const missing: LatestSnapshot = { status: "missing" };
 const shared = { stores: [], outputs: true, version: 7 };
 
 const inPhase: Record<SandboxPhaseName, (latestSnapshot: LatestSnapshot) => SessionSandboxState> = {
@@ -42,7 +41,6 @@ const actions: Record<SandboxActionType, SandboxAction> = {
   resume: { type: "resume", handle: other, at: 500 },
   restoreFromSnapshot: { type: "restoreFromSnapshot", handle: other, at: 500, ref: snap("s9") },
   publishSnapshot: { type: "publishSnapshot", ref: snap("s9") },
-  snapshotFailed: { type: "snapshotFailed" },
   lose: { type: "lose" },
   release: { type: "release" },
   discarded: { type: "discarded", refs: [] },
@@ -58,15 +56,14 @@ const legal: Array<{ action: SandboxActionType; from: SandboxPhaseName; snapshot
   { action: "acquire", from: "lost", to: running(none) },
   { action: "attach", from: "running", snapshot: taken("s1"), to: running(taken("s1"), 100) },
   { action: "attach", from: "paused", snapshot: taken("s1"), to: running(taken("s1")) },
-  { action: "renew", from: "running", snapshot: missing, to: running(missing) },
+  { action: "renew", from: "running", snapshot: none, to: running(none) },
   { action: "idlePause", from: "running", snapshot: taken("s1"), to: { phase: "paused", handle, pauseRef: self, latestSnapshot: taken("s1") } },
   { action: "resume", from: "paused", snapshot: taken("s1"), to: running(taken("s1")) },
   { action: "restoreFromSnapshot", from: "none", to: running(taken("s9")) },
   { action: "restoreFromSnapshot", from: "running", snapshot: taken("s1"), to: running(taken("s9")) },
   { action: "restoreFromSnapshot", from: "paused", snapshot: taken("s1"), to: running(taken("s9")) },
-  { action: "restoreFromSnapshot", from: "lost", snapshot: missing, to: running(taken("s9")) },
+  { action: "restoreFromSnapshot", from: "lost", snapshot: none, to: running(taken("s9")) },
   { action: "publishSnapshot", from: "running", snapshot: taken("s1"), to: { phase: "running", handle, runStartedAt: 100, latestSnapshot: taken("s9") } },
-  { action: "snapshotFailed", from: "running", to: { phase: "running", handle, runStartedAt: 100, latestSnapshot: missing } },
   { action: "lose", from: "running", snapshot: taken("s1"), to: { phase: "lost", latestSnapshot: taken("s1") } },
   { action: "lose", from: "paused", snapshot: taken("s1"), to: { phase: "lost", pauseRef: self, latestSnapshot: taken("s1") } },
   { action: "resume", from: "lost", snapshot: taken("s1"), to: running(taken("s1")) },
@@ -116,15 +113,9 @@ describe("Session sandbox transitions: every illegal one", () => {
 describe("Session sandbox transition guards", () => {
   it("acquire is refused while something needs restoring: never a silent empty sandbox (A.4)", () => {
     for (const from of ["none", "running", "paused", "lost"] as const) {
-      for (const snapshot of [taken("s1"), missing]) {
+      for (const snapshot of [taken("s1")]) {
         expect(() => transition(inPhase[from](snapshot), actions.acquire)).toThrow(SessionSandboxTransitionError);
       }
-    }
-  });
-
-  it("snapshotFailed only marks a record with no snapshot: an earlier one can still restore", () => {
-    for (const snapshot of [taken("s1"), missing]) {
-      expect(() => transition(inPhase.running(snapshot), actions.snapshotFailed)).toThrow(SessionSandboxTransitionError);
     }
   });
 

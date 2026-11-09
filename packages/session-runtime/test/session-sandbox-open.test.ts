@@ -73,17 +73,19 @@ describe("Session sandbox recovery order (design §0.0b A.4)", () => {
     expect(h.stored()).toMatchObject({ phase: "lost", latestSnapshot: latest });
   });
 
-  it("a changed sandbox whose snapshot failed (missing): SandboxRestoreError, nothing acquired", async () => {
-    const h = fakeSessionSandbox({ saved: runningRecord("r0", { latestSnapshot: { status: "missing" }, version: 4 }), attachGone: true });
-    await expect(h.sandbox.exec("x")).rejects.toThrow("there is no snapshot to start it from");
-    expect(h.log).toEqual(["attach:r0", "release:r0"]);
+  it("loss before the first snapshot recreates through the initial path, warns and is not restored", async () => {
+    const h = fakeSessionSandbox({ saved: { ...initialSandboxState(), phase: "lost", version: 4 }, attachGone: true });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["acquire", "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
+    expect(h.warnings.some((w) => w.startsWith("sandbox_recreated:") && w.includes("changes since its creation were lost"))).toBe(true);
   });
 
   it("nothing ever published (or no snapshots in the adapter): a new sandbox, with a warning", async () => {
     const h = fakeSessionSandbox({ saved: runningRecord("r0", { version: 4 }), attachGone: true });
     await h.sandbox.exec("x");
     expect(h.log).toEqual(["attach:r0", "release:r0", "acquire", "egress.attach", "exec:x"]);
-    expect(h.warnings.some((w) => w.startsWith("sandbox_started_empty"))).toBe(true);
+    expect(h.warnings.some((w) => w.startsWith("sandbox_recreated"))).toBe(true);
   });
 
   it("a sandbox with no handle to find again (A.7): every open, in every process, starts from the latest snapshot", async () => {

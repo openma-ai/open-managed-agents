@@ -6,9 +6,9 @@
 //   2. otherwise mint a generation and plan, then: resume the pause point of a
 //      paused sandbox -> start a new sandbox from the latest snapshot (the
 //      host's published one, else the record's) -> with neither, a new sandbox
-//      only when the record says nothing needs restoring (with a warning once
-//      something ran). A snapshot that cannot be started, or one that is
-//      missing, is a SandboxRestoreError, never a silent empty sandbox. A
+//      through the initial creation path when none was ever published (with a
+//      persisted warning about lost changes). A published snapshot that cannot
+//      be started is a SandboxRestoreError, never a silent empty sandbox. A
 //      "changes" handle is recorded before anything else, and only while this
 //      owner holds the fence;
 //   3. egress.attach, then storage.attach, then the marker for a new sandbox.
@@ -190,27 +190,21 @@ async function startNew<R>(
   // latest snapshot (or older than the host's), tried below.
   if ("pauseRef" in record && record.pauseRef !== undefined && !isSnapshotRef(record.pauseRef)) {
     const resumed = await tryResume(record.pauseRef).catch((error) => {
-      state.options.warn(`workspace_restore_failed ref=${record.pauseRef!.ref} error=${errorText(error)}`);
+      state.options.warn(`workspace_restore_failed ref=${record.pauseRef!.ref} kind=${record.pauseRef!.kind} error=${errorText(error)}`);
       return "gone" as const;
     });
     if (resumed !== "gone") return { opened: resumed, restored: false, publish: (handle, at) => ({ type: "resume", handle, at }) };
   }
   const snapshot = (await state.options.resumeRef()) ?? (record.latestSnapshot.status === "taken" ? record.latestSnapshot.ref : null);
   if (snapshot !== null) {
-    const restored = await tryResume(snapshot);
+    const restored = await tryResume(snapshot).catch((error) => {
+      throw new SandboxRestoreError(`The Session latest snapshot ${snapshot.ref} could not be started: ${errorText(error)}`, { cause: error });
+    });
     if (restored !== "gone") return { opened: restored, restored: true, publish: (handle, at) => ({ type: "restoreFromSnapshot", handle, at, ref: snapshot }) };
     await giveUp();
     throw new SandboxRestoreError(`The Session's sandbox is gone and its latest snapshot ${snapshot.ref} could not be started`);
   }
-  if (record.latestSnapshot.status === "missing") {
-    await giveUp();
-    throw new SandboxRestoreError("The Session's sandbox is gone and there is no snapshot to start it from");
-  }
-  // Nothing was ever published (design §0.0 rule 16: back to the last
-  // published state), or the adapter has no snapshots: say so, never silently.
-  if (record.version > 0) state.options.warn("sandbox_started_empty: the Session's sandbox is gone and no snapshot was ever published; a new one starts empty");
-  const acquired = await ports.sandbox.acquire({ scope, plan, signal });
-  if (acquired === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
+  const acquired = await firstCreate(state, record, plan, signal);
   return { opened: acquired, restored: false, publish: (handle, at) => ({ type: "acquire", handle, at }) };
 }
 
@@ -238,8 +232,7 @@ async function warm<R>(state: LiveSessionSandbox<R>): Promise<void> {
   if (!await state.isCurrent(state.execution())) return;
   const generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const plan = await state.options.plan({ scope, generation, stores: state.stores });
-  const acquired = await ports.sandbox.acquire({ scope, plan, signal });
-  if (acquired === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
+  const acquired = await firstCreate(state, saved, plan, signal);
   try {
     if (ports.sandbox.handle === "changes" && !await state.isCurrent(state.execution())) {
       throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was warmed");
@@ -265,4 +258,14 @@ async function readMarker(executor: SessionSandboxExecutor): Promise<string | nu
 async function writeMarker(executor: SessionSandboxExecutor, generation: string): Promise<void> {
   const out = await executor.exec(`echo ${generation} > ${SANDBOX_GENERATION_MARKER}`);
   if (parseExecResult(out).exitCode !== 0) throw new Error(`Writing ${SANDBOX_GENERATION_MARKER} failed: ${out.slice(0, 200)}`);
+}
+
+/** Initial open, warm and no-snapshot recovery share this creation boundary.
+ * Environment cache integration wraps acquire here; it never enters latestSnapshot. */
+async function firstCreate<R>(state: LiveSessionSandbox<R>, record: SessionSandboxState, plan: SandboxPlan, signal: AbortSignal): Promise<Acquired<R>> {
+  if (record.phase !== "none") await state.options.warn("sandbox_recreated: no Session snapshot was ever published; changes since its creation were lost; recreating from the initial environment and rerunning Session setup and mounts");
+  const { ports } = await state.compose();
+  const acquired = await ports.sandbox.acquire({ scope: state.scope(), plan, signal });
+  if (acquired === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
+  return acquired;
 }

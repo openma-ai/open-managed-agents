@@ -70,7 +70,7 @@ export interface PortsSessionSandboxOptions<R> {
   /** Lifecycle progress (snapshots, restores); not a warning. Omitted = dropped. */
   info?(message: string): void;
   /** A host that records this in the event log uses sessionSandboxWarningEvent (./session-warning). */
-  warn(message: string): void;
+  warn(message: string): void | Promise<void>;
   outputDurability(): { durability: "durable" | "best_effort" } | null;
   /** egress.attach again this often at exec boundaries (an expiring
    * credential in the egress, e.g. the E2B relay pass); null = never. */

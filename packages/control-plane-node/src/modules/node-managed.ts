@@ -23,6 +23,8 @@ import { installEnvironmentPackages } from "../lib/environment-packages";
 import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder";
 import { createPreparedSandboxBases } from "../lib/prepared-sandbox-bases";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
+import { sessionSandboxWarningEvent } from "@open-managed-agents/session-runtime";
+import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
 import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
@@ -306,7 +308,16 @@ export async function createManagedNodeRuntime(
     isFenceActive: isManagedSessionExecutionFenceActive,
     idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
     warmAtCreate: config.workspace.strategy !== "checkpoint_restore", mountOutputsAtCreate: sharedSessionOutputs === undefined && components.sandbox.capabilities?.mountsFixedAtCreate === true,
-    warn: (message, { workspaceId, session }) => logger.warn({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message),
+    warn: async (message, { workspaceId, session }) => {
+      logger.warn({ op: "main-node.session_sandbox", workspaceId, sessionId: session.id }, message);
+      try {
+      const event = decodeRuntimeProducedSessionEvent({ ...sessionSandboxWarningEvent(message), id: `sevt_${nanoid()}`, processed_at: new Date().toISOString() });
+      if (event === null) throw new Error("Sandbox warning event could not be decoded");
+      const projection = new SessionRuntimeProjectionApplicationService({ workspaceId, persistence: new SqlSessionRuntimeProjectionPersistence(sql) });
+      const result = await projection.recordSessionRuntimeEvents({ sessionId: session.id, events: [event] });
+      if (result.type !== "recorded" && result.type !== "not_found") logger.warn({ op: "main-node.session_sandbox.warning", result: result.type }, "sandbox warning could not be persisted");
+      } catch (error) { logger.warn({ op: "main-node.session_sandbox.warning", error }, "sandbox warning persistence failed"); }
+    },
   });
 
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({

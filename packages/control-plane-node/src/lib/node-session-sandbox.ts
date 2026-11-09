@@ -158,7 +158,7 @@ export interface NodeSessionSandboxOptions {
   relay(): { issue(attempt: SessionExecutionAttemptRef, harness: string | null | undefined): Promise<string>; endpoint: string } | null;
   isFenceActive(fence: SessionExecutionFence): Promise<boolean>;
   idlePauseMs: number;
-  warn(message: string, context: NodeSessionSandboxContext): void;
+  warn(message: string, context: NodeSessionSandboxContext): void | Promise<void>;
   /** Warm the sandbox at Session creation (design §0.0 rule 10); off under
    * checkpoint_restore, whose sandboxes are per allocation. */
   warmAtCreate?: boolean;

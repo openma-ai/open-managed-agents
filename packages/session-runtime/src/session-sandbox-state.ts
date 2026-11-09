@@ -14,8 +14,7 @@
 // (design §0.0b A.5: a pause in place is gone with the sandbox):
 //   none      nothing was ever published or attempted: a fresh sandbox is fine
 //   taken     a snapshot a new sandbox can start from
-//   missing   the sandbox changed, its snapshot failed and there is no earlier
-//             one: losing it is an error, never a silent empty sandbox
+// With no snapshot ever published, recovery repeats initial creation with a warning.
 //
 // Every transition is in SANDBOX_TRANSITIONS (action × phase → next record);
 // anything else throws SessionSandboxTransitionError. transition() only
@@ -33,8 +32,7 @@ export function isSnapshotRef(ref: ResumeRef): ref is SnapshotRef {
 
 export type LatestSnapshot =
   | { status: "none" }
-  | { status: "taken"; ref: SnapshotRef }
-  | { status: "missing" };
+  | { status: "taken"; ref: SnapshotRef };
 
 export type SandboxPhase =
   | { phase: "none" }
@@ -73,8 +71,6 @@ export type SandboxAction =
   | { type: "restoreFromSnapshot"; handle: SandboxHandle; at: number; ref: SnapshotRef }
   /** A newer snapshot; the previous one is dropped. */
   | { type: "publishSnapshot"; ref: SnapshotRef }
-  /** The sandbox changed, its snapshot failed, and there is no earlier one. */
-  | { type: "snapshotFailed" }
   /** The sandbox failed or cannot be found; the latest snapshot stays. */
   | { type: "lose" }
   /** The Session ended. */
@@ -128,10 +124,6 @@ export const SANDBOX_TRANSITIONS: Rules = {
   publishSnapshot: {
     running: (state, action) => state.phase !== "running" ? null
       : { phase: "running", handle: state.handle, runStartedAt: state.runStartedAt, latestSnapshot: { status: "taken", ref: action.ref } },
-  },
-  snapshotFailed: {
-    running: (state) => state.phase !== "running" || state.latestSnapshot.status !== "none" ? null
-      : { phase: "running", handle: state.handle, runStartedAt: state.runStartedAt, latestSnapshot: { status: "missing" } },
   },
   lose: { running: lost, paused: lost },
   release: { none: released, running: released, paused: released, lost: released },
