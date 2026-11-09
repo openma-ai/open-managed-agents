@@ -14,7 +14,8 @@ import { v1FileView } from "./sync-storage";
 /**
  * Known gaps of the reused installer (§0.2 table), not changed here: the
  * relay token is persisted in the sandbox's binding file rather than held
- * only in memory, the CA key is not on tmpfs, and the relay port is random.
+ * only in memory and the CA key is not on tmpfs. The relay uses the shared
+ * fixed loopback port so inherited proxy environments survive a restart.
  * The relay bundle is embedded in sandbox-egress, so Workers hosts install
  * it too; the sandbox image needs `node`.
  */

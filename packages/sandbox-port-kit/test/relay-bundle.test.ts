@@ -41,7 +41,7 @@ describe("embedded sandbox relay bundle", () => {
         if (existsSync(join(directory, "ready.json"))) ready = JSON.parse(readFileSync(join(directory, "ready.json"), "utf8"));
       }
       expect(ready?.pid).toBe(child.pid);
-      expect(ready).toMatchObject({ protocol: 3, bindingId: "delivery-1" });
+      expect(ready).toMatchObject({ protocol: 4, bindingId: "delivery-1" });
       expect(existsSync(join(directory, "binding.json"))).toBe(false);
       for (const name of readdirSync(directory)) {
         const path = join(directory, name);

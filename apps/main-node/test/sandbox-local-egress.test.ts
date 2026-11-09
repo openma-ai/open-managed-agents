@@ -136,7 +136,7 @@ describe("sandbox-owned local credential relay", () => {
     expect(f.issued).toHaveLength(2);
     for (const token of f.issued) expect(await f.sandbox.exec(`grep -rlF '${token}' .oma-egress || echo NONE`)).toContain("NONE");
     const ready = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json")) as Record<string, unknown>;
-    expect(ready).toMatchObject({ protocol: 3, bindingError: null });
+    expect(ready).toMatchObject({ protocol: 4, bindingError: null });
     expect(Object.keys(ready).sort()).toEqual(["bindingError", "bindingId", "caBundleFile", "caFile", "pid", "port", "protocol"]);
   });
 
@@ -167,11 +167,14 @@ describe("sandbox-owned local credential relay", () => {
   it("uses independent sandbox CAs and repairs a killed warm relay before commands run", async () => {
     const f = await fixture(); const a = await f.prepare();
     const b = new LocalSubprocessSandbox({ workdir: join(f.dir, "sandbox-b") }); cleanup.push(() => b.destroy());
+    await clearSandboxEgress(f.sandbox);
     const other = await f.prepare(b);
     expect(await readFile(a.caFile!, "utf8")).not.toBe(await readFile(other.caFile!, "utf8"));
-    for (const box of [f.sandbox, b]) expect(await box.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/'`)).toContain("200");
-    await run("kill", ["-KILL", String(a.pid)]);
-    const repaired = await f.prepare(); expect(repaired.pid).not.toBe(a.pid);
+    expect(await b.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/'`)).toContain("200");
+    await clearSandboxEgress(b);
+    const restarted = await f.prepare();
+    await run("kill", ["-KILL", String(restarted.pid)]);
+    const repaired = await f.prepare(); expect(repaired.pid).not.toBe(restarted.pid);
     expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/warm'`)).toContain("200");
   });
 });

@@ -203,6 +203,13 @@ rejected, with no permissive default. A re-issue keeps the attempt's scope.
 
 A store error is `503` (retryable); only a definite rejection is `401`. The
 egress forwarder holds the token in memory only and exits only on `401`.
+The bundled forwarder listens on the fixed loopback address `127.0.0.1:18080`
+(`SANDBOX_RELAY_PORT` in `sandbox-egress/src/relay-port.ts`). All proxy
+environment variables use that address, so background processes reconnect
+after a relay restart and use the current attempt binding. An occupied port
+fails installation with the port number; it never selects a random alternative.
+Local-subprocess sandboxes share the host network, so only one such relay
+can run there at once; use isolated sandboxes for concurrent credential egress.
 
 No compatibility path: the pre-#561 HMAC relay passes and sealed
 `sk-ant-req-v1.` execution `sessions_token`s are neither issued nor

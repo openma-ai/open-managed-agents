@@ -7,6 +7,7 @@
 // fixes the one window the real relay cannot be held in — "answered /health,
 // then exited before taking the delivery". Waiting for the relay to report a
 // delivery polls ready.json (an external process's progress, bounded).
+import { createServer } from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
@@ -60,7 +61,7 @@ const s=http.createServer((q,r)=>{if(mode==='exiting'){r.writeHead(503);r.end('e
 const exit=mode==='exit-after-health'&&q.url==='/health'&&pending();if(exit)fs.writeFileSync(path.join(dir,'fake-answered-with-delivery-pending'),'1');
 r.writeHead(200);r.end('ready',()=>{if(exit)process.exit(0)})});
 process.on('SIGTERM',()=>{fs.writeFileSync(path.join(dir,'fake-sigterm'),pending()?'pending':'none');process.exit(0)});
-s.listen(0,'127.0.0.1',()=>{fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({...JSON.parse(template),pid:process.pid,port:s.address().port}))});`;
+s.listen(18080,'127.0.0.1',()=>{fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({...JSON.parse(template),pid:process.pid,port:s.address().port}))});`;
 async function fakeRelay(f: LocalRelayFixture, mode: "exit-after-health" | "exiting" | "never-consumes", template: Ready) {
   const child = spawn(process.execPath, ["-e", FAKE_RELAY, f.egressDir, mode, JSON.stringify(template)], { stdio: "ignore", detached: true });
   cleanup.push(async () => { try { process.kill(child.pid!, "SIGKILL"); } catch {} });
@@ -69,6 +70,32 @@ async function fakeRelay(f: LocalRelayFixture, mode: "exit-after-health" | "exit
 }
 
 describe("sandbox relay delivery races (real processes)", () => {
+  it("an occupied loopback relay port fails explicitly and never selects another port", async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(18080, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
+    const f = await localRelayFixture(cleanup);
+    await expect(f.prepare()).rejects.toThrow(/18080.*in use/);
+    expect(await f.sandbox.exec('printf %s "$HTTPS_PROXY"')).toBe("");
+  }, 30_000);
+
+  it("a background client's inherited proxy reconnects after a relay restart with the next attempt token", async () => {
+    const f = await localRelayFixture(cleanup); const first = await f.prepare();
+    const inheritedProxy = await f.sandbox.exec('printf %s "$HTTPS_PROXY"');
+    expect(await curl(f)).toBe("200");
+    f.settle();
+    expect(await curl(f, "/idle")).toContain("401");
+    await stopRelay(f);
+    f.tokens.claimNext();
+    const next = await f.prepare();
+    expect(next.pid).not.toBe(first.pid);
+    const result = await f.sandbox.exec(
+      "HTTPS_PROXY='" + inheritedProxy + "' https_proxy='" + inheritedProxy + "' curl -sS --noproxy '' --max-time 5 -o /dev/null -w '%{http_code}' '" + f.target + "/recovered' 2>&1 || true",
+    );
+    expect(result).toBe("200");
+    expect(f.tokens.seenTokens.at(-1)).toBe(f.issued.at(-1));
+  }, 30_000);
+
   it("D: mv racing the relay's read-and-delete, 60 rounds under a curl load that makes the relay consume before every request: always a whole binding, no read error, no file left", async () => {
     const f = await localRelayFixture(cleanup); const first = await f.prepare();
     const load = f.sandbox.exec(`while [ ! -e .stop-load ]; do curl -sS --noproxy '' --max-time 5 -o /dev/null -w '%{http_code}\\n' '${f.target}/load' >> .load-codes 2>/dev/null || echo ERR >> .load-codes; done; echo LOAD_DONE`, 120_000);

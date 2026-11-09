@@ -46,4 +46,8 @@ void (async () => {
       exit: close,
     });
   }, 30000).unref();
-})().catch(() => { process.stderr.write("Sandbox credential relay failed\n"); process.exit(1); });
+})().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : "Sandbox credential relay failed";
+  publish({ pid: process.pid, bindingId: holder.state().deliveryId, bindingError: message });
+  process.stderr.write(`${message}\n`); process.exit(1);
+});

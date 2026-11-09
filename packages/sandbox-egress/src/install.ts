@@ -3,6 +3,8 @@ import { supportsCredentialEgress } from "@open-managed-agents/sandbox";
 import type { CredentialEgressRevokeReason, RuntimeResourceScope, RuntimeResourceFence } from "@open-managed-agents/runtime-resource-contract";
 import { RELAY_BUNDLE_GZIP_BASE64 } from "./relay-bundle.generated";
 import { RELAY_PROTOCOL } from "./relay-protocol";
+import { SANDBOX_RELAY_PORT } from "./relay-port";
+export { SANDBOX_RELAY_PORT } from "./relay-port";
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 const installed = new WeakMap<object, string[]>();
 const lifecycles = new WeakSet<object>();
@@ -73,7 +75,7 @@ const log=fs.openSync(path.join(dir,'relay.log'),'a');const child=cp.spawn(proce
 if(!await healthy(r))pid=await start(r);
 const t=Date.now();for(;;){r=read();const consumed=!fs.existsSync(bindingFile);
 if(r&&consumed&&r.bindingId===id&&await healthy(r)){process.stdout.write('EGRESS_READY:'+JSON.stringify({pid:r.pid,port:r.port,caFile:r.caFile,caBundleFile:r.caBundleFile,restarts})+String.fromCharCode(10));process.exit(0)}
-if(r&&consumed&&r.bindingId!==id&&r.bindingError)fail(String(r.bindingError));
+if(r&&consumed&&r.bindingError)fail(String(r.bindingError));
 const onDisk=delivered();if(!consumed&&onDisk!==null&&onDisk!==id)fail('superseded by a newer delivery');
 if(!consumed&&pid&&!alive(pid)){if(++restarts>2)fail('relay exited before it took the binding');pid=await start(null)}
 if(Date.now()-t>8000)fail(consumed?'relay did not report this delivery':'binding was not consumed');
@@ -161,7 +163,8 @@ export async function prepareSandboxEgress(input: {
   if (!matched) throw new Error("Sandbox credential relay installation/readiness failed");
   const state = JSON.parse(matched[1]!) as { pid: number; port: number; caFile: string; caBundleFile: string; restarts?: number };
   if (!Number.isSafeInteger(state.pid) || !Number.isSafeInteger(state.port)) throw new Error("Invalid sandbox relay readiness");
-  const proxy = `http://127.0.0.1:${state.port}`;
+  if (state.port !== SANDBOX_RELAY_PORT) throw new Error(`Sandbox relay must listen on port ${SANDBOX_RELAY_PORT}, got ${state.port}`);
+  const proxy = `http://127.0.0.1:${SANDBOX_RELAY_PORT}`;
   await replace({ ...placeholders, HTTPS_PROXY: proxy, https_proxy: proxy, HTTP_PROXY: proxy, http_proxy: proxy,
     NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1", NODE_USE_ENV_PROXY: "1",
     NODE_EXTRA_CA_CERTS: state.caFile, SSL_CERT_FILE: state.caBundleFile, REQUESTS_CA_BUNDLE: state.caBundleFile,
