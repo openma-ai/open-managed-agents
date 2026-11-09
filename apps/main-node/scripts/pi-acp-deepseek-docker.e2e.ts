@@ -20,7 +20,7 @@ if (!apiKey) throw new Error("DEEPSEEK_API_KEY is required (its value is never l
 
 const fixtureRoot = fileURLToPath(new URL("../test/fixtures/pi-acp-sandbox/", import.meta.url));
 const image = process.env.OMA_PI_ACP_DOCKER_IMAGE
-  ?? "openma/pi-acp-certification:pi-1.1.0-acp-0.1.8";
+  ?? "openma/pi-acp-certification:acp-0.1.8";
 const workspaceRoot = await mkdtemp(join(tmpdir(), "oma-pi-acp-docker-"));
 const containerName = `oma-pi-acp-${Date.now().toString(36)}`;
 const sessionId = `session_pi_acp_${Date.now().toString(36)}`;
