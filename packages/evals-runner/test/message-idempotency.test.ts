@@ -5,10 +5,10 @@ import { InMemoryKvStore } from "@open-managed-agents/kv-store/adapters/in-memor
 import { createManagedEvalRuntime } from "../src/runtime";
 import { tickEvalRuns, type EvalRunnerContext } from "../src/tick";
 
-function fixture() {
+function fixture(responseLosses = 0) {
   const session: any = { id: "s", status: "idle", archivedAt: null, agent: { id: "a" }, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", resources: [], outcomeEvaluations: [], usage: {} };
   const facts: any[] = []; let revision = 1, sequence = 0, dispatches = 0;
-  const runtime = () => createManagedEvalRuntime({ sessionEvents: new SessionEventsApplicationService({
+  const runtime = () => { const service = new SessionEventsApplicationService({
     workspaceId: "w", clock: { now: () => new Date("2026-01-01T00:00:01Z") },
     ids: { nextEventId: () => "e" + (++sequence), nextOutcomeId: () => "o" + (++sequence) },
     sessions: { find: async () => session }, execution: { find: async () => ({ session: structuredClone(session), environment: {}, revision }) },
@@ -21,7 +21,13 @@ function fixture() {
         return { type: "appended", events: input.events, session: input.nextSession };
       },
     }, dispatch: { sessionEventsAccepted: async () => { dispatches++; } },
-  } as any) } as any);
+  } as any);
+    return createManagedEvalRuntime({ sessionEvents: { sendSessionEvents: async (input: any) => {
+      const result = await service.sendSessionEvents(input);
+      if (responseLosses > 0) { responseLosses--; throw new Error("accepted response lost"); }
+      return result;
+    } } } as any);
+  };
   return { runtime, facts, dispatches: () => dispatches };
 }
 
@@ -35,8 +41,11 @@ it("independent eval runtimes atomically admit one message and replay its event 
   await expect(send("run:task:trial:1", "changed")).rejects.toThrow("idempotency_conflict");
 });
 
-it.each(["provisioning", "agent"])("two production ticks dispatch one %s message, then restart replay remains a no-op", async phase => {
-  const f = fixture(), { service } = createInMemoryEvalRunService(), kv = new InMemoryKvStore();
+it.each([
+  { phase: "provisioning", losses: 0 }, { phase: "agent", losses: 0 },
+  { phase: "provisioning", losses: 1 }, { phase: "agent", losses: 1 },
+])("production ticks retain one $phase message after $losses accepted-response loss, including restart replay", async ({ phase, losses }) => {
+  const f = fixture(losses), { service } = createInMemoryEvalRunService(), kv = new InMemoryKvStore();
   const messageIndex = phase === "provisioning" ? 0 : 1;
   const row = await service.create({ tenantId: "w", agentId: "a", environmentId: "env", results: {
     kind: "messages", agent_id: "a", environment_id: "env", task_count: 1, completed_count: 0, failed_count: 0,
@@ -52,11 +61,33 @@ it.each(["provisioning", "agent"])("two production ticks dispatch one %s message
     runtimeFor: () => ({ ...f.runtime(), settledAfter: async () => ({ settled: true, stopReason: "end_turn" }) }),
     benchmarksFor: () => ({}) as any,
   });
-  await Promise.all([tickEvalRuns(owner()), tickEvalRuns(owner())]);
+  if (losses) {
+    await tickEvalRuns(owner());
+    const afterLoss = await service.get({ tenantId: "w", runId: row.id });
+    expect((afterLoss!.results as any).tasks[0].trials[0].status).toBe("running");
+  } else await Promise.all([tickEvalRuns(owner()), tickEvalRuns(owner())]);
   await tickEvalRuns(owner());
   expect(f.facts).toHaveLength(1); expect(f.dispatches()).toBe(1);
   const saved = await service.get({ tenantId: "w", runId: row.id });
   const trial = (saved!.results as any).tasks[0].trials[0];
+  expect(trial.status).toBe("running");
+  expect(trial.phase).toBe("agent");
   expect(trial.message_event_id).toBe(f.facts[0].id);
   expect(trial.current_message_index).toBe(messageIndex);
+});
+
+ it("bounds persistent keyed response loss and never retries deterministic rejections or unkeyed sends", async () => {
+  let attempts = 0;
+  const throwing = createManagedEvalRuntime({ sessionEvents: { sendSessionEvents: async () => { attempts++; throw Error("transport unavailable"); } } } as any);
+  await expect(throwing.sendUserMessage("s", "hello", "same-key")).rejects.toThrow("transport unavailable");
+  expect(attempts).toBe(3);
+  attempts = 0;
+  await expect(throwing.sendUserMessage("s", "hello")).rejects.toThrow("transport unavailable");
+  expect(attempts).toBe(1);
+  for (const type of ["idempotency_conflict", "invalid_request"]) {
+    attempts = 0;
+    const rejected = createManagedEvalRuntime({ sessionEvents: { sendSessionEvents: async () => { attempts++; return { type, message: "rejected" }; } } } as any);
+    await expect(rejected.sendUserMessage("s", "hello", "same-key")).rejects.toThrow(type);
+    expect(attempts).toBe(1);
+  }
 });

@@ -195,11 +195,24 @@ export function createManagedEvalRuntime(deps: ManagedEvalRuntimeDependencies): 
       throw new EvalRuntimeError(`Creating the Session failed (${created.type}): ${created.message}`, created.type === "rate_limited");
     },
     async sendUserMessage(sessionId, text, idempotencyKey) {
-      const sent = await deps.sessionEvents.sendSessionEvents({
+      // An application response can be lost after canonical append + dispatch.
+      // Re-read its id via the SAME key; never retry an unkeyed admission or a
+      // deterministic application rejection. Bound transport recovery so a
+      // permanently unavailable service cannot leave a trial hanging forever.
+      const send = () => deps.sessionEvents.sendSessionEvents({
         sessionId,
         events: [{ type: "user.message", content: [{ type: "text", text }] } as never],
         ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       });
+      const admit = async () => {
+        for (let attempt = 0; ; attempt++) {
+          try { return await send(); }
+          catch (error) {
+            if (!idempotencyKey || attempt >= 2) throw error;
+          }
+        }
+      };
+      const sent = await admit();
       if (sent.type !== "accepted") {
         throw new EvalRuntimeError(`Sending the task message failed (${sent.type})${"message" in sent ? `: ${sent.message}` : ""}`);
       }
