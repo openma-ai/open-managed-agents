@@ -33,6 +33,9 @@ export async function endExecution<R>(state: LiveSessionSandbox<R>): Promise<voi
     if (record === null) state.current = null;
     else await takeSnapshot(state, state.current, state.execution(), record);
   }
+  // Old allocation cleanup is maintenance, never part of publishing/using
+  // this turn's runtime. Bounded and single-flight, with pending kept durably.
+  await state.retryReleases(await state.load());
   await armIdle(state, state.options.idle?.pauseMs ?? 0);
 }
 

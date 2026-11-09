@@ -64,7 +64,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
   const clock = { now: 1_000_000 };
   const store = versionedStore(initial);
   let n = 0;
-  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void>; acquire?: Promise<void>; acquiring?: () => void; onAttach?: () => Promise<void>; onStorage?: (input: { stores: SandboxPlan["stores"] }) => Promise<void>; generationStores?: boolean; onRevoke?: () => Promise<void>; onPlan?: () => Promise<void> } = {};
+  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void>; acquire?: Promise<void>; acquiring?: () => void; onAttach?: () => Promise<void>; onStorage?: (input: { stores: SandboxPlan["stores"] }) => Promise<void>; generationStores?: boolean; onRevoke?: () => Promise<void>; onRelease?: () => Promise<void>; onPlan?: () => Promise<void> } = {};
   const ports = (gated: "pause" | "attachAfterPause" | "acquire" | null) => {
     let paused = false;
     return {
@@ -91,7 +91,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
           paused = true;
           return { provider: "fake", ref: `pause-${handle.runtimeId}`, kind: "self" };
         },
-        async release({ handle }: { handle: { runtimeId: string } }) { log.push(`release:${handle.runtimeId}`); },
+        async release({ handle }: { handle: { runtimeId: string } }) { await gates.onRelease?.(); log.push(`release:${handle.runtimeId}`); },
         async discard({ ref }: { ref: { ref: string } }) { log.push(`discard:${ref.ref}`); },
         async keepAlive() { return "alive"; },
       },
@@ -144,6 +144,16 @@ const pausedWinner = (runtimeId: string): SessionSandboxState =>
   ({ ...initialSandboxState(), phase: "paused", handle: fake(runtimeId), pauseRef: { provider: "fake", ref: `pause-${runtimeId}`, kind: "self" } });
 
 describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
+  it("normal open never runs stale work because an old cleanup acknowledged a competing handle", async()=>{
+    const w=world({...winner("r0"),version:1,retiredHandles:[{handle:fake("old"),released:false}]});
+    const a=w.core({execution:attempt});
+    w.gates.onRelease=async()=>{const saved=w.store.get()!;await w.store.state.save({...saved,phase:"running",handle:fake("other"),version:saved.version+1},saved.version);};
+    await a.sandbox.exec("WORK");
+    // No old provider cleanup inside lifecycle publication or before exec.
+    expect(w.log).toContain("exec:WORK@r0");
+    expect(w.log).not.toContain("release:old");
+    expect(w.store.get()).toMatchObject({handle:fake("r0")});
+  });
   it("acquire: the loser releases the sandbox it started; the winner's record stays", async () => {
     const w = world();
     const a = w.core({ execution: attempt });

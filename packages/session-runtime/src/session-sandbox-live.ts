@@ -73,6 +73,7 @@ export class LiveSessionSandbox<R> {
   maxLifetimeMs: number | null = null;
   /** Calls (exec, process start, file I/O) currently in flight. */
   inFlight = 0;
+  private releasing: Promise<SessionSandboxState> | null = null;
   private composed: Promise<{ ports: SandboxPorts<R> }> | null = null;
 
   constructor(readonly options: PortsSessionSandboxOptions<R>) {}
@@ -156,7 +157,11 @@ export class LiveSessionSandbox<R> {
       this.options.warn(`sandbox_state_conflict expected_version=${current.version} action=${action.type}: another writer changed the Session sandbox record; this result is dropped`);
       return null;
     }
-    return this.retryDiscards(await this.retryReleases(next));
+    const settled = await this.retryDiscards(next);
+    // Snapshot cleanup may advance OUR metadata version, but must never turn
+    // a competing lifecycle publication into this action's successful result.
+    if (settled.phase !== next.phase || !sameOptionalHandle(recordedHandle(settled), recordedHandle(next))) { this.abandon(); return null; }
+    return settled;
   }
 
   /** Lost publication results are queued too: a failed discard cannot disappear. */
@@ -216,7 +221,7 @@ export class LiveSessionSandbox<R> {
   async releaseOwn(handle: SandboxHandle, execution = this.execution()): Promise<{ before: SessionSandboxState; after: SessionSandboxState } | undefined> {
     const { ports } = await this.compose();
     if (ports.sandbox.handle !== "changes") return;
-    for (;;) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       if (!await this.isCurrent(execution)) { this.abandon(); return; }
       const saved = await this.load();
       if (sameHandle(recordedHandle(saved), handle)) return;
@@ -229,25 +234,39 @@ export class LiveSessionSandbox<R> {
       if (after.version === saved.version + 2) return { before: saved, after };
       return;
     }
+    throw new SessionSandboxStateConflictError(`Could not retire runtime=${handle.runtimeId}: record CAS conflicted three times; provider cleanup was not authorized`);
   }
 
   /** Same durable record as snapshots; failures and a fence loss leave the
    * pending allocation for a new owner. Release is idempotent at the Port. */
-  async retryReleases(record: SessionSandboxState, execution = this.execution()): Promise<SessionSandboxState> {
+  retryReleases(record: SessionSandboxState, execution = this.execution()): Promise<SessionSandboxState> {
+    return this.releasing ??= this.releasePending(record, execution).finally(() => { this.releasing = null; });
+  }
+
+  private async releasePending(record: SessionSandboxState, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {
     let saved = record;
     const { ports } = await this.compose();
-    for (const entry of record.retiredHandles ?? []) {
+    // One bounded vendor attempt per maintenance tick; no new scheduler.
+    for (const entry of (record.retiredHandles ?? []).filter(entry => !entry.released).slice(0, 1)) {
       if (entry.released) continue;
       if (!await this.isCurrent(execution)) { this.abandon(); return saved; }
       try {
-        await ports.sandbox.release({ scope: this.scope(), handle: entry.handle });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            ports.sandbox.release({ scope: this.scope(), handle: entry.handle }),
+            new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("release deadline exceeded")), 1_000); }),
+          ]);
+        } finally { if (timer !== undefined) clearTimeout(timer); }
       } catch (error) {
         this.options.warn(`sandbox_release_failed runtime=${entry.handle.runtimeId} error=${errorText(error)}`);
         continue;
       }
       // Acknowledge on a fresh version; all lifecycle writes preserve claims.
-      for (;;) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!await this.isCurrent(execution)) { this.abandon(); return saved; }
         const current = await this.load();
+        if (!await this.isCurrent(execution)) { this.abandon(); return saved; }
         const next = transition(current, { type: "handleReleased", handle: entry.handle });
         if (await this.options.state.save(next, current.version)) { saved = next; break; }
       }
@@ -267,6 +286,10 @@ export class LiveSessionSandbox<R> {
     this.refreshError = null;
     throw error;
   }
+}
+
+function sameOptionalHandle(a: SandboxHandle | undefined, b: SandboxHandle | undefined): boolean {
+  return a === undefined && b === undefined || sameHandle(a, b);
 }
 
 export function sameHandle(a: SandboxHandle | undefined, b: SandboxHandle | undefined): boolean {
