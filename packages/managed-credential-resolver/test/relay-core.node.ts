@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCredentialEgressCore, createCredentialEgressRelay, createEgressRelayPasses, type CredentialEgressCorePorts } from "../src/relay";
+import { createCredentialEgressCore, createCredentialEgressRelay, type CredentialEgressCorePorts } from "../src/relay";
 
 const scope = { workspaceId: "ws", sessionId: "session", vaultIds: ["vault"] };
 const DENIED = "Credential relay request denied";
@@ -113,27 +113,36 @@ describe("credential egress core", () => {
 });
 
 describe("credential egress relay envelope over the core", () => {
-  async function relayFixture(session: { vaultIds: string[]; archivedAt: string | null } | null = { vaultIds: ["vault"], archivedAt: null }) {
+  /** The sandbox-gateway decision is the port: accepted / rejected (401) / unavailable (503). */
+  async function relayFixture(decision: "accepted" | "rejected" | "unavailable" = "accepted") {
     const f = fixture();
-    const passes = createEgressRelayPasses("relay-core-secret", Date.now);
-    const relay = createCredentialEgressRelay({ ...f.ports, passes,
-      authorize: async (claims) => session === null || session.archivedAt !== null ? null : { workspaceId: claims.workspaceId, sessionId: claims.sessionId, vaultIds: session.vaultIds } });
-    const pass = await passes.issue({ workspaceId: "ws", sessionId: "session", executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1, ttlMs: 60000 });
-    const request = (headers: Record<string, string>, authorization = `Bearer ${pass}`) => new Request("https://control.example/forward", {
+    const seen: Array<string | null> = [];
+    const warnings: string[] = [];
+    const relay = createCredentialEgressRelay({ ...f.ports,
+      log: { warn: (_fields, message) => { warnings.push(message); } },
+      authenticate: async (authorization) => {
+        seen.push(authorization);
+        if (authorization !== "Basic valid") return { type: "rejected" };
+        return decision === "accepted" ? { type: "accepted", scope: { workspaceId: "ws", sessionId: "session", vaultIds: ["vault"] } }
+          : decision === "rejected" ? { type: "rejected" } : { type: "unavailable", error: new Error("db down") };
+      } });
+    const request = (headers: Record<string, string>, authorization = "Basic valid") => new Request("https://control.example/forward", {
       method: "POST", headers: { authorization, "x-oma-egress-method": "POST", ...headers }, body: new Uint8Array([7, 8]),
     });
-    return { ...f, relay, request };
+    return { ...f, relay, request, seen, warnings };
   }
 
-  it("authenticates the pass and Session before the core", async () => {
+  it("authenticates before the core: rejected = 401, could-not-check = 503 (the forwarder stays up), never a lookup", async () => {
     const f = await relayFixture();
     await expectDenied(await f.relay.handle("resolve", f.request({ "x-oma-egress-target": "https://upstream.example/" }, "")), 401);
     await expectDenied(await f.relay.handle("forward", f.request({ "x-oma-egress-target": "https://upstream.example/" }, "Bearer forged.pass")), 401);
-    for (const session of [null, { vaultIds: ["vault"], archivedAt: "now" }]) {
-      const g = await relayFixture(session);
-      await expectDenied(await g.relay.handle("forward", g.request({ "x-oma-egress-target": "https://upstream.example/" })), 403);
-    }
-    expect(f.lookups).toHaveLength(0);
+    const ended = await relayFixture("rejected");
+    await expectDenied(await ended.relay.handle("forward", ended.request({ "x-oma-egress-target": "https://upstream.example/" })), 401);
+    const down = await relayFixture("unavailable");
+    const response = await down.relay.handle("forward", down.request({ "x-oma-egress-target": "https://upstream.example/" }));
+    expect(response.status).toBe(503);
+    expect(down.warnings).toHaveLength(1);
+    for (const g of [f, ended, down]) expect(g.lookups).toHaveLength(0);
   });
 
   it("keeps the Vault 403 ahead of envelope errors and never buffers a denied body", async () => {

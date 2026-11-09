@@ -5,11 +5,12 @@ import { Readable } from "node:stream";
 import type { Duplex } from "node:stream";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "./ca.js";
 import { sendDirectHttps } from "./direct-https.js";
+import { relayAuthorization, type RelayBinding } from "./relay-binding.js";
 /** `inspect`: the sandbox env holds Vault placeholders (oma_vault_…), so every
  * HTTPS host is terminated here: a request carrying one goes to the gateway
  * (which substitutes on the credential's allowed hosts and refuses with 403
  * elsewhere, design §8.4 rule 2); any other request goes upstream directly. */
-export interface LocalRelayConfig { endpoint: string; pass: string; ca?: string; directory: string; inspect?: boolean; /** Trust for direct upstreams instead of the public roots (fixtures only). */ upstreamCa?: string }
+export type LocalRelayConfig = RelayBinding;
 const VAULT_PLACEHOLDER = /oma_vault_[A-Za-z0-9_-]{43}/u;
 const carriesPlaceholder = (headers: Headers, body: Buffer) => {
   let found = false;
@@ -44,7 +45,7 @@ async function respond(response: Response, output: ServerResponse) {
   stream.once("error", () => output.destroy()); stream.pipe(output);
 }
 /** Runs inside one sandbox. It never receives a Vault token or root secret. */
-export async function startLocalRelay(config: () => LocalRelayConfig) {
+export async function startLocalRelay(config: () => LocalRelayConfig, state: { exiting(): boolean } = { exiting: () => false }) {
   const authority = await createEgressCertificateAuthority(await loadOrCreateEgressCa(config().directory));
   const sockets = new Set<Duplex>();
   const track = (socket: Duplex) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); };
@@ -57,7 +58,7 @@ export async function startLocalRelay(config: () => LocalRelayConfig) {
     const endpoint = new URL(`/v1/oma/egress/${action}`, current.endpoint);
     if (endpoint.protocol !== "https:") throw new Error("Credential relay requires HTTPS");
     return sendDirectHttps(new Request(endpoint, { method: "POST", headers: {
-      authorization: `Bearer ${current.pass}`, "x-oma-egress-target": target,
+      authorization: relayAuthorization(current), "x-oma-egress-target": target,
       "x-oma-egress-method": method, "x-oma-egress-headers": JSON.stringify(Object.fromEntries(headers)),
     }, body }), current.ca);
   };
@@ -78,7 +79,7 @@ export async function startLocalRelay(config: () => LocalRelayConfig) {
     } catch { if (!response.headersSent) response.writeHead(502).end("Credential relay unavailable"); else response.destroy(); }
   });
   const front = createServer(async (request, response) => {
-    if (request.url === "/health") { response.writeHead(200).end("ready"); return; }
+    if (request.url === "/health") { if (state.exiting()) response.writeHead(503).end("exiting"); else response.writeHead(200).end("ready"); return; }
     // Plain HTTP is never credential-injected, and never carries a placeholder out.
     try {
       const url = new URL(request.url ?? ""); if (url.protocol !== "http:") throw new Error("Invalid HTTP URL");
