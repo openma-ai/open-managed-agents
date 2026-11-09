@@ -92,6 +92,49 @@ async function shortenInvocation(id) {
 }
 
 registerHarness("deadline-backoff", () => ({ async run() { throw new Error("temporary outage"); } }));
+registerHarness("deadline-race", () => ({ async run(ctx) {
+  await awaitDeadline(ctx, "race");
+  if (ctx.userMessage.content[0].text === "reject") throw new Error("late harness rejection");
+} }));
+
+const settledExecutionLong = id => settledExecution(id, 800);
+async function settledExecution(id, polls = 150) {
+  for (let n = 0; n < polls; n++) {
+    const rows = await env.MAIN_DB.prepare("SELECT state,failure FROM managed_session_executions WHERE session_id=?").bind(id).all();
+    if (rows.results.length && rows.results.every(row => ["completed", "failed", "cancelled"].includes(row.state))) return rows.results;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error("execution did not settle");
+}
+
+// From Sol's workerd counterexample: cleanup succeeds after the invocation has expired.
+it.each(["memory", "dispose", "resolve", "reject"])("keeps public and durable outcomes consistent when %s crosses the model deadline", async kind => {
+  const id = await createSession(["resolve", "reject"].includes(kind) ? "deadline-race" : "record-order");
+  await runInDurableObject(stubOf(id), instance => {
+    const alarm = instance.runAlarm.bind(instance);
+    if (kind === "memory") instance.synchronizeManagedMemoryStores = async () => { await new Promise(r => setTimeout(r, 550)); };
+    instance.alarm = async () => {
+      const invocation = instance._turnInvocation = new TurnInvocation(300, 1800);
+      if (kind === "dispose") {
+        const cleanup = invocation.cleanup.bind(invocation);
+        let calls = 0;
+        invocation.cleanup = work => cleanup(async () => { const value = await work(); if (++calls === 3) await new Promise(r => setTimeout(r, 550)); return value; });
+      }
+      try { await alarm(); } finally { invocation.close(); instance._turnInvocation = null; }
+    };
+  });
+  await send(id, message(kind));
+  const settled = await settledExecution(id);
+  const seen = await events(id);
+  const terminal = seen.filter(e => e.type === "session.error" || e.type === "session.status_idle");
+  const modelExpired = ["resolve", "reject"].includes(kind);
+  expect(terminal.map(e => e.type)).toEqual(modelExpired ? ["session.error", "session.status_idle"] : ["session.status_idle"]);
+  expect(terminal.at(-1).stop_reason.type).toBe(modelExpired ? "retries_exhausted" : "end_turn");
+  expect(settled).toHaveLength(1);
+  expect(settled[0].state).toBe(modelExpired ? "failed" : "completed");
+  if (modelExpired) expect(settled[0].failure).toContain("invocation_deadline");
+  else expect(settled[0].failure).toBeNull();
+}, 30_000);
 describe("characterization: SessionDO interrupt and lane drain", () => {
   it("reports a deadline during retry backoff before idle, never silent cancellation", async () => {
     const id = await createSession("deadline-backoff");
@@ -102,9 +145,80 @@ describe("characterization: SessionDO interrupt and lane drain", () => {
     expect(JSON.stringify(seen.findLast(e => e.type === "session.error"))).toContain("invocation_deadline");
     expect(seen.at(-1).type).toBe("session.status_idle");
     expect(seen.at(-1).stop_reason.type).toBe("retries_exhausted");
-    const settled = await env.MAIN_DB.prepare("SELECT state FROM managed_session_executions WHERE session_id=?").bind(id).all();
-    expect(settled.results.length).toBeGreaterThan(0);
-    expect(settled.results.every(e => e.state === "failed")).toBe(true);
+    const settled = await settledExecution(id);
+    expect(settled.length).toBeGreaterThan(0);
+    expect(settled.every(e => e.state === "failed")).toBe(true);
+  }, 30_000);
+  it("renews the same attempt through successful cleanup and releases only after publication", async () => {
+    const id = await createSession("record-order");
+    const observation = { before: null, after: null, order: [] };
+    await runInDurableObject(stubOf(id), instance => {
+      const alarm = instance.runAlarm.bind(instance);
+      instance.synchronizeManagedMemoryStores = async fence => {
+        observation.order.push("sync");
+        observation.before = await env.MAIN_DB.prepare("SELECT attempt_id,generation,lease_expires_at_ms FROM managed_session_executions WHERE session_id=?").bind(id).first();
+        await new Promise(r => setTimeout(r, 30_700));
+        observation.after = await env.MAIN_DB.prepare("SELECT attempt_id,generation,lease_expires_at_ms FROM managed_session_executions WHERE session_id=?").bind(id).first();
+      };
+      instance.publishAgentsApiArtifacts = async () => { observation.order.push("publish"); };
+      const prepare = instance.doWarmUpSandbox.bind(instance);
+      instance.doWarmUpSandbox = async () => { await prepare(); instance.portsSandbox = { endExecution: async () => { observation.order.push("release"); } }; };
+      instance.alarm = async () => {
+        const invocation = instance._turnInvocation = new TurnInvocation(300, 35_000);
+        try { await alarm(); } finally { invocation.close(); instance._turnInvocation = null; }
+      };
+    });
+    await send(id, message("start"));
+    const settled = await settledExecutionLong(id);
+    expect(settled[0].state, JSON.stringify({ settled, observation, events: await events(id) })).toBe("completed");
+    expect(observation.order).toEqual(["sync", "publish", "release"]);
+    expect(observation.after.attempt_id).toBe(observation.before.attempt_id);
+    expect(observation.after.generation).toBe(observation.before.generation);
+    expect(observation.after.lease_expires_at_ms).toBeGreaterThan(observation.before.lease_expires_at_ms);
+    expect((await events(id)).filter(e => e.type === "session.error")).toEqual([]);
+  }, 50_000);
+  it.each(["cancel", "lost", "failure"])("does not publish or release a successful terminal after cleanup %s", async kind => {
+    const id = await createSession("record-order");
+    const order: string[] = [];
+    let entered = false;
+    await runInDurableObject(stubOf(id), instance => {
+      instance.synchronizeManagedMemoryStores = async () => {
+        entered = true;
+        if (kind === "lost") {
+          await env.MAIN_DB.prepare("UPDATE managed_session_executions SET generation=generation+1,owner_id='replacement' WHERE session_id=? AND state='running'").bind(id).run();
+          instance._executionFences.clear();
+          throw Object.assign(new Error("fence lost"), { name: "ExecutionFenceLostError" });
+        }
+        if (kind === "failure") throw new Error("memory publish failed");
+        await new Promise(r => setTimeout(r, 550));
+      };
+      instance.publishAgentsApiArtifacts = async () => { order.push("publish"); };
+      const prepare = instance.doWarmUpSandbox.bind(instance);
+      instance.doWarmUpSandbox = async () => { await prepare(); instance.portsSandbox = { endExecution: async () => { order.push("release"); } }; };
+    });
+    await send(id, message("start"));
+    for (let n = 0; n < 100 && !entered; n++) await new Promise(r => setTimeout(r, 25));
+    expect(entered).toBe(true);
+    if (kind === "cancel") await send(id, { type: "user.interrupt" });
+    if (kind === "lost") for (let n = 0; n < 100; n++) {
+      if (!await runInDurableObject(stubOf(id), instance => instance._executionActiveLanes.has("sthr_primary"))) break;
+      await new Promise(r => setTimeout(r, 25));
+    }
+    const settled = kind === "lost" ? (await env.MAIN_DB.prepare("SELECT state,generation,owner_id FROM managed_session_executions WHERE session_id=?").bind(id).all()).results : await settledExecution(id);
+    const seen = await events(id);
+    expect(order).toEqual([]);
+    if (kind === "cancel") {
+      expect(settled[0].state).toBe("cancelled");
+      expect(seen.filter(e => e.type === "session.error")).toEqual([]);
+      expect(seen.filter(e => e.type === "session.status_idle")).toHaveLength(1);
+    } else if (kind === "lost") {
+      expect(settled[0]).toMatchObject({ state: "running", generation: 2, owner_id: "replacement" });
+      expect(seen.filter(e => e.type === "session.error" || e.type === "session.status_idle")).toEqual([]);
+    } else {
+      expect(settled[0].state).toBe("failed");
+      expect(seen.filter(e => e.type === "session.error")).toHaveLength(1);
+      expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["retries_exhausted"]);
+    }
   }, 30_000);
   it("bounds a hung cleanup RPC and still reports error before idle", async () => {
     const id = await createSession("record-order");
@@ -120,6 +234,10 @@ describe("characterization: SessionDO interrupt and lane drain", () => {
     const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
     expect(seen.filter(e => e.type === "session.error").some(e => JSON.stringify(e).includes("cleanup_deadline"))).toBe(true);
     expect(seen.at(-1).stop_reason.type).toBe("retries_exhausted");
+    const settled = await settledExecution(id);
+    expect(settled[0].state).toBe("failed");
+    expect(seen.filter(e => e.type === "session.error")).toHaveLength(1);
+    expect((await events(id)).filter(e => e.type === "session.status_idle")).toHaveLength(1);
   }, 30_000);
   it.each(["revision", "child", "judge", "tool"])("cancels %s with the invocation and reports deadline before idle", async (kind) => {
     cancelled.delete(kind);

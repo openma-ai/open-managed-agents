@@ -52,6 +52,15 @@ describe("TurnInvocation", () => {
       expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
   });
+  it("caps cleanup at the alarm hard limit measured from invocation start", async () => {
+    vi.useFakeTimers();
+    try {
+      const invocation = new TurnInvocation(100, 20 * 60_000);
+      await vi.advanceTimersByTimeAsync(15 * 60_000 - 10_000);
+      await expect(invocation.cleanup(async () => undefined)).rejects.toThrow("cleanup_deadline");
+      invocation.close();
+    } finally { vi.useRealTimers(); }
+  });
   it("does not keep a timer after a successful invocation", async () => {
     vi.useFakeTimers();
     try {

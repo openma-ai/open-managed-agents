@@ -10,7 +10,8 @@ export class TurnInvocation {
   readonly #cleanupAt: number;
   readonly signal = this.#controller.signal;
   constructor(budgetMs = 13 * 60_000, cleanupMs = 110_000) {
-    this.#cleanupAt = Date.now() + budgetMs + cleanupMs;
+    // Reserve ten seconds for settlement before the alarm's 15 minute hard limit.
+    this.#cleanupAt = Date.now() + Math.min(budgetMs + cleanupMs, 15 * 60_000 - 10_000);
     this.#timer = setTimeout(() => this.#controller.abort(
       new TurnDeadlineError("invocation_deadline", "Turn exceeded the Cloudflare invocation wall-time budget"),
     ), budgetMs);

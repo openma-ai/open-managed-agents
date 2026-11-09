@@ -880,6 +880,7 @@ export class SessionDO extends DurableObject<Env> {
    */
   private _recoveryRun: Promise<void> | null = null;
   private _turnInvocation: TurnInvocation | null = null;
+  private readonly _reportedTurnErrors = new WeakSet<Error>();
   /** Consecutive failed recovery passes. */
   private _recoveryFailures = 0;
   /** Earliest epoch ms the next recovery retry may run (backoff horizon). */
@@ -2124,7 +2125,7 @@ export class SessionDO extends DurableObject<Env> {
           // atomic D1 outbox row and takes the claim path directly.
           admitUnclaimed: () => this.admitQueueFallback(executionStore, threadId),
           failed: (error) => {
-            if (error.name === "TurnDeadlineError") return; // already reported before idle
+            if (this._reportedTurnErrors.has(error) || isTurnCancellationError(error)) return; // only suppress an error actually emitted
             const errorEvent: SessionEvent = { type: "session.error", error: error.message };
             history.append(errorEvent);
             this.broadcastEvent(errorEvent);
@@ -2344,7 +2345,6 @@ export class SessionDO extends DurableObject<Env> {
         // A budget resume continues from history with no new user input.
         const trigger = turnInput.trigger.type === "session.updated" ? null : batch.at(-1) ?? null;
         const turn = await this.runAcceptedTurn(trigger, batch, executionHistory, signal, fence);
-        this._turnInvocation!.signal.throwIfAborted();
         if (turn?.holdQueuedOnLane) {
           holdQueuedOnLane = true;
           this.setExhaustedAt(threadId, Date.now());
@@ -2357,15 +2357,12 @@ export class SessionDO extends DurableObject<Env> {
       // be rejected as stale.  This is the commit barrier between the
       // harness side effects and execution settlement.
       await this._managedProjectionChain;
-      // Node parity (runner `afterExecution`): terminal facts are
-      // committed and this attempt still holds its fence, so completed
-      // root-turn outputs become Agents API artifacts before settle.
-      if (threadId === "sthr_primary" && !signal.aborted) {
-        await this.publishAgentsApiArtifacts(fence);
-      }
+      signal.throwIfAborted();
       return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
     } catch (err) {
       turnFailed = true;
+      await this._managedProjectionChain;
+      if ((err as { holdQueuedOnLane?: boolean }).holdQueuedOnLane) this.setExhaustedAt(threadId, Date.now());
       throw err;
     } finally {
       const currentFence = this._executionFences.get(threadId);
@@ -5646,14 +5643,9 @@ export class SessionDO extends DurableObject<Env> {
       activeFence,
     );
 
-    // Status-pair invariant: every status_running emit (line ~3889
-    // below) MUST be followed by exactly one status_idle emit before
-    // this function returns. The success path emits at line ~4067; the
-    // error paths historically didn't, leaving Console showing
-    // "Running" forever even after adapter.endTurn flipped the D1 row
-    // to 'idle' (Console derives the pill from SSE events, not D1
-    // polling). Tracked via this flag — finally emits if no earlier
-    // path did.
+    // Pair running with one public terminal, only after bounded cleanup.
+    let terminalError: Error | undefined;
+    let terminalReported = false;
     let idleEmitted = false;
     let managedMemorySynchronized = false;
     // A successful turn knows its precise stop reason before tool disposal,
@@ -5662,7 +5654,6 @@ export class SessionDO extends DurableObject<Env> {
     // has finished closing so clients cannot observe idle while resources are
     // still live.
     let completedIdleEvent: SessionEvent | undefined;
-    // How the harness attempts ended, when they did not complete.
     let failedAttempts: Exclude<TurnAttemptsResult, { type: "completed" }> | undefined;
 
     // Reuse session-level sandbox (singleton) — files persist across turns.
@@ -5763,7 +5754,9 @@ export class SessionDO extends DurableObject<Env> {
     this._threadAbortControllers.set(turnThreadId, abortController);
     const unlinkParentAbort = linkAbort(parentSignal, abortController);
     // One execution signal for tools, delegation, harness and outcome; cleanup retains the parent fence.
-    const effectiveAbortSignal = AbortSignal.any([abortController.signal, this._turnInvocation!.signal]);
+    const modelAbort = new AbortController();
+    const unlinkModelAbort = linkAbort(this._turnInvocation!.signal, modelAbort);
+    const effectiveAbortSignal = AbortSignal.any([abortController.signal, modelAbort.signal]);
     sandbox = this.bindSandboxToExecution(
       sandbox,
       effectiveAbortSignal,
@@ -6024,6 +6017,8 @@ export class SessionDO extends DurableObject<Env> {
     // Official CMA ordering: session.error{retrying} then status_rescheduled.
     const failureEvents: TurnFailureEventsPort = {
       sessionError: (message, retry_status) => {
+        if (retry_status !== "retrying" && terminalReported) return;
+        if (retry_status !== "retrying") terminalReported = true;
         const event = {
           type: "session.error",
           error: { type: "unknown_error", message, retry_status },
@@ -6185,6 +6180,7 @@ export class SessionDO extends DurableObject<Env> {
         });
         if (attempts.type !== "completed") {
           failedAttempts = attempts;
+          if (attempts.type !== "cancelled") this._reportedTurnErrors.add(attempts.error);
           throw attempts.error;
         }
       };
@@ -6330,13 +6326,16 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       this._turnInvocation!.signal.throwIfAborted();
-      // Execution end before the Memory barrier: egress revoked, then a copy
-      // sync publishes the sandbox's Memory edits. A failed publish fails the step.
-      if (this.portsSandbox !== null) await this._turnInvocation!.cleanup(() => this.portsSandbox!.endExecution());
+      // Model work ended on time. Keep the parent fence/heartbeat through cleanup,
+      // but do not let the model timer cancel successful bounded publication.
+      unlinkModelAbort();
+      abortController.signal.throwIfAborted();
       // Memory mutations are part of turn completion, not an asynchronous
       // afterthought. This barrier precedes status_idle and execution settle.
-      await this.synchronizeManagedMemoryStores(activeFence);
+      await this._turnInvocation!.cleanup(() => this.synchronizeManagedMemoryStores(activeFence));
       managedMemorySynchronized = true;
+      abortController.signal.throwIfAborted();
+      if (turnThreadId === "sthr_primary" && activeFence) await this._turnInvocation!.cleanup(() => this.publishAgentsApiArtifacts(activeFence));
 
       // Determine stop reason based on pending tool confirmations or custom tool results
       const pendingConfirmations = ctx.runtime.pendingConfirmations || [];
@@ -6378,8 +6377,8 @@ export class SessionDO extends DurableObject<Env> {
       // An interrupt or a lost execution fence ends the turn elsewhere: the
       // interrupt emits its idle, a replacement owner runs the turn.
       if (failedAttempts?.type === "cancelled" || isTurnCancellationError(err) || abortController.signal.aborted) {
-        idleEmitted = true;
-        return;
+        idleEmitted = true; terminalError = err instanceof Error ? err : new Error(String(err));
+        throw err;
       }
       if (failedAttempts?.type === "terminal") {
         // Official CMA: retry_status terminal → session transitions to terminated.
@@ -6394,13 +6393,10 @@ export class SessionDO extends DurableObject<Env> {
         idleEmitted = true;
         return;
       }
-      // A failure outside the harness attempts is the turn's last one (same as
-      // Node); the attempts already announced their own exhaustion.
-      if (failedAttempts === undefined) {
-        reportTurnFailure({ type: "exhausted" }, this.describeError(err), failureEvents);
-      }
-      // Official CMA exhausted: idle retries_exhausted. Owner lock: retain
-      // mid-run queued inputs (holdQueuedOnLane), do not flush them.
+      terminalError = err instanceof Error ? err : new Error(String(err));
+      // Attempts already announced their failure; report only preparation/cleanup here.
+      if (failedAttempts === undefined) reportTurnFailure({ type: "exhausted" }, this.describeError(err), failureEvents);
+      // Exhaustion retains mid-run queued inputs for the client to resume.
       holdQueuedOnLane = true;
       completedIdleEvent = {
         type: "session.status_idle",
@@ -6409,47 +6405,49 @@ export class SessionDO extends DurableObject<Env> {
     } finally {
       try { await this._turnInvocation!.cleanup(() => disposeTools(allTools)); }
       catch (error) {
+        terminalError ??= error instanceof Error ? error : new Error(String(error));
         reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
         completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
       }
-      if (!managedMemorySynchronized) {
+      if (!managedMemorySynchronized && !abortController.signal.aborted && !isTurnCancellationError(terminalError)) {
         try {
           // Error/cancel rescue pass. Reconciliation is idempotent, so a
           // partially committed prior attempt is safe to retry here.
-          await this.synchronizeManagedMemoryStores(activeFence);
+          await this._turnInvocation!.cleanup(() => this.synchronizeManagedMemoryStores(activeFence));
           managedMemorySynchronized = true;
         } catch (error) {
           if (!(error instanceof Error && error.name === "ExecutionFenceLostError")) {
+            terminalError ??= error instanceof Error ? error : new Error(String(error));
             reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
             completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
-            logWarn(
-              {
-                op: "session_do.memory_sync.rescue",
-                session_id: this.state.session_id,
-                error: error instanceof Error ? error.message : String(error),
-              },
-              "writable Managed Memory rescue sync failed",
-            );
+            logWarn({ op: "session_do.memory_sync.rescue", session_id: this.state.session_id,
+              error: error instanceof Error ? error.message : String(error) }, "writable Managed Memory rescue sync failed");
           }
         }
       }
+      try {
+        abortController.signal.throwIfAborted();
+        if (!terminalError && this.portsSandbox !== null) await this._turnInvocation!.cleanup(() => this.portsSandbox!.endExecution());
+      } catch (error) {
+        if (!abortController.signal.aborted && !isTurnCancellationError(error)) {
+          terminalError ??= error instanceof Error ? error : new Error(String(error));
+          reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
+          completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+        }
+      }
+      unlinkModelAbort();
+      if (terminalError && terminalReported) this._reportedTurnErrors.add(terminalError);
       if (this._threadAbortControllers.get(turnThreadId) === abortController) {
         this._threadAbortControllers.delete(turnThreadId);
       }
       this._turnSettled.delete(abortController);
       resolveTurnSettled();
       unlinkParentAbort();
-      // Emit status_idle only after turn-scoped resources have settled. On a
-      // successful turn this preserves its precise stop_reason; error paths
-      // use the generic event because they have no meaningful stop reason.
-      // This also pairs with status_running so Console never remains stuck at
-      // "Running" after a model/tool failure.
-      // A user.interrupt already emitted this turn's status_idle; emitting
-      // the catch-all one too produced two idles per interrupt.
+      // Interrupt owns its idle; a lost fence cannot append through guarded history.
       const interruptOwnsIdle = abortController.signal.aborted &&
         this._interruptIdleOwned.delete(turnThreadId);
       if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence, turnThreadId);
-      if (!idleEmitted && !interruptOwnsIdle) {
+      if (!idleEmitted && !interruptOwnsIdle && !abortController.signal.aborted) {
         try {
           const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);
@@ -6459,6 +6457,7 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
     }
+    if (terminalError) throw Object.assign(terminalError, { holdQueuedOnLane: true });
     return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
   }
 
