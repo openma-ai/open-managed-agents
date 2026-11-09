@@ -12,6 +12,8 @@ const scope = {
   workId: "work_provider_host",
 };
 
+const claim = { generation: 1, token: "work-token-1" };
+
 const profile = {
   workspace: { requirement: "ephemeral" as const },
   outputs: { requirement: "disabled" as const },
@@ -49,7 +51,7 @@ function driver(create: ManagedRuntimeProviderDriverPort["create"]): ManagedRunt
 }
 
 describe("provider-backed Managed Runtime Host", () => {
-  it("passes provider-owned config through the registry before entering the common fence state machine", async () => {
+  it("passes provider-owned config through the registry before entering the common Work-claim state machine", async () => {
     const providerConfig = { endpoint: "https://sandbox.acme.test", pool: "warm" };
     const create = vi.fn<ManagedRuntimeProviderDriverPort["create"]>(async () => ({
       sandbox: {
@@ -69,25 +71,18 @@ describe("provider-backed Managed Runtime Host", () => {
         driverCapabilities: vi.fn(async () => ({ drivers: ["ama_worker" as const] })),
       },
     } as never));
-    const acquire = vi.fn(async () => ({
-      type: "conflict" as const,
-      expiresAt: "2026-09-07T15:00:00.000Z",
-    }));
+    const open = vi.fn(async () => ({ type: "lost" as const }));
     const host = createManagedRuntimeProviderHost({
       driver: driver(create),
       placement: "driver_service",
       providerConfig,
       ownerId: "worker_01",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
-      fences: { acquire } as never,
+      claims: { open } as never,
       orphans: {} as never,
     });
 
-    await expect(host.run({ scope, profile })).resolves.toEqual({
-      type: "conflict",
-      expiresAt: "2026-09-07T15:00:00.000Z",
-    });
+    await expect(host.run({ scope, claim, profile })).resolves.toEqual({ type: "lease_lost" });
     expect(create).toHaveBeenCalledWith({
       environmentId: scope.environmentId,
       placement: "driver_service",
@@ -100,13 +95,13 @@ describe("provider-backed Managed Runtime Host", () => {
       profile,
       providerConfig,
     });
-    expect(acquire).toHaveBeenCalledOnce();
+    expect(open).toHaveBeenCalledOnce();
     const invalid = createManagedRuntimeProviderHost({
       driver: driver(create), placement: "driver_service", providerConfig,
-      ownerId: "worker_01", leaseTtlMs: 90_000, heartbeatIntervalMs: 30_000,
-      checkpointIntervalMs: 0, fences: { acquire } as never, orphans: {} as never,
+      ownerId: "worker_01", heartbeatIntervalMs: 30_000,
+      checkpointIntervalMs: 0, claims: { open } as never, orphans: {} as never,
     });
-    await expect(invalid.run({ scope, profile })).rejects.toThrow(/checkpointIntervalMs/);
+    await expect(invalid.run({ scope, claim, profile })).rejects.toThrow(/checkpointIntervalMs/);
   });
 
   it("fails capability admission before a provider adapter can allocate resources", async () => {
@@ -118,14 +113,14 @@ describe("provider-backed Managed Runtime Host", () => {
       placement: "driver_service",
       providerConfig: {},
       ownerId: "worker_01",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
-      fences: {} as never,
+      claims: {} as never,
       orphans: {} as never,
     });
 
     await expect(host.run({
       scope,
+      claim,
       profile: { ...profile, workspace: { requirement: "durable" } },
     })).rejects.toThrow(/durable workspace/i);
     expect(create).not.toHaveBeenCalled();
@@ -159,19 +154,13 @@ describe("provider-backed Managed Runtime Host", () => {
       placement: "driver_service",
       providerConfig: {},
       ownerId: "worker_01",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
-      fences: {
-        acquire: vi.fn(async () => ({
-          type: "conflict" as const,
-          expiresAt: "2026-09-07T15:00:00.000Z",
-        })),
-      } as never,
+      claims: { open: vi.fn(async () => ({ type: "lost" as const })) } as never,
       orphans: {} as never,
       scheduler,
     });
 
-    await expect(host.run({ scope, profile })).resolves.toMatchObject({ type: "conflict" });
+    await expect(host.run({ scope, claim, profile })).resolves.toMatchObject({ type: "lease_lost" });
     expect(create).toHaveBeenCalledOnce();
   });
 
@@ -184,14 +173,14 @@ describe("provider-backed Managed Runtime Host", () => {
       placement: "driver_service",
       providerConfig: {},
       ownerId: "worker_01",
-      leaseTtlMs: 90_000,
       heartbeatIntervalMs: 30_000,
-      fences: {} as never,
+      claims: {} as never,
       orphans: {} as never,
     });
 
     await expect(host.run({
       scope,
+      claim,
       profile,
       session: {
         id: scope.sessionId,

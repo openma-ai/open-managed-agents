@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createManagedRuntimeHost } from "../src/index";
-import { MemoryRuntimeOrphanPort, MemoryRuntimeResourceFencePort } from "../src/testing";
+import { MemoryEnvironmentWorkClaimPort, MemoryRuntimeOrphanPort } from "../src/testing";
 
 const scope = {
   workspaceId: "workspace_race",
@@ -28,25 +28,24 @@ const session = {
 
 /** The authority store, seen only through these operations. */
 function ownership() {
-  const fences = new MemoryRuntimeResourceFencePort();
+  const claims = new MemoryEnvironmentWorkClaimPort();
+  // Worker A's poll claimed the Work; the host runs under that claim.
+  const { generation, token } = claims.claim(scope);
   return {
-    dependencies: { fences },
-    runInput: {},
+    dependencies: { claims },
+    runInput: { claim: { generation, token } },
     /** Another worker becomes the owner of this Work and publishes its own candidate. */
     async takeOver(): Promise<void> {
-      const active = fences.inspect(scope)?.active;
-      if (active) await fences.release({ fence: active, reason: "lease_lost" });
-      const next = await fences.acquire({ scope, ownerId: "owner_b", ttlMs: 90_000 });
-      if (next.type !== "acquired") throw new Error("take-over failed");
-      await fences.publish({
-        fence: next.fence,
+      const next = claims.claim(scope);
+      await claims.publish({
+        claim: next,
         workspaceCandidate: { id: "workspace-b", contentHash: "sha256:b" },
         outputCandidate: null,
       });
     },
     /** The workspace candidate a replacement would restore from. */
     published(): string | null {
-      return fences.inspect(scope)?.publication?.workspaceCandidate.id ?? null;
+      return claims.inspect(scope)?.publication?.workspaceCandidate.id ?? null;
     },
   };
 }
@@ -66,7 +65,6 @@ function manualScheduler() {
 function fixture(owner: ReturnType<typeof ownership>, overrides: Record<string, any> = {}) {
   const base: any = {
     ownerId: "owner_a",
-    leaseTtlMs: 90_000,
     heartbeatIntervalMs: 30_000,
     scheduler: manualScheduler(),
     orphans: new MemoryRuntimeOrphanPort(),
