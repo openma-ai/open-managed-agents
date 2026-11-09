@@ -84,8 +84,8 @@ import { nanoid } from "nanoid";
 import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarnessEnvironmentConfig, resolveNodeManagedAuxiliaryToolModel } from "../lib/node-managed-agent-codec.js";
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
-import { ManagedCredentialResolver, createCredentialEgressRelay, createEgressRelayPasses } from "@open-managed-agents/managed-credential-resolver";
-import { authorizeSandboxEgress, createVaultPlaceholders } from "@open-managed-agents/sandbox-gateway";
+import { ManagedCredentialResolver, createCredentialEgressRelay } from "@open-managed-agents/managed-credential-resolver";
+import { authenticateSandboxEgress, createVaultPlaceholders, legacyRelayPassCheck } from "@open-managed-agents/sandbox-gateway";
 import { isSessionExecutionFenceActive, sessionExecutionLeasesFrom, type SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
@@ -225,6 +225,7 @@ export async function createManagedNodeRuntime(
     crypto: secrets?.cipherFor("managed.node-acp.execution-token") ?? null,
     gatewayBaseUrl: config.http.publicBaseUrl,
     now: () => new Date(),
+    sql,
     findExecution: input => managedSessionExecutionCoordinator.find(input),
     findSession: async input => (await managedRuntimeReaders.executionContext.find(input))?.session ?? null,
   });
@@ -299,8 +300,8 @@ export async function createManagedNodeRuntime(
     // Vault environment_variable / cap_cli credentials reach the sandbox only
     // as placeholders (design §0.5, §8.8): the relay substitutes them.
     substitutions: (context) => repositoryEgress.substitutions(context, () => managedCredentialResolver),
-    relay: () => relayPasses === null || !config.http.publicBaseUrl ? null
-      : { issue: (claims) => relayPasses.issue(claims), endpoint: config.http.publicBaseUrl },
+    relay: () => !platformRootSecret || !config.http.publicBaseUrl ? null
+      : { issue: (attempt, harness) => managedAcpCapabilities.issueEgress(attempt, harness), endpoint: config.http.publicBaseUrl },
     isFenceActive: isManagedSessionExecutionFenceActive,
     idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
     warmAtCreate: config.workspace.strategy !== "checkpoint_restore", mountOutputsAtCreate: sharedSessionOutputs === undefined && components.sandbox.capabilities?.mountsFixedAtCreate === true,
@@ -410,9 +411,9 @@ export async function createManagedNodeRuntime(
       });
     },
     // Cold preparation calls this last; warm reuse calls it for each new
-    // execution: the core re-attaches egress with a pass bound to it.
+    // execution: the core re-attaches egress with a sandbox token bound to it.
     refreshSandboxEnvironment: async ({ workspaceId, session, environment, executionFence }) => {
-      if (session.vaultIds.length > 0 && (!relayPasses || !config.http.publicBaseUrl)) {
+      if (session.vaultIds.length > 0 && (!platformRootSecret || !config.http.publicBaseUrl)) {
         throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
       }
       sessionSandboxes.get({ workspaceId, session }).bind({
@@ -1052,13 +1053,12 @@ export async function createManagedNodeRuntime(
     log: { warn: (fields, message) => logger.warn(fields, message) },
     ...(platformRootSecret ? { placeholders: createVaultPlaceholders(platformRootSecret) } : {}),
   }, capSpecs);
-  const relayPasses = platformRootSecret ? createEgressRelayPasses(platformRootSecret, Date.now) : null;
+  const legacyRelayPass = /* DEPLOY TRANSITION ONLY (pre-#561 HMAC pass, verify-only; next release removes) */ platformRootSecret ? legacyRelayPassCheck(platformRootSecret, managedAcpCapabilities.stores) : null;
   const managedCredentialEgressRoutes = buildCredentialEgressRoutes(() => {
-    if (!relayPasses) throw new Error("Credential relay is not configured");
+    if (!legacyRelayPass) throw new Error("Credential relay is not configured");
     return createCredentialEgressRelay({
-      passes: relayPasses,
       credentials: repositoryEgress.relayCredentials(managedCredentialResolver),
-      authorize: claims => authorizeSandboxEgress(managedAcpCapabilities.stores, claims),
+      authenticate: authorization => authenticateSandboxEgress(managedAcpCapabilities.tokens, authorization, { legacyPass: legacyRelayPass }),
       send: sendDirectHttps,
       log: { warn: (fields, message) => logger.warn(fields, message) },
     });

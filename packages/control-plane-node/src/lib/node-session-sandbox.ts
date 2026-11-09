@@ -51,13 +51,11 @@ import {
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import { EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
-import { issueSandboxRelayPass } from "@open-managed-agents/sandbox-gateway";
+import { UNFENCED_SANDBOX_TOKEN, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import type { SessionLifecycleCommandPort } from "@open-managed-agents/session-runtime-contract";
 import { toLegacyHarnessEnvironmentConfig } from "./node-managed-agent-codec.js";
 import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "./node-sandbox-orphan-reclaim.js";
 
-/** Lifetime of a relay pass; the relay is re-attached with a new one after half. */
-export const NODE_RELAY_PASS_TTL_MS = 60 * 60_000;
 /** idlePauseMs (design §0.0 rule 11) when SANDBOX_IDLE_PAUSE_MS is unset. */
 export const DEFAULT_SANDBOX_IDLE_PAUSE_MS = 5 * 60_000;
 
@@ -109,8 +107,10 @@ export interface NodeSessionSandboxOptions {
   };
   /** The Session's sandbox substitutions (Vault environment_variable / cap_cli placeholders). */
   substitutions(context: NodeSessionSandboxContext): Promise<Substitution[]>;
-  /** Relay pass signer and the control plane's public HTTPS origin; null = not configured. */
-  relay(): { issue(input: Parameters<Parameters<typeof issueSandboxRelayPass>[0]>[0]): Promise<string>; endpoint: string } | null;
+  /** Sandbox token issuer (#561) for an attempt — `harness` is the Session
+   * agent's harness name, which fixes the scope — and the control plane's
+   * public HTTPS origin; null = not configured. */
+  relay(): { issue(attempt: SessionExecutionAttemptRef, harness: string | null | undefined): Promise<string>; endpoint: string } | null;
   isFenceActive(fence: SessionExecutionFence): Promise<boolean>;
   idlePauseMs: number;
   warn(message: string, context: NodeSessionSandboxContext): void;
@@ -289,7 +289,9 @@ export class NodeSessionSandbox implements SandboxPort {
               issueToken: async ({ attempt }) => {
                 const relay = options.relay();
                 if (relay === null || !nodeCredentialEgress(relay)) throw new Error(NO_CREDENTIAL_EGRESS);
-                return issueSandboxRelayPass((claims) => relay.issue(claims), attempt, NODE_RELAY_PASS_TTL_MS);
+                // Warm-up (no attempt): a value every gateway refuses.
+                if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
+                return relay.issue(attempt, this.context.session.agent.openma?.harness);
               },
               authenticate: async () => null,
               handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),
@@ -325,7 +327,8 @@ export class NodeSessionSandbox implements SandboxPort {
       resumeRef: async () => null,
       warn: (message) => options.warn(message, this.context),
       outputDurability: () => null,
-      egressRenewMs: NODE_RELAY_PASS_TTL_MS / 2,
+      // The sandbox token dies with its attempt; nothing to renew on a timer.
+      egressRenewMs: null,
       keepAliveMs: options.adapter?.keepAliveMs ?? null,
       execution: () => {
         const fence = this.executionFence;

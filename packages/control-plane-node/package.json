@@ -72,6 +72,7 @@
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/sandbox-egress": "workspace:*",
     "@open-managed-agents/sandbox-gateway": "workspace:*",
+    "@open-managed-agents/sandbox-gateway-sql": "workspace:*",
     "@open-managed-agents/sandbox-port-kit": "workspace:*",
     "@open-managed-agents/scheduler": "workspace:*",
     "@open-managed-agents/session-event-store": "workspace:*",

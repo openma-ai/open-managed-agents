@@ -239,6 +239,14 @@ export interface Env {
       | { type: "not_found" }
       | { type: "fence_lost" }
     >;
+    /** A sandbox token (#561) for the in-sandbox egress forwarder of an
+     * execution attempt; `harness` (the agent's harness name) fixes its scope. */
+    issueSandboxEgressToken?(opts: {
+      tenantId: string;
+      sessionId: string;
+      attempt: { workspaceId: string; sessionId: string; executionId: string; attemptId: string; ownerId: string; generation: number };
+      harness: string | null;
+    }): Promise<string>;
     /** ACP model / MCP channels for one execution (design §0.6), bound to its fence. */
     issueManagedAcpExecutionChannels?(opts: {
       tenantId: string;

@@ -134,9 +134,10 @@ import {
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlRuntimeResourceFencePort } from "@open-managed-agents/runtime-resource-fence-sql";
-import { authorizeEnvironmentWorkEgress, authorizeSandboxEgress, isEnvironmentWorkFenceCurrent, type EnvironmentWorkFenceRef, type SandboxGatewayStores } from "@open-managed-agents/sandbox-gateway";
+import { authenticateSandboxEgress, authorizeEnvironmentWorkEgress, authorizeSandboxEgress, isEnvironmentWorkFenceCurrent, issueSandboxToken, legacyRelayPassCheck, sandboxHarnessPlacement, sandboxTokenScopeFor, type EnvironmentWorkFenceRef, type SandboxGatewayStores, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { createSqlSandboxGatewayStore } from "@open-managed-agents/sandbox-gateway-sql";
 import { issueCfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
+import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
 import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
 import { createSqlSessionExecutionLeases } from "@open-managed-agents/session-runtime-sql/execution-lease";
 import {
@@ -305,14 +306,17 @@ app.get("/auth-info", (c) => {
 // callback states fall through to normal Console authentication below.
 app.use("/v1/oma/oauth/callback", buildMcpOAuthCliCallback((context) => managedMcpOAuthCliFor((context as AppCtx).env)));
 
-// Session-scoped credential relay authenticates its own opaque pass, never ambient API credentials.
+// Session-scoped credential relay authenticates the sandbox token
+// (Basic <sessionId>:<token>, scope all or egress), never ambient API credentials.
 app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   const env = (context as AppCtx).env;
   if (!env.PLATFORM_ROOT_SECRET) throw new Error("Credential relay is not configured");
-  const { createCredentialEgressRelay, createEgressRelayPasses } = await import("@open-managed-agents/managed-credential-resolver");
+  const { createCredentialEgressRelay } = await import("@open-managed-agents/managed-credential-resolver");
+  const store = cfSandboxTokenStore(env);
+  // DEPLOY TRANSITION ONLY: pre-#561 HMAC relay passes, verify-only, next release removes.
+  const legacyPass = legacyRelayPassCheck(env.PLATFORM_ROOT_SECRET, cfSandboxGatewayStores(env));
   return createCredentialEgressRelay({
-    passes: createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now),
-    authorize: claims => authorizeSandboxEgress(cfSandboxGatewayStores(env), claims),
+    authenticate: authorization => authenticateSandboxEgress(store, authorization, { legacyPass }),
     credentials: {
       outboundTarget: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).outboundTarget(scope, hostname),
       forward: async (workspaceId, target, send) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(workspaceId)).forward(workspaceId, target, send),
@@ -2009,6 +2013,18 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
   /** ACP model / MCP channels for one SessionDO execution (design §0.6). */
   async issueManagedAcpExecutionChannels(opts: Parameters<typeof issueCfAcpExecutionChannels>[1]) {
     return issueCfAcpExecutionChannels(this.env, opts);
+  }
+
+  /** A sandbox token for the in-sandbox egress forwarder (#561) of the
+   * SessionDO's current execution attempt. `harness` is the agent's harness
+   * name: it fixes the scope (sandboxHarnessPlacement). */
+  async issueSandboxEgressToken(opts: { tenantId: string; sessionId: string; attempt: SessionExecutionAttemptRef; harness: string | null }): Promise<string> {
+    if (opts.attempt.workspaceId !== opts.tenantId || opts.attempt.sessionId !== opts.sessionId) {
+      throw new Error("Sandbox token fence does not name this Session");
+    }
+    return issueSandboxToken(cfSandboxTokenStore(this.env), opts.attempt, {
+      scope: sandboxTokenScopeFor(sandboxHarnessPlacement(opts.harness)),
+    });
   }
 
   async resolveManagedSkillVersion(opts: {

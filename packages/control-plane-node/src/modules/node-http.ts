@@ -252,20 +252,24 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
         credential: rec.credential,
       };
     },
+    // The sandbox token (#561): one execution-row read, scope + route checked.
+    resolveSandboxToken: (request) => managedAcpCapabilities.authenticateToken(request),
     resolveBearerToken: async ({ token, method, path }) => {
       if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
-      // The shared sandbox bearer check (design §0.0 rule 10): the execution
-      // token on proxy routes, then the Work token.
-      const scoped = await authenticateSandboxBearer(managedAcpCapabilities.authority({
+      // The shared sealed bearer check (design §0.0 rule 10): the pre-#561
+      // execution token on proxy routes (deploy transition), then the Work token.
+      const decision = await authenticateSandboxBearer(managedAcpCapabilities.authority({
         codec: sealedSandboxBearerCodec(managedEnvironmentWorkSessionTokenCrypto, () => new Date()),
         isCurrentClaim: (claim) => isCurrentEnvironmentWorkClaim({
           store: managedEnvironmentWorkStore,
           now: () => new Date(),
         }, claim),
       }), { token, method, path });
-      return scoped === null
-        ? null
-        : {
+      // A database error is not a rejection: the middleware answers 503.
+      if (decision.type === "unavailable") throw decision.error instanceof Error ? decision.error : new Error("sealed bearer could not be checked");
+      if (decision.type === "none") return null;
+      const scoped = decision.resolution;
+      return {
             tenantId: scoped.workspaceId,
             credential: {
               type: "environment_work_session",

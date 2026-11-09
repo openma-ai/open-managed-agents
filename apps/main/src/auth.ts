@@ -4,8 +4,9 @@ import { logWarn, logError } from "@open-managed-agents/shared";
 import { CfKvStore } from "@open-managed-agents/kv-store";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 import { sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
-import { authenticateSandboxBearer } from "@open-managed-agents/sandbox-gateway";
+import { authenticateSandboxBearer, sandboxTokenAuthDecision } from "@open-managed-agents/sandbox-gateway";
 import { cfAcpExecutionAuthority } from "./lib/cf-acp-execution-capability";
+import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
 import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-store-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
@@ -62,6 +63,9 @@ async function resolveWorkspaceApiKey(env: Env, apiKey: string): Promise<{
   }
 }
 
+/** A database error while checking a credential: answered 503, never 401. */
+class CredentialCheckUnavailable extends Error {}
+
 async function resolvePresentedApiCredential(
   c: { env: Env; req: { method: string; path: string } },
   token: string,
@@ -100,16 +104,21 @@ async function resolvePresentedApiCredential(
         );
       },
     } }, { token, method: c.req.method, path: c.req.path });
-    if (scoped !== null) {
+    if (scoped.type === "unavailable") {
+      logWarn({ op: "auth.sandbox_bearer_unavailable", err: scoped.error }, "sealed sandbox bearer could not be checked");
+      throw new CredentialCheckUnavailable("sealed sandbox bearer could not be checked");
+    }
+    if (scoped.type === "resolved") {
+      const resolution = scoped.resolution;
       return {
-        tenantId: scoped.workspaceId,
+        tenantId: resolution.workspaceId,
         credential: {
           type: "environment_work_session",
-          environmentId: scoped.environmentId,
-          sessionId: scoped.sessionId,
-          workId: scoped.workId,
-          claimedAt: scoped.claimedAt,
-          generation: scoped.generation,
+          environmentId: resolution.environmentId,
+          sessionId: resolution.sessionId,
+          workId: resolution.workId,
+          claimedAt: resolution.claimedAt,
+          generation: resolution.generation,
         },
       };
     }
@@ -133,6 +142,24 @@ export const authMiddleware = createMiddleware<{
 }>(async (c, next) => {
   // Internal endpoints have their own header-secret auth (see routes/internal.ts)
   if (c.req.path.startsWith("/v1/oma/internal/")) {
+    return next();
+  }
+  const unavailable = () => c.json({ error: "Credential could not be checked" }, 503, { "retry-after": "1" });
+
+  // 0. The sandbox token (#561): model gateway, MCP gateway and sandbox API.
+  // Its own Session + route + scope check, one tenant-D1 read; once a
+  // sandbox token is presented no other credential path is tried.
+  const sandbox = await sandboxTokenAuthDecision(cfSandboxTokenStore(c.env), {
+    headers: c.req.raw.headers, method: c.req.method, path: c.req.path,
+  });
+  if (sandbox.type === "unavailable") {
+    logWarn({ op: "auth.sandbox_token_unavailable", err: sandbox.error }, "sandbox token could not be checked");
+    return unavailable();
+  }
+  if (sandbox.type === "rejected") return c.json({ error: "Invalid sandbox token" }, 401);
+  if (sandbox.type === "accepted") {
+    c.set("tenant_id", sandbox.resolution.tenantId);
+    c.set("auth_credential", sandbox.resolution.credential);
     return next();
   }
 
@@ -170,7 +197,9 @@ export const authMiddleware = createMiddleware<{
     if (presented.status === "mismatch") {
       return c.json({ error: "Conflicting credentials" }, 401);
     }
-    const resolved = await resolvePresentedApiCredential(c, presented.token);
+    let resolved: ApiKeyResolution | null;
+    try { resolved = await resolvePresentedApiCredential(c, presented.token); }
+    catch (error) { if (error instanceof CredentialCheckUnavailable) return unavailable(); throw error; }
     if (!resolved) {
       const message = presented.transport === "bearer"
         ? "Invalid bearer token"
@@ -194,7 +223,9 @@ export const authMiddleware = createMiddleware<{
   const authorization = c.req.header("authorization") ?? "";
   if (authorization.startsWith("Bearer ")) {
     const token = authorization.slice("Bearer ".length);
-    const resolved = await resolvePresentedApiCredential(c, token);
+    let resolved: ApiKeyResolution | null;
+    try { resolved = await resolvePresentedApiCredential(c, token); }
+    catch (error) { if (error instanceof CredentialCheckUnavailable) return unavailable(); throw error; }
     if (resolved === null) return c.json({ error: "Invalid bearer token" }, 401);
     return commitResolvedAuth(resolved, "bearer");
   }
