@@ -19,7 +19,15 @@ const CORE_PACKAGES = [
   "packages/agent-harness",
 ];
 
+// SQL store adapters behind a contract Port (the host's RuntimeOrphanPort).
+// Core packages reach them only through that Port, never by dependency.
+const STORE_ADAPTER_PACKAGES = [
+  "packages/sandbox-orphan-store-sql",
+];
+
 const FORBIDDEN_PREFIXES = [
+  ...STORE_ADAPTER_PACKAGES.map((directory) =>
+    `@open-managed-agents/${directory.slice("packages/".length)}`),
   "cloudflare:",
   "node:",
   "better-sqlite3",
