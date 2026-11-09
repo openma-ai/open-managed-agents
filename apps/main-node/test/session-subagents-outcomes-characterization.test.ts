@@ -253,7 +253,7 @@ describe("characterization: Node outcome evaluation loop", () => {
     await expect(f.accept(3)).rejects.toThrow(/revision crashed/);
     expect(f.frames).toContainEqual(expect.objectContaining({
       type: "session.error",
-      error: expect.objectContaining({ message: "harness.run: Error: revision crashed", retry_status: "exhausted" }),
+      error: expect.objectContaining({ message: "revision crashed", retry_status: "exhausted" }),
     }));
     expect(ends(f.frames)[0]).toMatchObject({ result: "needs_revision", iteration: 0 });
   });

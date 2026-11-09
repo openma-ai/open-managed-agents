@@ -8,6 +8,7 @@
     "span.outcome_evaluation_ongoing",
     "span.outcome_evaluation_end",
     "span.model_request_start",
+    "session.warning",
     "agent.message",
     "span.model_request_end",
     "session.error",
@@ -68,6 +69,21 @@
         "id": "<id>",
         "processed_at": "<time>",
         "type": "session.status_running"
+      }
+    ],
+    "session.warning": [
+      {
+        "details": {
+          "acpSessionId": "pi-session",
+          "checkpointFingerprint": "",
+          "configurationSha256": "66498340aeba5908e81006fb8842ec5d4fb5b5400bfeeb2a22c69d76944ffb82",
+          "state": "started"
+        },
+        "id": "<id>",
+        "message": "ACP session started; context checkpoint is not yet committed.",
+        "processed_at": "<time>",
+        "source": "oma.acp_context",
+        "type": "session.warning"
       }
     ],
     "span.model_request_end": [

@@ -9,7 +9,7 @@
     "session.error": [
       {
         "error": {
-          "message": "PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)",
+          "message": "turn.execution: Error: PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)",
           "retry_status": {
             "type": "exhausted"
           },
