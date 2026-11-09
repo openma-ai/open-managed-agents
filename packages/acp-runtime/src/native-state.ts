@@ -160,7 +160,27 @@ export const ACP_NATIVE_STATE_PROFILES: readonly AcpNativeStateProfile[] = [
     provenance: "harbor",
     durability: "native",
     resume: "native-and-acp",
-    matches: (agent) => matchesIdentity(agent, ["pi-acp", "openma-pi-acp"]),
+    matches: (agent) => matchesIdentity(agent, ["pi-acp"])
+      && !matchesIdentity({ command: agent.command }, ["openma-pi-acp"]),
+    // Frozen legacy launch commands still need the adapter's ACP/native id map.
+    bindEnvironment: (nativePath) => ({
+      HOME: `${nativePath}/home`,
+      PI_CODING_AGENT_DIR: `${nativePath}/home/.pi/agent`,
+    }),
+    sessionArtifacts: (nativePath) => [
+      directory(`${nativePath}/home/.pi/agent/sessions`),
+      { path: `${nativePath}/home/.pi/pi-acp/session-map.json`, runtimePath: `${nativePath}/home/.pi/pi-acp/session-map.json`,
+        kind: "file", requiredForResume: true },
+    ],
+  },
+  {
+    // Share the durable namespace so existing OpenMA-adapter checkpoints stay
+    // valid; profile selection follows the frozen executable, not registry id.
+    id: "pi",
+    provenance: "oma",
+    durability: "native",
+    resume: "native-and-acp",
+    matches: (agent) => matchesIdentity(agent, ["openma-pi-acp"]),
     // @openma/pi-acp uses pi's native session ids and store directly for
     // session/resume and session/load. There is no adapter-owned id map.
     bindEnvironment: (nativePath) => ({
