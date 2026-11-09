@@ -4,8 +4,9 @@
 // injects its Ports and the Node infrastructure:
 //   - lifecycle: the deployment's Sandbox SDK v2 adapter when it has one
 //     (SANDBOX_PROVIDER=e2b: the native E2B adapter), else the v1 factory
-//     through fromV1SandboxFactory (images, prepared bases and allocation
-//     stay the managed builder's);
+//     through fromV1SandboxFactory (images and allocation stay the
+//     managed builder's);
+//   - the environment cache: only with a v2 adapter that can snapshot;
 //   - storage: Node's Memory Store and Session output implementations as
 //     the storage Port; written back at turn end under the execution fence,
 //     never at the interval (they rebase, which would overwrite files the
@@ -55,6 +56,7 @@ import { UNFENCED_SANDBOX_TOKEN, type SessionExecutionAttemptRef } from "@open-m
 import type { SessionLifecycleCommandPort } from "@open-managed-agents/session-runtime-contract";
 import { toLegacyHarnessEnvironmentConfig } from "./node-managed-agent-codec.js";
 import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "./node-sandbox-orphan-reclaim.js";
+import type { NodeEnvironmentCache, EnvironmentCacheSetup } from "./environment-cache.js";
 
 /** idlePauseMs (design §0.0 rule 11) when SANDBOX_IDLE_PAUSE_MS is unset. */
 export const DEFAULT_SANDBOX_IDLE_PAUSE_MS = 5 * 60_000;
@@ -124,6 +126,10 @@ export interface NodeSessionSandboxOptions {
    * outputs right after createV1, before the warm-up marker or the egress
    * step's exec, so the storage Port's attach finds them already mounted. */
   mountOutputsAtCreate?: boolean;
+  /** Present only with a v2 adapter that can snapshot an environment. */
+  environmentCache?: NodeEnvironmentCache;
+  /** Writes a session.warning to the Session's event stream now. */
+  sessionWarning?(context: NodeSessionSandboxContext, source: string, message: string): Promise<void>;
 }
 
 /** Node's only egress path for Vault sandbox credentials: the in-sandbox
@@ -345,6 +351,19 @@ export class NodeSessionSandbox implements SandboxPort {
         schedule: (delayMs) => this.scheduleIdle(delayMs),
         cancel: () => this.cancelIdle(),
       },
+      ...(options.adapter === undefined || options.environmentCache === undefined ? {} : {
+        environmentCache: options.environmentCache.forSession(
+          () => this.environmentSetup(),
+          (warning) => {
+            const message = `${warning.reason}: ${warning.message}`;
+            options.warn(`environment_cache ${message}`, this.context);
+            const context = this.context;
+            void options.sessionWarning?.(context, "environment_cache", message).catch((error: unknown) => {
+              options.warn(`session_warning_failed error=${error instanceof Error ? error.message : String(error)}`, context);
+            });
+          },
+        ),
+      }),
     });
   }
 
@@ -361,6 +380,9 @@ export class NodeSessionSandbox implements SandboxPort {
   }
 
   warm(): Promise<void> { return this.core.warm(); }
+
+  /** The Environment's setup succeeded here: the cache may snapshot it. */
+  environmentPrepared(): void { this.core.environmentPrepared(); }
 
   /** Execution end (design §0.1 step 7); the sandbox keeps running until the idle pause. */
   async endExecution(): Promise<void> {
@@ -406,6 +428,18 @@ export class NodeSessionSandbox implements SandboxPort {
       this.live = null;
       this.onDestroyed();
     }
+  }
+
+  /** What the environment cache snapshots for this Session; null = no setup known. */
+  private environmentSetup(): EnvironmentCacheSetup | null {
+    const { environment, session } = this.context;
+    if (environment.config === undefined) return null;
+    const openma = session.agent?.openma;
+    const acp = openma?.harness === "acp-sandbox" ? openma.acp?.agent.registry : undefined;
+    return {
+      environment: { id: environment.id, config: environment.config, ...(environment.openma === undefined ? {} : { openma: environment.openma }) },
+      ...(acp === undefined ? {} : { acpRegistry: acp }),
+    };
   }
 
   private image(): string {

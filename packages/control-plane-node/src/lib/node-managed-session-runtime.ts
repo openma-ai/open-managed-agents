@@ -557,6 +557,24 @@ export class DefaultNodeManagedSessionRuntimeDriver
     }
   }
 
+  /** A Session warning from outside its turn (a background environment
+   * snapshot build): written to the event stream now, with no execution fence
+   * since no turn owns it, in order with the Session's other output. */
+  publishSessionWarning(input: {
+    workspaceId: string;
+    sessionId: string;
+    source: string;
+    message: string;
+  }): Promise<void> {
+    return this.enqueueOutput(input.workspaceId, input.sessionId, {
+      id: this.dependencies.ids?.nextEventId() ?? `event_${randomUUID()}`,
+      type: "session.warning",
+      source: input.source,
+      message: input.message,
+      processed_at: this.nextEventStamp(input),
+    });
+  }
+
   private async finishCancelledStart(
     input: ExecuteNodeManagedSessionEvents,
     signal: AbortSignal,

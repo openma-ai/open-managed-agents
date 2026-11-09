@@ -3864,8 +3864,7 @@ export class SessionDO extends DurableObject<Env> {
       this.portsSandbox = createSessionSandbox(this.env.SANDBOX_ADAPTER, {
         env: this.env,
         storage: this.ctx.storage,
-        // Sandbox ID must be 1-63 chars; DO hex ID is 64 chars — truncate to fit
-        sandboxId: this.ctx.id.toString().slice(0, 63),
+        sandboxId: this.ctx.id.toString().slice(0, 63), // 1-63 chars; the DO hex id is 64
         // Operator catalog image (#545 / ADR 0016) for the Cloudflare adapter.
         sandboxImage: this.state.sandbox_image ?? null,
         session: () => ({ tenantId: this.state.tenant_id, environmentId: this.state.environment_id, sessionId: this.state.session_id, agentId: this.state.agent_id || null }),
@@ -3879,6 +3878,8 @@ export class SessionDO extends DurableObject<Env> {
         fence: () => this._executionFences.values().next().value,
         warn: (message) => { try { this.persistAndBroadcastEvent(sessionSandboxWarningEvent(message)); } catch {} },
         idleTimer: createSandboxIdleAlarm(this, "pauseIdleSandbox"),
+        waitUntil: (p) => this.ctx.waitUntil(p.catch(() => undefined)),
+        environmentConfig: async () => (this.state.environment_id ? await this.getEnvConfig(this.state.environment_id) : null),
       });
       this.sandbox = this.portsSandbox;
       this.wrappedSandbox = this.wrapSandboxWithLazyWarmup(this.sandbox);
@@ -4115,7 +4116,7 @@ export class SessionDO extends DurableObject<Env> {
             throw new Error(
               `Environment setup failed at ${result.path}: ${result.error}`,
             );
-          }
+          } else this.portsSandbox!.environmentPrepared(); // environment cache: build its snapshot in the background
         }
       }
 

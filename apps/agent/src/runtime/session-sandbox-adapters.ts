@@ -10,6 +10,7 @@ import { createE2BSessionSandbox } from "./e2b-session-sandbox";
 import type { SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
 import { relaySandboxToken } from "./session-sandbox-token";
 import type { PortsSessionSandbox, SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
+import type { EnvironmentPackages } from "@open-managed-agents/sandbox";
 
 export interface SessionSandboxDeps {
   env: Env;
@@ -28,6 +29,10 @@ export interface SessionSandboxDeps {
   /** Idle pause timer for adapters the host pauses (E2B); the Cloudflare
    * container stops itself through sleepAfter. */
   idleTimer: Omit<SessionSandboxIdleTimer, "pauseMs">;
+  /** Environment cache (Cloudflare adapter): the Session's Environment config now. */
+  environmentConfig?(): Promise<{ id?: string; config?: { packages?: EnvironmentPackages } } | null>;
+  /** The Durable Object's waitUntil, for background environment snapshot builds. */
+  waitUntil?(promise: Promise<unknown>): void;
 }
 
 export function createSessionSandbox(adapter: string | undefined, deps: SessionSandboxDeps): PortsSessionSandbox<unknown> {

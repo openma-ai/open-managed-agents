@@ -155,7 +155,92 @@ function fakeRuntime(id: string, caps: { suspend?: Array<"filesystem" | "memory"
   return runtime;
 }
 
-describe("v1Vendor", () => {
+function bridge(runtimes: Map<string, FakeRuntime>, created: FakeRuntime, contexts: unknown[] = []) {
+  return fromV1SandboxProvider<FakeRuntime>({
+    name: "v1",
+    provider: {
+      async create(ctx) { contexts.push(ctx); runtimes.set("new", created); return created; },
+      async resume(handle) {
+        const runtime = runtimes.get(handle.runtimeId);
+        if (runtime === undefined) throw new Error("not found");
+        return runtime;
+      },
+      async restore(checkpoint) {
+        const runtime = fakeRuntime(`restored-${checkpoint.checkpointId}`);
+        runtimes.set(runtime.runtimeHandle().runtimeId, runtime);
+        return runtime;
+      },
+    },
+    context: (s) => ({ sessionId: s.sessionId, workdir: "/w" }),
+    env: {},
+    leaseTtlMs: 120_000,
+    list: async () => [],
+    readiness: { timeoutMs: 100, pollMs: 1 },
+  });
+}
+
+describe("fromV1SandboxProvider", () => {
+  it("rejects a factory, a missing listing and a bad lease at composition", () => {
+    const base = { name: "v1", context: () => ({ sessionId: "s", workdir: "/w" }), env: {}, leaseTtlMs: 1, list: async () => [] };
+    const factory = Object.assign(async () => fakeRuntime("x"), {});
+    expect(() => fromV1SandboxProvider({ ...base, provider: factory as never })).toThrow(SandboxAssemblyError);
+    expect(() => fromV1SandboxProvider({ ...base, provider: { create: async () => fakeRuntime("x") } as never })).toThrow(SandboxAssemblyError);
+    const provider = { create: async () => fakeRuntime("x"), resume: async () => fakeRuntime("x"), restore: async () => fakeRuntime("x") };
+    expect(() => fromV1SandboxProvider({ ...base, provider, list: undefined })).toThrow(/list/);
+    expect(() => fromV1SandboxProvider({ ...base, provider, leaseTtlMs: 0 })).toThrow(SandboxAssemblyError);
+  });
+
+  it("acquires from the image, declares changing handles and no environment snapshots", async () => {
+    const adapter = bridge(new Map(), fakeRuntime("new"));
+    expect(adapter.lifecycle.handle).toBe("changes");
+    expect(adapter.lifecycle.maxLifetimeMs).toBeNull();
+    expect(adapter.lifecycle.snapshotEnvironment).toBeUndefined();
+    const acquired = await adapter.lifecycle.acquire({ scope, plan, signal });
+    expect(acquired).toMatchObject({ handle: { provider: "v1", runtimeId: "new" } });
+  });
+
+  it("reports a missing or stopped runtime as gone on attach", async () => {
+    const stopped = fakeRuntime("stopped");
+    stopped.state = "stopped";
+    const adapter = bridge(new Map([["stopped", stopped]]), fakeRuntime("new"));
+    expect(await adapter.lifecycle.attach({ scope, handle: { provider: "v1", runtimeId: "missing" }, signal })).toBe("gone");
+    expect(await adapter.lifecycle.attach({ scope, handle: { provider: "v1", runtimeId: "stopped" }, signal })).toBe("gone");
+    expect(await adapter.lifecycle.keepAlive({ runtime: stopped, handle: { provider: "v1", runtimeId: "stopped" } })).toBe("gone");
+  });
+
+  it("pauses through suspend and resumes the same runtime from the ref", async () => {
+    const runtime = fakeRuntime("r1", { suspend: ["memory", "filesystem"] });
+    const adapter = bridge(new Map([["r1", runtime]]), fakeRuntime("new"));
+    const handle = { provider: "v1", runtimeId: "r1" };
+    const ref = await adapter.lifecycle.pause({ scope, runtime, handle, signal });
+    expect(ref.ref).toBe("cp-r1");
+    expect(runtime.state).toBe("suspended");
+    const resumed = await adapter.lifecycle.resume({ scope, ref, plan, signal });
+    expect(resumed).toMatchObject({ handle });
+    expect(runtime.resumed).toEqual([expect.objectContaining({ kind: "filesystem", scope: "runtime" })]);
+  });
+
+  it("degrades without suspend / checkpoint to a ref to the sandbox itself", async () => {
+    const runtime = fakeRuntime("r2");
+    const adapter = bridge(new Map([["r2", runtime]]), fakeRuntime("new"));
+    const handle = { provider: "v1", runtimeId: "r2" };
+    expect(await adapter.lifecycle.pause({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", metadata: { kind: "self" } });
+    expect(await adapter.lifecycle.checkpoint({ scope, runtime, handle, signal })).toEqual({ provider: "v1", ref: "r2", metadata: { kind: "self" } });
+  });
+
+  it("restores a portable checkpoint into a new runtime and releases idempotently", async () => {
+    const runtime = fakeRuntime("r3", { checkpoint: ["filesystem"] });
+    const runtimes = new Map([["r3", runtime]]);
+    const adapter = bridge(runtimes, fakeRuntime("new"));
+    const ref = await adapter.lifecycle.checkpoint({ scope, runtime, handle: { provider: "v1", runtimeId: "r3" }, signal });
+    const restored = await adapter.lifecycle.resume({ scope, ref, plan, signal });
+    expect(restored).toMatchObject({ handle: { runtimeId: "restored-live-r3" } });
+    await adapter.lifecycle.release({ scope, handle: { provider: "v1", runtimeId: "r3" } });
+    expect(runtime.destroyed).toBe(true);
+    await expect(adapter.lifecycle.release({ scope, handle: { provider: "v1", runtimeId: "missing" } })).resolves.toBeUndefined();
+    await expect(adapter.lifecycle.discard({ scope, ref })).resolves.toBeUndefined();
+  });
+
   it("exposes vendor primitives over the v1 SandboxPort", async () => {
     const runtime = fakeRuntime("r4");
     const port = v1Vendor<FakeRuntime>("v1");

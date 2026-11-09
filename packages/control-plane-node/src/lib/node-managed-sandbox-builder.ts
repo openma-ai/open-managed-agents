@@ -9,12 +9,11 @@ import type {
   Environment,
   Session,
 } from "@open-managed-agents/managed-agents-application";
-import type { PreparedSandboxBases } from "./prepared-sandbox-bases";
 import type { SandboxFactoryCapabilities } from "@open-managed-agents/sandbox";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
-type SandboxScope = Pick<SandboxFactoryContext, "environmentId" | "workspaceId" | "image" | "preparedBase" | "allocationId">;
+type SandboxScope = Pick<SandboxFactoryContext, "environmentId" | "workspaceId" | "image" | "allocationId">;
 
 export interface ManagedSandboxBuilderDependencies {
   /** Operator SANDBOX_IMAGES catalog; empty when unset. */
@@ -24,8 +23,6 @@ export interface ManagedSandboxBuilderDependencies {
   workdir(sessionId: string): string;
   /** The foundation's factory call: shared memory/outputs ctx plus scope. */
   build(sessionId: string, workdir: string, scope: SandboxScope): Promise<SandboxExecutor>;
-  /** Prepared-base cache; absent leaves creation untouched. */
-  preparedBases?: PreparedSandboxBases;
 }
 
 /**
@@ -41,8 +38,8 @@ export function createManagedSandboxBuilder(dependencies: ManagedSandboxBuilderD
   return async (input: {
     workspaceId: string;
     allocationId?: string;
-    session: Pick<Session, "id"> & { agent?: Pick<Session["agent"], "openma"> };
-    environment: Pick<Environment, "id" | "openma"> & { config?: Environment["config"] };
+    session: Pick<Session, "id">;
+    environment: Pick<Environment, "id" | "openma">;
   }): Promise<SandboxExecutor> => {
     const image = resolveSandboxImage(
       images,
@@ -61,21 +58,6 @@ export function createManagedSandboxBuilder(dependencies: ManagedSandboxBuilderD
     const sessionWorkdir = dependencies.workdir(input.session.id);
     const workdir = input.allocationId === undefined ? sessionWorkdir : join(sessionWorkdir, "allocations",
       createHash("sha256").update(JSON.stringify([input.workspaceId, input.environment.id, input.session.id, input.allocationId])).digest("hex"));
-    const build = (preparedBase?: SandboxFactoryContext["preparedBase"]) =>
-      dependencies.build(input.session.id, workdir, preparedBase === undefined ? scope : { ...scope, preparedBase });
-    const preparedBases = dependencies.preparedBases;
-    if (preparedBases === undefined || input.environment.config === undefined) return build();
-    const acp = input.session.agent?.openma?.harness === "acp-sandbox"
-      ? input.session.agent.openma.acp?.agent.registry
-      : undefined;
-    return preparedBases.create(scope, {
-      environment: {
-        id: input.environment.id,
-        config: input.environment.config,
-        ...(input.environment.openma === undefined ? {} : { openma: input.environment.openma }),
-      },
-      ...(image !== undefined && { image }),
-      ...(acp !== undefined && { acpRegistry: acp }),
-    }, build);
+    return dependencies.build(input.session.id, workdir, scope);
   };
 }

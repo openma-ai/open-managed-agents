@@ -86,6 +86,11 @@ export async function environmentCommandPath(sandbox: PackageSandbox): Promise<s
 }
 
 const WARM_MARKER = "/tmp/.oma-setup-warm";
+/** The same marker on the root filesystem, next to /usr where apt installs:
+ * a filesystem snapshot (environment cache) keeps it but not /tmp, while a
+ * /workspace backup carries neither. $HOME when /var/lib is not writable. */
+const ROOTFS_WARM_MARKER = "/var/lib/oma/setup-warm";
+const HOME_WARM_MARKER = "$HOME/.cache/oma-setup-warm";
 const RESTORED_MARKER = "/workspace/.oma-setup-restored";
 
 /** A sandbox that runs shell commands. */
@@ -287,7 +292,7 @@ async function probeSetupState(
 ): Promise<{ path: EnvironmentPackagesPath; restoredMarker: string }> {
   try {
     const raw = await sandbox.exec(
-      `WARM=$(cat ${WARM_MARKER} 2>/dev/null || echo MISSING); ` +
+      `WARM=$(cat ${WARM_MARKER} 2>/dev/null || cat ${ROOTFS_WARM_MARKER} 2>/dev/null || cat "${HOME_WARM_MARKER}" 2>/dev/null || echo MISSING); ` +
       `REST=$(cat ${RESTORED_MARKER} 2>/dev/null || echo MISSING); ` +
       `echo "WARM=$WARM"; echo "REST=$REST"`,
       15_000,
@@ -320,7 +325,7 @@ export async function ensureEnvironmentPackages(
 ): Promise<{ path: EnvironmentPackagesPath; durationMs: number; error?: string }> {
   const startMs = Date.now();
   const { full, lang } = setupMarkers(packages, options.sandboxImage);
-  const markers = `echo "${full}" > ${WARM_MARKER}; mkdir -p /workspace; echo "${lang}" > ${RESTORED_MARKER}`;
+  const markers = `echo "${full}" > ${WARM_MARKER}; { mkdir -p /var/lib/oma && echo "${full}" > ${ROOTFS_WARM_MARKER}; } 2>/dev/null || { mkdir -p "$HOME/.cache" && echo "${full}" > "${HOME_WARM_MARKER}"; } 2>/dev/null || true; mkdir -p /workspace; echo "${lang}" > ${RESTORED_MARKER}`;
 
   const probe = await probeSetupState(sandbox, full, lang);
   const state = probe.path;

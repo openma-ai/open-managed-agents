@@ -27,8 +27,6 @@ import type {
   SandboxFactoryContext,
   SandboxFactoryEnv,
   SandboxPort,
-  SandboxPreparedBaseHandle,
-  SandboxPreparedBasePort,
   SandboxProviderPort,
   SandboxRuntimeCapabilities,
   SandboxRuntimeHandle,
@@ -82,7 +80,7 @@ export interface E2BSandboxLike {
   setTimeout?(timeoutMs: number): Promise<void>;
   pause?(opts?: { keepMemory?: boolean }): Promise<boolean>;
   connect?(): Promise<E2BSandboxLike>;
-  createSnapshot?(opts?: { name?: string }): Promise<{
+  createSnapshot?(opts?: { name?: string; mode?: "full" | "filesystem" }): Promise<{
     snapshotId: string;
     names: string[];
   }>;
@@ -114,9 +112,6 @@ export interface E2BSandboxOptions {
    *   Template().fromImage("ubuntu:latest").aptInstall(["s3fs"])
    */
   templateId?: string;
-  /** E2B snapshot id to create the sandbox from instead of `templateId`
-   * (a prepared base captured by {@link E2BSandboxExecutor.capturePreparedBase}). */
-  preparedBaseId?: string;
   /** Default per-command timeout in ms. */
   defaultTimeoutMs?: number;
   /** Sandbox user for commands and file operations. Defaults to the SDK's
@@ -158,7 +153,7 @@ export async function createE2BSandbox(
 ): Promise<E2BSandboxExecutor> {
   const mod = module ?? await loadE2BModule();
   const sb = await mod.Sandbox.create(
-    opts.preparedBaseId ?? opts.templateId ?? "base",
+    opts.templateId ?? "base",
     creationOptions(opts),
   );
   if (opts.readiness !== false) {
@@ -195,7 +190,7 @@ async function waitForSandboxReady(
 }
 
 export class E2BSandboxExecutor
-  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort, SandboxPreparedBasePort {
+  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -341,17 +336,22 @@ export class E2BSandboxExecutor
     };
   }
 
-  /** Snapshot this sandbox as a reusable creation source. Reusing a name
-   * appends a new build under it; the returned id pins this exact build. */
-  async capturePreparedBase(input: { name: string }): Promise<SandboxPreparedBaseHandle> {
+  /** Snapshot this sandbox's filesystem only (`mode: "filesystem"`) as a
+   * reusable creation source: sandboxes created from it boot from the disk,
+   * without this sandbox's memory or processes. Reusing a name appends a new
+   * build under it; the returned snapshot id pins this exact build. A project
+   * without filesystem-only snapshots gets E2B's 400
+   * `snapshot_filesystem_only_disabled`; it is surfaced, never retried as a
+   * full (memory) snapshot. */
+  async snapshotEnvironment(input: { name: string }): Promise<string> {
     if (typeof this.sandbox.createSnapshot !== "function") {
       throw new Error("E2B SDK does not expose sandbox.createSnapshot");
     }
-    const snapshot = await this.sandbox.createSnapshot({ name: input.name });
+    const snapshot = await this.sandbox.createSnapshot({ name: input.name, mode: "filesystem" });
     if (!snapshot.snapshotId) {
-      throw new Error("E2B SDK did not return a snapshotId for the prepared base");
+      throw new Error("E2B SDK did not return a snapshotId for the environment snapshot");
     }
-    return { provider: "e2b", id: snapshot.snapshotId };
+    return snapshot.snapshotId;
   }
 
   async exec(command: string, timeout?: number): Promise<string> {
@@ -898,14 +898,8 @@ function parseCreateMetadata(value: string | undefined): Record<string, string> 
 
 function optionsFromFactory(
   env: SandboxFactoryEnv,
-  ctx?: Pick<SandboxFactoryContext, "image" | "preparedBase">,
+  ctx?: Pick<SandboxFactoryContext, "image">,
 ): E2BSandboxOptions {
-  const preparedBase = ctx?.preparedBase;
-  if (preparedBase !== undefined && (preparedBase.provider !== "e2b" || !preparedBase.id)) {
-    throw new Error(
-      `E2B provider cannot create a sandbox from a ${preparedBase.provider} prepared base`,
-    );
-  }
   return {
     apiKey: env.E2B_API_KEY,
     apiUrl: env.E2B_API_URL,
@@ -915,8 +909,6 @@ function optionsFromFactory(
     lifetimeMs: parseLifetime(env.E2B_SANDBOX_TIMEOUT_MS),
     // An Environment-selected catalog image overrides the process default.
     templateId: ctx?.image?.reference ?? env.SANDBOX_IMAGE,
-    // A prepared base was built from that same image, so it wins over it.
-    ...(preparedBase === undefined ? {} : { preparedBaseId: preparedBase.id }),
     memoryBucket: readS3MemoryBucket(env),
   };
 }

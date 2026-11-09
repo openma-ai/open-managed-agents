@@ -50,7 +50,7 @@ function shellOver(files: Map<string, Uint8Array>) {
 
 
 function fakeSdk() {
-  const calls = { create: [] as Array<[string, Record<string, unknown>]>, commands: [] as Call[], kill: [] as string[], deleted: [] as string[], network: [] as unknown[], timeouts: [] as number[], paused: 0, listQueries: [] as unknown[] };
+  const calls = { create: [] as Array<[string, Record<string, unknown>]>, commands: [] as Call[], kill: [] as string[], deleted: [] as string[], network: [] as unknown[], timeouts: [] as number[], paused: 0, listQueries: [] as unknown[], snapshotModes: [] as string[] };
   const files = new Map<string, Uint8Array>();
   const shell = shellOver(files);
   const errors: { create?: Error; connect?: Error; setTimeout?: Error; snapshot?: Error; kill?: Error; command?: Error; verifyMount?: { exitCode: number; stderr: string } } = {};
@@ -75,7 +75,7 @@ function fakeSdk() {
     async kill() { return true; },
     async setTimeout(ms: number) { if (errors.setTimeout) throw errors.setTimeout; calls.timeouts.push(ms); },
     async pause() { calls.paused += 1; return true; },
-    async createSnapshot(opts?: { name?: string }) { if (errors.snapshot) throw errors.snapshot; return { snapshotId: `snap-${opts?.name ?? "anon"}`, names: [] }; },
+    async createSnapshot(opts?: { name?: string; mode?: string }) { if (errors.snapshot) throw errors.snapshot; calls.snapshotModes.push(opts?.mode ?? "full"); return { snapshotId: `snap-${opts?.name ?? "anon"}`, names: [] }; },
     async updateNetwork(network: unknown) { calls.network.push(network); },
   });
   const sdk: E2BV2Module = {
@@ -145,7 +145,7 @@ describe("E2B v2 lifecycle", () => {
     const fake = fakeSdk();
     const lifecycle = adapter(fake).lifecycle;
     fake.errors.create = apiError("SandboxError", 404);
-    expect(await lifecycle.acquire({ scope, plan: { ...plan, from: { template: { provider: "e2b", ref: "expired" } } }, signal })).toBe("gone");
+    expect(await lifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: { adapter: "e2b", ref: "expired" } } }, signal })).toBe("gone");
     fake.errors.create = apiError("RateLimitError", 429);
     await expect(lifecycle.acquire({ scope, plan, signal })).rejects.toBeInstanceOf(RetryableSandboxError);
     fake.errors.create = apiError("ServiceBusyError", 503);
@@ -176,11 +176,15 @@ describe("E2B v2 lifecycle", () => {
     const restored = await lifecycle.resume({ scope, ref: snapshot, plan, signal });
     expect(fake.calls.create.at(-1)![0]).toBe(snapshot.ref);
     expect(restored).toMatchObject({ handle: { runtimeId: "sbx-2" } });
-    const template = await lifecycle.snapshotTemplate({ ...acquired, signal });
-    expect(template).toEqual({ provider: "e2b", ref: "snap-oma-sbx-1" });
+    const environment = await lifecycle.snapshotEnvironment!({ ...acquired, signal });
+    expect(environment).toEqual({ adapter: "e2b", ref: "snap-oma-env-sbx-1" });
+    expect(fake.calls.snapshotModes).toEqual(["full", "filesystem"]);
+    await lifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: environment } }, signal });
+    expect(fake.calls.create.at(-1)![0]).toBe("snap-oma-env-sbx-1");
+    await expect(lifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: { adapter: "fake", ref: "x" } } }, signal })).rejects.toThrow(/adapter fake/);
     await lifecycle.discard({ scope, ref: paused });
-    await lifecycle.discard({ scope, ref: template });
-    expect(fake.calls.deleted).toEqual(["snap-oma-sbx-1"]);
+    await lifecycle.deleteEnvironmentSnapshot!({ ref: environment });
+    expect(fake.calls.deleted).toEqual(["snap-oma-env-sbx-1"]);
     await lifecycle.release({ scope, handle: acquired.handle });
     fake.errors.kill = apiError("SandboxNotFoundError");
     await expect(lifecycle.release({ scope, handle: acquired.handle })).resolves.toBeUndefined();
@@ -474,5 +478,22 @@ describe("E2B v2 egress (generic forwarder over the E2B vendor)", () => {
     if (acquired === "gone") throw new Error("unexpected");
     await ports.egress.attach({ runtime: acquired.runtime, scope, fence, policy: null, signal });
     expect(fake.files.has("/workspace/.oma-egress/relay.cjs")).toBe(false);
+  });
+});
+
+describe("a deleted environment snapshot", () => {
+  it("is gone for the error E2B really returns (SandboxError, status 404)", async () => {
+    const error = apiError("SandboxError", 404);
+    error.message = "404: template 'team/oma-env-1' not found";
+    const { isGone } = await import("../src/v2");
+    expect(isGone(error)).toBe(true);
+  });
+
+  it("acquire from it returns gone instead of throwing", async () => {
+    const error = apiError("SandboxError", 404);
+    const { createE2BV2Adapter } = await import("../src/v2");
+    const sdk = { Sandbox: { create: async () => { throw error; } } };
+    const adapter = createE2BV2Adapter({ sdk: sdk as never, connection: {}, leaseMs: 120_000, maxLifetimeMs: 3_600_000 });
+    await expect(adapter.lifecycle.acquire({ scope: { workspaceId: "ws", sessionId: "sess", workId: "sess" } as never, plan: { ...plan, from: { environmentSnapshot: { adapter: "e2b", ref: "deleted" } } }, signal })).resolves.toBe("gone");
   });
 });

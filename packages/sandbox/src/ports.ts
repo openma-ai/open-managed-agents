@@ -146,43 +146,6 @@ export interface SandboxSessionOutputMountPort {
   }): Promise<void>;
 }
 
-/** Serializable reference to a provider-owned prepared base: a snapshot of a
- * sandbox on which the Environment setup has already run. Hosts persist it
- * opaquely and hand it back as {@link SandboxFactoryContext.preparedBase}. */
-export interface SandboxPreparedBaseHandle {
-  provider: string;
-  id: string;
-}
-
-/** Provider primitive for capturing the current sandbox as a prepared base
- * that later sandboxes can be created from. Separate from
- * {@link SandboxRuntimePort.checkpoint}: a prepared base is a reusable
- * creation source shared across Sessions, not a restore point of one. */
-export interface SandboxPreparedBasePort {
-  capturePreparedBase(input: { name: string }): Promise<SandboxPreparedBaseHandle>;
-}
-
-export function supportsPreparedBase(
-  value: unknown,
-): value is SandboxPreparedBasePort {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<SandboxPreparedBasePort>;
-  return typeof candidate.capturePreparedBase === "function";
-}
-
-/** For adapters that cannot create a sandbox from a prepared base: a
- * requested base must fail the create, never be ignored. */
-export function rejectPreparedBase(
-  provider: string,
-  preparedBase: SandboxPreparedBaseHandle | undefined,
-): void {
-  if (preparedBase === undefined) return;
-  throw new Error(
-    `SANDBOX_PROVIDER=${provider} cannot create a sandbox from a prepared base ` +
-      `(requested ${preparedBase.provider}:${preparedBase.id})`,
-  );
-}
-
 export function supportsWorkspaceBackup(
   value: unknown,
 ): value is SandboxWorkspaceBackupPort {
@@ -360,12 +323,6 @@ export interface SandboxFactoryContext {
    * default `SANDBOX_IMAGE`; adapters that cannot honour a per-session image
    * must throw rather than ignore it. Absent means "provider default". */
   image?: { alias: string; reference: string };
-  /** Prepared base to create the sandbox from instead of the provider's
-   * template/image. When present the adapter MUST create from it; adapters
-   * that cannot, or that receive a base of another provider, must throw
-   * rather than ignore it (same rule as `image`). A base captured on a
-   * catalog image already contains that image, so `image` may accompany it. */
-  preparedBase?: SandboxPreparedBaseHandle;
 }
 
 /** Read-only view of process env handed to the factory. Whole `process.env`
@@ -381,9 +338,6 @@ export interface SandboxFactoryCapabilities {
    * must honor allocationId, or always create provider-assigned unique resources.
    * Shared host state must use the supplied allocation-scoped workdir. */
   allocationIsolation?: boolean;
-  /** Sandboxes implement {@link SandboxPreparedBasePort}, and the factory
-   * creates from {@link SandboxFactoryContext.preparedBase}. */
-  preparedBase?: boolean;
   /** Sandboxes implement {@link SandboxPort.mountMemoryStore} as a native
    * mount over the host's memory blobs (for example s3fs with `MEMORY_S3_*`,
    * or a host bind of a local memory root), and the composer guarantees it
@@ -407,7 +361,7 @@ export type SandboxFactory = ((
 };
 
 /** Declare capabilities on a factory, e.g. a custom composition that wraps an
- * adapter: `withSandboxFactoryCapabilities(factory, { preparedBase: true })`. */
+ * adapter: `withSandboxFactoryCapabilities(factory, { nativeMemoryStoreMount: true })`. */
 export function withSandboxFactoryCapabilities(
   factory: SandboxFactory,
   capabilities: SandboxFactoryCapabilities,

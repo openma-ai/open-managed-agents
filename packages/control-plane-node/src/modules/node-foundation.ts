@@ -266,7 +266,7 @@ export async function createNodeFoundation(
     workdir: string,
     scope: Pick<
       import("@open-managed-agents/sandbox").SandboxFactoryContext,
-      "environmentId" | "workspaceId" | "image" | "preparedBase" | "allocationId"
+      "environmentId" | "workspaceId" | "image" | "allocationId"
     > = {},
   ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
     return components.sandbox(
@@ -279,20 +279,6 @@ export async function createNodeFoundation(
       },
       sandboxEnvironment,
     );
-  }
-
-  /** A prepared-base builder: same factory and scope as a Session sandbox,
-   * deliberately without memory, outputs or any Session context, so nothing
-   * Session-owned can end up in the snapshot. */
-  async function buildPreparedBaseSandbox(
-    sessionId: string,
-    workdir: string,
-    scope: Pick<
-      import("@open-managed-agents/sandbox").SandboxFactoryContext,
-      "environmentId" | "workspaceId" | "image"
-    >,
-  ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
-    return components.sandbox({ ...scope, sessionId, workdir }, sandboxEnvironment);
   }
 
   // ─── Session registry ───────────────────────────────────────────────────
@@ -525,7 +511,6 @@ export async function createNodeFoundation(
     hub,
     realtimeDescription,
     buildSandbox,
-    buildPreparedBaseSandbox,
     resolveNodeModelCreds,
     resolveDreamModelCredentials,
     buildNodeLanguageModel,

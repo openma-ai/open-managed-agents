@@ -109,8 +109,3 @@ export class SandboxAssemblyError extends Error {
   override readonly name = "SandboxAssemblyError";
 }
 
-/** The provider cannot produce a 1:n template. The core treats a failed
- * template build as non-blocking and starts from the image (§0.1 step 1). */
-export class SandboxTemplateUnsupportedError extends Error {
-  override readonly name = "SandboxTemplateUnsupportedError";
-}

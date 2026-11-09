@@ -5,6 +5,7 @@
 // the Node Session runner.
 
 import type {
+  Acquired,
   MemoryStoreBinding,
   ProcessHandle,
   ResumeRef,
@@ -60,6 +61,14 @@ export interface SessionSandboxIdleTimer {
   cancel(): void | Promise<void>;
 }
 
+/** The environment cache for this Session (session-sandbox-environment-cache). */
+export interface SessionEnvironmentCache<R> {
+  /** Replaces sandbox.acquire: from the environment snapshot, else the image. */
+  acquire(input: { scope: RuntimeResourceScope; plan: SandboxPlan; signal: AbortSignal }): Promise<Acquired<R> | "gone">;
+  /** The Session's own setup succeeded: its snapshot may now be built. */
+  prepared(scope: RuntimeResourceScope): void;
+}
+
 export interface PortsSessionSandboxOptions<R> {
   compose(): Promise<{ ports: SandboxPorts<R> }>;
   /** The host's view of a runtime (exec output in the `exit=N\n...` shape). */
@@ -96,4 +105,6 @@ export interface PortsSessionSandboxOptions<R> {
    * a provider lease); null or omitted = never (Cloudflare: the alarm
    * calls renewActivityTimeout). */
   keepAliveMs?: number | null;
+  /** Omitted = every acquire starts from the plan's image. */
+  environmentCache?: SessionEnvironmentCache<R>;
 }

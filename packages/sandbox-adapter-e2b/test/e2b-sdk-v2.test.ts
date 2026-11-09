@@ -403,68 +403,48 @@ describe("E2B SDK v2 adapter", () => {
     });
   });
 
-  describe("prepared sandbox base", () => {
-    it("captures a named snapshot and returns a serializable handle", async () => {
+  describe("environment snapshot", () => {
+    it("takes a filesystem-only named snapshot and returns its id", async () => {
       const executor = await sandboxFactory(
         { sessionId: "builder", workdir: "/tmp/unused" },
         { E2B_API_KEY: "local" },
       ) as E2BSandboxExecutor;
       const raw = await sdk.create.mock.results.at(-1)!.value as ReturnType<typeof makeSdkSandbox>;
-      raw.createSnapshot.mockResolvedValueOnce({ snapshotId: "snap_base_01", names: ["oma-base-abc"] });
+      raw.createSnapshot.mockResolvedValueOnce({ snapshotId: "snap_env_01", names: ["oma-env-abc"] });
 
-      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
-        .resolves.toEqual({ provider: "e2b", id: "snap_base_01" });
-      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-base-abc" });
+      await expect(executor.snapshotEnvironment({ name: "oma-env-abc" })).resolves.toBe("snap_env_01");
+      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-env-abc", mode: "filesystem" });
     });
 
-    it("surfaces a provider that has no snapshot route as a capture failure", async () => {
-      // e2b@2.46.1 SandboxError from an E2B-compatible API without /sandboxes/{id}/snapshots.
+    it("surfaces a refused filesystem-only snapshot without retrying it as a full one", async () => {
       class SandboxError extends Error {
         override name = "SandboxError";
+        statusCode = 400;
       }
-      const raw = makeSdkSandbox("sb_no_snapshots");
-      raw.createSnapshot.mockRejectedValueOnce(new SandboxError("404: route not found"));
+      const raw = makeSdkSandbox("sb_fs_disabled");
+      raw.createSnapshot.mockRejectedValueOnce(new SandboxError("400: snapshot_filesystem_only_disabled"));
       const executor = new E2BSandboxExecutor(raw as never, {});
-      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
-        .rejects.toMatchObject({ name: "SandboxError", message: "404: route not found" });
+      await expect(executor.snapshotEnvironment({ name: "oma-env-abc" }))
+        .rejects.toMatchObject({ name: "SandboxError", message: "400: snapshot_filesystem_only_disabled" });
       expect(raw.createSnapshot).toHaveBeenCalledTimes(1);
-      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-base-abc" });
+      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-env-abc", mode: "filesystem" });
       expect(raw.kill).not.toHaveBeenCalled();
     });
 
-    it("refuses to capture when the SDK has no createSnapshot", async () => {
+    it("refuses to snapshot when the SDK has no createSnapshot", async () => {
       const raw = makeSdkSandbox("sb_old") as Partial<ReturnType<typeof makeSdkSandbox>>;
       delete raw.createSnapshot;
       const executor = new E2BSandboxExecutor(raw as never, {});
-      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
+      await expect(executor.snapshotEnvironment({ name: "oma-env-abc" }))
         .rejects.toThrow("E2B SDK does not expose sandbox.createSnapshot");
     });
 
-    it("creates from the base instead of the template, keeping lifetime and metadata", async () => {
-      const executor = await sandboxFactory(
-        {
-          sessionId: "session_hit",
-          workdir: "/tmp/unused",
-          image: { alias: "analytics", reference: "analytics-template" },
-          preparedBase: { provider: "e2b", id: "snap_base_01" },
-        },
-        { E2B_API_KEY: "local", SANDBOX_IMAGE: "code-interpreter", E2B_CREATE_METADATA: '{"team":"a"}' },
-      ) as E2BSandboxExecutor;
-
-      expect(sdk.create).toHaveBeenCalledTimes(1);
-      expect(sdk.create).toHaveBeenCalledWith("snap_base_01", expect.objectContaining({
-        metadata: { team: "a" },
-        timeoutMs: 30 * 60_000,
-      }));
-      expect(executor.runtimeHandle()).toEqual({ provider: "e2b", runtimeId: "created:snap_base_01" });
-    });
-
-    it("rejects a prepared base of another provider before calling E2B", async () => {
-      await expect(sandboxFactory(
-        { sessionId: "s", workdir: "/tmp/unused", preparedBase: { provider: "daytona", id: "x" } },
-        { E2B_API_KEY: "local" },
-      )).rejects.toThrow("E2B provider cannot create a sandbox from a daytona prepared base");
-      expect(sdk.create).not.toHaveBeenCalled();
+    it("keeps checkpoints on the default (memory) snapshot mode", async () => {
+      const raw = makeSdkSandbox("sb_cp");
+      raw.createSnapshot.mockResolvedValueOnce({ snapshotId: "snap_cp", names: [] });
+      const executor = new E2BSandboxExecutor(raw as never, {});
+      await executor.checkpoint({ kind: "memory" });
+      expect(raw.createSnapshot).toHaveBeenCalledWith(undefined);
     });
   });
 });

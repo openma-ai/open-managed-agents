@@ -1,10 +1,13 @@
 // Sandbox SDK v2 domain contract (research/sandbox-sdk-v2-design.md §0.1).
 //
-// The core calls only these three Ports. There are no optional methods, no
-// capability fields and no `typeof` probing: an implementation that has no use
-// for a method makes it a no-op. The single declaration is
-// {@link SandboxLifecyclePort.handle}, because the core takes different paths
-// on it. Whether storage and egress are provider-native or generic is decided
+// The core calls only these three Ports. There are no capability fields and
+// no `typeof` probing: an implementation that has no use for a method makes
+// it a no-op. The declarations are {@link SandboxLifecyclePort.handle},
+// because the core takes different paths on it, and the optional pair
+// {@link SandboxLifecyclePort.snapshotEnvironment} /
+// {@link SandboxLifecyclePort.deleteEnvironmentSnapshot}: an adapter that
+// cannot snapshot an environment leaves both out and the core then never
+// builds an environment cache for it. Whether storage and egress are provider-native or generic is decided
 // once, at composition time, by `createSandboxPorts` in
 // @open-managed-agents/sandbox-port-kit; the core never sees which it got.
 //
@@ -53,10 +56,12 @@ export interface SandboxLifecyclePort<R> {
    * plan), never a plan API. `null` = no cap (Cloudflare). The core uses it
    * to pause → attach in a gap between tool calls before the cap. */
   readonly maxLifetimeMs: number | null;
-  /** Start a new sandbox from a template or image digest. Providers that can
-   * only configure a firewall or mount storage at creation do it here from
-   * `plan`. A template in `plan.from` that expired or was deleted → `"gone"`;
-   * the core rebuilds the template and calls again. */
+  /** Start a new sandbox from an environment snapshot or an image digest.
+   * Providers that can only configure a firewall or mount storage at creation
+   * do it here from `plan`. An environment snapshot in `plan.from` that no
+   * longer works → `"gone"`, including one the adapter only finds dead after
+   * starting it (a failed first exec); the core then deletes its record,
+   * warns, starts from the image and rebuilds. */
   acquire(input: { scope: RuntimeResourceScope; plan: SandboxPlan; signal: AbortSignal }): Promise<Acquired<R> | "gone">;
   /** Find this sandbox again by handle (prewarmed, paused, or left by a
    * previous owner) and wake it if paused. Not found, or its disk is gone → `"gone"`. */
@@ -79,15 +84,21 @@ export interface SandboxLifecyclePort<R> {
   /** Delete this sandbox, running or paused. Idempotent, and callable with
    * only the serialized handle (orphan reaping). Terminate + reap today. */
   release(input: { scope: RuntimeResourceScope; handle: SandboxHandle }): Promise<void>;
-  /** Delete a separately stored ref (a snapshot restore point or a template).
-   * A ref that is the sandbox itself is a no-op (deleting sandboxes only goes
-   * through `release`); refs the provider cannot delete are a no-op too and
-   * wait for expiry. */
-  discard(input: { scope: RuntimeResourceScope; ref: ResumeRef | TemplateRef }): Promise<void>;
-  /** Snapshot a build sandbox into a template that can start any number of
-   * sandboxes (1:n). Unlike `checkpoint`, it must not return a ref to the
-   * sandbox itself. Replaces capturePreparedBase. */
-  snapshotTemplate(input: { runtime: R; handle: SandboxHandle; signal: AbortSignal }): Promise<TemplateRef>;
+  /** Delete a separately stored restore point. A ref that is the sandbox
+   * itself is a no-op (deleting sandboxes only goes through `release`); refs
+   * the provider cannot delete are a no-op too and wait for expiry. */
+  discard(input: { scope: RuntimeResourceScope; ref: ResumeRef }): Promise<void>;
+  /** Snapshot a build sandbox's disk (its Environment setup) into a source
+   * that starts any number of sandboxes (1:n), without the build sandbox's
+   * memory or processes. Optional: adapters that cannot leave it out. The
+   * ref is the adapter's own; the core stores and compares only its
+   * `adapter` field. The source image is not checked here or at acquire: the
+   * host's cache key carries the image digest. */
+  snapshotEnvironment?(input: { runtime: R; handle: SandboxHandle; signal: AbortSignal }): Promise<EnvironmentSnapshotRef>;
+  /** Delete an environment snapshot (expiry). Deleting a missing one succeeds.
+   * Best effort: providers without a delete API make it a no-op and the
+   * snapshot waits for the provider's own expiry; the core never depends on it. */
+  deleteEnvironmentSnapshot?(input: { ref: EnvironmentSnapshotRef }): Promise<void>;
   /** Orphan reaping: list sandboxes carrying these labels. `"fixed"` handles
    * return an empty list (a rebuild reuses the same name, so no orphans). */
   list(input: { labels: Partial<SandboxPlan["labels"]>; signal: AbortSignal }): Promise<{ handle: SandboxHandle; labels: SandboxPlan["labels"]; createdAt: string }[]>;
@@ -101,9 +112,12 @@ export interface SandboxHandle { provider: string; runtimeId: string; metadata?:
  * otherwise. Returned by checkpoint / pause and published with the fence; the
  * core only stores it and hands it back. */
 export interface ResumeRef { provider: string; ref: string; metadata?: OpaqueMetadata }
-/** Template that starts any number of sandboxes; cached per workspace,
- * never across tenants. Replaces SandboxPreparedBaseHandle. */
-export interface TemplateRef { provider: string; ref: string; metadata?: OpaqueMetadata }
+/** An environment snapshot: a disk with the Environment setup on it that
+ * starts any number of sandboxes. Opaque: `adapter` names the adapter that
+ * made it (the only part the core reads, to never hand one adapter's ref to
+ * another), `ref` is that adapter's to interpret. Cached per workspace,
+ * never across tenants. */
+export interface EnvironmentSnapshotRef { adapter: string; ref: string }
 export interface Acquired<R> { runtime: R; handle: SandboxHandle }
 
 /** A Memory Store mounted or copied at `/mnt/memory/<storeName>/`. */
@@ -112,9 +126,9 @@ export type MemoryStoreBinding = OrchestratorMemoryMount;
 /** Given in full to acquire / resume. Holds no token and no plaintext: plans
  * are cached and logged. */
 export interface SandboxPlan {
-  /** `image` is the digest bound to the Session. Without setup, or before the
-   * template exists, sandboxes start straight from the image. */
-  from: { template: TemplateRef } | { image: string };
+  /** `image` is the digest bound to the Session. Without setup, or before
+   * its environment snapshot exists, sandboxes start straight from the image. */
+  from: { environmentSnapshot: EnvironmentSnapshotRef } | { image: string };
   /** For providers that can only configure a firewall at creation. */
   egress: EgressPolicy | null;
   /** For native storage that can only be mounted at creation; others ignore it. */

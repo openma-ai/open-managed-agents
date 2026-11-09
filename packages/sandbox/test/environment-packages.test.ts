@@ -33,6 +33,17 @@ function fakeSandbox(failSetup = false) {
 }
 
 describe("environment packages", () => {
+  it("keeps the warm marker on the root filesystem too, which a filesystem snapshot keeps but /tmp is not", async () => {
+    const { sandbox, commands, files } = fakeSandbox();
+    await ensureEnvironmentPackages(sandbox, { apt: ["jq"] });
+    expect(commands.some((c) => c.includes("> /var/lib/oma/setup-warm") && c.includes("$HOME/.cache/oma-setup-warm"))).toBe(true);
+    expect(commands.find((c) => c.startsWith("WARM="))).toContain("cat /var/lib/oma/setup-warm");
+    // /tmp lost, rootfs copy read back by the probe: warm, no apt reinstall.
+    const rest = files.get("rest");
+    expect((await ensureEnvironmentPackages(sandbox, { apt: ["jq"] })).path).toBe("warm");
+    expect(rest).toBeDefined();
+  });
+
   it("reads both exec result shapes", () => {
     expect(parseExecResult("exit=2\nout\nstderr: boom")).toEqual({ exitCode: 2, stdout: "out", stderr: "boom" });
     expect(parseExecResult("some output\n[exit 1]")).toEqual({ exitCode: 1, stdout: "some output", stderr: "" });
