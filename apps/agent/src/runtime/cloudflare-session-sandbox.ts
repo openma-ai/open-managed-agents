@@ -15,8 +15,12 @@
 //     none and gets no Vault; revoke rebinds it that way.
 //   - acquire / resume keep the 3-attempt container start retry and bind the
 //     backup and billing context OmaSandbox needs for its idle teardown.
+//
+// Environment cache (cloudflare-environment-cache.ts): plan.from.image is
+// the Sandbox class's digest-pinned image. A build sandbox is its own Sandbox
+// Durable Object named by the build id, without the Session's outputs.
 
-import type { MemoryStoreBinding, SandboxLifecyclePort } from "@open-managed-agents/sandbox";
+import type { EnvironmentPackages, MemoryStoreBinding, SandboxLifecyclePort } from "@open-managed-agents/sandbox";
 import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
 import type { SandboxEgressPort } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
@@ -26,7 +30,14 @@ import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources } from "./managed-session-resources";
 import { findLatestBackup, type WorkspaceBackupHandle } from "./workspace-backups";
-import { memoryStoreMountTarget, PortsSessionSandbox } from "@open-managed-agents/session-runtime";
+import { memoryStoreMountTarget, PortsSessionSandbox, type SessionEnvironmentCache } from "@open-managed-agents/session-runtime";
+import {
+  createCloudflareEnvironmentCache,
+  d1EnvironmentCacheStore,
+  isEnvironmentBuildId,
+  UNKNOWN_SANDBOX_IMAGE,
+  type CloudflareEnvironmentSetup,
+} from "./cloudflare-environment-cache";
 
 export interface CloudflareSessionSandboxDeps {
   env: Env;
@@ -38,6 +49,15 @@ export interface CloudflareSessionSandboxDeps {
   /** The Session's current execution attempt (SessionDO's fence); undefined between turns. */
   fence(): SandboxExecutionFence | undefined;
   warn(message: string): void;
+  /** The Session's Environment config now (environment cache); omitted = cache off. */
+  environmentConfig?(): Promise<{ config?: { packages?: EnvironmentPackages } } | null>;
+  /** The Durable Object's waitUntil, for the background environment snapshot build. */
+  waitUntil?(promise: Promise<unknown>): void;
+}
+
+/** An environment snapshot build sandbox: never mounts a Session's outputs. */
+class BuildSandbox extends CloudflareSandbox {
+  override sessionOutputsMount(): null { return null; }
 }
 
 /** What the outbound binding needs of a SessionExecutionFence. */
@@ -55,11 +75,14 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     return { workspaceId: s.tenantId, environmentId: s.environmentId, sessionId: s.sessionId, workId: s.sessionId };
   };
   const handle = () => ({ provider: "cloudflare", runtimeId: deps.session().sessionId });
+  // One Sandbox DO per SessionDO; an environment build sandbox is its own DO.
+  const adapter = createCloudflareSandboxAdapter({
+    sandbox: (id) => isEnvironmentBuildId(id) ? new BuildSandbox(deps.env, id, deps.sandboxImage) : sandbox,
+    backups: backupBucket(deps.env),
+  });
+  const environmentCache = cloudflareEnvironmentCache(deps, adapter.lifecycle);
   return new PortsSessionSandbox<CloudflareSandboxRuntime>({
     async compose() {
-      // One Sandbox DO per SessionDO: the adapter's sessionId argument names
-      // the same sandbox.
-      const adapter = createCloudflareSandboxAdapter({ sandbox: () => sandbox, backups: backupBucket(deps.env) });
       const { ports } = createSandboxPorts({
         ...adapter,
         lifecycle: withSessionContext(adapter.lifecycle, sandbox, deps.session),
@@ -78,7 +101,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     async plan({ scope: s, generation }) {
       const session = deps.session();
       return {
-        from: { image: "deployment" },
+        from: { image: (await sandbox.sandboxImage().catch(() => null)) ?? UNKNOWN_SANDBOX_IMAGE },
         egress: null,
         stores: session.sessionId ? await managedStores(deps.env, session, generation) : [],
         outputs: { bindingId: `outputs:${s.sessionId}`, mountPath: "/mnt/session/outputs" },
@@ -98,6 +121,40 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     egressRenewMs: null,
     execution: () => deps.fence?.(),
     isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
+    ...(environmentCache === undefined ? {} : { environmentCache }),
+  });
+}
+
+/** Off without the Session's setup source or the tenant D1 (records). The
+ * build sandbox goes through the adapter's own lifecycle: the Session's
+ * backup and billing context belong to the Session's sandbox. */
+function cloudflareEnvironmentCache(
+  deps: CloudflareSessionSandboxDeps,
+  lifecycle: SandboxLifecyclePort<CloudflareSandboxRuntime>,
+): SessionEnvironmentCache<CloudflareSandboxRuntime> | undefined {
+  const { environmentConfig, waitUntil } = deps;
+  if (environmentConfig === undefined || waitUntil === undefined || !deps.env.MAIN_DB) return undefined;
+  const environmentSetup = async (): Promise<CloudflareEnvironmentSetup | null> => {
+    const environmentId = deps.session().environmentId;
+    const packages = environmentId ? (await environmentConfig())?.config?.packages : undefined;
+    return environmentId && packages ? { environmentId, packages } : null;
+  };
+  const dbFor = new Map<string, Promise<D1Database>>();
+  const tenantDb = (workspaceId: string) => {
+    let db = dbFor.get(workspaceId);
+    if (db === undefined) dbFor.set(workspaceId, db = buildCfTenantDbProvider(deps.env).resolve(workspaceId) as Promise<D1Database>);
+    return db;
+  };
+  return createCloudflareEnvironmentCache({
+    lifecycle,
+    storeFor: (workspaceId) => ({
+      get: async (key) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).get(key),
+      put: async (key, value) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).put(key, value),
+      delete: async (key) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).delete(key),
+    }),
+    setup: environmentSetup,
+    warn: (warning) => deps.warn(`environment_cache_${warning.reason}: ${warning.message}`),
+    waitUntil,
   });
 }
 

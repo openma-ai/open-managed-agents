@@ -32,20 +32,34 @@ afterAll(() => {
 class RecordingContainer {
   running = false;
   readonly images = { sandbox: "sandbox-image" };
-  startOptions: { env?: Record<string, string> } | undefined;
+  startOptions: { env?: Record<string, string>; image?: string; containerSnapshot?: { id: string } } | undefined;
+  /** A container snapshot start the platform refuses (monitor rejection). */
+  goneSnapshots = new Set<string>();
+  readonly snapshots: string[] = [];
   readonly execs: Array<{ argv: string[]; env?: Record<string, string> }> = [];
   private stopMonitor: (() => void) | undefined;
   constructor(private readonly log: string[]) {}
-  start(options: { env?: Record<string, string> }): void {
-    this.running = true;
+  start(options: { env?: Record<string, string>; image?: string; containerSnapshot?: { id: string } }): void {
     this.startOptions = options;
     this.log.push("start");
+    const id = options.containerSnapshot?.id;
+    if (id !== undefined && this.goneSnapshots.has(id)) {
+      this.failedStart = new Error(`Snapshot "${id}" was not found.`);
+      return;
+    }
+    this.running = true;
+  }
+  private failedStart: Error | undefined;
+  async snapshotContainer(options: { name: string }): Promise<{ id: string; size: number; name: string }> {
+    this.snapshots.push(options.name);
+    return { id: "snap-1", size: 46_302_611, name: options.name };
   }
   async interceptAllOutboundHttp(): Promise<void> { this.log.push("catch-all"); }
   async interceptOutboundHttps(): Promise<void> { this.log.push("catch-all-https"); }
   async interceptOutboundHttp(host: string): Promise<void> { this.log.push(`route:${host}`); }
   async setInactivityTimeout(ms: number): Promise<void> { this.log.push(`timeout:${ms}`); }
   async exec(argv: string[], options?: { env?: Record<string, string> }) {
+    if (!this.running) throw new Error("exec() cannot be called on a container that is not running.");
     this.execs.push({ argv, env: options?.env });
     this.log.push(`exec:${argv[0]}`);
     return {
@@ -54,6 +68,7 @@ class RecordingContainer {
     };
   }
   monitor(): Promise<void> {
+    if (this.failedStart !== undefined) return Promise.reject(this.failedStart);
     return new Promise((resolve) => { this.stopMonitor = resolve; });
   }
   async destroy(): Promise<void> {
@@ -314,6 +329,57 @@ describe("OmaSandbox on Sandbox SDK 1.0", () => {
     state.storage.kv.put("oma_last_activity_ms", Date.now() - 60_001);
     await box.alarm();
     expect(container.running).toBe(false);
+  });
+
+  it("starts from a container snapshot with its mounts attached again, and only that start", async () => {
+    const box = sandbox();
+    const result = await box.provision({
+      incarnation: "inc-s",
+      mounts: [{ bucket: "files", mountPath: "/mnt/session/outputs", options: R2 }],
+      autoStart: false,
+      containerSnapshot: { id: "snap-0" },
+    });
+    expect(result).toEqual({ incarnation: "inc-s", started: true, pendingMounts: [] });
+    expect(container.startOptions).toMatchObject({ containerSnapshot: { id: "snap-0" } });
+    expect(container.startOptions?.image).toBeUndefined();
+    expect(log.indexOf("mount:/mnt/session/outputs")).toBeGreaterThan(log.indexOf("start"));
+    expect(log.indexOf("mount:/mnt/session/outputs")).toBeLessThan(log.indexOf("catch-all"));
+
+    // The plan does not keep the snapshot: a later start uses the image.
+    container.stop();
+    await Promise.resolve();
+    await box.provision({ incarnation: "inc-2", mounts: [{ bucket: "files", mountPath: "/mnt/session/outputs", options: R2 }] });
+    expect(container.startOptions).toMatchObject({ image: "sandbox-image" });
+    expect(container.startOptions?.containerSnapshot).toBeUndefined();
+  });
+
+  it("reports a missing container snapshot as SNAPSHOT_GONE and leaves no container", async () => {
+    container.goneSnapshots.add("dead");
+    const box = sandbox();
+    await expect(box.provision({ incarnation: "inc-g", mounts: [], autoStart: false, containerSnapshot: { id: "dead" } }))
+      .rejects.toThrow(/^SNAPSHOT_GONE: container snapshot dead: Snapshot "dead" was not found\./);
+    expect(container.running).toBe(false);
+    await expect(box.describe()).resolves.toMatchObject({ running: false, incarnation: null });
+  });
+
+  it("snapshots only a running container, and names its image digest", async () => {
+    const box = sandbox();
+    await expect(box.snapshotEnvironment({ name: "oma-env-b" })).rejects.toThrow(/^SANDBOX_NOT_RUNNING:/);
+    expect(log).toEqual([]);
+    await box.provision({ incarnation: "inc-b", mounts: [], autoStart: false });
+    await expect(box.snapshotEnvironment({ name: "oma-env-b" })).resolves.toEqual({ id: "snap-1", size: 46_302_611 });
+    expect(container.snapshots).toEqual(["oma-env-b"]);
+    await expect(box.sandboxImage()).resolves.toBe("sandbox-image");
+  });
+
+  it("limits a build sandbox's egress to the given hosts, without credentials", async () => {
+    const box = sandbox();
+    await box.restrictOutboundToHosts(["pypi.org", "deb.debian.org"]);
+    expect(state.raw.kv.get("OUTBOUND_CONFIGURATION")).toEqual({
+      allowedHosts: ["pypi.org", "deb.debian.org"],
+      outboundHandlerOverride: { method: "package_source_passthrough" },
+    });
+    expect(log).toEqual([]);
   });
 
   it("never starts a stopped container to take a snapshot or to run a stale alarm", async () => {

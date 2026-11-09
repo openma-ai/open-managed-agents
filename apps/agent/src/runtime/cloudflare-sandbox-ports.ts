@@ -5,14 +5,20 @@
 // CloudflareSandbox directly; this is the v2 composition of the same
 // primitives.
 //
-// Restore points and templates are /workspace backups (DirectoryBackup in
-// OmaSandbox, objects in BACKUP_BUCKET under backups/). A backup restores
-// into any sandbox of this deployment, so it also serves as a 1:n template;
-// discard deletes its objects through the binding.
+// Restore points are /workspace backups (DirectoryBackup in OmaSandbox,
+// objects in BACKUP_BUCKET under backups/); discard deletes their objects.
 //
-// Gaps (§0.3): no rootfs snapshot API in Sandbox SDK 1.0, so a template
-// holds only /workspace (setup that installs outside it is not captured) and
-// pause = workspace backup + destroy; the idle timeout is per deployment
+// Environment snapshots (environment cache) are container snapshots
+// (ctx.container.snapshotContainer, durable_object scheduling policy): the
+// whole root filesystem, without mounts, memory, processes or /run. Measured
+// to restore in another Durable Object. The ref is the snapshot id. A missing
+// one does not fail start(); OmaSandbox reports SNAPSHOT_GONE from the
+// container monitor and acquire returns "gone". A snapshot of an older image
+// still starts that older image, so the host's cache key carries the image
+// digest. There is no delete API: deleteEnvironmentSnapshot is left out and
+// snapshots expire after 30 days without a restore (each restore renews it).
+//
+// Gaps (§0.3): pause = workspace backup + destroy; the idle timeout is per deployment
 // (OmaSandbox reads SANDBOX_IDLE_TIMEOUT_MS; plan.idleMs is not applied per
 // sandbox); there is no runtime firewall, so a limited policy is enforced
 // only on traffic the outbound handler sees; revoke reuses the handler's
@@ -30,7 +36,17 @@ export type CloudflareSandboxRuntime = Pick<
   | "describeSandbox" | "provisionSandbox" | "createWorkspaceBackup" | "restoreWorkspaceBackup"
   | "memoryStoreMount" | "sessionOutputsMount" | "setOutboundContext" | "revokeOutboundContext"
   | "destroy" | "renewActivityTimeout" | "exec" | "writeFileBytes" | "setEnvVars"
+  | "snapshotEnvironment" | "restrictOutboundToHosts"
 >;
+
+/** The adapter name in environment snapshot refs and cache keys. */
+export const CLOUDFLARE_ADAPTER = "cloudflare";
+/** Container snapshots expire 30 days after creation or their last restore. */
+export const CLOUDFLARE_SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60_000;
+/** OmaSandbox OMA_SANDBOX_SNAPSHOT_GONE (Workers RPC keeps only the message). */
+const SNAPSHOT_GONE = "SNAPSHOT_GONE";
+export const isSnapshotGoneError = (error: unknown): boolean =>
+  (error instanceof Error ? error.message : String(error)).includes(SNAPSHOT_GONE);
 
 const BACKUP_TTL_SEC = 7 * 24 * 60 * 60;
 /** OmaSandbox's DirectoryBackup storage: `{ binding: "BACKUP_BUCKET", prefix:
@@ -57,9 +73,14 @@ export function createCloudflareSandboxAdapter(input: {
       ...plan.stores.map((store) => runtime.memoryStoreMount(store)),
     ];
   };
-  const provision = async (scope: RuntimeResourceScope, plan: SandboxPlan) => {
+  const provision = async (scope: RuntimeResourceScope, plan: SandboxPlan, containerSnapshot?: { id: string }) => {
     const runtime = sandboxFor(scope.sessionId);
-    await runtime.provisionSandbox({ incarnation: crypto.randomUUID().slice(0, 12), mounts: mountsFor(runtime, scope, plan), autoStart: false });
+    await runtime.provisionSandbox({
+      incarnation: crypto.randomUUID().slice(0, 12),
+      mounts: mountsFor(runtime, scope, plan),
+      autoStart: false,
+      ...(containerSnapshot === undefined ? {} : { containerSnapshot }),
+    });
     return { runtime, handle: handleFor(scope) };
   };
 
@@ -68,12 +89,23 @@ export function createCloudflareSandboxAdapter(input: {
     /** Containers have no continuous-run cap. */
     maxLifetimeMs: null,
 
-    /** From the deployment image. Containers cannot snapshot an
-     * environment (no snapshotEnvironment), so plans never carry one. */
+    /** From the deployment image, or from an environment snapshot: a
+     * snapshot that is gone is "gone" at once (no retries); the core then
+     * drops its record, warns, starts from the image and rebuilds. */
     async acquire(input) {
       input.signal.throwIfAborted();
-      if ("environmentSnapshot" in input.plan.from) throw new Error("The Cloudflare container adapter cannot start from an environment snapshot");
-      return provision(input.scope, input.plan);
+      const from = input.plan.from;
+      if (!("environmentSnapshot" in from)) return provision(input.scope, input.plan);
+      const snapshot = from.environmentSnapshot;
+      if (snapshot.adapter !== CLOUDFLARE_ADAPTER) {
+        throw new Error(`The Cloudflare container adapter cannot start from a ${snapshot.adapter} environment snapshot`);
+      }
+      try {
+        return await provision(input.scope, input.plan, { id: snapshot.ref });
+      } catch (error) {
+        if (isSnapshotGoneError(error)) return "gone";
+        throw error;
+      }
     },
 
     /** A stopped container would restart without its mounts: report gone so
@@ -126,13 +158,23 @@ export function createCloudflareSandboxAdapter(input: {
     },
 
 
+    /** Snapshot the build sandbox's root filesystem; its mounts, memory and
+     * processes are not in it. No deleteEnvironmentSnapshot: Containers has
+     * no delete API, snapshots expire on their own. */
+    async snapshotEnvironment(input) {
+      input.signal.throwIfAborted();
+      const snapshot = await input.runtime.snapshotEnvironment({ name: `oma-env-${input.handle.runtimeId}`.slice(0, 63) });
+      if (typeof snapshot.id !== "string" || snapshot.id.length === 0) throw new Error("The container snapshot returned no id");
+      return { adapter: CLOUDFLARE_ADAPTER, ref: snapshot.id };
+    },
+
     /** Fixed handles: a rebuild reuses the DO name, so there are no orphans. */
     async list() {
       return [];
     },
   };
   return {
-    name: "cloudflare",
+    name: CLOUDFLARE_ADAPTER,
     lifecycle,
     vendor: {
       async exec(runtime, cmd, opts) {

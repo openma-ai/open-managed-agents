@@ -504,6 +504,11 @@ const HEALTH_PROBE_TIMEOUT_MS = 5_000;
 export const OMA_SANDBOX_NOT_RUNNING = "SANDBOX_NOT_RUNNING";
 export const OMA_SANDBOX_MOUNT_AFTER_START = "MOUNT_AFTER_START";
 export const OMA_SANDBOX_LEGACY_BACKUP = "LEGACY_BACKUP";
+/** A container snapshot to start from is gone (expired, deleted or never
+ * existed): start() does not throw for it, the container's monitor rejects. */
+export const OMA_SANDBOX_SNAPSHOT_GONE = "SNAPSHOT_GONE";
+/** First exec after a snapshot start, measured 0.2-5 s (cross-DO probe). */
+const SNAPSHOT_READY_TIMEOUT_MS = 120_000;
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
 const SYSTEM_CA = "/etc/ssl/certs/ca-certificates.system.crt";
@@ -567,6 +572,10 @@ export interface OmaProvisionRequest {
   /** Process environment. Replaces it for a new container, merges otherwise. */
   env?: Record<string, string>;
   autoStart?: boolean;
+  /** Start a new container from this container snapshot instead of the
+   * image (environment cache). Only this start: a later restart of the same
+   * Durable Object starts from the image. Ignored when one is running. */
+  containerSnapshot?: { id: string };
 }
 
 export interface OmaProvisionResult {
@@ -631,6 +640,17 @@ const HANDLERS: Record<string, OutboundHandlerFn> = {
 export function registerOmaOutboundHandler(name: string, fn: OutboundHandlerFn): void {
   HANDLERS[name] = fn;
 }
+
+/** Public package sources for an environment snapshot build sandbox: the
+ * request as sent, no Vault credential and no platform gateway. */
+const packageSourcePassthrough: OutboundHandlerFn = async (request) => {
+  const headers = new Headers(request.headers);
+  for (const h of HOP_BY_HOP_OR_CF_HEADERS) headers.delete(h);
+  for (const h of SANDBOX_CONTROL_HEADERS) headers.delete(h);
+  const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
+  return fetch(new Request(request.url, { method: request.method, headers, body, redirect: "manual" }));
+};
+HANDLERS.package_source_passthrough = packageSourcePassthrough;
 
 const STATIC_OUTBOUND_BY_HOST: Record<string, HandlerRef | OutboundHandlerFn> = {
   "*.r2.cloudflarestorage.com": r2OutboundPassthrough,
@@ -885,18 +905,20 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     }
   }
 
-  private async startContainer(requestedIncarnation?: string): Promise<void> {
+  private async startContainer(requestedIncarnation?: string, snapshot?: { id: string }): Promise<void> {
     const newContainer = !this.container.running;
     const plan = this.plan();
+    const fromSnapshot = newContainer && snapshot !== undefined;
     if (newContainer) {
-      this.container.start({
-        image: this.container.images.sandbox,
-        instance: "standard-1",
-        env: { ...CONTAINER_ENV, ...this.processEnv() },
-        enableInternet: false,
-      });
+      const env = { ...CONTAINER_ENV, ...this.processEnv() };
+      this.container.start(fromSnapshot
+        ? { containerSnapshot: { id: snapshot.id }, instance: "standard-1", env, enableInternet: false }
+        : { image: this.container.images.sandbox, instance: "standard-1", env, enableInternet: false });
     }
     try {
+      // A missing snapshot is reported by the monitor only; without this the
+      // mount below would wait on a container that never runs.
+      if (fromSnapshot) await this.awaitSnapshotStart(snapshot.id);
       const incarnation = !newContainer && plan.incarnation !== null
         ? plan.incarnation
         : requestedIncarnation ?? newIncarnation();
@@ -923,9 +945,9 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     }
   }
 
-  private startSetup(incarnation?: string): Promise<void> {
+  private startSetup(incarnation?: string, snapshot?: { id: string }): Promise<void> {
     this.setupPending = true;
-    const setup = this.startContainer(incarnation).then(
+    const setup = this.startContainer(incarnation, snapshot).then(
       () => {
         this.setupPending = false;
       },
@@ -1048,9 +1070,74 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
         autoStart,
       });
       if (request.env) this.ctx.storage.kv.put(PROCESS_ENV_KEY, { ...request.env });
-      await this.startSetup(request.incarnation);
+      await this.startSetup(request.incarnation, request.containerSnapshot);
       return { incarnation: this.plan().incarnation!, started: true, pendingMounts: [] };
     });
+  }
+
+  /** Waits for the first exec of a container started from a snapshot. A
+   * monitor rejection naming the snapshot means it is gone. */
+  private async awaitSnapshotStart(id: string): Promise<void> {
+    let monitorError: unknown;
+    const stopped = this.container.monitor().then(
+      () => { monitorError = new Error("the container exited during start"); },
+      (error: unknown) => { monitorError = error; },
+    );
+    const deadline = Date.now() + SNAPSHOT_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const ready = await Promise.race([
+        stopped.then(() => false),
+        (async () => {
+          try {
+            const proc = await this.container.exec(["true"]);
+            return (await proc.exitCode) === 0;
+          } catch {
+            return false;
+          }
+        })(),
+      ]);
+      if (monitorError !== undefined) {
+        const message = monitorError instanceof Error ? monitorError.message : String(monitorError);
+        if (/snapshot/i.test(message) && /not found|expired|does not exist/i.test(message)) {
+          throw new Error(`${OMA_SANDBOX_SNAPSHOT_GONE}: container snapshot ${id}: ${message}`);
+        }
+        throw new Error(`Starting from container snapshot ${id} failed: ${message}`);
+      }
+      if (ready) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`Container snapshot ${id} did not start within ${SNAPSHOT_READY_TIMEOUT_MS} ms`);
+  }
+
+  /** Environment cache: snapshot this container's root filesystem (not
+   * mounts, memory, processes or /run). Never starts a container. Waits for
+   * no other call: the build sandbox runs only its setup, then this. */
+  async snapshotEnvironment(input: { name: string }): Promise<{ id: string; size: number }> {
+    if (!this.ctx.container?.running) {
+      throw new Error(`${OMA_SANDBOX_NOT_RUNNING}: there is no running container to snapshot`);
+    }
+    if (this.inflight > 0) throw new Error("The container is busy; an environment snapshot needs it idle");
+    this.recordActivity(false);
+    const snapshot = await this.container.snapshotContainer({ name: input.name });
+    this.recordActivity(false);
+    return { id: snapshot.id, size: snapshot.size };
+  }
+
+  /** The digest-pinned reference of the image this class starts, or null
+   * (a class without a durable_object images map). */
+  async sandboxImage(): Promise<string | null> {
+    const image = (this.ctx.container as { images?: Record<string, string | undefined> } | undefined)?.images?.sandbox;
+    return typeof image === "string" && image.length > 0 ? image : null;
+  }
+
+  /** Environment snapshot build sandbox: only these hosts, passed through
+   * without credentials; everything else is blocked (R2 included). */
+  async restrictOutboundToHosts(hosts: string[]): Promise<void> {
+    await this.saveRules({
+      allowedHosts: [...hosts],
+      outboundHandlerOverride: { method: "package_source_passthrough" },
+    });
+    if (this.container.running) await this.interceptOutbound();
   }
 
   async describe(): Promise<OmaSandboxDescription> {

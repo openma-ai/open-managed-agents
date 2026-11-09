@@ -316,9 +316,12 @@ export class CloudflareSandbox
     incarnation: string;
     mounts: OmaMountBucketRequest[];
     autoStart?: boolean;
+    /** Start from this container snapshot (environment cache). */
+    containerSnapshot?: { id: string };
   }): Promise<OmaProvisionResult> {
     const sandbox = await this.getSandbox();
     if (typeof sandbox.provision !== "function") {
+      if (input.containerSnapshot !== undefined) throw new Error("This sandbox cannot start from a container snapshot");
       for (const mount of input.mounts) {
         if (typeof sandbox.mountBucket === "function") {
           await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
@@ -333,9 +336,31 @@ export class CloudflareSandbox
       // A new container starts with an empty process environment; warmup
       // publishes the current contract again.
       env: {},
+      ...(input.containerSnapshot === undefined ? {} : { containerSnapshot: input.containerSnapshot }),
     }) as OmaProvisionResult;
     if (result.started) this.processEnv = {};
     return result;
+  }
+
+  /** Snapshot the running container's root filesystem (environment cache). */
+  async snapshotEnvironment(input: { name: string }): Promise<{ id: string; size: number }> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.snapshotEnvironment !== "function") throw new Error("This sandbox cannot snapshot its container");
+    return sandbox.snapshotEnvironment(input);
+  }
+
+  /** Digest-pinned image reference this sandbox starts from, or null when unknown. */
+  async sandboxImage(): Promise<string | null> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.sandboxImage !== "function") return null;
+    return sandbox.sandboxImage();
+  }
+
+  /** Limit egress to these hosts, without credentials (environment snapshot build). */
+  async restrictOutboundToHosts(hosts: string[]): Promise<void> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.restrictOutboundToHosts !== "function") throw new Error("This sandbox cannot restrict its egress to package sources");
+    await sandbox.restrictOutboundToHosts(hosts);
   }
 
   /**

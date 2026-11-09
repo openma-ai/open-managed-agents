@@ -57,11 +57,35 @@ describe("Cloudflare v2 adapter", () => {
     expect(await ports.sandbox.list({ labels: {}, signal })).toEqual([]);
   });
 
-  it("cannot snapshot an environment: no snapshotEnvironment, and refuses a plan that carries one", async () => {
-    const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => fakeCf().runtime, backups });
-    expect(lifecycle.snapshotEnvironment).toBeUndefined();
+  it("starts from a container snapshot, maps a gone one to \"gone\" at once, and snapshots an environment", async () => {
+    const cf = fakeCf();
+    let provisions = 0;
+    const provision = cf.runtime.provisionSandbox.bind(cf.runtime);
+    (cf.runtime as { provisionSandbox: unknown }).provisionSandbox = async (input: { containerSnapshot?: { id: string } } & Parameters<typeof provision>[0]) => {
+      provisions += 1;
+      cf.log.push(["from", input.containerSnapshot ?? "image"]);
+      if (input.containerSnapshot?.id === "dead") throw new Error("SNAPSHOT_GONE: container snapshot dead: Snapshot \"dead\" was not found.");
+      return provision(input);
+    };
+    (cf.runtime as { snapshotEnvironment: unknown }).snapshotEnvironment = async (input: { name: string }) => { cf.log.push(["snapshot", input.name]); return { id: "snap-1", size: 46 }; };
+    const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, backups });
+    const fromSnapshot = (ref: string, adapter = "cloudflare") => ({ ...plan, from: { environmentSnapshot: { adapter, ref } } });
+
+    expect(await lifecycle.acquire({ scope, plan: fromSnapshot("snap-0"), signal })).toMatchObject({ handle: { runtimeId: "sess" } });
+    expect(cf.log.find(([op]) => op === "from")?.[1]).toEqual({ id: "snap-0" });
+    // Mounts are not in a snapshot: they are attached again at this start.
+    expect(cf.log.find(([op]) => op === "provision")?.[1]).toEqual(["/mnt/session/outputs", "/mnt/memory/notes"]);
+
+    provisions = 0;
+    expect(await lifecycle.acquire({ scope, plan: fromSnapshot("dead"), signal })).toBe("gone");
+    expect(provisions).toBe(1);
+    await expect(lifecycle.acquire({ scope, plan: fromSnapshot("x", "e2b"), signal })).rejects.toThrow(/cannot start from a e2b environment snapshot/);
+
+    const ref = await lifecycle.snapshotEnvironment!({ runtime: cf.runtime, handle: { provider: "cloudflare", runtimeId: "env_snapshot_b1" }, signal });
+    expect(ref).toEqual({ adapter: "cloudflare", ref: "snap-1" });
+    expect(cf.log.at(-1)).toEqual(["snapshot", "oma-env-env_snapshot_b1"]);
+    // Containers has no snapshot delete API: the core then keeps no retired list.
     expect(lifecycle.deleteEnvironmentSnapshot).toBeUndefined();
-    await expect(lifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: { adapter: "cloudflare", ref: "t" } } }, signal })).rejects.toThrow(/cannot start from an environment snapshot/);
   });
 
   it("discard deletes backup objects and leaves self refs alone", async () => {
