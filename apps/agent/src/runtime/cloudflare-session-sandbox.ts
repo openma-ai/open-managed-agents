@@ -3,10 +3,13 @@
 //
 // Composition only: createSandboxPorts + createCloudflareSandboxAdapter, handed
 // to the shared Session runtime (session-sandbox.ts). The handle is "fixed":
-// one Sandbox Durable Object per SessionDO, so state is derived, never stored.
-// Restore points are the existing D1 workspace backups (workspace-backups.ts)
-// that OmaSandbox writes when it backs up and stops an idle or destroyed
-// container.
+// one Sandbox Durable Object per SessionDO; the rest of the handle record
+// (latest snapshot, restoreRequired, version) is kept in SessionDO storage,
+// every write a compare-and-set on its version (session-sandbox-do-state).
+// Restore points are the D1 workspace backups (workspace-backups.ts):
+// OmaSandbox writes one when it backs up and stops an idle or destroyed
+// container, and every snapshot the core takes is recorded there too, so
+// the latest row is the latest snapshot whichever side took it.
 //
 // Two deliberate differences from the adapter defaults:
 //   - egress binds the outbound handler to the Session execution attempt
@@ -16,7 +19,7 @@
 //   - acquire / resume keep the 3-attempt container start retry and bind the
 //     backup and billing context OmaSandbox needs for its idle teardown.
 
-import type { MemoryStoreBinding, SandboxLifecyclePort } from "@open-managed-agents/sandbox";
+import type { MemoryStoreBinding, ResumeRef, SandboxLifecyclePort } from "@open-managed-agents/sandbox";
 import { createSandboxPorts } from "@open-managed-agents/sandbox-port-kit";
 import type { SandboxEgressPort } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
@@ -25,7 +28,8 @@ import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-a
 import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources } from "./managed-session-resources";
-import { findLatestBackup, type WorkspaceBackupHandle } from "./workspace-backups";
+import { DEFAULT_WORKSPACE_BACKUP_TTL_SEC, findLatestBackup, recordBackup, type WorkspaceBackupHandle } from "./workspace-backups";
+import { durableObjectSandboxState, type SessionSandboxStateStorage } from "./session-sandbox-do-state";
 import { memoryStoreMountTarget, PortsSessionSandbox } from "@open-managed-agents/session-runtime";
 
 export interface CloudflareSessionSandboxDeps {
@@ -34,6 +38,8 @@ export interface CloudflareSessionSandboxDeps {
   sandboxId: string;
   /** Operator catalog image (container binding + workdir); null = SANDBOX. */
   sandboxImage: CloudflareSandboxImage | null;
+  /** Where the handle record lives (SessionDO storage). */
+  storage: SessionSandboxStateStorage;
   session(): { tenantId: string; environmentId: string; sessionId: string; agentId: string | null };
   /** The Session's current execution attempt (SessionDO's fence); undefined between turns. */
   fence(): SandboxExecutionFence | undefined;
@@ -47,6 +53,7 @@ export const sandboxExecutionFenceKey = (fence: SandboxExecutionFence | undefine
 
 const IDLE_MS = 5 * 60_000;
 const START_ATTEMPTS = 3;
+const STATE_KEY = "cloudflare_sandbox_state";
 
 export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDeps): PortsSessionSandbox<CloudflareSandboxRuntime> {
   const sandbox = new CloudflareSandbox(deps.env, deps.sandboxId, deps.sandboxImage);
@@ -62,18 +69,18 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
       const adapter = createCloudflareSandboxAdapter({ sandbox: () => sandbox, backups: backupBucket(deps.env) });
       const { ports } = createSandboxPorts({
         ...adapter,
-        lifecycle: withSessionContext(adapter.lifecycle, sandbox, deps.session),
+        lifecycle: withSessionContext(adapter.lifecycle, sandbox, deps.session, deps.env),
         native: { ...adapter.native, egress: () => ({ port: executionEgress(deps.session, deps.fence) }) },
       // Both are native, so the generic implementations' deps are never read.
       }, { storage: {} as never, egress: {} as never });
       return { ports };
     },
     executor: () => sandbox,
-    state: {
-      load: async () => ({ handle: handle(), stores: [], outputs: false }),
-      save: async () => undefined,
-      clear: async () => undefined,
-    },
+    state: (() => {
+      const stored = durableObjectSandboxState(deps.storage, STATE_KEY);
+      // The handle is always this Session's Sandbox DO.
+      return { ...stored, load: async () => ({ stores: [], outputs: false, ...await stored.load(), handle: handle() }) };
+    })(),
     scope,
     async plan({ scope: s, generation }) {
       const session = deps.session();
@@ -88,7 +95,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     },
     async resumeRef() {
       const backup = await latestBackup(deps.env, deps.session());
-      return backup === null ? null : { provider: "cloudflare", ref: backup.id, metadata: { kind: "backup", backup: JSON.stringify(backup) } };
+      return backup === null ? null : { provider: "cloudflare", ref: backup.id, kind: "snapshot", metadata: { kind: "backup", backup: JSON.stringify(backup) } };
     },
     warn: deps.warn,
     outputDurability: () => sandbox.sessionOutputMountCapabilities(),
@@ -114,12 +121,23 @@ function backupBucket(env: Env): Pick<R2Bucket, "delete"> {
 }
 
 /** Binds what OmaSandbox's idle teardown needs, after every acquire /
- * attach / resume; retries a failed container start. */
+ * attach / resume; retries a failed container start; records every
+ * snapshot (checkpoint, and the backup a pause takes) as the Session's
+ * latest D1 workspace backup. */
 function withSessionContext(
   lifecycle: SandboxLifecyclePort<CloudflareSandboxRuntime>,
   sandbox: CloudflareSandbox,
   session: CloudflareSessionSandboxDeps["session"],
+  env: Env,
 ): SandboxLifecyclePort<CloudflareSandboxRuntime> {
+  const publish = async (ref: ResumeRef): Promise<ResumeRef> => {
+    const raw = ref.metadata?.backup;
+    const s = session();
+    if (ref.kind !== "snapshot" || typeof raw !== "string" || !s.tenantId || !s.environmentId || !s.sessionId || !env.MAIN_DB) return ref;
+    const db = await buildCfTenantDbProvider(env).resolve(s.tenantId);
+    await recordBackup(db, { tenantId: s.tenantId, environmentId: s.environmentId, sessionId: s.sessionId, handle: JSON.parse(raw) as WorkspaceBackupHandle, nowMs: Date.now(), ttlSec: DEFAULT_WORKSPACE_BACKUP_TTL_SEC });
+    return ref;
+  };
   const bind = async <T>(acquired: T): Promise<T> => {
     if (acquired === "gone") return acquired;
     const s = session();
@@ -134,6 +152,8 @@ function withSessionContext(
     acquire: async (input) => bind(await startWithRetry(() => lifecycle.acquire(input))),
     attach: async (input) => bind(await lifecycle.attach(input)),
     resume: async (input) => bind(await startWithRetry(() => lifecycle.resume(input))),
+    checkpoint: async (input) => publish(await lifecycle.checkpoint(input)),
+    pause: async (input) => publish(await lifecycle.pause(input)),
   };
 }
 

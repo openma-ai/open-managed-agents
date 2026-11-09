@@ -74,6 +74,8 @@ export type {
   SessionSandboxState,
 } from "./session-sandbox-options";
 export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
+export { SessionSandboxStateConflictError, stateVersion } from "./session-sandbox-live";
+export { SandboxRestoreError } from "./session-sandbox-open";
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";
 export {

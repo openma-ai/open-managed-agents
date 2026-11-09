@@ -12,7 +12,8 @@
 //
 // Gaps (§0.3): no rootfs snapshot API in Sandbox SDK 1.0, so a template
 // holds only /workspace (setup that installs outside it is not captured) and
-// pause = workspace backup + destroy; the idle timeout is per deployment
+// pause = workspace backup + destroy (no pause in place: the backup is the
+// snapshot, kind "snapshot"); the idle timeout is per deployment
 // (OmaSandbox reads SANDBOX_IDLE_TIMEOUT_MS; plan.idleMs is not applied per
 // sandbox); there is no runtime firewall, so a limited policy is enforced
 // only on traffic the outbound handler sees; revoke reuses the handler's
@@ -93,6 +94,9 @@ export function createCloudflareSandboxAdapter(input: {
       return (await runtime.describeSandbox()).running ? { runtime, handle: handleFor(input.scope) } : "gone";
     },
 
+    /** The container's inactivity timeout is per deployment (OmaSandbox's
+     * backstop): `ttlMs` is ignored. SessionDO runs no core idle pause here
+     * (the container stops itself), so no idle deadline is ever written. */
     async keepAlive(input) {
       if (!(await input.runtime.describeSandbox()).running) return "gone";
       await input.runtime.renewActivityTimeout();
@@ -102,9 +106,8 @@ export function createCloudflareSandboxAdapter(input: {
     async checkpoint(input): Promise<ResumeRef> {
       input.signal.throwIfAborted();
       const backup = await input.runtime.createWorkspaceBackup({ ttlSec: BACKUP_TTL_SEC });
-      return backup === null
-        ? { provider: "cloudflare", ref: input.handle.runtimeId, metadata: { kind: "self" } }
-        : { provider: "cloudflare", ref: backup.id, metadata: { kind: "backup", backup: JSON.stringify(backup) } };
+      if (backup === null) throw new Error("Cloudflare workspace backup produced no archive");
+      return { provider: "cloudflare", ref: backup.id, kind: "snapshot", metadata: { kind: "backup", backup: JSON.stringify(backup) } };
     },
 
     async pause(input) {
@@ -113,10 +116,12 @@ export function createCloudflareSandboxAdapter(input: {
       return ref;
     },
 
+    /** A fixed handle has nothing to wake: "self" is gone once attach was;
+     * a snapshot is a backup restored into a new container. */
     async resume(input) {
-      const acquired = await provision(input.scope, input.plan);
       const raw = input.ref.metadata?.backup;
-      if (typeof raw !== "string") return acquired;
+      if (input.ref.kind === "self" || typeof raw !== "string") return "gone";
+      const acquired = await provision(input.scope, input.plan);
       const restored = await acquired.runtime.restoreWorkspaceBackup(JSON.parse(raw));
       if (restored.ok) return acquired;
       await acquired.runtime.destroy();

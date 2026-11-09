@@ -28,14 +28,15 @@ export interface V1SandboxFactoryBridgeOptions<R extends SandboxPort> {
 }
 
 /** A bare v1 SandboxFactory (no SandboxProviderPort: it cannot find a
- * sandbox again) as a v2 adapter. Handles ("changes") name runtimes this
+ * sandbox again, and has no snapshot to start a new one from; use
+ * fromV1SandboxProvider, ./v1-provider-bridge, when the provider has one) as a v2 adapter. Handles ("changes") name runtimes this
  * bridge holds: attach finds one while this process holds it, else
  * "gone" and the core acquires again. Degrades as the §0.1 comments allow:
  * pause and checkpoint return a ref to the sandbox itself (the provider's
  * own lease reclaims it); nothing to list, the handles live in memory. */
 export function fromV1SandboxFactory<R extends SandboxPort>(options: V1SandboxFactoryBridgeOptions<R>): SandboxAdapterPort<R> {
   const held = options.held ?? new Map<string, R>();
-  const selfRef = (handle: SandboxHandle): ResumeRef => ({ provider: options.name, ref: handle.runtimeId, metadata: { kind: "self" } });
+  const selfRef = (handle: SandboxHandle): ResumeRef => ({ provider: options.name, ref: handle.runtimeId, kind: "self" });
   const find = async (runtimeId: string): Promise<R | null> => {
     const runtime = held.get(runtimeId);
     if (runtime === undefined) return null;
@@ -59,7 +60,8 @@ export function fromV1SandboxFactory<R extends SandboxPort>(options: V1SandboxFa
     async keepAlive(input) {
       if (!supportsSandboxRuntime(input.runtime)) return "alive";
       if (await input.runtime.status() === "stopped") return "gone";
-      if (options.leaseTtlMs !== undefined && input.runtime.runtimeCapabilities().lease) await input.runtime.renewLease({ ttlMs: options.leaseTtlMs });
+      const ttlMs = input.ttlMs ?? options.leaseTtlMs;
+      if (ttlMs !== undefined && input.runtime.runtimeCapabilities().lease) await input.runtime.renewLease({ ttlMs });
       return "alive";
     },
     async checkpoint(input) { return selfRef(input.handle); },

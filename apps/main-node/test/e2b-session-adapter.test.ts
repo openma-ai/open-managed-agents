@@ -12,7 +12,9 @@ import { join } from "node:path";
 
 import { nodeDefaults } from "../src/components";
 import { loadNodeConfig } from "../src/config";
-import { createNodeE2BSessionAdapter, DEFAULT_E2B_LEASE_MS } from "../src/e2b-session-adapter";
+import { createNodeE2BSessionAdapter, defaultE2BLeaseMs } from "../src/e2b-session-adapter";
+
+const IDLE_MS = 5 * 60_000;
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -22,19 +24,25 @@ describe("Node E2B Session sandbox adapter", () => {
     let loaded: { Sandbox?: { create?: unknown } } | undefined;
     const adapter = await createNodeE2BSessionAdapter(
       { E2B_MAX_LIFETIME_MS: "3600000", SANDBOX_IMAGE: "oma-base" },
+      IDLE_MS,
       async () => (loaded = await import("e2b")),
     );
     expect(typeof loaded?.Sandbox?.create).toBe("function");
     expect(adapter.adapter.name).toBe("e2b");
     expect(adapter.adapter.lifecycle.maxLifetimeMs).toBe(3_600_000);
-    expect(adapter.keepAliveMs).toBe(Math.floor(DEFAULT_E2B_LEASE_MS / 3));
+    expect(adapter.keepAliveMs).toBe(Math.floor(defaultE2BLeaseMs(IDLE_MS) / 3));
     expect(adapter.image(undefined)).toBe("oma-base");
     expect(adapter.image({ alias: "py", reference: "tpl-python" })).toBe("tpl-python");
   });
 
   it("requires E2B_MAX_LIFETIME_MS", async () => {
-    await expect(createNodeE2BSessionAdapter({})).rejects.toThrow(/E2B_MAX_LIFETIME_MS is required/);
-    await expect(createNodeE2BSessionAdapter({ E2B_MAX_LIFETIME_MS: "1h" })).rejects.toThrow(/positive integer/);
+    await expect(createNodeE2BSessionAdapter({}, IDLE_MS)).rejects.toThrow(/E2B_MAX_LIFETIME_MS is required/);
+    await expect(createNodeE2BSessionAdapter({ E2B_MAX_LIFETIME_MS: "1h" }, IDLE_MS)).rejects.toThrow(/positive integer/);
+  });
+
+  it("refuses a lease shorter than idlePauseMs + the margin (design §0.0b A.10)", async () => {
+    await expect(createNodeE2BSessionAdapter({ E2B_MAX_LIFETIME_MS: "3600000", E2B_SANDBOX_TIMEOUT_MS: String(IDLE_MS) }, IDLE_MS, async () => ({})))
+      .rejects.toThrow(/must be at least idlePauseMs/);
   });
 
   it("nodeDefaults composes it, and injects main-node's SDK into the v1 factory, for a standalone SANDBOX_PROVIDER=e2b deployment", async () => {

@@ -7748,23 +7748,9 @@ export class SessionDO extends DurableObject<Env> {
     // matter what woke the DO.
     await this._runRecovery("alarm");
 
-    // Container keepalive: while there's at least one background_tasks row,
-    // ping the sandbox container to reset its sleepAfter timer. Means
-    // long-running `python script.py &` jobs that the agent is waiting on
-    // don't get killed by the 5-minute idle TTL. Cheap (~5 ms RPC).
-    try {
-      const rows = this.ctx.storage.sql
-        .exec("SELECT 1 FROM background_tasks LIMIT 1")
-        .toArray();
-      if (rows.length > 0) {
-        const sb = await this.getOrCreateSandbox();
-        if (typeof (sb as { renewActivityTimeout?: () => Promise<void> }).renewActivityTimeout === "function") {
-          await (sb as { renewActivityTimeout: () => Promise<void> }).renewActivityTimeout();
-        }
-      }
-    } catch {
-      // background_tasks table missing or container down — alarm continues
-    }
+    // No sandbox keepalive from the alarm (design §0.0b A.10): an idle
+    // sandbox is never renewed, background tasks included; work that must
+    // outlive the execution has to hold one.
 
     await this._multiplexAlarm({ reason: "alarm" });
   }

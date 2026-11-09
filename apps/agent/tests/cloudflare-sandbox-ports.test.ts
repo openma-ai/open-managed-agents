@@ -107,7 +107,7 @@ describe("Cloudflare v2 adapter", () => {
     if (acquired === "gone") throw new Error("unexpected");
     expect(await lifecycle.keepAlive(acquired)).toBe("alive");
     const ref = await lifecycle.pause({ scope, ...acquired, signal });
-    expect(ref).toMatchObject({ provider: "cloudflare", ref: "bk1", metadata: { kind: "backup" } });
+    expect(ref).toMatchObject({ provider: "cloudflare", ref: "bk1", kind: "snapshot", metadata: { kind: "backup" } });
     expect(cf.state.running).toBe(false);
     expect(await lifecycle.keepAlive(acquired)).toBe("gone");
     expect(await lifecycle.resume({ scope, ref, plan, signal })).toMatchObject({ handle: { runtimeId: "sess" } });
@@ -117,14 +117,16 @@ describe("Cloudflare v2 adapter", () => {
     expect(cf.log.at(-1)).toEqual(["destroy"]);
   });
 
-  it("reports a failed restore as gone and a missing backup as a self ref", async () => {
+  it("reports a failed restore or a pause point as gone, and a missing backup as an error", async () => {
     const failing = fakeCf({ restoreOk: false });
     const { lifecycle } = createCloudflareSandboxAdapter({ sandbox: () => failing.runtime, backups });
     expect(await lifecycle.resume({ scope, ref: { provider: "cloudflare", ref: "bk", metadata: { kind: "backup", backup: "{}" } }, plan, signal })).toBe("gone");
     const none = fakeCf({ backup: false });
     const adapter = createCloudflareSandboxAdapter({ sandbox: () => none.runtime, backups });
-    expect(await adapter.lifecycle.checkpoint({ scope, runtime: none.runtime, handle: { provider: "cloudflare", runtimeId: "sess" }, signal }))
-      .toEqual({ provider: "cloudflare", ref: "sess", metadata: { kind: "self" } });
+    // A snapshot that is not one is never handed out (no silent fallback to the sandbox itself).
+    await expect(adapter.lifecycle.checkpoint({ scope, runtime: none.runtime, handle: { provider: "cloudflare", runtimeId: "sess" }, signal }))
+      .rejects.toThrow("Cloudflare workspace backup produced no archive");
+    expect(await adapter.lifecycle.resume({ scope, ref: { provider: "cloudflare", ref: "sess", kind: "self" }, plan, signal })).toBe("gone");
     expect(await adapter.vendor.readFile(none.runtime, "/missing")).toBeNull();
     expect(await adapter.vendor.readFile(none.runtime, "/present")).toEqual(new Uint8Array([9]));
   });

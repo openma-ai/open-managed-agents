@@ -3,9 +3,13 @@
 // (PortsSessionSandbox, @open-managed-agents/session-runtime); this module
 // injects its Ports and the Node infrastructure:
 //   - lifecycle: the deployment's Sandbox SDK v2 adapter when it has one
-//     (SANDBOX_PROVIDER=e2b: the native E2B adapter), else the v1 factory
-//     through fromV1SandboxFactory (images, prepared bases and allocation
-//     stay the managed builder's);
+//     (SANDBOX_PROVIDER=e2b: the native E2B adapter); else, when the
+//     provider exports a v1 SandboxProviderPort, fromV1SandboxProvider, which
+//     finds the sandbox again by its handle through the provider and starts
+//     a new one from its snapshot (design §0.0b A.8); else the bare v1
+//     factory through fromV1SandboxFactory, which only finds sandboxes this
+//     process holds. New sandboxes always come from the managed builder
+//     (images, prepared bases, allocation);
 //   - storage: Node's Memory Store and Session output implementations as
 //     the storage Port; written back at turn end under the execution fence,
 //     never at the interval (they rebase, which would overwrite files the
@@ -13,7 +17,10 @@
 //   - egress: createForwarderEgress to the existing /v1/oma/egress ingress
 //     with a relay pass bound to the execution attempt; attached
 //     repositories are platform channels under limited networking;
-//   - the handle record in process memory; the idle pause on a process timer.
+//   - the handle record (handle, pause point, latest snapshot) in SQL KV, so
+//     it survives a restart (in process memory only for checkpoint_restore
+//     allocations, which are per allocation); the idle pause on a process
+//     timer.
 // The facade is what the runner and the tools see (a SandboxPort). Calls the
 // core does not own (bytes reads, git checkout, command secrets, the v1
 // runtime Port the runner probes and heartbeats) go to the live runtime
@@ -21,6 +28,8 @@
 
 import {
   DEFAULT_WORKSPACE_ROOT,
+  SANDBOX_LEASE_MARGIN_MS,
+  assertLeaseCoversIdle,
   resolveSandboxImage,
   EMPTY_SANDBOX_IMAGE_CATALOG,
   supportsDuplexProcess,
@@ -28,7 +37,10 @@ import {
   supportsSessionOutputMount,
   type SandboxDuplexProcess,
   type SandboxDuplexProcessSpec,
+  type SandboxFactoryContext,
+  type SandboxFactoryEnv,
   type SandboxImageCatalog,
+  type SandboxProviderPort,
   type SandboxPort,
   type SandboxRuntimePort,
   type SandboxStoragePort,
@@ -38,6 +50,7 @@ import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-a
 import {
   createSandboxPorts,
   fromV1SandboxFactory,
+  fromV1SandboxProvider,
   repositoryChannels,
   sessionEgressPolicy,
   type SandboxAdapterPort,
@@ -45,6 +58,7 @@ import {
 import {
   PortsSessionSandbox,
   executionOfFence,
+  stateVersion,
   type SessionSandboxExecutor,
   type SessionSandboxState,
 } from "@open-managed-agents/session-runtime";
@@ -55,6 +69,8 @@ import { UNFENCED_SANDBOX_TOKEN, type SessionExecutionAttemptRef } from "@open-m
 import type { SessionLifecycleCommandPort } from "@open-managed-agents/session-runtime-contract";
 import { toLegacyHarnessEnvironmentConfig } from "./node-managed-agent-codec.js";
 import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "./node-sandbox-orphan-reclaim.js";
+import { SqlSessionSandboxRecords, type NodeSessionSandboxRecords } from "./node-session-sandbox-records.js";
+import type { SqlClient } from "@open-managed-agents/sql-client";
 
 /** idlePauseMs (design §0.0 rule 11) when SANDBOX_IDLE_PAUSE_MS is unset. */
 export const DEFAULT_SANDBOX_IDLE_PAUSE_MS = 5 * 60_000;
@@ -67,10 +83,24 @@ export function sandboxIdlePauseMs(value: string | undefined): number {
   return ms;
 }
 
+/** SANDBOX_SNAPSHOT_INTERVAL_MS (a positive integer of milliseconds); unset = the core default. */
+export function sandboxSnapshotIntervalMs(value: string | undefined): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const ms = Number(value);
+  if (!Number.isInteger(ms) || ms <= 0) throw new Error(`SANDBOX_SNAPSHOT_INTERVAL_MS must be a positive integer of milliseconds, got ${JSON.stringify(value)}`);
+  return ms;
+}
+
 export interface NodeSessionSandboxContext {
   workspaceId: string;
   session: Session;
   environment: Environment;
+}
+
+/** A provider module's v1 SandboxProviderPort; `name` is its runtimeHandle().provider. */
+export interface NodeSessionSandboxProvider {
+  name: string;
+  provider: SandboxProviderPort<SandboxPort & SandboxRuntimePort>;
 }
 
 /** A deployment's Sandbox SDK v2 adapter for Session sandboxes (design §0.2). */
@@ -83,8 +113,21 @@ export interface NodeSessionSandboxAdapter {
 }
 
 export interface NodeSessionSandboxOptions {
-  /** Omitted: the v1 factory (`createV1`) through the v1 bridge. */
+  /** Omitted: the v1 provider bridge when `provider` is given, else the v1 factory (`createV1`) through the v1 bridge. */
   adapter?: NodeSessionSandboxAdapter;
+  /** The v1 provider and the factory context / env it is called with. */
+  provider?: NodeSessionSandboxProvider & {
+    context(context: NodeSessionSandboxContext): SandboxFactoryContext;
+    env: SandboxFactoryEnv;
+  };
+  /** The handle records survive the process (design §0.0b A.8): SQL kv_entries. */
+  sql?: SqlClient;
+  /** Other handle records (tests); with neither, process memory. */
+  records?: NodeSessionSandboxRecords;
+  /** SANDBOX_SNAPSHOT_INTERVAL_MS: tool-call-gap snapshots at most this often. */
+  snapshotIntervalMs?: number;
+  /** Lifecycle progress (snapshots, restores, idle pause). */
+  info?(message: string, context: NodeSessionSandboxContext): void;
   images?: SandboxImageCatalog;
   /** The v1 sandbox for a Session (the managed builder). */
   createV1(input: NodeSessionSandboxContext & { allocationId?: string; signal: AbortSignal }): Promise<SandboxPort>;
@@ -105,7 +148,9 @@ export interface NodeSessionSandboxOptions {
       executionFence: SessionExecutionFence;
     }): Promise<void>;
   };
-  /** The Session's sandbox substitutions (Vault environment_variable / cap_cli placeholders). */
+  /** The Session's sandbox substitutions: Vault environment_variable / cap_cli
+   * credentials reach the sandbox only as placeholders, which the relay
+   * substitutes (design §0.5, §8.8). */
   substitutions(context: NodeSessionSandboxContext): Promise<Substitution[]>;
   /** Sandbox token issuer (#561) for an attempt — `harness` is the Session
    * agent's harness name, which fixes the scope — and the control plane's
@@ -143,7 +188,12 @@ export class NodeSessionSandboxes {
   /** v1 runtimes this process holds, shared by every facade's bridge. */
   private readonly held = new Map<string, SandboxPort>();
 
-  constructor(private readonly options: NodeSessionSandboxOptions) {}
+  constructor(private readonly options: NodeSessionSandboxOptions) {
+    // Design §0.0b A.10: the provider's own reclaim must outlast the idle pause.
+    if (options.adapter === undefined && options.provider !== undefined && options.v1LeaseTtlMs !== undefined) {
+      assertLeaseCoversIdle("OMA_SANDBOX_LEASE_TTL_SEC", options.v1LeaseTtlMs, options.idlePauseMs);
+    }
+  }
 
   /** Session create admission (SandboxCredentialAdmission.substitutes). */
   credentialEgress(): boolean {
@@ -266,20 +316,41 @@ export class NodeSessionSandbox implements SandboxPort {
     this.context = context;
     let adopting = initialState;
     const scope = () => scopeOf(this.context);
+    // checkpoint_restore allocations are per allocation: their record stays in memory.
+    const records = allocationId !== undefined ? undefined
+      : options.records ?? (options.sql === undefined ? undefined : new SqlSessionSandboxRecords(options.sql));
+    const create = async ({ signal }: { signal: AbortSignal }) => {
+      const sandbox = await options.createV1({ ...this.context, ...(allocationId === undefined ? {} : { allocationId }), signal });
+      if (options.mountOutputsAtCreate === true && supportsSessionOutputMount(sandbox)) {
+        await sandbox.mountSessionOutputs({ tenantId: this.context.workspaceId, sessionId: this.context.session.id });
+      }
+      return sandbox;
+    };
+    const provider = allocationId === undefined ? options.provider : undefined;
     this.core = new PortsSessionSandbox<SandboxPort>({
       compose: async () => {
-        const adapter = options.adapter?.adapter ?? fromV1SandboxFactory<SandboxPort>({
-          name: "node",
-          create: async ({ signal }) => {
-            const sandbox = await options.createV1({ ...this.context, ...(allocationId === undefined ? {} : { allocationId }), signal });
-            if (options.mountOutputsAtCreate === true && supportsSessionOutputMount(sandbox)) {
-              await sandbox.mountSessionOutputs({ tenantId: this.context.workspaceId, sessionId: this.context.session.id });
-            }
-            return sandbox;
-          },
-          ...(options.v1LeaseTtlMs === undefined ? {} : { leaseTtlMs: options.v1LeaseTtlMs }),
-          held,
-        });
+        const adapter = options.adapter?.adapter ?? (provider !== undefined
+          ? fromV1SandboxProvider<SandboxPort & SandboxRuntimePort>({
+              name: provider.name,
+              provider: provider.provider,
+              env: provider.env,
+              context: () => provider.context(this.context),
+              create: async (input) => {
+                const sandbox = await create(input);
+                if (!supportsSandboxRuntime(sandbox)) throw new Error(`${provider.name}: the sandbox has no runtime lifecycle to find it again`);
+                return sandbox;
+              },
+              leaseTtlMs: options.v1LeaseTtlMs ?? options.idlePauseMs + SANDBOX_LEASE_MARGIN_MS,
+              // Orphans are found through the persisted records, not by label.
+              list: async () => [],
+              readiness: { timeoutMs: 120_000, pollMs: 500 },
+            }) as unknown as SandboxAdapterPort<SandboxPort>
+          : fromV1SandboxFactory<SandboxPort>({
+              name: "node",
+              create,
+              ...(options.v1LeaseTtlMs === undefined ? {} : { leaseTtlMs: options.v1LeaseTtlMs }),
+              held,
+            }));
         const { ports } = createSandboxPorts({ ...adapter, native: { ...adapter.native, storage: () => this.storagePort() } }, {
           // Storage is Node's own (native above), so the generic deps are never read.
           storage: {} as never,
@@ -305,10 +376,24 @@ export class NodeSessionSandbox implements SandboxPort {
       state: {
         load: async () => {
           if (adopting !== undefined) { const warmed = await adopting; adopting = undefined; this.state ??= warmed; }
-          return this.state;
+          if (records === undefined) return this.state;
+          return this.state = await records.load(this.context.workspaceId, this.context.session.id);
         },
-        save: async (state) => { adopting = undefined; this.state = state; onSaved?.(state); },
-        clear: async () => { adopting = undefined; this.state = undefined; },
+        save: async (state, expected) => {
+          if (adopting !== undefined) { const warmed = await adopting; adopting = undefined; this.state ??= warmed; }
+          const won = records === undefined
+            ? stateVersion(this.state) === expected
+            : await records.save(this.context.workspaceId, this.context.session.id, state, expected);
+          if (!won) return false;
+          this.state = state;
+          onSaved?.(state);
+          return true;
+        },
+        clear: async () => {
+          adopting = undefined;
+          this.state = undefined;
+          await records?.clear(this.context.workspaceId, this.context.session.id);
+        },
       },
       scope,
       plan: async ({ scope: s, stores }) => {
@@ -323,9 +408,11 @@ export class NodeSessionSandbox implements SandboxPort {
           labels: { workspaceId: s.workspaceId, sessionId: s.sessionId },
         };
       },
-      // Restore points are the provider's (an E2B pause is the sandbox itself).
+      // The latest snapshot is the handle record's; Node publishes none of its own.
       resumeRef: async () => null,
+      ...(options.snapshotIntervalMs === undefined ? {} : { snapshotIntervalMs: options.snapshotIntervalMs }),
       warn: (message) => options.warn(message, this.context),
+      info: (message) => options.info?.(message, this.context),
       outputDurability: () => null,
       // The sandbox token dies with its attempt; nothing to renew on a timer.
       egressRenewMs: null,
@@ -494,7 +581,9 @@ export class NodeSessionSandbox implements SandboxPort {
     this.runtimeHandle = () => (port() ?? runtime).runtimeHandle();
     this.runtimeCapabilities = () => (port() ?? runtime).runtimeCapabilities();
     this.status = async () => port()?.status() ?? "unknown";
-    this.renewLease = async (input) => { await port()?.renewLease(input); };
+    // The runner's lease heartbeat goes through the core: it renews only
+    // inside an execution (design §0.0b A.10), never in the idle window.
+    this.renewLease = async () => { await this.core.renewActivityTimeout(); };
     this.suspend = async (input) => (port() ?? runtime).suspend(input);
     this.resume = async (checkpoint) => (port() ?? runtime).resume(checkpoint);
     this.checkpoint = async (input) => (port() ?? runtime).checkpoint(input);

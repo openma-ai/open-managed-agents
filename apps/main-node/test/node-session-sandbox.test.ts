@@ -122,7 +122,8 @@ describe("Node Session sandbox", () => {
     expect(t.box.markerReads()).toBe(readsBefore + 1);
     expect(t.created).toEqual(["v1"]);
     expect(t.attached.map((a) => a.attemptId)).toEqual(["a1", "a3"]);
-    expect(t.warnings).toEqual([]);
+    // The bare v1 factory has no snapshots: every snapshot attempt says so.
+    expect(new Set(t.warnings)).toEqual(new Set(["sandbox_snapshot_unsupported provider=node: the adapter's checkpoint returned the sandbox itself"]));
   });
 
   it("an execution running when the idle timer fires is not paused", async () => {

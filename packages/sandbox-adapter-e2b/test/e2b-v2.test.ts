@@ -166,10 +166,11 @@ describe("E2B v2 lifecycle", () => {
     expect(await lifecycle.keepAlive(acquired)).toBe("alive");
     expect(fake.calls.timeouts).toEqual([120_000]);
     const paused = await lifecycle.pause({ scope, ...acquired, signal });
-    expect(paused).toEqual({ provider: "e2b", ref: "sbx-1", metadata: { kind: "self" } });
+    expect(paused).toEqual({ provider: "e2b", ref: "sbx-1", kind: "self" });
     expect(fake.calls.paused).toBe(1);
     expect(await lifecycle.resume({ scope, ref: paused, plan, signal })).toMatchObject({ handle: { runtimeId: "sbx-1" } });
     const snapshot = await lifecycle.checkpoint({ scope, ...acquired, signal });
+    expect(snapshot.kind).toBe("snapshot");
     const restored = await lifecycle.resume({ scope, ref: snapshot, plan, signal });
     expect(fake.calls.create.at(-1)![0]).toBe(snapshot.ref);
     expect(restored).toMatchObject({ handle: { runtimeId: "sbx-2" } });

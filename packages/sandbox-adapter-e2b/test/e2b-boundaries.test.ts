@@ -128,7 +128,9 @@ describe("E2BSandboxExecutor boundaries", () => {
     ]) await expect(runtime.resume(checkpoint as never)).rejects.toThrow("own runtime-scoped");
     await expect(new E2BSandboxExecutor({ ...sb, connect: undefined } as never, {}).resume(own)).rejects.toThrow("sandbox.connect");
 
-    await expect(runtime.checkpoint({ kind: "filesystem" })).rejects.toThrow("memory state only");
+    // A filesystem checkpoint is an E2B filesystem snapshot (createSnapshot mode "filesystem").
+    await expect(runtime.checkpoint({ kind: "filesystem" })).resolves.toMatchObject({ kind: "filesystem", scope: "portable" });
+    expect(sb.createSnapshot).toHaveBeenLastCalledWith({ mode: "filesystem" });
     await expect(new E2BSandboxExecutor({ ...sb, createSnapshot: undefined } as never, {}).checkpoint({ kind: "memory" })).rejects.toThrow("createSnapshot");
     await expect(runtime.checkpoint({ kind: "memory" })).resolves.toMatchObject({ checkpointId: "snapshot-1", scope: "portable" });
     expect(sb.createSnapshot).toHaveBeenLastCalledWith(undefined);

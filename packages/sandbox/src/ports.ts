@@ -450,6 +450,9 @@ export interface SandboxProviderPort<
     ctx: SandboxFactoryContext,
     env: SandboxFactoryEnv,
   ): Promise<Runtime>;
+  /** Delete a portable checkpoint (the Session keeps only its latest
+   * snapshot). Omitted = checkpoints wait for the provider's expiry. */
+  discard?(checkpoint: SandboxCheckpointHandle, env: SandboxFactoryEnv): Promise<void>;
 }
 
 export function supportsSandboxRuntime(

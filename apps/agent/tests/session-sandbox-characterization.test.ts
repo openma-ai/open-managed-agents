@@ -55,7 +55,7 @@ function harness(opts: { execution?: () => SessionSandboxExecution | undefined }
     executor: () => executor,
     state: {
       load: async () => stored,
-      save: async (state) => { stored = state; },
+      save: async (state, expected) => { if ((stored?.version ?? 0) !== expected) return false; stored = state; return true; },
       clear: async () => { log.push("clear"); stored = undefined; },
     },
     scope: () => scope,

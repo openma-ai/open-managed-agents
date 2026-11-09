@@ -88,7 +88,7 @@ describe("PortsSessionSandbox", () => {
       executor: () => executor,
       state: {
         load: async () => saved as never,
-        save: async (state) => { log.push(`save:${state.handle.runtimeId}`); saved = state; },
+        save: async (state, expected) => { if ((saved?.version ?? 0) !== expected) return false; log.push(`save:${state.handle?.runtimeId}`); saved = state; return true; },
         clear: async () => { log.push("clear"); saved = undefined; },
       },
       scope: () => scope,
@@ -105,9 +105,9 @@ describe("PortsSessionSandbox", () => {
     const h = harness("changes", () => fail);
     await expect(h.sandbox.exec("true")).rejects.toThrow("egress down");
     // "changes": the new handle is written before use; the failure revokes,
-    // releases and forgets it.
-    expect(h.log).toEqual(["acquire:1", "save:r1", "egress.attach", "egress.revoke:failed", "release:r1", "clear"]);
-    expect(h.saved()).toBeUndefined();
+    // forgets it (compare-and-set) and releases it.
+    expect(h.log).toEqual(["acquire:1", "save:r1", "egress.attach", "egress.revoke:failed", "save:undefined", "release:r1"]);
+    expect(h.saved()).toEqual({ stores: [], outputs: false, runStartedAt: expect.any(Number), version: 2 });
     fail = false;
     expect(await h.sandbox.exec("true")).toBe("exit=0\n");
     expect(h.log.slice(6)).toEqual(["acquire:2", "save:r2", "egress.attach", "save:r2"]);

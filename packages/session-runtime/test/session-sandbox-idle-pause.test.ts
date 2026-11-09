@@ -34,18 +34,19 @@ describe("Session sandbox idle pause", () => {
     expect(h.log.filter((entry) => entry === "acquire")).toHaveLength(1);
   });
 
-  it("activity during the idle window pushes the pause out", async () => {
-    const h = fakeSessionSandbox();
+  it("activity during the idle window neither renews the lease nor moves the pause (design §0.0b A.10)", async () => {
+    const h = fakeSessionSandbox({ keepAliveMs: 1 });
     await h.sandbox.exec("first");
     await h.sandbox.endExecution();
     h.setExecution(undefined);
+    h.log.length = 0;
     h.advance(200_000);
     await h.sandbox.exec("background");
+    await h.sandbox.renewActivityTimeout();
     h.advance(100_000);
-    expect(await h.sandbox.idlePause()).toBe("skipped");
-    expect(h.timers).toEqual(["schedule:300000", "schedule:200000"]);
-    h.advance(200_000);
+    expect(h.log).not.toContain("keepAlive");
     expect(await h.sandbox.idlePause()).toBe("paused");
+    expect(h.timers).toEqual(["schedule:300000"]);
   });
 
   it("a lost fence before the idle pause: written back before the check, never paused", async () => {

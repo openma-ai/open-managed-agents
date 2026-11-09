@@ -15,10 +15,12 @@
 import { NodemailerSender } from "@open-managed-agents/email/adapters/nodemailer";
 import {
   createNodeSecrets,
+  sandboxIdlePauseMs,
   type NodeComponentOverrides,
   type NodeComponents,
+  type NodeSessionSandboxProvider,
 } from "@open-managed-agents/control-plane-node";
-import type { SandboxFactory } from "@open-managed-agents/sandbox";
+import type { SandboxFactory, SandboxPort, SandboxProviderPort, SandboxRuntimePort } from "@open-managed-agents/sandbox";
 import type { E2BModule } from "@open-managed-agents/sandbox-adapter-e2b";
 
 import { createBetterAuthComponent } from "./auth/node-auth.js";
@@ -90,6 +92,8 @@ export async function nodeDefaults(
   const sandbox = overrides.sandbox ?? await loadSandboxFactory(config);
   const sessionSandboxAdapter = overrides.sessionSandboxAdapter
     ?? (overrides.sandbox === undefined ? await loadSessionSandboxAdapter(config) : undefined);
+  const sessionSandboxProvider = overrides.sessionSandboxProvider
+    ?? (overrides.sandbox === undefined && sessionSandboxAdapter === undefined ? await loadSessionSandboxProvider(config) : undefined);
   const realtime = overrides.realtime ?? await createNodeRealtime(config.realtime, database, {
     ...(config.database.kind === "postgres" && { postgresDsn: config.database.url }),
   });
@@ -105,6 +109,7 @@ export async function nodeDefaults(
     email,
     sandbox,
     ...(sessionSandboxAdapter !== undefined && { sessionSandboxAdapter }),
+    ...(sessionSandboxProvider !== undefined && { sessionSandboxProvider }),
     realtime,
     blobs,
     ...(overrides.stores !== undefined && { stores: overrides.stores }),
@@ -143,5 +148,26 @@ async function loadSandboxFactory(config: NodeConfig): Promise<SandboxFactory> {
 async function loadSessionSandboxAdapter(config: NodeConfig) {
   if (config.processMode !== "standalone") return undefined;
   const selection = resolveSandboxProviderForEnvironment(config.sandbox.environment);
-  return selection.provider === "e2b" ? createNodeE2BSessionAdapter(config.sandbox.environment) : undefined;
+  const environment = config.sandbox.environment;
+  return selection.provider === "e2b" ? createNodeE2BSessionAdapter(environment, sandboxIdlePauseMs(environment.SANDBOX_IDLE_PAUSE_MS)) : undefined;
+}
+
+/** The provider names whose module exports a v1 SandboxProviderPort
+ * (`sandboxProvider`), as their runtimeHandle().provider. */
+const SESSION_SANDBOX_PROVIDERS: Partial<Record<string, string>> = {
+  "test-local-subprocess": "local-subprocess",
+  opensandbox: "opensandbox",
+};
+
+/** The provider's v1 SandboxProviderPort, when its module exports one
+ * (design §0.0b A.8): Session sandboxes are then found again by their
+ * persisted handle. Other providers keep the v1 factory alone. */
+async function loadSessionSandboxProvider(config: NodeConfig): Promise<NodeSessionSandboxProvider | undefined> {
+  if (config.processMode !== "standalone") return undefined;
+  const selection = resolveSandboxProviderForEnvironment(config.sandbox.environment);
+  const name = SESSION_SANDBOX_PROVIDERS[selection.provider];
+  if (name === undefined) return undefined;
+  const mod = (await import(selection.modulePath)) as { sandboxProvider?: SandboxProviderPort<SandboxPort & SandboxRuntimePort> };
+  if (mod.sandboxProvider === undefined) throw new Error(`SANDBOX_PROVIDER=${selection.provider}: ${selection.modulePath} exports no sandboxProvider`);
+  return { name, provider: mod.sandboxProvider };
 }

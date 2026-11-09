@@ -6,10 +6,19 @@
 //     marks the sandbox lost;
 //   - egress.attach again every `egressRenewMs` (an expiring credential such
 //     as the E2B relay pass), when the execution changed, or after a revoke.
-// renewActivityTimeout is the host's own keepAlive (the Cloudflare alarm).
+// renewActivityTimeout is the host's own heartbeat (the Node runner's lease
+// heartbeat, the Cloudflare alarm).
+//
+// The provider lease is renewed only inside an execution (design §0.0b
+// A.10). Idle activity (background processes, an alarm, a host heartbeat)
+// never renews it and never moves the idle pause; work that must outlive
+// the execution has to hold one. The lease is at least idlePauseMs +
+// SANDBOX_LEASE_MARGIN_MS (checked at assembly), so a sandbox whose idle
+// pause never runs stops on its own within the idle start + the lease.
+// No lock and no correction: a renewal that races the execution end costs
+// at most one more lease, or leaves an orphan for the orphan reclaim.
 
 import { SandboxGoneError } from "@open-managed-agents/sandbox";
-import { touchIdle } from "./session-sandbox-idle-pause";
 import type { LiveSessionSandbox, OpenSandbox } from "./session-sandbox-live";
 import { attachEgress } from "./session-sandbox-storage-egress";
 
@@ -27,13 +36,7 @@ export function renewAtExecBoundary<R>(state: LiveSessionSandbox<R>, open: OpenS
       state.storageSyncedAt = now;
     }
     const keepAliveMs = state.options.keepAliveMs ?? null;
-    if (keepAliveMs !== null && now - state.keptAliveAt >= keepAliveMs) {
-      if (await ports.sandbox.keepAlive(open) === "gone") {
-        state.markLost();
-        throw new SandboxGoneError("The sandbox is gone");
-      }
-      state.keptAliveAt = now;
-    }
+    if (keepAliveMs !== null && now - state.keptAliveAt >= keepAliveMs) await renewLease(state, open);
     const renew = state.options.egressRenewMs;
     const keyChanged = state.egressKey() !== state.egressAttachedKey;
     if ((renew !== null && now - state.egressAttachedAt >= renew) || keyChanged || state.egressRevoked) {
@@ -43,24 +46,29 @@ export function renewAtExecBoundary<R>(state: LiveSessionSandbox<R>, open: OpenS
   })().finally(() => { state.maintaining = null; });
 }
 
-/** keepAlive on the open sandbox (then the exec-boundary renewals), else on
- * the recorded one (an alarm-only wake keeps a background task's sandbox
- * alive). A paused one stays paused. */
+/** The host's heartbeat: renewLease on the open sandbox while an execution
+ * holds it. Between executions, or with nothing open, it does nothing: a
+ * recorded or paused sandbox is not attached and not kept alive. */
 export async function renewActivityTimeout<R>(state: LiveSessionSandbox<R>): Promise<void> {
-  const { ports } = await state.compose();
   await state.quiesce();
-  touchIdle(state);
   const open = state.current;
-  if (open !== null) {
-    if (await ports.sandbox.keepAlive(open) === "gone") {
-      state.markLost();
-      return;
-    }
-    await renewAtExecBoundary(state, open);
-    return;
+  if (open === null || state.execution() === undefined) return;
+  try {
+    await renewLease(state, open);
+  } catch (error) {
+    if (!(error instanceof SandboxGoneError)) throw error;
   }
-  const saved = await state.options.state.load();
-  if (saved?.handle === undefined || saved.paused === true) return;
-  const attached = await ports.sandbox.attach({ scope: state.scope(), handle: saved.handle, signal: new AbortController().signal });
-  if (attached !== "gone") await ports.sandbox.keepAlive(attached);
+}
+
+/** sandbox.keepAlive inside an execution only; between executions the
+ * renewal is dropped. "gone" marks the sandbox lost. */
+export async function renewLease<R>(state: LiveSessionSandbox<R>, open: OpenSandbox<R>): Promise<"renewed" | "dropped"> {
+  if (state.execution() === undefined) return "dropped";
+  const { ports } = await state.compose();
+  if (await ports.sandbox.keepAlive(open) === "gone") {
+    state.markLost();
+    throw new SandboxGoneError("The sandbox is gone");
+  }
+  state.keptAliveAt = state.now();
+  return "renewed";
 }

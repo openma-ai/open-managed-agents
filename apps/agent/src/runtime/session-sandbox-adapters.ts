@@ -9,10 +9,12 @@ import { createCloudflareSessionSandbox, type SandboxExecutionFence } from "./cl
 import { createE2BSessionSandbox } from "./e2b-session-sandbox";
 import type { SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
 import type { PortsSessionSandbox, SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
+import type { SessionSandboxStateStorage } from "./session-sandbox-do-state";
 
 export interface SessionSandboxDeps {
   env: Env;
-  storage: Pick<DurableObjectStorage, "get" | "put" | "delete">;
+  /** Where the Session sandbox record lives (session-sandbox-do-state). */
+  storage: SessionSandboxStateStorage;
   /** Sandbox Durable Object name for the Cloudflare adapter. */
   sandboxId: string;
   /** Operator catalog image for the Cloudflare adapter; null = SANDBOX. */

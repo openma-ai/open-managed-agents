@@ -2,7 +2,8 @@
 //
 // Composition only: createSandboxPorts + createE2BV2Adapter, handed to the
 // shared Session runtime (session-sandbox.ts):
-//   - the handle lives in DO storage ("changes" handle);
+//   - the handle record lives in DO storage ("changes" handle), every write
+//     a compare-and-set on its version (session-sandbox-do-state);
 //   - egress: the Environment networking becomes the E2B firewall, and when
 //     the Session has cap_cli Vault credentials the in-sandbox relay
 //     (packages/sandbox-egress) forwards their hosts to the control plane's
@@ -22,6 +23,7 @@
 //     becomes the adapter's maxLifetimeMs; the shared runtime refreshes the
 //     sandbox before it (design §0.0 rule 11).
 
+import { assertLeaseCoversIdle, SANDBOX_LEASE_MARGIN_MS } from "@open-managed-agents/sandbox";
 import type {
   MemoryStoreBinding,
   SandboxLifecyclePort,
@@ -39,7 +41,8 @@ import { UNFENCED_SANDBOX_TOKEN } from "@open-managed-agents/sandbox-gateway";
 import { sandboxExecutionFenceKey, type SandboxExecutionFence } from "./cloudflare-session-sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { createR2MemoryPrefixAccess, type MemoryPrefixBucket } from "./r2-memory-access";
-import { PortsSessionSandbox, type SessionSandboxExecutor, type SessionSandboxIdleTimer, type SessionSandboxState } from "@open-managed-agents/session-runtime";
+import { PortsSessionSandbox, type PortsSessionSandboxOptions, type SessionSandboxExecutor, type SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
+import { durableObjectSandboxState, type SessionSandboxStateStorage } from "./session-sandbox-do-state";
 
 export interface E2BSandboxEnv {
   E2B_API_KEY?: string;
@@ -75,18 +78,16 @@ export interface E2BSandboxEnv {
 }
 
 const IDLE_MS = 5 * 60_000;
-const LEASE_MS = 30 * 60_000;
+/** E2B's own timeout: idlePauseMs + margin (design §0.0b A.10), so a sandbox
+ * whose idle pause never ran stops within idle start + lease. */
+const LEASE_MS = IDLE_MS + SANDBOX_LEASE_MARGIN_MS;
+assertLeaseCoversIdle("SANDBOX_ADAPTER=e2b", LEASE_MS, IDLE_MS);
 const STATE_KEY = "e2b_sandbox_state";
-
-type PersistedState = SessionSandboxState;
 
 export interface E2BSessionSandboxOptions {
   compose(): Promise<{ ports: SandboxPorts<E2BSandboxExecutor>; vendor: SandboxVendorPort<E2BSandboxExecutor> }>;
-  state: {
-    load(): Promise<PersistedState | undefined>;
-    save(state: PersistedState): Promise<void>;
-    clear(): Promise<void>;
-  };
+  /** The handle record; every write is a compare-and-set on its version. */
+  state: PortsSessionSandboxOptions<E2BSandboxExecutor>["state"];
   scope(): RuntimeResourceScope;
   plan(scope: RuntimeResourceScope, stores: MemoryStoreBinding[]): Promise<SandboxPlan>;
   now(): number;
@@ -113,6 +114,8 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       outputDurability: () => ({ durability: "best_effort" }),
       // The sandbox token dies with its attempt; nothing to renew on a timer.
       egressRenewMs: null,
+      // The E2B timeout is renewed at exec boundaries inside an execution only.
+      keepAliveMs: Math.floor(LEASE_MS / 3),
       ...(options.idle === undefined ? {} : { idle: options.idle }),
       ...(options.fence === undefined ? {} : {
         execution: () => options.fence!(),
@@ -175,7 +178,7 @@ export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStora
  * the variable names. The e2b SDK is imported only when a sandbox opens. */
 export function createE2BSessionSandbox(input: {
   env: E2BSandboxEnv;
-  storage: Pick<DurableObjectStorage, "get" | "put" | "delete">;
+  storage: SessionSandboxStateStorage;
   scope(): RuntimeResourceScope;
   networking(): Promise<SessionNetworking | undefined>;
   fence(): SandboxExecutionFence | undefined;
@@ -247,11 +250,7 @@ export function createE2BSessionSandbox(input: {
       });
       return { ports, vendor: adapter.vendor };
     },
-    state: {
-      load: () => input.storage.get<PersistedState>(STATE_KEY),
-      save: (state) => input.storage.put(STATE_KEY, state),
-      clear: async () => { await input.storage.delete(STATE_KEY); },
-    },
+    state: durableObjectSandboxState(input.storage, STATE_KEY),
     scope: input.scope,
     async plan(scope, stores) {
       return {

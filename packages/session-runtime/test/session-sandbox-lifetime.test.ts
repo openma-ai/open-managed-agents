@@ -13,6 +13,7 @@ const HOUR = 60 * 60_000;
 const THRESHOLD = HOUR - MAX_TOOL_CALL_MS - LIFETIME_REFRESH_MARGIN_MS;
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
 const START = Date.UTC(2026, 10, 8, 12, 0, 0);
+const attempt = { executionId: "exec_1", attemptId: "att_1", ownerId: "owner_1", generation: 1 };
 
 function deferred() {
   let resolve!: () => void;
@@ -81,7 +82,7 @@ function harness(opts: { maxLifetimeMs: number | null; saved?: SessionSandboxSta
     executor: (runtime) => executor(runtime.id),
     state: {
       load: async () => stored,
-      save: async (state) => { stored = state; },
+      save: async (state, expected) => { if ((stored?.version ?? 0) !== expected) return false; stored = state; return true; },
       clear: async () => { stored = undefined; },
     },
     scope: () => scope,
@@ -93,6 +94,8 @@ function harness(opts: { maxLifetimeMs: number | null; saved?: SessionSandboxSta
     outputDurability: () => null,
     egressRenewMs: null,
     now: () => clock.now,
+    // The refresh renews only inside an execution (design §0.0b A.10).
+    execution: () => attempt,
     isCurrent: async () => (opts.isCurrent ?? (() => true))(),
   });
   return {

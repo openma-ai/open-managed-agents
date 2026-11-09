@@ -63,7 +63,10 @@ function cfDeps(resources: Array<Record<string, unknown>> = []) {
     warnings,
     deps: {
       env,
-      storage: {} as never,
+      storage: (() => {
+        const kv = new Map<string, unknown>();
+        return { kv: { get: (key: string) => kv.get(key), put: (key: string, value: unknown) => { kv.set(key, value); }, delete: (key: string) => kv.delete(key) } };
+      })() as never,
       sandboxId: "do-hex-id",
       sandboxImage: null,
       session: () => session,

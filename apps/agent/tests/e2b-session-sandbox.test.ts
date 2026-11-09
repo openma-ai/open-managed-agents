@@ -62,7 +62,7 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
     idle: { pauseMs: 300_000, schedule: (ms) => { timers.push(`schedule:${ms}`); }, cancel: () => { timers.push("cancel"); } },
     state: {
       load: async () => stored as never,
-      save: async (state) => { stored = state as never; },
+      save: async (state, expected) => { if (((stored as { version?: number } | undefined)?.version ?? 0) !== expected) return false; stored = state as never; return true; },
       clear: async () => { stored = undefined; },
     },
     scope: () => scope,
@@ -109,11 +109,12 @@ describe("E2BSessionSandbox", () => {
     expect(h.stored()?.stores).toEqual([{ storeName: "notes", storeId: "st", readOnly: false }]);
     expect(h.sandbox.sessionOutputMountCapabilities()).toEqual({ durability: "best_effort" });
     await h.sandbox.syncStorage("turn_end");
+    // No execution holds the sandbox: the heartbeat renews nothing (design §0.0b A.10).
     await h.sandbox.renewActivityTimeout();
     await h.sandbox.destroy();
     expect(h.log).toEqual([
       "acquire", "egress.attach:open", "storage.attach:0", "storage.attach:1",
-      "storage.sync:turn_end", "keepAlive", "storage.detach", "egress.revoke", "release:new",
+      "storage.sync:turn_end", "storage.detach", "egress.revoke", "release:new",
     ]);
     expect(h.stored()).toBeUndefined();
   });

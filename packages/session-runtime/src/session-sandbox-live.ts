@@ -4,10 +4,17 @@
 // Each step (open, storage and egress, renewal, lifetime refresh, idle
 // pause, execution end) works on this state; PortsSessionSandbox owns it.
 
-import type { MemoryStoreBinding, SandboxHandle, SandboxPlan, SandboxPorts } from "@open-managed-agents/sandbox";
+import type { MemoryStoreBinding, ResumeRef, SandboxHandle, SandboxPlan, SandboxPorts } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { executionKey, fenceFor, runtimeFenceOf } from "./session-sandbox-fence";
-import type { PortsSessionSandboxOptions, SessionSandboxExecution, SessionSandboxExecutor } from "./session-sandbox-options";
+import type { PortsSessionSandboxOptions, SessionSandboxExecution, SessionSandboxExecutor, SessionSandboxState } from "./session-sandbox-options";
+
+/** Another writer changed the Session sandbox record since this one read it
+ * (design §0.0b A.10): this writer's result was dropped and what it started
+ * cleaned up. */
+export class SessionSandboxStateConflictError extends Error {
+  override readonly name = "SessionSandboxStateConflictError";
+}
 
 /** An open sandbox. */
 export interface OpenSandbox<R> {
@@ -29,6 +36,12 @@ export class LiveSessionSandbox<R> {
   maintaining: Promise<void> | null = null;
   refreshing: Promise<void> | null = null;
   refreshError: unknown = null;
+  /** A snapshot in a tool-call gap (session-sandbox-snapshot); calls wait for it. */
+  snapshotting: Promise<void> | null = null;
+  /** A call that may change the sandbox ran since the last snapshot. */
+  dirty = false;
+  /** When the last snapshot was taken, else when this instance first opened the sandbox (0 = neither yet). */
+  snapshotAt = 0;
   env: Record<string, string> = {};
   stores: MemoryStoreBinding[] = [];
   outputs = false;
@@ -40,7 +53,8 @@ export class LiveSessionSandbox<R> {
   egressAttachedKey: string | undefined;
   /** egress.revoke ran since the last attach: the next call attaches again. */
   egressRevoked = false;
-  /** When the idle window started (execution end, then any activity); null = no idle pause pending. */
+  /** When the idle window started (execution end); null = no idle pause
+   * pending. Activity in the window does not move it (design §0.0b A.10). */
   idleSince: number | null = null;
   /** sandbox.maxLifetimeMs, known once composed. */
   maxLifetimeMs: number | null = null;
@@ -109,18 +123,41 @@ export class LiveSessionSandbox<R> {
     void Promise.resolve(this.options.idle?.cancel()).catch(() => undefined);
   }
 
-  /** Records `open` as the Session's sandbox, keeping the recorded restore point. */
-  async record(open: OpenSandbox<R>): Promise<void> {
+  /** Writes `next` as version `expected` + 1 if the record is still at
+   * `expected` (design §0.0b A.10); false = another writer won, nothing written. */
+  async commit(next: SessionSandboxState, expected: number): Promise<boolean> {
+    const won = await this.options.state.save({ ...next, version: expected + 1 }, expected);
+    if (!won) this.options.warn(`sandbox_state_conflict expected_version=${expected}: another writer changed the Session sandbox record; this result is dropped`);
+    return won;
+  }
+
+  /** Records `open` as the Session's sandbox, keeping the recorded restore
+   * points, against the version read here. The new version, or null when
+   * another writer won. */
+  async record(open: OpenSandbox<R>): Promise<number | null> {
     const saved = await this.options.state.load();
-    await this.options.state.save({
+    const version = stateVersion(saved);
+    const won = await this.commit({
       handle: open.handle, stores: this.stores, outputs: this.outputs, runStartedAt: open.runStartedAt,
-      ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }),
+      ...restorePoints(saved),
+    }, version);
+    return won ? version + 1 : null;
+  }
+
+  /** Cleans up a sandbox this writer started but could not record: released,
+   * unless the record names it (the winner holds it). */
+  async releaseOwn(handle: SandboxHandle): Promise<void> {
+    const saved = await this.options.state.load().catch(() => undefined);
+    if (sameHandle(saved?.handle, handle)) return;
+    const { ports } = await this.compose();
+    await ports.sandbox.release({ scope: this.scope(), handle }).catch((error) => {
+      this.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
     });
   }
 
-  /** Waits for a lifetime refresh in progress (it never rejects). */
+  /** Waits for a lifetime refresh or a gap snapshot in progress (neither rejects). */
   async quiesce(): Promise<void> {
-    while (this.refreshing !== null) await this.refreshing;
+    while (this.refreshing !== null || this.snapshotting !== null) await (this.refreshing ?? this.snapshotting);
   }
 
   /** A failed refresh fails the next call or turn-end sync, once. */
@@ -130,6 +167,29 @@ export class LiveSessionSandbox<R> {
     this.refreshError = null;
     throw error;
   }
+}
+
+/** What a new handle record carries over from the previous one: the pause
+ * point, the latest snapshot and whether a restore is required. */
+export function restorePoints(saved: SessionSandboxState | undefined): Pick<SessionSandboxState, "resumeRef" | "snapshotRef" | "restoreRequired"> {
+  return {
+    ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }),
+    ...(saved?.snapshotRef === undefined ? {} : { snapshotRef: saved.snapshotRef }),
+    ...(saved?.restoreRequired === true ? { restoreRequired: true } : {}),
+  };
+}
+
+export function sameHandle(a: SandboxHandle | undefined, b: SandboxHandle | undefined): boolean {
+  return a !== undefined && b !== undefined && a.provider === b.provider && a.runtimeId === b.runtimeId;
+}
+
+/** The record's version (design §0.0b A.10); none or an older record = 0. */
+export function stateVersion(saved: SessionSandboxState | undefined): number {
+  return saved?.version ?? 0;
+}
+
+export function sameRef(a: ResumeRef | undefined, b: ResumeRef | undefined): boolean {
+  return a !== undefined && b !== undefined && a.provider === b.provider && a.ref === b.ref;
 }
 
 export function mergeStores(base: MemoryStoreBinding[], current: MemoryStoreBinding[]): MemoryStoreBinding[] {

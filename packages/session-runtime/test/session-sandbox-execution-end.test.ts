@@ -49,15 +49,16 @@ describe("Session sandbox execution end", () => {
     expect(h.log.some((entry) => entry.startsWith("release"))).toBe(false);
   });
 
-  it("a failed execution publishes nothing: revoke, release, forget the handle, keep the restore point", async () => {
+  it("a failed execution publishes nothing: revoke, forget the handle and its pause point, release", async () => {
     const h = fakeSessionSandbox({ saved: { handle: { provider: "fake", runtimeId: "r0" }, stores: [], outputs: true, resumeRef: { provider: "fake", ref: "ref-r0" } } });
     await h.sandbox.exec("first");
     h.log.length = 0;
     await h.sandbox.failExecution();
     expect(h.log).toEqual(["egress.revoke:failed", "release:r0"]);
-    expect(h.stored()).toEqual({ stores: [], outputs: true, resumeRef: { provider: "fake", ref: "ref-r0" } });
-    // The next execution resumes from the recorded ref (gone here) and acquires.
+    // The pause point named the released sandbox: forgotten with it.
+    expect(h.stored()).toEqual({ stores: [], outputs: true, version: 2 });
+    // Nothing to restore from and nothing that needs it: a new sandbox.
     await h.sandbox.exec("again");
-    expect(h.log.slice(2, 4)).toEqual(["resume:ref-r0", "acquire"]);
+    expect(h.log.slice(2, 3)).toEqual(["acquire"]);
   });
 });

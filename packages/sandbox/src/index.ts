@@ -75,7 +75,7 @@ export {
 export { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "./no-environment";
 
 // Sandbox SDK v2 domain contract: the three Ports the core calls.
-export { RetryableSandboxError, SandboxGoneError } from "./sandbox-ports";
+export { RetryableSandboxError, SandboxGoneError, SANDBOX_LEASE_MARGIN_MS, assertLeaseCoversIdle } from "./sandbox-ports";
 export type {
   Acquired,
   EgressPolicy,
