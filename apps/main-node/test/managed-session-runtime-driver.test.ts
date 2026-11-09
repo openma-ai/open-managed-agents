@@ -1497,7 +1497,10 @@ it("reclaimed Node attempt persists interrupted tools before reloading canonical
   await engine.accept({ workspaceId: "w", sessionId: "s", session, environment, events: [{ id: "input", type: "user.message", content: [] }],
     executionFence: { ...executionFence, generation: 2 } } as never);
   expect(accepted.historyEvents).toMatchObject([
-    { id: "tool_lost" }, { type: "agent.tool_result", toolUseId: "tool_lost", isError: true },
+    { id: "tool_lost" },
+    { type: "session.warning", source: "tool_outcome_unknown", details: { outcome: "dispatched_unknown", toolUseId: "tool_lost", retryRequestId: "retry:tool_lost" } },
+    { id: "retry:tool_lost", type: "agent.tool_use", name: "bash", input: {}, evaluatedPermission: "ask" },
+    { type: "agent.tool_result", toolUseId: "tool_lost", isError: true },
     { type: "session.warning", source: "execution_resumed", details: { attempt: 2, reason: "lease_lost" } },
   ]);
 });
