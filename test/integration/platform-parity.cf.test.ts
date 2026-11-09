@@ -8,14 +8,17 @@
 // (packages/platform-parity/platforms.mjs).
 import { exports } from "cloudflare:workers";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { AcpSandboxHarness } from "../../packages/agent-harness/src/acp-sandbox-loop";
 import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import {
+  ACP_CHILD_EXIT_HARNESS,
   PARITY_HARNESS,
   PARITY_MODEL,
   PARITY_SCENARIOS,
   ScenarioContext,
   UNREACHABLE_MODEL_BASE_URL,
+  acpChildExitHarness,
   errorSignature,
   installLeakCapture,
   parityModels,
@@ -31,6 +34,11 @@ registerHarness(PARITY_HARNESS, () => {
     },
   };
 });
+
+// OmaSandbox.spawnDuplex streams stdout over Workers RPC; the e2e
+// cf-container-acp-mm-r1 run saw the exit reported while stdout stayed open.
+registerHarness(ACP_CHILD_EXIT_HARNESS, () =>
+  acpChildExitHarness(() => new AcpSandboxHarness(), { stdoutEndsOnExit: false }));
 
 const AUTH = { "x-api-key": "test-key" };
 

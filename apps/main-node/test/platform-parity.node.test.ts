@@ -10,12 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
-  type HarnessContext, DefaultHarness, registerHarness,
+  type HarnessContext, AcpSandboxHarness, DefaultHarness, registerHarness,
 } from "@open-managed-agents/agent-harness";
 import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
 import { nodeDefaults } from "../src/components";
 import {
+  ACP_CHILD_EXIT_HARNESS,
   PARITY_HARNESS,
   PARITY_MODEL,
   PARITY_SCENARIOS,
@@ -23,6 +24,7 @@ import {
   UNREACHABLE_MODEL_BASE_URL,
   installLeakCapture,
   parityModels,
+  acpChildExitHarness,
   registerParityRunner,
   type KnownDifference,
 } from "../../../packages/platform-parity/src";
@@ -35,6 +37,10 @@ registerHarness(PARITY_HARNESS, () => {
     },
   };
 });
+
+// A child process's stdout pipe ends when the process exits.
+registerHarness(ACP_CHILD_EXIT_HARNESS, () =>
+  acpChildExitHarness<HarnessContext>(() => new AcpSandboxHarness(), { stdoutEndsOnExit: true }));
 
 const dir = mkdtempSync(join(tmpdir(), "oma-platform-parity-"));
 // This platform declares no leaked rejections: any unhandled rejection while

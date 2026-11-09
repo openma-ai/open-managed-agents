@@ -4,6 +4,7 @@ import {
   textChunks,
   toolCallChunks,
 } from "../../../test/fakes/scripted-language-model";
+import { ACP_CHILD_EXIT_HARNESS } from "./acp-child-exit";
 import type { ParityScenario, ScenarioContext } from "./context";
 import type { ParityModelStep } from "./models";
 
@@ -260,6 +261,16 @@ export const contextBuildFailure: ParityScenario = {
   },
 };
 
+export const acpChildExit: ParityScenario = {
+  name: "acp-child-exit",
+  covers: "ACP 子进程中途退出: the in-sandbox agent process exits mid-prompt; the turn ends with session.error and the Session goes idle, not running",
+  async run(context) {
+    await simpleSession(context, {}, { _oma: { harness: ACP_CHILD_EXIT_HARNESS } });
+    await context.message("Start.");
+    await context.waitIdle(1);
+  },
+};
+
 /** The scenario set every platform runner executes (order = report order). */
 export const PARITY_SCENARIOS: ParityScenario[] = [
   oneTurn,
@@ -272,4 +283,5 @@ export const PARITY_SCENARIOS: ParityScenario[] = [
   requiresAction,
   interrupt,
   contextBuildFailure,
+  acpChildExit,
 ];

@@ -1,3 +1,4 @@
+export * from "./acp-child-exit";
 export * from "./context";
 export * from "./leaks";
 export * from "./models";
