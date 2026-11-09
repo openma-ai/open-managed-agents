@@ -4,6 +4,16 @@ import { describe, expect, it } from "vitest";
 import { buildAcpSemanticRecoveryPrompt } from "../src/acp-recovery";
 
 describe("ACP semantic recovery prompt", () => {
+  it("uses only consumed non-cancelled CF inputs while retaining all legal history", () => {
+    const current = user("current legal input", "current");
+    const events = [user("consumed original request"), {...user("future pending instruction"), _queued:true}, {...user("cancelled instruction"),cancelled_at_ms:1}, user("consumed later reply"), current] as SessionEvent[];
+    const prompt = buildAcpSemanticRecoveryPrompt(events,current,{reason:"execution-lost"});
+    expect(prompt).toContain("consumed original request");
+    expect(prompt).toContain("consumed later reply");
+    expect(prompt).toContain("current legal input");
+    expect(prompt).not.toContain("future pending instruction");
+    expect(prompt).not.toContain("cancelled instruction");
+  });
   it("honors the last compaction boundary and emits the current request once", () => {
     const current = user("continue", "current");
     const events: SessionEvent[] = [

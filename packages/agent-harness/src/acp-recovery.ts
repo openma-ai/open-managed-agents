@@ -1,3 +1,4 @@
+import { isConsumedHistoryEvent } from "./history/events-to-messages";
 import { SummarizeCompactionStrategy } from "./compaction";
 import type { HarnessContext } from "./interface";
 import type {
@@ -30,7 +31,7 @@ export function buildAcpSemanticRecoveryPrompt(
 ): string {
   const currentText = contentToText(currentMessage.content).trim();
   const relevantEvents = withoutCurrentMessage(
-    eventsAfterLastCompaction(events),
+    eventsAfterLastCompaction(events.filter(isConsumedHistoryEvent)),
     currentMessage,
   );
   const toolNames = collectToolNames(relevantEvents);
@@ -60,7 +61,7 @@ export function buildAcpSemanticRecoveryPrompt(
 
 /** Single rebuild implementation shared with execution-loss recovery. Never replays tool inputs. */
 export async function rebuildAcpContext(ctx: HarnessContext, reason: AcpSemanticRecoveryReason): Promise<{ prompt: string; compacted: boolean; historyCharacters: number; exceedsLimit: boolean }> {
-  const events = withoutCurrentMessage(ctx.acpRecoveryHistory ?? ctx.runtime.history.getEvents(), ctx.userMessage);
+  const events = withoutCurrentMessage((ctx.acpRecoveryHistory ?? ctx.runtime.history.getEvents()).filter(isConsumedHistoryEvent), ctx.userMessage);
   const prompt = buildAcpSemanticRecoveryPrompt(events, ctx.userMessage, { reason });
   if (!eventsAfterLastCompaction(events).some(event => eventToRecoveryLines(event, new Map()).length > 0)) {
     throw new Error("ACP context could not be rebuilt: canonical history contains no usable conversation");
