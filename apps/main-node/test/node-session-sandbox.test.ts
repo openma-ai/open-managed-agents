@@ -213,9 +213,9 @@ describe("Node Session sandbox warm-up at Session creation", () => {
   it("releases the warmed sandbox when the Session ends before its first execution", async () => {
     const t = setup();
     await t.sandboxes.warm(context);
-    await t.sandboxes.discardWarm(context);
+    await t.sandboxes.releaseSession(context);
     expect(t.box.destroyed()).toBe(1);
-    await t.sandboxes.discardWarm(context);
+    await t.sandboxes.releaseSession(context);
     expect(t.box.destroyed()).toBe(1);
   });
 });

@@ -3,10 +3,16 @@
 
 import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
-import type { SessionSandboxExecution, SessionSandboxExecutor, SessionSandboxState } from "../src/session-sandbox-options";
+import type { SessionSandboxExecution, SessionSandboxExecutor } from "../src/session-sandbox-options";
+import { initialSandboxState, type SessionSandboxState } from "../src/session-sandbox-state";
 
 export const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
 export const attempt: SessionSandboxExecution = { executionId: "exec_1", attemptId: "att_1", ownerId: "owner_1", generation: 3, expiresAt: "2030-01-01T00:00:00.000Z" };
+
+/** A record of a Session whose sandbox `runtimeId` is running. */
+export function runningRecord(runtimeId: string, extra: Partial<SessionSandboxState> = {}): SessionSandboxState {
+  return { ...initialSandboxState(), phase: "running", handle: { provider: "fake", runtimeId }, runStartedAt: 0, ...extra } as SessionSandboxState;
+}
 
 export function fakeSessionSandbox(opts: {
   handle?: "fixed" | "changes";
@@ -77,7 +83,6 @@ export function fakeSessionSandbox(opts: {
     state: {
       load: async () => stored,
       save: async (state, expected) => { if ((stored?.version ?? 0) !== expected) return false; stored = state; return true; },
-      clear: async () => { log.push("clear"); stored = undefined; },
     },
     scope: () => scope,
     plan: async ({ stores }) => ({

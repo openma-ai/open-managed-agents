@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attempt, fakeSessionSandbox } from "./fake-session-sandbox-ports";
+import { attempt, fakeSessionSandbox, runningRecord } from "./fake-session-sandbox-ports";
 
 // Execution end (research/sandbox-sdk-v2-design.md §0.1 steps 7 and 9;
 // §0.0 rules 10, 16), over fake Ports.
@@ -41,7 +41,7 @@ describe("Session sandbox execution end", () => {
   });
 
   it("\"fixed\": a lost fence never releases the sandbox", async () => {
-    const h = fakeSessionSandbox({ handle: "fixed", saved: { handle: { provider: "fake", runtimeId: "sess" }, stores: [], outputs: true } });
+    const h = fakeSessionSandbox({ handle: "fixed", saved: runningRecord("sess", { outputs: true }) });
     await h.sandbox.exec("first");
     h.loseFence();
     await h.sandbox.endExecution();
@@ -49,14 +49,14 @@ describe("Session sandbox execution end", () => {
     expect(h.log.some((entry) => entry.startsWith("release"))).toBe(false);
   });
 
-  it("a failed execution publishes nothing: revoke, forget the handle and its pause point, release", async () => {
-    const h = fakeSessionSandbox({ saved: { handle: { provider: "fake", runtimeId: "r0" }, stores: [], outputs: true, resumeRef: { provider: "fake", ref: "ref-r0" } } });
+  it("a failed execution publishes nothing: revoke, the lose transition, release", async () => {
+    const h = fakeSessionSandbox({ saved: runningRecord("r0", { outputs: true }) });
     await h.sandbox.exec("first");
     h.log.length = 0;
     await h.sandbox.failExecution();
     expect(h.log).toEqual(["egress.revoke:failed", "release:r0"]);
-    // The pause point named the released sandbox: forgotten with it.
-    expect(h.stored()).toEqual({ stores: [], outputs: true, version: 2 });
+    // The record no longer names the released sandbox.
+    expect(h.stored()).toEqual({ phase: "lost", latestSnapshot: { status: "none" }, stores: [], outputs: true, version: 2 });
     // Nothing to restore from and nothing that needs it: a new sandbox.
     await h.sandbox.exec("again");
     expect(h.log.slice(2, 3)).toEqual(["acquire"]);

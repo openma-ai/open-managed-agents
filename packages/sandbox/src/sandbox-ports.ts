@@ -63,19 +63,17 @@ export interface SandboxLifecyclePort<R> {
   attach(input: { scope: RuntimeResourceScope; handle: SandboxHandle; signal: AbortSignal }): Promise<Acquired<R> | "gone">;
   /** Called during an execution only: checks liveness and sets the
    * provider's own timeout (its idle reclaim) to `ttlMs` from now, the
-   * adapter's lease when omitted. The core also calls it with the idle
-   * deadline when the idle window starts and to correct a renewal that
-   * raced the execution end (design §0.0b A.10): the last write must win, so
-   * it sets the timeout, it does not extend it. A provider whose timeout
-   * cannot be set per call ignores `ttlMs`. */
+   * adapter's lease when omitted (design §0.0b A.10): it sets the timeout, it
+   * does not extend it. A provider whose timeout cannot be set per call
+   * ignores `ttlMs`. */
   keepAlive(input: { runtime: R; handle: SandboxHandle; ttlMs?: number }): Promise<"alive" | "gone">;
   /** Take a snapshot without stopping compute: a ref of kind `"snapshot"`
    * that outlives the sandbox (a new sandbox can be started from it). The
    * core takes one at every execution end and in tool-call gaps, keeps only
    * the latest and starts a new sandbox from it when the handle cannot be
    * found again (design §0.0 rule 11). An adapter that returns
-   * `kind: "self"` here declares it has no snapshots: the core then has
-   * nothing to restore a lost sandbox from and fails instead. */
+   * `kind: "self"` here declares it has no snapshots (a bare v1 factory):
+   * a lost sandbox is then replaced by a new one, with a warning. */
   checkpoint(input: { scope: RuntimeResourceScope; runtime: R; handle: SandboxHandle; signal: AbortSignal }): Promise<ResumeRef>;
   /** Keep the workspace and stop compute. Providers that pause in place do so
    * (`kind: "self"`, gone with the sandbox); providers without pause snapshot

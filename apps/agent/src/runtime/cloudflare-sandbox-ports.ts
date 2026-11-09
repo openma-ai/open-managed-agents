@@ -95,8 +95,7 @@ export function createCloudflareSandboxAdapter(input: {
     },
 
     /** The container's inactivity timeout is per deployment (OmaSandbox's
-     * backstop): `ttlMs` is ignored. SessionDO runs no core idle pause here
-     * (the container stops itself), so no idle deadline is ever written. */
+     * backstop, longer than the core's idle pause): `ttlMs` is ignored. */
     async keepAlive(input) {
       if (!(await input.runtime.describeSandbox()).running) return "gone";
       await input.runtime.renewActivityTimeout();

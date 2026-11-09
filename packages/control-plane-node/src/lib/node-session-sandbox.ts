@@ -234,18 +234,18 @@ export class NodeSessionSandboxes {
     await warming;
   }
 
-  /** The Session ended before its first execution: release the warmed sandbox. */
-  async discardWarm(context: NodeSessionSandboxContext): Promise<void> {
+  /** The Session ended (archived or deleted): its sandbox, a warmed one
+   * included, is released and its snapshots discarded (design §0.1 step 10). */
+  async releaseSession(context: NodeSessionSandboxContext): Promise<void> {
     const key = keyOf(context.workspaceId, context.session.id);
     const warming = this.warmed.get(key);
-    if (warming === undefined) return;
     this.warmed.delete(key);
-    const state = await warming.catch(() => undefined);
-    if (state !== undefined) await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, Promise.resolve(state)).destroy();
+    const state = await warming?.catch(() => undefined);
+    await new NodeSessionSandbox(context, undefined, this.options, this.held, () => undefined, state === undefined ? undefined : Promise.resolve(state)).release();
   }
 
-  /** `runtime` plus the warm-up at Session creation and the release of a
-   * warmed sandbox when the Session stops before its first execution. */
+  /** `runtime` plus the warm-up at Session creation and the release of the
+   * Session's sandbox when it stops. */
   warmingLifecycle(runtime: SessionLifecycleCommandPort, sandboxMode: (session: Session) => Promise<"none" | "sandbox">): SessionLifecycleCommandPort {
     if (this.options.warmAtCreate !== true) return runtime;
     return {
@@ -256,7 +256,9 @@ export class NodeSessionSandboxes {
       },
       sessionStopped: async (input) => {
         await runtime.sessionStopped(input);
-        await this.discardWarm({ workspaceId: input.workspaceId, session: input.session, environment: { id: input.session.environmentId } as Environment }).catch(() => undefined);
+        if (await sandboxMode(input.session) === "none") return;
+        const context = { workspaceId: input.workspaceId, session: input.session, environment: { id: input.session.environmentId } as Environment };
+        await this.releaseSession(context).catch((error: unknown) => this.options.warn(`sandbox_release_failed error=${error instanceof Error ? error.message : String(error)}`, context));
       },
     };
   }
@@ -389,11 +391,6 @@ export class NodeSessionSandbox implements SandboxPort {
           onSaved?.(state);
           return true;
         },
-        clear: async () => {
-          adopting = undefined;
-          this.state = undefined;
-          await records?.clear(this.context.workspaceId, this.context.session.id);
-        },
       },
       scope,
       plan: async ({ scope: s, stores }) => {
@@ -485,7 +482,22 @@ export class NodeSessionSandbox implements SandboxPort {
     return (await (await this.core.runtime()).resolveWorkspaceRoot?.()) ?? DEFAULT_WORKSPACE_ROOT;
   }
 
+  /** The runner gives this sandbox up (lost, replaced, its allocation over);
+   * the Session goes on: the sandbox is released, its latest snapshot stays
+   * for the next open. A lost fence leaves it to the new owner. */
   async destroy(): Promise<void> {
+    this.cancelIdle();
+    try {
+      await this.core.failExecution();
+    } finally {
+      this.executionFence = undefined;
+      this.live = null;
+      this.onDestroyed();
+    }
+  }
+
+  /** The Session ended: nothing opens again (design §0.1 step 10). */
+  async release(): Promise<void> {
     this.cancelIdle();
     try {
       await this.core.destroy();
@@ -493,6 +505,11 @@ export class NodeSessionSandbox implements SandboxPort {
       this.live = null;
       this.onDestroyed();
     }
+  }
+
+  /** The current sandbox was started from a snapshot by this instance. */
+  restoredFromSnapshot(): boolean {
+    return this.core.restoredFromSnapshot();
   }
 
   private image(): string {

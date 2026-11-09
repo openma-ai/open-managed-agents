@@ -3,7 +3,8 @@ import type { SandboxPorts } from "@open-managed-agents/sandbox";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
 import { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "../src/session-sandbox-lifetime";
 import { SessionSandboxStateConflictError } from "../src/session-sandbox-live";
-import type { SessionSandboxExecution, SessionSandboxExecutor, SessionSandboxState } from "../src/session-sandbox-options";
+import type { SessionSandboxExecution, SessionSandboxExecutor } from "../src/session-sandbox-options";
+import { initialSandboxState, recordedHandle, type LatestSnapshot, type SessionSandboxState, type SnapshotRef } from "../src/session-sandbox-state";
 
 // Design §0.0b A.10: every write of the Session sandbox record is a
 // compare-and-set on its version, +1 per write. Of two writers that read the
@@ -16,6 +17,11 @@ const THRESHOLD = HOUR - MAX_TOOL_CALL_MS - LIFETIME_REFRESH_MARGIN_MS;
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
 const attempt: SessionSandboxExecution = { executionId: "exec_1", attemptId: "att_1", ownerId: "owner_1", generation: 1 };
 const fake = (runtimeId: string) => ({ provider: "fake", runtimeId });
+const taken = (ref: SnapshotRef): LatestSnapshot => ({ status: "taken", ref });
+const latestRef = (state: SessionSandboxState | undefined): SnapshotRef => {
+  if (state?.latestSnapshot.status !== "taken") throw new Error("no latest snapshot");
+  return state.latestSnapshot.ref;
+};
 
 function deferred() {
   let resolve!: () => void;
@@ -28,7 +34,7 @@ function deferred() {
 function versionedStore(initial?: SessionSandboxState) {
   let stored = initial;
   const writes: string[] = [];
-  let intruder: { when: (state: SessionSandboxState) => boolean; winner: Omit<SessionSandboxState, "version"> } | null = null;
+  let intruder: { when: (state: SessionSandboxState) => boolean; winner: SessionSandboxState } | null = null;
   const state = {
     load: async () => stored,
     save: async (next: SessionSandboxState, expected: number): Promise<boolean> => {
@@ -43,18 +49,18 @@ function versionedStore(initial?: SessionSandboxState) {
       writes.push(`won@v${expected}`);
       return true;
     },
-    clear: async () => { stored = undefined; },
   };
   return {
     state, writes, get: () => stored,
-    intrude: (winner: Omit<SessionSandboxState, "version">, when: (state: SessionSandboxState) => boolean = () => true) => { intruder = { when, winner }; },
+    intrude: (winner: SessionSandboxState, when: (state: SessionSandboxState) => boolean = () => true) => { intruder = { when, winner }; },
   };
 }
 
 function world(initial?: SessionSandboxState, gone: string[] = []) {
   const log: string[] = [];
   const markers = new Map<string, string>();
-  for (const id of [initial?.handle?.runtimeId].filter((x): x is string => x !== undefined)) markers.set(id, "gen0");
+  const named = initial === undefined ? undefined : recordedHandle(initial);
+  if (named !== undefined) markers.set(named.runtimeId, "gen0");
   const clock = { now: 1_000_000 };
   const store = versionedStore(initial);
   let n = 0;
@@ -129,8 +135,12 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
   return { log, store, clock, gates, core };
 }
 
-const winner = (runtimeId: string, extra: Partial<SessionSandboxState> = {}): Omit<SessionSandboxState, "version"> =>
-  ({ handle: fake(runtimeId), stores: [], outputs: false, ...extra });
+/** The record of a writer that got there first: its sandbox is running. */
+const winner = (runtimeId: string, latestSnapshot: LatestSnapshot = { status: "none" }): SessionSandboxState =>
+  ({ ...initialSandboxState(), phase: "running", handle: fake(runtimeId), runStartedAt: 1, latestSnapshot });
+/** ...or it paused the sandbox. */
+const pausedWinner = (runtimeId: string): SessionSandboxState =>
+  ({ ...initialSandboxState(), phase: "paused", handle: fake(runtimeId), pauseRef: { provider: "fake", ref: `pause-${runtimeId}`, kind: "self" } });
 
 describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
   it("acquire: the loser releases the sandbox it started; the winner's record stays", async () => {
@@ -150,19 +160,19 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     await expect(a.sandbox.warm()).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
     expect(w.store.writes).toEqual(["won@v0", "lost@v0"]);
     expect(w.log).toEqual(["acquire:r1", "release:r1"]);
-    expect(w.store.get()?.handle).toEqual(fake("theirs"));
+    expect(w.store.get()).toMatchObject({ handle: fake("theirs") });
   });
 
   it("resume / new from the latest snapshot: the loser releases the sandbox it started, the snapshot is kept", async () => {
     const snapshotRef = { provider: "fake", ref: "snap-0", kind: "snapshot" as const };
-    const w = world({ handle: fake("r0"), stores: [], outputs: false, snapshotRef, restoreRequired: true, version: 3 }, ["r0"]);
+    const w = world({ ...winner("r0", taken(snapshotRef)), version: 3 }, ["r0"]);
     const a = w.core({ execution: attempt });
-    w.store.intrude(winner("theirs", { snapshotRef, restoreRequired: true }));
+    w.store.intrude(winner("theirs", taken(snapshotRef)));
     await expect(a.sandbox.exec("x")).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
     expect(w.store.writes).toEqual(["won@v3", "lost@v3"]);
     expect(w.log).toEqual(["attach:r0", "release:r0", "resume:snap-0", "release:from-snap-0"]);
     expect(w.log).not.toContain("discard:snap-0");
-    expect(w.store.get()).toMatchObject({ handle: fake("theirs"), snapshotRef, version: 4 });
+    expect(w.store.get()).toMatchObject({ handle: fake("theirs"), latestSnapshot: taken(snapshotRef), version: 4 });
   });
 
   it("publishing a snapshot: the loser discards only the snapshot it took; the previous one is not discarded", async () => {
@@ -170,18 +180,18 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     const a = w.core({ execution: attempt });
     await a.sandbox.exec("write-1");
     await a.sandbox.endExecution();
-    const previous = w.store.get()!.snapshotRef!;
+    const previous = latestRef(w.store.get());
     expect(previous.ref).toBe("snap-2");
     a.setExecution({ ...attempt, attemptId: "att_2" });
     await a.sandbox.exec("write-2");
     const before = w.store.writes.length;
-    w.store.intrude(winner("r1", { snapshotRef: previous, restoreRequired: true }), (state) => state.snapshotRef !== undefined && state.snapshotRef.ref !== previous.ref);
+    w.store.intrude(winner("r1", taken(previous)), (state) => state.latestSnapshot.status === "taken" && state.latestSnapshot.ref.ref !== previous.ref);
     w.log.length = 0;
     await a.sandbox.endExecution();
     // record (won), then the snapshot publish against the same version: one won, one lost.
     expect(w.store.writes.slice(before)).toEqual(["won@v4", "won@v5", "lost@v5"]);
     expect(w.log).toEqual(["checkpoint:snap-3", "discard:snap-3"]);
-    expect(w.store.get()).toMatchObject({ snapshotRef: previous, version: 6 });
+    expect(w.store.get()).toMatchObject({ latestSnapshot: taken(previous), version: 6 });
   });
 
   it("publishing a snapshot that wins discards the previous one only after the write", async () => {
@@ -194,7 +204,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     w.log.length = 0;
     await a.sandbox.endExecution();
     expect(w.log).toEqual(["checkpoint:snap-3", "discard:snap-2"]);
-    expect(w.store.get()?.snapshotRef?.ref).toBe("snap-3");
+    expect(latestRef(w.store.get()).ref).toBe("snap-3");
   });
 
   it("idle pause: the loser discards its pause ref and leaves the winner's record", async () => {
@@ -205,11 +215,10 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     a.setExecution(undefined);
     w.clock.now += 1_000;
     w.log.length = 0;
-    w.store.intrude(winner("theirs"), (state) => state.paused === true);
+    w.store.intrude(winner("theirs"), (state) => state.phase === "paused");
     expect(await a.sandbox.idlePause()).toBe("skipped");
     expect(w.log).toEqual(["pause:r1", "discard:pause-r1"]);
-    expect(w.store.get()).toMatchObject({ handle: fake("theirs") });
-    expect(w.store.get()?.paused).toBeUndefined();
+    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("theirs") });
   });
 
   it("lifetime refresh (pause → resume): the loser releases the sandbox it resumed when the winner names another", async () => {
@@ -221,7 +230,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     w.store.intrude(winner("theirs"));
     await expect(a.sandbox.exec("y")).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
     expect(w.log).toEqual(["pause:r1", "attach:r1", "release:r1"]);
-    expect(w.store.get()?.handle).toEqual(fake("theirs"));
+    expect(w.store.get()).toMatchObject({ handle: fake("theirs") });
   });
 
   it("lifetime refresh: a sandbox the winner's record names is not released", async () => {
@@ -230,10 +239,10 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     await a.sandbox.exec("x");
     w.clock.now += THRESHOLD + 1;
     w.log.length = 0;
-    w.store.intrude(winner("r1", { paused: true }));
+    w.store.intrude(pausedWinner("r1"));
     await expect(a.sandbox.exec("y")).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
     expect(w.log).toEqual(["pause:r1", "attach:r1"]);
-    expect(w.store.get()).toMatchObject({ handle: fake("r1"), paused: true });
+    expect(w.store.get()).toMatchObject({ phase: "paused", handle: fake("r1") });
   });
 
   it("release (failed execution): the loser keeps a sandbox the winner's record names", async () => {
@@ -241,10 +250,10 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     const a = w.core({ execution: attempt });
     await a.sandbox.exec("x");
     w.log.length = 0;
-    w.store.intrude(winner("r1", { paused: true }));
+    w.store.intrude(pausedWinner("r1"));
     await a.sandbox.failExecution();
     expect(w.log).not.toContain("release:r1");
-    expect(w.store.get()).toMatchObject({ handle: fake("r1"), paused: true });
+    expect(w.store.get()).toMatchObject({ phase: "paused", handle: fake("r1") });
   });
 
   it("release (failed execution): the loser releases its own sandbox the winner's record does not name", async () => {
@@ -255,7 +264,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     w.store.intrude(winner("theirs"));
     await a.sandbox.failExecution();
     expect(w.log).toEqual(["release:r1"]);
-    expect(w.store.get()?.handle).toEqual(fake("theirs"));
+    expect(w.store.get()).toMatchObject({ handle: fake("theirs") });
   });
 
   describe("lifetime refresh vs idle pause, both from the same version", () => {
@@ -269,14 +278,13 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
       w.clock.now += THRESHOLD + 1;
       const pausing = b.sandbox.idlePause(); // read the version, now held in pause
       await new Promise((r) => setTimeout(r, 0));
-      const version = w.store.get()!.version!;
+      const version = w.store.get()!.version;
       await a.sandbox.exec("y"); // refresh: pause → attach → recorded
       openPause.resolve();
       expect(await pausing).toBe("skipped");
       expect(w.store.writes.slice(-2)).toEqual([`won@v${version}`, `lost@v${version}`]);
       expect(w.log).toContain("discard:pause-r1");
-      expect(w.store.get()).toMatchObject({ handle: fake("r1"), runStartedAt: w.clock.now, version: version + 1 });
-      expect(w.store.get()?.paused).toBeUndefined();
+      expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("r1"), runStartedAt: w.clock.now, version: version + 1 });
     });
 
     it("the idle pause writes first: the refresh loses, keeps the sandbox the pause recorded, and the next call reopens it", async () => {
@@ -287,7 +295,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
       const openAttach = deferred();
       w.gates.attachAfterPause = openAttach.promise;
       w.clock.now += THRESHOLD + 1;
-      const version = w.store.get()!.version!;
+      const version = w.store.get()!.version;
       const refreshing = a.sandbox.exec("y"); // refresh: read the version, paused, attach held
       await new Promise((r) => setTimeout(r, 0));
       expect(await b.sandbox.idlePause()).toBe("paused");
@@ -295,7 +303,7 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
       await expect(refreshing).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
       expect(w.store.writes.slice(-2)).toEqual([`won@v${version}`, `lost@v${version}`]);
       expect(w.log.filter((entry) => entry.startsWith("release:"))).toEqual([]);
-      expect(w.store.get()).toMatchObject({ handle: fake("r1"), paused: true, version: version + 1 });
+      expect(w.store.get()).toMatchObject({ phase: "paused", handle: fake("r1"), version: version + 1 });
       // The next call opens the recorded (paused) sandbox again.
       expect(await a.sandbox.exec("z")).toBe("exit=0\n");
       expect(w.log.at(-1)).toBe("exec:z@r1");

@@ -9,7 +9,7 @@ function storage() {
   return { kv: { get: (key: string) => kv.get(key), put: (key: string, value: unknown) => { kv.set(key, value); }, delete: (key: string) => kv.delete(key) } } as unknown as Pick<DurableObjectStorage, "kv">;
 }
 
-const record = (runtimeId: string, version: number) => ({ handle: { provider: "fake", runtimeId }, stores: [], outputs: false, version });
+const record = (runtimeId: string, version: number) => ({ phase: "running" as const, handle: { provider: "fake", runtimeId }, runStartedAt: 1, latestSnapshot: { status: "none" as const }, stores: [], outputs: false, version });
 
 describe("durableObjectSandboxState", () => {
   it("of two writers from the same version only one wins; the winner's record stays", async () => {
@@ -19,13 +19,5 @@ describe("durableObjectSandboxState", () => {
     expect(await state.load()).toEqual(record("a", 1));
     expect(await state.save(record("c", 2), 1)).toBe(true);
     expect(await state.save(record("d", 2), 1)).toBe(false);
-  });
-
-  it("an older record without a version is version 0", async () => {
-    const s = storage();
-    s.kv.put("k", { handle: { provider: "fake", runtimeId: "old" }, stores: [], outputs: false });
-    const state = durableObjectSandboxState(s, "k");
-    expect(await state.save(record("new", 2), 1)).toBe(false);
-    expect(await state.save(record("new", 1), 0)).toBe(true);
   });
 });

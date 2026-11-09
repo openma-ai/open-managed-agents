@@ -20,7 +20,7 @@ async function twoProcesses() {
   return { a: new SqlSessionSandboxRecords(a), b: new SqlSessionSandboxRecords(b), sql: a };
 }
 
-const record = (runtimeId: string, version: number) => ({ handle: { provider: "fake", runtimeId }, stores: [], outputs: false, version });
+const record = (runtimeId: string, version: number) => ({ phase: "running" as const, handle: { provider: "fake", runtimeId }, runStartedAt: 1, latestSnapshot: { status: "none" as const }, stores: [], outputs: false, version });
 
 describe("SqlSessionSandboxRecords", () => {
   it("first write: of two inserts from version 0 only one wins", async () => {
@@ -35,25 +35,16 @@ describe("SqlSessionSandboxRecords", () => {
     await a.save("ws", "s1", record("r0", 1), 0);
     const [wonA, wonB] = await Promise.all([a.save("ws", "s1", record("ra", 2), 1), b.save("ws", "s1", record("rb", 2), 1)]);
     expect([wonA, wonB].filter(Boolean)).toHaveLength(1);
-    expect((await a.load("ws", "s1"))?.handle?.runtimeId).toBe(wonA ? "ra" : "rb");
+    expect(await a.load("ws", "s1")).toEqual(record(wonA ? "ra" : "rb", 2));
     expect(await a.save("ws", "s1", record("stale", 2), 1)).toBe(false);
   });
 
-  it("an older record without a version is version 0", async () => {
-    const { a, sql } = await twoProcesses();
-    await sql.prepare(`INSERT INTO kv_entries (tenant_id, "key", value, expires_at) VALUES (?, ?, ?, NULL)`)
-      .bind("ws", "session_sandbox_state:s1", JSON.stringify({ handle: { provider: "fake", runtimeId: "old" }, stores: [], outputs: false })).run();
-    expect(await a.save("ws", "s1", record("new", 2), 1)).toBe(false);
-    expect(await a.save("ws", "s1", record("new", 1), 0)).toBe(true);
-    expect(await a.load("ws", "s1")).toEqual(record("new", 1));
-  });
-
-  it("records are per workspace and Session; clear removes one", async () => {
+  it("records are per workspace and Session", async () => {
     const { a } = await twoProcesses();
     await a.save("ws", "s1", record("r1", 1), 0);
     await a.save("ws2", "s1", record("r2", 1), 0);
-    await a.clear("ws", "s1");
-    expect(await a.load("ws", "s1")).toBeUndefined();
-    expect((await a.load("ws2", "s1"))?.handle?.runtimeId).toBe("r2");
+    expect(await a.load("ws", "s1")).toEqual(record("r1", 1));
+    expect(await a.load("ws2", "s1")).toEqual(record("r2", 1));
+    expect(await a.load("ws", "s2")).toBeUndefined();
   });
 });

@@ -562,7 +562,11 @@ export class DefaultNodeManagedSessionRunner
     this.installSandbox(input, acquired, fingerprint);
     const root = await workspaceRootOf(acquired.sandbox);
     if (acquired.workspace === undefined) {
-      return `Files created in ${root} before the restart are gone.`;
+      // The Session sandbox core started it from its latest snapshot (design §0.0b A.4).
+      const restored = (acquired.sandbox as { restoredFromSnapshot?(): boolean }).restoredFromSnapshot?.() === true;
+      return restored
+        ? `${root} is back to its latest snapshot; files changed after that are gone.`
+        : `Files created in ${root} before the restart are gone.`;
     }
     return acquired.restoredFromMs === null
       ? `${root} is back to its initial state; files created before the restart are gone.`

@@ -4,10 +4,11 @@
 // Each step (open, storage and egress, renewal, lifetime refresh, idle
 // pause, execution end) works on this state; PortsSessionSandbox owns it.
 
-import type { MemoryStoreBinding, ResumeRef, SandboxHandle, SandboxPlan, SandboxPorts } from "@open-managed-agents/sandbox";
+import type { MemoryStoreBinding, SandboxHandle, SandboxPlan, SandboxPorts } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { executionKey, fenceFor, runtimeFenceOf } from "./session-sandbox-fence";
-import type { PortsSessionSandboxOptions, SessionSandboxExecution, SessionSandboxExecutor, SessionSandboxState } from "./session-sandbox-options";
+import type { PortsSessionSandboxOptions, SessionSandboxExecution, SessionSandboxExecutor } from "./session-sandbox-options";
+import { droppedSnapshots, initialSandboxState, recordedHandle, transition, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
 
 /** Another writer changed the Session sandbox record since this one read it
  * (design §0.0b A.10): this writer's result was dropped and what it started
@@ -38,8 +39,13 @@ export class LiveSessionSandbox<R> {
   refreshError: unknown = null;
   /** A snapshot in a tool-call gap (session-sandbox-snapshot); calls wait for it. */
   snapshotting: Promise<void> | null = null;
+  /** The open sandbox was started from a snapshot. */
+  restored = false;
   /** A call that may change the sandbox ran since the last snapshot. */
   dirty = false;
+  /** The adapter's checkpoint returned the sandbox itself: it has no snapshots
+   * (a bare v1 factory), so none are attempted again in this instance. */
+  snapshotsUnsupported = false;
   /** When the last snapshot was taken, else when this instance first opened the sandbox (0 = neither yet). */
   snapshotAt = 0;
   env: Record<string, string> = {};
@@ -123,32 +129,54 @@ export class LiveSessionSandbox<R> {
     void Promise.resolve(this.options.idle?.cancel()).catch(() => undefined);
   }
 
-  /** Writes `next` as version `expected` + 1 if the record is still at
-   * `expected` (design §0.0b A.10); false = another writer won, nothing written. */
-  async commit(next: SessionSandboxState, expected: number): Promise<boolean> {
-    const won = await this.options.state.save({ ...next, version: expected + 1 }, expected);
-    if (!won) this.options.warn(`sandbox_state_conflict expected_version=${expected}: another writer changed the Session sandbox record; this result is dropped`);
-    return won;
+  /** The record; a Session with none is in its initial state. */
+  async load(): Promise<SessionSandboxState> {
+    return (await this.options.state.load()) ?? initialSandboxState();
   }
 
-  /** Records `open` as the Session's sandbox, keeping the recorded restore
-   * points, against the version read here. The new version, or null when
-   * another writer won. */
-  async record(open: OpenSandbox<R>): Promise<number | null> {
-    const saved = await this.options.state.load();
-    const version = stateVersion(saved);
-    const won = await this.commit({
-      handle: open.handle, stores: this.stores, outputs: this.outputs, runStartedAt: open.runStartedAt,
-      ...restorePoints(saved),
-    }, version);
-    return won ? version + 1 : null;
+  /** One transition = one compare-and-set (design §0.0b A.11): the next record
+   * of `current` is written if the stored version is still `current`'s, then
+   * the snapshots it no longer references are discarded. Null = another writer
+   * won: nothing written, nothing discarded. An illegal transition throws
+   * SessionSandboxTransitionError. */
+  async apply(current: SessionSandboxState, action: SandboxAction): Promise<SessionSandboxState | null> {
+    const next: SessionSandboxState = {
+      ...transition(current, action),
+      stores: mergeStores(current.stores, this.stores),
+      outputs: current.outputs || this.outputs,
+    };
+    if (!await this.options.state.save(next, current.version)) {
+      this.options.warn(`sandbox_state_conflict expected_version=${current.version} action=${action.type}: another writer changed the Session sandbox record; this result is dropped`);
+      return null;
+    }
+    const dropped = droppedSnapshots(current, next);
+    if (dropped.length > 0) {
+      const { ports } = await this.compose();
+      for (const ref of dropped) {
+        await ports.sandbox.discard({ scope: this.scope(), ref }).catch((error) => this.options.warn(`sandbox_discard_failed ref=${ref.ref} error=${errorText(error)}`));
+        this.options.info?.(`sandbox_snapshot_discarded ref=${ref.ref} action=${action.type}`);
+      }
+    }
+    return next;
+  }
+
+  /** Records what is attached to `open`, the running sandbox of this record.
+   * The record, or null when another writer moved it on (a pause, a new
+   * sandbox): that writer's record stands. */
+  async record(open: OpenSandbox<R>): Promise<SessionSandboxState | null> {
+    const saved = await this.load();
+    if (saved.phase !== "running" || !sameHandle(saved.handle, open.handle)) {
+      this.options.warn(`sandbox_state_conflict phase=${saved.phase} runtime=${open.handle.runtimeId}: another writer changed the Session sandbox record; this result is dropped`);
+      return null;
+    }
+    return this.apply(saved, { type: "attach", handle: open.handle, at: open.runStartedAt });
   }
 
   /** Cleans up a sandbox this writer started but could not record: released,
    * unless the record names it (the winner holds it). */
   async releaseOwn(handle: SandboxHandle): Promise<void> {
-    const saved = await this.options.state.load().catch(() => undefined);
-    if (sameHandle(saved?.handle, handle)) return;
+    const saved = await this.load().catch(() => undefined);
+    if (saved !== undefined && sameHandle(recordedHandle(saved), handle)) return;
     const { ports } = await this.compose();
     await ports.sandbox.release({ scope: this.scope(), handle }).catch((error) => {
       this.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
@@ -169,27 +197,8 @@ export class LiveSessionSandbox<R> {
   }
 }
 
-/** What a new handle record carries over from the previous one: the pause
- * point, the latest snapshot and whether a restore is required. */
-export function restorePoints(saved: SessionSandboxState | undefined): Pick<SessionSandboxState, "resumeRef" | "snapshotRef" | "restoreRequired"> {
-  return {
-    ...(saved?.resumeRef === undefined ? {} : { resumeRef: saved.resumeRef }),
-    ...(saved?.snapshotRef === undefined ? {} : { snapshotRef: saved.snapshotRef }),
-    ...(saved?.restoreRequired === true ? { restoreRequired: true } : {}),
-  };
-}
-
 export function sameHandle(a: SandboxHandle | undefined, b: SandboxHandle | undefined): boolean {
   return a !== undefined && b !== undefined && a.provider === b.provider && a.runtimeId === b.runtimeId;
-}
-
-/** The record's version (design §0.0b A.10); none or an older record = 0. */
-export function stateVersion(saved: SessionSandboxState | undefined): number {
-  return saved?.version ?? 0;
-}
-
-export function sameRef(a: ResumeRef | undefined, b: ResumeRef | undefined): boolean {
-  return a !== undefined && b !== undefined && a.provider === b.provider && a.ref === b.ref;
 }
 
 export function mergeStores(base: MemoryStoreBinding[], current: MemoryStoreBinding[]): MemoryStoreBinding[] {

@@ -7,15 +7,14 @@
 import type {
   MemoryStoreBinding,
   ProcessHandle,
-  ResumeRef,
   SandboxDuplexProcess,
   SandboxDuplexProcessSpec,
   SandboxExecutor,
-  SandboxHandle,
   SandboxPlan,
   SandboxPorts,
 } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
+import type { SessionSandboxState, SnapshotRef } from "./session-sandbox-state";
 
 /** What a Session host calls on a sandbox runtime. */
 export type SessionSandboxExecutor = Pick<SandboxExecutor, "exec" | "readFile" | "writeFile"> & {
@@ -24,32 +23,6 @@ export type SessionSandboxExecutor = Pick<SandboxExecutor, "exec" | "readFile" |
   writeFileBytes(path: string, bytes: Uint8Array): Promise<string>;
   setEnvVars(env: Record<string, string>): Promise<void>;
 };
-
-/** The handle record: what a new owner of the Session needs to find its sandbox. */
-export interface SessionSandboxState {
-  /** The Session's sandbox (running or paused); absent after a failed
-   * execution released it. */
-  handle?: SandboxHandle;
-  stores: MemoryStoreBinding[];
-  outputs: boolean;
-  /** Start (epoch ms) of the sandbox's current continuous run. */
-  runStartedAt?: number;
-  /** The pause point recorded by the idle pause (design §0.1 step 8), when
-   * the adapter pauses in place (kind "self"): gone with the sandbox. */
-  resumeRef?: ResumeRef;
-  /** The latest snapshot (kind "snapshot"), kept apart from the pause point
-   * so a sandbox the provider reclaimed can be started again from it
-   * (design §0.0 rule 11). Only one is kept: a newer one discards it. */
-  snapshotRef?: ResumeRef;
-  /** Something ran in this Session's sandbox: losing it without a snapshot to
-   * start from is an error, never a silent empty sandbox. */
-  restoreRequired?: boolean;
-  /** The idle pause stopped the sandbox: attaching wakes it and starts a new run. */
-  paused?: boolean;
-  /** +1 on every write (design §0.0b A.10); absent (an older record) = 0.
-   * Every write is a compare-and-set against the version read before it. */
-  version?: number;
-}
 
 /** A Session execution attempt (managed_session_executions): the one fence
  * (design §0.0 rule 10). */
@@ -78,20 +51,18 @@ export interface PortsSessionSandboxOptions<R> {
   state: {
     load(): Promise<SessionSandboxState | undefined>;
     /** Atomic compare-and-set (design §0.0b A.10): stores `state` (its
-     * version is `expected` + 1) only when the stored version (no record, or
-     * a record without one = 0) is still `expected`; false = another writer
-     * got there first and nothing was written. */
+     * version is `expected` + 1) only when the stored version (no record = 0)
+     * is still `expected`; false = another writer got there first and nothing
+     * was written. */
     save(state: SessionSandboxState, expected: number): Promise<boolean>;
-    /** Session end only (destroy): the record is gone for good. */
-    clear(): Promise<void>;
   };
   scope(): RuntimeResourceScope;
   /** `stores`: stores already mounted through this runtime. */
   plan(input: { scope: RuntimeResourceScope; generation: string; stores: MemoryStoreBinding[] }): Promise<SandboxPlan>;
   /** The latest snapshot the host publishes itself (Cloudflare: D1
    * workspace_backups, where its snapshots are recorded too); preferred over
-   * the handle record's snapshotRef. null = only the handle record's. */
-  resumeRef(): Promise<ResumeRef | null>;
+   * the record's latestSnapshot. null = only the record's. */
+  resumeRef(): Promise<SnapshotRef | null>;
   /** Snapshot in a tool-call gap at most this often, and only when a call
    * ran since the last one (default SNAPSHOT_INTERVAL_MS). Every execution
    * end and idle pause also snapshots a changed sandbox. */

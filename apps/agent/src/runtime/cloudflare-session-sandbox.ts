@@ -3,13 +3,17 @@
 //
 // Composition only: createSandboxPorts + createCloudflareSandboxAdapter, handed
 // to the shared Session runtime (session-sandbox.ts). The handle is "fixed":
-// one Sandbox Durable Object per SessionDO; the rest of the handle record
-// (latest snapshot, restoreRequired, version) is kept in SessionDO storage,
+// one Sandbox Durable Object per SessionDO, so a Session with no record yet
+// starts from a running record naming it (attach is tried first, as a
+// container may outlive its record). The record is kept in SessionDO storage,
 // every write a compare-and-set on its version (session-sandbox-do-state).
 // Restore points are the D1 workspace backups (workspace-backups.ts):
-// OmaSandbox writes one when it backs up and stops an idle or destroyed
-// container, and every snapshot the core takes is recorded there too, so
-// the latest row is the latest snapshot whichever side took it.
+// OmaSandbox writes one when it backs up and stops a destroyed container or
+// one its idle backstop reclaims, and every snapshot the core takes is
+// recorded there too, so the latest row is the latest snapshot whichever
+// side took it. The core's idle pause (design §0.0b A.1, A.3) stops the
+// container at idlePauseMs: a snapshot, then stop; OmaSandbox's own idle
+// timeout is longer and only a backstop.
 //
 // Two deliberate differences from the adapter defaults:
 //   - egress binds the outbound handler to the Session execution attempt
@@ -30,7 +34,7 @@ import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from ".
 import { loadManagedSessionResources } from "./managed-session-resources";
 import { DEFAULT_WORKSPACE_BACKUP_TTL_SEC, findLatestBackup, recordBackup, type WorkspaceBackupHandle } from "./workspace-backups";
 import { durableObjectSandboxState, type SessionSandboxStateStorage } from "./session-sandbox-do-state";
-import { memoryStoreMountTarget, PortsSessionSandbox } from "@open-managed-agents/session-runtime";
+import { initialSandboxState, memoryStoreMountTarget, PortsSessionSandbox, type SessionSandboxIdleTimer } from "@open-managed-agents/session-runtime";
 
 export interface CloudflareSessionSandboxDeps {
   env: Env;
@@ -44,6 +48,8 @@ export interface CloudflareSessionSandboxDeps {
   /** The Session's current execution attempt (SessionDO's fence); undefined between turns. */
   fence(): SandboxExecutionFence | undefined;
   warn(message: string): void;
+  /** Schedules the core's idle pause (design §0.0 rule 11); `pauseMs` = IDLE_MS. */
+  idleTimer: Omit<SessionSandboxIdleTimer, "pauseMs">;
 }
 
 /** What the outbound binding needs of a SessionExecutionFence. */
@@ -51,6 +57,7 @@ export interface SandboxExecutionFence { executionId: string; attemptId: string;
 export const sandboxExecutionFenceKey = (fence: SandboxExecutionFence | undefined): string =>
   fence === undefined ? "" : `${fence.executionId}/${fence.attemptId}/${fence.ownerId}/${fence.generation}`;
 
+/** idlePauseMs; OmaSandbox's idle backstop (OMA_SANDBOX_IDLE_TIMEOUT_MS) is longer. */
 const IDLE_MS = 5 * 60_000;
 const START_ATTEMPTS = 3;
 const STATE_KEY = "cloudflare_sandbox_state";
@@ -78,8 +85,8 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     executor: () => sandbox,
     state: (() => {
       const stored = durableObjectSandboxState(deps.storage, STATE_KEY);
-      // The handle is always this Session's Sandbox DO.
-      return { ...stored, load: async () => ({ stores: [], outputs: false, ...await stored.load(), handle: handle() }) };
+      // No record yet: this Session's Sandbox DO, whose container may be running.
+      return { ...stored, load: async () => (await stored.load()) ?? { ...initialSandboxState(), phase: "running", handle: handle(), runStartedAt: 0 } };
     })(),
     scope,
     async plan({ scope: s, generation }) {
@@ -95,7 +102,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     },
     async resumeRef() {
       const backup = await latestBackup(deps.env, deps.session());
-      return backup === null ? null : { provider: "cloudflare", ref: backup.id, kind: "snapshot", metadata: { kind: "backup", backup: JSON.stringify(backup) } };
+      return backup === null ? null : { provider: "cloudflare", ref: backup.id, kind: "snapshot" as const, metadata: { kind: "backup", backup: JSON.stringify(backup) } };
     },
     warn: deps.warn,
     outputDurability: () => sandbox.sessionOutputMountCapabilities(),
@@ -105,6 +112,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     egressRenewMs: null,
     execution: () => deps.fence?.(),
     isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
+    idle: { pauseMs: IDLE_MS, ...deps.idleTimer },
   });
 }
 

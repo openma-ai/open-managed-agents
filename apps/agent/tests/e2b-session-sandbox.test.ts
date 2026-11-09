@@ -11,7 +11,7 @@ import {
   storageConfig,
 } from "../src/runtime/e2b-session-sandbox";
 import { sessionEgressPolicy } from "@open-managed-agents/sandbox-port-kit";
-import { STORAGE_SYNC_INTERVAL_MS } from "@open-managed-agents/session-runtime";
+import { initialSandboxState, STORAGE_SYNC_INTERVAL_MS, type SessionSandboxState } from "@open-managed-agents/session-runtime";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "sess" };
 
@@ -27,7 +27,10 @@ function fakeRuntime(id: string) {
   } as unknown as E2BSandboxExecutor & { id: string; env: Record<string, string> };
 }
 
-function harness(saved?: { handle: { provider: string; runtimeId: string }; stores: never[]; outputs: boolean }) {
+const running = (runtimeId: string, outputs = false): SessionSandboxState =>
+  ({ ...initialSandboxState(), phase: "running", handle: { provider: "e2b", runtimeId }, runStartedAt: 0, outputs });
+
+function harness(saved?: SessionSandboxState) {
   const log: string[] = [];
   const clock = { now: 1_000_000 };
   let syncFails: Error | null = null;
@@ -61,9 +64,8 @@ function harness(saved?: { handle: { provider: string; runtimeId: string }; stor
     compose: async () => ({ ports, vendor: {} as never }),
     idle: { pauseMs: 300_000, schedule: (ms) => { timers.push(`schedule:${ms}`); }, cancel: () => { timers.push("cancel"); } },
     state: {
-      load: async () => stored as never,
-      save: async (state, expected) => { if (((stored as { version?: number } | undefined)?.version ?? 0) !== expected) return false; stored = state as never; return true; },
-      clear: async () => { stored = undefined; },
+      load: async () => stored,
+      save: async (state, expected) => { if ((stored?.version ?? 0) !== expected) return false; stored = state; return true; },
     },
     scope: () => scope,
     plan: async (s, stores) => ({
@@ -82,22 +84,22 @@ describe("E2BSessionSandbox", () => {
     expect(await h.sandbox.exec("echo hi")).toBe("exit=0\nran:echo hi");
     expect(await h.sandbox.exec("fail")).toBe("exit=2\nout\nstderr: bad");
     expect(h.log).toEqual(["acquire", "egress.attach:open"]);
-    expect(h.stored()?.handle).toEqual({ provider: "e2b", runtimeId: "new" });
+    expect(h.stored()).toMatchObject({ phase: "running", handle: { provider: "e2b", runtimeId: "new" } });
   });
 
   it("re-attaches a saved handle and re-applies storage and env", async () => {
-    const h = harness({ handle: { provider: "e2b", runtimeId: "old" }, stores: [], outputs: true });
+    const h = harness(running("old", true));
     await h.sandbox.setEnvVars({ A: "1" });
     await h.sandbox.exec("true");
     expect(h.log).toEqual(["attach:old", "egress.attach:open", "storage.attach:0"]);
   });
 
   it("releases a gone handle and acquires a new sandbox", async () => {
-    const h = harness({ handle: { provider: "e2b", runtimeId: "old" }, stores: [], outputs: false });
+    const h = harness(running("old"));
     h.goneOnAttach();
     await h.sandbox.exec("true");
     expect(h.log).toEqual(["attach:old", "release:old", "acquire", "egress.attach:open"]);
-    expect(h.stored()?.handle.runtimeId).toBe("new");
+    expect(h.stored()).toMatchObject({ handle: { runtimeId: "new" } });
   });
 
   it("mounts stores and outputs, publishes at turn end and releases on destroy", async () => {
@@ -116,7 +118,7 @@ describe("E2BSessionSandbox", () => {
       "acquire", "egress.attach:open", "storage.attach:0", "storage.attach:1",
       "storage.sync:turn_end", "storage.detach", "egress.revoke", "release:new",
     ]);
-    expect(h.stored()).toBeUndefined();
+    expect(h.stored()).toMatchObject({ phase: "released" });
   });
 });
 
@@ -129,7 +131,7 @@ describe("E2BSessionSandbox idle pause (design §0.0 rule 11)", () => {
     h.clock.now += 300_000;
     expect(await h.sandbox.idlePause()).toBe("paused");
     expect(h.log.slice(-3)).toEqual(["storage.sync:before_stop", "storage.detach", "pause:new"]);
-    expect(h.stored()).toMatchObject({ handle: { runtimeId: "new" }, paused: true });
+    expect(h.stored()).toMatchObject({ phase: "paused", handle: { runtimeId: "new" } });
     const before = h.log.length;
     await h.sandbox.exec("again");
     expect(h.log.slice(before)).toEqual(["attach:new", "egress.attach:open", "storage.attach:0"]);

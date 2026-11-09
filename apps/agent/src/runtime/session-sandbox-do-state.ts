@@ -16,6 +16,5 @@ export function durableObjectSandboxState(storage: SessionSandboxStateStorage, k
       storage.kv.put(key, state);
       return true;
     },
-    clear: async () => { storage.kv.delete(key); },
   };
 }

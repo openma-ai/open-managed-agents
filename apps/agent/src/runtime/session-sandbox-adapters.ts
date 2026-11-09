@@ -26,8 +26,7 @@ export interface SessionSandboxDeps {
   /** The Session's current execution attempt (design §0.0 rule 10). */
   fence(): SandboxExecutionFence | undefined;
   warn(message: string): void;
-  /** Idle pause timer for adapters the host pauses (E2B); the Cloudflare
-   * container stops itself through sleepAfter. */
+  /** The core's idle pause timer (design §0.0b A.1). */
   idleTimer: Omit<SessionSandboxIdleTimer, "pauseMs">;
 }
 

@@ -479,10 +479,12 @@ const githubAuthHandler = async (
 
 
 
-/** Idle reclaim: snapshot and stop a container after this long without a
- * Durable Object request (same 5m as the 0.12 `sleepAfter`). Override with
- * the SANDBOX_IDLE_TIMEOUT_MS variable. */
-export const OMA_SANDBOX_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/** Idle reclaim backstop: snapshot and stop a container after this long
+ * without a Durable Object request. The core's idle pause (5 min, design
+ * §0.0b A.1) stops it first; this only runs if that pause never did, so it is
+ * idlePauseMs + SANDBOX_LEASE_MARGIN_MS. Override with the
+ * SANDBOX_IDLE_TIMEOUT_MS variable. */
+export const OMA_SANDBOX_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 /** Extra time before the platform stops a container whose idle alarm could
  * not run. Cloudflare counts Durable Object requests, not container traffic,
  * as activity. */

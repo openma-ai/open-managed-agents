@@ -15,7 +15,6 @@ import { stateVersion, type SessionSandboxState } from "@open-managed-agents/ses
 export interface NodeSessionSandboxRecords {
   load(workspaceId: string, sessionId: string): Promise<SessionSandboxState | undefined>;
   save(workspaceId: string, sessionId: string, state: SessionSandboxState, expected: number): Promise<boolean>;
-  clear(workspaceId: string, sessionId: string): Promise<void>;
 }
 
 const keyOf = (sessionId: string) => `session_sandbox_state:${sessionId}`;
@@ -38,10 +37,6 @@ export class SqlSessionSandboxRecords implements NodeSessionSandboxRecords {
       : await this.sql.prepare(`UPDATE kv_entries SET value = ? WHERE tenant_id = ? AND "key" = ? AND value = ?`)
           .bind(value, workspaceId, keyOf(sessionId), raw).run();
     return result.meta.changes === 1;
-  }
-
-  async clear(workspaceId: string, sessionId: string): Promise<void> {
-    await this.sql.prepare(`DELETE FROM kv_entries WHERE tenant_id = ? AND "key" = ?`).bind(workspaceId, keyOf(sessionId)).run();
   }
 
   private async raw(workspaceId: string, sessionId: string): Promise<string | null> {

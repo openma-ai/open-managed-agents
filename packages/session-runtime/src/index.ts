@@ -71,10 +71,24 @@ export type {
   SessionSandboxExecution,
   SessionSandboxExecutor,
   SessionSandboxIdleTimer,
-  SessionSandboxState,
 } from "./session-sandbox-options";
+export {
+  initialSandboxState,
+  recordedHandle,
+  SANDBOX_TRANSITIONS,
+  SessionSandboxTransitionError,
+  stateVersion,
+  transition,
+  type LatestSnapshot,
+  type SandboxAction,
+  type SandboxActionType,
+  type SandboxPhase,
+  type SandboxPhaseName,
+  type SessionSandboxState,
+  type SnapshotRef,
+} from "./session-sandbox-state";
 export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
-export { SessionSandboxStateConflictError, stateVersion } from "./session-sandbox-live";
+export { SessionSandboxStateConflictError } from "./session-sandbox-live";
 export { SandboxRestoreError } from "./session-sandbox-open";
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";
