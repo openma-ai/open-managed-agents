@@ -91,3 +91,40 @@ it.each([
     expect(attempts).toBe(1);
   }
 });
+
+// Catches classifying a persistence outage as failed execution after admission.
+// Every tick reads the actual service row, never a frozen active snapshot.
+it.each(["provisioning", "agent"])("a failed %s progress save recovers canonical dispatch and finishes scoring", async phase => {
+  const f = fixture(), { service } = createInMemoryEvalRunService(), kv = new InMemoryKvStore();
+  const row = await service.create({ tenantId: "w", agentId: "a", environmentId: "env", results: {
+    kind: "messages", agent_id: "a", environment_id: "env", task_count: 1, completed_count: 0, failed_count: 0,
+    tasks: [{ id: "case", status: "running", spec: { id: "case", messages: phase === "agent" ? ["prior", "last"] : ["last"] },
+      trials: [{ trial_index: 0, status: "running", phase, session_id: "s", started_at: new Date().toISOString(), current_message_index: 0, ...(phase === "agent" ? { message_event_id: "prior" } : {}) }] }],
+  } });
+  await service.update({ tenantId: "w", runId: row.id, status: "running" });
+  const before = await service.get({ tenantId: "w", runId: row.id });
+  const update = service.update.bind(service); let fail = true;
+  service.update = async input => { if (fail) { fail = false; throw Error("progress save unavailable"); } return update(input); };
+  const ctx: EvalRunnerContext = {
+    forEachShard: async fn => [await fn({ evals: service, kv })],
+    getServicesForTenant: async () => ({ evals: service, kv }),
+    runtimeFor: () => ({ ...f.runtime(), settledAfter: async () => ({ settled: true, stopReason: "end_turn" }),
+      trajectoryConfigs: async () => ({ agent: { model: "test" }, environment: { type: "cloud" } }), listEvents: async () => f.facts,
+      status: async () => "idle", releaseSandbox: async () => {} }),
+    benchmarksFor: () => ({}) as any,
+  };
+  await tickEvalRuns(ctx);
+  const immediate = await service.get({ tenantId: "w", runId: row.id });
+  expect(immediate!.status).toBe("running");
+  expect(immediate!.results).toEqual(before!.results);
+  expect(f.facts).toHaveLength(1); expect(f.dispatches()).toBe(1);
+  await tickEvalRuns(ctx); // reload original state and recover the accepted id
+  const recovered = await service.get({ tenantId: "w", runId: row.id });
+  expect((recovered!.results as any).tasks[0].trials[0].message_event_id).toBe(f.facts[0].id);
+  await tickEvalRuns(ctx); // actual persisted state now reaches grading
+  const completed = await service.get({ tenantId: "w", runId: row.id });
+  expect(completed!.status).toBe("completed");
+  const trial = (completed!.results as any).tasks[0].trials[0];
+  expect(trial.status).toBe("completed"); expect(trial.reward).toBe(1); expect(trial.trajectory_id).toBeTruthy();
+  expect(f.facts).toHaveLength(1); expect(f.dispatches()).toBe(1);
+});

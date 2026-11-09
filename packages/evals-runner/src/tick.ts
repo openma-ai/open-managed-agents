@@ -62,7 +62,17 @@ async function loadRun(ctx: EvalRunnerContext, tenantId: string, runId: string):
   return row ? rowToRecord(row) : null;
 }
 
+/** A storage failure is not evidence that the Session execution failed. */
+class EvalRunSaveError extends Error {
+  constructor(cause: unknown) { super(errorText(cause), { cause }); }
+}
+
 async function saveRun(ctx: EvalRunnerContext, run: EvalRunRecord): Promise<void> {
+  try { await persistRun(ctx, run); }
+  catch (error) { throw new EvalRunSaveError(error); }
+}
+
+async function persistRun(ctx: EvalRunnerContext, run: EvalRunRecord): Promise<void> {
   const services = await ctx.getServicesForTenant(run.tenant_id);
   // A run cancelled while this tick worked on it stays cancelled.
   const current = await services.evals.get({ tenantId: run.tenant_id, runId: run.id });
@@ -412,6 +422,12 @@ export async function tickEvalRuns(ctx: EvalRunnerContext): Promise<{ advanced: 
         await advanceRun(ctx, run);
         advanced++;
       } catch (err) {
+        if (err instanceof EvalRunSaveError) {
+          // Leave canonical run state intact. The next tick reloads it and
+          // keyed message admission recovers an already dispatched event id.
+          logWarn({ op: "eval.run.save_retry", run_id: run.id, err: errorText(err) }, "run progress save failed; retrying from durable state on the next tick");
+          continue;
+        }
         run.status = "failed";
         run.error = errorText(err);
         run.ended_at = new Date().toISOString();
