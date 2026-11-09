@@ -301,6 +301,8 @@ export const managed_environment_work = pgTable(
     revision: bigint("revision", { mode: "number" }).notNull(),
     state: text("state").notNull(),
     created_at: bigint("created_at", { mode: "number" }).notNull(),
+    /** Runtime Host restore pointer, written under the Work claim (ADR 0005). */
+    runtime_publication_json: text("runtime_publication_json"),
   },
   (table) => [
     primaryKey({ columns: [table.workspace_id, table.id] }),

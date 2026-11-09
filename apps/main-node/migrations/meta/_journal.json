@@ -232,6 +232,13 @@
       "when": 1794189209187,
       "tag": "0032_sandbox_token_hashes",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794205943781,
+      "tag": "0033_work_claim_publication",
+      "breakpoints": true
     }
   ]
 }
