@@ -11,12 +11,13 @@ const prompts: string[] = [];
 let alive = true;
 let failPrompt = false;
 let terminalError = false;
+let resumeSame = false;
 
 vi.mock("../../acp-runtime/src/placement.ts", () => ({
   createAcpRuntime: () => ({
     async start(options: Record<string, unknown>) {
       started.push(options);
-      const id = `acp_${started.length}`;
+      const id = resumeSame && options.resumeAcpSessionId ? String(options.resumeAcpSessionId) : `acp_${started.length}`;
       return {
         acpSessionId: id,
         isAlive: () => alive,
@@ -157,7 +158,47 @@ describe("acp-sandbox child lifetime", () => {
     expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"session.error",error:expect.stringContaining("provider disconnected")}));
     expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"span.model_request_end",is_error:true}));
   });
-  beforeEach(() => { terminalError = false; failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
+  it.each(["missing", "corrupt", "unreadable"])("tries durable native identity before rebuild when checkpoint is %s", async failure => {
+    const s = sandbox(false), ctx = context(s.port);
+    await new AcpSandboxHarness().run(ctx);
+    for (const key of s.files.keys()) failure === "corrupt" ? s.files.set(key,"{broken") : s.files.delete(key);
+    if (failure === "unreadable") s.port.readFile = async () => {throw new Error("denied");};
+    const recovered = context(s.port);
+    recovered.acpRecoveryHistory = ctx.runtime.history.getEvents();
+    resumeSame = true;
+    await new AcpSandboxHarness().run(recovered);
+    expect(started.at(-1)).toHaveProperty("resumeAcpSessionId", "acp_1");
+    expect(recovered.runtime.history.getEvents()).not.toContainEqual(expect.objectContaining({source:"oma.acp_context",details:expect.objectContaining({state:"rebuilt"})}));
+  });
+  it.each(["configuration", "id", "fingerprint"])("does not trust a checkpoint with a %s mismatch", async mismatch => {
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.runtime.broadcast({type:"user.message",content:[{type:"text",text:"valid consumed history"}]});
+    await new AcpSandboxHarness().run(ctx);
+    for (const [key, raw] of s.files) {
+      const checkpoint = JSON.parse(raw);
+      if (mismatch === "configuration") checkpoint.configurationSha256 = "other";
+      else if (mismatch === "id") checkpoint.acpSessionId = "other";
+      else checkpoint.extra = "modified";
+      s.files.set(key, JSON.stringify(checkpoint));
+    }
+    const recovered = context(s.port);
+    recovered.acpRecoveryHistory = ctx.runtime.history.getEvents();
+    await new AcpSandboxHarness().run(recovered);
+    expect(started.at(-1)).not.toHaveProperty("resumeAcpSessionId");
+    expect(prompts.at(-1)).toContain("valid consumed history");
+  });
+  it("does not reuse a missing checkpoint identity after configuration changes", async () => {
+    const s = sandbox(false), ctx = context(s.port);
+    ctx.runtime.broadcast({type:"user.message",content:[{type:"text",text:"valid consumed history"}]});
+    await new AcpSandboxHarness().run(ctx);
+    s.files.clear();
+    const recovered = context(s.port, {agent:{command:"different-acp"}});
+    recovered.acpRecoveryHistory = ctx.runtime.history.getEvents();
+    await new AcpSandboxHarness().run(recovered);
+    expect(started.at(-1)).not.toHaveProperty("resumeAcpSessionId");
+    expect(prompts.at(-1)).toContain("valid consumed history");
+  });
+  beforeEach(() => { resumeSame = false; terminalError = false; failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
 
   it("ignores idle_timeout_ms: it belongs to acp-proxy", async () => {
     const s = sandbox(false);

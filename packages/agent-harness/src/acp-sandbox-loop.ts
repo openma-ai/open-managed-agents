@@ -374,10 +374,16 @@ export class AcpSandboxHarness implements HarnessInterface {
     configKey: string,
     checkpointPath: string,
   ): Promise<string | null> {
+    const expected = await configurationDigest(configKey);
+    const durableId = this.#contextState.state !== "none"
+      && this.#contextState.state !== "started"
+      && (!this.#contextState.configuration_sha256 || this.#contextState.configuration_sha256 === expected)
+      ? this.#contextState.acp_session_id : null;
     let parsed: unknown;
     try {
       parsed = JSON.parse(await runtime.sandbox.readFile(checkpointPath));
     } catch {
+      if (durableId) return durableId;
       if (this.#contextState.state !== "none") this.#semanticRecoveryReason = "checkpoint-unavailable";
       return null;
     }
@@ -389,10 +395,10 @@ export class AcpSandboxHarness implements HarnessInterface {
       typeof (parsed as { acpSessionId?: unknown }).acpSessionId !== "string" ||
       (parsed as { acpSessionId: string }).acpSessionId.length === 0
     ) {
+      if (durableId) return durableId;
       if (this.#contextState.state !== "none") this.#semanticRecoveryReason = "checkpoint-unavailable";
       return null;
     }
-    const expected = await configurationDigest(configKey);
     const checkpoint = parsed as AcpSandboxCheckpoint;
     const fingerprint = await configurationDigest(JSON.stringify(checkpoint));
     if (checkpoint.configurationSha256 !== expected || (this.#contextState.state !== "none" && (this.#contextState.acp_session_id !== checkpoint.acpSessionId || this.#contextState.checkpoint_fingerprint !== fingerprint))) {
@@ -418,7 +424,7 @@ export class AcpSandboxHarness implements HarnessInterface {
       checkpointPath,
       `${JSON.stringify(checkpoint)}\n`,
     );
-    this.#contextState = transitionHarnessContext(this.#contextState, { type: "record_native", id: acpSessionId, fingerprint: await configurationDigest(JSON.stringify(checkpoint)) });
+    this.#contextState = { ...transitionHarnessContext(this.#contextState, { type: "record_native", id: acpSessionId, fingerprint: await configurationDigest(JSON.stringify(checkpoint)) }), configuration_sha256: checkpoint.configurationSha256 } as HarnessContextState;
     runtime.broadcast({ type: "session.warning", source: "oma.acp_context", message: "Agent-native context checkpoint recorded.", details: { ...this.#contextState } });
   }
 
