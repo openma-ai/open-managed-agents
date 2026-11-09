@@ -187,7 +187,13 @@ export async function settleDeadExecutionFailure(
 
 /** Reuse the failed owner's existing attempt reference, never mint recovery ownership. */
 export function failedExecutionSettlementFence(execution: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecution): import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence {
-  if (!execution.attempt) throw new Error("Failed execution has no attempt proof for settlement");
+  if (!execution.attempt) return {
+    executionId: execution.id, workspaceId: execution.workspaceId, sessionId: execution.sessionId,
+    // No owner is invented: these unused fields preserve the existing fence
+    // wire shape; failed_unclaimed checks identity plus NULL attempt in SQL.
+    attemptId: "", ownerId: "", generation: 0, expiresAt: execution.settledAt ?? execution.admittedAt,
+    settlement: "failed_unclaimed",
+  };
   return { executionId: execution.id, workspaceId: execution.workspaceId, sessionId: execution.sessionId,
     attemptId: execution.attempt.id, ownerId: execution.attempt.ownerId, generation: execution.attempt.generation,
     expiresAt: execution.attempt.leaseExpiresAt, settlement: "failed" };

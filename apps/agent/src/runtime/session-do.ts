@@ -1,5 +1,5 @@
 import { TurnInvocation } from "./turn-invocation";
-import { appendStaleTurnEvent } from "./stale-turn-settlement";
+import { appendStaleTurnEvent, backfillStaleTurnEvents } from "./stale-turn-settlement";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -3315,8 +3315,8 @@ export class SessionDO extends DurableObject<Env> {
         { status: 200, headers: { "content-type": "application/json" } });
     }
 
-    // GET /events — paginated event list
-    if (request.method === "GET" && url.pathname === "/events") {
+    // GET /events — reconcile committed recovery facts before reading local history.
+    if (request.method === "GET" && url.pathname === "/events") { await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, hasEvent: id => this.ctx.storage.sql.exec("SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", id).toArray().length > 0, append: e => this.runtimeAdapter.eventLog.append(e), sockets: () => this.ctx.getWebSockets() });
       const limitParam = url.searchParams.get("limit");
       let limit = limitParam ? parseInt(limitParam, 10) : 100;
       if (isNaN(limit) || limit < 1) limit = 100;
@@ -7809,7 +7809,7 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    await finalizeStaleTurns({
+    await backfillStaleTurnEvents({ binding: this.env.MAIN_MCP, workspaceId: this.state.tenant_id, sessionId: this.state.session_id, hasEvent: id => this.ctx.storage.sql.exec("SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", id).toArray().length > 0, append: e => this.runtimeAdapter.eventLog.append(e), sockets: () => this.ctx.getWebSockets() }); await finalizeStaleTurns({
       unknownToolResultText: UNKNOWN_TOOL_RESULT_TEXT,
       instanceStartedAt: this._instanceStartedAt,
       now: () => Date.now(),

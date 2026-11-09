@@ -448,7 +448,7 @@ describe("SqlSessionPersistence", () => {
       .toMatchObject({ status: "idle" });
   });
 
-  it.each([false, true])("fences failed-owner settlement at the transaction boundary (new execution: %s)", async superseded => {
+  it.each([[false, false], [true, false], [false, true], [true, true]])("fences failed-owner settlement (new execution: %s, unclaimed: %s)", async (superseded, unclaimed) => {
     await ensureSessionExecutionCoordinatorSchema(client);
     const sessions = new SqlSessionPersistence(client, testSealer);
     await sessions.insert({ workspaceId: "workspace_01", session, initialEvents: [], resourceSecrets: [] });
@@ -458,9 +458,14 @@ describe("SqlSessionPersistence", () => {
       events: [{ id, type: "user.message", content: [{ type: "text", text: "run" }], processedAt: time }],
     } });
     await admit("old", "2026-08-26T02:00:00.000Z");
-    const claimed = await coordinator.claim({ ownerId: "gone", attemptId: "old-attempt", claimedAt: "2026-08-26T02:00:01.000Z", leaseTtlMs: 1_000 });
-    if (claimed.type !== "claimed") throw new Error("claim");
-    await coordinator.settle({ fence: claimed.fence, outcome: "failed", failure: "dead", settledAt: "2026-08-26T02:00:01.500Z" });
+    if (unclaimed) {
+      await client.prepare("UPDATE managed_session_executions SET deadline_at_ms = ? WHERE id = 'old'").bind(Date.parse("2026-08-26T02:00:01.000Z")).run();
+      await coordinator.sweepExpired(Date.parse("2026-08-26T02:00:01.500Z"));
+    } else {
+      const claimed = await coordinator.claim({ ownerId: "gone", attemptId: "old-attempt", claimedAt: "2026-08-26T02:00:01.000Z", leaseTtlMs: 1_000 });
+      if (claimed.type !== "claimed") throw new Error("claim");
+      await coordinator.settle({ fence: claimed.fence, outcome: "failed", failure: "dead", settledAt: "2026-08-26T02:00:01.500Z" });
+    }
     const candidate = await coordinator.latestSettled({ workspaceId: "workspace_01", sessionId: session.id });
     expect(candidate?.state).toBe("failed");
     const { DefaultNodeManagedSessionRuntimeDriver } = await import("../../control-plane-node/src/lib/node-managed-session-runtime");

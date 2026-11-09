@@ -716,7 +716,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
         // Keep-first: the original event is already recorded and published.
         if (projected.type === "event_id_collision") return;
         if (projected.type === "execution_fence_lost") {
-          if (executionFence?.settlement === "failed") throw Object.assign(new Error("Dead execution settlement superseded"), { name: "ExecutionFenceLostError" });
+          if (executionFence?.settlement !== undefined) throw Object.assign(new Error("Dead execution settlement superseded"), { name: "ExecutionFenceLostError" });
           throw new Error(
             `Session ${workspaceId}/${sessionId} execution fence was lost`,
           );

@@ -103,8 +103,9 @@ export class SqlSessionRuntimeProjectionPersistence
         environmentWorkFence.generation < 1)
     ) return { type: "execution_fence_lost" };
     const now = this.#now().getTime();
-    const fenceSql = fence?.settlement === "failed"
-      ? `AND EXISTS (${FAILED_ATTEMPT_SQL})`
+    const failedSql = fence?.settlement === "failed_unclaimed" ? FAILED_ATTEMPT_SQL.replace("old.attempt_id = ? AND old.owner_id = ? AND old.generation = ?", "old.attempt_id IS NULL AND old.attempt_count = 0") : FAILED_ATTEMPT_SQL;
+    const fenceSql = fence?.settlement !== undefined
+      ? `AND EXISTS (${failedSql})`
       : fence !== undefined
       ? `AND EXISTS (
            SELECT 1 FROM managed_session_executions
@@ -126,10 +127,8 @@ export class SqlSessionRuntimeProjectionPersistence
           fence.workspaceId,
           fence.executionId,
           fence.sessionId,
-          fence.attemptId,
-          fence.ownerId,
-          fence.generation,
-          ...(fence.settlement === "failed" ? [] : [now]),
+          ...(fence.settlement === "failed_unclaimed" ? [] : [fence.attemptId, fence.ownerId, fence.generation]),
+          ...(fence.settlement !== undefined ? [] : [now]),
         ]
       : environmentWorkFence !== undefined
         ? [
@@ -262,7 +261,21 @@ export class SqlSessionRuntimeProjectionPersistence
       `UPDATE managed_sessions SET revision = revision
         WHERE workspace_id = ? AND id = ? AND revision = ? ${fenceSql}`,
     ).bind(input.workspaceId, input.sessionId, input.expectedRevision, ...fenceBindings);
-    const results = await this.client.batch([revisionGuard, ...eventStatements, ...threadStatements, update]);
+    const statements = [revisionGuard, ...eventStatements, ...threadStatements, update];
+    const rejected = new Error("Runtime projection admission changed inside transaction");
+    let results;
+    try {
+      // READ COMMITTED may change the fence between statements. Never commit
+      // earlier events/threads when the final CAS or an event write rejects.
+      results = this.client.batchChecked
+        ? await this.client.batchChecked(statements, rows => {
+          if (rows.at(-1)?.meta.changes !== 1 || rows.slice(1, 1 + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
+        })
+        : await this.client.batch(statements); // D1: one atomic SQLite snapshot.
+    } catch (error) {
+      if (error !== rejected) throw error;
+      results = [{ meta: { changes: 0 } }];
+    }
     const updateResult = results[results.length - 1];
     if (updateResult === undefined) {
       throw new Error("Runtime projection batch returned no update result");
@@ -296,9 +309,10 @@ export class SqlSessionRuntimeProjectionPersistence
     now: number,
   ): Promise<boolean> {
     const fence = input.executionFence;
-    if (fence?.settlement === "failed") {
-      const row = await this.client.prepare(FAILED_ATTEMPT_SQL)
-        .bind(fence.workspaceId, fence.executionId, fence.sessionId, fence.attemptId, fence.ownerId, fence.generation).first();
+    if (fence?.settlement !== undefined) {
+      const sql = fence.settlement === "failed_unclaimed" ? FAILED_ATTEMPT_SQL.replace("old.attempt_id = ? AND old.owner_id = ? AND old.generation = ?", "old.attempt_id IS NULL AND old.attempt_count = 0") : FAILED_ATTEMPT_SQL;
+      const row = await this.client.prepare(sql)
+        .bind(fence.workspaceId, fence.executionId, fence.sessionId, ...(fence.settlement === "failed_unclaimed" ? [] : [fence.attemptId, fence.ownerId, fence.generation])).first();
       return row !== null;
     }
     if (fence !== undefined) {

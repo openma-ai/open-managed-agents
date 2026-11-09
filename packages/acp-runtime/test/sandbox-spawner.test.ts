@@ -51,6 +51,18 @@ function openStdoutProcess(dieOn: "initialize" | "session/prompt") {
 const agent = { command: "open-stdout-agent", cwd: "/workspace" };
 
 describe("SandboxSpawner stdout", () => {
+  it("does not keep Node alive for the exit observation window", async () => {
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    const child = openStdoutProcess("session/prompt");
+    try {
+      await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);
+      child.die();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      const index = timer.mock.calls.findIndex(call => call[1] === STDOUT_DRAIN_AFTER_EXIT_MS * 2);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(timer.mock.results[index].value.hasRef()).toBe(false);
+    } finally { timer.mockRestore(); }
+  });
   it("logs bounded payload-free exit and both output drain timings", async () => {
     const log = vi.spyOn(console, "info").mockImplementation(() => {});
     try {

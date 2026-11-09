@@ -85,6 +85,7 @@ function toChildHandle(
       }
       report();
     }, STDOUT_DRAIN_AFTER_EXIT_MS * 2);
+    (reportTimer as unknown as { unref?: () => void } | undefined)?.unref?.();
   });
   let handle: ChildHandle;
   const onTransportError = (error: SandboxAcpTransportError) => { if (error.channel === "stdout") transportErrors.set(handle, error); };

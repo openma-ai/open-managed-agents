@@ -20,7 +20,7 @@ export interface SessionExecutionFence {
   generation: number;
   expiresAt: string;
   /** Recover only this failed attempt; persistence must reject newer work atomically. */
-  settlement?: "failed";
+  settlement?: "failed" | "failed_unclaimed";
 }
 
 /**

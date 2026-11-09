@@ -173,7 +173,11 @@ export class PostgresSqlClient implements SqlClient {
     return retryPostgres(() => this.batchOnce<T>(stmts));
   }
 
-  private async batchOnce<T = unknown>(stmts: SqlStatement[]): Promise<Array<SqlRunResult<T>>> {
+  batchChecked<T = unknown>(stmts: SqlStatement[], validate: (results: Array<SqlRunResult<T>>) => void): Promise<Array<SqlRunResult<T>>> {
+    return retryPostgres(() => this.batchOnce(stmts, validate));
+  }
+
+  private async batchOnce<T = unknown>(stmts: SqlStatement[], validate?: (results: Array<SqlRunResult<T>>) => void): Promise<Array<SqlRunResult<T>>> {
     return this.sql.begin<Array<SqlRunResult<T>>>(async (tx) => {
       const out: SqlRunResult<T>[] = [];
       for (const s of stmts) {
@@ -184,6 +188,7 @@ export class PostgresSqlClient implements SqlClient {
         }
         out.push((await s.executeRunIn(tx)) as SqlRunResult<T>);
       }
+      validate?.(out);
       return out;
     });
   }
