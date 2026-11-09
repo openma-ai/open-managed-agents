@@ -9,7 +9,10 @@ import type {
   SandboxLifecyclePort,
   SandboxPlan,
   SandboxPort,
-  TemplateRef,
+  Acquired,
+  SandboxCheckpointHandle,
+  SandboxFactoryContext,
+  SandboxFactoryEnv,
   SandboxProviderPort,
   SandboxRuntimePort,
 } from "@open-managed-agents/sandbox";

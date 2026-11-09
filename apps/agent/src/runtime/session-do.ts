@@ -6060,7 +6060,7 @@ export class SessionDO extends DurableObject<Env> {
           memoryStoreIds,
           environmentConfig,
           // ACP in the sandbox: model / MCP channels bound to this execution (design §0.6).
-          ...(resolvedHarnessName === "acp-sandbox" && activeFence && this.env.MAIN_MCP?.issueManagedAcpExecutionChannels ? { ANTHROPIC_API_KEY: "", ...await this.env.MAIN_MCP.issueManagedAcpExecutionChannels({ tenantId: this.state.tenant_id!, sessionId: this.state.session_id!, executionFence: activeFence }) } : {}),
+          ...(resolvedHarnessName === "acp-sandbox" && activeFence ? await acpSandboxExecutionEnv(this.env, activeFence, resolvedHarnessName) : {}),
           // Full-body LLM logs to R2, keyed by span event id (body_r2_key);
           // r2 = null disables capture.
           ...(this.env.LLM_LOGS_DISABLED === "1"
