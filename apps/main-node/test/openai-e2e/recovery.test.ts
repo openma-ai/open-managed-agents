@@ -69,6 +69,28 @@ describe("OpenAI Node persistence recovery E2E", () => {
     expect((await fixture.client.beta.agents.sessions.retrieve(session.id)).required_actions).toEqual([]);
   }, 150_000);
 
+  it("passes a settled random function result to inference before deferred same-turn steer", async () => {
+    const answer = "RESULT_CONTEXT_98765";
+    const requests: Array<Record<string, any>> = [];
+    const fixture = await boot(input => {
+      requests.push(input);
+      if (requests.length === 1) return { name: "lookup", input: { key: "answer" } };
+      return { text: JSON.stringify(input.messages).includes(answer) ? answer : "MISSING_TOOL_RESULT" };
+    });
+    const session = await fixture.client.beta.agents.sessions.create({
+      agent: { model: "claude-sonnet-4-20250514", tools: [{ type: "function", name: "lookup", description: "Read answer", parameters: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } }] },
+      environment: { type: "none" }, input: "Lookup answer",
+    });
+    const waiting = await until(() => fixture.client.beta.agents.sessions.retrieve(session.id), row => row.status === "requires_action");
+    const action = waiting.required_actions[0]!;
+    await fixture.client.beta.agents.sessions.events.create(session.id, { events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: "Quote the tool result then STEER_SUFFIX" }] }] }] });
+    await fixture.client.beta.agents.sessions.events.create(session.id, { events: [{ type: "agent.session.input.tool_result", turn_id: action.turn_id, call_id: action.call_id, success: true, output: answer }] });
+    await until(async () => (await fixture.client.beta.agents.sessions.turns.list(session.id)).data, rows => rows.every(row => row.status === "completed"));
+    expect(requests.length).toBeGreaterThan(1);
+    expect(JSON.stringify(requests.slice(1).map(row => row.messages))).toContain(answer);
+    expect(hasMessage((await fixture.client.beta.agents.sessions.items.list(session.id)).data, answer)).toBe(true);
+  }, 150_000);
+
   it("restores V1 child identity and history when a new parent Turn resumes and sends after process restart", async () => {
     let restoredChildId: string | undefined;
     const childRequests: Array<Record<string, any>> = [];

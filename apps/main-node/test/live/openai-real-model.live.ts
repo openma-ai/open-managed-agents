@@ -48,6 +48,7 @@ const clients = bases.map(base => new OpenAI({ apiKey: key, baseURL: base.replac
   return response;
 } }));
 const api = (replica = 0) => clients[replica % clients.length]!.beta.agents.sessions;
+let restartStateVerified = false;
 const owned: string[] = [];
 const results: Array<{ scenario: string; status: string; error?: string }> = [];
 const message = (text: string) => ({ type: "agent.session.input.message" as const, input: [{ role: "user" as const, content: [{ type: "input_text" as const, text }] }] });
@@ -88,6 +89,7 @@ await scenario("function-RA-deferred-steer-peer-settlement-pagination", async ()
     assert.deepEqual((await api(1).retrieve(session.id)).required_actions, waiting.required_actions);
     assert.deepEqual(await items(session.id, 1), beforeItems);
     assert.deepEqual(await turns(session.id, 1), beforeTurns);
+    restartStateVerified = true;
   }
   const body = { events: [{ type: "agent.session.input.tool_result" as const, turn_id: action.turn_id, call_id: action.call_id, success: true as const, output: toolAnswer }], "Idempotency-Key": randomUUID() };
   await api(1).events.create(session.id, body);
@@ -214,7 +216,7 @@ await scenario("real-subagent-root-child-history-isolation", async () => {
 });
 
 results.push(restartScript
-  ? { scenario: "process-restart-during-RA", status: results[0]?.status === "PASS" ? "PASS" : "FAIL", ...(results[0]?.error ? { error: results[0].error } : {}) }
+  ? { scenario: "process-restart-during-RA", status: restartStateVerified ? "PASS" : "FAIL", ...(restartStateVerified ? {} : { error: "Restart hook or durable RA state verification failed" }) }
   : { scenario: "process-restart-during-RA", status: "NOT_RUN", error: "Set OMA_LIVE_RESTART_SCRIPT to an operator-owned isolated process restart hook" });
 
 for (const id of owned) {
