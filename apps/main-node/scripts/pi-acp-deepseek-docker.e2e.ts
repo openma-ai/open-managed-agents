@@ -20,7 +20,7 @@ if (!apiKey) throw new Error("DEEPSEEK_API_KEY is required (its value is never l
 
 const fixtureRoot = fileURLToPath(new URL("../test/fixtures/pi-acp-sandbox/", import.meta.url));
 const image = process.env.OMA_PI_ACP_DOCKER_IMAGE
-  ?? "openma/pi-acp-certification:pi-0.84.4-acp-0.0.33";
+  ?? "openma/pi-acp-certification:pi-1.1.0-acp-0.1.8";
 const workspaceRoot = await mkdtemp(join(tmpdir(), "oma-pi-acp-docker-"));
 const containerName = `oma-pi-acp-${Date.now().toString(36)}`;
 const sessionId = `session_pi_acp_${Date.now().toString(36)}`;
@@ -42,7 +42,7 @@ try {
   const firstRuntime = createAcpRuntime({ type: "sandbox", sandbox });
   firstSession = await firstRuntime.start({
     agent: {
-      command: "pi-acp",
+      command: "openma-pi-acp",
       cwd: "/workspace",
       env: nativeEnvironment,
     },
@@ -50,7 +50,7 @@ try {
     perTurnTimeoutMs: 60_000,
   });
   await firstSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
-  await firstSession.setConfigOption("thought_level", "off");
+  await firstSession.setConfigOption("thinking", "off");
 
   const nonce = `PI_NATIVE_${Date.now().toString(36)}`;
   const firstEvents = await collect(
@@ -61,18 +61,6 @@ try {
   await firstSession.dispose();
   firstSession = undefined;
 
-  const sessionMapPath = join(
-    workspaceRoot,
-    ".openma/harness-state/acp",
-    encodeURIComponent(sessionId),
-    "pi/v1/native/home/.pi/pi-acp/session-map.json",
-  );
-  const sessionMap = JSON.parse(await readFile(sessionMapPath, "utf8")) as {
-    sessions?: Record<string, unknown>;
-  };
-  if (!(acpSessionId in (sessionMap.sessions ?? {}))) {
-    throw new Error("pi-acp native session map did not retain the ACP session id");
-  }
   const nativeSessionDir = join(
     workspaceRoot,
     ".openma/harness-state/acp",
@@ -90,7 +78,7 @@ try {
   const restoredRuntime = createAcpRuntime({ type: "sandbox", sandbox });
   restoredSession = await restoredRuntime.start({
     agent: {
-      command: "pi-acp",
+      command: "openma-pi-acp",
       cwd: "/workspace",
       env: nativeEnvironment,
     },
@@ -99,7 +87,7 @@ try {
     perTurnTimeoutMs: 60_000,
   });
   await restoredSession.setConfigOption("model", "deepseek/deepseek-v4-flash");
-  await restoredSession.setConfigOption("thought_level", "off");
+  await restoredSession.setConfigOption("thinking", "off");
   const restoredEvents = await collect(
     restoredSession.prompt("What exact token did I ask you to remember? Reply with that token only."),
   );

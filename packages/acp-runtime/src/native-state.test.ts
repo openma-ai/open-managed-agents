@@ -44,7 +44,7 @@ describe("Harbor-compatible ACP native session profiles", () => {
   it("publishes only the per-agent native session artifacts", () => {
     const pi = bindAcpAgentState({
       sessionId: "session_pi",
-      agent: { id: "pi-acp", command: "pi-acp" },
+      agent: { command: "openma-pi-acp" },
     });
     expect(pi).not.toHaveProperty("captureRoot");
     expect(pi).not.toHaveProperty("captureExcludeGlobs");
@@ -54,12 +54,6 @@ describe("Harbor-compatible ACP native session profiles", () => {
         path: "/workspace/.openma/harness-state/acp/session_pi/pi/v1/native/home/.pi/agent/sessions",
         runtimePath: "/tmp/openma-harness-state/acp/session_pi/pi/v1/native/home/.pi/agent/sessions",
         kind: "directory",
-        requiredForResume: true,
-      },
-      {
-        path: "/workspace/.openma/harness-state/acp/session_pi/pi/v1/native/home/.pi/pi-acp/session-map.json",
-        runtimePath: "/tmp/openma-harness-state/acp/session_pi/pi/v1/native/home/.pi/pi-acp/session-map.json",
-        kind: "file",
         requiredForResume: true,
       },
     ]);

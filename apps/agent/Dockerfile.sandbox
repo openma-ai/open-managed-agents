@@ -1,1 +1,5 @@
 FROM docker.io/openma/sandbox-base:435c9aa272b7444f6aaa36f3ecc10475ec7648c51186b8dfe58256e2e7f2c11e
+
+# Keep the pi-acp harness id; use the OpenMA adapter with HTTP MCP support.
+RUN npm install --global @earendil-works/pi-coding-agent@1.1.0 @openma/pi-acp@0.1.8 \
+    && npm cache clean --force

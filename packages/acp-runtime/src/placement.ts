@@ -89,7 +89,13 @@ class PlacementAcpRuntime implements AcpRuntime {
       await session.dispose().catch(() => undefined);
       throw new Error("ACP runtime initialized without a child process");
     }
-    return withChildLiveness(session, child, this.cancelGraceMs, perTurnTimeoutMs);
+    const supervised = withChildLiveness(session, child, this.cancelGraceMs, perTurnTimeoutMs);
+    if (options.mcpServers?.some(server => "type" in server && server.type === "http")
+      && session.agentCapabilities.mcpCapabilities?.http !== true) {
+      await supervised.dispose();
+      throw new Error("ACP agent does not declare mcpCapabilities.http=true; refusing to run a Session with HTTP MCP servers");
+    }
+    return supervised;
   }
 }
 
