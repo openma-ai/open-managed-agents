@@ -33,7 +33,10 @@ export interface V1SandboxFactoryBridgeOptions<R extends SandboxPort> {
  * bridge holds: attach finds one while this process holds it, else
  * "gone" and the core acquires again. Degrades as the §0.1 comments allow:
  * pause and checkpoint return a ref to the sandbox itself (the provider's
- * own lease reclaims it); nothing to list, the handles live in memory. */
+ * own lease reclaims it); nothing to list, the handles live in memory.
+ * RESTRICTED ADAPTER (daytona/litebox/boxrun/sprites factory deployments):
+ * no durable handle reattach or independent snapshots; does not satisfy A.4
+ * or A.6. Loss recreates with the shared core warning, matching main. */
 export function fromV1SandboxFactory<R extends SandboxPort>(options: V1SandboxFactoryBridgeOptions<R>): SandboxAdapterPort<R> {
   const held = options.held ?? new Map<string, R>();
   const selfRef = (handle: SandboxHandle): ResumeRef => ({ provider: options.name, ref: handle.runtimeId, kind: "self" });

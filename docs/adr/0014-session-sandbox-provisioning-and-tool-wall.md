@@ -64,6 +64,16 @@ Claude Managed Agents provisions when the session is created and blocks
 sandbox tools, not model output, while it is not ready. That is the model this
 ADR adopts (details in the research gist).
 
+## Restricted legacy factory adapters
+
+The bare v1 factory deployments for Daytona, Litebox, Boxrun and Sprites are
+**restricted adapters**: they have neither durable handle reattachment nor
+independent Session snapshots. They do not meet lifecycle design §0.0b A.4
+(recovery chain) or A.6 (vendor snapshots). A missing in-process runtime uses
+the shared core recreation path with a warning, preserving main behaviour.
+No provider-name branches are added to the core. This limitation does not
+apply to a deployment supplying a full v2 adapter or a reattachable provider.
+
 ## Decision
 
 ### 1. Provisioning starts at Session create
