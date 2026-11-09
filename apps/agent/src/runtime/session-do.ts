@@ -77,7 +77,7 @@ import {
   toolResultIds,
   type PendingToolCall as ResolvedPendingToolCall,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
-import { SessionExecutionHost, SessionSandboxRuntime, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
+import { SessionExecutionHost, SessionSandboxRuntime, sessionSandboxWarningEvent, type SessionExecutionRunResult } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import { interruptedTurnStopReason, linkAbort } from "@open-managed-agents/session-runtime-contract";
 import {
@@ -3929,7 +3929,7 @@ export class SessionDO extends DurableObject<Env> {
         // Sandbox egress follows a current execution attempt of this
         // Session; none between turns (design §0.0 rule 10).
         fence: () => this._executionFences.values().next().value,
-        warn: (message) => { try { this.persistAndBroadcastEvent({ type: "session.warning", message } as unknown as SessionEvent); } catch {} },
+        warn: (message) => { try { this.persistAndBroadcastEvent(sessionSandboxWarningEvent(message)); } catch {} },
         idleTimer: createSandboxIdleAlarm(this, "pauseIdleSandbox"),
       });
       this.sandbox = this.portsSandbox;

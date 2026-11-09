@@ -74,6 +74,7 @@ export interface PortsSessionSandboxOptions<R> {
   plan(input: { scope: RuntimeResourceScope; generation: string; stores: MemoryStoreBinding[] }): Promise<SandboxPlan>;
   /** Latest published restore point, or null. */
   resumeRef(): Promise<ResumeRef | null>;
+  /** A host that records this in the event log uses sessionSandboxWarningEvent (./session-warning). */
   warn(message: string): void;
   outputDurability(): { durability: "durable" | "best_effort" } | null;
   /** egress.attach again this often at exec boundaries (an expiring
