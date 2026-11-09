@@ -21,8 +21,8 @@ const issue = (env: MainBinding, attempt: SessionExecutionAttemptRef, harness: s
 };
 
 /** The token for one egress relay delivery of `attempt`. */
-export function relaySandboxToken(env: MainBinding, attempt: SessionExecutionAttemptRef, harness: string | null): Promise<string> {
-  return held.relayDelivery(attempt, issue(env, attempt, harness));
+export function relaySandboxToken(env: MainBinding, attempt: SessionExecutionAttemptRef, harness: string | null, sandbox?: object | string): Promise<string> {
+  return held.relayDelivery(attempt, issue(env, attempt, harness), sandbox);
 }
 
 /** HarnessContext.env for an in-sandbox ACP harness of the execution `fence`:

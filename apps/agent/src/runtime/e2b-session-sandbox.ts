@@ -177,7 +177,7 @@ export function createE2BSessionSandbox(input: {
   fence(): SandboxExecutionFence | undefined;
   /** The sandbox token for one relay delivery of `attempt` (SessionDO's
    * attemptSandboxTokens over the main worker's issueSandboxToken). */
-  relayToken(attempt: SessionExecutionAttemptRef): Promise<string>;
+  relayToken(attempt: SessionExecutionAttemptRef, sandbox?: object | string): Promise<string>;
   /** Schedules the idle pause (design §0.0 rule 11) `pauseMs` = IDLE_MS. */
   idleTimer?: Omit<SessionSandboxIdleTimer, "pauseMs">;
 }): E2BSessionSandbox {
@@ -227,11 +227,11 @@ export function createE2BSessionSandbox(input: {
             // control plane's existing ingress (apps/main), which verifies the
             // token, its scope and the Session itself.
             endpoint: { url: gateway ?? "https://egress-unconfigured.invalid" },
-            issueToken: async ({ attempt }) => {
+            issueToken: async ({ attempt, sandbox }) => {
               if (gateway === undefined) throw new Error("Vault credential egress on SANDBOX_ADAPTER=e2b requires PUBLIC_BASE_URL");
               // Warm-up (no attempt): a value the gateway always refuses.
               if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
-              return input.relayToken(attempt);
+              return input.relayToken(attempt, sandbox);
             },
             authenticate: async () => null,
             handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),

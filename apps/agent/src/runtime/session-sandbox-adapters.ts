@@ -33,10 +33,10 @@ export interface SessionSandboxDeps {
 export function createSessionSandbox(adapter: string | undefined, deps: SessionSandboxDeps): PortsSessionSandbox<unknown> {
   const name = adapter ?? "cloudflare";
   if (name === "cloudflare") {
-    return createCloudflareSessionSandbox({ ...deps, relayToken: (attempt) => relaySandboxToken(deps.env, attempt, deps.harness()) }) as PortsSessionSandbox<unknown>;
+    return createCloudflareSessionSandbox({ ...deps, relayToken: (attempt, sandbox) => relaySandboxToken(deps.env, attempt, deps.harness(), sandbox) }) as PortsSessionSandbox<unknown>;
   }
   if (name === "e2b") {
-    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, relayToken: (attempt) => relaySandboxToken(deps.env, attempt, deps.harness()), idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
+    return createE2BSessionSandbox({ env: deps.env, storage: deps.storage, scope: () => scopeOf(deps.session()), networking: deps.networking, fence: deps.fence, relayToken: (attempt, sandbox) => relaySandboxToken(deps.env, attempt, deps.harness(), sandbox), idleTimer: deps.idleTimer }) as PortsSessionSandbox<unknown>;
   }
   throw new Error(`Unknown SANDBOX_ADAPTER: ${name}`);
 }

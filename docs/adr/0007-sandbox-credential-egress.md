@@ -192,8 +192,11 @@ request reads that row directly (no cache, no Session snapshot), and a single
 read checks Session, attempt, hash, lease and scope together. Claim, requeue,
 settle and interrupt-finalize clear the column, so the fence is unchanged:
 losing the attempt revokes every token issued for it. Each attempt receives
-a new token. A re-issue appends a hash with a compare-and-set update and never
-rewrites existing entries.
+a new token. Repeated delivery to the same physical sandbox reuses it. A new
+physical incarnation in the same attempt (or a lost in-memory holder after host
+restart) rotates it: a compare-and-set atomically replaces the entire column
+with one hash, so the old token immediately stops authorizing new requests.
+No plaintext token is persisted for recovery.
 
 `s` is the scope, chosen at issue from where the harness runs: `all` for a
 harness inside the sandbox (`acp-sandbox`), `egress` for a harness outside

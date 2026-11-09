@@ -1,7 +1,7 @@
 // SandboxTokenStore over one SqlClient (CF tenant D1, Node SQLite / PG /
 // MySQL). The token hashes are a JSON array on the execution row
-// (managed_session_executions.sandbox_token_hashes), one entry per issued
-// token: {"h": <sha256 hex of the random part>, "s": "all" | "egress"}.
+// (managed_session_executions.sandbox_token_hashes), one current entry:
+// {"h": <sha256 hex of the random part>, "s": "all" | "egress"}.
 // The scope sits beside the hash so the one find read returns hash, lease
 // and scope together. Claim, requeue, settle
 // and interrupt-finalize reset it to NULL in the same statement that changes
@@ -10,9 +10,7 @@
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { SandboxTokenAttempt, SandboxTokenSession, SandboxTokenStore } from "@open-managed-agents/sandbox-gateway";
 
-/** Bounds a re-attach loop; a normal attempt holds 2–3 tokens. */
-export const MAX_SANDBOX_TOKENS_PER_ATTEMPT = 32;
-const APPEND_RETRIES = 8;
+const REPLACE_RETRIES = 8;
 
 export interface SessionRow {
   id: string; workspace_id: string; document: string; archived_at: number | string | null;
@@ -52,7 +50,7 @@ export const entries = (raw: string | null): TokenEntry[] => {
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) return [];
   // Anything that is not {h, s} is kept with no scope: it never verifies,
-  // and an append beside it is a scope mismatch (fails closed, nothing rewritten).
+  // and a replacement beside it is a scope mismatch (fails closed, nothing rewritten).
   return parsed.map((value): TokenEntry => {
     if (typeof value === "string") return { hash: value, scope: undefined };
     if (typeof value !== "object" || value === null) return { hash: "", scope: undefined };
@@ -98,12 +96,11 @@ export function createSqlSandboxTokenStore(sql: SqlClient): SandboxTokenStore {
       ).bind(workspaceId, sessionId).first<SessionRow>();
       return row === null ? null : sessionOf(row);
     },
-    // Compare-and-set on the column value: a concurrent append makes this
-    // write miss and retry with the new set, so no hash is lost on any
-    // dialect (no read-modify-write window). The fence and lease are in the
+    // Compare-and-set replaces the complete column with one hash. A concurrent
+    // rotation makes this write retry; old hashes never survive a commit. The fence and lease are in the
     // WHERE clause, so a settle / take-over committed first makes it stale.
-    async appendTokenHash({ fence, tokenSha256, scope, nowMs }) {
-      for (let attempt = 0; attempt < APPEND_RETRIES; attempt++) {
+    async replaceTokenHash({ fence, tokenSha256, scope, nowMs }) {
+      for (let attempt = 0; attempt < REPLACE_RETRIES; attempt++) {
         const current = await sql.prepare(
           `SELECT sandbox_token_hashes FROM managed_session_executions
             WHERE workspace_id = ? AND id = ? AND session_id = ? AND state = 'running'
@@ -114,18 +111,17 @@ export function createSqlSandboxTokenStore(sql: SqlClient): SandboxTokenStore {
         const set = entries(current.sandbox_token_hashes);
         // One attempt, one harness placement: a re-sign keeps the scope.
         if (set.some((entry) => entry.scope !== scope)) return "scope_mismatch";
-        if (set.some((entry) => entry.hash === tokenSha256)) return "appended";
-        if (set.length >= MAX_SANDBOX_TOKENS_PER_ATTEMPT) throw new Error("Sandbox token limit reached for this execution attempt");
+        if (set.some((entry) => entry.hash === tokenSha256)) return "replaced";
         const result = await sql.prepare(
           `UPDATE managed_session_executions SET sandbox_token_hashes = ?
             WHERE workspace_id = ? AND id = ? AND session_id = ? AND state = 'running'
               AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?
               AND COALESCE(sandbox_token_hashes, '') = ?`,
-        ).bind(serialize([...set, { hash: tokenSha256, scope }]), fence.workspaceId, fence.executionId, fence.sessionId,
+        ).bind(serialize([{ hash: tokenSha256, scope }]), fence.workspaceId, fence.executionId, fence.sessionId,
           fence.attemptId, fence.ownerId, fence.generation, nowMs, current.sandbox_token_hashes ?? "").run();
-        if (result.meta.changes === 1) return "appended";
+        if (result.meta.changes === 1) return "replaced";
       }
-      throw new Error("Sandbox token append kept conflicting");
+      throw new Error("Sandbox token replacement kept conflicting");
     },
   };
 }

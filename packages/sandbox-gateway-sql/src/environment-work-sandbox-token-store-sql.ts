@@ -13,9 +13,9 @@
 
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { SandboxTokenAttempt, SandboxTokenStore, SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
-import { entries, MAX_SANDBOX_TOKENS_PER_ATTEMPT, serialize, sessionOf, type SessionRow } from "./sandbox-token-store-sql";
+import { entries, serialize, sessionOf, type SessionRow } from "./sandbox-token-store-sql";
 
-const APPEND_RETRIES = 8;
+const REPLACE_RETRIES = 8;
 const ATTEMPT_PREFIX = "environment-work-claim:";
 
 /** The claim the store keys a token to: (workspace, environment, Session, Work, claim_generation). */
@@ -98,28 +98,27 @@ export function createSqlEnvironmentWorkSandboxTokenStore(sql: SqlClient): Sandb
     // Compare-and-set on the column while the claim is current. A queued
     // (claimed, not yet acknowledged) Work may be issued its token at poll;
     // it verifies only once the Work is starting.
-    async appendTokenHash({ fence, tokenSha256, scope, nowMs }) {
+    async replaceTokenHash({ fence, tokenSha256, scope, nowMs }) {
       const claim = claimOf(fence);
       if (claim === null) return "stale";
       const held = `workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_generation = ?
               AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > ?
               AND state IN ('queued', 'starting', 'active')`;
       const heldParameters = [claim.workspaceId, claim.environmentId, claim.workId, claim.sessionId, claim.generation, nowMs];
-      for (let attempt = 0; attempt < APPEND_RETRIES; attempt++) {
+      for (let attempt = 0; attempt < REPLACE_RETRIES; attempt++) {
         const current = await sql.prepare(`SELECT sandbox_token_hashes FROM managed_environment_work WHERE ${held}`)
           .bind(...heldParameters).first<{ sandbox_token_hashes: string | null }>();
         if (current === null) return "stale";
         const set = entries(current.sandbox_token_hashes);
         if (set.some((entry) => entry.scope !== scope)) return "scope_mismatch";
-        if (set.some((entry) => entry.hash === tokenSha256)) return "appended";
-        if (set.length >= MAX_SANDBOX_TOKENS_PER_ATTEMPT) throw new Error("Sandbox token limit reached for this Environment Work claim");
+        if (set.some((entry) => entry.hash === tokenSha256)) return "replaced";
         const result = await sql.prepare(
           `UPDATE managed_environment_work SET sandbox_token_hashes = ?
             WHERE ${held} AND COALESCE(sandbox_token_hashes, '') = ?`,
-        ).bind(serialize([...set, { hash: tokenSha256, scope }]), ...heldParameters, current.sandbox_token_hashes ?? "").run();
-        if (result.meta.changes === 1) return "appended";
+        ).bind(serialize([{ hash: tokenSha256, scope }]), ...heldParameters, current.sandbox_token_hashes ?? "").run();
+        if (result.meta.changes === 1) return "replaced";
       }
-      throw new Error("Sandbox token append kept conflicting");
+      throw new Error("Sandbox token replacement kept conflicting");
     },
   };
 }

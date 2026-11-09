@@ -47,10 +47,10 @@ export function createNodeManagedAcpCapabilities(dependencies: {
       return { gatewayBaseUrl: dependencies.gatewayBaseUrl, sessionsToken };
     },
     /** The token for one delivery to the in-sandbox egress forwarder of
-     * `attempt` (the harness's on the first, a re-sign after); `harness` is
+     * `attempt` (shared with the harness, rotated only for a new sandbox); `harness` is
      * the Session agent's harness name (scope all / egress). */
-    async issueEgress(attempt: SessionExecutionAttemptRef, harness: string | null | undefined) {
-      return attemptTokens.relayDelivery(attempt, () => issueSandboxToken(tokens, attempt, { scope: sandboxTokenScopeFor(sandboxHarnessPlacement(harness)), now }));
+    async issueEgress(attempt: SessionExecutionAttemptRef, harness: string | null | undefined, sandbox?: object | string) {
+      return attemptTokens.relayDelivery(attempt, () => issueSandboxToken(tokens, attempt, { scope: sandboxTokenScopeFor(sandboxHarnessPlacement(harness)), now }), sandbox);
     },
     /** authMiddleware: the sandbox token on the model gateway, MCP gateway and sandbox API. */
     authenticateToken(request: { headers: Headers; method: string; path: string }) {

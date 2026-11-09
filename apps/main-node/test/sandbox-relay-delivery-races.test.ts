@@ -101,7 +101,7 @@ describe("sandbox relay delivery races (real processes)", () => {
     const load = f.sandbox.exec(`while [ ! -e .stop-load ]; do curl -sS --noproxy '' --max-time 5 -o /dev/null -w '%{http_code}\\n' '${f.target}/load' >> .load-codes 2>/dev/null || echo ERR >> .load-codes; done; echo LOAD_DONE`, 120_000);
     const tokens: string[] = [];
     for (let round = 0; round < 60; round++) {
-      const token = await f.tokens.issue(); tokens.push(token);
+      const token = f.issued[0]!; tokens.push(token); // re-delivery is not a sandbox replacement
       await deliver(f, token, deliveryId(round));
       const state = await consumed(f, deliveryId(round));
       expect(state.bindingError).toBeNull();

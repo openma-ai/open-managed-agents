@@ -61,7 +61,7 @@ describe("sandbox token presentation (no store reads for a malformed request)", 
   const untouched = (): SandboxTokenStore => ({
     find: vi.fn(async () => { throw new Error("must not read"); }),
     findSession: vi.fn(async () => { throw new Error("must not read"); }),
-    appendTokenHash: vi.fn(async () => { throw new Error("must not write"); }),
+    replaceTokenHash: vi.fn(async () => { throw new Error("must not write"); }),
   });
   it("is absent for other credentials, rejected without a Session id or with two different ones", async () => {
     const store = untouched(); const token = generateSandboxToken();

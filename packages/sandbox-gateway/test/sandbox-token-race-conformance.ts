@@ -18,7 +18,7 @@ import {
 /** The verify read (one statement): Session + running attempt holding the hash. */
 const FIND = /FROM managed_sessions s/u;
 /** The re-sign's compare-and-set write. */
-const APPEND = /UPDATE managed_session_executions SET sandbox_token_hashes/u;
+const REPLACE = /UPDATE managed_session_executions SET sandbox_token_hashes/u;
 
 const inference = (sessionId: string) => `/v1/oma/inference-proxy/${sessionId}/anthropic/v1/messages`;
 
@@ -34,7 +34,7 @@ async function setResources(f: SandboxTokenStoreFixture, sessionId: string, reso
 export function sandboxTokenRaceConformance(adapterName: string, harness: SandboxTokenStoreTestHarness): void {
   describe(`${adapterName} sandbox token races (real SQL)`, () => {
     // ---- A: re-sign vs in-flight request -------------------------------
-    it("A: a request that has passed its read when a re-sign appends succeeds; old and new tokens both stay valid (model gateway and egress)", () =>
+    it("A: a request that has passed its read when a re-sign rotates succeeds; new requests reject the old token (model gateway and egress)", () =>
       harness.withStore("race-a-after-read", async (f) => {
         for (const [name, scope, check] of [
           ["gateway", "all", (id: string, token: string) => api(f.store, { path: inference(id), authorization: `Bearer ${token}` })],
@@ -49,12 +49,12 @@ export function sandboxTokenRaceConformance(adapterName: string, harness: Sandbo
           const fresh = await issueSandboxToken(f.store, fence, { scope, now: clock(2) });
           held.release();
           expect(await inFlight).toBe("accepted");
-          expect(await check(id, old)).toBe("accepted");
+          expect(await check(id, old)).toBe("rejected");
           expect(await check(id, fresh)).toBe("accepted");
         }
       }));
 
-    it("A: a request whose read runs after the append commits still finds the old token in the grown set", () =>
+    it("A: a request whose read runs after the replacement commits rejects the old token", () =>
       harness.withStore("race-a-before-read", async (f) => {
         const id = sessionIdOf(f, "s"); await f.seedSession(seed(id));
         const fence = await claim(f, id, "a1", 1);
@@ -64,23 +64,24 @@ export function sandboxTokenRaceConformance(adapterName: string, harness: Sandbo
         await held.reached; // request arrived, its read not yet run
         const fresh = await issueSandboxToken(f.store, fence, { scope: "egress", now: clock(2) });
         held.release();
-        expect(await inFlight).toBe("accepted");
+        expect(await inFlight).toBe("rejected");
         expect(await egress(f.store, sandboxBasicCredential(id, fresh))).toBe("accepted");
       }));
 
-    it("A: requests verified while the re-sign holds its CAS write are accepted, then both tokens are", () =>
+    it("A: requests verified while the re-sign holds its CAS write are accepted, then only the new token is", () =>
       harness.withStore("race-a-during-write", async (f) => {
         const id = sessionIdOf(f, "s"); await f.seedSession(seed(id));
         const fence = await claim(f, id, "a1", 1);
         const old = await issueSandboxToken(f.store, fence, { scope: "all", now: clock(1) });
-        const held = f.gate.holdNext(APPEND);
+        const held = f.gate.holdNext(REPLACE);
         const resign = issueSandboxToken(f.store, fence, { scope: "all", now: clock(2) });
         await held.reached;
         expect(await api(f.store, { path: inference(id), authorization: `Bearer ${old}` })).toBe("accepted");
         expect(await verify(f.store, id, old, "egress")).toBe("accepted");
         held.release();
         const fresh = await resign;
-        for (const token of [old, fresh]) expect(await api(f.store, { path: inference(id), apiKey: token })).toBe("accepted");
+        expect(await api(f.store, { path: inference(id), apiKey: old })).toBe("rejected");
+        expect(await api(f.store, { path: inference(id), apiKey: fresh })).toBe("accepted");
       }));
 
     // ---- B: resource detach / attach vs request ------------------------

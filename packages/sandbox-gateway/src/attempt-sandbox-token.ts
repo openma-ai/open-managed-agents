@@ -1,51 +1,40 @@
-// One execution, one sandbox token (#561, design §0.0 rule 10). The host
-// issues an attempt's token once and hands the same string to every
-// in-sandbox holder of that attempt: the ACP harness's model / MCP channels
-// and the egress relay's first delivery. A later relay delivery for the same
-// attempt (a sandbox reopened or refreshed mid-execution) re-signs: the new
-// token is appended to the attempt and becomes the held one, the earlier
-// ones stay valid until the attempt ends. Held in host memory only, never
-// written anywhere; a Session's next attempt replaces it.
-
+// One current token per execution attempt. Harness and every repeated delivery
+// to one sandbox share it. A different sandbox rotates through the authority's
+// atomic replacement write; no plaintext is persisted and no old hash survives.
 import type { SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
 
-/** Sessions whose current token one host holds; the oldest is dropped past
- * this (its next holder then re-signs, which the attempt accepts). */
-const HELD_SESSIONS = 1024;
-
 export interface AttemptSandboxTokens {
-  /** The attempt's token; `issue` runs once per attempt (again if it failed). */
   token(attempt: SessionExecutionAttemptRef, issue: () => Promise<string>): Promise<string>;
-  /** The token for one relay delivery: the first shares `token`, a later one re-signs. */
-  relayDelivery(attempt: SessionExecutionAttemptRef, issue: () => Promise<string>): Promise<string>;
+  /** sandbox identifies a physical incarnation, not a relay process or policy. */
+  relayDelivery(attempt: SessionExecutionAttemptRef, issue: () => Promise<string>, sandbox?: object | string): Promise<string>;
 }
-
-interface Held { attempt: string; token: Promise<string>; delivered: boolean }
-
+interface Held { attempt: string; token: Promise<string>; sandbox?: object | string }
 export function attemptSandboxTokens(): AttemptSandboxTokens {
   const held = new Map<string, Held>();
-  const sessionKey = (attempt: SessionExecutionAttemptRef) => JSON.stringify([attempt.workspaceId, attempt.sessionId]);
-  const attemptKey = (attempt: SessionExecutionAttemptRef) => JSON.stringify([attempt.executionId, attempt.attemptId, attempt.ownerId, attempt.generation]);
-  const current = (attempt: SessionExecutionAttemptRef) => {
-    const entry = held.get(sessionKey(attempt));
-    return entry?.attempt === attemptKey(attempt) ? entry : undefined;
+  const sessionKey = (a: SessionExecutionAttemptRef) => JSON.stringify([a.workspaceId, a.sessionId]);
+  const attemptKey = (a: SessionExecutionAttemptRef) => JSON.stringify([a.executionId, a.attemptId, a.ownerId, a.generation]);
+  const current = (a: SessionExecutionAttemptRef) => {
+    const entry = held.get(sessionKey(a));
+    return entry?.attempt === attemptKey(a) ? entry : undefined;
   };
-  const hold = (attempt: SessionExecutionAttemptRef, issue: () => Promise<string>, delivered: boolean) => {
-    const session = sessionKey(attempt);
-    const entry: Held = { attempt: attemptKey(attempt), token: issue(), delivered };
-    held.delete(session);
+  const hold = (a: SessionExecutionAttemptRef, issue: () => Promise<string>, sandbox?: object | string) => {
+    const session = sessionKey(a);
+    const previous = current(a);
+    // Serialize rotations: a slow earlier issue must never commit after the
+    // newest incarnation and revoke the token we just handed it.
+    const token = previous === undefined ? issue() : previous.token.catch(() => undefined).then(issue);
+    const entry: Held = { attempt: attemptKey(a), token, sandbox };
     held.set(session, entry);
-    if (held.size > HELD_SESSIONS) held.delete(held.keys().next().value!);
-    entry.token.catch(() => { if (held.get(session) === entry) held.delete(session); });
-    return entry.token;
+    token.catch(() => { if (held.get(session) === entry) held.delete(session); });
+    return token;
   };
   return {
-    token: (attempt, issue) => current(attempt)?.token ?? hold(attempt, issue, false),
-    relayDelivery(attempt, issue) {
-      const entry = current(attempt);
-      if (entry === undefined || entry.delivered) return hold(attempt, issue, true);
-      entry.delivered = true;
-      return entry.token;
+    token: (a, issue) => current(a)?.token ?? hold(a, issue),
+    relayDelivery(a, issue, sandbox) {
+      const entry = current(a);
+      if (entry === undefined) return hold(a, issue, sandbox);
+      if (entry.sandbox === undefined) { entry.sandbox = sandbox; return entry.token; }
+      return sandbox === undefined || entry.sandbox === sandbox ? entry.token : hold(a, issue, sandbox);
     },
   };
 }

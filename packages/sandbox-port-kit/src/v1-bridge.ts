@@ -84,10 +84,18 @@ export function fromV1SandboxFactory<R extends SandboxPort>(options: V1SandboxFa
   return { name: options.name, lifecycle, vendor: v1Vendor<R>(options.name) };
 }
 
+const runtimeIdentities = new WeakMap<object, string>();
+
 /** Vendor primitives over a v1 SandboxPort. A runtime without bytes I/O or
  * setEnvVars fails the call with a typed error. */
 export function v1Vendor<R extends SandboxPort>(name: string): SandboxVendorPort<R> {
   return {
+    sandboxIdentity: (runtime) => {
+      if (supportsSandboxRuntime(runtime)) return name + ":" + runtime.runtimeHandle().runtimeId;
+      let id = runtimeIdentities.get(runtime);
+      if (id === undefined) { id = crypto.randomUUID(); runtimeIdentities.set(runtime, id); }
+      return id;
+    },
     async exec(runtime, cmd, opts) {
       let command = cmd;
       let stdinPath: string | null = null;

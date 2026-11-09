@@ -291,6 +291,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   };
 
   const vendor: SandboxVendorPort<E2BSandboxExecutor> = {
+    sandboxIdentity: (runtime) => runtime.runtimeHandle().runtimeId,
     /** Runs in /workspace, the logical root the generic implementations
      * address relative paths from (the relay installer's .oma-egress). */
     async exec(runtime, cmd, opts) {

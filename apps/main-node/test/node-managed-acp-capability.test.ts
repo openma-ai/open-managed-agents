@@ -62,11 +62,11 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
 
   it("outside harness: the forwarder token (scope egress) is refused on every API channel, and the attempt can never receive an all token", async () => {
     const f = await fixture(null);
-    const relay = await f.capabilities.issueEgress(f.fence, null);
+    const relay = await f.capabilities.issueEgress(f.fence, null, "box-1");
     for (const path of ["/v1/oma/mcp-proxy/session/x", "/v1/oma/inference-proxy/session/anthropic/v1/messages"]) {
       expect((await call(f.capabilities, path, { authorization: `Bearer ${relay}` })).type).toBe("rejected");
     }
-    await expect(f.capabilities.issueEgress(f.fence, "acp-sandbox")).rejects.toThrow(/scope/);
+    await expect(f.capabilities.issueEgress(f.fence, "acp-sandbox", "replacement")).rejects.toThrow(/scope/);
   });
 
   it("refuses to issue for a mismatched Session, a stale fence, or no fence", async () => {
@@ -93,17 +93,29 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
     });
   }
 
-  it("a relay re-delivery in the same attempt re-signs: appended, every token of the attempt stays valid", async () => {
+  it("a replacement sandbox in the same attempt rotates and revokes the old token", async () => {
     const f = await fixture("acp-sandbox");
     const { sessionsToken: harness } = await f.capabilities.issue(f.input);
-    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox")).toBe(harness);
-    const redelivered = await f.capabilities.issueEgress(f.fence, "acp-sandbox");
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1")).toBe(harness);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1")).toBe(harness);
+    const redelivered = await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-2");
     expect(redelivered).not.toBe(harness);
-    for (const token of [harness, redelivered]) {
-      expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${token}` })).type).toBe("accepted");
-    }
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${harness}` })).type).toBe("rejected");
+    expect((await call(f.capabilities, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${redelivered}` })).type).toBe("accepted");
     // The harness channels of the attempt now get the re-signed one.
     expect((await f.capabilities.issue(f.input)).sessionsToken).toBe(redelivered);
+  });
+
+  it("a rebuilt host holder rotates instead of leaving two valid tokens", async () => {
+    const f = await fixture();
+    const old = await f.capabilities.issueEgress(f.fence, "acp-sandbox", "box-1");
+    const rebuilt = createNodeManagedAcpCapabilities({ gatewayBaseUrl: "https://service.test", now: () => new Date(), tokens: createSqlSandboxTokenStore(f.sql) });
+    const fresh = await rebuilt.issueEgress(f.fence, "acp-sandbox", "box-1");
+    expect(fresh).not.toBe(old);
+    expect((await call(rebuilt, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${old}` })).type).toBe("rejected");
+    expect((await call(rebuilt, "/v1/oma/mcp-proxy/session/x", { authorization: `Bearer ${fresh}` })).type).toBe("accepted");
+    const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE id = ?").bind(f.fence.executionId).first<{ sandbox_token_hashes: string }>();
+    expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
   });
 
   it("dies with the attempt", async () => {

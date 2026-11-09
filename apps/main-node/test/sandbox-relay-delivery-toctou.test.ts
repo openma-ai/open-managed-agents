@@ -24,6 +24,6 @@ describe("relay delivery claimed while the installer is reading it", () => {
     const second = await f.prepare();
     await f.sandbox.setEnvVars({ NODE_OPTIONS: "" });
     expect(second.pid).toBe(first.pid);
-    expect(f.issued).toHaveLength(2);
+    expect(f.issued).toHaveLength(1); // same sandbox: redelivery, not rotation
   });
 });

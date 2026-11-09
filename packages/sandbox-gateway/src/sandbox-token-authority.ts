@@ -88,8 +88,8 @@ export async function issueSandboxToken(
     throw new Error("Sandbox token requires the pinned Session agent (child ACP capabilities are not supported)");
   }
   const token = generateSandboxToken();
-  const appended = await store.appendTokenHash({ fence, tokenSha256: (await sandboxTokenSha256(token))!, scope: options.scope, nowMs: (options.now ?? Date.now)() });
-  if (appended === "stale") throw new Error("Sandbox token Session Execution fence is stale");
-  if (appended === "scope_mismatch") throw new Error(`Sandbox token scope ${options.scope} differs from this execution attempt's`);
+  const replaced = await store.replaceTokenHash({ fence, tokenSha256: (await sandboxTokenSha256(token))!, scope: options.scope, nowMs: (options.now ?? Date.now)() });
+  if (replaced === "stale") throw new Error("Sandbox token Session Execution fence is stale");
+  if (replaced === "scope_mismatch") throw new Error(`Sandbox token scope ${options.scope} differs from this execution attempt's`);
   return token;
 }

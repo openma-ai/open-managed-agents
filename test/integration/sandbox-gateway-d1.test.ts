@@ -147,13 +147,12 @@ describe("Cloudflare ACP execution channels", () => {
     const a = await acpAttempt("redeliver");
     const tokens = attemptSandboxTokens();
     const shared = await tokens.token(a.fence, issue(a));
-    expect(await tokens.relayDelivery(a.fence, issue(a))).toBe(shared);
-    const redelivered = await tokens.relayDelivery(a.fence, issue(a));
+    expect(await tokens.relayDelivery(a.fence, issue(a), "box-1")).toBe(shared);
+    const redelivered = await tokens.relayDelivery(a.fence, issue(a), "box-2");
     expect(redelivered).not.toBe(shared);
-    expect(await a.hashes()).toHaveLength(2);
-    for (const token of [shared, redelivered]) {
-      expect((await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: a.sessionId, token, channel: "api" })).type).toBe("accepted");
-    }
+    expect(await a.hashes()).toHaveLength(1);
+    expect((await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: a.sessionId, token: shared, channel: "api" })).type).toBe("rejected");
+    expect((await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: a.sessionId, token: redelivered, channel: "api" })).type).toBe("accepted");
   });
 
   it("refuse a token that does not open the Session's API channels", async () => {

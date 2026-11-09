@@ -27,6 +27,6 @@ export function createSqlGatewaySandboxTokenStore(sql: SqlClient): SandboxTokenS
       return execution ?? claim;
     },
     findSession: (input) => executions.findSession(input),
-    appendTokenHash: (input) => executions.appendTokenHash(input),
+    replaceTokenHash: (input) => executions.replaceTokenHash(input),
   };
 }

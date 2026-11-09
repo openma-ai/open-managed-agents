@@ -33,6 +33,8 @@ export interface SandboxAdapterPort<R> {
 
 /** The only provider primitives the generic implementations use. */
 export interface SandboxVendorPort<R> {
+  /** Physical sandbox identity, stable across wrapper reattachment. */
+  sandboxIdentity?(runtime: R): string;
   exec(runtime: R, cmd: string, opts?: { stdin?: string; timeoutMs?: number }): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   /** `null` when the file does not exist. */
   readFile(runtime: R, path: string): Promise<Uint8Array | null>;
@@ -82,7 +84,7 @@ export interface SandboxEgressDepsPort {
     endpoint: { url: string; fixedIps?: readonly string[] };
     /** Short-lived token bound to one Session execution attempt (#561);
      * `attempt` is null when no execution is running. */
-    issueToken(input: { scope: RuntimeResourceScope; attempt: SessionExecutionAttemptRef | null }): Promise<string>;
+    issueToken(input: { scope: RuntimeResourceScope; attempt: SessionExecutionAttemptRef | null; sandbox?: object | string }): Promise<string>;
     authenticate(id: { via: "token"; token: string } | { via: "source"; claim: SourceClaim }): Promise<EgressScope | null>;
     /** = createCredentialEgressCore: policy decision first, then credential substitution. */
     handle(scope: EgressScope, req: PlainRequest): Promise<Response>;

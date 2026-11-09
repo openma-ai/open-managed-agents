@@ -129,11 +129,11 @@ describe("sandbox-owned local credential relay", () => {
   });
 
   it("the token reaches the relay through one file that it deletes: no file under .oma-egress holds it", async () => {
-    const f = await fixture(); await f.prepare(); await f.prepare(); // a re-sign is consumed too
+    const f = await fixture(); await f.prepare(); await f.prepare(); // same-sandbox redelivery is consumed too
     expect(await f.sandbox.exec(`curl -sS --noproxy '' -o /dev/null -w '%{http_code}' '${f.target}/'`)).toContain("200");
     const listing = await f.sandbox.exec("ls -A .oma-egress");
     expect(listing).not.toMatch(/binding\./u);
-    expect(f.issued).toHaveLength(2);
+    expect(f.issued).toHaveLength(1);
     for (const token of f.issued) expect(await f.sandbox.exec(`grep -rlF '${token}' .oma-egress || echo NONE`)).toContain("NONE");
     const ready = JSON.parse(await f.sandbox.exec("cat .oma-egress/ready.json")) as Record<string, unknown>;
     expect(ready).toMatchObject({ protocol: 4, bindingError: null });

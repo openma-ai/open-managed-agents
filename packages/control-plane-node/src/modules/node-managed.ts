@@ -298,7 +298,7 @@ export async function createManagedNodeRuntime(
     // as placeholders (design §0.5, §8.8): the relay substitutes them.
     substitutions: (context) => repositoryEgress.substitutions(context, () => managedCredentialResolver),
     relay: () => !platformRootSecret || !config.http.publicBaseUrl ? null
-      : { issue: (attempt, harness) => managedAcpCapabilities.issueEgress(attempt, harness), endpoint: config.http.publicBaseUrl },
+      : { issue: (attempt, harness, sandbox) => managedAcpCapabilities.issueEgress(attempt, harness, sandbox), endpoint: config.http.publicBaseUrl },
     isFenceActive: isManagedSessionExecutionFenceActive,
     idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
     warmAtCreate: config.workspace.strategy !== "checkpoint_restore", mountOutputsAtCreate: sharedSessionOutputs === undefined && components.sandbox.capabilities?.mountsFixedAtCreate === true,

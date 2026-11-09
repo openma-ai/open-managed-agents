@@ -1,3 +1,4 @@
+import { attemptSandboxTokens } from "../../sandbox-gateway/src/attempt-sandbox-token";
 import { describe, expect, it } from "vitest";
 import type { EgressPolicy } from "@open-managed-agents/sandbox";
 import { createForwarderEgress } from "../src/forwarder-egress";
@@ -58,8 +59,9 @@ describe("relay pass binding (design §0.0 rule 10)", () => {
       clearCredentialEgress: async () => {},
     };
     let issued = 0;
+    const holder = attemptSandboxTokens();
     const egress = createForwarderEgress({ ...vendor([]), asSandboxPort: () => runtime }, {
-      gateway: { ...deps.gateway, issueToken: async () => "token-" + ++issued },
+      gateway: { ...deps.gateway, issueToken: async ({ attempt, sandbox }) => holder.relayDelivery(attempt!, async () => "token-" + ++issued, sandbox) },
     });
     const policy = { ...limited, substitutions: [{ credentialId: "vault:TOKEN", envName: "TOKEN", placeholder: "oma_ph_1", hosts: [], inject: { header: true, body: false } }] };
     const input = { runtime, scope, fence, policy, signal };

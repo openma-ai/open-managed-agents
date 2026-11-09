@@ -40,7 +40,7 @@ export interface CloudflareSessionSandboxDeps {
   /** The Session's current execution attempt (SessionDO's fence); undefined between turns. */
   fence(): SandboxExecutionFence | undefined;
   /** The sandbox token for one egress binding of `attempt` (#561). */
-  relayToken(attempt: SessionExecutionAttemptRef): Promise<string>;
+  relayToken(attempt: SessionExecutionAttemptRef, sandbox?: object | string): Promise<string>;
   warn(message: string): void;
 }
 
@@ -160,9 +160,9 @@ async function startWithRetry<T>(start: () => Promise<T>): Promise<T> {
  * request carrying a Vault placeholder is refused (oma-sandbox). */
 export function executionEgress(deps: Pick<CloudflareSessionSandboxDeps, "session" | "fence" | "relayToken" | "warn">): SandboxEgressPort<CloudflareSandboxRuntime> {
   const { fence } = deps;
-  const tokenFor = async (attempt: SessionExecutionAttemptRef) => {
+  const tokenFor = async (attempt: SessionExecutionAttemptRef, sandbox: string) => {
     try {
-      const tokenSha256 = await sandboxTokenSha256(await deps.relayToken(attempt));
+      const tokenSha256 = await sandboxTokenSha256(await deps.relayToken(attempt, sandbox));
       if (tokenSha256 === null) throw new Error("Sandbox token is malformed");
       return tokenSha256;
     } catch (error) {
@@ -173,7 +173,9 @@ export function executionEgress(deps: Pick<CloudflareSessionSandboxDeps, "sessio
   const bind = async (runtime: CloudflareSandboxRuntime, current: SandboxExecutionFence | undefined) => {
     const s = deps.session();
     if (!s.sessionId || !s.tenantId) return;
-    const tokenSha256 = current === undefined ? null : await tokenFor({ workspaceId: s.tenantId, sessionId: s.sessionId, ...current });
+    const incarnation = current === undefined ? null : (await runtime.describeSandbox()).incarnation;
+    if (current !== undefined && !incarnation) throw new Error("Sandbox token requires a physical container incarnation");
+    const tokenSha256 = current === undefined ? null : await tokenFor({ workspaceId: s.tenantId, sessionId: s.sessionId, ...current }, incarnation!);
     await runtime.setOutboundContext({ tenantId: s.tenantId, sessionId: s.sessionId, ...(tokenSha256 === null ? {} : { tokenSha256 }) });
   };
   return {

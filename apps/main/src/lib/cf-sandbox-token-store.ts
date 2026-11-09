@@ -43,6 +43,6 @@ export function cfSandboxTokenStore(env: Env): SandboxTokenStore {
       return sessions[0] ?? null;
     },
     findSession: async (input) => (await tenant(input.workspaceId)).findSession(input),
-    appendTokenHash: async (input) => (await tenant(input.fence.workspaceId)).appendTokenHash(input),
+    replaceTokenHash: async (input) => (await tenant(input.fence.workspaceId)).replaceTokenHash(input),
   };
 }
