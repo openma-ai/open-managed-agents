@@ -25,6 +25,7 @@ export function fakeSessionSandbox(opts: {
   attachGone?: boolean;
   markerError?: Error;
   resumeFails?: string[];
+  storageDetach?: () => Promise<void>;
   /** Runs inside egress.attach (after it is logged): gate it, or issue a real token. */
   egressAttach?: (fence: unknown) => Promise<void>;
   /** The adapter takes snapshots (checkpoint:snap-N); tool-call-gap snapshots every SNAPSHOT_EVERY_MS. */
@@ -92,7 +93,7 @@ export function fakeSessionSandbox(opts: {
     storage: {
       async attach({ fence }: { fence: unknown }) { log.push("storage.attach"); fences.push(fence); },
       async sync({ reason, fence }: { reason: string; fence: unknown }) { log.push(`storage.sync:${reason}`); fences.push(fence); },
-      async detach() { log.push("storage.detach"); },
+      async detach() { log.push("storage.detach"); await opts.storageDetach?.(); },
     },
     egress: {
       async attach({ fence }: { fence: unknown }) { log.push("egress.attach"); fences.push(fence); await opts.egressAttach?.(fence); },

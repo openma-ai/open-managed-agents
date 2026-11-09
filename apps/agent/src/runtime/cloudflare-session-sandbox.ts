@@ -100,7 +100,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     // §0.0 rule 10); the one SessionDO holds now is the current one.
     egressRenewMs: null,
     execution: () => deps.fence?.(),
-    isCurrent: async (execution) => execution === undefined || sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
+    isCurrent: async (execution) => sandboxExecutionFenceKey(deps.fence?.()) === sandboxExecutionFenceKey(execution),
     idle: { pauseMs: IDLE_MS, ...deps.idleTimer },
   });
 }

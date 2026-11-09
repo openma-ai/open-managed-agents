@@ -31,6 +31,7 @@ export async function armIdle<R>(state: LiveSessionSandbox<R>, delayMs: number):
   const idle = state.options.idle;
   if (idle === undefined) return;
   state.idleSince = state.now();
+  state.idleVersion = (await state.load()).version;
   await idle.schedule(delayMs);
   state.options.info?.(`sandbox_idle_started pause_in_ms=${delayMs}`);
 }
@@ -66,7 +67,7 @@ export async function idlePause<R>(state: LiveSessionSandbox<R>): Promise<"pause
   const signal = new AbortController().signal;
   const saved = await state.load();
   // Only a running sandbox pauses: a second fire, or a record moved on.
-  if (saved.phase !== "running") return "skipped";
+  if (saved.phase !== "running" || (state.idleVersion !== null && saved.version !== state.idleVersion)) return "skipped";
   const open = state.current;
   let target: { runtime: R; handle: SandboxHandle; outputs: SandboxPlan["outputs"] } | null = open === null ? null
     : { runtime: open.runtime, handle: open.handle, outputs: open.plan.outputs };
@@ -84,7 +85,9 @@ export async function idlePause<R>(state: LiveSessionSandbox<R>): Promise<"pause
   const snapshotted = await takeSnapshot(state, target, undefined, saved);
   if (snapshotted === "conflict") return "skipped";
   await ports.storage.detach({ runtime: target.runtime, scope });
-  if (!await state.isCurrent(undefined)) {
+  const expected = snapshotted ?? saved;
+  const current = await state.load();
+  if (current.version !== expected.version || !await state.isCurrent(undefined) || state.execution() !== undefined) {
     state.abandon();
     return "skipped";
   }
@@ -92,7 +95,7 @@ export async function idlePause<R>(state: LiveSessionSandbox<R>): Promise<"pause
   const ref = await ports.sandbox.pause({ scope, runtime: target.runtime, handle: target.handle, signal });
   // Not recorded, so nobody references it; discard never deletes the sandbox.
   const drop = () => ports.sandbox.discard({ scope, ref }).catch((error) => state.options.warn(`sandbox_discard_failed ref=${ref.ref} error=${errorText(error)}`));
-  if (!await state.isCurrent(undefined)) {
+  if (!await state.isCurrent(undefined) || state.execution() !== undefined) {
     await drop();
     return "skipped";
   }

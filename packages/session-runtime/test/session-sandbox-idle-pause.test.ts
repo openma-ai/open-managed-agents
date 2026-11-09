@@ -21,6 +21,16 @@ describe("Session sandbox idle pause", () => {
     expect(h.log.slice(3)).toEqual(["attach:r1", "egress.attach", "storage.attach", "exec:again"]);
   });
 
+  it("a new execution starting during detach prevents the vendor pause", async () => {
+    const h = fakeSessionSandbox({ storageDetach: async () => h.setExecution({ ...attempt, attemptId: "new" }) });
+    await h.sandbox.exec("first");
+    await h.sandbox.endExecution();
+    h.setExecution(undefined);
+    h.advance(300_000);
+    expect(await h.sandbox.idlePause()).toBe("skipped");
+    expect(h.log).not.toContain("pause");
+  });
+
   it("a new execution during the idle window attaches directly and the timer does not pause", async () => {
     const h = fakeSessionSandbox();
     await h.sandbox.exec("first");

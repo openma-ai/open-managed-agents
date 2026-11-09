@@ -65,6 +65,8 @@ export class LiveSessionSandbox<R> {
   /** When the idle window started (execution end); null = no idle pause
    * pending. Activity in the window does not move it (design §0.0b A.10). */
   idleSince: number | null = null;
+  /** Record version observed when this instance armed the idle timer. */
+  idleVersion: number | null = null;
   /** sandbox.maxLifetimeMs, known once composed. */
   maxLifetimeMs: number | null = null;
   /** Calls (exec, process start, file I/O) currently in flight. */

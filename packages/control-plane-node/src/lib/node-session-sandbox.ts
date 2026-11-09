@@ -420,7 +420,7 @@ export class NodeSessionSandbox implements SandboxPort {
           : { executionId: fence.executionId, attemptId: fence.attemptId, ownerId: fence.ownerId, generation: fence.generation, expiresAt: fence.expiresAt };
       },
       isCurrent: async (execution) => {
-        if (execution === undefined) return true;
+        if (execution === undefined) return this.executionFence === undefined;
         const fence = this.executionFence;
         return fence !== undefined && fence.attemptId === execution.attemptId && await options.isFenceActive(fence);
       },
