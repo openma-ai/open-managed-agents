@@ -5055,8 +5055,6 @@ export class SessionDO extends DurableObject<Env> {
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
   ): Promise<{ holdQueuedOnLane?: boolean } | void> {
-    // CF applies an outcome on receipt (POST /event); the next turn grades it.
-    if (trigger?.type === "user.define_outcome") return;
     const answers = planRequiresActionAnswers(asWireEvents(batch), () => asWireEvents(history.getEvents()));
     if (answers.type === "no_effect") return;
     const parkedStill = (answers.remaining?.length ?? 0) > 0;
@@ -5097,11 +5095,13 @@ export class SessionDO extends DurableObject<Env> {
       this.broadcastEvent(idleEvent, fence);
       return;
     }
-    // Answers and a budget resume continue from history: the empty message
-    // adds no input of its own.
-    const message: UserMessageEvent = trigger?.type === "user.message"
-      ? trigger as UserMessageEvent
-      : { type: "user.message", content: [{ type: "text", text: "" }] };
+    // The batch's newest message drives the turn. Answers, a budget resume and
+    // an outcome alone continue from history: the empty message adds no input
+    // of its own. CF applied a user.define_outcome on receipt (POST /event), so
+    // this turn ends with its grading.
+    const message: UserMessageEvent = (trigger?.type === "user.message" ? trigger
+      : [...batch].reverse().find((event) => event.type === "user.message")) as UserMessageEvent | undefined
+      ?? { type: "user.message", content: [{ type: "text", text: "" }] };
     return this.processUserMessage(message, runningAnnounced, signal, fence);
   }
 
