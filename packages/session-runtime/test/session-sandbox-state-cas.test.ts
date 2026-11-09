@@ -64,7 +64,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
   const clock = { now: 1_000_000 };
   const store = versionedStore(initial);
   let n = 0;
-  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void>; acquire?: Promise<void>; acquiring?: () => void; onAttach?: () => Promise<void>; onStorage?: (input: { stores: SandboxPlan["stores"] }) => Promise<void>; generationStores?: boolean; onRevoke?: () => Promise<void> } = {};
+  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void>; acquire?: Promise<void>; acquiring?: () => void; onAttach?: () => Promise<void>; onStorage?: (input: { stores: SandboxPlan["stores"] }) => Promise<void>; generationStores?: boolean; onRevoke?: () => Promise<void>; onPlan?: () => Promise<void> } = {};
   const ports = (gated: "pause" | "attachAfterPause" | "acquire" | null) => {
     let paused = false;
     return {
@@ -117,9 +117,9 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
       executor: (runtime) => executor(runtime.id),
       state: store.state,
       scope: () => scope,
-      plan: async ({ stores, generation }) => ({
+      plan: async ({ stores, generation }) => { await gates.onPlan?.(); return ({
         from: { image: "img" }, egress: null, stores: gates.generationStores ? [{bindingId:"memory",storeName:"notes",storeId:generation,mountPath:"/mnt/memory/notes",access:"read_write"}] : stores, outputs: { bindingId: "o", mountPath: "/mnt/session/outputs" }, idleMs: 1_000, labels: { workspaceId: "ws", sessionId: "sess" },
-      }),
+      }); },
       resumeRef: async () => null,
       // Only execution-end and idle-pause snapshots here: deterministic writes.
       snapshotIntervalMs: 1_000 * HOUR,
@@ -278,6 +278,27 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     release.resolve();await expect(pending).rejects.toThrow();
     expect(w.log.filter(x=>x.startsWith("release:"))).toEqual(["release:r1"]);
     expect(w.store.get()).toEqual(saved);
+  });
+
+  it.each([false,true])("adoption cannot roll back a same-handle newer record during replan (throws=%s)", async throws => {
+    const w=world();
+    const ready=deferred(),release=deferred();
+    w.gates.acquiring=ready.resolve;w.gates.acquire=release.promise;
+    const a=w.core({execution:attempt,gated:"acquire"});
+    const pending=a.sandbox.exec("must-not-run");
+    await ready.promise;await w.core().sandbox.warm();
+    let competing: SessionSandboxState | undefined;
+    w.gates.onPlan=async()=>{
+      const saved=w.store.get()!;
+      competing={...pausedWinner("r2"),version:saved.version+1};
+      await w.store.state.save(competing,saved.version);
+      if(throws)throw Error("plan failed after competing pause");
+    };
+    release.resolve();await expect(pending).rejects.toThrow();
+    await a.sandbox.failExecution();
+    expect(w.log.filter(x=>x.startsWith("release:"))).toEqual(["release:r1"]);
+    expect(w.store.get()).toEqual(competing);
+    expect(w.log.some(x=>x.startsWith("exec:must-not-run"))).toBe(false);
   });
 
   it("warm acquire: the loser releases the sandbox it warmed", async () => {
