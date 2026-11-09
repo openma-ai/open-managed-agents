@@ -187,6 +187,18 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("warm-owner"), version: 3 });
   });
 
+  it("a losing warmer retirement cannot invalidate the winner's final open publication", async () => {
+    const w=world();const execution=w.core({execution:attempt});
+    w.gates.onStorage=async()=>{
+      const saved=w.store.get()!;
+      await w.store.state.save({...saved,version:saved.version+1,retiredHandles:[{handle:fake("losing-warmer"),released:false}]},saved.version);
+    };
+    await expect(execution.sandbox.mountSessionOutputs()).resolves.toBeUndefined();
+    await expect(execution.sandbox.exec("WORK")).resolves.toBe("exit=0\n");
+    expect(w.log).toContain("exec:WORK@r1");
+    expect(w.store.get()).toMatchObject({handle:fake("r1"),retiredHandles:[{handle:fake("losing-warmer"),released:false}]});
+  });
+
   it("a first acquire loser adopts the completed warmer even when retired allocation deletion fails", async () => {
     const w=world();const ready=deferred(),finish=deferred();w.gates.acquiring=ready.resolve;w.gates.acquire=finish.promise;
     const a=w.core({execution:attempt,gated:"acquire"});const opening=a.sandbox.exec("WORK");

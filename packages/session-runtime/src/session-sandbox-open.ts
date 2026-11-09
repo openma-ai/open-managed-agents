@@ -208,7 +208,20 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
     if (state.snapshotAt === 0) state.snapshotAt = state.now();
     if (!reused) await writeMarker(open.executor, generation);
     await assertCurrent();
-    if (await state.apply(record, publish(open.handle, runStartedAt)) === null) throw conflict("its sandbox was opened");
+    let published = await state.apply(record, publish(open.handle, runStartedAt));
+    if (published === null) {
+      const fresh = await state.load();
+      // A losing creation warmer may retire its OWN different handle while
+      // our initial open installs storage. Rebase only a proven metadata-only
+      // advance, never a same-handle lifecycle writer or an arbitrary version.
+      const { version: oldVersion, retiredHandles: oldRetired, ...oldLifecycle } = record;
+      const { version: freshVersion, retiredHandles: freshRetired, ...freshLifecycle } = fresh;
+      if (freshVersion > oldVersion && JSON.stringify(oldRetired) !== JSON.stringify(freshRetired)
+        && JSON.stringify(oldLifecycle) === JSON.stringify(freshLifecycle) && await state.isCurrent(execution)) {
+        published = await state.apply(fresh, publish(open.handle, runStartedAt));
+      }
+    }
+    if (published === null) throw conflict("its sandbox was opened");
     await assertCurrent();
   } catch (error) {
     if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
