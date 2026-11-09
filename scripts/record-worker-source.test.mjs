@@ -14,7 +14,10 @@ test("capture/bind keeps the exact tracked source and refuses stale or reused ma
     writeFileSync(join(cwd, "source.txt"), "baseline");
     git("add", "source.txt");
     git("-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "baseline");
-    const evidence = join(cwd, "evidence.json");
+    const evidence = join(cwd, ".git", "evidence.json");
+    writeFileSync(join(cwd, "untracked-module.ts"), "secret-content-do-not-print");
+    assert.throws(() => recordWorkerSource(["capture", evidence], cwd), /untracked/i);
+    rmSync(join(cwd, "untracked-module.ts"));
     const captured = recordWorkerSource(["capture", evidence], cwd);
     assert.match(captured.source.head, /^[a-f0-9]{40}$/);
     assert.equal(captured.source.diff_head_sha256, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -23,10 +26,13 @@ test("capture/bind keeps the exact tracked source and refuses stale or reused ma
     assert.notEqual(sourceFingerprint(cwd).diff_head_sha256, captured.source.diff_head_sha256);
     assert.throws(() => recordWorkerSource(["bind", evidence, "test-version"], cwd), /Tracked source changed/);
     writeFileSync(join(cwd, "source.txt"), "baseline");
+    writeFileSync(join(cwd, "untracked-module.ts"), "changed after capture");
+    assert.throws(() => recordWorkerSource(["bind", evidence, "test-version"], cwd), /untracked/i);
+    rmSync(join(cwd, "untracked-module.ts"));
     const bound = recordWorkerSource(["bind", evidence, "test-version"], cwd);
     assert.equal(bound.deployment.worker_version_id, "test-version");
     assert.equal(bound.deployment.source_head, captured.source.head);
-    assert.match(bound.deployment.status_short, /evidence.json/);
+    assert.equal(bound.deployment.status_short, "");
     assert.throws(() => recordWorkerSource(["bind", evidence, "other-version"], cwd), /already bound/);
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

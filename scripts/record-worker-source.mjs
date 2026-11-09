@@ -8,6 +8,9 @@ import { pathToFileURL } from "node:url";
 
 export function sourceFingerprint(cwd = process.cwd()) {
   const git = (...args) => execFileSync("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 });
+  if (git("ls-files", "--others", "--exclude-standard", "-z").length > 0) {
+    throw new Error("Untracked non-ignored files exist; move evidence outside the checkout or ignore it before capture/bind");
+  }
   return {
     head: git("rev-parse", "HEAD").toString().trim(),
     status_short: git("status", "--short").toString(),
@@ -28,8 +31,8 @@ export function recordWorkerSource(args, cwd = process.cwd()) {
     return evidence;
   }
   const evidence = JSON.parse(readFileSync(path, "utf8"));
-  // Untracked log files can change during deployment. The tracked source must
-  // not change between capture and binding, and both status snapshots survive.
+  // Untracked non-ignored files are refused without printing names or content.
+  // Tracked source must stay unchanged between capture and binding.
   if (evidence.source.head !== source.head || evidence.source.diff_head_sha256 !== source.diff_head_sha256) {
     throw new Error("Tracked source changed after capture; do not bind this deployment to that fingerprint");
   }
