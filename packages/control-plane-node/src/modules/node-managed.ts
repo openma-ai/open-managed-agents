@@ -340,7 +340,7 @@ export async function createManagedNodeRuntime(
           auxModel: auxiliary?.model,
           auxModelInfo: auxiliary?.modelInfo,
           auxProviderOptions: auxiliary?.providerOptions,
-        });
+        }, { enforcePermissions: false });
       },
     }),
     outcomes: new NodeManagedOutcomeEvaluator({

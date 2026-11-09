@@ -1,4 +1,5 @@
 import { isMcpToolEnabled } from "@open-managed-agents/mcp";
+import { installAcpSandboxAgent, prepareAcpSandboxAgent } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import { dynamicTool, generateText, jsonSchema, tool } from "ai";
 import { z } from "zod";
 import { anthropic } from "@ai-sdk/anthropic";
@@ -1330,6 +1331,25 @@ export async function buildTools(
           return `general sub-agent error: ${e instanceof Error ? e.message : String(e)}`;
         }
       }),
+    });
+  }
+
+  // Host-only installation retry. It remains available when the ACP agent
+  // disables ordinary bash, and validates the pinned command rather than
+  // accepting a general-purpose shell capability.
+  if (agentConfig.harness === "acp-sandbox" && options?.enforcePermissions === false) {
+    tools.acp_install = tool({
+      description: "Retry the exact pinned ACP installation after explicit confirmation.",
+      inputSchema: z.object({ registry: z.string(), command: z.string(), timeout: z.number() }),
+      execute: async ({ registry, command, timeout }) => {
+        let output = "";
+        await installAcpSandboxAgent({ exec: async (expected, expectedTimeout) => {
+          if (command !== expected || timeout !== expectedTimeout) throw new Error("ACP install retry does not match the pinned registry command");
+          output = await sandbox.exec(command, timeout);
+          return output;
+        } }, prepareAcpSandboxAgent({ sessionId: env?.sessionId ?? "install-retry", agent: { registry } }));
+        return output;
+      },
     });
   }
 

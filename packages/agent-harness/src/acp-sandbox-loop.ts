@@ -1,4 +1,5 @@
-import { parkUnknownToolRetry } from "./unknown-tool-retry";
+import { parkUnknownToolRetry, isDispatchedUnknown } from "./unknown-tool-retry";
+import { installAcpAgentWithHistory } from "./acp-install";
 import { harnessContextFromEvents, transitionHarnessContext, type HarnessContextState } from "@open-managed-agents/session-runtime-contract";
 import { SessionExecutionLostError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
@@ -22,7 +23,6 @@ import type {
 import {
   captureAcpSandboxAgentState,
   hasRequiredAcpSandboxAgentState,
-  installAcpSandboxAgent,
   managedMcpProxyFromWorkEnvironment,
   materializeAcpSandboxAgentState,
   materializeHostedInferenceConfigFiles,
@@ -162,7 +162,14 @@ export class AcpSandboxHarness implements HarnessInterface {
         // Harbor-style install: pinned registry agents get their launcher
         // before spawn. A failure rejects into the turn error below; it never
         // falls back to a bare command or an unpinned package.
-        preparation = await installAcpSandboxAgent(runtime.sandbox, preparation);
+        try {
+          preparation = await installAcpAgentWithHistory(runtime, preparation);
+        } catch (error) {
+          // The install wrapper persisted the original result and frozen
+          // retry request. Pause instead of entering automatic host retry.
+          if (isDispatchedUnknown(error)) return;
+          throw error;
+        }
         const acpRuntime = createAcpRuntime({
           type: "sandbox",
           sandbox: runtime.sandbox,
