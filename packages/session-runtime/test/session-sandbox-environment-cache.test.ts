@@ -32,6 +32,8 @@ function harness(options: {
   deleteSnapshot?: ((ref: EnvironmentSnapshotRef) => Promise<void>) | null;
   noSnapshots?: boolean;
   data?: Map<string, string>;
+  publishFails?: () => boolean;
+  buildTimeoutMs?: number;
 } = {}) {
   const stores = new Map<string, Map<string, string>>();
   const storeOf = (id: string) => stores.get(id) ?? stores.set(id, new Map()).get(id)!;
@@ -67,10 +69,11 @@ function harness(options: {
   } as unknown as SandboxLifecyclePort<string>;
   const cache = new EnvironmentCache<string, string>({
     adapter: "fake",
+    buildTimeoutMs: options.buildTimeoutMs,
     lifecycle,
     storeFor: (id) => {
       const map = storeOf(id);
-      return { compareAndSwap: async (k, expected, value) => { if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); return true; }, get: async (k) => map.get(k) ?? null, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
+      return { compareAndSwap: async (k, expected, value) => { if (value && JSON.parse(value).state === "ready" && options.publishFails?.()) throw new Error("store put unavailable"); if ((map.get(k) ?? null) !== expected) return false; if (value === null) map.delete(k); else map.set(k, value); return true; }, get: async (k) => map.get(k) ?? null, put: async (k, v) => { map.set(k, v); }, delete: async (k) => { map.delete(k); } };
     },
     restrictEgress: async () => { setups.push("restricted"); await options.restrictEgress?.(); },
     setup: async (_runtime, setup) => { setups.push(setup); await options.setup?.(); },
@@ -260,6 +263,27 @@ describe("EnvironmentCache", () => {
     expect(reasons(h)).toEqual(["snapshot_build_failed"]);
     expect(h.released).toHaveLength(1);
     expect(h.data.size).toBe(0);
+  });
+
+  it("publication failure keeps a refused snapshot delete durably and the next Session retries", async () => {
+    let fail = true;
+    const h = harness({ publishFails: () => fail, deleteSnapshot: async () => { throw new Error("in use"); } });
+    await h.session("s1");
+    expect(h.deleted).toHaveLength(1);
+    expect(JSON.parse(h.data.get(h.storeKey)!)).toMatchObject({ state: "retired", retired: [{ ref: h.deleted[0] }] });
+    fail = false;
+    await h.session("s2");
+    expect(JSON.parse(h.data.get(h.storeKey)!).state).toBe("ready");
+  });
+
+  it("a snapshot returned after the deadline retains a failed delete for retry", async () => {
+    let finish!: (ref: EnvironmentSnapshotRef) => void;
+    const h = harness({ buildTimeoutMs: 1, snapshot: () => new Promise(resolve => { finish = resolve; }), deleteSnapshot: async () => { throw new Error("in use"); } });
+    await h.session("s1");
+    finish({ adapter: "fake", ref: "late" });
+    for (let i = 0; i < 80; i++) await Promise.resolve();
+    expect(h.data.has(h.storeKey)).toBe(true);
+    expect(JSON.parse(h.data.get(h.storeKey)!)).toMatchObject({ state: "retired", retired: [{ ref: "late" }] });
   });
 
   it("two cache instances sharing a store publish one winner and delete the loser", async () => {

@@ -56,6 +56,8 @@ export interface EnvironmentSnapshotBuildContext<R, Q> {
   aborts: Map<string, () => void>;
   /** Build sandboxes still being acquired (dispose() waits for them, bounded). */
   steps: Set<Promise<unknown>>;
+  /** Delete an unpublished result or retain it in the existing retired record. */
+  cleanup(store: EnvironmentCacheStore, storeKey: string, snapshot: EnvironmentSnapshotRef, fields: Record<string, unknown>): Promise<void>;
   /** The record's retired snapshots now, after a delete attempt; the build carries the survivors. */
   retired(store: EnvironmentCacheStore, storeKey: string): Promise<EnvironmentSnapshotRef[]>;
 }
@@ -93,6 +95,20 @@ export async function buildEnvironmentSnapshot<R, Q>(
   const timer = setTimeout(() => abortBuild(new Error("environment snapshot build exceeded its " + timeoutMs + " ms deadline")), timeoutMs);
 
   let builder: Acquired<R> | undefined;
+  let unpublished: EnvironmentSnapshotRef | undefined;
+  const cleanup = async (snapshot: EnvironmentSnapshotRef) => {
+    try {
+      // A failed response to CAS may mean it committed: never delete a winner.
+      const raw = await input.store.get(input.storeKey);
+      if (raw !== null && (JSON.parse(raw) as EnvironmentCacheEntry).snapshot?.ref === snapshot.ref) return;
+      await context.cleanup(input.store, input.storeKey, snapshot, fields);
+    } catch (error) {
+      // Provider and DB cannot transact atomically. The E2B provider snapshot
+      // name (oma-env-<builder runtime id>) and build labels remain the recovery
+      // evidence if neither deletion nor persistence is available.
+      logger.warn({ ...fields, path: "snapshot_cleanup_unrecorded", buildId, builder: builder?.handle.runtimeId, snapshotRef: snapshot.ref, error: context.errorText(error) }, "Snapshot cleanup could not be durably recorded; provider reconciliation is required");
+    }
+  };
   const release = async (target: Acquired<R>) => {
     await lifecycle.release({ scope, handle: target.handle }).catch((error: unknown) => {
       logger.warn({ ...fields, path: "build_cleanup_failed", error: context.errorText(error) }, "Releasing the environment snapshot build sandbox failed");
@@ -121,7 +137,7 @@ export async function buildEnvironmentSnapshot<R, Q>(
     const snapshot = await lifecycle.snapshotEnvironment!({ runtime: acquired.runtime, handle: acquired.handle, signal: controller.signal });
     // Finished after the deadline or shutdown settled the build: nobody records it.
     if (aborted !== undefined) {
-      await lifecycle.deleteEnvironmentSnapshot?.({ ref: snapshot }).catch(() => undefined);
+      await cleanup(snapshot);
       throw aborted;
     }
     return snapshot;
@@ -129,17 +145,21 @@ export async function buildEnvironmentSnapshot<R, Q>(
   void steps.catch(() => undefined);
   try {
     const snapshot = await Promise.race([steps, abortedPromise]);
+    unpublished = snapshot;
     const retired = await context.retired(input.store, input.storeKey);
     const published = await input.store.compareAndSwap(input.storeKey, input.expected, JSON.stringify({
       state: "ready", snapshot, createdAtMs: context.now(), ...(retired.length === 0 ? {} : { retired }),
     } satisfies EnvironmentCacheEntry));
     if (!published) {
-      await lifecycle.deleteEnvironmentSnapshot?.({ ref: snapshot });
+      await cleanup(snapshot);
+      unpublished = undefined;
       return { outcome: "aborted" };
     }
+    unpublished = undefined;
     logger.info({ ...fields, path: "build_ok", snapshotRef: snapshot.ref, durationMs: context.now() - startMs }, "Environment snapshot built");
     return { outcome: "built" };
   } catch (error) {
+    if (unpublished !== undefined) await cleanup(unpublished);
     const text = context.errorText(error);
     if (error instanceof BuildAborted) {
       logger.warn({ ...fields, path: "build_failed", reason: "shutdown", error: text, durationMs: context.now() - startMs }, "Environment snapshot build aborted by shutdown");

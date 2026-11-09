@@ -163,6 +163,21 @@ export class EnvironmentCache<R, Q> {
       buildTimeoutMs: options.buildTimeoutMs,
       aborts: new Map(),
       steps: new Set(),
+      cleanup: async (store, storeKey, snapshot, fields) => {
+        const kept = await this.#retire([snapshot], fields);
+        if (kept.length === 0) return;
+        // Reuse the retired responsibility, merging against the latest document.
+        // A concurrent winner must never be overwritten by a loser's cleanup.
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const raw = await store.get(storeKey);
+          const { parsed, retired } = this.#records(raw);
+          if (parsed?.snapshot?.ref === snapshot.ref) return;
+          if (!retired.some(ref => ref.ref === snapshot.ref)) retired.push(snapshot);
+          const next = JSON.stringify({ ...(parsed ?? { state: "retired" }), retired });
+          if (await store.compareAndSwap(storeKey, raw, next)) return;
+        }
+        throw new Error("Environment snapshot cleanup CAS contention");
+      },
       retired: async (store, storeKey) => {
         const raw = await store.get(storeKey).catch(() => null);
         return this.#retire(this.#records(raw).retired, {});
