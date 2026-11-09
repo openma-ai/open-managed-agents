@@ -284,7 +284,7 @@ data: {"exit_code":1}
 
   it("handles all duplex terminal events and stream framing", async () => {
     const cases: Array<{ response: Response; error: string }> = [
-      { response: new Response("bad", { status: 500 }), error: "500: bad" },
+      { response: new Response("bad", { status: 500 }), error: "HTTP 500" },
       { response: new Response(null), error: "did not return an SSE" },
       { response: sseText("", 200, "text/plain"), error: "did not return an SSE" },
       { response: sseText("event: exit\ndata: {}\n\n"), error: "invalid exit event" },

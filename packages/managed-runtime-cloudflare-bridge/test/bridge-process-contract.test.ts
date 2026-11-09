@@ -112,8 +112,7 @@ it.each(["request", "body"])("records cleanup identity before waiting for a hang
  let result: unknown;
  const spawning=runtime.spawnDuplexProcess({command:"sleep"}).catch(error=>{result=error;});
  try {
-   await vi.advanceTimersByTimeAsync(1);
-   expect(entered).toBe(true);
+   await vi.waitFor(() => expect(entered).toBe(true));
    expect(persistedBeforeSignal).toBe(true);
    await vi.advanceTimersByTimeAsync(60_000);
    expect(result).toMatchObject({runtimeId:"sandbox",processId:"pending",recorded:true});
@@ -160,6 +159,56 @@ it.each(["throws", "hangs", "refuses"])("exposes process identity and still atte
    expect(result).toMatchObject({runtimeId:"sandbox",processId:"recoverable",recorded:false});
    await spawning;
  } finally { vi.useRealTimers(); }
+});
+
+it("starts cleanup without reading a hanging non-2xx events error body", async () => {
+ let killed=false;
+ let finish!:()=>void;
+ const pending=new Promise<void>(resolve=>{finish=resolve;});
+ const runtime=new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:new InMemoryBlobStore(),fetch:async input=>{
+   if(String(input).endsWith("/process"))return Response.json({id:"error-body"});
+   if(String(input).endsWith("/events"))return new Response(new ReadableStream({async start(controller){await pending;controller.close();}}),{status:503});
+   if(String(input).endsWith("/signal")){killed=true;return Response.json({exit_code:137});}
+   return new Response(null,{status:204});
+ }});
+ const spawning=runtime.spawnDuplexProcess({command:"sleep"}).catch(error=>error);
+ try { await vi.waitFor(()=>expect(killed).toBe(true),{timeout:100}); }
+ finally { finish(); }
+ await expect(spawning).resolves.toBeInstanceOf(Error);
+});
+
+it.each(["before-write", "after-write"])("late cleanup identity PUT cannot replace confirmed exit: %s", async timing => {
+ vi.useFakeTimers();
+ const store=new InMemoryBlobStore();
+ const put=store.put.bind(store);
+ let release!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;});
+ let pendingPut: ReturnType<typeof put> | undefined;
+ store.put=(key,body,options)=>{
+   if(JSON.parse(String(body)).state!=="cleanup_unconfirmed")return put(key,body,options);
+   pendingPut=(async()=>{
+     if(timing==="before-write")await gate;
+     const result=await put(key,body,options);
+     if(timing==="after-write")await gate;
+     return result;
+   })();
+   return pendingPut;
+ };
+ const path="cloudflare-bridge-workspaces/processes/sandbox/late.json";
+ const runtime=new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:store,fetch:async input=>{
+   if(String(input).endsWith("/process"))return Response.json({id:"late"});
+   if(String(input).endsWith("/signal"))return Response.json({exit_code:137});
+   return new Response("failed",{status:503});
+ }});
+ let result: unknown;
+ const spawning=runtime.spawnDuplexProcess({command:"sleep"}).catch(error=>{result=error;});
+ try {
+   await vi.advanceTimersByTimeAsync(30_000);
+   expect(result).toMatchObject({cleanupConfirmed:true,recorded:false});
+   release(); await pendingPut; await spawning;
+   const record=await store.get(path);
+   expect(record===null?null:JSON.parse(await record.text()).state).not.toBe("cleanup_unconfirmed");
+ } finally { release(); vi.useRealTimers(); }
 });
 
 it("retains recoverable process identity when events and cleanup both fail", async () => {

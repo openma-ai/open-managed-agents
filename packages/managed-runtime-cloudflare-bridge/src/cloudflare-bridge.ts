@@ -437,7 +437,7 @@ export class CloudflareBridgeRuntime
       let recorded = false;
       let storageFailure: unknown;
       try {
-        recorded = await cleanupStep(async () => await this.#store.put(key, JSON.stringify(identity)) !== null);
+        recorded = await cleanupStep(async () => await this.#store.put(key, JSON.stringify(identity), { precondition: { type: "ifNoneMatch", value: "*" } }) !== null);
         if (!recorded) storageFailure = new Error("Process cleanup identity was not stored");
       } catch (error) { storageFailure = error; }
       let cleanupFailure: unknown;
@@ -448,6 +448,17 @@ export class CloudflareBridgeRuntime
           if (!Number.isSafeInteger(result.exit_code)) throw new Error("Process exit was not confirmed");
         });
       } catch (error) { cleanupFailure = error; }
+      if (cleanupFailure === undefined && !recorded) {
+        // A timed-out PUT is not cancelled: it may still create its identity.
+        // Keep a terminal tombstone at the same key. The initial create-only
+        // PUT cannot overwrite it, whether it writes before or after this PUT.
+        // BlobStore's conditional-write contract is required here; failure is
+        // exposed with identity, never treated as durable cancellation.
+        try {
+          const terminal = await cleanupStep(async () => this.#store.put(key, JSON.stringify({ ...identity, state: "cleanup_confirmed" })));
+          if (terminal === null) throw new Error("Process cleanup confirmation was not stored");
+        } catch (error) { storageFailure = error; }
+      }
       if (cleanupFailure === undefined && recorded) {
         // A failed delete leaves a conservative, recoverable identity, not a
         // lost process. Never remove the identity before real exit confirmation.
@@ -460,8 +471,14 @@ export class CloudflareBridgeRuntime
       }
       throw failure;
     };
-    try { response = await requestProcess("/events"); }
+    try { response = await this.#request(processPath + "/events"); }
     catch (error) { return cleanupFailedStart(error); }
+    if (!response.ok) {
+      // Error text is untrusted streaming I/O, not a prerequisite for killing
+      // the already allocated process. Dispose independently of cleanup.
+      void response.body?.cancel().catch(() => undefined);
+      return cleanupFailedStart(new Error(`Cloudflare Bridge process events failed (HTTP ${response.status})`));
+    }
     if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
       void response.body?.cancel().catch(() => undefined);
       return cleanupFailedStart(new Error("Cloudflare Bridge process did not return an SSE stream"));

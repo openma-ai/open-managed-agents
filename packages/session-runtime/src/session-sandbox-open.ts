@@ -94,7 +94,7 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
       generation = marker;
     }
   }
-  const reused = opened !== "gone";
+  let reused = opened !== "gone";
   if (!reused) generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   // An attached sandbox may have kept running: keep the recorded start; one
   // the idle pause stopped wakes now. A resumed or new one starts a run now.
@@ -127,9 +127,30 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
           const lost = opened;
           opened = "gone";
           await state.releaseOwn(lost.handle);
-          throw conflict("its sandbox was opened");
-        }
-        record = next;
+          // Only the initial acquire can converge on a completed creation
+          // warm-up. Attach once, never retry allocation or overwrite the
+          // winner; all later transitions retain their ordinary CAS failure.
+          const winner = await state.load();
+          if (record.phase !== "none" || winner.phase !== "running" || winner.version !== 1
+            || winner.latestSnapshot.status !== "none" || !await state.isCurrent(execution)) {
+            throw conflict("its sandbox was opened");
+          }
+          const attached = await ports.sandbox.attach({ scope, handle: winner.handle, signal });
+          const marker = attached === "gone" ? null : await readMarker(state.options.executor(attached.runtime));
+          if (attached === "gone" || marker === null) throw conflict("its sandbox was opened");
+          // The winner can change during attach. Do not expose its runtime or
+          // perform storage/egress side effects until its identity is stable.
+          const confirmed = await state.load();
+          if (confirmed.version !== winner.version || confirmed.phase !== "running"
+            || !sameHandle(confirmed.handle, winner.handle) || !await state.isCurrent(execution)) {
+            throw conflict("its sandbox was opened");
+          }
+          opened = attached;
+          generation = marker;
+          runStartedAt = winner.runStartedAt;
+          reused = true;
+          record = winner;
+        } else record = next;
         publish = (handle, at) => ({ type: "attach", handle, at });
       }
     }

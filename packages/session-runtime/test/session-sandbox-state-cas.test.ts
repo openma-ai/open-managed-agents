@@ -64,8 +64,8 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
   const clock = { now: 1_000_000 };
   const store = versionedStore(initial);
   let n = 0;
-  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void> } = {};
-  const ports = (gated: "pause" | "attachAfterPause" | null) => {
+  const gates: { pause?: Promise<void>; attachAfterPause?: Promise<void>; acquire?: Promise<void>; acquiring?: () => void; onAttach?: () => Promise<void> } = {};
+  const ports = (gated: "pause" | "attachAfterPause" | "acquire" | null) => {
     let paused = false;
     return {
       sandbox: {
@@ -73,6 +73,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
         maxLifetimeMs: HOUR,
         async attach({ handle }: { handle: { runtimeId: string } }) {
           log.push(`attach:${handle.runtimeId}`);
+          await gates.onAttach?.();
           if (paused && gated === "attachAfterPause" && gates.attachAfterPause) await gates.attachAfterPause;
           paused = false;
           return gone.includes(handle.runtimeId) ? "gone" : { runtime: { id: handle.runtimeId }, handle: fake(handle.runtimeId) };
@@ -82,7 +83,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
           log.push(`resume:${ref.ref}`);
           return { runtime: { id }, handle: fake(id) };
         },
-        async acquire() { n += 1; log.push(`acquire:r${n}`); return { runtime: { id: `r${n}` }, handle: fake(`r${n}`) }; },
+        async acquire() { const id = `r${++n}`; log.push(`acquire:${id}`); if (gated === "acquire") { gates.acquiring?.(); await gates.acquire; } return { runtime: { id }, handle: fake(id) }; },
         async checkpoint() { n += 1; log.push(`checkpoint:snap-${n}`); return { provider: "fake", ref: `snap-${n}`, kind: "snapshot" }; },
         async pause({ handle }: { handle: { runtimeId: string } }) {
           log.push(`pause:${handle.runtimeId}`);
@@ -108,7 +109,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
     },
     async setEnvVars() {},
   }) as unknown as SessionSandboxExecutor;
-  const core = (opts: { execution?: SessionSandboxExecution; gated?: "pause" | "attachAfterPause" } = {}) => {
+  const core = (opts: { execution?: SessionSandboxExecution; gated?: "pause" | "attachAfterPause" | "acquire" } = {}) => {
     let execution = opts.execution;
     const composed = ports(opts.gated ?? null);
     const sandbox = new PortsSessionSandbox<{ id: string }>({
@@ -127,7 +128,7 @@ function world(initial?: SessionSandboxState, gone: string[] = []) {
       egressRenewMs: null,
       now: () => clock.now,
       execution: () => execution,
-      isCurrent: async () => true,
+      isCurrent: async captured => captured === execution,
       idle: { pauseMs: 1_000, schedule: () => undefined, cancel: () => undefined },
     });
     return { sandbox, setExecution: (next: SessionSandboxExecution | undefined) => { execution = next; } };
@@ -149,8 +150,91 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     w.store.intrude(winner("theirs"));
     await expect(a.sandbox.exec("x")).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
     expect(w.store.writes).toEqual(["won@v0", "lost@v0"]);
-    expect(w.log).toEqual(["acquire:r1", "release:r1"]);
+    // One attach probes the winner; without its completed warm marker it
+    // must still fail, without allocating again or touching that runtime.
+    expect(w.log).toEqual(["acquire:r1", "release:r1", "attach:theirs"]);
     expect(w.store.get()).toEqual({ ...winner("theirs"), version: 1 });
+  });
+
+  it("failed startup cleanup without an acquired sandbox leaves the other writer's runtime intact", async () => {
+    const w = world({ ...winner("warm-owner"), version: 1 });
+    const execution = w.core({ execution: attempt });
+    await execution.sandbox.failExecution();
+    expect(w.log).toEqual([]);
+    expect(w.store.writes).toEqual([]);
+    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("warm-owner"), version: 1 });
+  });
+
+  it("acquire loser followed by failed startup cleanup releases only its own allocation once", async () => {
+    const w = world();
+    const execution = w.core({ execution: attempt });
+    w.store.intrude(winner("warm-owner"));
+    await expect(execution.sandbox.exec("x")).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
+    await execution.sandbox.failExecution();
+    await execution.sandbox.failExecution();
+    expect(w.log).toEqual(["acquire:r1", "release:r1", "attach:warm-owner"]);
+    expect(w.store.writes).toEqual(["won@v0", "lost@v0"]);
+    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("warm-owner"), version: 1 });
+  });
+
+  it("a first acquire loser attaches the completed warm winner without another allocation or execution failure", async () => {
+    const w = world();
+    const acquiring = deferred(), finishAcquire = deferred();
+    w.gates.acquiring = acquiring.resolve;
+    w.gates.acquire = finishAcquire.promise;
+    const execution = w.core({ execution: attempt, gated: "acquire" });
+    const opening = execution.sandbox.exec("work");
+    await acquiring.promise;
+    const warmer = w.core();
+    await warmer.sandbox.warm();
+    const warmRecord = w.store.get();
+    expect(warmRecord).toMatchObject({ phase: "running", handle: fake("r2"), version: 1 });
+    finishAcquire.resolve();
+    await expect(opening).resolves.toBe("exit=0\n");
+    expect(w.log.filter(entry=>entry.startsWith("acquire:"))).toEqual(["acquire:r1", "acquire:r2"]);
+    expect(w.log.filter(entry=>entry.startsWith("release:"))).toEqual(["release:r1"]);
+    expect(w.log).toContain("attach:r2");
+    expect(w.log.at(-1)).toBe("exec:work@r2");
+    expect(w.store.get()).toMatchObject({ phase: "running", handle: fake("r2"), version: 2 });
+  });
+
+  it.each(["advanced", "released", "gone", "fence-lost"])("initial acquire convergence refuses an unsafe winner: %s", async mode => {
+    const w = world(undefined, mode === "gone" ? ["r2"] : []);
+    const acquiring = deferred(), finishAcquire = deferred();
+    w.gates.acquiring = acquiring.resolve;
+    w.gates.acquire = finishAcquire.promise;
+    const execution = w.core({ execution: attempt, gated: "acquire" });
+    const opening = execution.sandbox.exec("must-not-run");
+    await acquiring.promise;
+    await w.core().sandbox.warm();
+    if(mode === "advanced") await w.store.state.save({...w.store.get()!,version:2},1);
+    if(mode === "released") await w.store.state.save({...initialSandboxState(),phase:"released",version:2},1);
+    if(mode === "fence-lost") execution.setExecution(undefined);
+    finishAcquire.resolve();
+    await expect(opening).rejects.toBeInstanceOf(Error);
+    await execution.sandbox.failExecution();
+    expect(w.log.filter(entry=>entry.startsWith("acquire:"))).toEqual(["acquire:r1","acquire:r2"]);
+    expect(w.log.filter(entry=>entry.startsWith("release:"))).toEqual(["release:r1"]);
+    expect(w.log.some(entry=>entry.startsWith("exec:"))).toBe(false);
+    expect(w.store.get()?.version).toBe(mode === "advanced" || mode === "released" ? 2 : 1);
+  });
+
+  it("does not adopt or release a warm winner changed while attaching", async () => {
+    const w = world();
+    const acquiring = deferred(), finishAcquire = deferred();
+    w.gates.acquiring = acquiring.resolve;
+    w.gates.acquire = finishAcquire.promise;
+    const execution = w.core({ execution: attempt, gated: "acquire" });
+    const opening = execution.sandbox.exec("must-not-run");
+    await acquiring.promise;
+    await w.core().sandbox.warm();
+    w.gates.onAttach = async () => { await w.store.state.save({...w.store.get()!,version:2},1); };
+    finishAcquire.resolve();
+    await expect(opening).rejects.toBeInstanceOf(SessionSandboxStateConflictError);
+    await execution.sandbox.failExecution();
+    expect(w.log.filter(entry=>entry.startsWith("release:"))).toEqual(["release:r1"]);
+    expect(w.log.some(entry=>entry.startsWith("exec:"))).toBe(false);
+    expect(w.store.get()).toMatchObject({phase:"running",handle:fake("r2"),version:2});
   });
 
   it("warm acquire: the loser releases the sandbox it warmed", async () => {

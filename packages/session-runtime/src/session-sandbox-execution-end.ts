@@ -46,6 +46,9 @@ export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<vo
   const { ports } = await state.compose();
   const scope = state.scope();
   const open = state.current;
+  // A persisted handle is discovery, not ownership by this attempt. Failed
+  // opens already roll back their own resources; never adopt a winner here.
+  if (open === null) return;
   state.current = null;
   state.lost = false;
   state.refreshError = null;
