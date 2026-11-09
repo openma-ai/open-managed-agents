@@ -47,7 +47,8 @@ const PENDING_BUILD_MAX_AGE_MS = 60 * 60_000;
 /** A stored record before validation. */
 type RawRecord = { state?: unknown; snapshot?: Partial<EnvironmentSnapshotRef>; createdAtMs?: unknown; lastUsedAtMs?: unknown; retired?: unknown };
 
-/** Retired snapshots kept per record at most (oldest dropped, logged). */
+/** Backpressure: never build more snapshots while this many deletes are refused.
+ * Legacy records above the limit are kept intact, not truncated. */
 const MAX_RETIRED = 20;
 /** KV key prefix: kept from the first release so deployed records stay valid. */
 const KEY_PREFIX = "sandbox_prepared_base:v1";
@@ -300,6 +301,11 @@ export class EnvironmentCache<R, Q> {
     const current = await store.get(storeKey).catch(() => null);
     const { entry: existing } = this.#parse(current, local, fields);
     if (existing !== null && !environmentSnapshotExpired(existing, this.#ttl, this.#now())) return;
+    if (this.#records(current).retired.length >= MAX_RETIRED) {
+      const retired = await this.#retire(this.#records(current).retired, fields);
+      await this.#keepRetired(store, storeKey, retired, fields);
+      if (retired.length >= MAX_RETIRED) return;
+    }
     const result = await buildEnvironmentSnapshot(this.#build, { store, storeKey, local, fields, scope: pending.scope, plan: pending.plan, setup: pending.setup });
     if (result.outcome === "built") this.#hitFailures.delete(local);
     if (result.outcome !== "failed") return;
@@ -333,10 +339,7 @@ export class EnvironmentCache<R, Q> {
         this.#options.logger.warn({ ...fields, path: "delete_failed", snapshotRef: ref.ref, error: this.#errorText(error) }, "Deleting a retired environment snapshot failed; it is retried later");
       }
     }
-    if (kept.length > MAX_RETIRED) {
-      this.#options.logger.warn({ ...fields, path: "retired_dropped", dropped: kept.slice(0, kept.length - MAX_RETIRED).map((ref) => ref.ref) }, "Too many retired environment snapshots; the oldest are no longer retried");
-    }
-    return kept.slice(-MAX_RETIRED);
+    return kept;
   }
 
   /** The record without a usable snapshot: kept for its retired ones, else removed. */

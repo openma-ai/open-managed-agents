@@ -334,6 +334,20 @@ describe("EnvironmentCache", () => {
     expect(h.deleted.filter((r) => r === first).length).toBe(3);
   });
 
+  it("keeps all 21 refused deletes and pauses new builds until cleanup makes room", async () => {
+    let inUse = true;
+    const h = harness({ deleteSnapshot: async () => { if (inUse) throw new Error("in use"); } });
+    const retired = Array.from({ length: 21 }, (_, n) => ({ adapter: "fake", ref: "old" + n }));
+    h.data.set(h.storeKey, JSON.stringify({ state: "retired", retired }));
+    await h.session("s1");
+    expect(JSON.parse(h.data.get(h.storeKey)!).retired).toEqual(retired);
+    expect(h.builds()).toHaveLength(0);
+    inUse = false;
+    await h.session("s2");
+    expect(JSON.parse(h.data.get(h.storeKey)!).retired).toBeUndefined();
+    expect(h.builds()).toHaveLength(1);
+  });
+
   it("a retired-only record is a miss that keeps its retired refs through the rebuild", async () => {
     const h = harness({ deleteSnapshot: async () => { throw new Error("in use"); } });
     h.data.set(h.storeKey, JSON.stringify({ state: "retired", retired: [{ adapter: "fake", ref: "old" }, { adapter: "other", ref: "not-ours" }] }));
