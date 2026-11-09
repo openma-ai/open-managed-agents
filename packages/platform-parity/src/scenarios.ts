@@ -4,7 +4,7 @@ import {
   textChunks,
   toolCallChunks,
 } from "../../../test/fakes/scripted-language-model";
-import { ACP_CHILD_EXIT_HARNESS, ACP_TIMEOUT_HARNESS } from "./acp-child-exit";
+import { ACP_CHILD_EXIT_HARNESS, ACP_TIMEOUT_HARNESS, ACP_REVISION_TIMEOUT_HARNESS } from "./acp-child-exit";
 import type { ParityScenario, ScenarioContext } from "./context";
 import type { ParityModelStep } from "./models";
 
@@ -281,6 +281,19 @@ export const acpTimeout: ParityScenario = {
   },
 };
 
+export const acpRevisionTimeout: ParityScenario = {
+  name: "acp-revision-timeout",
+  covers: "共享 outcome revision 的真实 ACP 超时必须 error exhausted → idle retries_exhausted",
+  async run(context) {
+    await simpleSession(context, {}, { _oma: { harness: ACP_REVISION_TIMEOUT_HARNESS } });
+    await context.send([
+      { type: "user.message", content: [{ type: "text", text: "Start." }] },
+      { type: "user.define_outcome", description: "parity-revision-timeout", rubric: { type: "text", content: "parity-revision-timeout" }, max_iterations: 3 },
+    ], "message_and_outcome");
+    await context.waitIdle(1, "retries_exhausted");
+  },
+};
+
 /** The scenario set every platform runner executes (order = report order). */
 export const PARITY_SCENARIOS: ParityScenario[] = [
   oneTurn,
@@ -295,4 +308,5 @@ export const PARITY_SCENARIOS: ParityScenario[] = [
   contextBuildFailure,
   acpChildExit,
   acpTimeout,
+  acpRevisionTimeout,
 ];

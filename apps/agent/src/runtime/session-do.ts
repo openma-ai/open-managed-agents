@@ -5760,7 +5760,8 @@ export class SessionDO extends DurableObject<Env> {
     this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
     const unlinkParentAbort = linkAbort(parentSignal, abortController);
-    const effectiveAbortSignal = abortController.signal;
+    // One execution signal for tools, delegation, harness and outcome; cleanup retains the parent fence.
+    const effectiveAbortSignal = AbortSignal.any([abortController.signal, this._turnInvocation!.signal]);
     sandbox = this.bindSandboxToExecution(
       sandbox,
       effectiveAbortSignal,
@@ -6167,22 +6168,25 @@ export class SessionDO extends DurableObject<Env> {
         this.broadcastEvent(runningEvent, activeFence);
       }
 
-      const attempts = await runTurnAttempts({
-        run: () => this._turnInvocation!.run(() => harness.run({ ...ctx, runtime: { ...ctx.runtime, abortSignal: AbortSignal.any([effectiveAbortSignal, this._turnInvocation!.signal]) } })),
-        agentEventCount: () => countAgentEvents(history.getEvents()),
-        // A lost execution fence is a cancellation too: the replacement owner
-        // runs the turn, so this one must neither retry nor report.
-        isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
-        classify: (error, produced) => this._turnInvocation?.signal.aborted ? "turn_dead" : classifyTurnFailure(error, produced),
-        retry: TURN_RETRY,
-        signal: abortController.signal,
-        events: failureEvents,
-        describe: (error) => this.describeError(error),
-      });
-      if (attempts.type !== "completed") {
-        failedAttempts = attempts;
-        throw attempts.error;
-      }
+      const runHarness = async (userMessage = ctx.userMessage) => {
+        const attempts = await runTurnAttempts({
+          run: () => this._turnInvocation!.run(() => harness.run({ ...ctx, userMessage })),
+          agentEventCount: () => countAgentEvents(history.getEvents()),
+          // A lost execution fence is a cancellation too: the replacement owner
+          // runs the turn, so this one must neither retry nor report.
+          isCancelled: (error) => isTurnCancellationError(error) || abortController.signal.aborted,
+          classify: (error, produced) => this._turnInvocation?.signal.aborted ? "turn_dead" : classifyTurnFailure(error, produced),
+          retry: TURN_RETRY,
+          signal: effectiveAbortSignal,
+          events: failureEvents,
+          describe: (error) => this.describeError(error),
+        });
+        if (attempts.type !== "completed") {
+          failedAttempts = attempts;
+          throw attempts.error;
+        }
+      };
+      await runHarness();
 
       // A parked call can already be closed by the time the run returns
       // (steer/interrupt closed it with a tool_result, or the client answered
@@ -6251,92 +6255,79 @@ export class SessionDO extends DurableObject<Env> {
         const outcomeModelId =
           typeof agent.model === "string" ? agent.model : agent.model?.id;
         const judgeModel = ctx.model;
-        try {
-          await runOutcomeSupervisor({
-            outcome,
-            initialIteration: this.state.outcome_iteration ?? 0,
-            tenantId: this.state.tenant_id,
-            filesBucket: this.env.FILES_BUCKET ?? null,
-            abortSignal: effectiveAbortSignal,
-            judgeModelId: outcomeModelId,
-            getEvents: () => history.getEvents(),
-            appendAndBroadcast: (event) => {
-              history.append(event);
-              this.broadcastEvent(event, activeFence);
+        await runOutcomeSupervisor({
+          outcome,
+          initialIteration: this.state.outcome_iteration ?? 0,
+          tenantId: this.state.tenant_id,
+          filesBucket: this.env.FILES_BUCKET ?? null,
+          abortSignal: effectiveAbortSignal,
+          judgeModelId: outcomeModelId,
+          getEvents: () => history.getEvents(),
+          appendAndBroadcast: (event) => {
+            history.append(event);
+            this.broadcastEvent(event, activeFence);
+          },
+          persistState: (delta) => {
+            const next = { ...this.state };
+            if ("outcome" in delta) next.outcome = delta.outcome ?? null;
+            if (typeof delta.outcome_iteration === "number") {
+              next.outcome_iteration = delta.outcome_iteration;
+            }
+            if (delta.outcome_evaluations) {
+              next.outcome_evaluations = delta.outcome_evaluations;
+            }
+            this.setState(next);
+          },
+          readEvaluations: () => this.state.outcome_evaluations ?? [],
+          makeVerifierContext: () => ({
+            sessionId: this.state.session_id,
+            runExec: async (cmd, opts) => {
+              const raw = await sandbox.exec(cmd, opts?.timeoutMs ?? 600_000);
+              // sandbox.exec returns "exit=N\n<merged-output>"
+              const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
+              return m
+                ? { exit_code: parseInt(m[1], 10), output: m[2] }
+                : { exit_code: -1, output: raw };
             },
-            persistState: (delta) => {
-              const next = { ...this.state };
-              if ("outcome" in delta) next.outcome = delta.outcome ?? null;
-              if (typeof delta.outcome_iteration === "number") {
-                next.outcome_iteration = delta.outcome_iteration;
-              }
-              if (delta.outcome_evaluations) {
-                next.outcome_evaluations = delta.outcome_evaluations;
-              }
-              this.setState(next);
-            },
-            readEvaluations: () => this.state.outcome_evaluations ?? [],
-            makeVerifierContext: () => ({
-              sessionId: this.state.session_id,
-              runExec: async (cmd, opts) => {
-                const sb = await this.getOrCreateSandbox();
-                const raw = await sb.exec(cmd, opts?.timeoutMs ?? 600_000);
-                // sandbox.exec returns "exit=N\n<merged-output>"
-                const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
-                return m
-                  ? { exit_code: parseInt(m[1], 10), output: m[2] }
-                  : { exit_code: -1, output: raw };
-              },
-            }),
-            makeJudgeFn: () => async (prompt, signal) => {
-              const result = await generateText({
-                model: judgeModel,
-                system: prompt.system,
-                messages: [{ role: "user", content: prompt.user }],
-                maxOutputTokens: 800,
-                abortSignal: signal,
-              });
-              const text =
-                result.text ||
-                extractTextFromContent(
-                  (result as unknown as { content?: unknown }).content,
-                );
-              const u = (result as unknown as {
-                usage?: {
-                  inputTokens?: number;
-                  outputTokens?: number;
-                  cachedInputTokens?: number;
-                  cacheReadInputTokens?: number;
-                  cacheCreationInputTokens?: number;
-                };
-              }).usage;
-              const usage = u
-                ? {
-                    input_tokens: u.inputTokens ?? 0,
-                    output_tokens: u.outputTokens ?? 0,
-                    cache_creation_input_tokens:
-                      u.cacheCreationInputTokens ?? u.cachedInputTokens,
-                    cache_read_input_tokens: u.cacheReadInputTokens,
-                  }
-                : undefined;
-              return { text, usage };
-            },
-            runHarnessTurn: async (msg) => {
-              await harness.run({ ...ctx, userMessage: msg });
-            },
-          });
-        } catch (err) {
-          // Supervisor itself blew up (e.g. a persistState callback
-          // threw). Surface as a session warning — the supervisor's own
-          // failure path already handled verifier-internal errors and
-          // emitted a `failed` end span.
-          logWarn(
-            { op: "outcome.supervisor", session_id: this.state.session_id, err },
-            "outcome supervisor crashed",
-          );
-        }
+          }),
+          makeJudgeFn: () => async (prompt, signal) => {
+            const result = await generateText({
+              model: judgeModel,
+              system: prompt.system,
+              messages: [{ role: "user", content: prompt.user }],
+              maxOutputTokens: 800,
+              abortSignal: signal,
+            });
+            const text =
+              result.text ||
+              extractTextFromContent(
+                (result as unknown as { content?: unknown }).content,
+              );
+            const u = (result as unknown as {
+              usage?: {
+                inputTokens?: number;
+                outputTokens?: number;
+                cachedInputTokens?: number;
+                cacheReadInputTokens?: number;
+                cacheCreationInputTokens?: number;
+              };
+            }).usage;
+            const usage = u
+              ? {
+                  input_tokens: u.inputTokens ?? 0,
+                  output_tokens: u.outputTokens ?? 0,
+                  cache_creation_input_tokens:
+                    u.cacheCreationInputTokens ?? u.cachedInputTokens,
+                  cache_read_input_tokens: u.cacheReadInputTokens,
+                }
+              : undefined;
+            return { text, usage };
+          },
+          runHarnessTurn: runHarness,
+        });
       }
 
+      this._turnInvocation!.signal.throwIfAborted();
       // Execution end before the Memory barrier: egress revoked, then a copy
       // sync publishes the sandbox's Memory edits. A failed publish fails the step.
       if (this.portsSandbox !== null) await this.portsSandbox.endExecution();

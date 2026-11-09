@@ -5,6 +5,7 @@ import {
 } from "../../../test/fakes/dying-acp-agent-sandbox";
 
 /** Harness id both runners register for the acp-child-exit scenario. */
+export const ACP_REVISION_TIMEOUT_HARNESS = "platform-parity-acp-revision-timeout";
 export const ACP_TIMEOUT_HARNESS = "platform-parity-acp-timeout";
 export const ACP_CHILD_EXIT_HARNESS = "platform-parity-acp-child-exit";
 

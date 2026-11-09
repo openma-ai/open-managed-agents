@@ -164,6 +164,7 @@ export async function runOutcomeSupervisor(
       ? original
       : { ...original, rubric_content: outcome.rubricContent };
 
+  let lastStartId: string | undefined;
   const outcomes = createSessionOutcomes<StoredEvent[] | SessionEvent[]>({
     evaluator: createVerifierOutcomeEvaluator({
       judge: deps.makeJudgeFn,
@@ -182,6 +183,7 @@ export async function runOutcomeSupervisor(
           iteration,
           ...(parentEventId ? { parent_event_id: parentEventId } : {}),
         };
+        lastStartId = start.id!;
         deps.appendAndBroadcast(start);
         return { startEventId: start.id!, ...(parentEventId ? { parentEventId } : {}) };
       },
@@ -197,13 +199,13 @@ export async function runOutcomeSupervisor(
         const end: SpanOutcomeEvaluationEndEvent = {
           type: "span.outcome_evaluation_end",
           outcome_id: verdict.outcomeId,
-          ...(started ? { outcome_evaluation_start_id: started.startEventId } : {}),
+          ...((started?.startEventId ?? lastStartId) ? { outcome_evaluation_start_id: started?.startEventId ?? lastStartId } : {}),
           result: verdict.result,
           iteration: verdict.iteration,
           explanation: verdict.explanation,
           // Back-compat alias: console + RL collector still read .feedback.
           feedback: verdict.explanation,
-          ...(verdict.usage ? { usage: verdict.usage } : {}),
+          usage: verdict.usage ?? { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
           ...(started?.parentEventId ? { parent_event_id: started.parentEventId } : {}),
         };
         deps.appendAndBroadcast(end);

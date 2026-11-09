@@ -1,0 +1,199 @@
+{
+  "event_types": [
+    "user.define_outcome",
+    "user.message",
+    "session.status_running",
+    "agent.message",
+    "span.outcome_evaluation_start",
+    "span.outcome_evaluation_ongoing",
+    "span.outcome_evaluation_end",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.error",
+    "span.outcome_evaluation_end",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "First attempt.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      },
+      {
+        "content": [
+          {
+            "text": "working",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "session.error": [
+      {
+        "error": {
+          "message": "ACP prompt exceeded its 20ms turn deadline",
+          "retry_status": {
+            "type": "exhausted"
+          },
+          "type": "unknown_error"
+        },
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.error"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "retries_exhausted"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "span.outcome_evaluation_end": [
+      {
+        "explanation": "Try again.",
+        "id": "<id>",
+        "iteration": 0,
+        "outcome_evaluation_start_id": "<id>",
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "result": "needs_revision",
+        "type": "span.outcome_evaluation_end",
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      {
+        "explanation": "harness crashed during revision: ACP prompt exceeded its 20ms turn deadline",
+        "id": "<id>",
+        "iteration": 1,
+        "outcome_evaluation_start_id": "<id>",
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "result": "failed",
+        "type": "span.outcome_evaluation_end",
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "span.outcome_evaluation_ongoing": [
+      {
+        "id": "<id>",
+        "iteration": 0,
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.outcome_evaluation_ongoing"
+      }
+    ],
+    "span.outcome_evaluation_start": [
+      {
+        "id": "<id>",
+        "iteration": 0,
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.outcome_evaluation_start"
+      }
+    ],
+    "user.define_outcome": [
+      {
+        "description": "parity-revision-timeout",
+        "id": "<id>",
+        "max_iterations": 3,
+        "outcome_id": "<id>",
+        "processed_at": "<time>",
+        "rubric": {
+          "content": "parity-revision-timeout",
+          "type": "text"
+        },
+        "type": "user.define_outcome"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Start.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [
+      {
+        "completed_at": "<time>",
+        "description": "parity-revision-timeout",
+        "explanation": "harness crashed during revision: ACP prompt exceeded its 20ms turn deadline",
+        "iteration": 1,
+        "outcome_id": "<id>",
+        "result": "failed",
+        "type": "outcome_evaluation"
+      }
+    ],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {}
+  },
+  "reads": {
+    "message_and_outcome_status": 200,
+    "session_create_status": 201
+  },
+  "models": {},
+  "timeouts": []
+}

@@ -7,13 +7,15 @@
 // @open-managed-agents/agent, @open-managed-agents/main
 // (packages/platform-parity/platforms.mjs).
 import { exports } from "cloudflare:workers";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { AcpSandboxHarness } from "../../packages/agent-harness/src/acp-sandbox-loop";
 import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import {
+  revisionJudgeResponse,
   ACP_CHILD_EXIT_HARNESS,
   ACP_TIMEOUT_HARNESS,
+  ACP_REVISION_TIMEOUT_HARNESS,
   PARITY_HARNESS,
   PARITY_MODEL,
   PARITY_SCENARIOS,
@@ -189,3 +191,20 @@ registerParityRunner({ describe, test, expect }, {
     return observation;
   },
 });
+
+registerHarness(ACP_REVISION_TIMEOUT_HARNESS, () => {
+  const acp = acpChildExitHarness(() => new AcpSandboxHarness(), { stdoutEndsOnExit: false, timeout: true });
+  return { async run(ctx) {
+    if (JSON.stringify(ctx.runtime.history.getEvents()).includes("<outcome_feedback")) await acp.run(ctx);
+    else ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "First attempt." }] });
+  } };
+});
+
+const originalFetch = globalThis.fetch;
+beforeAll(() => {
+  vi.stubGlobal("fetch", async (input, init) => {
+    if (String(init?.body).includes("parity-revision-timeout")) return revisionJudgeResponse();
+    return originalFetch(input, init);
+  });
+});
+afterAll(() => vi.unstubAllGlobals());

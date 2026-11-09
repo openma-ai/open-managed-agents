@@ -5,3 +5,4 @@ export * from "./models";
 export * from "./normalize";
 export * from "./runner";
 export { PARITY_SCENARIOS } from "./scenarios";
+export * from "./judge-response";
