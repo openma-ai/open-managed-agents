@@ -193,6 +193,25 @@ describe("SqlEnvironmentWorkClaimPort", () => {
     await expect(claims.isCurrent(current)).resolves.toBe(false);
   });
 
+  it("allows only final publication for the stopped generation and rejects it after reclaim", async () => {
+    const current = ref(await claim());
+    await setState("active");
+    const before = (await store.find(scope))!;
+    await store.replace({ ...scope, expectedRevision: before.revision,
+      next: { ...before, claim: null, work: { ...before.work, state: "stopped" } } });
+    await expect(claims.isCurrent(current)).resolves.toBe(false);
+    await expect(claims.open(current)).resolves.toEqual({ type: "lost" });
+    const publication = { claim: current, workspaceCandidate: workspace("final"), outputCandidate: null };
+    await expect(claims.publish(publication)).resolves.toEqual({ type: "lost" });
+    await expect(claims.publish({ ...publication, final: true })).resolves.toEqual({ type: "published", revision: 1 });
+    await expect(store.claimAvailable({ ...scope, workerId: "other", claimedAt: new Date(clock.now).toISOString(),
+      reclaimBefore: new Date(clock.now).toISOString(), heartbeatTtlSeconds: 30 })).resolves.toEqual({ type: "empty" });
+    await setState("queued");
+    const next = ref(await claim());
+    expect(next.generation).toBe(current.generation + 1);
+    await expect(claims.publish({ ...publication, final: true })).resolves.toEqual({ type: "lost" });
+  });
+
   it("rejects mismatched scope and malformed generations", async () => {
     const current = ref(await claim());
     await expect(claims.isCurrent({ ...current, sessionId: "session_other" })).resolves.toBe(false);

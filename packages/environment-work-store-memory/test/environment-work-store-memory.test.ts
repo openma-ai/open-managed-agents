@@ -95,6 +95,25 @@ describe("MemoryEnvironmentWorkStore", () => {
     )).resolves.toBe(false);
   });
 
+  it("retains the generation after stop clears the claim", async () => {
+    const store = new MemoryEnvironmentWorkStore();
+    const initial = record("work_01", "2026-08-26T09:00:00.000Z");
+    const location = { workspaceId: "workspace_a", environmentId: "env_01", workId: "work_01" };
+    const stored = await store.insert({ workspaceId: location.workspaceId, record: {
+      ...initial, claim: { generation: 3, claimedAt: initial.work.createdAt, workerId: "worker" },
+    } });
+    const stopped = await store.replace({ ...location, expectedRevision: stored.revision,
+      next: { ...stored, claim: null, work: { ...stored.work, state: "stopped" } } });
+    expect(stopped.type).toBe("replaced");
+    const current = (await store.find(location))!;
+    expect(current.claim).toBeNull();
+    await store.replace({ ...location, expectedRevision: current.revision,
+      next: { ...current, work: { ...current.work, state: "queued" } } });
+    const next = await store.claimAvailable({ ...location, workerId: "next", claimedAt: initial.work.createdAt,
+      reclaimBefore: initial.work.createdAt, heartbeatTtlSeconds: 90 });
+    expect(next.type === "claimed" && next.record.claim?.generation).toBe(4);
+  });
+
   it("isolates workspaces and protects records with revision CAS", async () => {
     const store = new MemoryEnvironmentWorkStore();
     const initial = record("work_01", "2026-08-26T09:00:00.000Z");

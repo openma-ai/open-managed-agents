@@ -109,6 +109,39 @@ describe("self-hosted ownership races (characterization)", () => {
     expect(owner.published()).toBe("workspace-a");
   });
 
+  it("publishes final workspace and outputs after the official worker force-stops its claim", async () => {
+    const owner = ownership();
+    const scheduler = manualScheduler();
+    const dependencies = fixture(owner, {
+      scheduler,
+      workspace: { checkpoint: vi.fn(async () => {
+        scheduler.tick();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return { id: "workspace-a", contentHash: "sha256:a", revision: 1 };
+      }) },
+      outputs: {
+        capabilities: vi.fn(async () => ({ strategies: [{ strategy: "final_collect", durability: "durable" }] })),
+        prepare: vi.fn(async () => ({ bindingId: "outputs", mountPath: "/outputs" })),
+        collect: vi.fn(async () => []),
+        finalize: vi.fn(async () => ({ id: "output-a", contentHash: "sha256:out" })),
+      },
+      harnessDriver: {
+        run: vi.fn(async () => {
+          // Force stop revokes the actual authority, not just the API response.
+          owner.dependencies.claims.stop(scope);
+          return { type: "completed" };
+        }),
+      },
+    });
+    const result = await createManagedRuntimeHost(dependencies).run({
+      scope, profile: { ...profile, outputs: { requirement: "durable" } }, ...owner.runInput,
+    });
+    expect(result).toEqual({ type: "completed", revision: 1 });
+    expect(owner.dependencies.claims.inspect(scope)?.publication?.outputCandidate?.id).toBe("output-a");
+    await expect(owner.dependencies.claims.isCurrent({ ...scope, ...owner.runInput.claim })).resolves.toBe(false);
+    await expect(owner.dependencies.claims.open({ ...scope, ...owner.runInput.claim })).resolves.toEqual({ type: "lost" });
+  });
+
   it("race 1: a stale owner's publication is lost and the new owner's pointer stays", async () => {
     const owner = ownership();
     const dependencies = fixture(owner, {

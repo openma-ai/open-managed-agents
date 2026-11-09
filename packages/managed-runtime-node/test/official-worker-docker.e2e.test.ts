@@ -196,6 +196,8 @@ describe("official EnvironmentWorker in Docker", () => {
         },
         stopEnvironmentWork: async () => {
           operations.push("stop");
+          claims.stop({ workspaceId: "workspace_docker_official", environmentId,
+            sessionId: sessionView.id, workId: activeWork.id });
           return {
             type: "stopped",
             work: {

@@ -224,7 +224,7 @@ export class SqlEnvironmentWorkStore
       .prepare(
         `UPDATE managed_environment_work
             SET document = ?, session_id = ?, sealed_secret = ?, claim_at = ?,
-                claim_worker_id = ?, claim_generation = ?, heartbeat_ttl_seconds = ?,
+                claim_worker_id = ?, claim_generation = COALESCE(?, claim_generation), heartbeat_ttl_seconds = ?,
                 revision = revision + 1, state = ?
           WHERE workspace_id = ? AND environment_id = ? AND id = ?
             AND revision = ?`,
@@ -239,7 +239,7 @@ export class SqlEnvironmentWorkStore
           ? null
           : timestamp(input.next.claim.claimedAt),
         input.next.claim?.workerId ?? null,
-        input.next.claim?.generation ?? 0,
+        input.next.claim?.generation ?? null,
         input.next.heartbeatTtlSeconds,
         input.next.work.state,
         input.workspaceId,

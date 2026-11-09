@@ -908,7 +908,8 @@ describe("Managed Runtime Host fault matrix", () => {
       await vi.advanceTimersByTimeAsync(10);
       await expectation;
       expect(dependencies.claims.isCurrent).toHaveBeenCalledOnce();
-      expect(dependencies.sandbox.heartbeat).toHaveBeenCalledOnce();
+      // The harness settled while the ownership read completed: no more keepalive.
+      expect(dependencies.sandbox.heartbeat).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

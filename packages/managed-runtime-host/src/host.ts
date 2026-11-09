@@ -325,6 +325,7 @@ export function createManagedRuntimeHost(
       const committedCheckpointIds = new Set<string>();
       const controller = new AbortController();
       let leaseLost = false;
+      let harnessSettled = false;
       let monitor: Promise<void> | null = null;
       let sessionInputSyncAbort: AbortController | null = null;
       let sessionInputSyncLoop: Promise<void> | null = null;
@@ -357,12 +358,13 @@ export function createManagedRuntimeHost(
             dependencies.heartbeatIntervalMs,
             controller.signal,
           );
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || harnessSettled) return;
           const current = await withDeadline(
             dependencies.claims.isCurrent(claim),
             dependencies.heartbeatIntervalMs,
             `Environment Work claim check timed out after ${dependencies.heartbeatIntervalMs}ms`,
           );
+          if (harnessSettled) return;
           if (!current) {
             loseLease("Environment Work claim lost");
             return;
@@ -714,6 +716,9 @@ export function createManagedRuntimeHost(
             : {}),
           signal: controller.signal,
         });
+        // After execution, only the final publication CAS decides authority.
+        // The official worker has already stopped/revoked its live claim.
+        harnessSettled = true;
         // Registered by the supervised driver after ready (inside a callback).
         (checkpointRequestAbort as AbortController | null)?.abort(new Error("Managed runtime harness settled"));
         await checkpointRequestLoop;
@@ -819,6 +824,7 @@ export function createManagedRuntimeHost(
         }
         const published = await dependencies.claims.publish({
           claim,
+          final: true,
           workspaceCandidate,
           outputCandidate,
           ...(runtimeCheckpoint === null ? {} : { runtimeCheckpoint }),

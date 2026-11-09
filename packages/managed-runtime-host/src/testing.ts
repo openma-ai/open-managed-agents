@@ -21,8 +21,8 @@ interface WorkClaimRecord {
   generation: number;
   claimAt: number;
   token: string;
-  /** claimed: starting/active; stopping: stop requested, claim kept; lost: force-stopped or expired. */
-  state: "claimed" | "stopping" | "lost";
+  /** claimed: starting/active; stopping: draining; stopped: execution revoked; lost: expired/replaced. */
+  state: "claimed" | "stopping" | "stopped" | "lost";
   publication: RuntimeResourcePublication | null;
   nextRevision: number;
 }
@@ -95,7 +95,13 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
     if (record !== undefined && record.state === "claimed") record.state = "stopping";
   }
 
-  /** Force stop or an expired lease: no claim is current. */
+  /** Force stop revokes execution, retaining only the final publication generation. */
+  stop(scope: RuntimeResourceScope): void {
+    const record = this.#records.get(scopeKey(scope));
+    if (record !== undefined) record.state = "stopped";
+  }
+
+  /** An expired or otherwise lost lease: no claim is current. */
   lose(scope: RuntimeResourceScope): void {
     const record = this.#records.get(scopeKey(scope));
     if (record !== undefined) record.state = "lost";
@@ -117,12 +123,15 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
 
   async publish(input: {
     claim: EnvironmentWorkClaim;
+    final?: boolean;
     workspaceCandidate: RuntimePublicationCandidate;
     outputCandidate: RuntimePublicationCandidate | null;
     runtimeCheckpoint?: RuntimeResourcePublication["runtimeCheckpoint"];
   }): Promise<PublishRuntimeResourcesResult> {
     const record = this.#records.get(scopeKey(input.claim));
-    if (!this.#holds(record, input.claim)) return { type: "lost" };
+    if (!this.#holds(record, input.claim)
+      && !(input.final === true && record?.state === "stopped"
+        && record.generation === input.claim.generation)) return { type: "lost" };
     const previous = record!.publication;
     if (
       previous !== null &&
@@ -156,7 +165,7 @@ export class MemoryEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort 
   #holds(record: WorkClaimRecord | undefined, claim: EnvironmentWorkClaim): boolean {
     return record !== undefined
       && record.claimAt + this.#ttlMs > this.#now().getTime()
-      && record.state !== "lost"
+      && (record.state === "claimed" || record.state === "stopping")
       && record.generation === claim.generation
       && record.token === claim.token;
   }
