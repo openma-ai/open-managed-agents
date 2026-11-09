@@ -41,6 +41,9 @@ export interface EnvironmentWorkClaimPort {
   isCurrent(claim: EnvironmentWorkClaim): Promise<boolean>;
   publish(input: {
     claim: EnvironmentWorkClaim;
+    /** Host-only final publication may drain a stopped, unreclaimed generation.
+     * This never authorizes execution or sandbox credentials. */
+    final?: boolean;
     workspaceCandidate: RuntimePublicationCandidate;
     outputCandidate: RuntimePublicationCandidate | null;
     runtimeCheckpoint?: RuntimeCheckpointRef | null;

@@ -21,6 +21,8 @@ export interface SqlEnvironmentWorkClaimOptions {
 
 interface ClaimRow {
   claim_at: number | string;
+  state: string;
+  document: string;
   heartbeat_ttl_seconds: number | string;
   runtime_publication_json: string | null;
 }
@@ -109,7 +111,9 @@ function candidateFields(input: {
  * row that poll, ack, heartbeat and stop mutate: claim_generation identifies
  * the claim (only a claim bumps it), and claim_at + heartbeat_ttl_seconds is
  * the lease the protocol's 412 enforces. A reclaim, a force stop or an expired
- * lease therefore ends the host's authority with no second lease to drift.
+ * lease therefore ends execution authority with no second lease to drift.
+ * Only final host publication may drain the same stopped generation; this
+ * does not make isCurrent/open or sandbox authentication succeed.
  *
  * The Work token is not compared here: the host is a trusted process that
  * read the generation from its own claimed secret, and the generation alone
@@ -151,6 +155,7 @@ export class SqlEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
 
   async publish(input: {
     claim: EnvironmentWorkClaim;
+    final?: boolean;
     workspaceCandidate: RuntimePublicationCandidate;
     outputCandidate: RuntimePublicationCandidate | null;
     runtimeCheckpoint?: RuntimeResourcePublication["runtimeCheckpoint"];
@@ -159,7 +164,7 @@ export class SqlEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
     const fieldsJson = stableJson(fields);
     const sql = await this.#client(input.claim.workspaceId);
     for (let attempt = 0; attempt < this.#maxPublishAttempts; attempt += 1) {
-      const row = await this.#read(input.claim, HELD_STATES);
+      const row = await this.#read(input.claim, HELD_STATES, input.final);
       if (row === null) return { type: "lost" };
       const previous = parsePublication(row.runtime_publication_json);
       if (
@@ -171,17 +176,19 @@ export class SqlEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
       }
       const revision = (previous?.revision ?? 0) + 1;
       const next = stableJson({ ...fields, generation: input.claim.generation, revision });
-      const [condition, parameters] = this.#claimCondition(input.claim, HELD_STATES);
+      const [condition, parameters] = this.#claimCondition(input.claim, HELD_STATES, input.final);
       const result = await sql.prepare(
         `UPDATE managed_environment_work
             SET runtime_publication_json = ?
           WHERE ${condition}
+            AND state = ? AND document = ? AND claim_at = ? AND heartbeat_ttl_seconds = ?
             AND ${row.runtime_publication_json === null
               ? "runtime_publication_json IS NULL"
               : "runtime_publication_json = ?"}`,
       ).bind(
         next,
         ...parameters,
+        row.state, row.document, row.claim_at, row.heartbeat_ttl_seconds,
         ...(row.runtime_publication_json === null ? [] : [row.runtime_publication_json]),
       ).run();
       if (result.meta.changes === 1) return { type: "published", revision };
@@ -203,12 +210,14 @@ export class SqlEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
   #claimCondition(
     claim: EnvironmentWorkClaim,
     states: string,
+    final = false,
   ): [string, Array<string | number>] {
     return [
       `workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ?
-         AND claim_generation = ? AND claim_at IS NOT NULL
-         AND claim_at + heartbeat_ttl_seconds * 1000 > ?
-         AND state IN ${states}`,
+         AND claim_generation = ?
+         AND ((claim_at IS NOT NULL
+           AND claim_at + heartbeat_ttl_seconds * 1000 > ?
+           AND state IN ${states})${final ? " OR state = 'stopped'" : ""})`,
       [
         claim.workspaceId,
         claim.environmentId,
@@ -220,14 +229,24 @@ export class SqlEnvironmentWorkClaimPort implements EnvironmentWorkClaimPort {
     ];
   }
 
-  async #read(claim: EnvironmentWorkClaim, states: string): Promise<ClaimRow | null> {
+  async #read(claim: EnvironmentWorkClaim, states: string, final = false): Promise<ClaimRow | null> {
     if (!Number.isSafeInteger(claim.generation) || claim.generation < 1) return null;
     const sql = await this.#client(claim.workspaceId);
-    const [condition, parameters] = this.#claimCondition(claim, states);
-    return sql.prepare(
-      `SELECT claim_at, heartbeat_ttl_seconds, runtime_publication_json
+    const [condition, parameters] = this.#claimCondition(claim, states, final);
+    const row = await sql.prepare(
+      `SELECT claim_at, heartbeat_ttl_seconds, runtime_publication_json, state, document
          FROM managed_environment_work
         WHERE ${condition}`,
     ).bind(...parameters).first<ClaimRow>();
+    if (row !== null && row.state === "stopped") {
+      // stoppedAt already lives in the Work document on every SQL dialect.
+      // Pin that document and the lease columns in the publication CAS above.
+      const stoppedAt = (JSON.parse(row.document) as { stoppedAt?: string | null }).stoppedAt;
+      if (row.claim_at === null || stoppedAt == null
+        || !(Date.parse(stoppedAt) <= Number(row.claim_at) + Number(row.heartbeat_ttl_seconds) * 1_000)) {
+        return null;
+      }
+    }
+    return row;
   }
 }

@@ -36,7 +36,8 @@ function cloneRecord(record: EnvironmentWorkRecord): EnvironmentWorkRecord {
 }
 
 function cloneStored(record: StoredEnvironmentWork): StoredEnvironmentWork {
-  return { ...cloneRecord(record), revision: record.revision };
+  const cloned = cloneRecord(record);
+  return { ...cloned, claim: record.work.state === "stopped" ? null : cloned.claim, revision: record.revision };
 }
 
 function descending(left: StoredEnvironmentWork, right: StoredEnvironmentWork): number {
@@ -71,7 +72,7 @@ function requeueExpiredLease(
 }
 
 export class MemoryEnvironmentWorkStore implements EnvironmentWorkStore {
-  private readonly records = new Map<string, StoredEnvironmentWork>();
+  private readonly records = new Map<string, StoredEnvironmentWork & { claimGeneration: number }>();
   private readonly workerPolls = new Map<string, string>();
 
   async insert(input: InsertEnvironmentWorkRecord): Promise<StoredEnvironmentWork> {
@@ -83,7 +84,8 @@ export class MemoryEnvironmentWorkStore implements EnvironmentWorkStore {
     if (this.records.has(recordKey)) {
       throw new Error(`Environment Work ${input.record.work.id} already exists`);
     }
-    const stored = { ...cloneRecord(input.record), revision: 1 };
+    const stored = { ...cloneRecord(input.record), revision: 1,
+      claimGeneration: input.record.claim?.generation ?? 0 };
     this.records.set(recordKey, stored);
     return cloneStored(stored);
   }
@@ -145,6 +147,9 @@ export class MemoryEnvironmentWorkStore implements EnvironmentWorkStore {
     }
     const record = {
       ...cloneRecord(input.next),
+      // Keep lease history for the stopped generation, without exposing a live claim.
+      claim: input.next.work.state === "stopped" ? input.next.claim ?? current.claim : input.next.claim,
+      claimGeneration: input.next.claim?.generation ?? current.claimGeneration,
       revision: current.revision + 1,
     };
     this.records.set(recordKey, record);
@@ -177,12 +182,13 @@ export class MemoryEnvironmentWorkStore implements EnvironmentWorkStore {
     const next = hasExpiredLease(current, input.claimedAt)
       ? requeueExpiredLease(current, input.heartbeatTtlSeconds)
       : cloneRecord(current);
-    const record: StoredEnvironmentWork = {
+    const record = {
       ...next,
+      claimGeneration: current.claimGeneration + 1,
       claim: {
         claimedAt: input.claimedAt,
         workerId: input.workerId,
-        generation: (current.claim?.generation ?? 0) + 1,
+        generation: current.claimGeneration + 1,
       },
       revision: current.revision + 1,
     };

@@ -193,6 +193,46 @@ describe("SqlEnvironmentWorkClaimPort", () => {
     await expect(claims.isCurrent(current)).resolves.toBe(false);
   });
 
+  it.each([29_999, 30_000, 30_001])("checks stop time against the claim lease (elapsed=%s)", async (elapsed) => {
+    const current = ref(await claim());
+    await setState("active");
+    clock.now += elapsed;
+    const before = (await store.find(scope))!;
+    const stoppedAt = new Date(clock.now).toISOString();
+    await store.replace({ ...scope, expectedRevision: before.revision,
+      next: { ...before, claim: null, work: { ...before.work, state: "stopped", stoppedAt } } });
+    // Publication can finish after expiry, but stopping cannot restore expired authority.
+    clock.now += 60_000;
+    await expect(claims.publish({ claim: current, final: true,
+      workspaceCandidate: workspace("final"), outputCandidate: null,
+    })).resolves.toEqual(elapsed <= 30_000 ? { type: "published", revision: 1 } : { type: "lost" });
+    expect((await store.find(scope))!.claim).toBeNull();
+    expect((await store.list({ ...scope, limit: 10 }))[0].claim).toBeNull();
+    const row = await client.prepare("SELECT claim_at FROM managed_environment_work").first<{ claim_at: number }>();
+    expect(row!.claim_at).toBe(Date.parse("2026-08-26T09:20:00.000Z"));
+    await expect(claims.open(current)).resolves.toEqual({ type: "lost" });
+    await expect(claims.isCurrent(current)).resolves.toBe(false);
+  });
+
+  it("allows only final publication for the stopped generation and rejects it after reclaim", async () => {
+    const current = ref(await claim());
+    await setState("active");
+    const before = (await store.find(scope))!;
+    await store.replace({ ...scope, expectedRevision: before.revision,
+      next: { ...before, claim: null, work: { ...before.work, state: "stopped", stoppedAt: new Date(clock.now).toISOString() } } });
+    await expect(claims.isCurrent(current)).resolves.toBe(false);
+    await expect(claims.open(current)).resolves.toEqual({ type: "lost" });
+    const publication = { claim: current, workspaceCandidate: workspace("final"), outputCandidate: null };
+    await expect(claims.publish(publication)).resolves.toEqual({ type: "lost" });
+    await expect(claims.publish({ ...publication, final: true })).resolves.toEqual({ type: "published", revision: 1 });
+    await expect(store.claimAvailable({ ...scope, workerId: "other", claimedAt: new Date(clock.now).toISOString(),
+      reclaimBefore: new Date(clock.now).toISOString(), heartbeatTtlSeconds: 30 })).resolves.toEqual({ type: "empty" });
+    await setState("queued");
+    const next = ref(await claim());
+    expect(next.generation).toBe(current.generation + 1);
+    await expect(claims.publish({ ...publication, final: true })).resolves.toEqual({ type: "lost" });
+  });
+
   it("rejects mismatched scope and malformed generations", async () => {
     const current = ref(await claim());
     await expect(claims.isCurrent({ ...current, sessionId: "session_other" })).resolves.toBe(false);

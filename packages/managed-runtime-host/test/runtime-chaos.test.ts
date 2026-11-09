@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createManagedRuntimeHost,
 } from "../src/index";
-import type { EnvironmentWorkClaim } from "@open-managed-agents/runtime-resource-contract";
+import type { EnvironmentWorkClaim, PublishRuntimeResourcesResult } from "@open-managed-agents/runtime-resource-contract";
 import type { ManagedRuntimeHostDependencies } from "../src/index";
 import {
   MemoryRuntimeOrphanPort,
@@ -75,7 +75,7 @@ function chaosFixture(failAt: PostAcquireStage) {
         publication: null,
       })),
       isCurrent: vi.fn(async () => !loseRenew),
-      publish: stage("claims.publish", { type: "published" as const, revision: 1 }),
+      publish: stage<PublishRuntimeResourcesResult>("claims.publish", { type: "published", revision: 1 }),
     },
     sandbox: {
       capabilities: vi.fn(async () => ({
@@ -198,13 +198,10 @@ describe("managed runtime deterministic chaos matrix", () => {
       },
     };
     loseClaim();
-    dependencies.outputs.finalize.mockImplementation(async (rawInput: unknown) => {
-      const { signal } = rawInput as { signal: AbortSignal };
+    dependencies.claims.publish.mockResolvedValue({ type: "lost" });
+    dependencies.outputs.finalize.mockImplementation(async () => {
       wakeMonitor();
-      await new Promise<void>((_resolve, reject) =>
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-      );
-      throw new Error("unreachable");
+      return { id: "unpublished-output", contentHash: "sha256:out", entries: 0 };
     });
 
     await expect(
@@ -212,7 +209,7 @@ describe("managed runtime deterministic chaos matrix", () => {
         dependencies as unknown as ManagedRuntimeHostDependencies,
       ).run({ scope, claim, profile }),
     ).resolves.toEqual({ type: "lease_lost" });
-    expect(dependencies.claims.publish).not.toHaveBeenCalled();
+    expect(dependencies.claims.publish).toHaveBeenCalledWith(expect.objectContaining({ final: true }));
     expect(dependencies.outputs.abort).toHaveBeenCalledWith(
       expect.objectContaining({ reason: "lease_lost" }),
     );
