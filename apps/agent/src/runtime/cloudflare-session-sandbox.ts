@@ -80,12 +80,13 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     sandbox: (id) => isEnvironmentBuildId(id) ? new BuildSandbox(deps.env, id, deps.sandboxImage) : sandbox,
     backups: backupBucket(deps.env),
   });
-  const environmentCache = cloudflareEnvironmentCache(deps, adapter.lifecycle);
+  const sessionLifecycle = withSessionContext(adapter.lifecycle, sandbox, deps.session);
+  const environmentCache = cloudflareEnvironmentCache(deps, adapter.lifecycle, sessionLifecycle);
   return new PortsSessionSandbox<CloudflareSandboxRuntime>({
     async compose() {
       const { ports } = createSandboxPorts({
         ...adapter,
-        lifecycle: withSessionContext(adapter.lifecycle, sandbox, deps.session),
+        lifecycle: sessionLifecycle,
         native: { ...adapter.native, egress: () => ({ port: executionEgress(deps.session, deps.fence) }) },
       // Both are native, so the generic implementations' deps are never read.
       }, { storage: {} as never, egress: {} as never });
@@ -131,6 +132,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
 function cloudflareEnvironmentCache(
   deps: CloudflareSessionSandboxDeps,
   lifecycle: SandboxLifecyclePort<CloudflareSandboxRuntime>,
+  sessionLifecycle: SandboxLifecyclePort<CloudflareSandboxRuntime>,
 ): SessionEnvironmentCache<CloudflareSandboxRuntime> | undefined {
   const { environmentConfig, waitUntil } = deps;
   if (environmentConfig === undefined || waitUntil === undefined || !deps.env.MAIN_DB) return undefined;
@@ -146,7 +148,7 @@ function cloudflareEnvironmentCache(
     return db;
   };
   return createCloudflareEnvironmentCache({
-    lifecycle,
+    lifecycle, sessionLifecycle,
     storeFor: (workspaceId) => ({
       compareAndSwap: async (key, expected, value) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).compareAndSwap(key, expected, value),
       get: async (key) => d1EnvironmentCacheStore(await tenantDb(workspaceId), workspaceId).get(key),

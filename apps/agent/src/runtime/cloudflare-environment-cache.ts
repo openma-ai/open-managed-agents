@@ -78,6 +78,7 @@ export function d1EnvironmentCacheStore(db: D1Database, workspaceId: string): En
 export interface CloudflareEnvironmentCacheOptions {
   /** The adapter's own lifecycle (the build sandbox is not the Session's). */
   lifecycle: SandboxLifecyclePort<CloudflareSandboxRuntime>;
+  sessionLifecycle?: SandboxLifecyclePort<CloudflareSandboxRuntime>;
   storeFor(workspaceId: string): EnvironmentCacheStore;
   /** The Session's Environment setup now; null = nothing to install. */
   setup(): Promise<CloudflareEnvironmentSetup | null>;
@@ -94,6 +95,7 @@ export function createCloudflareEnvironmentCache(options: CloudflareEnvironmentC
   const cache = new EnvironmentCache<CloudflareSandboxRuntime, CloudflareEnvironmentSetup>({
     adapter: CLOUDFLARE_ADAPTER,
     lifecycle: options.lifecycle,
+    ...(options.sessionLifecycle === undefined ? {} : { sessionLifecycle: options.sessionLifecycle }),
     storeFor: options.storeFor,
     restrictEgress: (runtime) => runtime.restrictOutboundToHosts([...ENVIRONMENT_BUILD_HOSTS]),
     setup: (runtime, setup) => (options.build ?? buildEnvironment)(runtime, setup),

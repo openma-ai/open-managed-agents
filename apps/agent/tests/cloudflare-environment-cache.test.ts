@@ -61,7 +61,14 @@ function harness(options: { failSnapshot?: boolean; failInstall?: boolean } = {}
   };
   const warnings: EnvironmentCacheWarning[] = [];
   const background: Promise<unknown>[] = [];
+  const contexts: string[] = [];
   const cache = createCloudflareEnvironmentCache({
+    // Context binding models withSessionContext's Session-only acquire.
+    sessionLifecycle: { ...adapter.lifecycle, acquire: async input => {
+      const acquired = await adapter.lifecycle.acquire(input);
+      if (acquired !== "gone") contexts.push(input.scope.sessionId);
+      return acquired;
+    } },
     lifecycle: adapter.lifecycle,
     storeFor: () => store,
     setup: async () => setup,
@@ -82,10 +89,17 @@ function harness(options: { failSnapshot?: boolean; failInstall?: boolean } = {}
     await Promise.all(background);
     return acquired;
   };
-  return { log, gone, rows, warnings, background, cache, session };
+  return { contexts, log, gone, rows, warnings, background, cache, session };
 }
 
 describe("Cloudflare environment cache", () => {
+  it("uses the Session context lifecycle on hit and miss, never on a shared builder", async () => {
+    const h = harness();
+    await h.session("s1");
+    await h.session("s2");
+    expect(h.contexts).toEqual(["s1", "s2"]);
+    expect(h.log.some(entry => entry.startsWith("snapshot:env_snapshot_"))).toBe(true);
+  });
   it("miss: starts from the image without a warning, then builds the snapshot in the background", async () => {
     const h = harness();
     await h.session("s1");

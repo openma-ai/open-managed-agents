@@ -75,6 +75,8 @@ export interface EnvironmentCacheOptions<R, Q> extends EnvironmentCacheExpiry {
   /** The adapter's name; part of the store key and compared with each record. */
   adapter: string;
   lifecycle: SandboxLifecyclePort<R>;
+  /** Session acquire may bind billing/backup context; builders always use raw lifecycle. */
+  sessionLifecycle?: SandboxLifecyclePort<R>;
   /** The store scoped to the owning workspace. */
   storeFor(workspaceId: string): EnvironmentCacheStore;
   /** Limit a build sandbox's egress to public package sources (design §0.1
@@ -190,7 +192,8 @@ export class EnvironmentCache<R, Q> {
   async acquire(input: EnvironmentCacheAcquire<R, Q>): Promise<Acquired<R> | "gone"> {
     const { lifecycle, logger, op, adapter } = this.#options;
     const { scope, plan, signal, key, warn } = input;
-    const cold = () => lifecycle.acquire({ scope, plan, signal });
+    const sessionLifecycle = this.#options.sessionLifecycle ?? lifecycle;
+    const cold = () => sessionLifecycle.acquire({ scope, plan, signal });
     if (key === null || !("image" in plan.from)) return cold();
     if (lifecycle.snapshotEnvironment === undefined) {
       if (!this.#unsupportedLogged) {
@@ -236,7 +239,7 @@ export class EnvironmentCache<R, Q> {
         warn({ reason: "snapshot_gone", message: "The cached environment snapshot is no longer valid (" + detail + "); packages are installed in this Session and the cache is rebuilt." });
       };
       try {
-        const acquired = await lifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: snapshot } }, signal });
+        const acquired = await sessionLifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: snapshot } }, signal });
         if (acquired !== "gone") {
           this.#hitFailures.delete(local);
           await this.#recordUse(store, storeKey, { ...entry, ...(retired.length === 0 ? {} : { retired }) }, fields);
