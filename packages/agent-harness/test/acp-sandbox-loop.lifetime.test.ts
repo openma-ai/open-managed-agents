@@ -10,6 +10,7 @@ const disposed: string[] = [];
 const prompts: string[] = [];
 let alive = true;
 let failPrompt = false;
+let terminalError = false;
 
 vi.mock("../../acp-runtime/src/placement.ts", () => ({
   createAcpRuntime: () => ({
@@ -19,7 +20,7 @@ vi.mock("../../acp-runtime/src/placement.ts", () => ({
       return {
         acpSessionId: id,
         isAlive: () => alive,
-        async *prompt(text: string) { prompts.push(text); if (failPrompt) throw new Error("first turn failed"); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; },
+        async *prompt(text: string) { prompts.push(text); if (failPrompt) throw new Error("first turn failed"); yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } }; if (terminalError) yield {type:"promptError",error:"provider disconnected"}; },
         async dispose() { disposed.push(id); },
       };
     },
@@ -147,7 +148,16 @@ describe("acp-sandbox child lifetime", () => {
     expect(prompts.at(-1)).toContain("original canonical request");
     expect(recovered.runtime.history.getEvents()).toContainEqual(expect.objectContaining({source:"oma.acp_context",details:expect.objectContaining({state:"rebuilt"})}));
   });
-  beforeEach(() => { failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
+  it("does not checkpoint partial output followed by a terminal promptError", async () => {
+    const s = sandbox(false), ctx = context(s.port);
+    terminalError = true;
+    await new AcpSandboxHarness().run(ctx);
+    expect(s.files.size).toBe(0);
+    expect(ctx.runtime.history.getEvents()).not.toContainEqual(expect.objectContaining({source:"oma.acp_context",details:expect.objectContaining({state:"native"})}));
+    expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"session.error",error:expect.stringContaining("provider disconnected")}));
+    expect(ctx.runtime.history.getEvents()).toContainEqual(expect.objectContaining({type:"span.model_request_end",is_error:true}));
+  });
+  beforeEach(() => { terminalError = false; failPrompt = false; started.length = 0; disposed.length = 0; alive = true; vi.mocked(captureAcpSandboxAgentState).mockClear(); });
 
   it("ignores idle_timeout_ms: it belongs to acp-proxy", async () => {
     const s = sandbox(false);

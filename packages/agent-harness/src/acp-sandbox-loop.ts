@@ -273,6 +273,7 @@ export class AcpSandboxHarness implements HarnessInterface {
       } finally {
         runtime.abortSignal?.removeEventListener("abort", onAbort);
       }
+      if (translator.promptError !== null) throw new Error(translator.promptError);
       // An agent may end a failed turn as a plain end_turn (pi-acp does);
       // never report that as a silent success.
       if (!translator.producedOutput && !runtime.abortSignal?.aborted) {
