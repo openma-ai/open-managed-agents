@@ -4,11 +4,11 @@
 // Each step (open, storage and egress, renewal, lifetime refresh, idle
 // pause, execution end) works on this state; PortsSessionSandbox owns it.
 
-import type { MemoryStoreBinding, SandboxHandle, SandboxPlan, SandboxPorts } from "@open-managed-agents/sandbox";
+import type { MemoryStoreBinding, ResumeRef, SandboxHandle, SandboxPlan, SandboxPorts } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { executionKey, fenceFor, runtimeFenceOf } from "./session-sandbox-fence";
 import type { PortsSessionSandboxOptions, SessionSandboxExecution, SessionSandboxExecutor } from "./session-sandbox-options";
-import { initialSandboxState, recordedHandle, transition, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
+import { initialSandboxState, recordedHandle, isSnapshotRef, transition, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
 
 /** Another writer changed the Session sandbox record since this one read it
  * (design §0.0b A.10): this writer's result was dropped and what it started
@@ -157,6 +157,20 @@ export class LiveSessionSandbox<R> {
       return null;
     }
     return this.retryDiscards(next);
+  }
+
+  /** Lost publication results are queued too: a failed discard cannot disappear. */
+  async discard(ref: ResumeRef): Promise<void> {
+    if (!isSnapshotRef(ref)) {
+      const { ports } = await this.compose();
+      await ports.sandbox.discard({ scope: this.scope(), ref });
+      return;
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const saved = await this.load();
+      if (await this.apply(saved, { type: "queueDiscard", ref }) !== null) return;
+    }
+    this.options.warn(`sandbox_discard_queue_failed ref=${ref.ref}: record CAS conflicted three times`);
   }
 
   /** Queue entries survive a vendor failure and process restart. A successful

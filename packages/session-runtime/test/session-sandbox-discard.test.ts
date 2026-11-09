@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import type { SandboxPorts } from "@open-managed-agents/sandbox";
+import { publishSnapshot } from "../src/session-sandbox-snapshot";
 import { LiveSessionSandbox } from "../src/session-sandbox-live";
 import { initialSandboxState, type SessionSandboxState } from "../src/session-sandbox-state";
 import { scope } from "./fake-session-sandbox-ports";
@@ -22,9 +23,11 @@ it("persists failed snapshot discards, retries after restart and clears them aft
   });
   await create().apply(saved, { type: "publishSnapshot", ref: { ...old, ref: "latest" } });
   expect(saved).toMatchObject({ pendingDiscards: [old] });
+  await publishSnapshot(create(), { ...old, ref: "orphan" }, undefined, { ...saved, version: 0 });
+  expect(saved.pendingDiscards).toEqual([old, { ...old, ref: "orphan" }]);
   derivedAlive = false;
   await create().apply(saved, { type: "release" });
-  expect(discarded).toEqual(["old", "latest"]);
+  expect(discarded).toEqual(["old", "orphan", "latest"]);
   expect(saved.pendingDiscards ?? []).toEqual([]);
   expect(infos.some((text) => text.includes("pending_count=0"))).toBe(true);
 });

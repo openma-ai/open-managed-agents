@@ -44,6 +44,7 @@ const actions: Record<SandboxActionType, SandboxAction> = {
   lose: { type: "lose" },
   release: { type: "release" },
   discarded: { type: "discarded", refs: [] },
+  queueDiscard: { type: "queueDiscard", ref: snap("orphan") },
 };
 
 const running = (latestSnapshot: LatestSnapshot, runStartedAt = 500) => ({ phase: "running", handle: other, runStartedAt, latestSnapshot });
@@ -75,6 +76,7 @@ const legal: Array<{ action: SandboxActionType; from: SandboxPhaseName; snapshot
 
 for (const from of Object.keys(inPhase) as SandboxPhaseName[]) {
   legal.push({ action: "discarded", from, to: inPhase[from](none) });
+  legal.push({ action: "queueDiscard", from, to: { ...inPhase[from](none), pendingDiscards: [snap("orphan")] } });
 }
 
 const phases = Object.keys(inPhase) as SandboxPhaseName[];

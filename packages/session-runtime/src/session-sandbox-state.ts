@@ -76,7 +76,8 @@ export type SandboxAction =
   /** The Session ended. */
   | { type: "release" }
   /** Acknowledges successful vendor deletions, under the same version CAS. */
-  | { type: "discarded"; refs: SnapshotRef[] };
+  | { type: "discarded"; refs: SnapshotRef[] }
+  | { type: "queueDiscard"; ref: SnapshotRef };
 
 export type SandboxActionType = SandboxAction["type"];
 
@@ -127,6 +128,7 @@ export const SANDBOX_TRANSITIONS: Rules = {
   },
   lose: { running: lost, paused: lost },
   release: { none: released, running: released, paused: released, lost: released },
+  queueDiscard: { none: (state) => state, running: (state) => state, paused: (state) => state, lost: (state) => state, released: (state) => state },
   discarded: { none: (state) => state, running: (state) => state, paused: (state) => state, lost: (state) => state, released: (state) => state },
 };
 
@@ -140,6 +142,7 @@ export function transition(state: SessionSandboxState, action: SandboxAction): S
   for (const ref of droppedSnapshots(state, result)) {
     if (!pending.some((other) => sameRef(other, ref))) pending.push(ref);
   }
+  if (action.type === "queueDiscard" && !pending.some((ref) => sameRef(ref, action.ref))) pending.push(action.ref);
   const remaining = action.type === "discarded" ? pending.filter((ref) => !action.refs.some((other) => sameRef(other, ref))) : pending;
   if (remaining.length > 0) result.pendingDiscards = remaining;
   else delete result.pendingDiscards;

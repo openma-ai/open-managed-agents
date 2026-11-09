@@ -189,9 +189,9 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     w.log.length = 0;
     await a.sandbox.endExecution();
     // record (won), then the snapshot publish against the same version: one won, one lost.
-    expect(w.store.writes.slice(before)).toEqual(["won@v4", "won@v5", "lost@v5"]);
+    expect(w.store.writes.slice(before)).toEqual(["won@v4", "won@v5", "lost@v5", "won@v6", "won@v7"]);
     expect(w.log).toEqual(["checkpoint:snap-3", "discard:snap-3"]);
-    expect(w.store.get()).toMatchObject({ latestSnapshot: taken(previous), version: 6 });
+    expect(w.store.get()).toMatchObject({ latestSnapshot: taken(previous), version: 8 });
   });
 
   it("publishing a snapshot that wins discards the previous one only after the write", async () => {

@@ -99,9 +99,7 @@ export async function publishSnapshot<R>(
   execution: SessionSandboxExecution | undefined,
   expected?: SessionSandboxState,
 ): Promise<SnapshotOutcome> {
-  const { ports } = await state.compose();
-  const discard = () => ports.sandbox.discard({ scope: state.scope(), ref })
-    .catch((error) => state.options.warn(`sandbox_discard_failed ref=${ref.ref} error=${errorText(error)}`));
+  const discard = () => state.discard(ref);
   try {
     if (!await state.isCurrent(execution)) {
       state.options.warn(`sandbox_snapshot_lost ref=${ref.ref}: the execution fence was lost; the snapshot is discarded`);

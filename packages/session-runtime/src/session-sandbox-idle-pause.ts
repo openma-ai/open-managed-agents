@@ -95,7 +95,7 @@ export async function idlePause<R>(state: LiveSessionSandbox<R>, expectedVersion
   state.current = null;
   const ref = await ports.sandbox.pause({ scope, runtime: target.runtime, handle: target.handle, signal });
   // Not recorded, so nobody references it; discard never deletes the sandbox.
-  const drop = () => ports.sandbox.discard({ scope, ref }).catch((error) => state.options.warn(`sandbox_discard_failed ref=${ref.ref} error=${errorText(error)}`));
+  const drop = () => state.discard(ref);
   if (!await state.isCurrent(undefined) || state.execution() !== undefined) {
     await drop();
     return "skipped";

@@ -44,6 +44,6 @@ it("a checkpoint cannot publish over a sandbox replaced while the vendor was tak
   });
   state.dirty = true;
   expect(await takeSnapshot(state, { runtime: {}, handle: { provider: "fake", runtimeId: "old" } }, undefined)).toBe("conflict");
-  expect(saved).toEqual(winner);
+  expect(saved).toEqual({ ...winner, version: winner.version + 2 });
   expect(discarded).toEqual(["old-snapshot"]);
 });
