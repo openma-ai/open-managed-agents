@@ -5,6 +5,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxPort } from "@open-managed-agents/sandbox";
+import { LocalSubprocessSandbox } from "../../../packages/sandbox/src/adapters/local-subprocess";
+import { ChildProcess } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
 
 import {
@@ -16,6 +21,39 @@ import {
 } from "../../../packages/control-plane-node/src/lib/node-session-sandbox.js";
 
 const IDLE_MS = 60_000;
+it("retries real Node managed cleanup after exit confirmation times out",async()=>{
+ const root=await mkdtemp(join(process.cwd(),".node-cleanup-retry-"));const runtime=new LocalSubprocessSandbox({workdir:root});
+ const handle=await runtime.startManagedProcess({command:process.execPath,args:["-e","setInterval(()=>{},1000)"],env:{}});
+ const t=setup();t.box.sandbox.destroy=()=>runtime.destroy();const sandbox=t.sandboxes.build(context);await sandbox.open();
+ const original=ChildProcess.prototype.kill;const blocked=vi.spyOn(ChildProcess.prototype,"kill").mockImplementation(function(this:ChildProcess,signal){return this.pid===handle.pid?true:original.call(this,signal);});
+ try {
+  await expect(sandbox.destroy()).rejects.toMatchObject({code:"MANAGED_PROCESS_CLEANUP_FAILED"});
+  expect(t.sandboxes.get(context)).toBe(sandbox);expect(existsSync(root)).toBe(true);expect(()=>process.kill(handle.pid,0)).not.toThrow();
+  blocked.mockRestore();await sandbox.destroy();
+  expect(existsSync(root)).toBe(false);expect(()=>process.kill(handle.pid,0)).toThrow();expect(()=>t.sandboxes.get(context)).toThrow(/no sandbox/);
+ }finally{blocked.mockRestore();await runtime.destroy();await rm(root,{recursive:true,force:true});}
+},10_000);
+it("keeps Node cleanup ownership and retries a managed release failure",async()=>{
+ const t=setup();let attempts=0;let clean=false;
+ const failure=Object.assign(new AggregateError([],"unconfirmed exit"),{code:"MANAGED_PROCESS_CLEANUP_FAILED"});
+ t.box.sandbox.destroy=async()=>{attempts++;if(!clean)throw failure;};
+ const sandbox=t.sandboxes.build(context);await sandbox.open();
+ await expect(sandbox.destroy()).rejects.toBe(failure);
+ expect(t.sandboxes.get(context)).toBe(sandbox);
+ clean=true;await sandbox.destroy();expect(attempts).toBe(2);
+ expect(()=>t.sandboxes.get(context)).toThrow(/no sandbox/);
+});
+
+it("keeps Node release ownership until Session-end cleanup succeeds",async()=>{
+ const t=setup();let attempts=0;let clean=false;
+ const failure=Object.assign(new AggregateError([],"unconfirmed exit"),{code:"MANAGED_PROCESS_CLEANUP_FAILED"});
+ t.box.sandbox.destroy=async()=>{attempts++;if(!clean)throw failure;};
+ const sandbox=t.sandboxes.build(context);await sandbox.open();
+ await expect(sandbox.release()).rejects.toBe(failure);
+ expect(t.sandboxes.get(context)).toBe(sandbox);
+ clean=true;await sandbox.release();expect(attempts).toBe(2);
+ expect(()=>t.sandboxes.get(context)).toThrow(/no sandbox/);
+});
 it("retains launch cleanup ownership when the post-launch Work lookup throws", async () => {
  const t=setup();let launched=false;let killed=0;
  Object.assign(t.box.sandbox,{startManagedProcess:async()=>{launched=true;return{id:"native",pid:1,getStatus:async()=>"running",kill:async()=>{killed++;}};}});

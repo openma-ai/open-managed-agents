@@ -553,24 +553,18 @@ export class NodeSessionSandbox implements SandboxPort {
    * for the next open. A lost fence leaves it to the new owner. */
   async destroy(): Promise<void> {
     this.cancelIdle();
-    try {
-      await this.core.failExecution();
-    } finally {
-      this.executionFence = undefined;
-      this.live = null;
-      this.onDestroyed();
-    }
+    await this.core.failExecution();
+    this.executionFence = undefined;
+    this.live = null;
+    this.onDestroyed();
   }
 
   /** The Session ended: nothing opens again (design §0.1 step 10). */
   async release(): Promise<void> {
     this.cancelIdle();
-    try {
-      await this.core.destroy();
-    } finally {
-      this.live = null;
-      this.onDestroyed();
-    }
+    await this.core.destroy();
+    this.live = null;
+    this.onDestroyed();
   }
 
   /** What the environment cache snapshots for this Session; null = no setup known. */
