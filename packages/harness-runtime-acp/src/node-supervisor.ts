@@ -1,4 +1,7 @@
-import { answerAcpPermission } from "@open-managed-agents/agent-harness";
+import { NodeManagedAcpWorkItemFailure } from "./work-item-failure.js";
+import { createWorkTurnCoordinator, type WorkTurnCoordinator } from "./work-turn-coordinator.js";
+import type { WorkControlRuntime, WorkFinalizationPort, WorkTurnCompletion } from "./work-control-runtime.js";
+export type { WorkControlRuntime, WorkFinalizationPort, WorkTurnCompletion } from "./work-control-runtime.js";
 import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/installed-harnesses";
 import { createExecutionChannelsHttpResolver } from "./execution-channels-http.js";
 import {
@@ -10,6 +13,7 @@ import { sandboxTokenRandomPart } from "@open-managed-agents/sandbox-gateway";
 import type { AcpRuntime } from "@open-managed-agents/acp-runtime";
 import { posix, join } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { safeSkillArchivePath } from "@open-managed-agents/acp-runtime/skill-package";
 import { unzipSync } from "fflate";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
@@ -19,7 +23,6 @@ import {
   managedMcpProxyFromWorkEnvironment,
   projectAcpSandboxMcpServers,
 } from "@open-managed-agents/acp-runtime/sandbox-agent";
-import type { InferenceWireProtocol } from "@open-managed-agents/acp-runtime/inference-config";
 import { wireHostedInferenceForAcpLaunch } from "@open-managed-agents/harness-inference-adapters";
 import { bindAcpAgentState, type AcpStatefulAgentSpec } from "@open-managed-agents/acp-runtime/native-state";
 import {
@@ -29,10 +32,6 @@ import {
 } from "@open-managed-agents/harness-supervisor";
 
 import {
-  createManagedAcpSupervisorHarness,
-} from "./index.js";
-import {
-  createManagedHarnessHttpControlChannel,
   createManagedHarnessHttpRecoveryHistory,
   createManagedHarnessHttpSkillSource,
   type ManagedHarnessHttpScheduler,
@@ -58,6 +57,12 @@ const CONTROL_PLANE_ENV_KEYS = [
   "ANTHROPIC_WORK_SECRET",
   "OPENMA_SANDBOX_TOKEN",
 ] as const;
+
+/** main's Node startup retry: three attempts, 2s then 4s apart, capped at 30s. */
+const ACP_STARTUP_RETRY = {
+  attempts: 3,
+  delayMs: (attempt: number): number => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),
+};
 
 export interface ManagedAcpSessionAgentSnapshot {
   readonly id: string;
@@ -120,7 +125,17 @@ export interface NodeManagedAcpSupervisorAppOptions {
   resolveAgent?(
     input: NodeManagedAcpAgentResolverInput,
   ): AcpStatefulAgentSpec | null | Promise<AcpStatefulAgentSpec | null>;
+  /** Trusted Work claim returned by the host authority, never inferred from the bearer. */
+  workClaim?: { generation: number; holder: string };
+  /** Real turn activity drain and post-terminal publication. Required to start. */
+  finalization?: Pick<WorkFinalizationPort, "drainTurn">;
+  onTurnComplete?(turn: WorkTurnCompletion): Promise<void>;
+  /** Local bookkeeping only; durable authority remains in the control plane. */
+  onTurnAdmitted?(turnId: string): void;
+  onTurnPublished?(turnId: string): void;
   control?: {
+    /** Explicitly injected gated common runtime until the new API is published. */
+    runtime?: WorkControlRuntime;
     pollIntervalMs?: number;
     scheduler?: ManagedHarnessHttpScheduler;
     retry?: { maxAttempts?: number };
@@ -131,6 +146,8 @@ export interface NodeManagedAcpSupervisorAppOptions {
     drainDeadlineMs?: number;
     drainPollIntervalMs?: number;
     abortGraceMs?: number;
+    /** Side-effect-free ACP start attempts before the run fails startup. */
+    startupRetry?: { attempts: number; delayMs(attempt: number): number };
   };
 }
 
@@ -149,6 +166,15 @@ interface ActiveRunContext {
   channels: ManagedAcpExecutionChannels | null;
   history: ManagedHarnessRecoveryHistoryPort;
   skills: ManagedHarnessHttpSkillSource;
+  /** Project one retrying startup attempt under this run's Work claim. */
+  reportStartupRetry(id: string): Promise<void>;
+}
+
+/** One supervised run's startup fence; exhaustion fails only this run. */
+interface StartupRun {
+  signal: AbortSignal;
+  nonce: string;
+  exhausted(error: unknown): void;
 }
 
 /**
@@ -201,6 +227,40 @@ export function createNodeManagedAcpSupervisorApp(
     // protocol ordering instead of carrying unreachable nullable branches.
     let active!: ActiveRunContext;
     let activeSession!: ManagedAcpSessionSnapshot;
+    let startup!: StartupRun;
+    let turns!: WorkTurnCoordinator;
+    const startupRetry = options.lifecycle?.startupRetry ?? ACP_STARTUP_RETRY;
+    const sleep = options.supervisorScheduler?.sleep ?? abortableSleep;
+    // A failed spawn/initialize leaves no ACP session and no agent output, so
+    // main retries it with retrying + rescheduled facts. Exhaustion is a
+    // startup failure for the Work item to settle atomically; this process
+    // fences the run first so it never reports it as a turn error or prompts
+    // a session that never started.
+    const startupRetryingRuntime: AcpRuntime = {
+      async start(sessionOptions) {
+        const run = startup;
+        for (let attempt = 1; ; attempt += 1) {
+          try {
+            const session = await acpRuntime.start(sessionOptions);
+            turns.nativeReady(session);
+            return session;
+          } catch (error) {
+            if (run.signal.aborted) throw error;
+            let retry = attempt < startupRetry.attempts;
+            if (retry) {
+              retry = await active.reportStartupRetry(`${run.nonce}:${attempt}`).then(() => true, () => false);
+            }
+            if (!retry) {
+              const startupFailure = new NodeManagedAcpWorkItemFailure("startup", error);
+              run.exhausted(startupFailure);
+              throw startupFailure;
+            }
+            await sleep(startupRetry.delayMs(attempt), run.signal).catch(() => undefined);
+            if (run.signal.aborted) throw error;
+          }
+        }
+      },
+    };
     const sessionState = createAcpNativeSessionState({
       io: stateIo,
       ...(identity === undefined ? {} : { harness: identity }),
@@ -229,6 +289,7 @@ export function createNodeManagedAcpSupervisorApp(
         const scrubbedEnvironment = Object.fromEntries(
           CONTROL_PLANE_ENV_KEYS.map((key) => [key, undefined]),
         );
+        turns.selectNativeHarness(resolved.id ?? options.agentId ?? harness.id);
         const baseAgent: AcpStatefulAgentSpec = {
           ...resolved,
           id: resolved.id ?? options.agentId ?? harness.id,
@@ -276,22 +337,7 @@ export function createNodeManagedAcpSupervisorApp(
         }
         return {
           agent,
-          // ACP options are answered locally using the existing harness policy;
-          // platform policies are not an ACP wire capability. Tool identity is
-          // currently recognized only through Claude Code's metadata extension.
-          clientCallbacks: {
-            requestPermission: async (request) => answerAcpPermission({
-              id: session.agent.id,
-              name: session.agent.id,
-              version: session.agent.version,
-              model: session.agent.model.id,
-              system: session.agent.system ?? "",
-              created_at: typeof session.created_at === "string" ? session.created_at : "",
-              // The authority supplies resolved public tool configs; keep their
-              // policy fields intact rather than rebuilding toolset defaults.
-              tools: [...session.agent.tools] as unknown as Parameters<typeof answerAcpPermission>[0]["tools"],
-            }, request),
-          },
+          clientCallbacks: { requestPermission: request => turns.requestPermission(request) },
           mcpServers: projectAcpSandboxMcpServers({
             sessionId: session.id,
             gatewayBaseUrl: active.channels?.mcpProxy.gatewayBaseUrl,
@@ -319,9 +365,44 @@ export function createNodeManagedAcpSupervisorApp(
       },
       maxCharacters: options.recovery?.maxCharacters,
     });
-    return createManagedAcpSupervisorHarness({
+    const runtime = options.control?.runtime;
+    // Installed 0.13.1 silently ignores the candidate input hooks. Refuse to
+    // create a public-history runner rather than advertising unsafe support.
+    if (!runtime) throw new Error("Work input dispatch runtime is unavailable; common capability injection required");
+    const createSupervisor = runtime.createSupervisor;
+    if (!options.finalization || typeof options.finalization.drainTurn !== "function") {
+      throw new Error("Work finalization drainTurn port is required");
+    }
+    const finalization = options.finalization;
+    turns = createWorkTurnCoordinator({
+      runtime,
+      fallbackHarnessId: options.agentId ?? harness.id,
+      fetch: options.fetch,
+      pollIntervalMs: options.control?.pollIntervalMs,
+      scheduler: options.control?.scheduler,
+      hasOutcomeEvaluator: options.onTurnComplete !== undefined,
+      onTurnAdmitted: options.onTurnAdmitted,
+      onTurnPublished: options.onTurnPublished,
+      loadSession(session) {
+        activeSession = decodeManagedAcpSessionSnapshot(session);
+        return activeSession.agent.tools;
+      },
+      failRun: error => startup.exhausted(error),
+    });
+    const supervised = createSupervisor({
+      finalization: {
+        drainTurn: context => finalization.drainTurn(context),
+        afterTerminal: context => turns.afterTerminal(context.command.turnId),
+      },
+      onTurnComplete: options.onTurnComplete,
       connect: async (input) => {
         assertClaimedScope(environment, input.scope);
+        if (!runtime) throw new Error("Work input dispatch runtime is unavailable; common capability injection required");
+        const claim = options.workClaim;
+        if (!claim || !Number.isSafeInteger(claim.generation) || claim.generation < 1 || !claim.holder.trim()) {
+          throw new Error("Trusted Work generation and holder are required");
+        }
+        turns.reset({ ...input.scope, ...claim }, input.signal);
         const proxy = managedMcpProxyFromWorkEnvironment(environment);
         if (proxy === null) {
           throw new Error("A valid scoped ANTHROPIC_WORK_SECRET is required");
@@ -377,23 +458,25 @@ export function createNodeManagedAcpSupervisorApp(
           channels: resolvedChannels?.type === "ready" ? resolvedChannels.channels : null,
           history,
           skills,
+          reportStartupRetry: (id) => publishStartupRetry({
+            apiBaseUrl: proxy.gatewayBaseUrl,
+            sessionsToken: proxy.sessionsToken,
+            sessionId: input.scope.sessionId,
+            id,
+            fetch: options.fetch ?? globalThis.fetch,
+            signal: input.signal,
+          }),
         };
-        return createManagedHarnessHttpControlChannel({
+        return turns.connect({
           scope: input.scope,
           harness: input.harness,
           workspacePath: input.workspacePath,
           apiBaseUrl: proxy.gatewayBaseUrl,
           sessionsToken: proxy.sessionsToken,
-          fetch: options.fetch,
-          pollIntervalMs: options.control?.pollIntervalMs,
-          scheduler: options.control?.scheduler,
-          retry: options.control?.retry,
-          onSessionLoaded(session) {
-            activeSession = decodeManagedAcpSessionSnapshot(session);
-          },
+          signal: input.signal,
         });
       },
-      acpRuntime,
+      acpRuntime: startupRetryingRuntime,
       sessionPreparation: sessionState,
       sessionState,
       semanticRecovery,
@@ -401,6 +484,46 @@ export function createNodeManagedAcpSupervisorApp(
       drainPollIntervalMs: options.lifecycle?.drainPollIntervalMs,
       abortGraceMs: options.lifecycle?.abortGraceMs,
     });
+    return {
+      async start(input) {
+        const controller = new AbortController();
+        const forwardAbort = () => controller.abort(input.signal.reason);
+        if (input.signal.aborted) forwardAbort();
+        else input.signal.addEventListener("abort", forwardAbort, { once: true });
+        const release = () => input.signal.removeEventListener("abort", forwardAbort);
+        let failStartup!: (error: unknown) => void;
+        const startupFailed = new Promise<never>((_resolve, reject) => { failStartup = reject; });
+        startupFailed.catch(() => undefined);
+        startup = {
+          signal: controller.signal,
+          nonce: randomUUID(),
+          exhausted(error) {
+            controller.abort(error);
+            failStartup(error);
+          },
+        };
+        let run: Awaited<ReturnType<typeof supervised.start>>;
+        try {
+          run = await supervised.start({ ...input, signal: controller.signal,
+            checkpoint: checkpoint => turns.checkpoint(checkpoint.turnId),
+          });
+        } catch (error) {
+          release();
+          throw error;
+        }
+        return {
+          completed: Promise.race([run.completed, startupFailed]),
+          async drain() { try { await run.drain(); } finally { release(); } },
+          async stop(reason) {
+            // Stop both common's run and this wrapper's startup/backoff. The
+            // inner supervisor owns a separate controller, so stopping it alone
+            // must not leave our retry loop able to launch another process.
+            controller.abort(new Error(reason ?? "Managed ACP startup stopped"));
+            try { await run.stop(reason); } finally { release(); }
+          },
+        };
+      },
+    };
   };
 
   return {
@@ -414,6 +537,47 @@ export function createNodeManagedAcpSupervisorApp(
       });
     },
   };
+}
+
+/** main's retrying startup facts. Stable IDs/body across a lost response; no
+ * provider exception text leaves the sandbox (same as the exhausted settlement). */
+async function publishStartupRetry(input: {
+  apiBaseUrl: string;
+  sessionsToken: string;
+  sessionId: string;
+  id: string;
+  fetch: typeof globalThis.fetch;
+  signal: AbortSignal;
+}): Promise<void> {
+  const processedAt = new Date().toISOString();
+  const id = `acp-startup:${input.id}`;
+  const body = JSON.stringify({ events: [
+    { id: `${id}:0`, type: "session.error", processed_at: processedAt,
+      error: { type: "unknown_error", message: "ACP startup failed", retry_status: "retrying" } },
+    { id: `${id}:1`, type: "session.status_rescheduled", processed_at: processedAt },
+  ] });
+  const send = () => input.fetch(
+    `${input.apiBaseUrl.replace(/\/+$/u, "")}/v1/oma/sessions/${encodeURIComponent(input.sessionId)}/runtime-events`,
+    { method: "POST", body, signal: input.signal,
+      headers: { authorization: `Bearer ${input.sessionsToken}`, "content-type": "application/json" } },
+  );
+  let response: Response;
+  try { response = await send(); }
+  catch (error) {
+    // Response loss only: the identical batch is confirmed or applied once.
+    if (input.signal.aborted) throw error;
+    response = await send();
+  }
+  if (!response.ok) throw new Error(`ACP startup retry projection rejected: ${response.status}`);
+}
+
+function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Structural startup barrier only. The injected authority still owns live

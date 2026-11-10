@@ -87,7 +87,7 @@ export function buildOutcomeTrajectory(events: readonly unknown[]): Trajectory {
     trajectory_id: "supervisor-inline",
     session_id: "supervisor-inline",
     agent_config: {} as Trajectory["agent_config"],
-    environment_config: {} as Trajectory["environment_config"],
+    environment_config: { workspace: "not independently verified", network: "unknown" } as unknown as Trajectory["environment_config"],
     model: { id: "supervisor-inline", provider: "" },
     started_at: new Date(0).toISOString(),
     outcome: "running",
@@ -164,7 +164,8 @@ export function createVerifierOutcomeEvaluator<Snapshot = unknown>(
         outcome: resolved,
         evaluator: {
           async evaluate({ snapshot }) {
-            const score = await verifier.check(buildOutcomeTrajectory(dependencies.history(snapshot)));
+            const events = dependencies.history(snapshot);
+            const score = await verifier.check(buildOutcomeTrajectory(events));
             const usage = (score.metadata as { usage?: SessionOutcomeUsage } | undefined)?.usage;
             return {
               result: score.pass ? "satisfied" : "needs_revision",

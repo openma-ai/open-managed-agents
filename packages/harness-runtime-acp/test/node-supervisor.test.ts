@@ -13,10 +13,35 @@ import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/
 import { answerAcpPermission } from "@open-managed-agents/agent-harness";
 import type { AcpRuntime, SessionOptions } from "@open-managed-agents/acp-runtime";
 import {
-  createNodeManagedAcpSupervisorApp,
+  createNodeManagedAcpSupervisorApp as createProductionApp,
   decodeManagedAcpSessionSnapshot,
   type ManagedAcpSessionSnapshot,
 } from "../src/node-supervisor";
+import { createManagedAcpSupervisorHarness, createManagedHarnessHttpControlChannel } from "@openma/common/managed-runtime";
+import type { NodeManagedAcpSupervisorAppOptions } from "../src/node-supervisor";
+// These pre-existing tests exercise launch configuration/native IO/recovery,
+// not Work dispatch. Their frozen public-history transport deliberately remains
+// a test-only adapter. The real gated/default CLI contract lives in the candidate
+// HTTP/SQLite suite; never use this adapter in production composition.
+function createNodeManagedAcpSupervisorApp(options: NodeManagedAcpSupervisorAppOptions = {}) {
+  return createProductionApp({ ...options, workClaim: { generation: 1, holder: "fixture" },
+    control: { ...options.control, runtime: {
+      createSupervisor(options) { const harness = createManagedAcpSupervisorHarness({ ...options,
+        async connect(input) {
+          const channel = await options.connect(input);
+          return { ...channel, async publish(event) {
+            // This suite characterizes startup/native configuration, not durable
+            // Work terminal publication (covered by the default CLI suite).
+            if (event.type !== "session.complete") await channel.publish(event);
+          } };
+        },
+      }); return { start: input => harness.start({ ...input, checkpoint: async () => {} }) }; },
+      createControlChannel(options) { return { ...createManagedHarnessHttpControlChannel(options), async beforeDispatch() { throw new Error("Legacy configuration fixture cannot dispatch gated Work"); } }; },
+      async applyPermissionMode() { throw new Error("Legacy configuration fixture must not claim verified Work dispatch"); },
+    } },
+    finalization: { async drainTurn() { throw new Error("Legacy configuration fixture cannot finalize Work"); } },
+  });
+}
 import { createNodeAcpHarnessStateIo, type NodeAcpHarnessStateIo } from "../src/node";
 
 const scope = {
@@ -148,7 +173,7 @@ function productionFetch(input: {
       });
     }
     if (request.url.endsWith(`/v1/oma/sessions/${scope.sessionId}/runtime-events`)) {
-      return json({ recorded: 1 });
+      return json({ data: (await request.json() as {events: {id:string}[]}).events.map(event => ({id:event.id})) });
     }
     throw new Error(`unexpected request ${request.url}`);
   });
@@ -172,7 +197,42 @@ describe("preinstalled Node managed ACP supervisor", () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
-  it.each(["always_allow", "always_ask"] as const)("wires the default permission callback from the public Session snapshot: %s", async (defaultPolicy) => {
+
+  it("stopping during startup backoff cannot spawn another ACP process", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const inBackoff = new Promise<void>(resolve => { entered = resolve; });
+    const backoff = new Promise<void>(resolve => { release = resolve; });
+    let starts = 0;
+    const fallback = productionFetch({});
+    const fetch: typeof globalThis.fetch = async (raw, init) => {
+      if (String(raw).includes(`/v1/sessions/${scope.sessionId}/events`)) return json({
+        data: [{ id: "input", type: "user.message", processed_at: "2026-09-08T01:00:00.000Z", content: [{ type: "text", text: "start" }] }], next_page: null,
+      });
+      return fallback(raw, init);
+    };
+    const app = createNodeManagedAcpSupervisorApp({
+      environment: claimedEnvironment, agentId: "codex-acp", fetch,
+      stateIo: { async readFile() { throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+        async writeFile() {}, async writeFileBytes() {}, async exec() { return ""; } },
+      acpRuntime: { async start() { starts++; throw new Error("spawn failed"); } },
+      supervisorScheduler: { sleep: async () => { entered(); await backoff; } },
+      lifecycle: { drainDeadlineMs: 0, abortGraceMs: 0, startupRetry: { attempts: 3, delayMs: () => 1 } },
+    });
+    const harness = (await app.resolveHarness({ id: "acp", version: "1" }))!;
+    const run = await harness.start({ scope, harness: { id: "acp", version: "1" },
+      workspacePath: "/workspace", outputPath: null, checkpoint: async () => {}, signal: new AbortController().signal });
+    const completion = run.completed.catch(() => undefined);
+    await inBackoff;
+    try {
+      await run.stop("aborted");
+      release();
+      await completion;
+      expect(starts).toBe(1);
+    } finally { release(); await run.stop("aborted"); }
+  });
+
+  it.each(["always_allow", "always_ask"] as const)("keeps legacy permission policy characterization but fences production callbacks without an admitted Work root: %s", async (defaultPolicy) => {
     const seen: SessionOptions[] = [];
     const session: BetaManagedAgentsSession = {
       id: scope.sessionId, environment_id: scope.environmentId, type: "session",
@@ -255,7 +315,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
     for (const [toolName, optionId] of cases) {
       const want = { outcome: { outcome: "selected", optionId } };
       expect(answerAcpPermission(legacyAgent, request(toolName))).toEqual(want);
-      await expect(permission!(request(toolName))).resolves.toEqual(want);
+      await expect(permission!(request(toolName))).resolves.toEqual({ outcome: { outcome: "cancelled" } });
     }
     for (const [toolName, choices, want] of [
       ["Bash", [options[1]!], { outcome: { outcome: "selected", optionId: "always" } }],
@@ -266,12 +326,12 @@ describe("preinstalled Node managed ACP supervisor", () => {
     ] as const) {
       const input = request(toolName, [...choices]);
       expect(answerAcpPermission(legacyAgent, input)).toEqual(want);
-      await expect(permission!(input)).resolves.toEqual(want);
+      await expect(permission!(input)).resolves.toEqual({ outcome: { outcome: "cancelled" } });
     }
     // Existing helper throws for this inherited-object key. The production
     // callback must reject, not swallow the exception and return an allow.
     expect(() => answerAcpPermission(legacyAgent, request("constructor"))).toThrow(TypeError);
-    await expect(permission!(request("constructor"))).rejects.toThrow(TypeError);
+    await expect(permission!(request("constructor"))).resolves.toEqual({ outcome: { outcome: "cancelled" } });
   });
 
   it("projects the real Session Agent into ACP without exposing Work credentials", async () => {
@@ -338,7 +398,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
           : json({ data: [], next_page: null });
       }
       if (request.url.endsWith(`/v1/oma/sessions/${scope.sessionId}/runtime-events`)) {
-        return json({ recorded: 1 });
+        return json({ data: (await request.json() as {events: {id:string}[]}).events.map(event => ({id:event.id})) });
       }
       throw new Error(`unexpected request ${request.url}`);
     });
@@ -874,7 +934,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
         });
       }
       if (request.url.endsWith(`/v1/oma/sessions/${scope.sessionId}/runtime-events`)) {
-        return json({ recorded: 1 });
+        return json({ data: (await request.json() as {events: {id:string}[]}).events.map(event => ({id:event.id})) });
       }
       throw new Error(`unexpected request ${request.url}`);
     });

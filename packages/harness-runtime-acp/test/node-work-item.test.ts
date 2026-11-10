@@ -125,6 +125,7 @@ describe("Node ACP claimed Work item", () => {
         ANTHROPIC_ENVIRONMENT_KEY: "standing-key-must-not-be-used",
       },
       fetch,
+      checkpoint: async () => {},
       supervisorApp: supervisor([]),
       scheduler: { sleep: async (_ms, signal) => {
         await new Promise<void>((_resolve, reject) => {
@@ -149,6 +150,7 @@ describe("Node ACP claimed Work item", () => {
       environment: { ...environment, OPENMA_HARNESS_ID: undefined },
       lifecycleClient: client,
       fetch: startupFetch,
+      checkpoint: async () => {},
       supervisorApp: supervisor([]),
     })).toThrow("OPENMA_HARNESS_ID");
     expect(client.ack).not.toHaveBeenCalled();
@@ -160,6 +162,7 @@ describe("Node ACP claimed Work item", () => {
       environment: { ...environment, ANTHROPIC_WORK_SECRET: "invalid" },
       lifecycleClient: client,
       fetch: startupFetch,
+      checkpoint: async () => {},
       supervisorApp: supervisor([]),
     })).toThrow("scoped sessions_token");
     expect(client.ack).not.toHaveBeenCalled();
@@ -171,6 +174,7 @@ describe("Node ACP claimed Work item", () => {
       environment,
       lifecycleClient: client,
       fetch: startupFetch,
+      checkpoint: async () => {},
       supervisorApp: {
         resolveHarness: vi.fn(async () => null),
         serve: vi.fn(),
@@ -193,6 +197,7 @@ describe("Node ACP claimed Work item", () => {
       environment: { ...environment, OPENMA_WORKSPACE_ID: "workspace_01" },
       lifecycleClient: client,
       fetch: startupFetch,
+      checkpoint: async () => {},
       outputPath: null,
       supervisorApp: {
         resolveHarness: vi.fn(async () => ({
@@ -225,6 +230,7 @@ describe("Node ACP claimed Work item", () => {
       environment,
       lifecycleClient: client,
       fetch: startupFetch,
+      checkpoint: async () => {},
       supervisorApp: {
         resolveHarness: vi.fn(async () => ({
           start: vi.fn(async () => { throw new Error("start failed"); }),
@@ -252,6 +258,7 @@ describe("Node ACP claimed Work item", () => {
       environment,
       lifecycleClient: client,
       fetch: startupFetch,
+      checkpoint: async () => {},
       supervisorApp: {
         resolveHarness: vi.fn(async () => ({
           start: vi.fn(async (input) => {
@@ -289,6 +296,7 @@ for (const mode of ["response_lost", "unavailable", "boundary_rejected"] as cons
     let starts = 0;
     const runner = createNodeManagedAcpWorkItemRunner({
       environment,lifecycleClient:client,
+      checkpoint: async () => {},
       fetch: async (raw,init) => {
         const request = new Request(raw,init);
         if (request.url.endsWith("startup-boundary")) return mode === "boundary_rejected" ? new Response(null,{status:409}) : Response.json({revision:3});

@@ -2336,6 +2336,9 @@ importers:
       '@open-managed-agents/sandbox-gateway':
         specifier: workspace:*
         version: link:../sandbox-gateway
+      '@open-managed-agents/session-outcomes':
+        specifier: workspace:*
+        version: link:../session-outcomes
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared

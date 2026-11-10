@@ -64,6 +64,7 @@
     "@open-managed-agents/harness-supervisor": "workspace:*",
     "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
+    "@open-managed-agents/session-outcomes": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sandbox-gateway": "workspace:*",
     "@open-managed-agents/runtime": "workspace:*",

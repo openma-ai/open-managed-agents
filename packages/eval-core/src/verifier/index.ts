@@ -13,4 +13,5 @@ export {
   type JudgeFn,
   type JudgeUsage,
   type LlmJudgeOpts,
+  buildCanonicalEvidence,
 } from "./builtins/llm_judge";
