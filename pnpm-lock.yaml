@@ -1993,6 +1993,9 @@ importers:
       '@open-managed-agents/managed-runtime-host':
         specifier: workspace:*
         version: link:../managed-runtime-host
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
     devDependencies:
       vitest:
         specifier: ^5.0.5
