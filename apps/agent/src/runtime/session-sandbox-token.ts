@@ -36,5 +36,13 @@ export async function acpSandboxExecutionEnv(env: MainBinding, fence: SessionExe
   const main = env.MAIN_MCP;
   if (main?.managedAcpExecutionChannels === undefined) return {};
   const sessionsToken = await held.token(fence, issue(env, fence, harness));
-  return { ANTHROPIC_API_KEY: "", ...await main.managedAcpExecutionChannels({ tenantId: fence.workspaceId, sessionId: fence.sessionId, sessionsToken }) };
+  const result = await main.managedAcpExecutionChannels({ tenantId: fence.workspaceId, sessionId: fence.sessionId, sessionsToken, resultFormat: "typed" });
+  if (!result || (result.type !== "ready" && result.type !== "failed")) throw new Error("Invalid ACP sandbox channel authority response");
+  if (result.type === "failed") {
+    const cause = result.cause === undefined ? undefined : Object.assign(new Error(result.cause.name), result.cause);
+    throw Object.assign(new Error(result.message, { cause }), { phase: result.phase, code: result.code });
+  }
+  const channels = result.channels;
+  if (!channels?.mcpProxy || !channels.hostedInference?.model || channels.mcpProxy.sessionsToken !== sessionsToken || channels.hostedInference.sessionsToken !== sessionsToken || typeof channels.mcpProxy.gatewayBaseUrl !== "string" || !channels.mcpProxy.gatewayBaseUrl || typeof channels.hostedInference.gatewayBaseUrl !== "string" || !channels.hostedInference.gatewayBaseUrl || typeof channels.hostedInference.model.providerId !== "string" || !channels.hostedInference.model.providerId) throw new Error("Invalid ACP sandbox channel authority response");
+  return { ANTHROPIC_API_KEY: "", ...channels };
 }
