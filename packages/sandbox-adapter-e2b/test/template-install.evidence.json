@@ -1,0 +1,37 @@
+{
+  "sourceSha": "5e1b0e0edbbba72dae4bce4531da4c46bbf978fa",
+  "adapterBase": "3c53a48bbfb186680cc9dc11e494acc0e9499717",
+  "sourceBuild": "git archive fixed SHA into own ignored directory; pnpm install --frozen-lockfile; pnpm --filter @open-managed-agents/harness-runtime-acp build: exit 0",
+  "sourceLockSha256": "a43e266bb0d60175f148286eea3df6a1ffc1fff8846ca0904b5cb20b06c3ab5b",
+  "bundleSha256": "aff68c5d22f21b6f91d7f8cc245abbbf50d4ad8cffcdc8c975829b7d42b8f691",
+  "bundleMetaSha256": "db9a844aacaa4bc6f9f5e0019a77c9945fe8ffd11f880e65f480f00c31eb1c25",
+  "common": "published 0.13.1 bundled; no worker node_modules; static externals only Node builtins",
+  "entry": {
+    "command": "/usr/local/bin/node",
+    "args": [
+      "/opt/oma-managed/worker/node-e2b-work-item-cli.js"
+    ]
+  },
+  "harness": {
+    "id": "codex-acp",
+    "version": "1.8.0",
+    "command": "/opt/oma-harnesses/codex-acp/bin/codex-acp",
+    "installation": "template/harness/package-lock.json npm ci --omit=dev --ignore-scripts; inventory supplied only through control-plane replacement env"
+  },
+  "checks": {
+    "linux": "PASS: installation closure, real codex-acp initialize/stdout under agent UID, agent no write, actual specialized CLI reaches missing Work env only after loading wrapper, missing wrapper fails before Work, writable/tampered/workspace symlink rejection, readiness oma-managed-v2",
+    "container": "existing own oma-v2e2b-work-source:aebf83ce; disposable --rm; context/test mounted read-only; network only for npm registry installation",
+    "sdk": "e2b 2.63.0 Template.toJSON(computeHashes=true) PASS offline",
+    "packageTests": "72 PASS / 5 SKIP",
+    "typecheck": "PASS",
+    "diffCheck": "PASS"
+  },
+  "cloud": "NOT RUN; old cloud templates do not certify this increment",
+  "remaining": [
+    "No live Work/model/canonical end-to-end certification performed.",
+    "Active setsid escape and same-physical reclaim P1 remain owned by integration lifecycle; not closed here.",
+    "Fresh generated context required, with fixed source archive and frozen lock build; use template/build-context.mjs.",
+    "Trust root-owned installer/context and npm lock integrity; source marker is provenance metadata, not a cryptographic signature.",
+    "Base image is version-tagged, not digest pinned."
+  ]
+}
