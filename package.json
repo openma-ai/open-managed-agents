@@ -132,7 +132,7 @@
     "@cloudflare/workers-types": "^5.20261030.1",
     "@playwright/test": "^1.59.1",
     "@testcontainers/minio": "^12.1.0",
-    "@testcontainers/postgresql": "^12.1.0",
+    "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "5.0.5",
     "bash-parser": "^0.5.0",
@@ -145,9 +145,9 @@
     "wrangler": "^4.156.0"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.94",
-    "@ai-sdk/openai": "^4.0.106",
-    "ai": "7.0.159",
+    "@ai-sdk/anthropic": "4.0.98",
+    "@ai-sdk/openai": "^4.0.110",
+    "ai": "7.0.164",
     "better-auth": "^1.6.3",
     "drizzle-orm": "^0.45.2",
     "zod": "4.3.6"

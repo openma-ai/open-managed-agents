@@ -1,5 +1,21 @@
 # @openma/cli
 
+## 0.8.0
+
+### Minor Changes
+
+- 957e1da: Add eval support (benchmarks → cases → eval runs, Harbor and messages kinds): `client.oma.evals` in the SDK (`benchmarks` list/listBuiltin/create/retrieve/update/delete/upload, `benchmarks.cases` retrieve/add/replace/delete, `runs` create/list/retrieve/cancel/delete/waitForRun) and `oma evals benchmarks …` / `oma evals cases …` / `oma evals run` / `oma evals runs …` in the CLI.
+  
+  Harbor benchmarks are read-only imports with immutable revisions: new `git` source (github.com / huggingface.co), `benchmarks.sync`/`syncUpload`, `evals.gitRefs({ url })` (branches and tags to pick a ref) and `{ revision }` on benchmark/case retrieve in the SDK; `oma evals benchmarks import --git <url> [--ref] [--path]`, `oma evals benchmarks sync <id> [--ref|--file]` and `--revision N` on benchmark/case show in the CLI. Harbor case add/replace/delete helpers and empty harbor benchmarks are removed.
+
+### Patch Changes
+
+- ca10397: Add headless runtime pairing: `oma runtime pair [--ttl <seconds>]` mints a one-time setup command, and `oma bridge setup --token <omrp_…>` (or `OMA_PAIRING_TOKEN`) pairs a machine without a browser.
+- ca10397: Run attached Runtime sandbox sessions in local per-session LiteBox instances with retained ownership and selected skill package copies.
+- ca10397: Reuse one embedded LiteBox provider per Runtime sandbox registry and honor optional BOXLITE_HOME so concurrent sessions do not deadlock on the home lock.
+- ca10397: Ignore protected system and Runtime-owned keys in session environment overlays, with key-only warnings.
+- ca10397: Cache managed Skill Versions once per Runtime and link session skills to immutable content, preserving resolved versions across restarts with Windows junction/copy fallbacks.
+
 ## 0.7.3
 
 ### Patch Changes
