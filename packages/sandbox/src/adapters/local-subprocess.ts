@@ -124,6 +124,15 @@ interface OutputsMount {
   mountRel: string;
 }
 
+/** Managed exits were not confirmed; the caller may retry destroy(). */
+export class ManagedProcessCleanupError extends AggregateError {
+  readonly code = "MANAGED_PROCESS_CLEANUP_FAILED";
+  constructor(readonly processIds: readonly string[], errors: unknown[]) {
+    super(errors, "Managed process cleanup failed; retry destroy to confirm exit");
+    this.name = "ManagedProcessCleanupError";
+  }
+}
+
 export class LocalSubprocessSandbox
   implements SandboxExecutor, SandboxDuplexProcessPort, SandboxRuntimePort {
   private workdir: string;
@@ -133,6 +142,7 @@ export class LocalSubprocessSandbox
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private processes = new Map<string, BackgroundProcess>();
   private closing: Promise<void> | undefined;
+  private closeFailed = false;
   private duplexProcesses = new Set<SandboxDuplexProcess>();
   private mounts = new Map<string, MemoryMount>();
   private outputsMount: OutputsMount | null = null;
@@ -545,7 +555,16 @@ export class LocalSubprocessSandbox
   }
 
   destroy(): Promise<void> {
-    return this.closing ??= this.close();
+    // Keep the closing barrier after failure, but let a later call retry.
+    // Concurrent callers share one attempt; successful destroy stays idempotent.
+    if (this.closing === undefined || this.closeFailed) {
+      this.closeFailed = false;
+      this.closing = this.close().catch(error => {
+        this.closeFailed = true;
+        throw error;
+      });
+    }
+    return this.closing;
   }
 
   private async close(): Promise<void> {
@@ -557,10 +576,20 @@ export class LocalSubprocessSandbox
       ),
     );
     this.duplexProcesses.clear();
-    for (const proc of this.processes.values()) {
-      try { await proc.kill("SIGKILL"); } catch { /* best-effort */ }
+    const failedIds: string[] = [];
+    const errors: unknown[] = [];
+    for (const [id, proc] of this.processes) {
+      try { await proc.kill("SIGKILL"); } catch (error) {
+        if (proc.managed) {
+          failedIds.push(id);
+          errors.push(error);
+          continue; // Retain ownership until exit or a successful retry.
+        }
+        // Legacy log processes keep their best-effort cleanup semantics.
+      }
+      this.processes.delete(id);
     }
-    this.processes.clear();
+    if (failedIds.length) throw new ManagedProcessCleanupError(failedIds, errors);
     for (const mount of this.mounts.values()) {
       if (mount.readOnly) makeWritableRecursive(mount.targetDir);
     }
@@ -796,7 +825,7 @@ class BackgroundProcess implements ProcessHandle {
   private exitSignal: NodeJS.Signals | null = null;
   private readonly exited: Promise<void>;
 
-  constructor(public id: string, child: ChildProcess, private readonly managed = false) {
+  constructor(public id: string, child: ChildProcess, readonly managed = false) {
     this.child = child;
     this.pid = child.pid ?? 0;
     child.stdout?.on("data", (b: Buffer) => { this.stdout += b.toString(); });
