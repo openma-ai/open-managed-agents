@@ -211,12 +211,14 @@ function inputEndingWithProcess(
   exited: Promise<unknown>,
 ): WritableStream<Uint8Array> {
   const writer = source.getWriter();
-  const error = new Error("agent process exited; stdin is closed");
+  let error: unknown = new Error("agent process exited; stdin is closed");
   let stop!: () => void;
   const stopped = new Promise<void>(resolve => { stop = resolve; });
   return new WritableStream<Uint8Array>({
     start(controller) {
-      void exited.then(() => undefined, () => undefined).then(() => {
+      // A failed exit observation is not proof that the process exited.
+      // Keep that transport failure for every pending/future stdin operation.
+      void exited.then(() => undefined, reason => { error = reason; }).then(() => {
         controller.error(error);
         stop();
         void writer.abort(error).catch(() => undefined);

@@ -51,6 +51,22 @@ function openStdoutProcess(dieOn: "initialize" | "session/prompt") {
 const agent = { command: "open-stdout-agent", cwd: "/workspace" };
 
 describe("SandboxSpawner stdout", () => {
+  it("preserves failed exit observation on a blocked stdin write instead of claiming process exit", async () => {
+    const child = openStdoutProcess("session/prompt");
+    let rejectExit!: (error: Error) => void;
+    child.process.exited = new Promise((_resolve, reject) => { rejectExit = reject; });
+    let writing!: () => void;
+    const started = new Promise<void>(resolve => { writing = resolve; });
+    child.process.stdin = new WritableStream({ write() { writing(); return new Promise<void>(() => {}); } });
+    const handle = await new SandboxSpawner({ spawnDuplexProcess: async () => child.process }).spawn(agent);
+    const writer = handle.stdin.getWriter();
+    const failure = new Error("connection reset before exit confirmation");
+    const write = expect(writer.write(encoder.encode("request"))).rejects.toBe(failure);
+    const closed = expect(writer.closed).rejects.toBe(failure);
+    await started;
+    rejectExit(failure);
+    await Promise.all([write, closed]);
+  });
   it.each(["gone", "alive", "unknown"] as const)("only provider-confirmed %s may stop uncertain exit drains", async state => {
     let rejectExit!: (error:Error)=>void;
     const cancelled:string[]=[];
