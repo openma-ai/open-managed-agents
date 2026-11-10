@@ -32,6 +32,9 @@ export function createNodeEnvironmentWorkWorker(input: {
   const args: unknown = JSON.parse(env.OPENMA_WORK_RUNNER_ARGS ?? "[]");
   if (!Array.isArray(args) || args.some(a => typeof a !== "string" || a.includes("\0"))) throw new TypeError("OPENMA_WORK_RUNNER_ARGS must be string argv");
   if (command !== undefined && (!command.startsWith("/") || command.includes("\0"))) throw new TypeError("OPENMA_WORK_RUNNER_COMMAND must be absolute and non-NUL");
+  if (env.SANDBOX_PROVIDER === "e2b" && command !== undefined && (
+    command !== "/usr/local/bin/node" || args.length !== 1 || args[0] !== "/opt/oma-managed/worker/node-e2b-work-item-cli.js"
+  )) throw new TypeError("A trusted E2B worker requires the fixed preinstalled command and argv");
   const origin = input.config.http.publicBaseUrl;
   const controller = new AbortController();
   const workers = new Map<string, { worker: ManagedEnvironmentWorker; completed: Promise<void> }>();

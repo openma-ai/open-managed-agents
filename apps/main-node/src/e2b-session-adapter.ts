@@ -44,8 +44,10 @@ export async function createNodeE2BSessionAdapter(
     },
     leaseMs,
     maxLifetimeMs,
-    // A base template's default user cannot create /mnt mount points.
-    user: "root",
+    // SDK agent operations are unprivileged; the opt-in template launcher
+    // separately starts trusted management workers as root through private Files API.
+    user: "oma-worker",
+    managedBootstrap: {},
     setup: E2B_SANDBOX_DIRECTORIES,
     // The executor's s3fs mounts for Node's outputs and native Memory Store calls.
     ...(memoryBucket === undefined ? {} : { memoryBucket }),

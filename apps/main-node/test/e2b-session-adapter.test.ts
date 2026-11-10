@@ -20,6 +20,23 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("Node E2B Session sandbox adapter", () => {
+  it("uses oma-worker for ordinary operations and root-private v2 management without shell fallback", async () => {
+    const users: unknown[] = [];
+    const reads: string[] = [];
+    const sandbox = { sandboxId: "sb", kill: async () => {},
+      commands: { run: async (_cmd: string, opts?: {user?: string}) => { users.push(opts?.user); return {stdout: "", stderr: "", exitCode: 0}; } },
+      files: { read: async (path: string, opts?: {user?: string}) => { reads.push(path); users.push(opts?.user); return path.endsWith("/ready") ? "oma-managed-v1" : "ordinary"; }, write: async () => {} },
+    };
+    const sdk = { Sandbox: { connect: async () => sandbox } };
+    const composition = await createNodeE2BSessionAdapter({E2B_MAX_LIFETIME_MS: "3600000"}, IDLE_MS, async () => sdk);
+    const attached = await composition.adapter.lifecycle.attach({handle: {provider: "e2b", runtimeId: "sb"}, signal: new AbortController().signal} as Parameters<typeof composition.adapter.lifecycle.attach>[0]);
+    if (attached === "gone") throw Error("unexpected gone");
+    await attached.runtime.readFile("/workspace/file");
+    expect(users).toEqual(["oma-worker"]);
+    await expect(attached.runtime.startManagedProcess({command: "/usr/local/bin/node", env: {}})).rejects.toThrow(/not ready/);
+    expect(reads).toEqual(["/workspace/file", "/run/oma-managed/ready"]);
+    expect(users).toEqual(["oma-worker", "root"]);
+  });
   it("loads the e2b SDK and builds the v2 adapter with the account's lifetime cap", async () => {
     let loaded: { Sandbox?: { create?: unknown } } | undefined;
     const adapter = await createNodeE2BSessionAdapter(

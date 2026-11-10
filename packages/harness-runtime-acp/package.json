@@ -40,7 +40,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "pnpm run clean && tsc -p tsconfig.build.json && esbuild src/node-cli.ts src/node-work-item-cli.ts --bundle --platform=node --format=esm --target=node20 --outdir=dist --banner:js=\"#!/usr/bin/env node\"",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json && esbuild src/node-cli.ts src/node-work-item-cli.ts src/node-e2b-work-item-cli.ts --metafile=dist/bundle-meta.json --bundle --platform=node --format=esm --target=node20 --outdir=dist --banner:js=\"#!/usr/bin/env node\"",
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --config vitest.coverage.config.ts --coverage",
     "typecheck": "tsc --noEmit",
