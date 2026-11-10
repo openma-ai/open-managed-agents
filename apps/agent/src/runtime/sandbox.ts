@@ -308,7 +308,7 @@ export class CloudflareSandbox
       // An SDK-shaped double without the provisioning RPC starts lazily.
       return { running: false, incarnation: null, mounts: [] };
     }
-    return sandbox.describe();
+    return await sandbox.describe();
   }
 
   /** Starts a container with its complete mount set, or reports the running

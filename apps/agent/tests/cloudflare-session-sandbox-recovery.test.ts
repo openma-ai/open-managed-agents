@@ -5,6 +5,26 @@ import { setCloudflareSandboxForTest } from "../src/runtime/sandbox";
 
 afterEach(() => setCloudflareSandboxForTest(undefined));
 
+it("probe rejection reaches warm caller without provisioning or publishing", async () => {
+  const failure = new Error("probe unavailable");
+  let effects = 0;
+  setCloudflareSandboxForTest({
+    describe: async () => { throw failure; },
+    provision: async () => { effects++; }, exec: async () => { effects++; },
+  });
+  const kv = new Map<string, unknown>();
+  const sandbox = createCloudflareSessionSandbox({
+    env: {} as never, sandboxId: "sandbox", sandboxImage: null,
+    storage: { kv: { get: (k: string) => kv.get(k), put: (k: string, v: unknown) => { kv.set(k, v); } } } as never,
+    session: () => ({ tenantId: "ws", environmentId: "env", sessionId: "", agentId: null }),
+    fence: () => undefined, relayToken: async () => { effects++; return "forbidden"; },
+    warn: () => undefined, idleTimer: { schedule: () => undefined, cancel: () => undefined },
+  });
+  await expect(sandbox.warm()).rejects.toBe(failure);
+  expect(effects).toBe(0);
+  expect(kv.size).toBe(0);
+});
+
 it.each([false, true])("recordless CF warm distinguishes fresh from live container (running=%s)", async (wasRunning) => {
   let running = wasRunning;
   let marker = wasRunning ? "existing-generation" : "";

@@ -1,9 +1,17 @@
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { AcpProxyHarness } from "../../packages/agent-harness/src/acp-proxy-loop";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
+
+// Direct DO fixtures bypass HTTP init; bootstrap the real deployment schema
+// before event projection/markProcessed RPCs can reach the combined worker.
+beforeAll(async () => {
+  const response = await exports.default.fetch(new Request("http://localhost/v1/oma/model_cards", { headers: { "x-api-key": "test-key" } }));
+  expect(response.status).toBe(200);
+});
 
 registerHarness("acp-proxy", () => new AcpProxyHarness());
 
@@ -71,6 +79,7 @@ describe("interrupting a runner while its proxy is waiting for permission", () =
         // complete fixture retained for parametrize stability; no runner cancel either way.
         void complete;
       } finally { room.env = originalEnv; socket.close(); }
+      await room._managedProjectionChain;
     });
   });
 });

@@ -67,6 +67,7 @@ import {
   type LaneStatus,
   openTurnMarker,
   reportTurnFailure,
+  sessionErrorMessage,
   runTurnAttempts,
   TURN_RETRY,
   type TurnAttemptsResult,
@@ -6256,7 +6257,7 @@ export class SessionDO extends DurableObject<Env> {
       }
       terminalError = err instanceof Error ? err : new Error(String(err));
       // Attempts already announced their failure; report only preparation/cleanup here.
-      if (failedAttempts === undefined) reportTurnFailure({ type: "exhausted" }, this.describeError(err), failureEvents);
+      if (failedAttempts === undefined) reportTurnFailure({ type: "exhausted" }, sessionErrorMessage(err, "turn.execution"), failureEvents);
       // Exhaustion retains mid-run queued inputs for the client to resume.
       holdQueuedOnLane = true;
       completedIdleEvent = {
