@@ -154,6 +154,12 @@ export class EnvironmentAwareSessionEventDispatchRouter
   }
 
   private async stopAcceptedInterrupts(input: AcceptedSessionEvents): Promise<void> {
+    // Missing legacy metadata is not the explicit null (no Work) intent.
+    // Without a durable target identity, neither time nor the latest Work can
+    // safely reconstruct cancellation; preserve the input and fail visibly.
+    if (input.events.some(event => event.type === "user.interrupt" && event.environmentWorkId === undefined)) {
+      throw new Error("Cannot safely recover interrupt: missing its accepted Environment Work target");
+    }
     const targets = new Set(input.events.flatMap(event => event.type === "user.interrupt" && event.environmentWorkId != null ? [event.environmentWorkId] : []));
     for (const workId of targets) {
       const result = await this.dependencies.selfHostedWork.stop({
