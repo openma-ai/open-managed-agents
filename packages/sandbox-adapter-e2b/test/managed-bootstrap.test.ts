@@ -33,11 +33,13 @@ async function fixture() {
   return { root, marker, adapter, shellCalls: () => shellCalls };
 }
 
+// Native identity/process-group semantics require Linux waitid/WNOWAIT.
+// Run test/managed-bootstrap-linux.py in a disposable Linux root container on macOS.
 describe("template-native management bootstrap", () => {
   it("exposes safe managed launch rather than shell startProcess", () => {
     expect(typeof new E2BSandboxExecutor({} as never, {}).startManagedProcess).toBe("function");
   });
-  it("replaces poisoned image/session env before executable startup and preserves argv/cwd", async () => {
+  it.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)("replaces poisoned image/session env before executable startup and preserves argv/cwd", async () => {
     const { root, marker, adapter, shellCalls } = await fixture();
     const output = join(root, "observed.json");
     const args = ["quote'", "$(touch forbidden)", "space and\nnewline", "--flag"];
@@ -50,7 +52,7 @@ describe("template-native management bootstrap", () => {
     await expect(access(marker)).rejects.toThrow();
     expect(shellCalls()).toBe(0);
   });
-  it("reports native spawn failure and manages status / signal without shell", async () => {
+  it.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)("reports native spawn failure and manages status / signal without shell", async () => {
     const { adapter, shellCalls } = await fixture();
     await expect(adapter.startManagedProcess({ command: "/nonexistent/worker", env: {} })).rejects.toThrow(/spawn/i);
     const handle = await adapter.startManagedProcess({ command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: "/", env: {} });
@@ -61,7 +63,7 @@ describe("template-native management bootstrap", () => {
     await handle.kill("SIGTERM");
     expect(shellCalls()).toBe(0);
   });
-  it("rejects root agent execution and malformed native launch inputs", async () => {
+  it.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)("rejects root agent execution and malformed native launch inputs", async () => {
     expect(() => new E2BSandboxExecutor({} as never, { managedBootstrap: {}, user: "root" })).toThrow(/unprivileged/i);
     const { adapter, shellCalls } = await fixture();
     for (const spec of [{ command: "node", env: {} }, { command: process.execPath, args: ["bad\u0000arg"], env: {} }, { command: process.execPath, env: { "BAD=NAME": "x" } }] as SandboxManagedProcessSpec[]) {
@@ -71,7 +73,7 @@ describe("template-native management bootstrap", () => {
   });
   it("never retries or shell-falls-back after an ambiguous file dispatch", async () => {
     let writes = 0;
-    const adapter = new E2BSandboxExecutor({ files: { read: async () => "oma-managed-v1", write: async () => { writes++; throw Error("transport lost"); } } } as never, { managedBootstrap: {} });
+    const adapter = new E2BSandboxExecutor({ files: { read: async () => "oma-managed-v2", write: async () => { writes++; throw Error("transport lost"); } } } as never, { managedBootstrap: {} });
     await expect(adapter.startManagedProcess({ command: process.execPath, env: {} })).rejects.toThrow(/outcome unknown/i);
     await expect(adapter.startManagedProcess({ command: process.execPath, env: {} })).rejects.toThrow(/closed/i);
     expect(writes).toBe(1);
@@ -89,7 +91,7 @@ describe("template-native management bootstrap", () => {
     await expect(destroying).rejects.toThrow("destroy denied");
     expect(events).toEqual(["ready", "kill"]);
   });
-  it("fails closed without a preinstalled bootstrap and after destroy", async () => {
+  it.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)("fails closed without a preinstalled bootstrap and after destroy", async () => {
     const { adapter } = await fixture();
     await adapter.destroy();
     await expect(adapter.startManagedProcess({ command: process.execPath, env: {} })).rejects.toThrow(/clos/i);

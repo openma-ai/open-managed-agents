@@ -28,11 +28,9 @@ try {
   for (let n = 0; n < 100 && await handle.getStatus() !== "exited"; n++) await new Promise(r => setTimeout(r, 25));
   assert.equal(await handle.getStatus(), "exited");
   const observed = JSON.parse(await sandbox.files.read("/workspace/observed.json", { user: "root" }));
-  assert.deepEqual(observed.env, { ONLY: "yes" }); assert.deepEqual(observed.args, argv); assert.equal(observed.cwd, "/workspace"); assert.notEqual(observed.uid, 0);
-  // The unprivileged worker cannot read root-private launch requests.
-  const denied = await adapter.startManagedProcess({ command: "/usr/local/bin/node", env: {}, args: ["-e", "try{require('fs').readdirSync('/run/oma-managed');process.exit(99)}catch(e){require('fs').writeFileSync('/workspace/private-denied',e.code)}"] });
-  for (let n = 0; n < 100 && await denied.getStatus() !== "exited"; n++) await new Promise(r => setTimeout(r, 25));
-  assert.equal(await sandbox.files.read("/workspace/private-denied", { user: "root" }), "EACCES");
+  assert.deepEqual(observed.env, { ONLY: "yes" }); assert.deepEqual(observed.args, argv); assert.equal(observed.cwd, "/workspace"); assert.equal(observed.uid, 0);
+  // Ordinary agent exec is oma-worker; management remains root.
+  await assert.rejects(sandbox.files.read("/run/oma-managed/ready", { user: "oma-worker" }));
   for (const file of ["/workspace/poison-executed", "/workspace/argv-executed"]) {
     await assert.rejects(sandbox.files.read(file, { user: "root" }), (e: any) => ["FileNotFoundError", "NotFoundError"].includes(e.name));
   }

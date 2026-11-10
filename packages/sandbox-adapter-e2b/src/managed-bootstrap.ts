@@ -20,7 +20,7 @@ export async function startE2BManagedProcess(
   for (const [name, value] of Object.entries(spec.env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Invalid replacement environment");
   }
-  if (await sandbox.files.read(directory + "/ready", { user: "root" }) !== "oma-managed-v1") throw new Error("Trusted E2B management template is not ready");
+  if (await sandbox.files.read(directory + "/ready", { user: "root" }) !== "oma-managed-v2") throw new Error("Trusted E2B management template is not ready");
   async function request(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const id = crypto.randomUUID();
     const prefix = directory + "/" + id;
