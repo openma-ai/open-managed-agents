@@ -67,6 +67,28 @@ describe("withSandboxExecutionGuard", () => {
     expect(dispatches).toBe(1);
   });
 
+  it.each(["before", "after"])("aborts a stalled %s authority read and observes its late rejection", async phase => {
+    const { sandbox } = sandboxFixture();
+    const controller = new AbortController();
+    let reject!: (error: Error) => void, entered!: () => void, checks = 0, dispatched = 0;
+    const authority = new Promise<boolean>((_resolve, rejectPromise) => { reject = rejectPromise; });
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    sandbox.exec = async () => { dispatched++; return "late"; };
+    const guarded = withSandboxExecutionGuard(sandbox, { signal:controller.signal,isValid:()=>{
+      checks++; if(phase==="after" && checks===1) return true;
+      entered(); return authority;
+    }});
+    let settled = false;
+    const result = guarded.exec("effect").then(value=>value,error=>{settled=true;return error;});
+    await reading; controller.abort("interrupt");
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const cancelled = settled;
+    reject(new Error("late authority failure"));
+    expect(await result).toBeInstanceOf(SandboxExecutionFencedError);
+    expect(cancelled).toBe(true);
+    expect(dispatched).toBe(phase==="before"?0:1);
+  });
+
   it("kills a process handle when the parent fence is revoked", async () => {
     const { sandbox, process } = sandboxFixture();
     const controller = new AbortController();

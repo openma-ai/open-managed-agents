@@ -128,6 +128,22 @@ describe("Managed Node native subagents", () => {
     await f.run();
     expect(rejected).toBe(true);
   });
+  it("cancels the actual child runner while its parent authority lookup is stalled", async () => {
+    let entered!:()=>void, release!:(value:boolean)=>void;
+    const reading = new Promise<void>(resolve=>{entered=resolve;});
+    const authority = new Promise<boolean>(resolve=>{release=resolve;});
+    const fence = {workspaceId:"workspace",sessionId:session.id,executionId:"exec",attemptId:"attempt",ownerId:"owner",generation:1,expiresAt:"2099-01-01T00:00:00Z"};
+    const f = fixture(async ({session:current,subagents,sandbox})=>{
+      if(current.agent.name==="Parent") {const child=await subagents!.create({name:"Worker",message:"Work"});await subagents!.wait({threadIds:[child.threadId]});}
+      else {try {await sandbox.exec("must not dispatch");} catch {}}
+    },undefined,{executionFence:fence,isExecutionFenceActive:async()=>{entered();return authority;}});
+    let settled=false;
+    const run=f.run().finally(()=>{settled=true;});
+    await reading;f.runner.cancel({workspaceId:"workspace",sessionId:session.id});
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const cancelled=settled;release(true);await run;
+    expect(cancelled).toBe(true);
+  });
   it("propagates the child's actual budget short circuit to its external idle event", async () => {
     const {createSessionBudgetGate,memoryListCostPicoStore,beginModelEgress}=await import("../../../packages/agent-harness/src/budget");
     const gate=createSessionBudgetGate({amount:"1",currency:"USD"},{version:1,currency:"USD",input_per_mtok:"1",output_per_mtok:"1"},memoryListCostPicoStore("10000000000"));

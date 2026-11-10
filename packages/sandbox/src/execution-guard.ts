@@ -49,33 +49,36 @@ async function invokeWithGuard<T>(
   guard: SandboxExecutionGuard,
   operation: () => Promise<T>,
 ): Promise<T> {
-  await assertValid(guard);
-  const operationPromise = Promise.resolve().then(operation);
   if (!guard.signal) {
-    const result = await operationPromise;
+    await assertValid(guard);
+    const result = await operation();
     await assertValid(guard);
     return result;
   }
-
+  const signal = guard.signal;
   let onAbort!: () => void;
-  const abortPromise = new Promise<never>((_, reject) => {
+  const aborted = new Promise<never>((_, reject) => {
     onAbort = () => reject(new SandboxExecutionFencedError(
-      guard.signal?.reason instanceof Error
-        ? guard.signal.reason.message
-        : "sandbox execution was aborted",
+      signal.reason instanceof Error ? signal.reason.message : "sandbox execution was aborted",
     ));
-    guard.signal!.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
   });
-  try {
-    const result = await Promise.race([operationPromise, abortPromise]);
+  const pending = (async () => {
     await assertValid(guard);
+    // Authority can finish after abort won the race. Never dispatch then.
+    if (signal.aborted) throw new SandboxExecutionFencedError();
+    const result = await operation();
+    await assertValid(guard);
+    if (signal.aborted) throw new SandboxExecutionFencedError();
     return result;
+  })();
+  try {
+    if (signal.aborted) onAbort();
+    return await Promise.race([pending, aborted]);
   } finally {
-    guard.signal.removeEventListener("abort", onAbort);
-    // A provider call cannot always be cancelled (e.g. a remote HTTP
-    // request). Observe its eventual rejection so losing a lease does not
-    // create an unhandled rejection in the host.
-    void operationPromise.catch(() => undefined);
+    signal.removeEventListener("abort", onAbort);
+    // Both authority reads and provider calls may settle after cancellation.
+    void pending.catch(() => undefined);
   }
 }
 
