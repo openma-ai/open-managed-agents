@@ -3,9 +3,9 @@
 //
 // Composition only: createSandboxPorts + createCloudflareSandboxAdapter, handed
 // to the shared Session runtime (session-sandbox.ts). The handle is "fixed":
-// one Sandbox Durable Object per SessionDO, so a Session with no record yet
-// starts from a running record naming it (attach is tried first, as a
-// container may outlive its record). The record is kept in SessionDO storage,
+// one Sandbox Durable Object per SessionDO. With no record, only a live
+// container starts from an attachable running record (it may outlive its
+// record); a stopped one starts fresh. The record is kept in SessionDO storage,
 // every write a compare-and-set on its version (session-sandbox-do-state).
 // Recovery points live only in the version-CAS Session sandbox record.
 // D1 workspace backups are not container snapshots and never override it.
@@ -113,8 +113,11 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
     executor: () => sandbox,
     state: (() => {
       const stored = durableObjectSandboxState(deps.storage, STATE_KEY);
-      // No record yet: this Session's Sandbox DO, whose container may be running.
-      return { ...stored, load: async () => (await stored.load()) ?? { ...initialSandboxState(), phase: "running", handle: handle(), runStartedAt: 0 } };
+      // Probe only when no durable record exists. A live legacy container is
+      // attachable; a stopped one is an initial create, not evidence of loss.
+      return { ...stored, load: async () => (await stored.load()) ?? ((await sandbox.describeSandbox()).running
+        ? { ...initialSandboxState(), phase: "running", handle: handle(), runStartedAt: 0 }
+        : initialSandboxState()) };
     })(),
     scope,
     async plan({ scope: s, generation }) {
