@@ -11,7 +11,20 @@ export interface FindRuntimeProjectionSession {
   sessionId: string;
 }
 
+/** Internal Work checkpoint, not another authority or event ledger. */
+export interface RuntimeRawProjectionCheckpoint {
+  generation: number;
+  seq: number;
+  lastEvent: string;
+  projectorState: string;
+}
+
+export interface FindRawRuntimeProjection extends FindRuntimeProjectionSession {
+  environmentWorkFence: EnvironmentWorkExecutionFence;
+}
+
 export interface ProjectSessionRuntimeState extends FindRuntimeProjectionSession {
+  rawProjection?: { expected: string | null; next: RuntimeRawProjectionCheckpoint };
   expectedRevision: number;
   events: RuntimeProducedSessionEvent[];
   next: Session;
@@ -73,6 +86,7 @@ export type ProjectSessionRuntimeStateResult =
   | { type: "revision_conflict"; actualRevision: number };
 
 export interface SessionRuntimeProjectionPersistencePort {
+  findRawProjection?(input: FindRawRuntimeProjection): Promise<{ type: "found"; checkpoint: RuntimeRawProjectionCheckpoint | null } | { type: "execution_fence_lost" }>;
   findCurrent(
     input: FindRuntimeProjectionSession,
   ): Promise<StoredSession | null>;

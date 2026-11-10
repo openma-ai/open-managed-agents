@@ -2,6 +2,8 @@ import { decodeSessionEventDocument, encodeSessionEventDocument } from '@open-ma
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   FindRuntimeProjectionSession,
+  FindRawRuntimeProjection,
+  RuntimeRawProjectionCheckpoint,
   ProjectSessionRuntimeState,
   ProjectSessionRuntimeStateResult,
   SessionRuntimeProjectionPersistencePort,
@@ -79,6 +81,19 @@ export class SqlSessionRuntimeProjectionPersistence
     return row === null ? null : storedSession(row);
   }
 
+  async findRawProjection(input: FindRawRuntimeProjection): Promise<{ type: "found"; checkpoint: RuntimeRawProjectionCheckpoint | null } | { type: "execution_fence_lost" }> {
+    const fence = input.environmentWorkFence;
+    if (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.sessionId) return { type: "execution_fence_lost" };
+    const row = await this.client.prepare(
+      `SELECT runtime_projection FROM managed_environment_work
+        WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ?
+          AND claim_generation = ? AND state IN ('starting','active') AND claim_at IS NOT NULL
+          AND claim_at + heartbeat_ttl_seconds * 1000 > ?`,
+    ).bind(fence.workspaceId, fence.environmentId, fence.workId, fence.sessionId, fence.generation, this.#now().getTime()).first<{ runtime_projection: string | null }>();
+    if (row === null) return { type: "execution_fence_lost" };
+    return { type: "found", checkpoint: row.runtime_projection === null ? null : JSON.parse(row.runtime_projection) as RuntimeRawProjectionCheckpoint };
+  }
+
   async project(
     input: ProjectSessionRuntimeState,
   ): Promise<ProjectSessionRuntimeStateResult> {
@@ -102,9 +117,10 @@ export class SqlSessionRuntimeProjectionPersistence
         !Number.isSafeInteger(environmentWorkFence.generation) ||
         environmentWorkFence.generation < 1)
     ) return { type: "execution_fence_lost" };
+    if (input.rawProjection !== undefined && environmentWorkFence === undefined) throw new Error("Raw checkpoint requires Work authority");
     const now = this.#now().getTime();
     const failedSql = fence?.settlement === "failed_unclaimed" ? FAILED_ATTEMPT_SQL.replace("old.attempt_id = ? AND old.owner_id = ? AND old.generation = ?", "old.attempt_id IS NULL AND old.attempt_count = 0") : FAILED_ATTEMPT_SQL;
-    const fenceSql = fence?.settlement !== undefined
+    let fenceSql = fence?.settlement !== undefined
       ? `AND EXISTS (${failedSql})`
       : fence !== undefined
       ? `AND EXISTS (
@@ -122,7 +138,7 @@ export class SqlSessionRuntimeProjectionPersistence
                 AND claim_at + heartbeat_ttl_seconds * 1000 > ?
            )`
         : "";
-    const fenceBindings: Array<string | number> = fence !== undefined
+    const fenceBindings: Array<string | number | null> = fence !== undefined
       ? [
           fence.workspaceId,
           fence.executionId,
@@ -140,6 +156,13 @@ export class SqlSessionRuntimeProjectionPersistence
             now,
           ]
         : [];
+    if (input.rawProjection !== undefined) {
+      fenceSql += ` AND EXISTS (SELECT 1 FROM managed_environment_work raw_work
+        WHERE raw_work.workspace_id = ? AND raw_work.environment_id = ? AND raw_work.id = ?
+          AND ((raw_work.runtime_projection IS NULL AND ? IS NULL) OR raw_work.runtime_projection = ?))`;
+      fenceBindings.push(input.environmentWorkFence!.workspaceId, input.environmentWorkFence!.environmentId,
+        input.environmentWorkFence!.workId, input.rawProjection.expected, input.rawProjection.expected);
+    }
     const existingEvents = await Promise.all(input.events.map((event) =>
       this.client.prepare(
         `SELECT document FROM managed_session_events
@@ -149,7 +172,9 @@ export class SqlSessionRuntimeProjectionPersistence
       }>()
     ));
     if (existingEvents.some((row) => row !== null)) {
-      const exactReplay = existingEvents.every((row, index) =>
+      // Raw input replay is decided from its durable cursor, not canonical
+      // ID coincidence; never ACK it without advancing the checkpoint.
+      const exactReplay = input.rawProjection === undefined && existingEvents.every((row, index) =>
         row !== null && JSON.stringify(decodeSessionEventDocument(row.document).event) === JSON.stringify(input.events[index])
       );
       if (!await this.isFenceActive(input, now)) {
@@ -234,6 +259,8 @@ export class SqlSessionRuntimeProjectionPersistence
       input.sessionId, thread.id, input.workspaceId, input.sessionId,
       input.expectedRevision, ...fenceBindings));
     const next = input.next;
+    const updateFenceBindings = input.rawProjection === undefined ? fenceBindings
+      : [...fenceBindings.slice(0, -2), JSON.stringify(input.rawProjection.next), JSON.stringify(input.rawProjection.next)];
     const update = this.client.prepare(
         `UPDATE managed_sessions
             SET document = ?, revision = revision + 1, agent_id = ?,
@@ -253,7 +280,7 @@ export class SqlSessionRuntimeProjectionPersistence
         input.workspaceId,
         input.sessionId,
         input.expectedRevision,
-        ...fenceBindings,
+        ...updateFenceBindings,
       );
     // Serialize event insertion with accepted inputs and other runtime batches
     // before publishing the successful Session revision as an ordering fact.
@@ -261,7 +288,18 @@ export class SqlSessionRuntimeProjectionPersistence
       `UPDATE managed_sessions SET revision = revision
         WHERE workspace_id = ? AND id = ? AND revision = ? ${fenceSql}`,
     ).bind(input.workspaceId, input.sessionId, input.expectedRevision, ...fenceBindings);
-    const statements = [revisionGuard, ...eventStatements, ...threadStatements, update];
+    const raw = input.rawProjection;
+    const work = environmentWorkFence;
+    const checkpoint = raw !== undefined && work !== undefined ? this.client.prepare(
+      `UPDATE managed_environment_work SET runtime_projection = ?
+        WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ?
+          AND claim_generation = ? AND state IN ('starting','active') AND claim_at IS NOT NULL
+          AND claim_at + heartbeat_ttl_seconds * 1000 > ?
+          AND ((runtime_projection IS NULL AND ? IS NULL) OR runtime_projection = ?)
+          AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND revision = ?)`,
+    ).bind(JSON.stringify(raw.next), work.workspaceId, work.environmentId, work.workId, work.sessionId,
+      work.generation, now, raw.expected, raw.expected, input.workspaceId, input.sessionId, input.expectedRevision) : undefined;
+    const statements = [revisionGuard, ...eventStatements, ...threadStatements, ...(checkpoint === undefined ? [] : [checkpoint]), update];
     const rejected = new Error("Runtime projection admission changed inside transaction");
     let results;
     try {
@@ -269,14 +307,14 @@ export class SqlSessionRuntimeProjectionPersistence
       // earlier events/threads when the final CAS or an event write rejects.
       results = this.client.batchChecked
         ? await this.client.batchChecked(statements, rows => {
-          if (rows.at(-1)?.meta.changes !== 1 || rows.slice(1, 1 + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
+          if (rows.at(-1)?.meta.changes !== 1 || rows.slice(1, 1 + eventStatements.length).some(row => row.meta.changes !== 1) || (checkpoint !== undefined && rows.at(-2)?.meta.changes !== 1)) throw rejected;
         })
         : await this.client.batch(statements); // D1: one atomic SQLite snapshot.
     } catch (error) {
       if (error !== rejected) throw error;
       results = [{ meta: { changes: 0 } }];
     }
-    const updateResult = results[results.length - 1];
+    const updateResult = results.at(-1);
     if (updateResult === undefined) {
       throw new Error("Runtime projection batch returned no update result");
     }
