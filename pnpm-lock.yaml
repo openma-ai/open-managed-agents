@@ -2309,6 +2309,9 @@ importers:
       '@open-managed-agents/runtime-resource-contract':
         specifier: workspace:*
         version: link:../runtime-resource-contract
+      '@open-managed-agents/sandbox-gateway':
+        specifier: workspace:*
+        version: link:../sandbox-gateway
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared

@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { zipSync } from "fflate";
+import { generateSandboxToken } from "@open-managed-agents/sandbox-gateway";
+const executionToken = generateSandboxToken();
 
 import type { AcpRuntime, SessionOptions } from "@open-managed-agents/acp-runtime";
 import {
@@ -239,7 +241,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
     const app = createNodeManagedAcpSupervisorApp({
       resolveExecutionChannels: async request => {
         expect(request).toEqual({tenantId:scope.workspaceId,sessionId:scope.sessionId,sessionsToken:"scoped-session-token"});
-        return {type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:"oma_sbx_test-only"},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:"oma_sbx_test-only",model:{providerId:"anthropic",baseUrl:null}}}};
+        return {type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}}};
       },
       environment: {
         ANTHROPIC_BASE_URL: "https://api.openma.test",
@@ -307,7 +309,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
         type: "http",
         name: "github",
         url: `https://gateway.openma.test/v1/oma/mcp-proxy/${scope.sessionId}/github`,
-        headers: [{ name: "Authorization", value: "Bearer oma_sbx_test-only" }],
+        headers: [{ name: "Authorization", value: "Bearer " + executionToken }],
       }, {
         name: "workspace",
         command: "/usr/local/bin/workspace-mcp",
@@ -360,6 +362,22 @@ describe("preinstalled Node managed ACP supervisor", () => {
     if (mode === "failed") await expect(started).rejects.toThrow("execution channels rejected");
     else { const run = await started; await expect(run.completed).rejects.toThrow("execution channels authority"); }
     expect(seen).toHaveLength(0);
+  });
+
+  it.each(["work", "invalid", "different", "empty-hosted", "no-model", "no-provider", "bad-url"])("rejects malformed ready channels before ACP start: %s", async mode => {
+    const workspace=await mkdtemp(join(tmpdir(),"openma-ready-boundary-"));roots.push(workspace);
+    const seen:SessionOptions[]=[];
+    const channels:any={mcpProxy:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}};
+    if(mode==="work") channels.mcpProxy.sessionsToken=channels.hostedInference.sessionsToken="scoped-session-token";
+    if(mode==="invalid") channels.mcpProxy.sessionsToken=channels.hostedInference.sessionsToken="oma_sbx_bad";
+    if(mode==="different") channels.mcpProxy.sessionsToken=generateSandboxToken();
+    if(mode==="empty-hosted") channels.hostedInference.sessionsToken="";
+    if(mode==="no-model") delete channels.hostedInference.model;
+    if(mode==="no-provider") channels.hostedInference.model.providerId="";
+    if(mode==="bad-url") channels.hostedInference.gatewayBaseUrl="file:///private";
+    const app=createNodeManagedAcpSupervisorApp({environment:claimedEnvironment,workspacePath:workspace,agentId:"codex-acp",acpRuntime:fakeAcpRuntime(seen),resolveExecutionChannels:async()=>({type:"ready",channels}),fetch:productionFetch({agent:agentSnapshot({inference:{provider_id:"anthropic",base_url:null}})}),control:{pollIntervalMs:1,scheduler:{sleep:async()=>{}}}});
+    let failed=false;try {const h=await app.resolveHarness({id:"acp",version:"1"});const run=await h!.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});await run.completed;} catch {failed=true;}
+    expect(seen).toHaveLength(0);expect(failed).toBe(true);
   });
 
   it("fails closed when the supervisor scope is not the claimed Work scope", async () => {

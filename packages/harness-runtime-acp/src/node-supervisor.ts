@@ -3,6 +3,7 @@ import {
   parseAcpReleaseSource, isPinnedAcpVersion, type AcpRelease, type AcpReleaseSource,
 } from "@openma/common/acp-artifacts";
 import type { ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult, ManagedAcpExecutionChannels } from "@open-managed-agents/shared/acp-execution-channels-rpc";
+import { sandboxTokenRandomPart } from "@open-managed-agents/sandbox-gateway";
 import type { AcpRuntime } from "@open-managed-agents/acp-runtime";
 import { posix, join } from "node:path";
 import { homedir } from "node:os";
@@ -255,14 +256,10 @@ export function createNodeManagedAcpSupervisorApp(
             agent: binding.agent,
             nativePath: binding.nativePath,
             model: {
-              wireModel: modelHandle,
-              providerId: inference.provider_id,
-              baseUrl: inference.base_url,
-              protocolEndpoints: inference.protocol_endpoints?.map((endpoint) => ({
-                protocol: endpoint.protocol as InferenceWireProtocol,
-                proxyPathSegment: endpoint.proxy_path_segment,
-                upstreamBaseUrl: endpoint.upstream_base_url,
-              })),
+              wireModel: active.channels!.hostedInference.model.wireModel ?? modelHandle,
+              providerId: active.channels!.hostedInference.model.providerId,
+              baseUrl: active.channels!.hostedInference.model.baseUrl,
+              protocolEndpoints: active.channels!.hostedInference.model.protocolEndpoints,
             },
           });
           for (const file of hosted.files) {
@@ -351,6 +348,7 @@ export function createNodeManagedAcpSupervisorApp(
         });
         const resolvedChannels = await options.resolveExecutionChannels?.({tenantId:input.scope.workspaceId,sessionId:input.scope.sessionId,sessionsToken:proxy.sessionsToken});
         if (resolvedChannels?.type === "failed") throw new Error(resolvedChannels.message);
+        if (resolvedChannels !== undefined) validateExecutionChannels(resolvedChannels, proxy.sessionsToken);
         active = {
           outputPath: input.outputPath,
           channels: resolvedChannels?.type === "ready" ? resolvedChannels.channels : null,
@@ -393,6 +391,25 @@ export function createNodeManagedAcpSupervisorApp(
       });
     },
   };
+}
+
+/** Structural startup barrier only. The injected authority still owns live
+ * claim/attempt and scope validation; token shape cannot establish ownership. */
+function validateExecutionChannels(result: ManagedAcpExecutionChannelsResult, workToken: string): void {
+  const invalid = () => { throw new Error("Invalid ACP execution channels capability"); };
+  if (result?.type !== "ready") return invalid();
+  const {mcpProxy,hostedInference} = result.channels ?? {};
+  const token = mcpProxy?.sessionsToken;
+  if (typeof token !== "string" || token === workToken || sandboxTokenRandomPart(token) === null
+    || hostedInference?.sessionsToken !== token) return invalid();
+  for (const raw of [mcpProxy.gatewayBaseUrl,hostedInference.gatewayBaseUrl]) {
+    if (typeof raw !== "string" || !raw.trim()) return invalid();
+    let url: URL; try { url = new URL(raw); } catch { return invalid(); }
+    if (!["http:","https:"].includes(url.protocol) || url.username || url.password) return invalid();
+  }
+  const model = hostedInference.model;
+  if (!model || typeof model.providerId !== "string" || !model.providerId.trim()
+    || !(model.baseUrl === null || typeof model.baseUrl === "string" && model.baseUrl.trim())) return invalid();
 }
 
 export function decodeManagedAcpSessionSnapshot(
