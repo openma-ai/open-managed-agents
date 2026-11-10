@@ -13,13 +13,13 @@ export function createSandboxPorts<R extends object>(
   const storage = adapter.native?.storage?.(deps.storage) ?? createSyncStorage(adapter.vendor, deps.storage);
   const native = adapter.native?.egress?.(deps.egress);
   const delivery = native?.port ?? createForwarderEgress(adapter.vendor, deps.egress);
-  // Every runtime attach/update crosses the authority before any consumer,
-  // including native/no-relay adapters and Sessions without Vault credentials.
+  // Bind before consumers unless native egress explicitly owns this boundary.
+  // Native/no-relay alone is not an exemption, nor is absence of Vault.
   // The authority's shared holder alone decides reuse, rotation and revocation.
   const bind = async (input: Parameters<SandboxEgressPort<R>["attach"]>[0]) => {
     input.signal.throwIfAborted();
     const attempt = attemptOfFence(input.fence);
-    if (attempt !== null) await deps.egress.gateway.issueToken({
+    if (attempt !== null && native?.tokenBinding !== "native") await deps.egress.gateway.issueToken({
       scope: input.scope, attempt, sandbox: await adapter.vendor.sandboxIdentity?.(input.runtime) ?? input.runtime,
     });
     input.signal.throwIfAborted();
