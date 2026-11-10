@@ -5,9 +5,9 @@
 //      generation and the recycle probe value);
 //   2. otherwise mint a generation and plan, then: resume the pause point of a
 //      paused sandbox -> start a new sandbox from the latest snapshot (the
-//      host's published one, else the record's) -> with neither, a new sandbox
-//      through the initial creation path when none was ever published (with a
-//      persisted warning about lost changes). A published snapshot that cannot
+//      host's published one, else the record's) -> with neither, typed failure
+//      for a previous allocation; only a fresh Session may create initially.
+//      A published snapshot that cannot
 //      be started is a SandboxRestoreError, never a silent empty sandbox. A
 //      "changes" handle is recorded before anything else, and only while this
 //      owner holds the fence;
@@ -340,7 +340,7 @@ async function writeMarker(executor: SessionSandboxExecutor, generation: string)
 /** Initial open, warm and no-snapshot recovery share this creation boundary.
  * Environment cache integration wraps acquire here; it never enters latestSnapshot. */
 async function firstCreate<R>(state: LiveSessionSandbox<R>, record: SessionSandboxState, plan: SandboxPlan, signal: AbortSignal): Promise<Acquired<R>> {
-  if (record.phase !== "none") await state.options.warn("sandbox_recreated: no Session snapshot was ever published; changes since its creation were lost; recreating from the initial environment and rerunning Session setup and mounts");
+  if (record.phase !== "none") throw new SandboxRestoreError("The previous Session sandbox could not be recovered and no usable Session snapshot is available");
   const { ports } = await state.compose();
   const input = { scope: state.scope(), plan, signal };
   const acquired = await (state.options.environmentCache?.acquire(input) ?? ports.sandbox.acquire(input));
