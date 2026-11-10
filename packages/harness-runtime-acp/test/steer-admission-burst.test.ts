@@ -21,7 +21,8 @@ it('two same-page inputs must serialize permission gates and continue FIFO, not 
   const workspace=f.root+'/native';await mkdir(workspace,{recursive:true});
   running=runNodeWorkItemCli({environment:{ANTHROPIC_ENVIRONMENT_ID:f.scope.environmentId,ANTHROPIC_SESSION_ID:f.scope.sessionId,ANTHROPIC_WORK_ID:f.scope.workId,OPENMA_HARNESS_ID:'acp',OPENMA_ACP_AGENT_ID:'codex-acp',ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:f.token(),api_base_url:f.base})).toString('base64url')},signal:controller.signal,heartbeatIntervalMs:50,runtime:{modules:await parityModules(),spawner,stateIo:createNodeAcpHarnessStateIo({workspacePath:workspace})},fetch:async(raw,init)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;const r=await f.nativeFetch(new Request(raw,init));if(['inputs-consume','work-publish'].includes(action))receipts.push({action,status:r.status,body:await r.clone().json()});return r;}}).then(()=>({done:true}),error=>{release.resolve();return {error}});
   await root.promise;
-  await f.api('/v1/sessions/'+f.session.id+'/events',{events:[{type:'user.message',content:[{type:'text',text:'a'}]},{type:'user.message',content:[{type:'text',text:'b'}]}]});
+  await f.api('/v1/sessions/'+f.session.id+'/events',{events:[{type:'user.message',content:[{type:'text',text:'a'}]}]});
+  await f.api('/v1/sessions/'+f.session.id+'/events',{events:[{type:'user.message',content:[{type:'text',text:'b'}]}]});
   await modeEntered.promise;await new Promise(r=>setTimeout(r,150));release.resolve();
   const observed=await Promise.race([running,new Promise(r=>setTimeout(()=>r({timeout:true}),2000))]);
   console.log('BURST_EVIDENCE',JSON.stringify({prompts,steers,modeCount,receipts,error:String(observed?.error)}));

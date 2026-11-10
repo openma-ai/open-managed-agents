@@ -17,29 +17,27 @@ import {
   decodeManagedAcpSessionSnapshot,
   type ManagedAcpSessionSnapshot,
 } from "../src/node-supervisor";
-import { createManagedAcpSupervisorHarness, createManagedHarnessHttpControlChannel } from "@openma/common/managed-runtime";
 import type { NodeManagedAcpSupervisorAppOptions } from "../src/node-supervisor";
-// These pre-existing tests exercise launch configuration/native IO/recovery,
-// not Work dispatch. Their frozen public-history transport deliberately remains
-// a test-only adapter. The real gated/default CLI contract lives in the candidate
-// HTTP/SQLite suite; never use this adapter in production composition.
+import { configurationWorkHttp } from "./helpers/configuration-work-http.js";
+import { workRuntimeModules } from "./helpers/work-runtime-modules.js";
+const configurationModules = await workRuntimeModules();
+// Launch/native IO tests use real installed control/supervisor factories with
+// explicit private protocol fixtures; SQL integration lives in sibling suites.
 function createNodeManagedAcpSupervisorApp(options: NodeManagedAcpSupervisorAppOptions = {}) {
-  return createProductionApp({ ...options, workClaim: { generation: 1, holder: "fixture" },
-    control: { ...options.control, runtime: {
-      createSupervisor(options) { const harness = createManagedAcpSupervisorHarness({ ...options,
-        async connect(input) {
-          const channel = await options.connect(input);
-          return { ...channel, async publish(event) {
-            // This suite characterizes startup/native configuration, not durable
-            // Work terminal publication (covered by the default CLI suite).
-            if (event.type !== "session.complete") await channel.publish(event);
-          } };
-        },
-      }); return { start: input => harness.start({ ...input, checkpoint: async () => {} }) }; },
-      createControlChannel(options) { return { ...createManagedHarnessHttpControlChannel(options), async beforeDispatch() { throw new Error("Legacy configuration fixture cannot dispatch gated Work"); } }; },
-      async applyPermissionMode() { throw new Error("Legacy configuration fixture must not claim verified Work dispatch"); },
-    } },
-    finalization: { async drainTurn() { throw new Error("Legacy configuration fixture cannot finalize Work"); } },
+  return createProductionApp({ ...options, fetch: configurationWorkHttp(options.fetch ?? globalThis.fetch),
+    workClaim: {generation:1,holder:"fixture"},
+    control: {...options.control,runtime:{
+      createSupervisor:configurationModules.common.createManagedAcpSupervisorHarness,
+      createControlChannel:configurationModules.common.createManagedHarnessHttpControlChannel,
+      // These tests inject AcpSession doubles for configuration, not SDK mode
+      // negotiation (the protocol peer suite tests the real permission mapper).
+      async applyPermissionMode(session) {
+        const configOptions=await session.setConfigOption("mode","agent-full-access");
+        if(!configOptions.some((option:any)=>option.id==="mode"&&option.currentValue==="agent-full-access"))throw Error("Fixture native mode was not applied");
+        return {status:"applied",nativeModeId:"agent-full-access",verification:"session/set_config_option"};
+      },
+    }},
+    finalization:{async drainTurn(context){await context.flush();}},
   });
 }
 import { createNodeAcpHarnessStateIo, type NodeAcpHarnessStateIo } from "../src/node";
@@ -66,6 +64,7 @@ function fakeAcpRuntime(seen: SessionOptions[], prompts: string[] = []): AcpRunt
   return {
     async start(options) {
       seen.push(options);
+      const configOptions=[{id:"mode",name:"Mode",type:"select" as const,currentValue:"agent-full-access",options:[{value:"agent-full-access",name:"Full"}]}];
       return {
         id: "internal_1",
         acpSessionId: "native_1",
@@ -76,7 +75,7 @@ function fakeAcpRuntime(seen: SessionOptions[], prompts: string[] = []): AcpRunt
         agentCapabilities: {},
         initializeMeta: null,
         sessionSetupMeta: null,
-        configOptions: [],
+        configOptions,
         modes: null,
         promptCapabilities: {},
         supportsSessionFork: false,
@@ -91,7 +90,8 @@ function fakeAcpRuntime(seen: SessionOptions[], prompts: string[] = []): AcpRunt
         nesCapabilities: null,
         positionEncoding: null,
         supportsSteering: true,
-        async *prompt(text: string | readonly unknown[]) {
+        async *prompt(text: string | readonly unknown[], dispatch?: {onDispatched?():Promise<void>}) {
+          await dispatch?.onDispatched?.();
           prompts.push(String(text));
           yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } };
           yield { type: "promptComplete", response: {} };
@@ -99,7 +99,7 @@ function fakeAcpRuntime(seen: SessionOptions[], prompts: string[] = []): AcpRunt
         async steer() { return "promptRequired" as const; },
         async cancelCurrentTurn() {},
         drainPendingEvents() { return []; },
-        async setConfigOption() { return []; },
+        async setConfigOption() { return configOptions; },
         async authenticate() {},
         async setMode() {},
         async listSessions() { return { sessions: [] }; },
@@ -495,12 +495,8 @@ describe("preinstalled Node managed ACP supervisor", () => {
         },
       },
     });
-    await expect(readFile(join(workspace, "AGENTS.md"), "utf8"))
-      .resolves.toBe(
-        "Inspect the repository before editing.\n\n"
-        + "## OpenMA skills\n\n"
-        + "- skill_1@4: /workspace/.openma/skills/skill_1/4/repository-guide/SKILL.md\n",
-      );
+    // ADR0016: platform instructions no longer mutate the user's AGENTS.md.
+    await expect(readFile(join(workspace, "AGENTS.md"), "utf8")).rejects.toMatchObject({code:"ENOENT"});
     await expect(readFile(
       join(workspace, ".openma/skills/skill_1/4/repository-guide/SKILL.md"),
       "utf8",

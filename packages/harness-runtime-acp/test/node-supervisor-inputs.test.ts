@@ -1,3 +1,4 @@
+import { workRuntimeModules } from "./helpers/work-runtime-modules.js";
 import { afterEach, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,18 +20,14 @@ import { SqlEnvironmentWorkStore } from "../../environment-work-store-sql/src/in
 import { createNodeManagedAcpSupervisorApp } from "../src/node-supervisor.js";
 import type { WorkControlRuntime } from "../src/work-control-runtime.js";
 
-// Candidate SOURCE composition only; no package alias/install/lock mutation.
-// Explicit env makes this suite opt-in, rather than pretending 0.13.1 has hooks.
-const candidate = process.env.OPENMA_COMMON_CANDIDATE;
+// No package alias/install/lock mutation; default subject is installed common.
+// Installed exports run by default; source comparison is explicit and optional.
+
 const cleanup: Array<()=>Promise<unknown>>=[];
 afterEach(async()=>{ for(const close of cleanup.splice(0).reverse()) await close(); });
 const deferred = () => {let resolve!:()=>void; const promise=new Promise<void>(r=>{resolve=r;});return {promise,resolve};};
 async function fixture(scenario:"prompt"|"approval"|"resume"|"steer"|"interrupt"|"lost"|"mode-failed"|"bad-output-ack"|"claim-lost"|"outcome"|"root-proof", failStartup = false) {
- const runtimePath=candidate+"/src/managed-runtime/index.ts";
- const modePath=candidate+"/src/acp-runtime/permission-mapping.ts";
- const common=await import(/* @vite-ignore */ runtimePath);
- const { AcpRuntimeImpl } = await import(/* @vite-ignore */ candidate+"/src/acp-runtime/runtime.ts");
- const modes=await import(/* @vite-ignore */ modePath);
+ const { common, modes, AcpRuntimeImpl } = await workRuntimeModules();
  const runtime:WorkControlRuntime={createSupervisor:common.createManagedAcpSupervisorHarness,createControlChannel:common.createManagedHarnessHttpControlChannel,applyPermissionMode:modes.applyAcpPermissionMode};
  const root=await mkdtemp(join(tmpdir(),"supervisor-inputs-"));cleanup.push(()=>rm(root,{recursive:true,force:true}));
  const config=loadNodeConfig({NODE_ENV:"test",AUTH_DISABLED:"0",API_KEY:"test-admin",PROCESS_MODE:"api",LOG_LEVEL:"silent",PLATFORM_ROOT_SECRET:"test-work-inputs-root-secret-32-characters",OPENMA_TEST_SANDBOX_PROVIDER:"local-subprocess",DATABASE_PATH:join(root,"db.sqlite"),AUTH_DATABASE_PATH:join(root,"auth.sqlite"),MEMORY_BLOB_DIR:join(root,"memory"),SESSION_OUTPUTS_DIR:join(root,"outputs"),SANDBOX_WORKDIR:join(root,"sandbox"),MEMORY_QUEUE:"disabled"});
@@ -133,9 +130,9 @@ async function fixture(scenario:"prompt"|"approval"|"resume"|"steer"|"interrupt"
   await append({id:"resume",type:"session.updated",resume:true,processedAt:now});
  }
  const prompts:string[]=[];const wire:Record<string,unknown>[]=[];const done=deferred();
- let send!:(value:object)=>void;let promptId:unknown;let buffer="";const exit=deferred();
+ let send!:(value:object)=>void;let promptId:unknown;let buffer="";
  let configOptions=[{id:"mode",name:"Mode",category:"mode",type:"select",currentValue:"default",options:[{value:"default",name:"Default"},{value:"auto",name:"Auto"},{value:"bypassPermissions",name:"Bypass"}]}];
- const acpRuntime=new AcpRuntimeImpl({async spawn(){return {
+ const acpRuntime=new AcpRuntimeImpl({async spawn(){const exit=deferred();return {
   stdout:new ReadableStream<Uint8Array>({start(c){send=value=>c.enqueue(new TextEncoder().encode(JSON.stringify({jsonrpc:"2.0",...value})+"\n"));}}),
   stderr:new ReadableStream<Uint8Array>({start(c){c.close();}}),
   stdin:new WritableStream<Uint8Array>({async write(bytes){buffer+=new TextDecoder().decode(bytes);while(buffer.includes("\n")){const end=buffer.indexOf("\n");const m=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);wire.push(m);
@@ -197,11 +194,21 @@ async function fixture(scenario:"prompt"|"approval"|"resume"|"steer"|"interrupt"
  await Promise.race([done.promise,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("supervisor did not settle")),5000);timer.unref();})]);
  return {notifications,prompts,wire,order,consumeCount,publicPolls,cursors,rootReads,outputs,completion,sql,session,run};
 }
-it.skipIf(!candidate).each(["prompt","resume","approval","steer","interrupt"] as const)("private Node HTTP/SQLite -> supervisor: %s",async scenario=>{
+it.each(["prompt","resume","approval","steer","interrupt"] as const)("private Node HTTP/SQLite -> supervisor: %s",async scenario=>{
  const f=await fixture(scenario);
- expect(f.prompts).toEqual(scenario==="resume"?[""]:scenario==="steer"||scenario==="interrupt"?["first","second"]:["first"]);
+ if (scenario === "steer") {
+  // This fixture supplies no native artifacts: queued next-root prompt must
+  // rebuild from canonical history instead of pretending native state exists.
+  expect(f.prompts).toHaveLength(2);expect(f.prompts[0]).toBe("first");
+  expect(f.prompts[1]).toContain('reason="native-state-missing"');
+  expect(f.prompts[1]!.split("Current request:\n")[1]).toBe("second\n</openma-recovery>");
+ } else expect(f.prompts).toEqual(scenario==="resume"?[""]:scenario==="interrupt"?["first","second"]:["first"]);
  expect(f.order.indexOf("drain")).toBeLessThan(f.order.indexOf("canonical"));expect(f.order.indexOf("canonical")).toBeLessThan(f.order.indexOf("terminal"));expect(f.order.indexOf("terminal")).toBeLessThan(f.order.lastIndexOf("post"));
- expect(f.publicPolls).toBe(0);expect(f.cursors.length).toBeGreaterThan(0);expect(f.cursors.slice(1).every(c=>c!==null)).toBe(true);
+ expect(f.publicPolls).toBe(0);expect(f.cursors.length).toBeGreaterThan(0);if(scenario==="steer") {
+  // One genuine semantic-recovery history read after losing native artifacts;
+  // steady input polling still uses the append cursor, not whole-history scans.
+  expect(f.cursors.filter(cursor=>cursor===null)).toHaveLength(2);
+ } else expect(f.cursors.slice(1).every(c=>c!==null)).toBe(true);
  expect(f.rootReads).toHaveLength(f.prompts.length);expect(f.rootReads.every(read=>read.limit>=1&&read.limit<=100)).toBe(true);
  expect(f.order.indexOf("mode")).toBeLessThan(f.order.indexOf("consume"));expect(f.order.indexOf("consume")).toBeLessThan(f.order.indexOf("prompt"));
  if(scenario==="approval"){
@@ -211,11 +218,11 @@ it.skipIf(!candidate).each(["prompt","resume","approval","steer","interrupt"] as
   expect(f.consumeCount).toBe(2);
  }
 });
-it.skipIf(!candidate).each(["lost","mode-failed"] as const)("does not dispatch or blindly retry on %s",async scenario=>{
+it.each(["lost","mode-failed"] as const)("does not dispatch or blindly retry on %s",async scenario=>{
  const f=await fixture(scenario);expect(f.prompts).toEqual([]);expect(f.consumeCount).toBe(scenario==="lost"?1:0);expect(await f.completion).toBeInstanceOf(Error);
 });
 
-it.skipIf(!candidate)("rejects HTTP enqueue acknowledgement instead of claiming durable terminal",async()=>{
+it("rejects HTTP enqueue acknowledgement instead of claiming durable terminal",async()=>{
  const f=await fixture("bad-output-ack");expect(await f.completion).toBeInstanceOf(Error);expect(f.order).not.toContain("post");
 });
 
@@ -224,15 +231,15 @@ it("does not silently use installed common when dispatch capability is missing",
  await expect(app.resolveHarness({id:"acp",version:"1"})).rejects.toThrow("common capability injection required");
 });
 
-it.skipIf(!candidate).each(["claim-lost","outcome"] as const)("fails closed before sampling on %s",async scenario=>{
+it.each(["claim-lost","outcome"] as const)("fails closed before sampling on %s",async scenario=>{
  const f=await fixture(scenario);expect(f.prompts).toEqual([]);expect(await f.completion).toBeInstanceOf(Error);expect(f.consumeCount).toBe(scenario==="claim-lost"?1:0);
 });
 
-it.skipIf(!candidate)("authenticates consumed root bytes through real Node HTTP and SQLite projection",async()=>{
+it("authenticates consumed root bytes through real Node HTTP and SQLite projection",async()=>{
  await expect(fixture("root-proof")).rejects.toThrow("root-proof-verified");
 });
 
-it.skipIf(!candidate)("notifies runner only after canonical input and publication acknowledgements",async()=>{
+it("notifies runner only after canonical input and publication acknowledgements",async()=>{
  const f=await fixture("prompt");
  await expect.poll(()=>f.notifications.length).toBe(2);
  expect(f.notifications[0]).toMatchObject({phase:"admitted"});
@@ -242,7 +249,7 @@ it.skipIf(!candidate)("notifies runner only after canonical input and publicatio
  expect(f.order.lastIndexOf("post")).toBeLessThan(f.order.indexOf("published"));
 });
 
-it.skipIf(!candidate)("marks asynchronous spawn exhaustion as startup rather than run failure",async()=>{
+it("marks asynchronous spawn exhaustion as startup rather than run failure",async()=>{
  const f=await fixture("prompt",true);
  expect(await f.completion).toMatchObject({name:"NodeManagedAcpWorkItemFailure",phase:"startup"});
  expect(f.prompts).toEqual([]);

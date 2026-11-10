@@ -1,3 +1,4 @@
+import { workRuntimeModules } from "./helpers/work-runtime-modules.js";
 import {expect,it} from "vitest";
 import {mkdtemp,rm,writeFile,readFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
@@ -19,12 +20,10 @@ import {buildWorkFinalizationRoutes} from "../../http-routes/src/work-finalizati
 import {authenticateWorkFinalizationBearer} from "../../managed-agents-adapters-runtime/src/environment-work-session-token.js";
 import {SqlEnvironmentWorkStore} from "../../environment-work-store-sql/src/index.js";
 const {getRequestListener}=createRequire(new URL("../../../apps/main-node/package.json",import.meta.url).href)("@hono/node-server") as typeof import("../../../apps/main-node/node_modules/@hono/node-server");
-const candidate=process.env.OPENMA_COMMON_CANDIDATE;
+
 const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>{resolve=r;});return {promise,resolve};};
-it.skipIf(!candidate).each(["joined", "pending", "sync", "sync-claude", "sync-command", "sync-agent", "detached", "outcome-satisfied", "outcome-post", "outcome-interrupt", "outcome-max", "outcome-failed", "outcome-abort", "outcome-budget", "outcome-script"] as const)("default CLI composition bootstraps from Node HTTP/SQLite then joins a registered child before publication (mode=%s)",async(mode)=>{
- const common=await import(/* @vite-ignore */ candidate+"/src/managed-runtime/index.ts");
- const modes=await import(/* @vite-ignore */ candidate+"/src/acp-runtime/permission-mapping.ts");
- const {AcpRuntimeImpl}=await import(/* @vite-ignore */ candidate+"/src/acp-runtime/runtime.ts");
+it.each(["joined", "pending", "sync", "sync-claude", "sync-command", "sync-agent", "detached", "outcome-satisfied", "outcome-post", "outcome-interrupt", "outcome-max", "outcome-failed", "outcome-abort", "outcome-budget", "outcome-script"] as const)("default CLI composition bootstraps from Node HTTP/SQLite then joins a registered child before publication (mode=%s)",async(mode)=>{
+ const { common, modes, AcpRuntimeImpl } = await workRuntimeModules();
  const outcomeMode = mode.startsWith("outcome-");
  let grades = 0;
  let interrupt: (()=>Promise<void>) | undefined;

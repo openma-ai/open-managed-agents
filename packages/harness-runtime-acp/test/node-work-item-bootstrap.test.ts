@@ -1,4 +1,4 @@
-import {expect,it} from "vitest";
+import {expect,it,vi} from "vitest";
 import {runNodeWorkItemCli} from "../src/node-work-item-cli.js";
 const environment={ANTHROPIC_ENVIRONMENT_ID:"env",ANTHROPIC_SESSION_ID:"s",ANTHROPIC_WORK_ID:"w",OPENMA_HARNESS_ID:"test",ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:"secret",api_base_url:"https://host"})).toString("base64url")};
 const claim={workspaceId:"trusted-ws",environmentId:"env",sessionId:"s",workId:"w",generation:2,holder:"worker"};
@@ -26,13 +26,21 @@ it("idle keeps heartbeat alive until cancellation, without constructing runtime 
  })).rejects.toThrow("idle cancelled");
  expect(reads).toBe(3);expect(beats).toBeGreaterThan(1);expect(calls).not.toContain("stop");
 });
-it("default run names unavailable common exports rather than pretending 0.13.1 supports dispatch",async()=>{
+it("fails closed before startup when required runtime exports are absent",async()=>{
+ vi.resetModules();
+ vi.doMock("@openma/common/managed-runtime", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("@openma/common/managed-runtime");
+  return { ...actual, ManagedHarnessFinalizationError: undefined };
+ });
+ try {
+ const { runNodeWorkItemCli } = await import("../src/node-work-item-cli.js");
  const calls:string[]=[];
  await expect(runNodeWorkItemCli({environment,scheduler:{sleep},fetch:async(raw)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
   if(action==="ack")return Response.json({});if(action==="heartbeat")return Response.json({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90});
   if(action==="work-bootstrap")return Response.json({type:"run",claim,root,revision:3});if(action==="work-recovery")return Response.json({type:"run",turnId:"t",revision:3});throw Error(action);
- }})).rejects.toThrow(/common.*0\.13\.1.*ManagedHarnessFinalizationError/);
+ }})).rejects.toThrow(/common.*required.*capabilities/);
  expect(calls).not.toContain("startup-failed");expect(calls).not.toContain("stop");
+ } finally { vi.doUnmock("@openma/common/managed-runtime"); vi.resetModules(); }
 });
 it.each(["gap","rejected"] as const)("default CLI never dispatches after bootstrap %s",async type=>{
  const calls:string[]=[];
