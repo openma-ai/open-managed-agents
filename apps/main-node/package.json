@@ -96,7 +96,7 @@
     "@open-managed-agents/sessions-store": "workspace:*",
     "@open-managed-agents/vaults-store": "workspace:*",
     "@testcontainers/mysql": "^12.1.0",
-    "@testcontainers/postgresql": "^12.1.0",
+    "@testcontainers/postgresql": "^12.2.1",
     "@types/better-sqlite3": "^9.6.0",
     "@types/pg": "^8.20.0",
     "@types/turndown": "^5.0.5",
