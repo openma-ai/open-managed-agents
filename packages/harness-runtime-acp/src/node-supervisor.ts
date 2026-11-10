@@ -1,3 +1,4 @@
+import { createExecutionChannelsHttpResolver } from "./execution-channels-http.js";
 import {
   resolveAcpRelease, prepareAcpRelease, validateAcpRelease, acpReleaseMatchesSource,
   parseAcpReleaseSource, isPinnedAcpVersion, type AcpRelease, type AcpReleaseSource,
@@ -53,6 +54,7 @@ const CONTROL_PLANE_ENV_KEYS = [
   "ANTHROPIC_SESSION_ID",
   "ANTHROPIC_WORK_ID",
   "ANTHROPIC_WORK_SECRET",
+  "OPENMA_SANDBOX_TOKEN",
 ] as const;
 
 export interface ManagedAcpSessionAgentSnapshot {
@@ -346,7 +348,10 @@ export function createNodeManagedAcpSupervisorApp(
           scheduler: options.control?.scheduler,
           signal: input.signal,
         });
-        const resolvedChannels = await options.resolveExecutionChannels?.({tenantId:input.scope.workspaceId,sessionId:input.scope.sessionId,sessionsToken:proxy.sessionsToken});
+        const resolveChannels = options.resolveExecutionChannels ?? (environment.OPENMA_SANDBOX_TOKEN
+          ? createExecutionChannelsHttpResolver({apiBaseUrl:proxy.gatewayBaseUrl,fetch:options.fetch}) : undefined);
+        const resolvedChannels = await resolveChannels?.({tenantId:input.scope.workspaceId,sessionId:input.scope.sessionId,
+          sessionsToken:options.resolveExecutionChannels ? proxy.sessionsToken : environment.OPENMA_SANDBOX_TOKEN!});
         if (resolvedChannels?.type === "failed") throw new Error(resolvedChannels.message);
         if (resolvedChannels !== undefined) validateExecutionChannels(resolvedChannels, proxy.sessionsToken);
         active = {
