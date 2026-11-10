@@ -6,7 +6,7 @@ settings:
 
 overrides:
   mysql2: 3.24.6
-  '@openma/common': 0.13.1
+  '@openma/common': 0.14.0
 
 importers:
 
@@ -293,8 +293,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/integrations-core
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -492,8 +492,8 @@ importers:
         specifier: ^5.3.0
         version: 5.3.0
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       astro:
         specifier: ^6.1.9
         version: 6.1.9(@types/node@26.6.6)(@typescript/typescript6@6.0.2)(@vercel/functions@3.9.7(@aws-sdk/credential-provider-web-identity@3.972.78)(ws@8.21.0))(aws4fetch@1.0.20)(jiti@2.6.1)(lightningcss@1.32.0)(rollup@4.62.4)(tsx@4.21.0)(yaml@2.9.1)
@@ -739,8 +739,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vaults-store
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -1055,8 +1055,8 @@ importers:
         specifier: ^1.76.0
         version: 1.76.0
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/matter':
         specifier: 0.2.8
         version: 0.2.8(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1131,8 +1131,8 @@ importers:
         specifier: ^5.2.8
         version: 5.3.0
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@tailwindcss/vite':
         specifier: ^4.1.0
         version: 4.2.2(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
@@ -1159,8 +1159,8 @@ importers:
         specifier: workspace:*
         version: link:../sandbox
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -1178,14 +1178,14 @@ importers:
   packages/agent-harness:
     dependencies:
       '@ai-sdk/anthropic':
-        specifier: ^4.0.94
-        version: 4.0.94(zod@4.3.6)
+        specifier: ^4.0.98
+        version: 4.0.98(zod@4.3.6)
       '@ai-sdk/openai':
         specifier: ^4.0.106
         version: 4.0.106(zod@4.3.6)
       '@ai-sdk/provider':
-        specifier: 4.0.35
-        version: 4.0.35
+        specifier: 4.0.36
+        version: 4.0.36
       '@earendil-works/pi-agent-core':
         specifier: 1.1.0
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(@smithy/signature-v4@5.7.3)(undici@8.12.4)(ws@8.21.0)(zod@4.3.6)
@@ -1232,11 +1232,11 @@ importers:
         specifier: workspace:*
         version: link:../shared
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       ai:
-        specifier: ^7.0.159
-        version: 7.0.159(zod@4.3.6)
+        specifier: ^7.0.164
+        version: 7.0.164(zod@4.3.6)
       fflate:
         specifier: ^0.8.2
         version: 0.8.3
@@ -1367,8 +1367,8 @@ importers:
         specifier: workspace:*
         version: link:../sandbox
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
@@ -2343,8 +2343,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.6.7))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.6.7))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -2966,8 +2966,8 @@ importers:
         specifier: workspace:*
         version: link:../vault-store
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       '@open-managed-agents/session-store-memory':
         specifier: workspace:*
@@ -2984,8 +2984,8 @@ importers:
         specifier: workspace:*
         version: link:../acp-runtime
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       vitest:
         specifier: ^5.0.5
@@ -3171,8 +3171,8 @@ importers:
         specifier: workspace:*
         version: link:../runtime-resource-contract
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.6.7))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.6.7))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       standardwebhooks:
         specifier: 1.0.0
@@ -3662,8 +3662,8 @@ importers:
         specifier: workspace:*
         version: link:../openai-agents-api
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       openai:
         specifier: 7.15.0
@@ -4002,8 +4002,8 @@ importers:
   packages/runtime-relay:
     dependencies:
       '@openma/common':
-        specifier: 0.13.1
-        version: 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: 0.14.0
+        version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       vitest:
         specifier: ^5.0.5
@@ -4881,20 +4881,8 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  '@ai-sdk/anthropic@4.0.94':
-    resolution: {integrity: sha512-gD0KmsUZTRuhiYleM2SdMrY0c7m+VeRckLX2VVPnEAlQmaKqSw8+noHiK5ED+SHy4tuDf9VQqcHxlGeObzMNyw==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
   '@ai-sdk/anthropic@4.0.98':
     resolution: {integrity: sha512-NYo+vOKMo10YnbotYZXtTk/MGR2a1dVpp0gIVBuDPnTDmdEQ/WFiRVHzYJVF00o4SDn5iCV19Ym0qBUdGhOzuQ==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/gateway@4.0.132':
-    resolution: {integrity: sha512-ppStDEz96g+JEuxGiVTP29OKBjPyYZXRxs38wnq3427U2QbZtxe6TukrgSAAq0n4yaHvSvVAWJY9kBlW8XudYg==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -7224,8 +7212,8 @@ packages:
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
 
-  '@openma/common@0.13.1':
-    resolution: {integrity: sha512-IRXqlhv+Xj5qpxDsnywAu1s6BAjf6dpvUBrHvmzw8tX+VEzlnwMx0Q4siRMauJAW3XUix7w1KtgnSgHlGnsjlQ==}
+  '@openma/common@0.14.0':
+    resolution: {integrity: sha512-vVC6+0xMzXRvqFq1TdaG/O1nIq57Y9fb+Jv3G2etlR6aQabFMX9eXbRU9z5HFCR9vNodEo1hklrXw0ZewTQx3g==}
     engines: {node: '>=20'}
     peerDependencies:
       '@anthropic-ai/sdk': 0.120.x
@@ -9820,12 +9808,6 @@ packages:
   agent-base@9.0.0:
     resolution: {integrity: sha512-TQf59BsZnytt8GdJKLPfUZ54g/iaUL2OWDSFCCvMOhsHduDQxO8xC4PNeyIkVcA5KwL2phPSv0douC0fgWzmnA==}
     engines: {node: '>= 20'}
-
-  ai@7.0.159:
-    resolution: {integrity: sha512-4e/BwDoKJlMNYZaqERcTbGte+4TwroN9qKnCprog/XVfD9InzVPlhCviDhN452JIRrRsYg9BT0WsQ2C3Ds2mVQ==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
 
   ai@7.0.164:
     resolution: {integrity: sha512-wZxQnJ53WntJ334Q/UuCIXmhnZ3X0+NcU3706VGSYAeW0lbEIJd9pOKCoRHN7HZTzyOyrl5o38BEgE+0duVwuw==}
@@ -14672,23 +14654,10 @@ snapshots:
     dependencies:
       zod: 4.6.7
 
-  '@ai-sdk/anthropic@4.0.94(zod@4.3.6)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.35
-      '@ai-sdk/provider-utils': 5.0.72(zod@4.3.6)
-      zod: 4.3.6
-
   '@ai-sdk/anthropic@4.0.98(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.36
       '@ai-sdk/provider-utils': 5.0.75(zod@4.3.6)
-      zod: 4.3.6
-
-  '@ai-sdk/gateway@4.0.132(zod@4.3.6)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.35
-      '@ai-sdk/provider-utils': 5.0.72(zod@4.3.6)
-      '@vercel/oidc': 3.2.0
       zod: 4.3.6
 
   '@ai-sdk/gateway@4.0.137(zod@4.3.6)':
@@ -17107,7 +17076,7 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
-  '@openma/common@0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@openma/common@0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.9.0(zod@4.6.7)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -17133,7 +17102,7 @@ snapshots:
       - '@types/react-dom'
       - supports-color
 
-  '@openma/common@0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@openma/common@0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.9.0(zod@4.6.7)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -17159,7 +17128,7 @@ snapshots:
       - '@types/react-dom'
       - supports-color
 
-  '@openma/common@0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.6.7))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@openma/common@0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.6.7))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.9.0(zod@4.6.7)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -17304,7 +17273,7 @@ snapshots:
 
   '@openma/matter@0.2.8(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@openma/common': 0.13.1(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/common': 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.3.6))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/matter-loop': 0.2.8
       effect: 3.22.1
     transitivePeerDependencies:
@@ -20099,13 +20068,6 @@ snapshots:
   agent-base@7.1.4: {}
 
   agent-base@9.0.0: {}
-
-  ai@7.0.159(zod@4.3.6):
-    dependencies:
-      '@ai-sdk/gateway': 4.0.132(zod@4.3.6)
-      '@ai-sdk/provider': 4.0.35
-      '@ai-sdk/provider-utils': 5.0.72(zod@4.3.6)
-      zod: 4.3.6
 
   ai@7.0.164(zod@4.3.6):
     dependencies:

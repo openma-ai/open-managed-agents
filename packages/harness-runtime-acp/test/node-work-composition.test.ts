@@ -53,8 +53,13 @@ it("refuses a failed actual activity and cancels local drain wait without fabric
   for await (const _ of session.prompt("hi")) {}
   await expect(f.activity.drain(context)).rejects.toThrow("child failed");
 });
-it("default capability loading rejects published common 0.13.1 before constructing a process", async () => {
-  await expect(composition.loadWorkRuntimeModules()).rejects.toThrow(/0\.13\.1.*ManagedHarnessFinalizationError/);
+it("loads gated capabilities from the formally installed common package", async () => {
+  const modules = await composition.loadWorkRuntimeModules();
+  const managed = await import("@openma/common/managed-runtime");
+  const acp = await import("@openma/common/acp-runtime");
+  expect(modules.control.createSupervisor).toBe(managed.createManagedAcpSupervisorHarness);
+  expect(modules.control.createControlChannel).toBe(managed.createManagedHarnessHttpControlChannel);
+  expect(modules.control.applyPermissionMode).toBe(acp.applyAcpPermissionMode);
 });
 it("aborting a join does not turn a still-running child into a completion receipt", async () => {
   const f = fixture([{ type: "promptComplete", response: { stopReason: "end_turn" } }]);

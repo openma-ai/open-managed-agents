@@ -34,7 +34,7 @@ export async function loadWorkRuntimeModules(): Promise<WorkRuntimeModules> {
   const permission = (acp as unknown as Record<string, unknown>).applyAcpPermissionMode;
   if (typeof exports.ManagedHarnessFinalizationError !== "function" || typeof permission !== "function"
     || typeof managed.createManagedAcpSupervisorHarness !== "function" || typeof managed.createManagedHarnessHttpControlChannel !== "function") {
-    throw new Error("@openma/common installed 0.13.1 lacks ManagedHarnessFinalizationError / gated dispatch and applyAcpPermissionMode; upgrade the published runtime before running Work");
+    throw new Error("@openma/common lacks required gated dispatch/finalization and permission capabilities; install common >=0.14.0 before running Work");
   }
   return {
     control: {
