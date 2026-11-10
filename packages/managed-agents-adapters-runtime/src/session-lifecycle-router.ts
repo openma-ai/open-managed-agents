@@ -1,4 +1,6 @@
+import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type {
+  Session,
   Environment,
   EnvironmentSessionWorkEnqueuerPort,
   EnvironmentWorkEnvironmentSourcePort,
@@ -46,10 +48,9 @@ export type EnvironmentExecutionAuthority =
  */
 export function environmentExecutionAuthority(
   environment: Pick<Environment, "config">,
+  session?: Pick<Session, "agent">,
 ): EnvironmentExecutionAuthority {
-  return environment.config.type === "self_hosted"
-    ? "environment_work"
-    : "session_execution";
+  return sessionExecutionPlacement(environment, session).authority;
 }
 
 export class EnvironmentAwareSessionLifecycleRouter
@@ -60,7 +61,7 @@ export class EnvironmentAwareSessionLifecycleRouter
   ) {}
 
   async sessionStarted(input: StartSessionExecution): Promise<void> {
-    if (environmentExecutionAuthority(input.environment) === "session_execution") {
+    if (environmentExecutionAuthority(input.environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionStarted(input);
       return;
     }
@@ -82,7 +83,7 @@ export class EnvironmentAwareSessionLifecycleRouter
         `Environment ${input.session.environmentId} was not found while stopping Session ${input.sessionId}`,
       );
     }
-    if (environmentExecutionAuthority(environment) === "session_execution") {
+    if (environmentExecutionAuthority(environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionStopped(input);
     } else {
       const result = await this.dependencies.selfHostedWork.stop({
@@ -133,7 +134,7 @@ export class EnvironmentAwareSessionEventDispatchRouter
   ) {}
 
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
-    if (environmentExecutionAuthority(input.environment) === "session_execution") {
+    if (environmentExecutionAuthority(input.environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionEventsAccepted(input);
     }
   }
@@ -182,7 +183,7 @@ export class EnvironmentAwareSessionEventStreamRouter
         `Environment ${input.session.environmentId} was not found while streaming Session ${input.sessionId}`,
       );
     }
-    const stream = environmentExecutionAuthority(environment) === "session_execution"
+    const stream = environmentExecutionAuthority(environment, input.session) === "session_execution"
       ? this.dependencies.runtime
       : this.dependencies.selfHosted;
     if ("threadId" in input) {

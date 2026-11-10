@@ -12,7 +12,8 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "@open-managed-agents/session-runtime": "workspace:*"
+    "@open-managed-agents/session-runtime": "workspace:*",
+    "@open-managed-agents/domain": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^5.0.5"

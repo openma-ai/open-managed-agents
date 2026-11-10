@@ -13,6 +13,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "1.1.0",
     "@open-managed-agents/app": "workspace:*",
+    "@open-managed-agents/domain": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*",
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "croner": "^9.1.0",

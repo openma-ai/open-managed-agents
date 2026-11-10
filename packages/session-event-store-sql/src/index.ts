@@ -76,7 +76,7 @@ function stableJson(value: unknown): string {
 
 export interface SqlSessionEventStoreOptions {
   /** Atomically append accepted events and their Node execution outbox row. */
-  executionOutbox?: boolean | ((scope: { workspaceId: string; environmentId: string }) => Promise<boolean>);
+  executionOutbox?: boolean | ((scope: { workspaceId: string; environmentId: string; session: AppendSessionEvents["nextSession"] }) => Promise<boolean>);
   executionPolicy?: {
     maxAttempts: number;
     timeoutMs: number;
@@ -96,7 +96,7 @@ export class SqlSessionEventStore
       throw new Error("Next Session ID does not match the event target");
     }
     const executionOutbox = typeof this.options.executionOutbox === "function"
-      ? await this.options.executionOutbox({ workspaceId: input.workspaceId, environmentId: input.nextSession.environmentId })
+      ? await this.options.executionOutbox({ workspaceId: input.workspaceId, environmentId: input.nextSession.environmentId, session: input.nextSession })
       : this.options.executionOutbox;
     if (executionOutbox === true && (input.events.length > 0 || (input.executionEvents?.length ?? 0) > 0)) {
       return this.appendWithExecutionOutbox(input);

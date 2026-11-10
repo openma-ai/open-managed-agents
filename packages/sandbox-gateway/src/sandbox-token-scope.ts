@@ -9,6 +9,8 @@
 // A missing or unknown scope on a stored entry is a definite rejection: there
 // is no default that widens.
 
+import { harnessExecutionPlacement } from "@open-managed-agents/domain/environment-work";
+
 export type SandboxTokenScope = "all" | "egress";
 
 /** Where a token is presented. `api`: model gateway, MCP gateway, sandbox API. */
@@ -24,7 +26,7 @@ export const isSandboxTokenScope = (value: unknown): value is SandboxTokenScope 
  * gateway, the MCP gateway and the sandbox API from there); every other
  * harness runs in the control plane and the sandbox only executes tools. */
 export function sandboxHarnessPlacement(harness: string | null | undefined): SandboxHarnessPlacement {
-  return harness === "acp-sandbox" ? "in_sandbox" : "outside_sandbox";
+  return harnessExecutionPlacement(harness);
 }
 
 export function sandboxTokenScopeFor(placement: SandboxHarnessPlacement): SandboxTokenScope {

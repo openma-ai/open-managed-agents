@@ -1,3 +1,4 @@
+import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import {
   SessionResourceResolverService,
@@ -213,10 +214,10 @@ export class SqlManagedSessionsComposition {
     // Self-hosted workers consume the canonical log under Environment Work.
     // Only cloud placement may also enqueue the Node execution outbox.
     const executionOutbox = dependencies.executionOutbox === true
-      ? async (scope: { workspaceId: string; environmentId: string }) => {
+      ? async (scope: { workspaceId: string; environmentId: string; session: Session }) => {
           const environment = await environments.find(scope);
           if (environment === null) throw new Error("Session environment not found for execution routing");
-          return environment.config.type !== "self_hosted";
+          return sessionExecutionPlacement(environment, scope.session).authority === "session_execution";
         }
       : false;
     this.sessions = new SqlSessionPersistence(client, sealer, {
