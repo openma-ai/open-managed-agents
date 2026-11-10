@@ -21,8 +21,10 @@ subprocess.run(['npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--
 (harness / 'bin/codex-acp').symlink_to('../node_modules/.bin/codex-acp')
 agent = pwd.getpwnam('oma-worker')
 
+pin = json.loads((context / "installation.json").read_text())
+verify_args = ["--source-sha", pin["sourceSha"], "--lock-sha256", pin["sourceLockSha256"]]
 def verify(ok=True):
-    result = subprocess.run(['/usr/bin/python3', '-I', '-S', str(managed / 'verify-install.py')], capture_output=True, text=True)
+    result = subprocess.run(['/usr/bin/python3', '-I', '-S', str(managed / 'verify-install.py'), *verify_args], capture_output=True, text=True)
     assert (result.returncode == 0) == ok, result.stderr
 
 verify()
@@ -64,6 +66,17 @@ bundle.chmod(0o666); verify(False); bundle.chmod(0o644)
 original = bundle.read_bytes(); bundle.write_bytes(original + b'\n//tampered'); verify(False); bundle.write_bytes(original)
 bundle.unlink(); target = Path('/workspace/forged-worker.js'); target.write_bytes(original); bundle.symlink_to(target); verify(False); bundle.unlink(); bundle.write_bytes(original)
 verify()
+# A safe resolved target must not conceal a writable lexical parent.
+safe = Path('/opt/safe-harness')
+harness.rename(safe); harness.symlink_to(safe)
+harness.parent.chmod(0o777); verify(False)
+harness.parent.chmod(0o755); verify()
+harness.unlink(); safe.rename(harness)
+# The expected pin is supplied independently, not accepted from manifest.
+original_manifest = (managed / 'installation.json').read_text()
+mutated = json.loads(original_manifest); mutated['sourceSha'] = '0' * 40
+(managed / 'installation.json').write_text(json.dumps(mutated)); verify(False)
+(managed / 'installation.json').write_text(original_manifest); verify()
 launcher = subprocess.Popen(['/usr/bin/python3','-I','-S',str(managed / 'launcher.py')])
 try:
     import time

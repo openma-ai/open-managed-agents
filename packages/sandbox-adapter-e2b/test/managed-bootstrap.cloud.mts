@@ -17,7 +17,7 @@ let sandbox;
 try {
   const context = process.env.OMA_E2B_PREPARED_CONTEXT;
   if (!context) throw Error("OMA_E2B_PREPARED_CONTEXT required; old bootstrap-only templates are not certified");
-  const build = await sdk.Template.build(managedTemplate(sdk, context), alias, { apiKey: process.env.E2B_API_KEY, cpuCount: 1, memoryMB: 512 });
+  const build = await sdk.Template.build(managedTemplate(sdk, context, { sourceSha: process.env.OMA_E2B_SOURCE_SHA!, lockSha256: process.env.OMA_E2B_LOCK_SHA256! }), alias, { apiKey: process.env.E2B_API_KEY, cpuCount: 1, memoryMB: 512 });
   console.log(JSON.stringify({ phase: "template-built", cloud: true, alias, build, launcherSha256, startedAt }));
   sandbox = await sdk.Sandbox.create(alias, { apiKey: process.env.E2B_API_KEY, timeoutMs: 120_000, metadata: { owner: alias, purpose: "545-managed-bootstrap" } });
   const adapter = new E2BSandboxExecutor(sandbox, { managedBootstrap: {} });
