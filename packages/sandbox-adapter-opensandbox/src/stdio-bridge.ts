@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { setTimeout as delay } from "node:timers/promises";
+import { Readable } from "node:stream";
+import { request as httpRequest } from "undici";
 import type { SandboxDuplexProcess, SandboxDuplexProcessSpec } from "@open-managed-agents/sandbox";
 import type { OpenSandbox } from "./opensandbox";
 
@@ -31,7 +33,7 @@ const child = spawn(spec.command, spec.args || [], {
   cwd: spec.cwd || '/workspace', env: { ...process.env, ...spec.env }, detached: true,
   stdio: ['pipe', 'pipe', 'pipe']
 });
-let outcome, waiter;
+let outcome;
 const startupTimer = setTimeout(() => {
   try { process.kill(-child.pid, 'SIGKILL'); } catch {}
   server.close(() => process.exit(1));
@@ -39,7 +41,6 @@ const startupTimer = setTimeout(() => {
 startupTimer.unref();
 const finish = value => {
   outcome = value;
-  if (waiter) waiter.end(JSON.stringify(outcome));
   setTimeout(() => server.close(() => process.exit(0)), 30000).unref();
 };
 child.on('error', () => finish({ code: 127, signal: null }));
@@ -54,7 +55,11 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url === '/exit') {
     res.setHeader('content-type', 'application/json');
-    if (outcome) res.end(JSON.stringify(outcome)); else waiter = res;
+    // Short, repeatable observation of this relay's one child. The random
+    // per-spawn auth token prevents a reused service port from confirming a
+    // different process. Never hold headers/body open for the turn lifetime.
+    if (outcome) res.end(JSON.stringify(outcome));
+    else { res.writeHead(204); res.end(); }
     return;
   }
   if (req.method === 'POST' && req.url === '/stdin') {
@@ -102,42 +107,81 @@ export async function spawnBridge(
     throw error;
   }
   const endpoint = await sandbox.serviceEndpoint(port);
-  const request = async (path: string, init: RequestInit = {}, stream = false) => {
+  const headers = { ...endpoint.headers, "X-OpenMA-Stdio-Token": token };
+  const streamsAbort = new AbortController();
+  const openStream = async (path: string): Promise<ReadableStream<Uint8Array>> => {
+    // fetch applies its own five-minute body deadline even without an
+    // AbortSignal. Raw stdio may be silent for an entire turn; it cannot carry
+    // heartbeat bytes and cannot be replayed safely after disconnect.
+    const response = await httpRequest(`${endpoint.endpoint}${path}`, {
+      headers, headersTimeout: 30_000, bodyTimeout: 0, signal: streamsAbort.signal,
+    });
+    if (response.statusCode !== 200) {
+      await response.body.dump();
+      throw new Error(`OpenSandbox stdio ${path} failed (HTTP ${response.statusCode})`);
+    }
+    return Readable.toWeb(response.body) as ReadableStream<Uint8Array>;
+  };
+  const request = async (path: string, init: RequestInit = {}) => {
     const response = await fetch(`${endpoint.endpoint}${path}`, {
-      ...init, headers: { ...endpoint.headers, "X-OpenMA-Stdio-Token": token },
-      ...(stream ? {} : { signal: AbortSignal.timeout(30_000) }),
+      ...init, headers,
+      signal: AbortSignal.timeout(path === "/exit" ? 1_000 : 30_000),
     });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`OpenSandbox stdio relay failed (HTTP ${response.status})`); }
     return response;
   };
   const deadline = Date.now() + 30_000;
   while (true) {
-    try { await request("/ready"); break; }
+    try { await (await request("/ready")).text(); break; }
     catch (error) { if (Date.now() >= deadline) { await cleanup(); throw error; } await delay(100); }
   }
   try {
     const [stdout, stderr] = await Promise.all([
-      request("/stdout", {}, true), request("/stderr", {}, true),
+      openStream("/stdout"), openStream("/stderr"),
     ]);
-    if (!stdout.body || !stderr.body) throw new Error("OpenSandbox stdio relay returned no stream");
-    const exited = request("/exit", {}, true).then(async (response) => {
-      return await response.json() as { code: number | null; signal: string | null };
-    });
+    const exited = (async () => {
+      let failures = 0;
+      for (;;) {
+        try {
+          const response = await request("/exit");
+          if (response.status !== 204) {
+            const outcome: unknown = await response.json();
+            if (!outcome || typeof outcome !== "object" ||
+              !("code" in outcome) || !("signal" in outcome) ||
+              !(outcome.code === null || Number.isInteger(outcome.code)) ||
+              !(outcome.signal === null || typeof outcome.signal === "string") ||
+              (outcome.code === null && outcome.signal === null)) {
+              throw new Error("Invalid OpenSandbox child exit response");
+            }
+            return outcome as { code: number | null; signal: string | null };
+          }
+          failures = 0;
+        } catch (cause) {
+          if (++failures >= 3) {
+            const error = new Error(`OpenSandbox exit observation failed (sandbox=${sandbox.id}, port=${port}, phase=exit_observation, at=${new Date().toISOString()}); child exit is unconfirmed`, { cause });
+            streamsAbort.abort(error);
+            throw error;
+          }
+        }
+        await delay(250);
+      }
+    })();
     // Consumers may attach after this request fails; avoid an unhandled rejection.
     void exited.catch(() => undefined);
     const kill = async (signal: "SIGTERM" | "SIGKILL" = "SIGTERM") => {
-      await request(`/${signal}`, { method: "DELETE" });
+      await (await request(`/${signal}`, { method: "DELETE" })).text();
     };
     return {
-      stdout: stdout.body, stderr: stderr.body, exited, kill,
+      stdout, stderr, exited, kill,
       stdin: new WritableStream<Uint8Array>({
-        async write(chunk) { await request("/stdin", { method: "POST", body: Buffer.from(chunk) }); },
-        async close() { await request("/close", { method: "POST" }); },
+        async write(chunk) { await (await request("/stdin", { method: "POST", body: Buffer.from(chunk) })).text(); },
+        async close() { await (await request("/close", { method: "POST" })).text(); },
         async abort() { await kill("SIGKILL"); },
       }),
     };
   } catch (error) {
-    await request("/SIGKILL", { method: "DELETE" }).catch(() => undefined);
+    streamsAbort.abort(error);
+    await request("/SIGKILL", { method: "DELETE" }).then(response => response.text()).catch(() => undefined);
     throw error;
   }
 }

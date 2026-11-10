@@ -58,6 +58,25 @@ it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("runs the SDK-backe
   }
 }, 240_000);
 
+it.skipIf(process.env.OMA_OPENSANDBOX_LONG_CERTIFICATION !== "1")("observes a silent OpenSandbox child beyond the five-minute HTTP deadline", async () => {
+  const sandbox = await sandboxProvider.create(
+    { sessionId: `exit-certification-${randomUUID()}`, workdir: "/workspace" },
+    { ...process.env, OPENSANDBOX_TIMEOUT_SECONDS: "600" },
+  );
+  try {
+    const child = await sandbox.spawnDuplexProcess({
+      command: "node",
+      args: ["-e", "setTimeout(() => { process.stdout.write('DONE'); process.stderr.write('cleanup'); }, 310000)"],
+    });
+    const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    // Attach rejection handlers immediately while the exit observation runs.
+    const completed = Promise.all([child.exited, output]);
+    expect(await completed).toEqual([{ code: 0, signal: null }, ["DONE", "cleanup"]]);
+  } finally {
+    await sandbox.destroy();
+  }
+}, 420_000);
+
 function certificationManager() {
   return SandboxManager.create({ connectionConfig: {
     domain: process.env.OPENSANDBOX_DOMAIN,

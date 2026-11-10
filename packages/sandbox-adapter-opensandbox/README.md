@@ -72,6 +72,123 @@ worker/supervisor protocol remains unchanged. The lifecycle API key stays on
 the control plane and is never added to commands, container environment, or
 file uploads. Relay authentication uses a random, per-process token.
 
+Exit observation uses short authenticated `/exit` queries (204 while running,
+otherwise the actual exit code/signal), retried against that same relay identity.
+Queries have a one-second deadline and run every 250ms; three consecutive
+failures reject observation with the original cause and sandbox/port/timestamp.
+A failed query or acknowledged kill is **not** evidence of child exit. ACP
+cleanup still refuses native-state capture/deletion without confirmed exit and
+retains the transport cause, ACP session ID, phase and elapsed time on its error.
+
+Raw stdout/stderr use Undici requests with a bounded header wait and no body
+idle timeout, so a silent turn can exceed five minutes without injecting
+heartbeat bytes into the protocol. A real stream disconnect is not replayed:
+missing bytes cannot safely be reconstructed. Reverse proxies must allow idle
+streaming connections for the intended turn duration. A permanent loss of exit
+observation aborts the local stdio readers; the execution owner remains
+responsible for stopping the child. The relay retains its exit result for
+30 seconds after the child exits.
+
+## Sandbox SDK v2 (explicit composition)
+
+`@open-managed-agents/sandbox-adapter-opensandbox/v2` exports
+`createOpenSandboxV2Adapter`. This is a native lifecycle adapter, not the v1
+provider bridge. Compose it with `createSandboxPorts` from `sandbox-port-kit`
+for CAS-backed Memory Store sync, output publication and gateway substitutions.
+The existing Node `SANDBOX_PROVIDER=opensandbox` selection is **not switched**
+to this adapter yet: its composition must supply the network enforcement port
+below and use the v2 storage implementation, rather than claim native mounts.
+
+Required configuration:
+
+- `options.runtime`: explicitly `docker`, `kubernetes`, or `fast`; this declares
+  the actual server backend, it does not switch the remote server's backend.
+- `deploymentId`: stable, non-secret, unique to the configured endpoint/account.
+  Handles and refs carry it along with backend and workspace/session ownership;
+  switching any of these rejects old references before accessing the provider.
+- `network`: a deployment implementation of `OpenSandboxNetworkPort`.
+  `prepare` must arrange enforcement before allocation and return the SDK's
+  creation-time domain policy. `replace` must replace the whole effective
+  policy, including removal of old grants, CIDRs and platform hard denies.
+  The SDK's domain-only `patchEgressRules` is **not sufficient**. There is no
+  default or boolean bypass. The deployment implementation and direct-egress
+  isolation require live certification; unit doubles do not establish security.
+- `gateway` and optional `channels`: the hosts/IPs needed by the platform.
+- Fast only: `fastBase: { image, templateId }` binds the exact selected image to
+  a prebuilt Fast template. A different image is rejected, not ignored.
+
+### Credential injection selection
+
+The v2 adapter factory accepts `credentialInjection: "gateway" | "provider"`.
+Omitted means `gateway`: no native egress factory is supplied, and the existing
+configuration SDK composes its forwarder. `provider` supplies `native.egress`,
+enables `credentialProxy` at sandbox creation (including snapshot restores),
+and requires `deps.egress.secrets.read`. Fast rejects provider mode immediately.
+This is a TypeScript composition option, not a new environment variable or a
+change to the current Node default provider wiring.
+
+Provider mode explicitly gives the OpenSandbox credential proxy custody of
+plaintext credentials. OpenMA sends them only through the provider Vault API;
+sandbox environment variables contain placeholders, not secrets. Bindings use
+HTTPS-only host matching and passthrough substitution on exactly the requested
+header/body surfaces, not automatic Authorization/header injection. Network
+policy is still enforced separately.
+
+Attach/update delete the previous Vault before replacing the complete policy
+and credential set. A brief unavailable-credential window is intentional: old
+bindings must not survive a narrowing or removal. Updates reread credentials,
+including rotations with unchanged IDs. Revoke deletes the Vault and clears
+tracked placeholder environment values. Operations on one runtime are serialized
+so an in-flight attach cannot overtake revocation. SDK error payloads are not
+propagated because they can contain plaintext. A failed cleanup propagates;
+the host must destroy the sandbox, not snapshot or reuse it. Lifecycle snapshot
+and template creation also revoke provider credentials defensively before capture.
+Handles record the injection mode; changing it requires new compute.
+
+Current native-mode restrictions are explicit, never silent fallbacks:
+
+- At most one substitution per policy. The SDK does not establish how multiple
+  overlapping bindings compose; use gateway for multi-credential policies.
+- Only credentials with `expiresAt: null`. Provider bindings have no TTL field;
+  host timers cannot guarantee expiry after host loss. Use gateway for expiring
+  credentials, including OAuth tokens with an expiration timestamp.
+- Provider custody does not provide a remote execution-lease fence. Host crash
+  can leave a Vault active until cleanup or sandbox expiry. Select gateway when
+  credentials must be checked against current execution authority per request.
+- Real Docker/sidecar HTTPS trust, substitution and teardown remain to be
+  certified. Real-SDK serialization tests do not prove live MITM behavior.
+
+### Persistence and handles
+
+All backends declare `handle: "changes"`. Attach may retain an existing ID;
+restoring a snapshot allocates a new ID that the Session core must persist
+under its fence. `maxLifetimeMs: null` describes a renewable absolute lease,
+not indefinite data retention. The lease must exceed the plan's idle window.
+
+Pause first waits for a **Ready snapshot**, then pauses the original runtime.
+The original handle remains usable until provider TTL expiry; the separate
+snapshot is the fallback after attach returns `gone`. Docker/Fast pause can
+retain memory; Kubernetes pause is filesystem-only. Do not rely on portable
+snapshots preserving processes across every backend. Fast snapshots may retain
+processes: quiesce ACP and revoke egress before snapshotting. Images must include
+Node and the executables required by generic file sync and relay installation.
+
+Snapshots are not Memory Store or output mounts. Generic storage copies those
+in and writes them back under CAS/fencing; it is not continuous shared storage.
+Static deployment volumes are rejected in v2 to prevent shared host/PVC paths
+crossing Session boundaries. Templates are snapshot refs reusable within one
+workspace, not across workspaces. `discard` deletes snapshots, while `release`
+deletes compute by serialized handle. Provider throttling maps to retryable
+errors, missing compute to `gone`, and snapshot failure never stops compute.
+
+Residual lifecycle limits: an interrupted snapshot/pause or a crash before the
+host publishes its ref can leave an unreferenced snapshot; deployment snapshot
+GC is still required. Retaining the paused handle narrows but does not eliminate
+the crash window: if ref publication fails and that handle later expires, the
+host cannot recover an unrecorded ref. Snapshot retention/deletion behavior and
+restore-time policy enforcement must be certified on the selected backend.
+The adapter is opt-in pending that deployment integration and live validation.
+
 ## Lifecycle mapping
 
 OpenSandbox pause does **not** freeze `expires_at`: expiry stays absolute
@@ -181,6 +298,19 @@ variables above and run:
 ```sh
 pnpm --filter @open-managed-agents/sandbox-adapter-opensandbox test:certification
 ```
+
+For the #566 long-idle regression (310 seconds, no model required):
+
+```sh
+# Real HTTP relay + child on the local host; no OpenSandbox server needed.
+OMA_STDIO_LONG_TEST=1 pnpm --filter @open-managed-agents/sandbox-adapter-opensandbox test
+# Actual remote OpenSandbox lifecycle (connection variables required).
+OMA_OPENSANDBOX_LONG_CERTIFICATION=1 pnpm --filter @open-managed-agents/sandbox-adapter-opensandbox test
+```
+
+The local relay check does not certify OpenSandbox gateway timeouts or a full
+ACP/model/Execution run. Run the remote check and the issue's real-session
+scenario before claiming deployment acceptance.
 
 The live checks create temporary remote sandboxes and one snapshot, and delete
 them in cleanup. The snapshot check needs a server runtime with snapshot support.

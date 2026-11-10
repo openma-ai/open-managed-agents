@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import type { Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
 import { OpenSandbox, optionsFromEnvironment } from "../src/index";
 
@@ -121,6 +122,114 @@ it("terminates a sandbox child with the requested signal", async () => {
   await Promise.all([stdout, stderr]);
 });
 
+
+it("recovers exit observation after a disconnected request without treating it as process exit", async () => {
+  const { sandbox } = await fixture();
+  const realFetch = globalThis.fetch;
+  let interrupted = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    if (String(url).endsWith("/exit") && !interrupted) {
+      interrupted = true;
+      // Lose the actual HTTP observation, not the sandbox process.
+      await realFetch(url, { ...init, signal: AbortSignal.abort(new Error("exit connection lost")) });
+    }
+    return realFetch(url, init);
+  });
+  const child = await sandbox.spawnDuplexProcess({ command: process.execPath, cwd: process.cwd(), args: ["-e", "process.stdin.resume(); process.stdin.on('end', () => process.exit(7))"] });
+  const streams = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  let settled = false;
+  void child.exited.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const settledBeforeExit = settled;
+  await child.stdin.getWriter().close();
+  const outcome = await child.exited.catch(error => error);
+  await streams;
+  expect(settledBeforeExit).toBe(false);
+  expect(outcome).toEqual({ code: 7, signal: null });
+});
+
+it("keeps silent raw stdio usable beyond fetch idle deadlines without injecting heartbeat bytes", async () => {
+  const { sandbox } = await fixture();
+  const original = getGlobalDispatcher();
+  // Accelerate real Undici deadlines, respecting an explicit no-idle-timeout
+  // policy. fetch supplies 300s itself; request can explicitly opt out.
+  const dispatcher = new Agent();
+  const dispatch = dispatcher.dispatch.bind(dispatcher);
+  dispatcher.dispatch = (options, handler) => dispatch({
+    ...options, headersTimeout: 100,
+    bodyTimeout: options.bodyTimeout === 0 ? 0 : 100,
+  }, handler);
+  setGlobalDispatcher(dispatcher);
+  try {
+    const child = await sandbox.spawnDuplexProcess({ command: process.execPath, cwd: process.cwd(), args: ["-e", "process.stdin.on('data', b => { process.stdout.write(b); process.stderr.write(b); });"] });
+    const stdout = new Response(child.stdout).text().catch(error => error);
+    const stderr = new Response(child.stderr).text().catch(error => error);
+    await new Promise(resolve => setTimeout(resolve, 1_600));
+    const writer = child.stdin.getWriter();
+    await writer.write(new TextEncoder().encode("after idle"));
+    await writer.close();
+    const outcome = await child.exited.catch(error => error);
+    expect(await stdout).toBe("after idle");
+    expect(await stderr).toBe("after idle");
+    expect(outcome).toEqual({ code: 0, signal: null });
+  } finally {
+    setGlobalDispatcher(original);
+    await dispatcher.destroy();
+  }
+});
+
+it("rejects lost exit observation with its cause instead of inventing a successful exit", async () => {
+  const { sandbox } = await fixture();
+  const realFetch = globalThis.fetch;
+  const cause = new Error("relay unavailable");
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    if (String(url).endsWith("/exit")) throw cause;
+    return realFetch(url, init);
+  });
+  const child = await sandbox.spawnDuplexProcess({ command: process.execPath, cwd: process.cwd(), args: ["-e", "process.stdin.resume()"] });
+  const streams = Promise.allSettled([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  try {
+    const error = await child.exited.catch(error => error);
+    expect(error).toMatchObject({ cause });
+    expect(error.message).toContain("phase=exit_observation");
+    expect(error.message).toContain("sandbox=sb-1");
+    expect(error.message).toContain("unconfirmed");
+  } finally {
+    await child.kill("SIGKILL");
+    await streams;
+  }
+});
+
+it("does not accept malformed exit receipts as proof of process exit", async () => {
+  const { sandbox } = await fixture();
+  const realFetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    if (String(url).endsWith("/exit")) return Response.json({ code: null, signal: null });
+    return realFetch(url, init);
+  });
+  const child = await sandbox.spawnDuplexProcess({ command: process.execPath, cwd: process.cwd(), args: ["-e", "process.stdin.resume()"] });
+  const streams = Promise.allSettled([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  try {
+    await expect(child.exited).rejects.toMatchObject({ cause: { message: "Invalid OpenSandbox child exit response" } });
+  } finally {
+    await child.kill("SIGKILL");
+    await streams;
+  }
+});
+
+it.skipIf(process.env.OMA_STDIO_LONG_TEST !== "1")("keeps a real relay child silent beyond five minutes and confirms exit", async () => {
+  const { sandbox } = await fixture();
+  const child = await sandbox.spawnDuplexProcess({ command: process.execPath, cwd: process.cwd(), args: ["-e", "setTimeout(() => { process.stdout.write('DONE'); process.stderr.write('cleanup'); }, 310000)"] });
+  const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  try {
+    expect(await Promise.all([child.exited, output])).toEqual([
+      { code: 0, signal: null }, ["DONE", "cleanup"],
+    ]);
+  } finally {
+    await child.kill("SIGKILL");
+    await output.catch(() => undefined);
+  }
+}, 330_000);
 
 it("reports a failed child spawn and allows idempotent termination", async () => {
   const { sandbox } = await fixture();

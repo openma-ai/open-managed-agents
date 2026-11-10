@@ -4054,6 +4054,12 @@ importers:
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@open-managed-agents/sandbox-port-kit':
+        specifier: workspace:*
+        version: link:../sandbox-port-kit
+      undici:
+        specifier: 8.12.4
+        version: 8.12.4
     devDependencies:
       '@alibaba-group/opensandbox':
         specifier: 1.1.1

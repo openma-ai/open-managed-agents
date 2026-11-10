@@ -209,6 +209,25 @@ describe("sandbox ACP runtime", () => {
     }
   });
 
+  it("preserves the exit transport cause and ACP identity when cleanup cannot confirm exit", async () => {
+    let child!: Awaited<ReturnType<NodeSpawner["spawn"]>>;
+    let rejectExit!: (error: Error) => void;
+    const cause = new Error("exit observation disconnected", { cause: new Error("UND_ERR_HEADERS_TIMEOUT") });
+    const runtime = createAcpRuntime({ type: "local", spawner: { spawn: async spec => {
+      child = await new NodeSpawner().spawn(spec);
+      return { ...child, exited: new Promise<never>((_, reject) => { rejectExit = reject; }) };
+    } } }, { cancelGraceMs: 10 });
+    const session = await runtime.start({ agent: { command: process.execPath, args: ["-e", closeIgnoringAcpAgentSource], cwd: process.cwd() } });
+    try {
+      rejectExit(cause);
+      const error = await session.dispose().catch(error => error);
+      expect(error).toMatchObject({ cause, phase: "cleanup_failed", acpSessionId: session.acpSessionId });
+      expect(error.message).toMatch(/exit.*not confirmed/i);
+    } finally {
+      await child.kill("SIGKILL"); await child.exited;
+    }
+  });
+
   it("hard-kills an ACP child that ignores session/close during dispose", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-stuck-close-"));
     temporaryDirectories.push(workdir);
