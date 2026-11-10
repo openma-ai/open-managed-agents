@@ -135,6 +135,17 @@ export class EnvironmentAwareSessionEventDispatchRouter
     private readonly dependencies: EnvironmentAwareSessionEventDispatchRouterDependencies,
   ) {}
 
+  static forWorkspace(runtime: SessionEventDispatchPort, workFor: (workspaceId: string) => EnvironmentAwareSessionEventDispatchRouterDependencies["selfHostedWork"]): EnvironmentAwareSessionEventDispatchRouter {
+    return new EnvironmentAwareSessionEventDispatchRouter({runtime,selfHostedWork:{
+      stop: input => workFor(input.workspaceId).stop(input),
+      interruptTarget: input => {
+        const work=workFor(input.workspaceId);
+        if (!work.interruptTarget) throw new Error("Environment Work interrupt target binding is not configured");
+        return work.interruptTarget(input);
+      },
+    }});
+  }
+
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
     if (environmentExecutionAuthority(input.environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionEventsAccepted(input);

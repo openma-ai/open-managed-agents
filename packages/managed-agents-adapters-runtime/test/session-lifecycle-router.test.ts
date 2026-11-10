@@ -63,6 +63,17 @@ const managedEnvironment = {
 } satisfies Environment;
 
 describe("Environment-aware Session lifecycle router", () => {
+  it("workspace composition binds interrupt target and stop to the accepted workspace", async () => {
+    const calls:string[]=[];
+    const router=EnvironmentAwareSessionEventDispatchRouter.forWorkspace({sessionEventsAccepted:async()=>{throw Error("wrong brain");}}, workspaceId=>({
+      stop:async input=>{calls.push(`${workspaceId}:${input.workId}`);return {type:"stopped"} as never;},
+      interruptTarget:async()=>{calls.push(workspaceId+":bind");return "work_bound";}
+    }));
+    const accepted={workspaceId:"workspace_exact",session,environment:selfHostedEnvironment};
+    expect(await router.bindInterruptTarget(accepted)).toBe("work_bound");
+    await router.sessionEventsAccepted({...accepted,events:[{id:"interrupt",type:"user.interrupt",environmentWorkId:"work_bound"}] as never});
+    expect(calls).toEqual(["workspace_exact:bind","workspace_exact:work_bound"]);
+  });
   it.each([
     ["cloud","acp-sandbox","environment_work","all"],
     ["cloud","default","session_execution","egress"],
