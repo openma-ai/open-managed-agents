@@ -102,7 +102,7 @@ export function toListEnvironmentWorkQuery(
   };
 }
 
-export function toEnvironmentWorkResponse(work: EnvironmentWorkView): object {
+export function toEnvironmentWorkResponse(work: EnvironmentWorkView) {
   return {
     id: work.id,
     acknowledged_at: work.acknowledgedAt,
@@ -116,7 +116,7 @@ export function toEnvironmentWorkResponse(work: EnvironmentWorkView): object {
     state: work.state,
     stop_requested_at: work.stopRequestedAt,
     stopped_at: work.stoppedAt,
-    type: "work",
+    type: "work" as const,
   };
 }
 

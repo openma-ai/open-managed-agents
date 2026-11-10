@@ -36,6 +36,9 @@ import {
   supportsDuplexProcess,
   supportsSandboxRuntime,
   supportsSessionOutputMount,
+  type SandboxManagedProcessSpec,
+  type SandboxManagedProcessHandle,
+  type SandboxManagedProcessPort,
   type SandboxDuplexProcess,
   type SandboxDuplexProcessSpec,
   type SandboxFactoryContext,
@@ -83,6 +86,13 @@ export function sandboxSnapshotIntervalMs(value: string | undefined): number | u
   const ms = Number(value);
   if (!Number.isInteger(ms) || ms <= 0) throw new Error(`SANDBOX_SNAPSHOT_INTERVAL_MS must be a positive integer of milliseconds, got ${JSON.stringify(value)}`);
   return ms;
+}
+
+/** Existing Work claim authority; no SessionExecution lease is fabricated. */
+export interface NodeSandboxWorkAuthority {
+  attempt: SessionExecutionAttemptRef;
+  isCurrent(): Promise<boolean>;
+  token(sandbox: object | string): Promise<string>;
 }
 
 export interface NodeSessionSandboxContext {
@@ -133,6 +143,7 @@ export interface NodeSessionSandboxOptions {
       sandbox: SandboxPort;
       runtimeGeneration: string;
       executionFence?: SessionExecutionFence;
+      authorizeMemoryMutation?(): Promise<boolean>;
       signal: AbortSignal;
     }): Promise<void>;
     /** turn_end / before_stop under the execution fence: Memory write-back and outputs. */
@@ -204,6 +215,7 @@ export class NodeSessionSandboxes {
     allocationId?: string;
     runtimeGeneration?: string;
     executionFence?: SessionExecutionFence;
+    workAuthority?: NodeSandboxWorkAuthority;
   }): NodeSessionSandbox {
     const key = keyOf(input.workspaceId, input.session.id);
     const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
@@ -216,6 +228,7 @@ export class NodeSessionSandboxes {
       context,
       ...(input.runtimeGeneration === undefined ? {} : { runtimeGeneration: input.runtimeGeneration }),
       ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
+      ...(input.workAuthority === undefined ? {} : { workAuthority: input.workAuthority }),
     });
     this.current.set(key, sandbox);
     return sandbox;
@@ -288,6 +301,7 @@ export class NodeSessionSandbox implements SandboxPort {
   private readonly core: PortsSessionSandbox<SandboxPort>;
   private context: NodeSessionSandboxContext;
   private executionFence: SessionExecutionFence | undefined;
+  private workAuthority: NodeSandboxWorkAuthority | undefined;
   private runtimeGeneration = "";
   private state: SessionSandboxState | undefined;
   /** The runtime the core last opened (kept after an idle pause for probes). */
@@ -317,7 +331,7 @@ export class NodeSessionSandbox implements SandboxPort {
   ) {
     this.context = context;
     let adopting = initialState;
-    const scope = () => scopeOf(this.context);
+    const scope = () => ({ ...scopeOf(this.context), ...(this.workAuthority === undefined ? {} : { workId: this.workAuthority.attempt.executionId }) });
     // checkpoint_restore allocations are per allocation: their record stays in memory.
     const records = allocationId !== undefined ? undefined
       : options.records ?? (options.sql === undefined ? undefined : new SqlSessionSandboxRecords(options.sql));
@@ -362,7 +376,9 @@ export class NodeSessionSandbox implements SandboxPort {
               issueToken: async ({ attempt, sandbox }) => {
                 // Warm-up (no attempt): a value every gateway refuses.
                 if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
-                return options.token(attempt, this.context.session.agent.openma?.harness, sandbox);
+                return this.workAuthority !== undefined
+                  ? this.workAuthority.token(sandbox ?? this)
+                  : options.token(attempt, this.context.session.agent.openma?.harness, sandbox);
               },
               authenticate: async () => null,
               handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),
@@ -372,7 +388,12 @@ export class NodeSessionSandbox implements SandboxPort {
         });
         return { ports };
       },
-      executor: (runtime) => this.track(runtime),
+      executor: (runtime) => {
+        if (this.workAuthority !== undefined && (!("startManagedProcess" in runtime) || typeof runtime.startManagedProcess !== "function")) {
+          throw new Error("Sandbox lacks safe native management launch");
+        }
+        return this.track(runtime);
+      },
       state: {
         load: async () => {
           if (adopting !== undefined) { const warmed = await adopting; adopting = undefined; this.state ??= warmed; }
@@ -413,11 +434,17 @@ export class NodeSessionSandbox implements SandboxPort {
       egressRenewMs: null,
       keepAliveMs: options.adapter?.keepAliveMs ?? null,
       execution: () => {
+        if (this.workAuthority !== undefined) return this.workAuthority.attempt;
         const fence = this.executionFence;
         return fence === undefined ? undefined
           : { executionId: fence.executionId, attemptId: fence.attemptId, ownerId: fence.ownerId, generation: fence.generation, expiresAt: fence.expiresAt };
       },
       isCurrent: async (execution) => {
+        if (this.workAuthority !== undefined) {
+          const held = this.workAuthority.attempt;
+          return execution?.executionId === held.executionId && execution.attemptId === held.attemptId
+            && execution.ownerId === held.ownerId && execution.generation === held.generation && await this.workAuthority.isCurrent();
+        }
         if (execution === undefined) return this.executionFence === undefined;
         const fence = this.executionFence;
         return fence !== undefined && fence.attemptId === execution.attemptId && await options.isFenceActive(fence);
@@ -444,7 +471,9 @@ export class NodeSessionSandbox implements SandboxPort {
   }
 
   /** The runner's view of this Session: context, its runtime generation and the execution attempt. */
-  bind(input: { context: NodeSessionSandboxContext; runtimeGeneration?: string; executionFence?: SessionExecutionFence }): void {
+  bind(input: { context: NodeSessionSandboxContext; runtimeGeneration?: string; executionFence?: SessionExecutionFence; workAuthority?: NodeSandboxWorkAuthority }): void {
+    if (input.executionFence !== undefined && input.workAuthority !== undefined) throw new Error("Sandbox requires exactly one execution authority");
+    this.workAuthority = input.workAuthority;
     this.context = input.context;
     if (input.runtimeGeneration !== undefined) this.runtimeGeneration = input.runtimeGeneration;
     this.executionFence = input.executionFence;
@@ -488,6 +517,25 @@ export class NodeSessionSandbox implements SandboxPort {
   writeFile(path: string, content: string): Promise<string> { return this.core.writeFile(path, content); }
   writeFileBytes(path: string, bytes: Uint8Array): Promise<string> { return this.core.writeFileBytes(path, bytes); }
   startProcess(command: string) { return this.core.startProcess(command); }
+  async workToken(): Promise<string> {
+    const authority = this.workAuthority;
+    if (authority === undefined || !await authority.isCurrent()) throw new Error("Current Work claim required");
+    return authority.token(await this.core.runtime());
+  }
+  /** Management launch only; native adapter must replace env before exec. */
+  async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
+    const authority = this.workAuthority;
+    if (authority === undefined || !await authority.isCurrent()) throw new Error("Current Work claim required for management launch");
+    const runtime = await this.core.runtime();
+    if (!("startManagedProcess" in runtime) || typeof runtime.startManagedProcess !== "function") throw new Error("Sandbox lacks safe native management launch");
+    if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost before launch");
+    const handle = await (runtime as SandboxPort & SandboxManagedProcessPort).startManagedProcess(spec);
+    if (authority !== this.workAuthority || !await authority.isCurrent()) {
+      await handle.kill("SIGTERM");
+      throw new Error("Work claim lost during launch");
+    }
+    return handle;
+  }
   setEnvVars(env: Record<string, string>): Promise<void> { return this.core.setEnvVars(env); }
   spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> { return this.core.spawnDuplexProcess(spec); }
   renewActivityTimeout(): Promise<void> { return this.core.renewActivityTimeout(); }
@@ -552,6 +600,7 @@ export class NodeSessionSandbox implements SandboxPort {
         await this.options.storage.attach({
           ...this.context, sandbox: runtime, runtimeGeneration: this.runtimeGeneration, signal,
           ...(executionFence === undefined ? {} : { executionFence }),
+          ...(this.workAuthority === undefined ? {} : { authorizeMemoryMutation: () => this.workAuthority!.isCurrent() }),
         });
       },
       sync: async ({ runtime, fence, reason }) => {

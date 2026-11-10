@@ -1580,6 +1580,9 @@ importers:
       '@open-managed-agents/managed-credential-resolver':
         specifier: workspace:*
         version: link:../managed-credential-resolver
+      '@open-managed-agents/managed-runtime-host':
+        specifier: workspace:*
+        version: link:../managed-runtime-host
       '@open-managed-agents/managed-runtime-sandbox':
         specifier: workspace:*
         version: link:../managed-runtime-sandbox

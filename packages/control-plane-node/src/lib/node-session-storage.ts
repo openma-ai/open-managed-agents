@@ -26,7 +26,7 @@ export interface NodeSessionStorageDeps {
 
 export function createNodeSessionStorage(deps: NodeSessionStorageDeps): NodeSessionSandboxOptions["storage"] {
   return {
-    async attach({ workspaceId, session, sandbox, runtimeGeneration, executionFence, signal }) {
+    async attach({ workspaceId, session, sandbox, runtimeGeneration, executionFence, authorizeMemoryMutation, signal }) {
       // Shared outputs are not a live mount: hydrate canonical files into a
       // fresh sandbox before inputs are staged, so input mounts under the
       // outputs directory win and the next turn can read prior outputs.
@@ -36,7 +36,7 @@ export function createNodeSessionStorage(deps: NodeSessionStorageDeps): NodeSess
         session,
         sandbox,
         runtimeGeneration,
-        ...(executionFence === undefined ? {} : { authorizeMemoryMutation: () => deps.isFenceActive(executionFence) }),
+        ...(authorizeMemoryMutation !== undefined ? { authorizeMemoryMutation } : executionFence === undefined ? {} : { authorizeMemoryMutation: () => deps.isFenceActive(executionFence) }),
         signal,
       });
     },

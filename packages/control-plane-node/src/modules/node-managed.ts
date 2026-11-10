@@ -1283,6 +1283,7 @@ export async function createManagedNodeRuntime(
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
     managedEnvironmentWorkStore,
+    sessionSandboxes,
     managedDeploymentsRoutes,
     managedDeploymentRunsRoutes,
     managedEnvironmentsRoutes,
