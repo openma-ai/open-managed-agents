@@ -464,12 +464,18 @@ export default defineConfig({
     // across files in this suite.
     fsModuleCache: false,
     exclude: [
+      // Historical source snapshots and independent probes run explicitly.
+      "**/.validation/**",
+      "**/probe.validation/**",
       "**/node_modules/**",
       "**/.git/**",
       "**/.claude/worktrees/**",
       "**/.pnpm-store/**",
       // This is a node:test architecture suite and is run explicitly by
       // test:architecture, not inside workerd/Vitest.
+      "scripts/build-cf-work-runner.test.mjs",
+      "scripts/prepare-cf-work-runner.test.mjs",
+      "apps/agent/tests/cf-webhook-native-fetch.test.mjs",
       "scripts/provider-package-boundaries.test.mjs",
       "scripts/check-dependency-sources.test.mjs",
       "scripts/migration-compatibility.test.mjs",

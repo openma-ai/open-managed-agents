@@ -44,7 +44,7 @@ export const TEST_FILE_PATTERNS = [
   /\.e2e\.[cm]?[jt]s$/u,
 ];
 
-export const GENERATED_PATH = /(?:^|\/)(?:node_modules|dist|build|coverage|\.astro|\.git|\.next|\.turbo|\.vercel|\.wrangler)\/|^apps\/agent\/build-[^/]*\/|^\.claude\/worktrees\//u;
+export const GENERATED_PATH = /(?:^|\/)(?:node_modules|dist|build|coverage|\.validation|probe\.validation|\.astro|\.git|\.next|\.turbo|\.vercel|\.wrangler)\/|^apps\/agent\/build-[^/]*\/|^\.claude\/worktrees\//u;
 
 export function isTestFile(path) {
   return !GENERATED_PATH.test(path) && TEST_FILE_PATTERNS.some((pattern) => pattern.test(path));

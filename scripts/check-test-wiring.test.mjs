@@ -15,7 +15,7 @@ test("isTestFile covers the repository's test naming and skips generated trees",
     assert.equal(isTestFile(path), true, path);
   }
   for (const path of ["src/logger.node.ts", "src/db.integration.ts", "a/node_modules/x.test.ts", "packages/p/dist/x.test.js",
-    "apps/agent/build-1/x.test.ts", "tsconfig.test.json", "packages/p/test/helper.ts", "packages/p/test/a.typecheck.ts"]) {
+    "apps/agent/build-1/x.test.ts", ".validation/source/test/x.test.ts", "probe.validation/review/x.test.ts", "packages/p/.validation/x.test.ts", "tsconfig.test.json", "packages/p/test/helper.ts", "packages/p/test/a.typecheck.ts"]) {
     assert.equal(isTestFile(path), false, path);
   }
 });

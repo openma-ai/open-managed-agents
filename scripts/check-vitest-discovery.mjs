@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +40,15 @@ test("root Cloudflare runtime aliases stay inside the repository checkout", asyn
     [],
     `runtime aliases escape the repository checkout: ${externalAliases.join(", ")}`,
   );
+});
+
+test("root discovery excludes validation snapshots without excluding production tests", async () => {
+  const { default: config } = await import(join(repoRoot, "vitest.config.ts"));
+  const excluded = path => (config.test?.exclude ?? []).some(pattern => matchesGlob(path, pattern));
+  for (const path of [".validation/source-copy/test/copy.test.ts", "probe.validation/review/copy.test.ts", "packages/example/.validation/copy.test.ts"]) {
+    assert.equal(excluded(path), true, `validation snapshot would be collected: ${path}`);
+  }
+  assert.equal(excluded("apps/agent/tests/session-do-work-lease.test.ts"), false);
 });
 
 test("root Cloudflare test discovery excludes generated and Node-only trees", () => {
