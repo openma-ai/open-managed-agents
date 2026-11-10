@@ -115,6 +115,8 @@ export type SentSessionEvent =
     })
   | (SentEventBase & {
       type: "user.interrupt";
+      /** Internal cancellation intent, atomically persisted with accepted input. */
+      environmentWorkId?: string | null;
       sessionThreadId?: string | null;
     })
   | (SentEventBase & {

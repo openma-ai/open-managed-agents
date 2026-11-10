@@ -117,7 +117,7 @@ export class EnvironmentAwareSessionLifecycleRouter
 
 export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
   runtime: SessionEventDispatchPort;
-  selfHostedWork: Pick<EnvironmentSessionWorkEnqueuerPort, "stop">;
+  selfHostedWork: Pick<EnvironmentSessionWorkEnqueuerPort, "stop" | "interruptTarget">;
 }
 
 /**
@@ -143,19 +143,24 @@ export class EnvironmentAwareSessionEventDispatchRouter
     await this.stopAcceptedInterrupts(input);
   }
 
-  async reconcileAcceptedInterrupts(input: AcceptedSessionEvents & { acceptedAt: string }): Promise<void> {
-    if (environmentExecutionAuthority(input.environment, input.session) === "environment_work") {
-      await this.stopAcceptedInterrupts(input, input.acceptedAt);
-    }
+  async bindInterruptTarget(input: Omit<AcceptedSessionEvents, "events">): Promise<string | null> {
+    if (environmentExecutionAuthority(input.environment, input.session) !== "environment_work") return null;
+    if (!this.dependencies.selfHostedWork.interruptTarget) throw new Error("Environment Work interrupt target binding is not configured");
+    return this.dependencies.selfHostedWork.interruptTarget(input);
   }
 
-  private async stopAcceptedInterrupts(input: AcceptedSessionEvents, createdAtOrBefore?: string): Promise<void> {
-    if (input.events.some(event => event.type === "user.interrupt")) {
+  async reconcileAcceptedInterrupts(input: AcceptedSessionEvents): Promise<void> {
+    if (environmentExecutionAuthority(input.environment, input.session) === "environment_work") await this.stopAcceptedInterrupts(input);
+  }
+
+  private async stopAcceptedInterrupts(input: AcceptedSessionEvents): Promise<void> {
+    const targets = new Set(input.events.flatMap(event => event.type === "user.interrupt" && event.environmentWorkId != null ? [event.environmentWorkId] : []));
+    for (const workId of targets) {
       const result = await this.dependencies.selfHostedWork.stop({
         workspaceId: input.workspaceId,
         session: input.session,
         reason: "interrupted",
-        ...(createdAtOrBefore === undefined ? {} : { createdAtOrBefore }),
+        workId,
       });
       if (result.type === "conflict") throw new Error(result.message);
     }

@@ -95,6 +95,12 @@ export class EnvironmentWorkEnqueuerService
     return { type: "queued", work: inserted.work };
   }
 
+  async interruptTarget(input: { workspaceId: string; session: import("../domain/session").Session }): Promise<string | null> {
+    if (input.workspaceId !== this.dependencies.workspaceId) throw new Error("Environment Work workspace mismatch");
+    const current = await this.dependencies.store.findActiveSession({ workspaceId: input.workspaceId, sessionId: input.session.id });
+    return current?.work.environmentId === input.session.environmentId ? current.work.id : null;
+  }
+
   async stop(
     input: StopEnvironmentSessionWork,
   ): Promise<StopEnvironmentSessionWorkResult> {
@@ -106,14 +112,14 @@ export class EnvironmentWorkEnqueuerService
     }
     // ACK/reclaim/heartbeat share this revision. Re-read after a lost CAS,
     // but never follow a different Work created while the old one settles.
-    let targetWorkId: string | undefined;
+    if (input.workId === null) return { type: "not_found" };
+    let targetWorkId: string | undefined = input.workId;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const current = await this.dependencies.store.findActiveSession({
         workspaceId: this.dependencies.workspaceId,
         sessionId: input.session.id,
       });
-      if (current === null || (targetWorkId !== undefined && current.work.id !== targetWorkId)
-        || (input.createdAtOrBefore !== undefined && current.work.createdAt > input.createdAtOrBefore)) return { type: "not_found" };
+      if (current === null || (targetWorkId !== undefined && current.work.id !== targetWorkId)) return { type: "not_found" };
       targetWorkId = current.work.id;
       if (
         current.work.data.type !== "session" ||

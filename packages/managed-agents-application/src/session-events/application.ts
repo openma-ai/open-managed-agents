@@ -40,6 +40,7 @@ export { sessionInputIdentityPrefix };
 function inputPayload(event: SentSessionEvent): string {
   const { id: _id, processedAt: _time, deferredUntilToolResults: _deferred, continuationToolUseIds: _continuation, cancelled_at_ms: _cancelled, ...body } = event;
   if ("outcomeId" in body) delete (body as {outcomeId?: string}).outcomeId;
+  if ("environmentWorkId" in body) delete body.environmentWorkId;
   const normalize = (value: unknown): unknown => Array.isArray(value) ? value.map(normalize)
     : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, normalize(child)])) : value;
   return JSON.stringify(normalize(body));
@@ -260,12 +261,10 @@ export class SessionEventsApplicationService
           const accepted = events.map(event => byId.get(event.id)! as SentSessionEvent);
           const interrupts = accepted.filter(event => event.type === "user.interrupt");
           if (interrupts.length > 0 && this.dependencies.dispatch.reconcileAcceptedInterrupts) {
-            const times = interrupts.map(event => sessionEventSortTime(event));
-            if (times.some(time => time === undefined)) throw new Error("Accepted interrupt recovery requires its canonical acceptance time");
             await this.dependencies.dispatch.reconcileAcceptedInterrupts({
               workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId,
               session: execution.session, environment: execution.environment,
-              events: interrupts, acceptedAt: (times as string[]).sort().at(-1)!,
+              events: interrupts,
             });
           }
           return { type: "accepted", events: accepted };
@@ -386,14 +385,20 @@ export class SessionEventsApplicationService
           ? { ...event, processedAt: acceptedAt } as SentSessionEvent
           : event)
         : acceptedEvents;
+      // Persist the exact cancellation target with the accepted input.
+      const target = accepted.some(event => event.type === "user.interrupt") && this.dependencies.dispatch.bindInterruptTarget
+        ? await this.dependencies.dispatch.bindInterruptTarget({ workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId, session: execution.session, environment: execution.environment })
+        : undefined;
+      const bind = (event: SentSessionEvent): SentSessionEvent => event.type === "user.interrupt" && target !== undefined ? { ...event, environmentWorkId: target } : event;
+      const bound = accepted.map(bind);
       const appended = await this.dependencies.store.append({
         workspaceId: this.dependencies.workspaceId,
         sessionId: command.sessionId,
         expectedRevision: execution.revision,
-        events: accepted,
-        nextSession: applyAcceptedEvents(execution.session, accepted, acceptedAt),
+        events: bound,
+        nextSession: applyAcceptedEvents(execution.session, bound, acceptedAt),
         ...(replaceEvents.length ? { replaceEvents } : {}),
-        ...(executionEvents === undefined ? {} : { executionEvents }),
+        ...(executionEvents === undefined ? {} : { executionEvents: executionEvents.map(bind) }),
       });
       if (appended.type === "not_found") return { type: "not_found" };
       if (appended.type === "revision_conflict") continue;
@@ -403,7 +408,7 @@ export class SessionEventsApplicationService
         sessionId: command.sessionId,
         session: appended.session,
         environment: execution.environment,
-        events: executionEvents ?? appended.events,
+        events: executionEvents?.map(bind) ?? appended.events,
       });
       return { type: "accepted", events: appended.events };
     }
