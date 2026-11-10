@@ -83,6 +83,12 @@ const LEASE_MS = IDLE_MS + SANDBOX_LEASE_MARGIN_MS;
 assertLeaseCoversIdle("SANDBOX_ADAPTER=e2b", LEASE_MS, IDLE_MS);
 const STATE_KEY = "e2b_sandbox_state";
 
+export interface E2BWorkAuthority {
+  attempt: SessionExecutionAttemptRef;
+  isCurrent(): Promise<boolean>;
+  token(sandbox: object | string): Promise<string>;
+}
+
 export interface E2BSessionSandboxOptions {
   warn?(message: string): void;
   leaseMs?: number;
@@ -94,6 +100,7 @@ export interface E2BSessionSandboxOptions {
   now(): number;
   /** The Session's current execution attempt; omitted = egress never rebinds on it. */
   fence?(): SandboxExecutionFence | undefined;
+  workAuthority?: E2BWorkAuthority;
   /** The host's idle timer (SessionDO alarm); omitted = never paused. */
   idle?: SessionSandboxIdleTimer;
 }
@@ -118,7 +125,11 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       // The E2B timeout is renewed at exec boundaries inside an execution only.
       keepAliveMs: Math.floor((options.leaseMs ?? LEASE_MS) / 3),
       ...(options.idle === undefined ? {} : { idle: options.idle }),
-      ...(options.fence === undefined ? {} : {
+      ...(options.workAuthority === undefined ? {} : {
+        execution: () => options.workAuthority!.attempt,
+        isCurrent: async (execution) => execution?.attemptId === options.workAuthority!.attempt.attemptId && await options.workAuthority!.isCurrent(),
+      }),
+      ...(options.workAuthority !== undefined || options.fence === undefined ? {} : {
         execution: () => options.fence!(),
         isCurrent: async (execution) => sandboxExecutionFenceKey(options.fence!()) === sandboxExecutionFenceKey(execution),
       }),
@@ -181,6 +192,7 @@ export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStora
  * the variable names. The e2b SDK is imported only when a sandbox opens. */
 export function createE2BSessionSandbox(input: {
   env: E2BSandboxEnv;
+  workAuthority?: E2BWorkAuthority;
   warn?(message: string): void;
   storage: SessionSandboxStateStorage;
   scope(): RuntimeResourceScope;
@@ -213,13 +225,15 @@ export function createE2BSessionSandbox(input: {
   return new E2BSessionSandbox({
     warn: input.warn, leaseMs,
     async compose() {
+      if (input.workAuthority && (input.fence() !== undefined || !await input.workAuthority.isCurrent())) throw new Error("Work fence lost or mixed with SessionExecution");
       const sdk = await loadE2BModule();
       const adapter = createE2BV2Adapter({
         sdk,
         connection: e2bConnection(env),
         leaseMs,
         maxLifetimeMs,
-        user: "root",
+        user: "oma-worker",
+        managedBootstrap: {},
         ...(storage.kind === "native"
           ? { setup: E2B_SANDBOX_SETUP, channels: [new URL(env.R2_ENDPOINT!).hostname], objectStorage: storage.objectStorage }
           : { setup: E2B_SANDBOX_DIRECTORIES }),
@@ -245,6 +259,7 @@ export function createE2BSessionSandbox(input: {
           authorize: async () => true,
         },
         egress: {
+          ...(input.workAuthority === undefined ? {} : { channels: async () => [new URL(env.PUBLIC_BASE_URL!).hostname] }),
           gateway: {
             // The relay calls <endpoint>/v1/oma/egress/{resolve,forward}: the
             // control plane's existing ingress (apps/main), which verifies the
@@ -253,7 +268,7 @@ export function createE2BSessionSandbox(input: {
             issueToken: async ({ attempt, sandbox }) => {
               // Warm-up (no attempt): a value the gateway always refuses.
               if (attempt === null) return UNFENCED_SANDBOX_TOKEN;
-              return input.relayToken(attempt, sandbox);
+              return input.workAuthority !== undefined ? input.workAuthority.token(sandbox ?? {}) : input.relayToken(attempt, sandbox);
             },
             authenticate: async () => null,
             handle: async () => new Response(`Credential egress is served by the control plane at ${EGRESS_RELAY_PATH}`, { status: 404 }),
@@ -279,6 +294,7 @@ export function createE2BSessionSandbox(input: {
     },
     now: Date.now,
     fence: input.fence,
+    workAuthority: input.workAuthority,
     ...(input.idleTimer === undefined ? {} : { idle: { pauseMs: idleMs, ...input.idleTimer } }),
   });
 }
