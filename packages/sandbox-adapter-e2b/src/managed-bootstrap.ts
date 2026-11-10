@@ -106,7 +106,7 @@ export async function restoreE2BManagedProcess(sandbox: E2BSandboxLike, options:
   if (!sandbox.sandboxId || locator.sandboxId !== sandbox.sandboxId) throw new Error("Management locator belongs to another sandbox");
   const identity = checkedIdentity(locator.identity);
   const request = await managementRequest(sandbox, options);
-  const body = { target: locator.id, epoch: locator.epoch, identity };
+  const body = { target: locator.id, epoch: locator.epoch, identity, requireBound: true };
   const getStatus = async () => {
     const result = await request({ ...body, op: "status" });
     if (result.status !== "running" && result.status !== "exited") throw new Error("Invalid management status");

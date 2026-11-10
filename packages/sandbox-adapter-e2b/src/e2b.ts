@@ -195,6 +195,8 @@ async function waitForSandboxReady(
 export class E2BSandboxExecutor
   implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort, SandboxManagedProcessPort {
   private managedClosed = false;
+  private managedDestroyed = false;
+  private readonly managedRecovery = new Set<Promise<unknown>>();
   private readonly managedStarts = new Set<Promise<SandboxManagedProcessHandle>>();
   private readonly managedBootstrap?: E2BManagedBootstrapOptions;
   private envVars: Record<string, string> = {};
@@ -381,7 +383,11 @@ export class E2BSandboxExecutor
     if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
     const starting = startE2BManagedProcess(this.sandbox, this.managedBootstrap, spec, identity);
     this.managedStarts.add(starting);
-    try { return await starting; }
+    try {
+      const handle = await starting;
+      if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+      return handle;
+    }
     catch (error) {
       // A failed acknowledgement may hide a dispatched launch. Fail closed until destroy.
       if ((error as { outcome?: string }).outcome === "unknown") this.managedClosed = true;
@@ -389,14 +395,27 @@ export class E2BSandboxExecutor
     } finally { this.managedStarts.delete(starting); }
   }
 
+  private async recoverManaged<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+    const pending = operation();
+    this.managedRecovery.add(pending);
+    try {
+      const value = await pending;
+      if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+      return value;
+    } finally { this.managedRecovery.delete(pending); }
+  }
+
   async inspectManagedProcessSlot(): Promise<E2BManagedLocator> {
+    if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
     if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
-    return inspectE2BManagedSlot(this.sandbox, this.managedBootstrap);
+    return this.recoverManaged(() => inspectE2BManagedSlot(this.sandbox, this.managedBootstrap!));
   }
 
   async restoreManagedProcess(locator: E2BManagedLocator): Promise<SandboxManagedProcessHandle> {
+    if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
     if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
-    return restoreE2BManagedProcess(this.sandbox, this.managedBootstrap, locator);
+    return this.recoverManaged(() => restoreE2BManagedProcess(this.sandbox, this.managedBootstrap!, locator));
   }
 
   async startProcess(command: string): Promise<ProcessHandle | null> {
@@ -713,8 +732,9 @@ export class E2BSandboxExecutor
   }
 
   async destroy(): Promise<void> {
+    this.managedDestroyed = true;
     this.managedClosed = true;
-    await Promise.allSettled(this.managedStarts);
+    await Promise.allSettled([...this.managedStarts, ...this.managedRecovery]);
     try {
       await this.sandbox.kill();
     } catch (err) {
