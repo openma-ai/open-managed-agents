@@ -17,12 +17,18 @@ function translator() {
   const update = (u: Record<string, unknown>) =>
     t.consume({ type: "session.event", event: { sessionId: "s", update: u } } as never);
   const result = () => events.find((e) => e.type === "agent.tool_result")?.content;
-  return { update, result };
+  return { update, result, events };
 }
 
 const call = { sessionUpdate: "tool_call", toolCallId: "t1", title: "ls", kind: "execute", rawInput: { command: "ls" } };
 
 describe("AcpTranslator tool output", () => {
+  it("preserves the canonical failed-tool status from the shared projector", async () => {
+    const { update, events } = translator();
+    await update(call);
+    await update({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "failed", rawOutput: "failed output" });
+    expect(events.find(event => event.type === "agent.tool_result")).toMatchObject({tool_use_id:"t1",content:"failed output",is_error:true});
+  });
   it("keeps terminal output sent before the status update", async () => {
     const { update, result } = translator();
     await update(call);

@@ -25,6 +25,7 @@
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/session-subagents": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
+    "@openma/common": "^0.13.1",
     "ai": "^7.0.159",
     "fflate": "^0.8.2",
     "nanoid": "^5.1.0",
