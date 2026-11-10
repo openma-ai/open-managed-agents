@@ -1,3 +1,4 @@
+import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/installed-harnesses";
 import { createExecutionChannelsHttpResolver } from "./execution-channels-http.js";
 import {
   resolveAcpRelease, prepareAcpRelease, validateAcpRelease, acpReleaseMatchesSource,
@@ -588,45 +589,6 @@ function parseHarnessSources(raw: string | undefined, variable: string): Record<
   } catch (error) {
     throw new TypeError(`${variable}: ${error instanceof Error ? error.message : "invalid release sources"}`);
   }
-}
-
-interface InstalledAcpHarness {
-  id: string;
-  version: string;
-  command: string;
-  args?: string[];
-}
-
-/** Image-owned inventory, distinct from the requested harness selection. */
-function parseInstalledHarnesses(raw: string | undefined): InstalledAcpHarness[] | null {
-  if (raw === undefined) return null;
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new TypeError("OPENMA_ACP_HARNESSES must be a JSON array");
-  }
-  if (!Array.isArray(value)) throw new TypeError("OPENMA_ACP_HARNESSES must be a JSON array");
-  const seen = new Set<string>();
-  return value.map((entry: unknown) => {
-    if (!isRecord(entry)
-      || !isNonEmptyString(entry.id) || entry.id.trim() !== entry.id
-      || !isNonEmptyString(entry.version) || entry.version.trim() !== entry.version
-      || !isNonEmptyString(entry.command) || !posix.isAbsolute(entry.command)
-      || (entry.args !== undefined && (!Array.isArray(entry.args)
-        || entry.args.some((arg: unknown) => typeof arg !== "string")))) {
-      throw new TypeError("OPENMA_ACP_HARNESSES entries require id, version, absolute command and optional string args");
-    }
-    const key = JSON.stringify([entry.id, entry.version]);
-    if (seen.has(key)) throw new TypeError(`OPENMA_ACP_HARNESSES duplicates ${entry.id}@${entry.version}`);
-    seen.add(key);
-    return {
-      id: entry.id,
-      version: entry.version,
-      command: entry.command,
-      ...(entry.args === undefined ? {} : { args: [...entry.args] as string[] }),
-    };
-  });
 }
 
 function defaultAgentResolver(agentId: string): AcpStatefulAgentSpec | null {

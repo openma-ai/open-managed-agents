@@ -13,6 +13,7 @@
     "./native-state": "./src/native-state.ts",
     "./sandbox-agent": "./src/sandbox-agent.ts",
     "./registry-pins": "./src/acp-registry-pins.ts",
+    "./installed-harnesses": "./src/installed-harnesses.ts",
     "./inference-config": "./src/inference/index.ts",
     "./skill-cache": "./src/skill-cache.ts",
     "./skill-package": "./src/skill-package.ts"
