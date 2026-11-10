@@ -165,7 +165,7 @@ jobs:
 
       - name: Setup pnpm
         # No version pin — reads `packageManager` from root package.json.
-        uses: pnpm/action-setup@v6.1.0
+        uses: pnpm/action-setup@v6.1.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -262,7 +262,7 @@ jobs:
 
       - name: Setup pnpm
         # No version pin — reads `packageManager` from root package.json.
-        uses: pnpm/action-setup@v6.1.0
+        uses: pnpm/action-setup@v6.1.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
