@@ -46,6 +46,8 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type {
   ProcessHandle,
+  SandboxManagedProcessSpec,
+  SandboxManagedProcessHandle,
   SandboxCheckpointHandle,
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
@@ -241,6 +243,23 @@ export class LocalSubprocessSandbox
     this.processes.set(id, proc);
     child.on("close", () => this.processes.delete(id));
     return proc;
+  }
+
+  async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
+    if (!isAbsolute(spec.command) || spec.command.includes("\0")) throw new TypeError("Managed process requires an absolute executable");
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(spec.env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Invalid managed process environment");
+      env[key] = value;
+    }
+    if (spec.args?.some(value => typeof value !== "string" || value.includes("\0"))) throw new TypeError("Invalid managed process argv");
+    const child = spawn(spec.command, [...(spec.args ?? [])], {cwd:spec.cwd ? this.resolvePath(spec.cwd) : this.workdir, env, stdio:"ignore", detached:false});
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    const id = "managed_" + child.pid + "_" + Date.now();
+    const proc = new BackgroundProcess(id, child);
+    this.processes.set(id, proc);
+    child.once("close", () => this.processes.delete(id));
+    return {id, pid:child.pid!, kill:signal=>proc.kill(signal), getStatus:()=>proc.getStatus()};
   }
 
   async spawnDuplexProcess(

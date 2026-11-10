@@ -1,6 +1,9 @@
 export { DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe, workspaceRootOf } from "./ports";
 export type {
   ProcessHandle,
+  SandboxManagedProcessSpec,
+  SandboxManagedProcessHandle,
+  SandboxManagedProcessPort,
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
   SandboxDuplexProcessSpec,
