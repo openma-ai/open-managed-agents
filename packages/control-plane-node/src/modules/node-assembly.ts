@@ -69,7 +69,7 @@ async function buildNodeControlPlane(
   const {
     config, processMode, logger, metrics, backendDescription, platformRootSecret, sql,
     evalsService, kv,
-    memoryService, managedSessionExecutionWorker, sharedSessionOutputs,
+    memoryService, managedSessionExecutionWorker, managedEnvironmentWorkWorker, sharedSessionOutputs,
   } = runtime;
   setDbBoundaryLogger((record) => {
     const level = record.outcome === "error" ? "error" : record.retryCount > 0 ? "warn" : "info";
@@ -94,6 +94,7 @@ async function buildNodeControlPlane(
   disposables.add("scheduler", () => scheduler.stop());
   // Registered last so it stops first: it drives the Session compositions above.
   disposables.add("managed_session_execution_worker", () => managedSessionExecutionWorker.stop());
+  disposables.add("managed_environment_work_worker", () => managedEnvironmentWorkWorker.stop());
 
   const shutdownNodeApp = async (signal = "dispose") => {
     logger.info({ op: "main-node.shutdown", signal }, `received ${signal}, shutting down`);
@@ -119,6 +120,7 @@ async function buildNodeControlPlane(
       // Start the execution poller only after every runtime dependency above
       // (Managed Memory/Skill applications included) has initialized.
       managedSessionExecutionWorker.start();
+      await managedEnvironmentWorkWorker.start();
       await scheduler.start();
       logger.info({ op: "main-node.scheduler.started" }, "scheduler started");
     },

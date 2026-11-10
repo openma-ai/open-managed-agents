@@ -112,6 +112,44 @@ async function fixture() {
 }
 
 describe("self-hosted sandbox token follows the Environment Work claim", () => {
+  it("Node's shared holder issues against Work, reuses one physical sandbox, and rotates only on replacement or reclaim", async () => {
+    const f = await fixture();
+    const first = await f.claim();
+    const claim = { workspaceId, environmentId, sessionId, workId, generation: first };
+    const token = await f.capabilities.issueWork(claim, "acp-sandbox", "box-a");
+    expect(await f.capabilities.issueWork(claim, "acp-sandbox", "box-a")).toBe(token);
+    await f.ack();
+    expect(await f.status(token)).toBe(200);
+    await expect(f.capabilities.issueWork(claim, null, "box-a")).rejects.toThrow(/scope/);
+    const replacement = await f.capabilities.issueWork(claim, "acp-sandbox", "box-b");
+    expect(replacement).not.toBe(token);
+    expect(await f.status(token)).toBe(401);
+    expect(await f.status(replacement)).toBe(200);
+    const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_environment_work WHERE id = ?").bind(workId).first<{sandbox_token_hashes:string}>();
+    expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+    f.clock.now += 90_001;
+    const next = await f.claim();
+    await expect(f.capabilities.issueWork(claim, "acp-sandbox", "box-b")).rejects.toThrow(/stale/);
+    const current = await f.capabilities.issueWork({ ...claim, generation: next }, "acp-sandbox", "box-b");
+    await f.ack();
+    expect(await f.status(current)).toBe(200);
+    expect(await f.status(replacement)).toBe(401);
+    expect(await f.sql.prepare("SELECT COUNT(*) AS count FROM managed_session_executions").first()).toEqual({count:0});
+  });
+  it("a rebuilt host revokes the old holder and a cached delivery cannot revive its hash", async () => {
+    const f = await fixture();
+    const generation = await f.claim();
+    const claim = { workspaceId, environmentId, sessionId, workId, generation };
+    const old = await f.capabilities.issueWork(claim, "acp-sandbox", "box-a");
+    await f.ack();
+    const rebuilt = createNodeManagedAcpCapabilities({ gatewayBaseUrl: "https://service.test", now: () => new Date(f.clock.now), sql: f.sql });
+    const current = await rebuilt.issueWork(claim, "acp-sandbox", "box-a");
+    expect(current).not.toBe(old);
+    await expect(f.capabilities.issueWork(claim, "acp-sandbox", "box-a")).rejects.toThrow(/stale/);
+    expect(await f.status(old)).toBe(401);
+    expect(await f.status(current)).toBe(200);
+  });
+
   it("verifies only once acknowledged and survives heartbeats inside the lease", async () => {
     const f = await fixture();
     const generation = await f.claim();

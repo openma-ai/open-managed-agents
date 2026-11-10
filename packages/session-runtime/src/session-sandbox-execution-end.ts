@@ -54,7 +54,7 @@ export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<vo
   // A persisted handle is discovery, not ownership by this attempt. Failed
   // opens already roll back their own resources; never adopt a winner here.
   if (open === null) return;
-  state.current = null;
+  // Retain the local owner until physical release confirms cleanup.
   state.lost = false;
   state.refreshError = null;
   if (open !== null) await revokeEgress(state, open, "failed");
@@ -62,18 +62,26 @@ export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<vo
   const recorded = recordedHandle(saved);
   state.dirty = false;
   // The record names another sandbox: its writer holds it; only ours goes.
-  if (open !== null && !sameHandle(recorded, open.handle)) {
+  if (recorded !== undefined && !sameHandle(recorded, open.handle)) {
     await state.releaseOwn(open.handle);
+    state.current = null;
     return;
   }
   // Forget the handle first; release only once the record no longer names it.
   if (recorded !== undefined && await state.apply(saved, { type: "lose" }) === null) {
     if (open !== null) await state.releaseOwn(open.handle);
+    state.current = null;
     return;
   }
   const handle = open?.handle ?? recorded;
   if (handle !== undefined) {
-    await ports.sandbox.release({ scope, handle }).catch((error) => state.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`));
+    await ports.sandbox.release({ scope, handle }).catch((error) => {
+      // Managed cleanup is unconfirmed, not a completed release. The same
+      // local owner remains available to retry, even after the lose CAS.
+      if ((error as { code?: unknown } | null)?.code === "MANAGED_PROCESS_CLEANUP_FAILED") throw error;
+      state.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
+    });
+    state.current = null;
     await state.retryDiscards();
   }
 }

@@ -727,13 +727,7 @@ export async function createManagedNodeRuntime(
     environments: nodeManagedEnvironments,
     lifecycle: managedSessionLifecycle,
     runtime: managedSessionRuntime,
-    eventDispatch: new EnvironmentAwareSessionEventDispatchRouter({
-      runtime: managedSessionRuntime,
-      selfHostedWork: {
-        stop: input => managedEnvironmentWorkEnqueuerFor(input.workspaceId).stop(input),
-        interruptTarget: input => managedEnvironmentWorkEnqueuerFor(input.workspaceId).interruptTarget!(input),
-      },
-    }),
+    eventDispatch: EnvironmentAwareSessionEventDispatchRouter.forWorkspace(managedSessionRuntime, managedEnvironmentWorkEnqueuerFor),
     eventStream: new EnvironmentAwareSessionEventStreamRouter({
       environments: nodeManagedEnvironments,
       runtime: managedSessionRuntimeStream ?? managedSessionRuntime,
@@ -1287,6 +1281,7 @@ export async function createManagedNodeRuntime(
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
     managedEnvironmentWorkStore,
+    sessionSandboxes,
     managedDeploymentsRoutes,
     managedDeploymentRunsRoutes,
     managedEnvironmentsRoutes,

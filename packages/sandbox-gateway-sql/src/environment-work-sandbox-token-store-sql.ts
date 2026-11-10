@@ -17,6 +17,9 @@ import { entries, replacementTokenHashes, sessionOf, type SessionRow } from "./s
 
 const REPLACE_RETRIES = 8;
 const ATTEMPT_PREFIX = "environment-work-claim:";
+const HELD_CLAIM = `workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_generation = ?
+              AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > ?
+              AND state IN ('queued', 'starting', 'active')`;
 
 /** The claim the store keys a token to: (workspace, environment, Session, Work, claim_generation). */
 export interface EnvironmentWorkTokenClaim {
@@ -56,8 +59,17 @@ interface FoundRow extends SessionRow {
   claim_at: number | string | null; heartbeat_ttl_seconds: number | string | null; sandbox_token_hashes: string | null;
 }
 
-export function createSqlEnvironmentWorkSandboxTokenStore(sql: SqlClient): SandboxTokenStore {
+export function createSqlEnvironmentWorkSandboxTokenStore(sql: SqlClient): SandboxTokenStore & {
+  isCurrentDelivery(input: { claim: EnvironmentWorkTokenClaim; tokenSha256: string; scope: "all" | "egress"; nowMs: number }): Promise<boolean>;
+} {
   return {
+    /** Bootstrap may precede ACK. Read-only: never revive a replaced hash. */
+    async isCurrentDelivery({ claim, tokenSha256, scope, nowMs }) {
+      const row = await sql.prepare(
+        `SELECT sandbox_token_hashes FROM managed_environment_work WHERE ${HELD_CLAIM}`
+      ).bind(claim.workspaceId, claim.environmentId, claim.workId, claim.sessionId, claim.generation, nowMs).first<{ sandbox_token_hashes: string | null }>();
+      return row !== null && entries(row.sandbox_token_hashes).some(entry => entry.hash === tokenSha256 && entry.scope === scope);
+    },
     // One statement: Session row + its held Work claim holding the hash.
     async find({ sessionId, tokenSha256 }) {
       const row = await sql.prepare(
@@ -101,9 +113,7 @@ export function createSqlEnvironmentWorkSandboxTokenStore(sql: SqlClient): Sandb
     async replaceTokenHash({ fence, tokenSha256, scope, nowMs }) {
       const claim = claimOf(fence);
       if (claim === null) return "stale";
-      const held = `workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_generation = ?
-              AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > ?
-              AND state IN ('queued', 'starting', 'active')`;
+      const held = HELD_CLAIM;
       const heldParameters = [claim.workspaceId, claim.environmentId, claim.workId, claim.sessionId, claim.generation, nowMs];
       for (let attempt = 0; attempt < REPLACE_RETRIES; attempt++) {
         const current = await sql.prepare(`SELECT sandbox_token_hashes FROM managed_environment_work WHERE ${held}`)

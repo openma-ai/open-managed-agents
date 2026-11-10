@@ -10,13 +10,24 @@ import type {
 import { createSandboxPorts } from "../src/create-sandbox-ports";
 import { SandboxAssemblyError, type SandboxPortDeps, type SandboxVendorPort } from "../src/ports";
 import { createSyncStorage, OUTPUTS_SEEDED_MARKER } from "../src/sync-storage";
-import { fromV1SandboxProvider, v1Vendor } from "../src/v1-bridge";
+import { fromV1SandboxFactory, fromV1SandboxProvider, v1Vendor } from "../src/v1-bridge";
 
 const scope = { workspaceId: "ws", environmentId: "env", sessionId: "sess", workId: "work" };
 const fence = { ...scope, ownerId: "owner", generation: 1, token: "t", expiresAt: "2030-01-01T00:00:00.000Z" };
 const outputs = { bindingId: "out", mountPath: "/mnt/session/outputs" as const };
 const signal = new AbortController().signal;
 const plan = { from: { image: "img@sha256:1" }, egress: null, stores: [], outputs, idleMs: 60_000, labels: { workspaceId: "ws", sessionId: "sess" } };
+
+it("factory release retains its runtime after cleanup rejection so release can retry",async()=>{
+ let clean=false;let attempts=0;const failure=new Error("exit unconfirmed");
+ const runtime:SandboxPort={exec:async()=>"",readFile:async()=>"",writeFile:async()=>"",destroy:async()=>{attempts++;if(!clean)throw failure;}};
+ const held=new Map<string,SandboxPort>();const adapter=fromV1SandboxFactory({name:"test",create:async()=>runtime,held});
+ const acquired=await adapter.lifecycle.acquire({scope,plan,signal});if(acquired==="gone")throw new Error("factory acquisition unexpectedly gone");const input={scope,handle:acquired.handle};
+ await expect(adapter.lifecycle.release(input)).rejects.toBe(failure);
+ expect(held.get(acquired.handle.runtimeId)).toBe(runtime);
+ clean=true;await adapter.lifecycle.release(input);expect(attempts).toBe(2);expect(held.size).toBe(0);
+ await adapter.lifecycle.release(input);expect(attempts).toBe(2);
+});
 
 interface Box { files: Map<string, Uint8Array>; commands: string[] }
 

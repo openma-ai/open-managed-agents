@@ -74,6 +74,47 @@ the shared core recreation path with a warning, preserving main behaviour.
 No provider-name branches are added to the core. This limitation does not
 apply to a deployment supplying a full v2 adapter or a reattachable provider.
 
+## Implemented recovery entry point (2026-11-10 integration)
+
+Acquisition is centralized in `packages/session-runtime/src/session-sandbox-open.ts`:
+`openSandbox → start → startNew → firstCreate`. Node callers enter through
+`NodeSessionSandbox.open` in `packages/control-plane-node/src/lib/node-session-sandbox.ts`;
+provider attach/wake/resume stays behind `SandboxLifecyclePort`. There is no
+parallel dispatcher recovery policy or second getSandbox authority.
+
+Current order: persisted physical handle (attach wakes paused compute), recorded
+self pause point, host/record Session snapshot, then the configured Environment
+preparation path. An explicit snapshot `gone` reaches the final fallback; an
+exception is not evidence of absence. Classified retryable attach/self-resume
+errors receive at most three calls and two backoffs of at most one second, with
+fence checks. Unknown errors or exhausted retries do not retire the original
+allocation. Retry count/backoff bounds do not bound provider transport duration.
+
+`firstCreate` uses `SessionEnvironmentCache.acquire` when composed. Node
+`NodeEnvironmentCache.forSession` (`lib/environment-cache.ts`) keys this cache
+by workspace, image and Environment setup. A hit starts the prepared Environment
+snapshot. A miss/expired/deleted entry starts the configured image, reruns setup,
+and only successful preparation may publish a cache. The existing Node prepare
+path in `modules/node-managed.ts` installs Environment packages then prepares
+Session inputs; setup failure does not establish agent readiness. Cache builds
+are best effort/asynchronous, not guaranteed complete at acquisition return.
+
+Prepared-base fallback is **not full Session workspace restoration**. It emits
+a lost-changes warning, does not mark Session-snapshot restoration, and does not
+invent an agent-native completed-turn watermark. Canonical context recovery and
+unknown-side-effect verification remain required; fallback is not authorization
+to replay completed or unknown side effects.
+
+Current limitations: native Session CAS holds `latestSnapshot` and `pauseRef`,
+not ordered retained history. Replaced snapshots enter `pendingDiscards` and
+are deleted. Node separately retains timestamped tar history in
+`workspace_backups`, but this native lifecycle path does not enumerate/restore
+it. Latest-to-oldest retained Session snapshot fallback is **not yet supported**
+here; no synthetic history index is implied. Cross-host managed-worker discovery
+is distinct from persisted physical-handle recovery. A busy OS lock without an
+exact trusted locator fails safely; it never authorizes guessing a PID or
+replacing the physical sandbox.
+
 ## Decision
 
 ### 1. Provisioning starts at Session create

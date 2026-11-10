@@ -94,6 +94,7 @@ export interface E2BV2AdapterOptions {
    * mountSessionOutputs) for compositions whose own storage Port calls
    * them (the Node control plane). Omitted = those calls fail. */
   memoryBucket?: E2BSandboxOptions["memoryBucket"];
+  managedBootstrap?: E2BSandboxOptions["managedBootstrap"];
 }
 
 /** The Session scope storage calls receive (this package does not depend on
@@ -140,6 +141,7 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   const { sdk, connection } = options;
   const executorOptions = {
     ...connection,
+    ...(options.managedBootstrap === undefined ? {} : { managedBootstrap: options.managedBootstrap }),
     ...(options.user === undefined ? {} : { user: options.user }),
     ...(options.memoryBucket === undefined ? {} : { memoryBucket: options.memoryBucket }),
     lifetimeMs: options.leaseMs,

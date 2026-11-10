@@ -3,6 +3,8 @@
  * the legacy route-service bundle and API-key storage. HTTP mounting and
  * lifecycle ownership belong to node-http.ts and node-assembly.ts.
  */
+import { createNodeEnvironmentWorkWorker } from "../lib/node-environment-work-worker.js";
+import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { createManagedNodeRuntime } from "./node-managed.js";
 import { createNodeFoundation } from "./node-foundation.js";
 
@@ -76,6 +78,7 @@ export async function createNodeRuntime(
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
     managedEnvironmentWorkStore,
+    sessionSandboxes,
     managedDeploymentsRoutes,
     managedDeploymentRunsRoutes,
     managedEnvironmentsRoutes,
@@ -100,6 +103,12 @@ export async function createNodeRuntime(
     managedCredentialEgressRoutes,
     managedUserProfilesRoutes,
   } = managed;
+
+  const managedEnvironmentWorkWorker = createNodeEnvironmentWorkWorker({
+    sql, config, work: managedEnvironmentWorkStore, sandboxes: sessionSandboxes, capabilities: managedAcpCapabilities,
+    application: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.environmentWork),
+    onError: () => logger.error({ op: "main-node.environment_work.dispatch_failed" }, "Work dispatch failed; durable poll will retry"),
+  });
 
   // ─── Services bundle ────────────────────────────────────────────────────
 
@@ -301,6 +310,7 @@ export async function createNodeRuntime(
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
     managedEnvironmentWorkStore,
+    managedEnvironmentWorkWorker,
     managedDeploymentsRoutes,
     managedDeploymentRunsRoutes,
     managedEnvironmentsRoutes,

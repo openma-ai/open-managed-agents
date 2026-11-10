@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SandboxPorts } from "@open-managed-agents/sandbox";
+import { RetryableSandboxError, type SandboxPorts } from "@open-managed-agents/sandbox";
 import { PortsSessionSandbox } from "../src/ports-session-sandbox";
 import { SessionSandboxFenceLostError } from "../src/session-sandbox-fence";
 import { SandboxRestoreError } from "../src/session-sandbox-open";
@@ -35,11 +35,45 @@ describe("Session sandbox recovery order (design §0.0b A.4)", () => {
     expect(h.sandbox.restoredFromSnapshot()).toBe(false);
   });
 
-  it("probe loss preserves the pause point and tries it before the snapshot even when resume throws", async () => {
-    const h = fakeSessionSandbox({ saved: transition(paused(), { type: "lose" }), resumable: ["snap-0"], resumeFails: ["pause-r0"] });
+  it("temporary attach errors reconnect the exact handle without allocation", async () => {
+    const h = fakeSessionSandbox({saved: runningRecord("r0"), attachErrors: [new RetryableSandboxError("busy", 0), new RetryableSandboxError("busy", 0)]});
     await h.sandbox.exec("x");
-    expect(h.log).toEqual(["resume:pause-r0", "resume:snap-0", "egress.attach", "exec:x"]);
-    expect(h.sandbox.restoredFromSnapshot()).toBe(true);
+    expect(h.log).toEqual(["attach:r0", "attach:r0", "attach:r0", "egress.attach", "exec:x"]);
+  });
+
+  it("exhausted retryable attach does not release, resume or allocate", async () => {
+    const saved = paused();
+    const h = fakeSessionSandbox({saved, attachErrors: Array.from({length: 4}, () => new RetryableSandboxError("busy", 0))});
+    await expect(h.sandbox.exec("x")).rejects.toBeInstanceOf(RetryableSandboxError);
+    expect(h.log).toEqual(["attach:r0", "attach:r0", "attach:r0"]);
+    expect(h.stored()).toEqual(saved);
+  });
+
+  it("unclassified attach error is not absence and is not blindly retried", async () => {
+    const h = fakeSessionSandbox({saved: paused(), attachErrors: [new Error("transport unknown")]});
+    await expect(h.sandbox.exec("x")).rejects.toThrow("transport unknown");
+    expect(h.log).toEqual(["attach:r0"]);
+  });
+
+  it("self resume retries transient errors before considering a snapshot", async () => {
+    const h = fakeSessionSandbox({saved: transition(paused(), {type: "lose"}), resumable: ["pause-r0", "snap-0"], resumeErrors: [new RetryableSandboxError("busy", 0)]});
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["resume:pause-r0", "resume:pause-r0", "egress.attach", "exec:x"]);
+  });
+
+  it("exhausted self resume does not pretend the original allocation is gone", async () => {
+    const saved = transition(paused(), {type: "lose"});
+    const h = fakeSessionSandbox({saved, resumable: ["snap-0"], resumeErrors: Array.from({length: 4}, () => new RetryableSandboxError("busy", 0))});
+    await expect(h.sandbox.exec("x")).rejects.toBeInstanceOf(RetryableSandboxError);
+    expect(h.log).toEqual(["resume:pause-r0", "resume:pause-r0", "resume:pause-r0"]);
+    expect(h.stored()).toEqual(saved);
+  });
+
+  it("unclassified self resume error preserves its pause point and does not fall through", async () => {
+    const h = fakeSessionSandbox({ saved: transition(paused(), { type: "lose" }), resumable: ["snap-0"], resumeFails: ["pause-r0"] });
+    await expect(h.sandbox.exec("x")).rejects.toThrow("resume failed");
+    expect(h.log).toEqual(["resume:pause-r0"]);
+    expect(h.stored()?.pauseRef).toEqual(paused().pauseRef);
   });
 
   it("a transient marker read error does not release a resumable sandbox", async () => {
@@ -66,11 +100,31 @@ describe("Session sandbox recovery order (design §0.0b A.4)", () => {
     expect(h.log).not.toContain("acquire");
   });
 
-  it("the latest snapshot gone too: SandboxRestoreError, never an empty sandbox; the record forgets the handle", async () => {
-    const h = fakeSessionSandbox({ saved: paused(), attachGone: true });
-    await expect(h.sandbox.exec("x")).rejects.toBeInstanceOf(SandboxRestoreError);
-    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0"]);
-    expect(h.stored()).toMatchObject({ phase: "lost", latestSnapshot: latest });
+  it.each(["hit", "miss"] as const)("unavailable Session snapshot falls back through prepared environment: %s", async preparedBase => {
+    const h = fakeSessionSandbox({saved: paused(), attachGone: true, preparedBase});
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0", "prepared:" + preparedBase, "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
+    expect(h.warnings.some(w => w.includes("workspace") && w.includes("lost"))).toBe(true);
+  });
+
+  it("prepared environment failure is explicit after Session snapshots are gone", async () => {
+    const h = fakeSessionSandbox({saved: paused(), attachGone: true, preparedBase: "fail"});
+    await expect(h.sandbox.exec("x")).rejects.toThrow("Environment preparation failed");
+    expect(h.log.at(-1)).toBe("prepared:fail");
+  });
+
+  it("live original sandbox wins before any prepared fallback", async () => {
+    const h = fakeSessionSandbox({saved: runningRecord("r0"), preparedBase: "fail"});
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "egress.attach", "exec:x"]);
+  });
+
+  it("a gone Session snapshot uses the initial Environment preparation path", async () => {
+    const h = fakeSessionSandbox({saved: paused(), attachGone: true});
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0", "acquire", "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
   });
 
   it("loss before the first snapshot recreates through the initial path, warns and is not restored", async () => {

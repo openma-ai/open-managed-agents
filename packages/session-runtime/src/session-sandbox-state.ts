@@ -63,7 +63,7 @@ export type SessionSandboxState = SandboxPhase & {
 
 export type SandboxAction =
   /** A new sandbox with nothing to restore. */
-  | { type: "acquire"; handle: SandboxHandle; at: number }
+  | { type: "acquire"; handle: SandboxHandle; at: number; preparedFallback?: true }
   /** The recorded sandbox found again; a paused one woke and starts a new run. */
   | { type: "attach"; handle: SandboxHandle; at: number }
   /** The lifetime refresh: the same sandbox, a new continuous run. */
@@ -101,8 +101,8 @@ type Lifecycle = SandboxPhase & { latestSnapshot: LatestSnapshot };
 type Rule<A> = (state: SessionSandboxState, action: A) => Lifecycle | null;
 type Rules = { [T in SandboxActionType]: Partial<Record<SandboxPhaseName, Rule<Extract<SandboxAction, { type: T }>>>> };
 
-const fresh: Rule<{ handle: SandboxHandle; at: number }> = (state, action) =>
-  state.latestSnapshot.status === "none"
+const fresh: Rule<{ handle: SandboxHandle; at: number; preparedFallback?: true }> = (state, action) =>
+  (state.latestSnapshot.status === "none" || action.preparedFallback === true)
     ? { phase: "running", handle: action.handle, runStartedAt: action.at, latestSnapshot: state.latestSnapshot }
     : null;
 const restored: Rule<{ handle: SandboxHandle; at: number; ref: SnapshotRef }> = (_state, action) =>

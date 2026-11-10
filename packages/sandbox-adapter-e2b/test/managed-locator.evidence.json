@@ -1,0 +1,22 @@
+{
+  "base": "b749019c322576d9ffb9fc48fca16001373b452a",
+  "scope": "E2B package only private Files management locator; no Node/shared port edits",
+  "contract": {
+    "start": "E2BSandboxExecutor.startManagedProcess(spec, identity?) identity={workspaceId,sessionId,workId,attemptId}; values nonsecret strings 1..256. Caller supplies trusted identity separately from agent workspace/env.",
+    "inspect": "inspectManagedProcessSlot() -> {sandboxId,id,epoch,pid,identity,status}; no secret/env; missing/unbound slot rejects, no PID scan",
+    "restore": "restoreManagedProcess(locator) -> standard lifecycle handle after exact sandboxId + UUID + launcher epoch + expected identity status match. Each status/kill carries same UUID/epoch/identity; stale A remains tombstoned and cannot target B.",
+    "compatibility": "Existing unbound start remains lifecycle-only and is not inspectable/restorable. Shared SandboxManagedProcessPort unchanged."
+  },
+  "validation": {
+    "red": "inspect-slot unsupported observed before implementation",
+    "linux": "PASS A start inspect, wrong identity reject, A kill, B start, stale A kill leaves B running, wrong epoch reject, private agent access denied, no secret in inspect, launcher restart unknown locator reject, busy-without-locator reject",
+    "adapter": "PASS actual E2B executor wrapped native Files: new instance inspect/restore old precise handle; wrong identity and wrong physical sandbox rejected; stale handle kill preserves B",
+    "regression": "flock PASS, six Linux native tests PASS, 73 package PASS/5 SKIP, typecheck/diff-check PASS"
+  },
+  "boundaries": [
+    "Node caller must recheck cloud claim/fence at execution boundaries; inspect+kill is not atomically coupled to any promise/auth callback.",
+    "Launcher registry is memory-only; restart with lost table fails closed.",
+    "flock is sandbox-local only; no cross-host authority claim added.",
+    "No destroy/reclaim/attempt retirement changes; no cloud deployment/push."
+  ]
+}

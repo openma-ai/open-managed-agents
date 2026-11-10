@@ -77,8 +77,8 @@ export function fromV1SandboxFactory<R extends SandboxPort>(options: V1SandboxFa
     },
     async release(input) {
       const runtime = held.get(input.handle.runtimeId);
-      held.delete(input.handle.runtimeId);
       await runtime?.destroy?.();
+      held.delete(input.handle.runtimeId);
     },
     async discard() {},
     async list() { return []; },
