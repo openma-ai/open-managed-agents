@@ -291,3 +291,34 @@ describe("AcpTranslator prompt usage", () => {
     expect(reportedUsage).toEqual([]);
   });
 });
+
+
+describe("common projector child lifecycle", () => {
+  it.each(["flush", "complete", "error"])("preserves pending child tools at %s boundary with a discoverable thread", async boundary => {
+    const {runtime,events}=makeFakeRuntime(); const translator=new AcpTranslator(runtime);
+    await translator.consume(ev({sessionUpdate:"tool_call",toolCallId:"task",_meta:{claudeCode:{toolName:"Task"}}}));
+    await translator.consume(ev({sessionUpdate:"tool_call",toolCallId:"read",title:"Read",_meta:{claudeCode:{parentToolUseId:"task"}}}));
+    if(boundary==="flush") await translator.flush();
+    else await translator.consume(boundary==="complete"?{type:"promptComplete",response:{stopReason:"end_turn"}}:{type:"promptError",error:"failed"});
+    const tools=events.filter(e=>e.type==="agent.tool_use");
+    expect(tools.map(e=>e.id)).toEqual(["task","read"]);
+    const child=tools.find(e=>e.id==="read")!;
+    expect(child.session_thread_id).toBe("acp:claude:task");
+    expect(events.some(e=>e.type==="session.thread_created"&&e.session_thread_id===child.session_thread_id)).toBe(true);
+    expect(events.some(e=>e.type==="session.thread_status_running"&&e.session_thread_id===child.session_thread_id)).toBe(true);
+  });
+});
+
+it("preserves nested common child lanes and cancelled lifecycle without root fallback", async () => {
+  const {runtime,events}=makeFakeRuntime(); const t=new AcpTranslator(runtime);
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"outer",_meta:{claudeCode:{toolName:"Task"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"inner",_meta:{claudeCode:{toolName:"Task",parentToolUseId:"outer"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"leaf",title:"Read",_meta:{claudeCode:{parentToolUseId:"inner"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call_update",toolCallId:"leaf",status:"completed",rawOutput:"ok"}));
+  await t.consume(ev({sessionUpdate:"tool_call_update",toolCallId:"inner",status:"cancelled"}));
+  await t.flush();
+  expect(events.find(e=>e.type==="session.thread_created"&&e.session_thread_id==="acp:claude:inner")).toMatchObject({parent_thread_id:"acp:claude:outer"});
+  expect(events.find(e=>e.type==="agent.tool_use"&&e.id==="leaf")).toMatchObject({session_thread_id:"acp:claude:inner"});
+  expect(events.find(e=>e.type==="session.thread_status_idle"&&e.session_thread_id==="acp:claude:inner")).toMatchObject({interrupted:true});
+  expect(events.filter(e=>e.type==="agent.tool_result"&&e.tool_use_id==="leaf")).toHaveLength(1);
+});

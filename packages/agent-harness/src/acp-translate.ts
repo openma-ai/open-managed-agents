@@ -165,7 +165,7 @@ export class AcpTranslator {
     // its experimental Usage shape preserves cachedReadTokens/cachedWriteTokens;
     // usage_update only describes context-window occupancy (used/size).
     if (msg.type === "promptComplete") {
-      await this.#flushAllPendingToolUses();
+      await this.#flushAllPendingToolUses("promptComplete");
       await this.#closeMessage();
       await this.#closeThinking();
       await this.#closeModelRequest(msg.response);
@@ -173,7 +173,7 @@ export class AcpTranslator {
     }
     if (msg.type === "promptError") {
       this.#promptError = msg.error ?? "ACP prompt failed";
-      await this.#flushAllPendingToolUses();
+      await this.#flushAllPendingToolUses("promptError");
       await this.#closeMessage();
       await this.#closeThinking();
       await this.#closeModelRequest(undefined, msg.error ?? "ACP prompt failed");
@@ -261,7 +261,7 @@ export class AcpTranslator {
       await this.#closeModelRequest(undefined, "ACP prompt aborted");
       return;
     }
-    await this.#flushAllPendingToolUses();
+    await this.#flushAllPendingToolUses("promptComplete");
     await this.#closeMessage();
     await this.#closeThinking();
     // Backward compatibility with daemons predating PromptResponse relay:
@@ -353,8 +353,12 @@ export class AcpTranslator {
       this.#runtime.broadcast({type:"agent.tool_use",id:generateEventId(),name:update.title ?? update.kind ?? "tool",input:(update.rawInput as Record<string, unknown>) ?? {}});
       return;
     }
-    const events = this.#projector.project({type:"session.event",sessionId:"translator",turnId:"turn",event:{update}});
+    this.#publishProjected(this.#projector.project({type:"session.event",sessionId:"translator",turnId:"turn",event:{update}}));
+  }
+
+  #publishProjected(events: ReturnType<ManagedAcpEventProjector["project"]>): void {
     for (const event of events) {
+      if (event.type.startsWith("session.thread_") || (event.session_thread_id && ["session.error", "agent.message", "agent.thinking"].includes(event.type))) this.#runtime.broadcast(event as never);
       if (event.type === "agent.tool_use") this.#runtime.broadcast(event as never);
       if (event.type === "agent.tool_result") {
         const content = event.content as Array<{text?: string}>;
@@ -363,9 +367,12 @@ export class AcpTranslator {
     }
   }
 
-  async #flushAllPendingToolUses(): Promise<void> {
-    // A text boundary flushes pending canonical tools without completing the turn.
-    this.#projectTools({sessionUpdate:"agent_message_chunk",content:{text:""}});
+  async #flushAllPendingToolUses(terminal?: "promptComplete" | "promptError"): Promise<void> {
+    if (terminal) {
+      // The common terminal boundary flushes EVERY child lane. A root text
+      // boundary only flushes root and must not masquerade as turn completion.
+      this.#publishProjected(this.#projector.project({type:"session.event",sessionId:"translator",turnId:"turn",event:terminal === "promptError" ? {type:terminal,error:"ACP prompt failed"} : {type:terminal,response:{stopReason:"end_turn"}}}));
+    } else this.#projectTools({sessionUpdate:"agent_message_chunk",content:{text:""}});
   }
 
   #recordToolOutput(upd: AcpSessionUpdate): void {
