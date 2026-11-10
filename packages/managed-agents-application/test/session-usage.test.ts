@@ -15,7 +15,7 @@ import {
   sumModelSpanUsage,
   tokenTotalsToApiUsage,
 } from "../src/sessions/budget";
-import { memoryListCostPicoStore } from "@open-managed-agents/domain/sessions";
+import { memoryListCostPicoStore, type SessionUsage } from "@open-managed-agents/domain/sessions";
 
 const PRICING = { version: 1, currency: "USD", input_per_mtok: "1", output_per_mtok: "1" } as const;
 const BUDGET = { amountMinor: "100", currency: "USD" as const };
@@ -29,7 +29,7 @@ describe("session usage (application, shared by Cloudflare and Node)", () => {
     expect(sessionUsageSnapshot(totals(1, 2, 3, 4), null)).toEqual({
       inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreation: { ephemeralFiveMinuteInputTokens: 4 },
     });
-    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: undefined }, pricing: async () => PRICING, store: memoryListCostPicoStore("1504000000000") });
+    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: {} }, pricing: async () => PRICING, store: memoryListCostPicoStore("1504000000000") });
     expect(sessionUsageSnapshot(totals(1, 2), gate)).toEqual({
       inputTokens: 1, outputTokens: 2, listCost: { amountMinor: "150", currency: "USD" }, list_cost_pico: "1504000000000",
     });
@@ -56,7 +56,7 @@ describe("session usage (application, shared by Cloudflare and Node)", () => {
     expect(reportSessionUsage(meter, "sthr_child", { input_tokens: 2, output_tokens: 1 }, null).usage)
       .toEqual({ inputTokens: 2, outputTokens: 1 });
     expect(meter.session()).toEqual({ input_tokens: 26, output_tokens: 13 });
-    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: undefined }, pricing: async () => PRICING, store: memoryListCostPicoStore("1504000000000") });
+    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: {} }, pricing: async () => PRICING, store: memoryListCostPicoStore("1504000000000") });
     expect(reportSessionUsage(meter, "sthr_primary", {}, gate).usage).toEqual({
       inputTokens: 24, outputTokens: 12, listCost: { amountMinor: "150", currency: "USD" }, list_cost_pico: "1504000000000",
     });
@@ -90,27 +90,27 @@ describe("session usage (application, shared by Cloudflare and Node)", () => {
   it("opens the gate only with a budget and pricing; pricing is looked up only with a budget", async () => {
     let lookups = 0;
     const pricing = async () => { lookups += 1; return PRICING; };
-    expect(await openSessionBudgetGate({ session: { budget: null, usage: undefined }, pricing, store: memoryListCostPicoStore() })).toBeNull();
+    expect(await openSessionBudgetGate({ session: { budget: null, usage: {} }, pricing, store: memoryListCostPicoStore() })).toBeNull();
     expect(lookups).toBe(0);
-    expect(await openSessionBudgetGate({ session: { budget: BUDGET, usage: undefined }, pricing: async () => null, store: memoryListCostPicoStore() })).toBeNull();
-    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: undefined }, pricing, store: memoryListCostPicoStore() });
+    expect(await openSessionBudgetGate({ session: { budget: BUDGET, usage: {} }, pricing: async () => null, store: memoryListCostPicoStore() })).toBeNull();
+    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: {} }, pricing, store: memoryListCostPicoStore() });
     expect(lookups).toBe(1);
     expect(gate).toMatchObject({ maxListCost: { amount: "100", currency: "USD" }, list_cost_pico: "0", reached: false });
   });
 
   it("resumes consumed cost from the store, else the Session's exact pico, else its rounded cents (kept: Node)", async () => {
-    const open = (usage: Record<string, unknown> | undefined, stored?: string) =>
-      openSessionBudgetGate({ session: { budget: BUDGET, usage: usage as never }, pricing: async () => PRICING, store: memoryListCostPicoStore(stored) });
+    const open = (usage: SessionUsage, stored?: string) =>
+      openSessionBudgetGate({ session: { budget: BUDGET, usage }, pricing: async () => PRICING, store: memoryListCostPicoStore(stored) });
     expect((await open({ list_cost_pico: "123" }, "456"))!.list_cost_pico).toBe("456");
     expect((await open({ list_cost_pico: "123" }))!.list_cost_pico).toBe("123");
     expect((await open({ listCost: { amountMinor: "50", currency: "USD" } }))!.list_cost_pico).toBe("500000000000");
-    expect((await open(undefined))!.list_cost_pico).toBe("0");
+    expect((await open({}))!.list_cost_pico).toBe("0");
     expect((await open({ list_cost_pico: "123" }, "not-a-number"))!.list_cost_pico).toBe("123");
   });
 
   it("the gate persists each egress through the platform store", async () => {
     const store = memoryListCostPicoStore();
-    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: undefined }, pricing: async () => PRICING, store });
+    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: {} }, pricing: async () => PRICING, store });
     applyModelEgressRequest(gate, { action: "complete", usage: { input_tokens: 1_000_000 } });
     expect(store.load()).toBe("1000000000000");
   });
@@ -134,7 +134,7 @@ describe("session usage (application, shared by Cloudflare and Node)", () => {
     expect(parseModelEgressRequest({ action: "complete", usage: { input_tokens: 1 } })).toEqual({ action: "complete", usage: { input_tokens: 1 } });
     expect(MODEL_EGRESS_ACTION_REQUIRED).toBe("action required (begin|complete)");
     expect(applyModelEgressRequest(null, { action: "begin" })).toEqual({ active: false, allowed: true, list_cost_pico: null });
-    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: undefined }, pricing: async () => PRICING, store: memoryListCostPicoStore() });
+    const gate = await openSessionBudgetGate({ session: { budget: BUDGET, usage: {} }, pricing: async () => PRICING, store: memoryListCostPicoStore() });
     expect(applyModelEgressRequest(gate, { action: "begin" })).toEqual({ active: true, allowed: true, reached: false, list_cost_pico: "0" });
     expect(applyModelEgressRequest(gate, { action: "complete", usage: { input_tokens: 1_000_000 } }))
       .toEqual({ active: true, reached: true, list_cost_pico: "1000000000000" });

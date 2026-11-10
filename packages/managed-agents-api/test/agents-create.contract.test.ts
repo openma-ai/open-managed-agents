@@ -515,7 +515,7 @@ describe("Managed Agents API — POST /v1/agents", () => {
       harness: "acp-sandbox",
       acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
     });
-    expect((await response.json())._oma).toEqual({
+    expect(await response.json()).toHaveProperty("_oma", {
       harness: "acp-sandbox",
       acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
     });
