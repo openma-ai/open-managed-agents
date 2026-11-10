@@ -11,7 +11,10 @@ it.each(["latest","next","main","^1.2.3","~1.2.3","1.x","*",">=1","1a2"])("rejec
 it("rejects duplicate identity before any consumer selects the first match",()=>{
  expect(()=>parseInstalledHarnesses(JSON.stringify([valid,{...valid,command:"/other"}]))).toThrow(/duplicate/);
 });
-it.each(["relative","/opt/../bin/runner","/opt/./runner","/opt/runner;bad","/opt/runner\0","/opt/runner\n"])("rejects invalid command %s",command=>{
+it.each(["/opt/OpenMA Agents/runner","/opt/工具/runner","/opt/runner@1.2.3/bin/run","/opt/runner;literal"])("retains absolute executable paths without shell token restrictions: %s",command=>{
+ expect(parseInstalledHarnesses(JSON.stringify([valid,{...valid,id:"other",command}]))).toEqual([valid,{...valid,id:"other",command}]);
+});
+it.each(["relative","/","/opt/../bin/runner","/opt/./runner","/opt//runner","/opt/runner/","/opt/runner\0","/opt/runner\n"])("rejects invalid command %s",command=>{
  expect(()=>parseInstalledHarnesses(JSON.stringify([{...valid,command}]))).toThrow();
 });
 it.each([["ok",3],["bad\0arg"],"not-array"])("rejects invalid argv %#",args=>{

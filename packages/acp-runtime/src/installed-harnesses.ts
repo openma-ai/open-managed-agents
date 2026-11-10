@@ -8,7 +8,8 @@ export interface InstalledAcpHarness {
 }
 const pinnedVersion = /^[0-9]+(?:\.[0-9]+)*(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
 const identity = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const absoluteCommand = /^\/(?:[A-Za-z0-9._+-]+\/)*[A-Za-z0-9._+-]+$/;
+// Executable paths are argv, not shell tokens: spaces/Unicode/@ are literal.
+const absoluteCommand = /^\/(?:[^/\x00-\x1f\x7f]+\/)*[^/\x00-\x1f\x7f]+$/;
 const invalid = () => new TypeError("OPENMA_ACP_HARNESSES entries require id, pinned version, absolute command and optional string args");
 
 export function parseInstalledHarnesses(raw: string | undefined): InstalledAcpHarness[] | null {
