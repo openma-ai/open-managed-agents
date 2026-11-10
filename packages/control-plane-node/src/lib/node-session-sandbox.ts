@@ -62,6 +62,7 @@ import {
 import {
   PortsSessionSandbox,
   executionOfFence,
+  recordedHandle,
   stateVersion,
   type SessionSandboxExecutor,
   type SessionSandboxState,
@@ -189,6 +190,8 @@ export function nodeCredentialEgress(relay: ReturnType<NodeSessionSandboxOptions
   return relay !== null && relay.endpoint.startsWith("https://");
 }
 
+type ManagementDiscovery = { owner: NodeSessionSandbox; pending: ReturnType<NodeSessionSandbox["recoverManagedProcessSlot"]> };
+
 const NO_CREDENTIAL_EGRESS = "Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL";
 
 /** One facade per runner allocation, found again by the runner's hooks. */
@@ -198,6 +201,8 @@ export class NodeSessionSandboxes {
   private readonly warmed = new Map<string, Promise<SessionSandboxState | undefined>>();
   /** v1 runtimes this process holds, shared by every facade's bridge. */
   private readonly held = new Map<string, SandboxPort>();
+  /** Only unresolved discovery RPCs; shared across claim facades, removed on settle. */
+  private readonly managementDiscoveries = new Map<string, ManagementDiscovery>();
 
   constructor(private readonly options: NodeSessionSandboxOptions) {
     // Design §0.0b A.10: the provider's own reclaim must outlast the idle pause.
@@ -223,7 +228,7 @@ export class NodeSessionSandboxes {
     this.warmed.delete(key);
     const sandbox: NodeSessionSandbox = new NodeSessionSandbox(context, input.allocationId, this.options, this.held, () => {
       if (this.current.get(key) === sandbox) this.current.delete(key);
-    }, warmed?.catch(() => undefined));
+    }, warmed?.catch(() => undefined), undefined, this.managementDiscoveries);
     sandbox.bind({
       context,
       ...(input.runtimeGeneration === undefined ? {} : { runtimeGeneration: input.runtimeGeneration }),
@@ -308,7 +313,6 @@ export class NodeSessionSandbox implements SandboxPort {
   private live: SandboxPort | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly commandSecrets = new Map<string, Record<string, string>>();
-  private managementDiscovery: Promise<unknown> | undefined;
 
   readFileBytes?: (path: string) => Promise<Uint8Array>;
   gitCheckout?: SandboxPort["gitCheckout"];
@@ -329,6 +333,7 @@ export class NodeSessionSandbox implements SandboxPort {
     private readonly onDestroyed: () => void,
     initialState?: Promise<SessionSandboxState | undefined>,
     onSaved?: (state: SessionSandboxState) => void,
+    private readonly managementDiscoveries = new Map<string, ManagementDiscovery>(),
   ) {
     this.context = context;
     let adopting = initialState;
@@ -549,31 +554,41 @@ export class NodeSessionSandbox implements SandboxPort {
   async recoverManagedProcessSlot(): Promise<Awaited<ReturnType<NodeSessionSandbox["discoverManagedProcessSlot"]>>> {
     // Do not cancel or duplicate an uncancellable Files RPC. Its late result
     // stays bound to the original authority checks in discoverManagedProcessSlot.
-    if (!this.managementDiscovery) {
-      const pending = this.discoverManagedProcessSlot();
-      this.managementDiscovery = pending;
-      void pending.finally(() => { if (this.managementDiscovery === pending) this.managementDiscovery = undefined; }).catch(() => {});
+    const runtime = await this.core.runtime();
+    const physical = this.state && recordedHandle(this.state);
+    if (!physical) throw new Error("Recorded physical sandbox required for management discovery");
+    const key = JSON.stringify([this.context.workspaceId, this.context.session.id, physical.provider, physical.runtimeId]);
+    let discovery = this.managementDiscoveries.get(key);
+    if (!discovery) {
+      discovery = { owner: this, pending: this.discoverManagedProcessSlot(runtime) };
+      this.managementDiscoveries.set(key, discovery);
+      const exact = discovery;
+      void exact.pending.finally(() => { if (this.managementDiscoveries.get(key) === exact) this.managementDiscoveries.delete(key); }).catch(() => {});
     }
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await Promise.race([this.managementDiscovery as ReturnType<NodeSessionSandbox["discoverManagedProcessSlot"]>, new Promise<never>((_, reject) => {
+      const result = await Promise.race([discovery.pending, new Promise<never>((_, reject) => {
         timeout = setTimeout(() => reject(new Error("Management discovery wait timed out; native outcome remains pending")), 1_000);
       })]);
+      if (discovery.owner !== this) throw new Error("Prior management discovery settled; current claim must rediscover");
+      return result;
     } finally { if (timeout !== undefined) clearTimeout(timeout); }
   }
-  private async discoverManagedProcessSlot() {
+  private async discoverManagedProcessSlot(runtime: SandboxPort) {
     const authority = this.workAuthority;
     if (!authority || !await authority.isCurrent()) throw new Error("Current Work claim required for management discovery");
-    const runtime = await this.core.runtime();
     type Locator = { sandboxId: string; id: string; epoch: string; pid: number;
       identity: {workspaceId: string; sessionId: string; workId: string; attemptId: string}; status: "running" | "exited" };
     const managed = runtime as SandboxPort & { inspectManagedProcessSlot?(): Promise<Locator>; restoreManagedProcess?(locator: Locator): Promise<SandboxManagedProcessHandle> };
     if (typeof managed.inspectManagedProcessSlot !== "function" || typeof managed.restoreManagedProcess !== "function") throw new Error("Trusted management discovery unsupported");
-    const locator = await managed.inspectManagedProcessSlot();
-    if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management discovery");
+    // Bind both capabilities now: late RPC completion cannot switch launchers.
+    const inspect = managed.inspectManagedProcessSlot.bind(managed);
+    const restore = managed.restoreManagedProcess.bind(managed);
+    const locator = await inspect();
+    if (this.live !== runtime || authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management discovery");
     if (locator.identity.workspaceId !== authority.attempt.workspaceId || locator.identity.sessionId !== authority.attempt.sessionId) throw new Error("Management slot scope mismatch");
-    const handle = await managed.restoreManagedProcess(locator);
-    if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management restore");
+    const handle = await restore(locator);
+    if (this.live !== runtime || authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management restore");
     return {locator, handle};
   }
   setEnvVars(env: Record<string, string>): Promise<void> { return this.core.setEnvVars(env); }

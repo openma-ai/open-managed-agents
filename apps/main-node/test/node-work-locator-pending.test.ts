@@ -57,6 +57,14 @@ it.each(["retry-claim", "hung-inspect", "hung-restore", "late-inspect", "late-re
    await starting;expect(kills).toBe(mode==="retry-claim"?1:0);expect(launches).toBe(0);
    if(mode.startsWith("late-")){await new Promise(resolve=>setTimeout(resolve,1200));expect(inspected).toBe(1);expect(restores).toBe(mode==="late-restore"?1:0);}
    await components.database.sql.prepare("UPDATE managed_environment_work SET claim_at = 0 WHERE id = ?").bind(row!.id).run();
+   if(mode.startsWith("late-")){
+    let generation=0;
+    for(let i=0;i<150&&generation<3;i++){generation=(await components.database.sql.prepare("SELECT claim_generation FROM managed_environment_work WHERE id = ?").bind(row!.id).first<{claim_generation:number}>())!.claim_generation;await new Promise(resolve=>setTimeout(resolve,20));}
+    expect(generation).toBeGreaterThanOrEqual(3);
+    await new Promise(resolve=>setTimeout(resolve,1400));
+    expect(inspected,"same physical discovery must remain single-flight across new wrappers").toBe(1);
+    expect(restores).toBe(mode==="late-restore"?1:0);
+   }
    release();
    for(let i=0;i<220&&launches===0;i++)await new Promise(resolve=>setTimeout(resolve,20));
    expect(launches,"new legitimate claim must continue exact old handle cleanup").toBe(1);

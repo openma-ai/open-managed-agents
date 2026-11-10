@@ -65,6 +65,52 @@ it("retains launch cleanup ownership when the post-launch Work lookup throws", a
  await expect(sandbox.startManagedProcess({command:"/bin/true",env:{}})).rejects.toThrow("lookup unavailable");
  expect(killed).toBe(1);
 });
+
+it.each(["workspace", "session", "physical"] as const)("isolates pending management discovery by %s and reclaims it on settle", async dimension => {
+ const states = new Map<string, import("@open-managed-agents/session-runtime").SessionSandboxState>();
+ const records = {load:async(w:string,s:string)=>states.get(w+":"+s),save:async(w:string,s:string,state:import("@open-managed-agents/session-runtime").SessionSandboxState,expected:number)=>{if((states.get(w+":"+s)?.version??0)!==expected)return false;states.set(w+":"+s,state);return true;}};
+ const t=setup({records});let inspected=0;let restored=0;let originalRestored=0;let release!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;});
+ const authority=(c:typeof context)=>({attempt:{workspaceId:c.workspaceId,sessionId:c.session.id,executionId:"work",attemptId:"claim:2",ownerId:"owner",generation:2},isCurrent:async()=>true,token:async()=>"token"});
+ const locator=(c:typeof context)=>({sandboxId:"physical",id:"old",epoch:"epoch",pid:1234,identity:{workspaceId:c.workspaceId,sessionId:c.session.id,workId:"work",attemptId:"claim:1"},status:"running" as const});
+ const handle={id:"old",pid:1234,kill:async()=>{},getStatus:async()=>"running" as const};
+ Object.assign(t.box.sandbox,{startManagedProcess:async()=>handle,inspectManagedProcessSlot:async()=>{inspected++;await gate;return locator(context);},restoreManagedProcess:async()=>{originalRestored++;return handle;}});
+ const first=t.sandboxes.build({...context,workAuthority:authority(context)});await first.open();
+ const pending=first.recoverManagedProcessSlot();
+ while(inspected===0)await new Promise(resolve=>setTimeout(resolve,1));
+ const other={...context,workspaceId:dimension==="workspace"?"ws_2":context.workspaceId,session:dimension==="session"?{...context.session,id:"sess_2"}:context.session};
+ // Reuse the same physical handle for workspace/session cases. For physical,
+ // let the existing lifecycle create a replacement from an absent record.
+ const original=states.get("ws_1:sess_1")!;
+ if(dimension==="physical")states.delete("ws_1:sess_1");else states.set(other.workspaceId+":"+other.session.id,original);
+ const second=t.sandboxes.build({...other,workAuthority:authority(other)});await second.open();
+ Object.assign(t.box.sandbox,{inspectManagedProcessSlot:async()=>{inspected++;return locator(other);},restoreManagedProcess:async()=>{restored++;return handle;}});
+ try {
+  await expect(second.recoverManagedProcessSlot()).resolves.toMatchObject({handle});
+  expect(inspected).toBe(2);expect(restored).toBe(1);
+  release();await expect(pending).resolves.toMatchObject({handle});
+  expect(originalRestored,"pending discovery must retain its original launcher capability").toBe(1);
+  await expect(second.recoverManagedProcessSlot()).resolves.toMatchObject({handle});
+  expect(inspected).toBe(3);
+ }finally{release();await pending.catch(()=>{});await second.destroy();}
+});
+
+it("does not transfer a settled discovery result to a different claim wrapper", async()=>{
+ const states=new Map<string, import("@open-managed-agents/session-runtime").SessionSandboxState>();
+ const t=setup({records:{load:async(w,s)=>states.get(w+":"+s),save:async(w,s,state)=>{states.set(w+":"+s,state);return true;}}});
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});let inspected=0;
+ const handle={id:"old",pid:1234,kill:async()=>{},getStatus:async()=>"running" as const};
+ Object.assign(t.box.sandbox,{startManagedProcess:async()=>handle,inspectManagedProcessSlot:async()=>{inspected++;await gate;return {identity:{workspaceId:"ws_1",sessionId:"sess_1"}};},restoreManagedProcess:async()=>handle});
+ const authority={attempt:{workspaceId:"ws_1",sessionId:"sess_1",executionId:"work",attemptId:"claim:2",ownerId:"owner",generation:2},isCurrent:async()=>true,token:async()=>"token"};
+ const first=t.sandboxes.build({...context,workAuthority:authority});await first.open();const pending=first.recoverManagedProcessSlot();
+ while(inspected===0)await new Promise(resolve=>setTimeout(resolve,1));
+ const second=t.sandboxes.build({...context,workAuthority:{...authority}});await second.open();
+ const waiting=expect(second.recoverManagedProcessSlot()).rejects.toThrow(/current claim must rediscover/);
+ await new Promise(resolve=>setTimeout(resolve,5));release();
+ await pending;await waiting;expect(inspected).toBe(1);
+ await second.recoverManagedProcessSlot();expect(inspected).toBe(2);await second.destroy();
+});
+
 const context = {
   workspaceId: "ws_1",
   session: { id: "sess_1", resources: [], vaultIds: [], agent: { id: "agent", version: 1 } },
