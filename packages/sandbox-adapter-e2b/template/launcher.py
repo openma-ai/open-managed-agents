@@ -94,6 +94,10 @@ def dispatch(request):
         return {"id": request["id"], "pid": child.pid, "epoch": epoch}
     child = children[request["target"]]
     expected = identities[request["target"]]
+    # Recovery is never authenticated by caller-supplied fields alone. Legacy
+    # local handles omit identity; any bound/recovery request needs stored identity.
+    if expected is None and (request.get("requireBound") is True or request.get("identity") is not None):
+        raise ValueError("management target has no bound identity")
     if request.get("epoch") is not None and request.get("epoch") != epoch:
         raise ValueError("management locator epoch mismatch")
     if expected is not None and (request.get("identity") != expected or request.get("epoch") != epoch):

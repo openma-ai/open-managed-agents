@@ -21,6 +21,16 @@ try {
   assert.equal((await recovered.inspectManagedProcessSlot()).id,b.id);
   await assert.rejects(new E2BSandboxExecutor({...sb,sandboxId:"physical-other"},options).restoreManagedProcess(locator));
   await b.kill("SIGKILL");
+  const legacy=await recovered.startManagedProcess({command:"/usr/local/bin/node",args:["-e","setInterval(()=>{},1000)"],env:{}});
+  await assert.rejects(recovered.restoreManagedProcess({...locator,id:legacy.id,pid:legacy.pid}), /reject|failed|bound/i);
+  assert.equal(await legacy.getStatus(),"running");await legacy.kill("SIGKILL");
+  const live=await recovered.startManagedProcess({command:"/usr/local/bin/node",args:["-e","setInterval(()=>{},1000)"],env:{}},identity);
+  const liveLocator=await recovered.inspectManagedProcessSlot();let files=0;
+  const closed=new E2BSandboxExecutor({...sb,files:{read:async(p:string)=>{files++;return sb.files.read(p)},write:async(p:string,d:string|Uint8Array)=>{files++;return sb.files.write(p,d)}},kill:async()=>{throw Error("kill denied")}},options);
+  await assert.rejects(closed.destroy(),/kill denied/);
+  await assert.rejects(closed.inspectManagedProcessSlot(),/closed/);
+  await assert.rejects(closed.restoreManagedProcess(liveLocator),/closed/);
+  assert.equal(files,0);assert.equal(await live.getStatus(),"running");await live.kill("SIGKILL");
   console.log("new adapter instance inspect/restore exact old handle + staleA kill safe PASS");
 } finally {
   const exit=new Promise(r=>launcher.once("exit",r));launcher.kill("SIGTERM");await exit;
