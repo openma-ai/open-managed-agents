@@ -156,8 +156,11 @@ async function responseError(response: Response): Promise<Error> {
 
 async function* parseSse(
   stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
 ): AsyncIterable<{ event: string; data: string }> {
   const reader = stream.getReader();
+  const cancel = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
   const decoder = new TextDecoder();
   let buffer = "";
   let event = "message";
@@ -169,6 +172,7 @@ async function* parseSse(
   try {
     for (;;) {
       const next = await reader.read();
+      if (signal?.aborted) throw signal.reason;
       buffer += next.done ? decoder.decode() : decoder.decode(next.value, { stream: true });
       while (true) {
         const newline = buffer.indexOf("\n");
@@ -188,6 +192,7 @@ async function* parseSse(
     if (buffer !== "") parseLine(buffer.replace(/\r$/, ""));
     if (data.length > 0) yield { event, data: data.join("\n") };
   } finally {
+    signal?.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
 }
@@ -489,9 +494,12 @@ export class CloudflareBridgeRuntime
       void response.body?.cancel().catch(() => undefined);
       return cleanupFailedStart(new Error("Cloudflare Bridge process did not return an SSE stream"));
     }
+    const terminalRead = new AbortController();
+    let outputFailure: Error | undefined;
+    let terminalTimer: ReturnType<typeof setTimeout> | undefined;
     const exited = (async () => {
       try {
-        for await (const message of parseSse(response.body!)) {
+        for await (const message of parseSse(response.body!, terminalRead.signal)) {
           if (message.event === "stdout") {
             await stdoutWriter.write(decodeBase64(message.data));
           } else if (message.event === "stderr") {
@@ -504,15 +512,23 @@ export class CloudflareBridgeRuntime
             return { code: Number(payload.exit_code), signal: null };
           } else if (message.event === "error") {
             const payload = JSON.parse(message.data) as { error?: unknown; code?: unknown };
-            throw new Error(
+            const error = Object.assign(new Error(
               `Cloudflare Bridge exec error${
                 typeof payload.code === "string" ? ` (${payload.code})` : ""
               }: ${String(payload.error ?? "unknown")}`,
-            );
+            ), { code: payload.code });
+            if (payload.code !== "OUTPUT_INCOMPLETE" || outputFailure) throw error;
+            // Output loss is not process loss. Preserve the stream failure while
+            // reading the immediately following real exit, never a signal ACK.
+            outputFailure = error;
+            void stdoutWriter.abort(error).catch(() => undefined);
+            void stderrWriter.abort(error).catch(() => undefined);
+            terminalTimer = setTimeout(() => terminalRead.abort(error), 1_000);
           }
         }
-        throw new Error("Cloudflare Bridge process stream ended without a terminal event");
+        throw outputFailure ?? new Error("Cloudflare Bridge process stream ended without a terminal event");
       } finally {
+        clearTimeout(terminalTimer);
         await Promise.allSettled([
           stdoutWriter.close(),
           stderrWriter.close(),

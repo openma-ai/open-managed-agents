@@ -312,6 +312,7 @@ export async function createManagedNodeRuntime(
     ...(config.workspace.sandboxLeaseTtlMs === undefined
       ? {}
       : { sandboxLease: { ttlMs: config.workspace.sandboxLeaseTtlMs } }),
+    isExecutionFenceActive: isManagedSessionExecutionFenceActive,
     subagentThreads: new SqlSessionThreadStore(sql),
     subagentPolicy: ({ session }) => nodeOpenAISubagentPolicy(session, openAIAgentsSecrets),
     resolveSubagentSession: async ({ session, request }) => {
@@ -508,7 +509,7 @@ export async function createManagedNodeRuntime(
       if (agent.harness === "acp-sandbox") {
         const model = await resolveHostedModel(input.workspaceId, agent.model);
         const capability = await managedAcpCapabilities.issue(input);
-        acpRecoveryHistory = await loadNodeManagedAcpRecoveryHistory({
+        acpRecoveryHistory = input.runtime.sessionThreadId !== "sthr_primary" ? input.runtime.history.getEvents() : await loadNodeManagedAcpRecoveryHistory({
           sql, history: managedRuntimeReaders.history,
           fence: input.executionFence!, acceptedEvents: input.acceptedEvents,
         });

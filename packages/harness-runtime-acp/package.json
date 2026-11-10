@@ -63,8 +63,10 @@
     "@open-managed-agents/harness-supervisor": "workspace:*",
     "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
+    "@open-managed-agents/shared": "workspace:*",
+    "@open-managed-agents/sandbox-gateway": "workspace:*",
     "@open-managed-agents/runtime": "workspace:*",
-    "@openma/common": "^0.9.1",
+    "@openma/common": "^0.13.1",
     "fflate": "^0.8.2"
   },
   "devDependencies": {

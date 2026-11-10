@@ -15,6 +15,7 @@
  * index.ts is the executable entrypoint (process.env, listen, signals).
  */
 
+import { nodeExecutionChannelsHttp } from "../lib/node-execution-channels-http.js";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
 import { Hono } from "hono";
@@ -303,6 +304,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
 
   app.route("/v1/oma/egress", managedCredentialEgressRoutes);
   app.use("/v1/oma/oauth/callback", managedMcpOAuthCliCallback);
+
+  app.route("/v1/oma/sessions", nodeExecutionChannelsHttp({ tokens: managedAcpCapabilities.tokens, sql, modelCards: modelCardsService, gatewayBaseUrl: config.http.gatewayOrigin }));
 
   const v1 = new Hono<{
     Variables: {

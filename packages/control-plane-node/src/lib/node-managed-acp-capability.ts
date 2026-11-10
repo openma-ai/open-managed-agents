@@ -32,16 +32,18 @@ export function createNodeManagedAcpCapabilities(dependencies: {
   return {
     tokens,
     /** The in-sandbox ACP harness's channels: scope `all`. */
-    async issue(input: { workspaceId: string; session: Session; environment: Environment; executionFence?: SessionExecutionFence }) {
+    async issue(input: { workspaceId: string; session: Session; executionSession?: Session; environment: Environment; executionFence?: SessionExecutionFence }) {
       if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)");
+      const session = input.executionSession ?? input.session;
+      if (session.id !== input.session.id || session.environmentId !== input.session.environmentId) throw new Error("Child must share the execution Session and environment");
       const fence = input.executionFence;
       if (fence !== undefined && (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.session.id)) {
         throw new Error("Sandbox token fence does not name this Session");
       }
       if (fence === undefined) throw new Error("Sandbox token requires a current Session Execution fence");
       const sessionsToken = await attemptTokens.token(fence, () => issueSandboxToken(tokens, fence, {
-        scope: sandboxTokenScopeFor(sandboxHarnessPlacement(input.session.agent.openma?.harness)),
-        expected: { environmentId: input.environment.id, agent: { id: input.session.agent.id, version: input.session.agent.version } },
+        scope: sandboxTokenScopeFor(sandboxHarnessPlacement(session.agent.openma?.harness)),
+        expected: { environmentId: input.environment.id, agent: { id: session.agent.id, version: session.agent.version } },
         now,
       }));
       return { gatewayBaseUrl: dependencies.gatewayBaseUrl, sessionsToken };

@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { zipSync } from "fflate";
+import { generateSandboxToken } from "@open-managed-agents/sandbox-gateway";
+const executionToken = generateSandboxToken();
 
 import type { AcpRuntime, SessionOptions } from "@open-managed-agents/acp-runtime";
 import {
@@ -237,6 +239,10 @@ describe("preinstalled Node managed ACP supervisor", () => {
       throw new Error(`unexpected request ${request.url}`);
     });
     const app = createNodeManagedAcpSupervisorApp({
+      resolveExecutionChannels: async request => {
+        expect(request).toEqual({tenantId:scope.workspaceId,sessionId:scope.sessionId,sessionsToken:"scoped-session-token"});
+        return {type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}}};
+      },
       environment: {
         ANTHROPIC_BASE_URL: "https://api.openma.test",
         ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
@@ -303,7 +309,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
         type: "http",
         name: "github",
         url: `https://gateway.openma.test/v1/oma/mcp-proxy/${scope.sessionId}/github`,
-        headers: [{ name: "Authorization", value: "Bearer scoped-session-token" }],
+        headers: [{ name: "Authorization", value: "Bearer " + executionToken }],
       }, {
         name: "workspace",
         command: "/usr/local/bin/workspace-mcp",
@@ -340,6 +346,75 @@ describe("preinstalled Node managed ACP supervisor", () => {
     expect(runtimePosts.every((request) =>
       request.headers.get("authorization") === "Bearer scoped-session-token"
     )).toBe(true);
+  });
+
+  it.each(["missing", "failed"])("never reuses Work credentials when execution channels are %s", async mode => {
+    const workspace = await mkdtemp(join(tmpdir(), "openma-channel-boundary-")); roots.push(workspace);
+    const seen: SessionOptions[] = [];
+    const app = createNodeManagedAcpSupervisorApp({environment:claimedEnvironment,workspacePath:workspace,
+      acpRuntime:fakeAcpRuntime(seen),agentId:"codex-acp",
+      fetch:productionFetch({agent:agentSnapshot({mcp_servers:[{type:"url",name:"docs",url:"https://upstream.test"}]})}),
+      ...(mode==="failed"?{resolveExecutionChannels:async()=>({type:"failed" as const,phase:"token_validation" as const,code:"token_rejected" as const,message:"execution channels rejected"})}:{}),
+      control:{pollIntervalMs:1,scheduler:{sleep:async()=>{}}},
+    });
+    const harness=await app.resolveHarness({id:"acp",version:"1"});
+    const started = harness!.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});
+    if (mode === "failed") await expect(started).rejects.toThrow("execution channels rejected");
+    else { const run = await started; await expect(run.completed).rejects.toThrow("execution channels authority"); }
+    expect(seen).toHaveLength(0);
+  });
+
+  it.each(["work", "invalid", "different", "empty-hosted", "no-model", "no-provider", "bad-url"])("rejects malformed ready channels before ACP start: %s", async mode => {
+    const workspace=await mkdtemp(join(tmpdir(),"openma-ready-boundary-"));roots.push(workspace);
+    const seen:SessionOptions[]=[];
+    const channels:any={mcpProxy:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}};
+    if(mode==="work") channels.mcpProxy.sessionsToken=channels.hostedInference.sessionsToken="scoped-session-token";
+    if(mode==="invalid") channels.mcpProxy.sessionsToken=channels.hostedInference.sessionsToken="oma_sbx_bad";
+    if(mode==="different") channels.mcpProxy.sessionsToken=generateSandboxToken();
+    if(mode==="empty-hosted") channels.hostedInference.sessionsToken="";
+    if(mode==="no-model") delete channels.hostedInference.model;
+    if(mode==="no-provider") channels.hostedInference.model.providerId="";
+    if(mode==="bad-url") channels.hostedInference.gatewayBaseUrl="file:///private";
+    const app=createNodeManagedAcpSupervisorApp({environment:claimedEnvironment,workspacePath:workspace,agentId:"codex-acp",acpRuntime:fakeAcpRuntime(seen),resolveExecutionChannels:async()=>({type:"ready",channels}),fetch:productionFetch({agent:agentSnapshot({inference:{provider_id:"anthropic",base_url:null}})}),control:{pollIntervalMs:1,scheduler:{sleep:async()=>{}}}});
+    let failed=false;try {const h=await app.resolveHarness({id:"acp",version:"1"});const run=await h!.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});await run.completed;} catch {failed=true;}
+    expect(seen).toHaveLength(0);expect(failed).toBe(true);
+  });
+
+  it("uses the default HTTP authority with bootstrap sandbox token, keeping Work HTTP separate", async()=>{
+    const workspace=await mkdtemp(join(tmpdir(),"openma-http-authority-"));roots.push(workspace);
+    const seen:SessionOptions[]=[];let channelCalls=0;
+    const control=productionFetch({agent:agentSnapshot({mcp_servers:[{type:"url",name:"docs",url:"https://upstream.test"}]})});
+    const app=createNodeManagedAcpSupervisorApp({environment:{...claimedEnvironment,OPENMA_SANDBOX_TOKEN:executionToken},workspacePath:workspace,agentId:"codex-acp",acpRuntime:fakeAcpRuntime(seen),fetch:async(input,init)=>{
+      const request=new Request(input,init);
+      if(new URL(request.url).pathname.endsWith("/execution-channels")){channelCalls++;expect(request.headers.get("authorization")).toBe("Bearer "+executionToken);return Response.json({type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}}});}
+      expect(request.headers.get("authorization")).toBe("Bearer scoped-session-token");return control(input,init);
+    },control:{pollIntervalMs:1,scheduler:{sleep:async()=>{}}}});
+    const h=await app.resolveHarness({id:"acp",version:"1"});const run=await h!.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});await run.completed;await run.drain();
+    expect(channelCalls).toBe(1);expect(seen).toHaveLength(1);
+  });
+
+  it.each(["http", "transport", "malformed", "failed", "replaced-token"])("default HTTP authority %s failure never starts ACP or falls back to Work", async mode => {
+    const workspace = await mkdtemp(join(tmpdir(), "openma-http-failed-")); roots.push(workspace);
+    const seen: SessionOptions[] = []; let calls = 0;
+    const app = createNodeManagedAcpSupervisorApp({
+      environment: { ...claimedEnvironment, OPENMA_SANDBOX_TOKEN: executionToken },
+      workspacePath: workspace, agentId: "codex-acp", acpRuntime: fakeAcpRuntime(seen),
+      fetch: async (input, init) => {
+        const request = new Request(input, init); calls++;
+        expect(request.url).toContain("/execution-channels");
+        expect(request.headers.get("authorization")).toBe("Bearer " + executionToken);
+        if (mode === "replaced-token") { const other=generateSandboxToken(); return Response.json({type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://control.test",sessionsToken:other},hostedInference:{gatewayBaseUrl:"https://control.test",sessionsToken:other,model:{providerId:"anthropic",baseUrl:null}}}}); }
+        if (mode === "http") return new Response(null, { status: 503 });
+        if (mode === "transport") throw new Error("sensitive-provider-detail");
+        return Response.json(mode === "failed"
+          ? { type: "failed", phase: "token_validation", code: "token_rejected", message: "sensitive-provider-detail" }
+          : { type: "ready", channels: {} });
+      },
+    });
+    const harness = await app.resolveHarness({ id: "acp", version: "1" });
+    await expect(harness!.start({ scope, harness: { id: "acp", version: "1" }, workspacePath: "/workspace", outputPath: null, checkpoint: async () => {}, signal: new AbortController().signal }))
+      .rejects.toThrow(/Execution channels/);
+    expect(calls).toBe(1); expect(seen).toHaveLength(0);
   });
 
   it("fails closed when the supervisor scope is not the claimed Work scope", async () => {

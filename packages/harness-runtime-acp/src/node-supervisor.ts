@@ -1,7 +1,10 @@
+import { createExecutionChannelsHttpResolver } from "./execution-channels-http.js";
 import {
   resolveAcpRelease, prepareAcpRelease, validateAcpRelease, acpReleaseMatchesSource,
   parseAcpReleaseSource, isPinnedAcpVersion, type AcpRelease, type AcpReleaseSource,
 } from "@openma/common/acp-artifacts";
+import type { ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult, ManagedAcpExecutionChannels } from "@open-managed-agents/shared/acp-execution-channels-rpc";
+import { sandboxTokenRandomPart } from "@open-managed-agents/sandbox-gateway";
 import type { AcpRuntime } from "@open-managed-agents/acp-runtime";
 import { posix, join } from "node:path";
 import { homedir } from "node:os";
@@ -51,6 +54,7 @@ const CONTROL_PLANE_ENV_KEYS = [
   "ANTHROPIC_SESSION_ID",
   "ANTHROPIC_WORK_ID",
   "ANTHROPIC_WORK_SECRET",
+  "OPENMA_SANDBOX_TOKEN",
 ] as const;
 
 export interface ManagedAcpSessionAgentSnapshot {
@@ -103,6 +107,8 @@ export interface NodeManagedAcpSupervisorAppOptions {
   workspacePath?: string;
   heartbeatIntervalMs?: number;
   fetch?: typeof globalThis.fetch;
+  /** Existing control-plane authority; Work bearer never doubles as model/MCP. */
+  resolveExecutionChannels?(request: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannelsResult>;
   acpRuntime?: AcpRuntime;
   /** Versioned release cache, independent of the environment image. */
   artifacts?: { root?: string; fetch?: typeof globalThis.fetch };
@@ -138,7 +144,7 @@ export interface NodeManagedAcpSupervisorApp {
 
 interface ActiveRunContext {
   outputPath: string | null;
-  proxy: { gatewayBaseUrl: string; sessionsToken: string };
+  channels: ManagedAcpExecutionChannels | null;
   history: ManagedHarnessRecoveryHistoryPort;
   skills: ManagedHarnessHttpSkillSource;
 }
@@ -242,23 +248,20 @@ export function createNodeManagedAcpSupervisorApp(
           : session.agent.model.id;
         let agent: AcpStatefulAgentSpec = baseAgent;
         const inference = session.agent.inference;
+        if ((inference?.provider_id || session.agent.mcp_servers.some(server => server.type === "url")) && active.channels === null) throw new Error("ACP execution channels authority is required; Work credentials cannot authorize model/MCP");
         if (inference?.provider_id) {
           const hosted = wireHostedInferenceForAcpLaunch({
             sessionId: session.id,
-            gatewayBaseUrl: active.proxy.gatewayBaseUrl,
-            sessionsToken: active.proxy.sessionsToken,
+            gatewayBaseUrl: active.channels!.hostedInference.gatewayBaseUrl,
+            sessionsToken: active.channels!.hostedInference.sessionsToken,
             env: baseAgent.env ?? {},
             agent: binding.agent,
             nativePath: binding.nativePath,
             model: {
-              wireModel: modelHandle,
-              providerId: inference.provider_id,
-              baseUrl: inference.base_url,
-              protocolEndpoints: inference.protocol_endpoints?.map((endpoint) => ({
-                protocol: endpoint.protocol as InferenceWireProtocol,
-                proxyPathSegment: endpoint.proxy_path_segment,
-                upstreamBaseUrl: endpoint.upstream_base_url,
-              })),
+              wireModel: active.channels!.hostedInference.model.wireModel ?? modelHandle,
+              providerId: active.channels!.hostedInference.model.providerId,
+              baseUrl: active.channels!.hostedInference.model.baseUrl,
+              protocolEndpoints: active.channels!.hostedInference.model.protocolEndpoints,
             },
           });
           for (const file of hosted.files) {
@@ -273,8 +276,8 @@ export function createNodeManagedAcpSupervisorApp(
           agent,
           mcpServers: projectAcpSandboxMcpServers({
             sessionId: session.id,
-            gatewayBaseUrl: active.proxy.gatewayBaseUrl,
-            sessionsToken: active.proxy.sessionsToken,
+            gatewayBaseUrl: active.channels?.mcpProxy.gatewayBaseUrl,
+            sessionsToken: active.channels?.mcpProxy.sessionsToken,
             servers: session.agent.mcp_servers,
           }),
           sessionRequestMeta: {
@@ -345,9 +348,15 @@ export function createNodeManagedAcpSupervisorApp(
           scheduler: options.control?.scheduler,
           signal: input.signal,
         });
+        const resolveChannels = options.resolveExecutionChannels ?? (environment.OPENMA_SANDBOX_TOKEN
+          ? createExecutionChannelsHttpResolver({apiBaseUrl:proxy.gatewayBaseUrl,fetch:options.fetch}) : undefined);
+        const resolvedChannels = await resolveChannels?.({tenantId:input.scope.workspaceId,sessionId:input.scope.sessionId,
+          sessionsToken:options.resolveExecutionChannels ? proxy.sessionsToken : environment.OPENMA_SANDBOX_TOKEN!});
+        if (resolvedChannels?.type === "failed") throw new Error(resolvedChannels.message);
+        if (resolvedChannels !== undefined) validateExecutionChannels(resolvedChannels, proxy.sessionsToken);
         active = {
           outputPath: input.outputPath,
-          proxy,
+          channels: resolvedChannels?.type === "ready" ? resolvedChannels.channels : null,
           history,
           skills,
         };
@@ -387,6 +396,25 @@ export function createNodeManagedAcpSupervisorApp(
       });
     },
   };
+}
+
+/** Structural startup barrier only. The injected authority still owns live
+ * claim/attempt and scope validation; token shape cannot establish ownership. */
+function validateExecutionChannels(result: ManagedAcpExecutionChannelsResult, workToken: string): void {
+  const invalid = () => { throw new Error("Invalid ACP execution channels capability"); };
+  if (result?.type !== "ready") return invalid();
+  const {mcpProxy,hostedInference} = result.channels ?? {};
+  const token = mcpProxy?.sessionsToken;
+  if (typeof token !== "string" || token === workToken || sandboxTokenRandomPart(token) === null
+    || hostedInference?.sessionsToken !== token) return invalid();
+  for (const raw of [mcpProxy.gatewayBaseUrl,hostedInference.gatewayBaseUrl]) {
+    if (typeof raw !== "string" || !raw.trim()) return invalid();
+    let url: URL; try { url = new URL(raw); } catch { return invalid(); }
+    if (!["http:","https:"].includes(url.protocol) || url.username || url.password) return invalid();
+  }
+  const model = hostedInference.model;
+  if (!model || typeof model.providerId !== "string" || !model.providerId.trim()
+    || !(model.baseUrl === null || typeof model.baseUrl === "string" && model.baseUrl.trim())) return invalid();
 }
 
 export function decodeManagedAcpSessionSnapshot(

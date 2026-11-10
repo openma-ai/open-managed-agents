@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0",
-    "@openma/common": "^0.9.1",
+    "@openma/common": "^0.13.1",
     "@openma/matter": "0.2.8",
     "@openma/matter-feishu": "0.2.8",
     "@openma/matter-gitlab": "0.2.8",

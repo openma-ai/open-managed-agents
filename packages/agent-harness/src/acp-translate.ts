@@ -40,6 +40,7 @@
  * `#emittedToolUses`.
  */
 
+import { ManagedAcpEventProjector } from "@openma/common/managed-runtime";
 import { generateEventId } from "@open-managed-agents/shared";
 import type { HarnessRuntime } from "./interface";
 
@@ -119,17 +120,7 @@ export class AcpTranslator {
   #finalTextLength = 0;
   #activeMessage: { id: string; text: string } | null = null;
   #activeThinking: { id: string; text: string } | null = null;
-  /** Tool calls observed but not yet emitted as agent.tool_use. ACP child
-   *  may send multiple `tool_call` / `tool_call_update` frames per actual
-   *  invocation; we accumulate the richest seen `name`/`input` here and
-   *  flush exactly once. Keyed by toolCallId. */
-  #pendingToolUses: Map<string, { name: string; input: Record<string, unknown> }> = new Map();
-  /** Tool call ids already emitted as agent.tool_use. Subsequent duplicate
-   *  `tool_call` notifications for the same id (a Claude Code ACP behaviour
-   *  — see file header) are dropped; the canonical "I have richer info now"
-   *  channel is `tool_call_update` with non-terminal status, which we still
-   *  honor by patching pending state but never re-emit a second tool_use. */
-  #emittedToolUses: Set<string> = new Set();
+  #projector = new ManagedAcpEventProjector({ nextEventId: generateEventId, now: () => new Date() });
   /** Tool output seen on `tool_call_update` frames, keyed by toolCallId.
    *  claude-agent-acp sends a command's output in its own update before the
    *  status update, either as `_meta.terminal_output(_delta)` or as
@@ -219,7 +210,7 @@ export class AcpTranslator {
         // ACP doesn't have an explicit "message complete" marker.
         await this.#closeMessage();
         await this.#closeThinking();
-        this.#bufferToolUse(upd);
+        this.#projectTools(upd);
         break;
       case "tool_call_update":
         this.#recordToolOutput(upd);
@@ -229,10 +220,9 @@ export class AcpTranslator {
         // then emit the result. Non-terminal updates carry richer
         // name/input data; merge into pending without emitting.
         if (upd.status && upd.status !== "in_progress" && upd.status !== "pending") {
-          if (upd.toolCallId) await this.#flushPendingToolUse(upd.toolCallId);
-          await this.#emitToolResult(upd);
+          this.#projectTools(this.#withToolOutput(upd));
         } else {
-          this.#mergeIntoPendingToolUse(upd);
+          this.#projectTools(upd);
         }
         break;
       case "user_message_chunk":
@@ -267,7 +257,7 @@ export class AcpTranslator {
       }
       // Drop unflushed tool_uses on abort — they'd be misleading without a
       // matching tool_result, and the user already knows the turn was killed.
-      this.#pendingToolUses.clear();
+      // Projector is per turn; discarded on abort without publishing pending tools.
       await this.#closeModelRequest(undefined, "ACP prompt aborted");
       return;
     }
@@ -356,81 +346,26 @@ export class AcpTranslator {
     });
   }
 
-  /** Buffer a fresh tool_call frame — caller responsible for closing any
-   *  active message/thinking first. Idempotent against already-emitted ids
-   *  (Claude Code re-sends `tool_call` for the same id after sending the
-   *  filled-in version, sometimes after the terminal update; we drop those). */
-  #bufferToolUse(upd: AcpSessionUpdate): void {
-    if (!upd.toolCallId) {
-      // ACP missing toolCallId is malformed — emit anonymously so the
-      // event stream stays useful for debugging, but skip dedup tracking.
-      this.#runtime.broadcast({
-        type: "agent.tool_use",
-        id: generateEventId(),
-        name: upd.title ?? upd.kind ?? "tool",
-        input: (upd.rawInput as Record<string, unknown>) ?? {},
-      });
+  #projectTools(update: AcpSessionUpdate): void {
+    // Preserve the legacy malformed-frame diagnostic without inventing a
+    // stable tool identity that could collide with a real protocol call.
+    if (update.sessionUpdate === "tool_call" && !update.toolCallId) {
+      this.#runtime.broadcast({type:"agent.tool_use",id:generateEventId(),name:update.title ?? update.kind ?? "tool",input:(update.rawInput as Record<string, unknown>) ?? {}});
       return;
     }
-    if (this.#emittedToolUses.has(upd.toolCallId)) return;
-    const existing = this.#pendingToolUses.get(upd.toolCallId);
-    this.#pendingToolUses.set(upd.toolCallId, this.#mergeFrames(existing, upd));
-  }
-
-  /** Apply a non-terminal `tool_call_update` to existing pending state. No
-   *  emission yet — we wait for the terminal update or a flush trigger. */
-  #mergeIntoPendingToolUse(upd: AcpSessionUpdate): void {
-    if (!upd.toolCallId) return;
-    if (this.#emittedToolUses.has(upd.toolCallId)) return;
-    const existing = this.#pendingToolUses.get(upd.toolCallId);
-    this.#pendingToolUses.set(upd.toolCallId, this.#mergeFrames(existing, upd));
-  }
-
-  /** Combine a previous pending state with an incoming ACP frame, preferring
-   *  whichever side carries non-empty data. ACP sends a skeleton (kind only,
-   *  empty input) followed by a filled frame (title=<command>, input=<args>);
-   *  we want the filled values to win without losing the skeleton's kind. */
-  #mergeFrames(
-    existing: { name: string; input: Record<string, unknown> } | undefined,
-    upd: AcpSessionUpdate,
-  ): { name: string; input: Record<string, unknown> } {
-    const incomingInput = (upd.rawInput as Record<string, unknown> | undefined) ?? {};
-    const incomingName = upd.title ?? upd.kind ?? "";
-    const richer = (a: string, b: string): string => {
-      // Prefer a non-empty name; if both non-empty, prefer the longer
-      // one (the filled-in title is typically more descriptive than
-      // the skeleton's kind label).
-      if (!a) return b;
-      if (!b) return a;
-      return b.length > a.length ? b : a;
-    };
-    return {
-      input: Object.keys(incomingInput).length > 0
-        ? incomingInput
-        : (existing?.input ?? {}),
-      name: existing
-        ? richer(existing.name, incomingName)
-        : (incomingName || "tool"),
-    };
-  }
-
-  async #flushPendingToolUse(id: string): Promise<void> {
-    const pending = this.#pendingToolUses.get(id);
-    if (!pending) return;
-    this.#pendingToolUses.delete(id);
-    this.#emittedToolUses.add(id);
-    this.#runtime.broadcast({
-      type: "agent.tool_use",
-      id,
-      name: pending.name,
-      input: pending.input,
-    });
+    const events = this.#projector.project({type:"session.event",sessionId:"translator",turnId:"turn",event:{update}});
+    for (const event of events) {
+      if (event.type === "agent.tool_use") this.#runtime.broadcast(event as never);
+      if (event.type === "agent.tool_result") {
+        const content = event.content as Array<{text?: string}>;
+        this.#runtime.broadcast({ ...event, content: content.map(block => block.text ?? "").join("\n") } as never);
+      }
+    }
   }
 
   async #flushAllPendingToolUses(): Promise<void> {
-    for (const id of Array.from(this.#pendingToolUses.keys())) {
-      await this.#flushPendingToolUse(id);
-    }
+    // A text boundary flushes pending canonical tools without completing the turn.
+    this.#projectTools({sessionUpdate:"agent_message_chunk",content:{text:""}});
   }
 
   #recordToolOutput(upd: AcpSessionUpdate): void {
@@ -449,22 +384,13 @@ export class AcpTranslator {
     }
   }
 
-  async #emitToolResult(upd: AcpSessionUpdate): Promise<void> {
-    if (!upd.toolCallId) return;
-    const out = upd.rawOutput;
+  #withToolOutput(upd: AcpSessionUpdate): AcpSessionUpdate {
+    if (!upd.toolCallId) return upd;
     const seen = this.#toolOutputs.get(upd.toolCallId);
     this.#toolOutputs.delete(upd.toolCallId);
-    const text =
-      typeof out === "string" ? out
-      : out != null ? JSON.stringify(out)
-      : seen !== undefined ? seen
-      : `(status: ${upd.status ?? "unknown"})`;
-    this.#runtime.broadcast({
-      type: "agent.tool_result",
-      tool_use_id: upd.toolCallId,
-      content: text,
-    });
+    return upd.rawOutput == null && seen !== undefined ? { ...upd, rawOutput: seen } : upd;
   }
+
 }
 
 function chunkText(content: AcpSessionUpdate["content"]): string {

@@ -86,11 +86,34 @@ The Managed Agents API remains the canonical public protocol:
 The per-work Session bearer is an exact capability projection of the resolved
 Session snapshot. It may retrieve the claimed Session and its events, declared
 skills, attached files, attached Memory Stores with their declared access
-mode, the bound MCP gateway, and its own Work heartbeat/stop endpoints. It may
+mode, and its own Work heartbeat/stop endpoints. Model and MCP access use the
+existing attempt-scoped `oma_sbx` capability, never this Work bearer. It may
 not list/upload/delete files, cross to another Session or resource, or mutate a
 read-only Memory Store. Claim rotation fences the previous bearer against all
 of these routes. A sandbox egress adapter may narrow the reachable route
 families further, but the API-side live-claim check remains authoritative.
+
+### Unified execution lifecycle and placement
+
+MA and ACP placements use the Environment Worker claim/ACK, CAS heartbeat,
+lease loss, recovery, interrupt and settlement lifecycle. Placement changes
+only event-input/event-output adapters and the existing Session capability
+scope; it does not introduce an ACP-specific worker, lease or recovery ledger.
+Provider runtime Ports retain allocation, attach/resume, resource/storage,
+snapshot, idle management and process bootstrap/stop/status. They do not carry
+ACP session stdin/stdout/SSE across the provider boundary. A sandbox supervisor
+uses the existing Work HTTP control channel over outbound HTTP; ACP stdio stays
+local between that supervisor and its child. No public sandbox ingress is needed.
+
+Execution heartbeat is the existing Work claim CAS renewal, not a native
+process-alive check or provider keepalive. Lease loss cancels execution and old
+attempt writes remain fenced. Provider liveness and idle timers remain resource
+management only. The Work bearer cannot authorize model/MCP calls; those use
+the existing unique attempt holder, shared on the same physical sandbox and
+rotated without grace when the physical sandbox changes. Scope cannot be
+elevated and sharing that holder does not merge parent/child agent permissions.
+MA child threads reuse the parent execution context and their existing thread
+event history. This boundary does not relocate the external MA model loop.
 
 Memory Store ownership has exactly two lanes. An unmodified `ama_worker` owns
 download and read-write synchronization through Anthropic's SDK; OpenMA does

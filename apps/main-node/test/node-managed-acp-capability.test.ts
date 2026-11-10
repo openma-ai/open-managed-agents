@@ -69,6 +69,23 @@ describe("Node sandbox token (ACP channels and egress), real SQLite", () => {
     await expect(f.capabilities.issueEgress(f.fence, "acp-sandbox", "replacement")).rejects.toThrow(/scope/);
   });
 
+  it("reuses the root attempt holder for a child without minting a child token or elevating egress scope", async () => {
+    const f = await fixture("acp-sandbox");
+    const child = { ...f.input.session, agent: { ...f.input.session.agent, id: "child", version: 2 } };
+    const reused = await f.capabilities.issue({ ...f.input, session: child, executionSession: f.input.session });
+    const root = await f.capabilities.issue(f.input);
+    expect(reused.sessionsToken).toBe(root.sessionsToken);
+    expect(await f.capabilities.issueEgress(f.fence, "acp-sandbox", "same-box")).toBe(root.sessionsToken);
+    const row = await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_session_executions WHERE id = ?").bind(f.fence.executionId).first<{sandbox_token_hashes:string}>();
+    expect(JSON.parse(row!.sandbox_token_hashes)).toHaveLength(1);
+    await expect(f.capabilities.issue({ ...f.input, session: { ...child, id: "other" }, executionSession: f.input.session })).rejects.toThrow(/Session/);
+    const outside = await fixture(null);
+    const relay = await outside.capabilities.issueEgress(outside.fence, null, "same-box");
+    const channels = await outside.capabilities.issue({ ...outside.input, session: child, executionSession: outside.input.session });
+    expect(channels.sessionsToken).toBe(relay);
+    expect((await call(outside.capabilities, "/v1/oma/mcp-proxy/session/x", {authorization: "Bearer " + channels.sessionsToken})).type).toBe("rejected");
+  });
+
   it("refuses to issue for a mismatched Session, a stale fence, or no fence", async () => {
     const f = await fixture();
     await expect(f.capabilities.issue({ ...f.input, workspaceId: "other" })).rejects.toThrow(/does not name this Session/);

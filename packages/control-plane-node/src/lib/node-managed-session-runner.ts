@@ -176,6 +176,7 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
    * Default: 3 attempts, backoff min(30s, 2s * 2^(n-1)).
    */
   harnessRetry?: { attempts: number; delayMs(attempt: number): number };
+  isExecutionFenceActive?(fence: SessionExecutionFence): Promise<boolean>;
   subagentThreads?: ManagedNodeSubagentThreads;
   subagentPolicy?(input: ManagedRunnerContext): ManagedNodeSubagentPolicy | Promise<ManagedNodeSubagentPolicy>;
   resolveSubagentSession?(input: ManagedRunnerContext & { request: ManagedNodeCreateSubagent }): Promise<Session>;
@@ -251,6 +252,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   disposeTools?(tools: HarnessContext["tools"]): Promise<void>;
   buildHarness(): HarnessInterface;
   buildHarnessContext(input: ManagedRunnerContext & ManagedRunnerSubagentContext & {
+    /** Physical execution owner, never the child thread agent authorization. */
+    executionSession?: Session;
     acceptedEvents: NodeManagedSessionRunnerAcceptInput["events"];
     executionFence?: SessionExecutionFence;
     sandbox: SandboxExecutor;
@@ -758,6 +761,8 @@ export class DefaultNodeManagedSessionRunner
       ? recovery.sandbox
       : withSandboxExecutionGuard(recovery.sandbox, {
           signal: abortController.signal,
+          isValid: this.dependencies.isExecutionFenceActive === undefined ? undefined
+            : () => this.dependencies.isExecutionFenceActive!(input.executionFence!),
         });
     let acquisition: Promise<void> | undefined;
     const ensureSandbox = (): Promise<void> => acquisition ??= this.beginSandboxStartup({
@@ -877,14 +882,14 @@ export class DefaultNodeManagedSessionRunner
           policy,
           resolveSession: this.dependencies.resolveSubagentSession === undefined ? undefined :
             (request) => this.dependencies.resolveSubagentSession!({ ...context, request }),
-          run: async ({ session, runtime: childRuntime, sandbox: childSandbox }) => {
+          run: async ({ session, runtime: childRuntime, sandbox: childSandbox, acceptedEvents }) => {
             const childContext = { ...context, session };
             let childTools: HarnessContext["tools"] | undefined;
             try {
               const model = await this.dependencies.buildModel(childContext);
               childTools = await this.dependencies.buildTools({ ...childContext, sandbox: childSandbox });
               const harnessContext = await this.dependencies.buildHarnessContext({
-                ...childContext, acceptedEvents: [], sandbox: childSandbox,
+                ...childContext, executionSession: input.session, acceptedEvents, executionFence: input.executionFence, sandbox: childSandbox,
                 runtime: childRuntime, model, tools: childTools,
               });
               // One session egress meter: child model calls are gated and
@@ -919,6 +924,7 @@ export class DefaultNodeManagedSessionRunner
         const harnessContext = await this.dependencies.buildHarnessContext({
           ...context,
           ...subagentContext,
+          executionSession: input.session,
           acceptedEvents: input.events,
           executionFence: input.executionFence,
           sandbox,

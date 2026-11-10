@@ -101,7 +101,7 @@ interface SubagentsInput {
    */
   threadStartAdmission?: SessionWorkAdmissionPort;
   resolveSession?(request: ManagedNodeCreateSubagent): Promise<Session>;
-  run(input: { session: Session; runtime: ManagedNodeHarnessRuntime; sandbox: SandboxExecutor }): Promise<void>;
+  run(input: { session: Session; runtime: ManagedNodeHarnessRuntime; sandbox: SandboxExecutor; acceptedEvents: Extract<SessionEventView, { type: "user.message" }>[] }): Promise<void>;
   output(frame: unknown): Promise<void>;
   clock: { now(): Date };
   ids: { nextEventId(): string };
@@ -195,7 +195,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
       },
       events: { emit: (event) => this.emitEvent(event) },
       facts: { facts: () => subagentFacts(input.historyEvents) },
-      turns: { run: ({ thread, abortSignal }) => this.runTurn(thread, abortSignal) },
+      turns: { run: ({ thread, message, abortSignal }) => this.runTurn(thread, abortSignal, message?.id) },
       ids: { threadId: () => `sthr_${randomUUID()}`, messageId: () => input.ids.nextEventId() },
     });
   }
@@ -280,7 +280,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     }, threadId);
   }
 
-  private async runTurn(thread: SubagentThread<Session>, abortSignal: AbortSignal): Promise<SubagentTurnResult> {
+  private async runTurn(thread: SubagentThread<Session>, abortSignal: AbortSignal, messageId?: string): Promise<SubagentTurnResult> {
     const session = thread.agent;
     const log = this.threadLog(thread.id);
     const before = log.length;
@@ -298,7 +298,9 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     if (this.budgetGate !== null) runtime.setBudgetGate(turnSessionBudgetGate(this.budgetGate));
     let stopReason: "end_turn" | "budget_reached" = "end_turn";
     try {
-      await this.input.run({ session, runtime, sandbox });
+      const acceptedEvents = log.flatMap(event => event.type === "agent.thread_message_received" && messageId !== undefined && event.fromMessageId === messageId
+        ? [{ id: event.id, type: "user.message" as const, content: event.content, processedAt: event.processedAt }] : []);
+      await this.input.run({ session, runtime, sandbox, acceptedEvents });
       // Capture this turn before output draining lets siblings advance. An
       // explicit terminal frame is authoritative, not a later session flag.
       const terminal = runtime.history.getEvents().slice().reverse().find(event => event.type === "session.status_idle");
