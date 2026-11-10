@@ -200,7 +200,7 @@ describe("SqlSessionPersistence", () => {
       initialEvents: [{ type: "user.message", content: [{ type: "text", text: "Run once" }] }], resourceSecrets: [],
     });
     await expect(client.prepare("SELECT COUNT(*) AS count FROM managed_session_initial_events").first()).resolves.toEqual({ count: 1 });
-    expect(scope).toEqual({ workspaceId: "workspace_01", environmentId: session.environmentId });
+    expect(scope).toEqual({ workspaceId: "workspace_01", environmentId: session.environmentId, session });
     await expect(client.prepare("SELECT COUNT(*) AS count FROM managed_session_executions").first()).resolves.toEqual({ count: enabled ? 1 : 0 });
   });
 

@@ -1,3 +1,4 @@
+import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type {
   EnqueueEnvironmentSessionWork,
   EnqueueEnvironmentSessionWorkResult,
@@ -35,7 +36,7 @@ export class EnvironmentWorkEnqueuerService
       };
     }
     if (
-      input.environment.config.type !== "self_hosted" ||
+      sessionExecutionPlacement(input.environment, input.session).authority !== "environment_work" ||
       input.environment.archivedAt !== null
     ) {
       return {

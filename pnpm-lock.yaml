@@ -2591,6 +2591,9 @@ importers:
       '@open-managed-agents/app':
         specifier: workspace:*
         version: link:../managed-agents-app
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
       '@open-managed-agents/managed-agents-application':
         specifier: workspace:*
         version: link:../managed-agents-application
@@ -2631,6 +2634,9 @@ importers:
       '@open-managed-agents/deployment-store-sql':
         specifier: workspace:*
         version: link:../deployment-store-sql
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
       '@open-managed-agents/dream-store-sql':
         specifier: workspace:*
         version: link:../dream-store-sql
@@ -4088,6 +4094,9 @@ importers:
 
   packages/sandbox-gateway:
     dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
       '@open-managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../session-runtime
