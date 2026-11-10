@@ -165,3 +165,18 @@ it("actual HTTP entry resolves command-only pin from trusted installed inventory
   expect(response.status).toBe(200);expect(launched.OPENMA_HARNESS_ID).toBe("installed-release");expect(launched.OPENMA_HARNESS_VERSION).toBe("2.4.6");expect(JSON.parse(launched.OPENMA_ACP_HARNESSES)[0].command).toBe("/opt/agents/fixed");
  } finally {setCloudflareSandboxForTest(undefined);}
 });
+
+it("bootstrap failure rejects the drain with safe observable diagnostics and no ACK/stop", async () => {
+ const {createCfDispatchedEnvironmentWorker}=await import("../src/runtime/cf-environment-worker");const {vi}=await import("vitest");const report=vi.spyOn(console,"error").mockImplementation(()=>{});let polls=0,stops=0;
+ try {
+  const worker=createCfDispatchedEnvironmentWorker({...env,PUBLIC_BASE_URL:"https://control.test"} as never,{environmentId:"env",workspaceId:"default",environmentKey:"standing-private"},{baseURL:"https://control.test",beta:{webhooks:{unwrap:()=>({id:"event",type:"event",data:{type:"session.status_run_started",workspace_id:"default"}})}},withOptions:()=>({beta:{environments:{work:{poll:async()=>{polls++;return{id:"work",environment_id:"env",data:{type:"session",id:"sess"},secret:"work-private",metadata:{}};},stop:async()=>{stops++;}}}}})} as never);
+  await expect(worker.drain()).rejects.toThrow("CF EnvironmentWorker failed");expect(polls).toBe(1);expect(stops).toBe(0);expect(report).toHaveBeenCalled();expect(JSON.stringify(report.mock.calls)).not.toMatch(/standing-private|work-private/);
+ } finally {report.mockRestore();}
+});
+it("signed webhook background poll failure stays rejected without leaking dependency error", async () => {
+ const {createCfDispatchedEnvironmentWorker}=await import("../src/runtime/cf-environment-worker");const {vi}=await import("vitest");const report=vi.spyOn(console,"error").mockImplementation(()=>{});const waits:Promise<unknown>[]=[];
+ try {
+  const worker=createCfDispatchedEnvironmentWorker({...env,PUBLIC_BASE_URL:"https://control.test"} as never,{environmentId:"env",workspaceId:"default",environmentKey:"standing-private"},{baseURL:"https://control.test",beta:{webhooks:{unwrap:()=>({id:"event",type:"event",data:{type:"session.status_run_started",workspace_id:"default"}})}},withOptions:()=>({beta:{environments:{work:{poll:async()=>{throw Error("raw-private-credential");},stop:async()=>{throw Error("unexpected");}}}}})} as never);
+  worker.handleWebhook({body:"verified-by-client",headers:{},waitUntil:p=>waits.push(p)});const settled=await Promise.allSettled(waits);expect(settled[0].status).toBe("rejected");expect(String((settled[0] as PromiseRejectedResult).reason)).not.toContain("private");expect(JSON.stringify(report.mock.calls)).not.toContain("private");
+ } finally {report.mockRestore();}
+});

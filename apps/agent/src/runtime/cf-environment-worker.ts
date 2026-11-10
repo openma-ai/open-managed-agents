@@ -15,7 +15,15 @@ export function createCfDispatchedEnvironmentWorker(env: Env, config: CfEnvironm
   for (const value of [config.environmentId, config.workspaceId, config.environmentKey, env.PUBLIC_BASE_URL]) if (!value?.trim()) throw new TypeError("CF EnvironmentWorker configuration is incomplete");
   const origin = env.PUBLIC_BASE_URL!.replace(/\/+$/, "");
   const control = client ?? new Anthropic({ apiKey: null, authToken: config.environmentKey, baseURL: origin, maxRetries: 0 }) as unknown as DispatchedManagedEnvironmentWorkerClient;
-  return createDispatchedManagedEnvironmentWorker({ client: control, environmentId: config.environmentId, workspaceId: config.workspaceId, environmentKey: config.environmentKey, webhookKey: config.webhookKey, sandboxApiBaseUrl: origin, maxWorkItemsPerDrain: 8,
+  let failures = 0;
+  const failure = () => Object.assign(new Error("CF EnvironmentWorker failed"), { code: "work_control_or_dispatch_failed" });
+  const worker = createDispatchedManagedEnvironmentWorker({ client: control, environmentId: config.environmentId, workspaceId: config.workspaceId, environmentKey: config.environmentKey, webhookKey: config.webhookKey, sandboxApiBaseUrl: origin, maxWorkItemsPerDrain: 8,
+    onError() {
+      // Raw SDK errors can contain URLs/headers/body. Keep only a bounded
+      // operational signal, and reject so waitUntil cannot report success.
+      console.error("cf_environment_worker_failed", { code: "work_control_or_dispatch_failed", environmentId: config.environmentId, workspaceId: config.workspaceId });
+      failures++;
+    },
     dispatch: {
       descriptor: () => ({ provider: "cloudflare", version: "1.0.0", strategy: "poll_unacked_then_dispatch" }),
       async dispatch(input) {
@@ -26,6 +34,17 @@ export function createCfDispatchedEnvironmentWorker(env: Env, config: CfEnvironm
       },
     },
   });
+  const observed = async (promise: Promise<void>, before: number) => {
+    try { await promise; } catch { if (failures === before) { console.error("cf_environment_worker_failed", { code: "work_control_or_dispatch_failed" }); } throw failure(); }
+    if (failures !== before) throw failure();
+  };
+  return { ...worker,
+    drain(signal?: AbortSignal) { const before = failures; return observed(worker.drain(signal), before); },
+    handleWebhook(input: Parameters<typeof worker.handleWebhook>[0]) {
+      const before = failures;
+      return worker.handleWebhook({ ...input, waitUntil(promise) { const result = observed(promise, before); void result.catch(() => undefined); input.waitUntil(result); } });
+    },
+  };
 }
 export type CfWorkEnvironment = Env & { OPENMA_WORK_ENVIRONMENT_ID?: string; OPENMA_WORK_WORKSPACE_ID?: string; OPENMA_WORK_ENVIRONMENT_KEY?: string; OPENMA_WORK_WEBHOOK_KEY?: string };
 const configuredWorkers = new WeakMap<object, ReturnType<typeof createCfDispatchedEnvironmentWorker>>();
