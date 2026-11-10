@@ -1,1 +1,0 @@
-ALTER TABLE "managed_environment_work" ADD COLUMN "runtime_projection" text;

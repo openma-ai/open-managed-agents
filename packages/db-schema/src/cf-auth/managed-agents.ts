@@ -297,8 +297,6 @@ export const managed_environment_work = sqliteTable(
     created_at: integer("created_at").notNull(),
     /** Runtime Host restore pointer, written under the Work claim (ADR 0005). */
     runtime_publication_json: text("runtime_publication_json"),
-    /** Control-plane raw ACP projector checkpoint, committed with canonical events. */
-    runtime_projection: text("runtime_projection"),
     /** Sandbox token hashes of the current claim; reset by every claim. */
     sandbox_token_hashes: text("sandbox_token_hashes"),
   },

@@ -88,12 +88,6 @@ const workClaimPublicationMigration = {
   toSnapshot: "6f23cfa4-a1c3-4c7a-8efa-040a495a1191",
 } as const;
 
-/** Nullable control-plane raw ACP projection checkpoint on the existing Work. */
-const workRuntimeProjectionMigration = {
-  fromSnapshot: workClaimPublicationMigration.toSnapshot,
-  toSnapshot: "98d68bd5-a662-42a1-a646-6030593d00d9",
-} as const;
-
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -161,7 +155,6 @@ export async function migrateNodeMysqlSchema(
       runtimeResourceTablesMigration.toSnapshot,
       sandboxTokenHashesMigration.toSnapshot,
       workClaimPublicationMigration.toSnapshot,
-      workRuntimeProjectionMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -206,11 +199,6 @@ export async function migrateNodeMysqlSchema(
         if (installed.snapshot_id === sandboxTokenHashesMigration.fromSnapshot) {
           await ensureMysqlNullableColumn(sql, "managed_session_executions", "sandbox_token_hashes", "TEXT");
           installed = { snapshot_id: sandboxTokenHashesMigration.toSnapshot };
-          continue;
-        }
-        if (installed.snapshot_id === workRuntimeProjectionMigration.fromSnapshot) {
-          await ensureMysqlNullableColumn(sql, "managed_environment_work", "runtime_projection", "TEXT");
-          installed = { snapshot_id: workRuntimeProjectionMigration.toSnapshot };
           continue;
         }
         if (installed.snapshot_id === workClaimPublicationMigration.fromSnapshot) {
