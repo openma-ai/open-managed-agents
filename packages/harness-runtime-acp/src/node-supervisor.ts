@@ -250,7 +250,7 @@ export function createNodeManagedAcpSupervisorApp(
         let agent: AcpStatefulAgentSpec = baseAgent;
         const inference = session.agent.inference;
         if ((inference?.provider_id || session.agent.mcp_servers.some(server => server.type === "url")) && active.channels === null) throw new Error("ACP execution channels authority is required; Work credentials cannot authorize model/MCP");
-        if (inference?.provider_id) {
+        if (active.channels !== null) {
           const hosted = wireHostedInferenceForAcpLaunch({
             sessionId: session.id,
             gatewayBaseUrl: active.channels!.hostedInference.gatewayBaseUrl,

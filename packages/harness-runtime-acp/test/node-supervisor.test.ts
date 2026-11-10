@@ -241,7 +241,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
     const app = createNodeManagedAcpSupervisorApp({
       resolveExecutionChannels: async request => {
         expect(request).toEqual({tenantId:scope.workspaceId,sessionId:scope.sessionId,sessionsToken:"scoped-session-token"});
-        return {type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}}};
+        return {type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken,model:{providerId:"openai",baseUrl:null}}}};
       },
       environment: {
         ANTHROPIC_BASE_URL: "https://api.openma.test",
@@ -268,6 +268,8 @@ describe("preinstalled Node managed ACP supervisor", () => {
           command: "codex-acp",
           env: {
             KEEP_ME: "yes",
+            OPENAI_API_KEY: "must-not-reach-agent",
+            ANTHROPIC_API_KEY: "must-not-reach-agent",
             ANTHROPIC_WORK_SECRET: "must-be-removed",
           },
         };
@@ -294,6 +296,8 @@ describe("preinstalled Node managed ACP supervisor", () => {
       effort: "low",
     });
     expect(seenOptions).toHaveLength(1);
+    expect(seenOptions[0]?.agent.env?.OPENAI_API_KEY).toBeUndefined();
+    expect(seenOptions[0]?.agent.env?.ANTHROPIC_API_KEY).toBeUndefined();
     expect(seenOptions[0]).toMatchObject({
       agent: {
         command: "codex-acp",
@@ -367,7 +371,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
   it.each(["work", "invalid", "different", "empty-hosted", "no-model", "no-provider", "bad-url"])("rejects malformed ready channels before ACP start: %s", async mode => {
     const workspace=await mkdtemp(join(tmpdir(),"openma-ready-boundary-"));roots.push(workspace);
     const seen:SessionOptions[]=[];
-    const channels:any={mcpProxy:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}};
+    const channels:any={mcpProxy:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken,model:{providerId:"openai",baseUrl:null}}};
     if(mode==="work") channels.mcpProxy.sessionsToken=channels.hostedInference.sessionsToken="scoped-session-token";
     if(mode==="invalid") channels.mcpProxy.sessionsToken=channels.hostedInference.sessionsToken="oma_sbx_bad";
     if(mode==="different") channels.mcpProxy.sessionsToken=generateSandboxToken();
@@ -386,11 +390,15 @@ describe("preinstalled Node managed ACP supervisor", () => {
     const control=productionFetch({agent:agentSnapshot({mcp_servers:[{type:"url",name:"docs",url:"https://upstream.test"}]})});
     const app=createNodeManagedAcpSupervisorApp({environment:{...claimedEnvironment,OPENMA_SANDBOX_TOKEN:executionToken},workspacePath:workspace,agentId:"codex-acp",acpRuntime:fakeAcpRuntime(seen),fetch:async(input,init)=>{
       const request=new Request(input,init);
-      if(new URL(request.url).pathname.endsWith("/execution-channels")){channelCalls++;expect(request.headers.get("authorization")).toBe("Bearer "+executionToken);return Response.json({type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:null}}}});}
+      if(new URL(request.url).pathname.endsWith("/execution-channels")){channelCalls++;expect(request.headers.get("authorization")).toBe("Bearer "+executionToken);return Response.json({type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:executionToken,model:{providerId:"openai",baseUrl:null}}}});}
       expect(request.headers.get("authorization")).toBe("Bearer scoped-session-token");return control(input,init);
     },control:{pollIntervalMs:1,scheduler:{sleep:async()=>{}}}});
     const h=await app.resolveHarness({id:"acp",version:"1"});const run=await h!.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});await run.completed;await run.drain();
     expect(channelCalls).toBe(1);expect(seen).toHaveLength(1);
+    expect(seen[0]?.agent.env?.HOSTED_INFERENCE_TOKEN).toBe(executionToken);
+    expect(seen[0]?.agent.env?.HOSTED_INFERENCE_URL).toContain("/inference-proxy/");
+    expect(seen[0]?.agent.env?.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(seen[0]?.agent.env?.OPENAI_API_KEY).toBeUndefined();
   });
 
   it.each(["http", "transport", "malformed", "failed", "replaced-token"])("default HTTP authority %s failure never starts ACP or falls back to Work", async mode => {
@@ -403,7 +411,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
         const request = new Request(input, init); calls++;
         expect(request.url).toContain("/execution-channels");
         expect(request.headers.get("authorization")).toBe("Bearer " + executionToken);
-        if (mode === "replaced-token") { const other=generateSandboxToken(); return Response.json({type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://control.test",sessionsToken:other},hostedInference:{gatewayBaseUrl:"https://control.test",sessionsToken:other,model:{providerId:"anthropic",baseUrl:null}}}}); }
+        if (mode === "replaced-token") { const other=generateSandboxToken(); return Response.json({type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://control.test",sessionsToken:other},hostedInference:{gatewayBaseUrl:"https://control.test",sessionsToken:other,model:{providerId:"openai",baseUrl:null}}}}); }
         if (mode === "http") return new Response(null, { status: 503 });
         if (mode === "transport") throw new Error("sensitive-provider-detail");
         return Response.json(mode === "failed"
@@ -926,4 +934,13 @@ describe("preinstalled Node managed ACP supervisor", () => {
     expect(() => decodeManagedAcpSessionSnapshot(sessionSnapshot(agent as never)))
       .toThrow(`Managed Session ${path} is invalid`);
   });
+});
+
+it("preserves existing common clientCallbacks through native Session preparation",async()=>{
+ const {createAcpNativeSessionState}=await import("../src/node");
+ const callbacks={requestPermission:async()=>({outcome:{outcome:"cancelled" as const}})};
+ const state=createAcpNativeSessionState({io:{readFile:async()=>{throw new Error("missing")},writeFile:async()=>{},writeFileBytes:async()=>{},exec:async()=>""},resolveSession:async()=>({agent:{id:"codex-acp",command:"codex-acp"},clientCallbacks:callbacks})});
+ const command={type:"session.start",sessionId:"callback-session",cwd:"/workspace"} as never;
+ await state.beforeStart(command);
+ expect((await state.prepare(command)).clientCallbacks).toBe(callbacks);
 });

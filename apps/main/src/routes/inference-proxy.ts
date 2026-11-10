@@ -12,6 +12,10 @@ import { admitViaSessionAdmissionHook, logWarn } from "@open-managed-agents/shar
 import type { Services } from "@open-managed-agents/services";
 import type { HostedInferenceEgress } from "@open-managed-agents/inference-proxy";
 import { createInferenceProxyRoutes, type InferenceProxyPorts } from "@open-managed-agents/http-routes/proxy";
+import { authenticateSandboxToken } from "@open-managed-agents/sandbox-gateway";
+import { cfSandboxTokenStore } from "../lib/cf-sandbox-token-store";
+import { extractHostedInferenceProxyToken } from "@open-managed-agents/inference-proxy";
+import { SqlWorkModelEgress } from "@open-managed-agents/managed-agents-adapters-sql";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { resolveSessionSandboxFetcher } from "../lib/cf-session-router";
@@ -69,4 +73,20 @@ function cfInferenceProxyPorts(env: Env, tenantDb: D1Database, services: Service
 export default createInferenceProxyRoutes<{
   Bindings: Env;
   Variables: { services: Services; tenantDb: D1Database };
-}>((_workspaceId, context) => cfInferenceProxyPorts(context.env, context.var.tenantDb, context.var.services));
+}>(async (workspaceId, context) => {
+  const ports = cfInferenceProxyPorts(context.env, context.var.tenantDb, context.var.services);
+  const sessionId = context.req.param("sessionId") ?? "";
+  const presented = extractHostedInferenceProxyToken(context.req.raw.headers);
+  if (presented.status !== "ok") return ports;
+  const sql = new CfD1SqlClient(context.var.tenantDb);
+  const work = await authenticateSandboxToken(cfSandboxTokenStore(context.env),{sessionId,token:presented.token,channel:"api"});
+  if (work.type === "unavailable") throw new Error("Work model authority unavailable");
+  if (work.type !== "accepted") return {...ports,budget:()=>({begin:()=>false,complete:()=>{}})};
+  if (!work.attempt.attemptId.startsWith("environment-work-claim:")) return ports;
+  const session = await new SqlSessionSource(sql).find({workspaceId,sessionId});
+  if (!session) throw new Error("Work model Session unavailable");
+  const model = session.agent.model;
+  const card = await context.var.services.modelCards.findByModelId({tenantId:workspaceId,modelId:typeof model === "string" ? model : model.id});
+  const meter = await new SqlWorkModelEgress(sql).open(work.resolution,card?.archived_at ? null : card?.pricing ?? null);
+  return {...ports,budget:()=>meter};
+});

@@ -78,6 +78,7 @@ export function createNodeAcpHarnessStateIo(
 export interface AcpHarnessResolvedSession {
   agent: AcpStatefulAgentSpec;
   restart?: SessionOptions["restart"];
+  clientCallbacks?: SessionOptions["clientCallbacks"];
   idleTimeoutMs?: number;
   perTurnTimeoutMs?: number;
   mcpServers?: SessionOptions["mcpServers"];
@@ -189,6 +190,7 @@ export class AcpNativeSessionState implements ManagedHarnessSessionStatePort {
     const resolved = record.options;
     return {
       agent: record.preparation.launch,
+      ...(resolved.clientCallbacks === undefined ? {} : { clientCallbacks: resolved.clientCallbacks }),
       ...(resolved.restart === undefined ? {} : { restart: resolved.restart }),
       ...(resolved.idleTimeoutMs === undefined
         ? {}

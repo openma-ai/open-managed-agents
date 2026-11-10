@@ -86,7 +86,9 @@ export function inferenceUsageFromSse(text: string): TokenUsage | null {
 export function observeInferenceResponseUsage(
   response: Response,
   onUsage: (usage: TokenUsage) => void | Promise<void>,
+  durable = false,
 ): Response {
+  if (durable && response.body) return observeDurableUsage(response, onUsage);
   if (!response.body) {
     void response
       .clone()
@@ -132,6 +134,8 @@ export function observeInferenceResponseUsage(
  * the in-process `modelEgress(gate)`.
  */
 export type HostedInferenceEgress = {
+  /** A successful response EOF waits for canonical usage persistence. */
+  durable?: boolean;
   begin(): boolean | Promise<boolean>;
   complete(usage: TokenUsage): void | Promise<void>;
 };
@@ -150,7 +154,7 @@ export async function withHostedInferenceBudget(
   if (!egress) return send();
   if (!(await egress.begin())) return exhaustedResponse();
   const response = await send();
-  return observeInferenceResponseUsage(response, (usage) => egress.complete(usage));
+  return observeInferenceResponseUsage(response, (usage) => egress.complete(usage), "durable" in egress && egress.durable === true);
 }
 
 /** Generic host admission decision for one hosted model request. */
@@ -175,4 +179,47 @@ export async function withHostedInferenceAdmission(
     }
   }
   return send();
+}
+
+/** Bounded incremental observation. One upstream stream, no detached promise:
+ * EOF is committed only after canonical metering. Cancellation never invents
+ * completed usage. Unknown/oversized metering frames fail closed. */
+function observeDurableUsage(response: Response, onUsage: (usage: TokenUsage) => void | Promise<void>): Response {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const sse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+  let pending = "";
+  let usage: TokenUsage | null = null;
+  const observeLine = (line: string) => {
+    const next = inferenceUsageFromSse(line);
+    if (next) usage = {...usage,...next};
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (!chunk.done) {
+          pending += decoder.decode(chunk.value,{stream:true});
+          if (sse) {
+            let end: number;
+            while ((end = pending.indexOf("\n")) >= 0) {
+              observeLine(pending.slice(0,end));
+              pending = pending.slice(end+1);
+            }
+          }
+          if (pending.length > 1_048_576) throw new Error("Model usage frame exceeds meter limit");
+          controller.enqueue(chunk.value);
+          return;
+        }
+        pending += decoder.decode();
+        if (sse) observeLine(pending);
+        else { try { usage = inferenceUsageFromJson(JSON.parse(pending)); } catch { /* rejected below */ } }
+        if (response.ok && usage === null) throw new Error("Completed model response has no usage");
+        if (usage) await onUsage(usage);
+        controller.close();
+      } catch (error) { await reader.cancel(error).catch(()=>{}); controller.error(error); }
+    },
+    cancel: reason => reader.cancel(reason),
+  });
+  return new Response(body,response);
 }

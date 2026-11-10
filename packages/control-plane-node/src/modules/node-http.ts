@@ -15,6 +15,9 @@
  * index.ts is the executable entrypoint (process.env, listen, signals).
  */
 
+import { SqlWorkModelEgress, SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
+import { authenticateSandboxToken } from "@open-managed-agents/sandbox-gateway";
+import { extractHostedInferenceProxyToken } from "@open-managed-agents/inference-proxy";
 import { SqlSessionRuntimeProjectionPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
 import { buildWorkStartupFailureRoutes } from "@open-managed-agents/http-routes";
 import { authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
@@ -560,7 +563,23 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   // The parent v1 middleware authenticates the caller (sandbox-gateway) and
   // sets tenant_id; the gateways never take the workspace from the request.
   v1.route("/oma/mcp-proxy", createMcpProxyRoutes(() => mcpProxyPorts));
-  v1.route("/oma/inference-proxy", createInferenceProxyRoutes(() => inferenceProxyPorts));
+  v1.route("/oma/inference-proxy", createInferenceProxyRoutes(async (workspaceId,c) => {
+    const sessionId = c.req.param("sessionId") ?? "";
+    const credential = c.get("auth_credential" as never) as ApiKeyResolution["credential"];
+    if (credential?.type !== "environment_work_session") return inferenceProxyPorts;
+    const presented = extractHostedInferenceProxyToken(c.req.raw.headers);
+    if (presented.status !== "ok") throw new Error("Model credential unavailable");
+    const work = await authenticateSandboxToken(managedAcpCapabilities.tokens, {sessionId,token:presented.token,channel:"api"});
+    if (work.type === "unavailable") throw new Error("Work model authority unavailable");
+    if (work.type !== "accepted") return {...inferenceProxyPorts,budget:()=>({begin:()=>false,complete:()=>{}})};
+    if (!work.attempt.attemptId.startsWith("environment-work-claim:")) return inferenceProxyPorts;
+    const session = await new SqlSessionSource(sql).find({workspaceId,sessionId});
+    if (!session) throw new Error("Work model Session unavailable");
+    const model = session.agent.model;
+    const card = await modelCardsService.findByModelId({tenantId:workspaceId,modelId:typeof model === "string" ? model : model.id});
+    const meter = await new SqlWorkModelEgress(sql).open(work.resolution,card?.archived_at ? null : card?.pricing ?? null);
+    return {...inferenceProxyPorts,budget:()=>meter};
+  }));
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);
   v1.route("/user_profiles", managedUserProfilesRoutes);

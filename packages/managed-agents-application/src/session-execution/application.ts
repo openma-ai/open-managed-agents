@@ -102,12 +102,16 @@ export class SessionRuntimeProjectionApplicationService
     if (command.events.length === 0) {
       return { type: "recorded", session: current.session };
     }
+    // Work model usage is metered by the authenticated control-plane proxy.
+    // ACP's native snapshot is not authority to erase or re-credit that meter.
+    const events = command.environmentWorkFence === undefined ? command.events : command.events.map(event =>
+      event.type === "session.usage" ? {...event,usage:structuredClone(current.session.usage)} : event);
     const projected = await this.dependencies.persistence.project({
       workspaceId: this.dependencies.workspaceId,
       sessionId: command.sessionId,
       expectedRevision: current.revision,
-      events: command.events,
-      next: applyRuntimeEvents(current.session, command.events),
+      events,
+      next: applyRuntimeEvents(current.session, events),
       ...(command.executionFence !== undefined && {
         executionFence: command.executionFence,
       }),
