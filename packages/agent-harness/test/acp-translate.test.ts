@@ -343,3 +343,14 @@ it("does not leak unknown-parent text into root and keeps child thinking attribu
   expect(events.filter(e=>e.type==="agent.message")).toHaveLength(0);
   expect(events.filter(e=>e.type==="agent.thinking")).toMatchObject([{session_thread_id:"acp:claude:task"}]);
 });
+
+it.each(["root","main"])("normalizes %s aliases without losing or duplicating root text/thinking",async lane=>{
+ const {runtime,events}=makeFakeRuntime();const t=new AcpTranslator(runtime);
+ await t.consume({type:"session.event",event:{session_thread_id:lane,update:{sessionUpdate:"agent_message_chunk",content:{text:"root answer"}}}});
+ await t.consume({type:"session.event",event:{session_thread_id:lane,update:{sessionUpdate:"agent_thought_chunk",content:{text:"root thought"}}}});
+ await t.flush();
+ expect(events.filter(e=>e.type==="agent.message")).toMatchObject([{content:[{type:"text",text:"root answer"}]}]);
+ expect(events.filter(e=>e.type==="agent.message")).toHaveLength(1);
+ expect(events.filter(e=>e.type==="agent.thinking")).toMatchObject([{text:"root thought"}]);
+ expect(events.filter(e=>e.type==="agent.thinking")).toHaveLength(1);
+});

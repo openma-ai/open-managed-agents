@@ -195,8 +195,12 @@ export class AcpTranslator {
     // Use the common parser for vendor parent correlation; unknown child
     // parents are still child evidence and must never leak into the root.
     const parsed = parseAcpEvent(msg.event);
+    const sourceLane = (msg.event as unknown as Record<string, unknown>).session_thread_id;
+    // Match common projector normalization: root/main are root aliases, not
+    // child evidence. Preserve the normal root streaming boundary exactly once.
+    const childLane = typeof sourceLane === "string" && sourceLane !== "root" && sourceLane !== "main";
     if ((parsed.kind === "text" || parsed.kind === "thought")
-      && (parsed.parentToolUseId || ((msg.event as unknown as Record<string, unknown>).session_thread_id))) {
+      && (parsed.parentToolUseId || childLane)) {
       this.#publishProjected(this.#projector.project({type:"session.event",sessionId:"translator",turnId:"turn",event:msg.event}));
       return;
     }
