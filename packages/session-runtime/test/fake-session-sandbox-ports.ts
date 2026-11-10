@@ -23,6 +23,8 @@ export function fakeSessionSandbox(opts: {
   saved?: SessionSandboxState;
   revokeFails?: boolean;
   attachGone?: boolean;
+  attachErrors?: Error[];
+  resumeErrors?: Error[];
   markerError?: Error;
   resumeFails?: string[];
   storageDetach?: () => Promise<void>;
@@ -42,6 +44,8 @@ export function fakeSessionSandbox(opts: {
   let now = 1_000;
   let execution: SessionSandboxExecution | undefined = attempt;
   let current = true;
+  const attachErrors = [...(opts.attachErrors ?? [])];
+  const resumeErrors = [...(opts.resumeErrors ?? [])];
   let acquired = 0;
   let snapshots = 0;
   /** Exits every duplex process started so far. */
@@ -70,10 +74,14 @@ export function fakeSessionSandbox(opts: {
       maxLifetimeMs: null,
       async attach({ handle }: { handle: { runtimeId: string } }) {
         log.push(`attach:${handle.runtimeId}`);
+        const error = attachErrors.shift();
+        if (error) throw error;
         return opts.attachGone === true ? "gone" : { runtime: {}, handle };
       },
       async resume({ ref }: { ref: { ref: string } }) {
         log.push(`resume:${ref.ref}`);
+        const error = resumeErrors.shift();
+        if (error) throw error;
         if (opts.resumeFails?.includes(ref.ref)) throw new Error("resume failed");
         return opts.resumable?.includes(ref.ref) === true ? { runtime: {}, handle: { provider: "fake", runtimeId: `from-${ref.ref}` } } : "gone";
       },

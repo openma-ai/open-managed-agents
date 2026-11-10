@@ -23,7 +23,7 @@
 // open attaches it; a sandbox the provider reclaimed meanwhile is "gone"
 // there and acquired again, so only the warm-up is lost.
 
-import { parseExecResult, type Acquired, type ResumeRef, type SandboxHandle, type SandboxPlan } from "@open-managed-agents/sandbox";
+import { RetryableSandboxError, parseExecResult, type Acquired, type ResumeRef, type SandboxHandle, type SandboxPlan } from "@open-managed-agents/sandbox";
 import { SessionSandboxFenceLostError } from "./session-sandbox-fence";
 import { disarmIdle } from "./session-sandbox-idle-pause";
 import { errorText, mergeStores, sameHandle, SessionSandboxStateConflictError, type LiveSessionSandbox, type OpenSandbox } from "./session-sandbox-live";
@@ -85,6 +85,19 @@ export async function rollbackOpen<R>(state: LiveSessionSandbox<R>, opened: Pick
   else await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
 }
 
+/** Only idempotent handle reconnection/self-resume is retried. Unknown errors
+ * are not absence; snapshot creation is deliberately not retried here. */
+async function retryRecovery<R, T>(state: LiveSessionSandbox<R>, action: () => Promise<T>): Promise<T> {
+  const execution = state.execution();
+  for (let attempt = 0; ; attempt++) {
+    if (!await state.isCurrent(execution)) throw new SessionSandboxFenceLostError("Session fence lost during sandbox recovery");
+    try { return await action(); } catch (error) {
+      if (!(error instanceof RetryableSandboxError) || attempt >= 2 || !Number.isFinite(error.retryAfterMs) || error.retryAfterMs < 0 || error.retryAfterMs > 1_000) throw error;
+      await new Promise(resolve => setTimeout(resolve, error.retryAfterMs));
+    }
+  }
+}
+
 function conflict(what: string): SessionSandboxStateConflictError {
   return new SessionSandboxStateConflictError(`Another writer changed the Session sandbox record while ${what}`);
 }
@@ -111,7 +124,7 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
   let opened: Acquired<R> | "gone" = "gone";
   let generation = "";
   if (recorded !== undefined) {
-    opened = await ports.sandbox.attach({ scope, handle: recorded, signal });
+    opened = await retryRecovery(state, () => ports.sandbox.attach({ scope, handle: recorded, signal }));
     const marker = opened === "gone" ? null : await readMarker(state.options.executor(opened.runtime));
     if (marker === null) {
       opened = "gone";
@@ -253,7 +266,8 @@ async function startNew<R>(
   const scope = state.scope();
   const tryResume = async (ref: ResumeRef): Promise<Acquired<R> | "gone"> => {
     const started = state.now();
-    const opened = await ports.sandbox.resume({ scope, ref, plan, signal });
+    const resume = () => ports.sandbox.resume({ scope, ref, plan, signal });
+    const opened = ref.kind === "self" ? await retryRecovery(state, resume) : await resume();
     if (opened !== "gone") state.options.warn(`workspace_restored ref=${ref.ref} kind=${ref.kind} elapsed_ms=${state.now() - started}`);
     else state.options.warn(`workspace_restore_failed ref=${ref.ref} kind=${ref.kind} elapsed_ms=${state.now() - started} error=gone`);
     return opened;
@@ -266,10 +280,7 @@ async function startNew<R>(
   // A pause in place is gone with the sandbox; one that is a snapshot is the
   // latest snapshot (or older than the host's), tried below.
   if ("pauseRef" in record && record.pauseRef !== undefined && !isSnapshotRef(record.pauseRef)) {
-    const resumed = await tryResume(record.pauseRef).catch((error) => {
-      state.options.warn(`workspace_restore_failed ref=${record.pauseRef!.ref} kind=${record.pauseRef!.kind} error=${errorText(error)}`);
-      return "gone" as const;
-    });
+    const resumed = await tryResume(record.pauseRef);
     if (resumed !== "gone") return { opened: resumed, restored: false, publish: (handle, at) => ({ type: "resume", handle, at }) };
   }
   const snapshot = (await state.options.resumeRef()) ?? (record.latestSnapshot.status === "taken" ? record.latestSnapshot.ref : null);
