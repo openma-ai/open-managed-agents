@@ -308,6 +308,7 @@ export class NodeSessionSandbox implements SandboxPort {
   private live: SandboxPort | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly commandSecrets = new Map<string, Record<string, string>>();
+  private managementDiscovery: Promise<unknown> | undefined;
 
   readFileBytes?: (path: string) => Promise<Uint8Array>;
   gitCheckout?: SandboxPort["gitCheckout"];
@@ -545,7 +546,22 @@ export class NodeSessionSandbox implements SandboxPort {
   /** E2B's trusted Files management channel only; not a general sandbox Port.
    * Discovery grants no kill authority. The dispatcher must prove the located
    * Work attempt is obsolete and use its ordinary exact-handle handoff. */
-  async recoverManagedProcessSlot() {
+  async recoverManagedProcessSlot(): Promise<Awaited<ReturnType<NodeSessionSandbox["discoverManagedProcessSlot"]>>> {
+    // Do not cancel or duplicate an uncancellable Files RPC. Its late result
+    // stays bound to the original authority checks in discoverManagedProcessSlot.
+    if (!this.managementDiscovery) {
+      const pending = this.discoverManagedProcessSlot();
+      this.managementDiscovery = pending;
+      void pending.finally(() => { if (this.managementDiscovery === pending) this.managementDiscovery = undefined; }).catch(() => {});
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([this.managementDiscovery as ReturnType<NodeSessionSandbox["discoverManagedProcessSlot"]>, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Management discovery wait timed out; native outcome remains pending")), 1_000);
+      })]);
+    } finally { if (timeout !== undefined) clearTimeout(timeout); }
+  }
+  private async discoverManagedProcessSlot() {
     const authority = this.workAuthority;
     if (!authority || !await authority.isCurrent()) throw new Error("Current Work claim required for management discovery");
     const runtime = await this.core.runtime();

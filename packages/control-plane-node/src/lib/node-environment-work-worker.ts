@@ -39,7 +39,7 @@ export function createNodeEnvironmentWorkWorker(input: {
   const controller = new AbortController();
   const workers = new Map<string, { worker: ManagedEnvironmentWorker; completed: Promise<void> }>();
   // Management handles only, never ownership/lease state. SQL remains authority.
-  type ManagedProcess = { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; pending?: { op: string; result: Promise<unknown> } };
+  type ManagedProcess = { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; takeover?: { authorize(): Promise<boolean> }; pending?: { op: string; result: Promise<unknown> } };
   const processes = new Map<string, ManagedProcess>();
   // The Port has no cancellation signal. Bound our wait, NOT the native call:
   // retain an unresolved exact-handle RPC and never start a concurrent duplicate.
@@ -151,7 +151,12 @@ export function createNodeEnvironmentWorkWorker(input: {
               const slot = JSON.stringify([scope.workspaceId, delivery.sessionId]);
               await handoff(slot, async () => {
                 if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before handoff");
-                for (const [key, process] of processes) if (process.slot === slot) await retire(key);
+                for (const [key, process] of processes) if (process.slot === slot) {
+                  // The exact target/pending RPC stays; a new legitimate claim
+                  // supplies fresh cleanup authority instead of inheriting a closure.
+                  if (process.takeover) process.takeover.authorize = current;
+                  await retire(key);
+                }
                 const claim = { ...delivery, generation };
                 const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
                   workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: current, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
@@ -184,8 +189,9 @@ export function createNodeEnvironmentWorkWorker(input: {
                   };
                   if (!await current() || !await obsolete()) throw new Error("Management worker remains current or takeover claim lost");
                   const recoveredKey = JSON.stringify([scope.workspaceId, identity.workId, identity.attemptId, recovered.handle.id]);
-                  processes.set(recoveredKey, {slot, handle: recovered.handle, current: async () => {
-                    if (!await current()) throw new Error("Takeover claim lost; old handle cleanup unauthorized");
+                  const takeover = {authorize: current};
+                  processes.set(recoveredKey, {slot, handle: recovered.handle, takeover, current: async () => {
+                    if (!await takeover.authorize()) throw new Error("Takeover claim lost; old handle cleanup unauthorized");
                     return !await obsolete();
                   }});
                   await retire(recoveredKey);
