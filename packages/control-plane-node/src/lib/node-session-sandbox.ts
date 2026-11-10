@@ -433,6 +433,7 @@ export class NodeSessionSandbox implements SandboxPort {
       // The sandbox token dies with its attempt; nothing to renew on a timer.
       egressRenewMs: null,
       keepAliveMs: options.adapter?.keepAliveMs ?? null,
+      isolateExecutionAttempts: () => options.adapter?.adapter.name === "e2b",
       execution: () => {
         if (this.workAuthority !== undefined) return this.workAuthority.attempt;
         const fence = this.executionFence;

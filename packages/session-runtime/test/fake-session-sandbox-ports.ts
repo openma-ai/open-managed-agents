@@ -18,6 +18,7 @@ export function runningRecord(runtimeId: string, extra: Partial<SessionSandboxSt
 
 export function fakeSessionSandbox(opts: {
   handle?: "fixed" | "changes";
+  isolateExecutionAttempts?: boolean;
   keepAliveMs?: number;
   keepAliveGone?: boolean;
   saved?: SessionSandboxState;
@@ -120,6 +121,7 @@ export function fakeSessionSandbox(opts: {
     outputDurability: () => null,
     egressRenewMs: null,
     now: () => now,
+    isolateExecutionAttempts: () => opts.isolateExecutionAttempts === true,
     execution: () => execution,
     isCurrent: async () => current,
     ...(opts.keepAliveMs === undefined ? {} : { keepAliveMs: opts.keepAliveMs }),

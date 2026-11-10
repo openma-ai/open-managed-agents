@@ -47,6 +47,10 @@ export type SandboxPhaseName = SandboxPhase["phase"];
  * its sandbox. `version` is +1 per write (design §0.0b A.10). */
 export type SessionSandboxState = SandboxPhase & {
   latestSnapshot: LatestSnapshot;
+  /** Physical allocation use, not a second execution authority. */
+  attemptBinding?: { executionId: string; attemptId: string; ownerId: string; generation: number };
+  pristine?: boolean;
+  requireSnapshot?: boolean;
   /** Durable retry queue. Old records without it mean an empty queue. */
   pendingDiscards?: SnapshotRef[];
   /** Provider-assigned allocations retired by record CAS. Tombstones survive
@@ -78,7 +82,7 @@ export type SandboxAction =
   /** A newer snapshot; the previous one is dropped. */
   | { type: "publishSnapshot"; ref: SnapshotRef }
   /** The sandbox failed or cannot be found; the latest snapshot stays. */
-  | { type: "lose" }
+  | { type: "lose"; retire?: SandboxHandle; requireSnapshot?: boolean }
   /** The Session ended. */
   | { type: "release" }
   /** Acknowledges successful vendor deletions, under the same version CAS. */
@@ -158,11 +162,18 @@ export function transition(state: SessionSandboxState, action: SandboxAction): S
   const lifecycleRevision = metadataOnly ? state.lifecycleRevision : (state.lifecycleRevision ?? 0) + 1;
   const result: SessionSandboxState = { ...next, stores: state.stores, outputs: state.outputs, version: state.version + 1,
     ...(lifecycleRevision === undefined ? {} : { lifecycleRevision }) };
+  if (recordedHandle(state) && refers(recordedHandle(result), recordedHandle(state)!)) {
+    if (state.attemptBinding) result.attemptBinding = state.attemptBinding;
+    if (state.pristine) result.pristine = true;
+  }
+  if (state.requireSnapshot || (action.type === "lose" && action.requireSnapshot)) result.requireSnapshot = true;
+  if (action.type === "restoreFromSnapshot") delete result.requireSnapshot;
   // Metadata cannot synthesize a witness for a legacy record: doing so would
   // let missing historical lifecycle writes look like an unchanged revision.
   if (lifecycleRevision === undefined) delete result.lifecycleRevision;
   if (retired.length > 0) result.retiredHandles = retired;
   if (action.type === "retireHandle" && !retired.some(entry => refers(entry.handle, action.handle))) result.retiredHandles = [...retired, { handle: action.handle, released: false }];
+  if (action.type === "lose" && action.retire && !retired.some(entry => refers(entry.handle, action.retire!))) result.retiredHandles = [...retired, {handle:action.retire,released:false}];
   if (action.type === "handleReleased") result.retiredHandles = retired.map(entry => refers(entry.handle, action.handle) ? { ...entry, released: true } : entry);
   const pending = [...(state.pendingDiscards ?? [])];
   for (const ref of droppedSnapshots(state, result)) {

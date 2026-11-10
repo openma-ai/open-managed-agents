@@ -149,12 +149,17 @@ export class LiveSessionSandbox<R> {
    * the snapshots it no longer references are discarded. Null = another writer
    * won: nothing written, nothing discarded. An illegal transition throws
    * SessionSandboxTransitionError. */
-  async apply(current: SessionSandboxState, action: SandboxAction): Promise<SessionSandboxState | null> {
+  async apply(current: SessionSandboxState, action: SandboxAction, pristine = false): Promise<SessionSandboxState | null> {
     const next: SessionSandboxState = {
       ...transition(current, action),
       stores: mergeStores(current.stores, this.stores),
       outputs: current.outputs || this.outputs,
     };
+    if (this.options.isolateExecutionAttempts?.() && recordedHandle(next)) {
+      const execution=this.execution();
+      if (pristine) next.pristine=true;
+      else if (execution) {next.attemptBinding={executionId:execution.executionId,attemptId:execution.attemptId,ownerId:execution.ownerId,generation:execution.generation};delete next.pristine;}
+    }
     if (!await this.options.state.save(next, current.version)) {
       this.options.warn(`sandbox_state_conflict expected_version=${current.version} action=${action.type}: another writer changed the Session sandbox record; this result is dropped`);
       return null;
