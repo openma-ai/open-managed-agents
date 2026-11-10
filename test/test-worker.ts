@@ -12,6 +12,10 @@ import { registerTestHarnesses } from "./harnesses";
 registerCoreHarnesses();
 registerTestHarnesses();
 
+// Reserved parity origin must never escape to real DNS, including DO realms.
+import { installParityModelTransport } from "./fixtures/cf-parity-outbound";
+installParityModelTransport();
+
 export { SessionDO } from "../apps/agent/src/runtime/session-do";
 // Resolve via vitest alias to test/sandbox-stub.ts (empty DO). Do NOT export
 // OmaSandbox here — it requires ctx.container, which miniflare does not provide,

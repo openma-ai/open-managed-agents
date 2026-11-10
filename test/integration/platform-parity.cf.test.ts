@@ -7,6 +7,8 @@
 // @open-managed-agents/agent, @open-managed-agents/main
 // (packages/platform-parity/platforms.mjs).
 import { exports } from "cloudflare:workers";
+import { installParityModelTransport } from "../fixtures/cf-parity-outbound";
+const modelTransport = installParityModelTransport();
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { AcpSandboxHarness } from "../../packages/agent-harness/src/acp-sandbox-loop";
 import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
@@ -88,11 +90,13 @@ afterAll(() => {
 const fetchPublic = (request) => exports.default.fetch(request);
 
 beforeAll(async () => {
+  const beforeProbe = modelTransport.calls();
   const response = await fetchPublic(new Request("http://localhost/v1/oma/model_cards", {
     method: "POST",
     headers: { ...AUTH, "content-type": "application/json" },
     body: JSON.stringify({ provider: "ant", model_id: PARITY_MODEL, api_key: "sk-ant-parity", base_url: UNREACHABLE_MODEL_BASE_URL }),
   }));
+  expect(modelTransport.calls() - beforeProbe).toBe(response.status === 201 ? 1 : 0);
   if (response.status !== 201 && response.status !== 409) {
     throw new Error(`parity model card: ${response.status} ${await response.text()}`);
   }
@@ -176,7 +180,9 @@ registerParityRunner({ describe, test, expect }, {
   knownDifferences: KNOWN_DIFFERENCES,
   run: async (scenario) => {
     const context = new ScenarioContext(fetchPublic, AUTH);
+    const beforeModelCalls = modelTransport.calls();
     await scenario.run(context);
+    if (scenario.name === "outcome-evaluation") expect(modelTransport.calls() - beforeModelCalls).toBe(4);
     const observation = await context.observe();
     console.log(`PARITY_OBSERVATION cloudflare ${scenario.name} ${JSON.stringify(observation)}`);
     return observation;
