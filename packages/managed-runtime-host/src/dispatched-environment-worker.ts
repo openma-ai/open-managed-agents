@@ -160,7 +160,8 @@ export function createDispatchedManagedEnvironmentWorker(
       const work = await runnerClient.beta.environments.work.poll(
         options.environmentId,
         {
-          block_ms: null,
+          // Omit block_ms for the SDK non-blocking default. null becomes an
+          // empty query value, which is not a valid 1-999ms wait.
           ...(options.reclaimOlderThanMs === undefined
             ? {}
             : { reclaim_older_than_ms: options.reclaimOlderThanMs }),
