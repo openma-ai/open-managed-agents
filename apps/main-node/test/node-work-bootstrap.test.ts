@@ -8,14 +8,25 @@ import {nodeDefaults} from "../src/components";
 import {createNodeControlPlane} from "../src/control-plane";
 import {LocalSubprocessSandbox} from "../../../packages/sandbox/src/adapters/local-subprocess";
 
-it.each(["recover", "stopped", "missing-native", "uninstalled", "late-launch"] as const)("production Work bootstrap through real HTTP auth: %s",async mode=>{
+it.each(["recover", "stopped", "missing-native", "uninstalled", "late-launch", "cleanup-failed", "cleanup-unconfirmed", "exit-confirmed"] as const)("production Work bootstrap through real HTTP auth: %s",async mode=>{
  const root=await mkdtemp(join(process.cwd(),".test-artifacts/work-"));
  const server=createServer();await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
  const base="http://127.0.0.1:"+(server.address() as {port:number}).port;
  let launches=0;let scopeToken="";const handles: Array<{pid:number;getStatus():Promise<string>}> = [];const tokens:string[]=[];let builds=0;
  const sandbox=new LocalSubprocessSandbox({workdir:join(root,"sandbox"),outputsRoot:join(root,"outputs")});
  const native=sandbox.startManagedProcess.bind(sandbox);
- sandbox.startManagedProcess=async spec=>{launches++;scopeToken=spec.env.OPENMA_SANDBOX_TOKEN;tokens.push(scopeToken);const handle=await native(spec);handles.push(handle);if(mode==="late-launch")await components.database.sql.prepare("UPDATE managed_environment_work SET claim_at = 0 WHERE id = ?").bind(spec.env.ANTHROPIC_WORK_ID).run();return handle;};
+ let cleanupAttempts=0;let confirmedExit=false;let statusChecks=0;let cleanupFault=true;
+ sandbox.startManagedProcess=async spec=>{
+  if(launches===1&&mode==="exit-confirmed")expect(confirmedExit,"old worker exit must be observed before replacement spawn").toBe(true);
+  launches++;scopeToken=spec.env.OPENMA_SANDBOX_TOKEN;tokens.push(scopeToken);const handle=await native(spec);handles.push(handle);
+  if(mode==="late-launch")await components.database.sql.prepare("UPDATE managed_environment_work SET claim_at = 0 WHERE id = ?").bind(spec.env.ANTHROPIC_WORK_ID).run();
+  if(launches!==1)return handle;
+  return {...handle,async kill(signal:string){cleanupAttempts++;if(mode==="cleanup-failed"&&cleanupFault)throw new Error("injected native cleanup failure");await handle.kill(signal);},async getStatus(){
+   if(mode==="cleanup-unconfirmed"&&cleanupFault)return "running";
+   if(mode==="exit-confirmed"&&statusChecks++<2)return "running";
+   const status=await handle.getStatus();if(["exited","killed","completed","error"].includes(status))confirmedExit=true;return status;
+  }};
+ };
  // Real native child exercises HTTP ACK; ACP body is deliberately not claimed
  // in this bounded bootstrap test. The full runner chain is separate evidence.
  const child="const d=JSON.parse(Buffer.from(process.env.ANTHROPIC_WORK_SECRET,'base64url'));fetch(d.api_base_url+'/v1/environments/'+process.env.ANTHROPIC_ENVIRONMENT_ID+'/work/'+process.env.ANTHROPIC_WORK_ID+'/ack',{method:'POST',headers:{authorization:'Bearer '+d.sessions_token}}).then(r=>{if(!r.ok)process.exit(2);setInterval(()=>{},1000)})";
@@ -57,12 +68,19 @@ it.each(["recover", "stopped", "missing-native", "uninstalled", "late-launch"] a
   }
   // Fault injection changes only lease time. No new HTTP/user wakeup follows.
   await components.database.sql.prepare("UPDATE managed_environment_work SET claim_at = ? WHERE session_id = ?").bind(Date.now()-100_000,session.id).run();
-  for(let i=0;i<150&&launches<2;i++)await new Promise(resolve=>setTimeout(resolve,20));
+  if(mode==="cleanup-failed"||mode==="cleanup-unconfirmed") {
+   await new Promise(resolve=>setTimeout(resolve,2300));
+   expect(cleanupAttempts).toBeGreaterThan(0);
+   expect(launches,"failed or unconfirmed cleanup must block a second worker").toBe(1);
+   cleanupFault=false;
+   await components.database.sql.prepare("UPDATE managed_environment_work SET claim_at = ? WHERE session_id = ?").bind(Date.now()-100_000,session.id).run();
+  }
+  for(let i=0;i<200&&launches<2;i++)await new Promise(resolve=>setTimeout(resolve,20));
   expect(launches).toBe(2);expect(builds).toBe(1);expect(tokens[1]).not.toBe(tokens[0]);
   for(let i=0;i<100;i++){if(await handles[0].getStatus()!=="running")break;await new Promise(resolve=>setTimeout(resolve,20));}
   expect(await handles[0].getStatus()).not.toBe("running");
   const generation=await components.database.sql.prepare("SELECT claim_generation FROM managed_environment_work WHERE session_id = ?").bind(session.id).first<{claim_generation:number}>();
-  expect(generation?.claim_generation).toBe(2);
+  expect(generation?.claim_generation).toBe(mode==="cleanup-failed"||mode==="cleanup-unconfirmed"?3:2);
   expect((await components.database.sql.prepare("SELECT COUNT(*) AS count FROM managed_session_executions WHERE session_id = ?").bind(session.id).first<{count:number}>())?.count).toBe(0);
   const channels=(token:string)=>cp.fetch(new Request(base+"/v1/oma/sessions/"+session.id+"/execution-channels",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:"{}"}));
   // HTTP ACK and token verification both use real auth, not disabled middleware.

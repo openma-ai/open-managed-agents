@@ -39,7 +39,28 @@ export function createNodeEnvironmentWorkWorker(input: {
   const controller = new AbortController();
   const workers = new Map<string, { worker: ManagedEnvironmentWorker; completed: Promise<void> }>();
   // Management handles only, never ownership/lease state. SQL remains authority.
-  const processes = new Map<string, { handle: SandboxManagedProcessHandle; current(): Promise<boolean> }>();
+  const processes = new Map<string, { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean> }>();
+  // Serialize local handle cleanup and registration, not ownership. The sandbox
+  // OS lock remains the exclusion boundary across hosts/restarts.
+  const handoffs = new Map<string, Promise<void>>();
+  async function handoff(slot: string, action: () => Promise<void>) {
+    const previous = handoffs.get(slot) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(action);
+    handoffs.set(slot, next);
+    try { await next; } finally { if (handoffs.get(slot) === next) handoffs.delete(slot); }
+  }
+  async function retire(key: string) {
+    const process = processes.get(key);
+    if (!process) return;
+    // Unknown authority throws: never interpret lookup failure as lost ownership.
+    if (await process.current()) throw new Error("Previous management worker is still current");
+    await process.handle.kill("SIGTERM");
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (["exited", "killed", "completed", "error"].includes(await process.handle.getStatus())) { processes.delete(key); return; }
+      if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error("Previous management worker exit is unconfirmed");
+  }
   let timer: ReturnType<typeof setInterval> | undefined;
   let draining: Promise<void> | undefined;
   let started = false;
@@ -49,9 +70,9 @@ export function createNodeEnvironmentWorkWorker(input: {
   const tick = () => draining ??= (async () => {
     if (controller.signal.aborted || command === undefined || origin === undefined) return;
     for (const [key, process] of processes) {
-      if (await process.current()) continue;
-      await process.handle.kill("SIGTERM");
-      processes.delete(key);
+      await handoff(process.slot, async () => {
+        if (processes.get(key) === process && !await process.current()) await retire(key);
+      });
     }
     const rows = await input.sql.prepare(
       "SELECT DISTINCT workspace_id, environment_id FROM managed_environment_work WHERE state IN ('queued', 'starting', 'active')"
@@ -105,21 +126,26 @@ export function createNodeEnvironmentWorkWorker(input: {
               const installed = inventory?.find(entry => entry.id === pin?.id && entry.command === pin?.command && JSON.stringify(entry.args ?? []) === JSON.stringify(pin?.args ?? []));
               const harness = pin?.registry ? parseAcpRegistryRef(pin.registry) : installed;
               if (!harness) throw new Error("Pinned harness is not installed");
-              const claim = { ...delivery, generation };
-              const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
-                workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: current, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
+              const slot = JSON.stringify([scope.workspaceId, delivery.sessionId]);
+              await handoff(slot, async () => {
+                if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before handoff");
+                for (const [key, process] of processes) if (process.slot === slot) await retire(key);
+                const claim = { ...delivery, generation };
+                const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
+                  workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: current, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
+                });
+                await sandbox.open();
+                if (!await current()) throw new Error("Work claim lost before bootstrap");
+                const token = await sandbox.workToken();
+                const handle = await sandbox.startManagedProcess({ command, args: args as string[], env: {
+                  ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
+                  ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
+                  OPENMA_WORKSPACE_ID: scope.workspaceId, OPENMA_SANDBOX_TOKEN: token,
+                  OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
+                  ...(inventory === null ? {} : { OPENMA_ACP_HARNESSES: JSON.stringify(inventory) }),
+                } });
+                processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { slot, handle, current });
               });
-              await sandbox.open();
-              if (!await current()) throw new Error("Work claim lost before bootstrap");
-              const token = await sandbox.workToken();
-              const handle = await sandbox.startManagedProcess({ command, args: args as string[], env: {
-                ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
-                ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
-                OPENMA_WORKSPACE_ID: scope.workspaceId, OPENMA_SANDBOX_TOKEN: token,
-                OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
-                ...(inventory === null ? {} : { OPENMA_ACP_HARNESSES: JSON.stringify(inventory) }),
-              } });
-              processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { handle, current });
             },
           },
         });
@@ -148,8 +174,7 @@ export function createNodeEnvironmentWorkWorker(input: {
       await draining;
       await Promise.all([...workers.values()].map(worker => worker.completed));
       workers.clear();
-      await Promise.all([...processes.values()].map(process => process.handle.kill("SIGTERM")));
-      processes.clear();
+      await Promise.all([...processes].map(([key, process]) => handoff(process.slot, () => retire(key))));
     },
   };
 }
