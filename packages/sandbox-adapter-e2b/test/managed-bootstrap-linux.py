@@ -90,6 +90,8 @@ print(json.dumps(result))
         result = subprocess.run(['/usr/bin/python3', '-I', '-S', '-c', probe, str(worker['pid'])],
                                 user=agent.pw_uid, group=agent.pw_gid, extra_groups=[], capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), {'environment': 'DENIED', 'signal': 'DENIED'})
+        self.assertTrue(live(worker['pid']))
+        self.assertTrue(self.request({'op':'kill','target':worker['id'],'signal':'SIGKILL'})['ok'])
         output = self.base / 'agent.json'
         # Uses the actual installed common 0.13.1 NodeSpawner through our wrapper.
         script = self.base / 'worker.mjs'
@@ -121,7 +123,6 @@ print(json.dumps(result))
         self.assertNotIn('ANTHROPIC_WORK_SECRET', data['env'])
         self.assertNotIn('SYNTHETIC_WORK_TOKEN', data['env'])
         wait(lambda: self.request({'op': 'status', 'target': launched['id']})['status'] == 'exited')
-        self.assertTrue(live(worker['pid']))
 
     def test_native_worker_replacement_env_and_literal_argv(self):
         output = self.base / 'native.json'

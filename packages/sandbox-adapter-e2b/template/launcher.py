@@ -3,6 +3,8 @@ The directory and this file must be owned by root and inaccessible to agents.
 Only the provider Files API (user=root) may submit management requests.
 """
 import json
+import fcntl
+import stat
 import os
 import re
 import signal
@@ -51,9 +53,25 @@ def dispatch(request):
             raise ValueError("absolute cwd required")
         # shell=False and explicit env replace the environment BEFORE execve.
         # No pipes: the worker communicates directly with its control plane.
-        child = subprocess.Popen([command] + args, env=env, cwd=cwd or "/workspace",
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        # Stable sandbox-local inode; never unlink or name by Work/attempt.
+        lock_path = root / "worker.lock"
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_nlink != 1:
+                raise ValueError("unsafe management lock")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("management worker busy") from None
+            # pass_fds clears CLOEXEC for exactly this fd in the actual worker.
+            # The launcher closes its duplicate immediately, not on worker exit.
+            child = subprocess.Popen([command] + args, env=env, cwd=cwd or "/workspace",
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, start_new_session=True,
+                                     pass_fds=(descriptor,))
+        finally:
+            os.close(descriptor)
         children[request["id"]] = child
         return {"id": request["id"], "pid": child.pid}
     child = children[request["target"]]
@@ -99,7 +117,7 @@ try:
                 result = {"ok": True, **dispatch(request)}
             except Exception as error:
                 # Do not return command/env or native error text containing secrets.
-                result = {"ok": False, "error": "native spawn failed" if request.get("op") == "start" else "management request failed"}
+                result = {"ok": False, "error": "management worker busy" if isinstance(error, RuntimeError) and str(error) == "management worker busy" else "native spawn failed" if request.get("op") == "start" else "management request failed"}
             finally:
                 source.unlink(missing_ok=True)
                 trigger.unlink(missing_ok=True)

@@ -1,0 +1,24 @@
+{
+  "base": "612481a109abf762d44cf15300af4ca06214064c",
+  "scope": "stable sandbox-local nonblocking flock only; no reclaim/destroy/ledger/Work fence changes",
+  "contract": {
+    "path": "/run/oma-managed/worker.lock (root directory override only in local tests)",
+    "inode": "O_NOFOLLOW, regular root-owned private single-link inode; never unlink",
+    "busy": "explicit management worker busy; no Popen/command execution and no registration overwrite",
+    "ownership": "Popen pass_fds to actual management worker; launcher closes duplicate immediately; no holding supervisor process",
+    "agent": "actual common 0.13.1 NodeSpawner tested; helper additionally closes fd>=3 before dropping identity/exec"
+  },
+  "validation": {
+    "red": "worker lock missing observed before implementation",
+    "linuxFlock": "PASS: Node worker /proc fd target, launcher no duplicate, different Work/attempt busy zero execution, stable inode, SIGKILL kernel release, same-sandbox takeover, old handle kill does not disturb successor, root private/no agent replace, independent sandbox lock",
+    "agentFd": "PASS actual common NodeSpawner agent self-reported fd list excludes worker.lock; worker SIGKILL allows takeover while agent exists; forced pass_fds helper test confirms extra fd closed and lock reacquirable",
+    "linuxPriorRegression": "6 PASS under explicit /usr/bin/python3",
+    "package": "73 PASS / 5 SKIP; typecheck/diff-check PASS"
+  },
+  "cloud": "NOT RUN; new final Node source pin and template context must be rebuilt together before cloud certification",
+  "limits": [
+    "flock is local single-worker exclusion, not cross-host Work fencing",
+    "Active setsid escape/reclaim lifecycle remains separate; no overall security PASS claimed",
+    "No PID guessing or busy fallback; existing precise handle lifecycle remains caller ownership"
+  ]
+}

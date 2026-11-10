@@ -13,6 +13,9 @@ if os.getuid() != 0:
 with open(sys.argv[1]) as source:
     spec = json.load(source)
 os.unlink(sys.argv[1])
+# Defense in depth: only local ACP stdio crosses the identity boundary.
+# Never let an agent extend management flock ownership via inherited extras.
+os.closerange(3, os.sysconf("SC_OPEN_MAX"))
 agent = pwd.getpwnam("oma-worker")
 if agent.pw_uid == 0 or agent.pw_gid == 0:
     raise SystemExit("unprivileged agent identity required")
