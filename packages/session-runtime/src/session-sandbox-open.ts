@@ -24,7 +24,6 @@
 // there and acquired again, so only the warm-up is lost.
 
 import { parseExecResult, type Acquired, type ResumeRef, type SandboxHandle, type SandboxPlan } from "@open-managed-agents/sandbox";
-import { isolateSandboxAttempt } from "./session-sandbox-attempt";
 import { SessionSandboxFenceLostError } from "./session-sandbox-fence";
 import { disarmIdle } from "./session-sandbox-idle-pause";
 import { errorText, mergeStores, sameHandle, SessionSandboxStateConflictError, type LiveSessionSandbox, type OpenSandbox } from "./session-sandbox-live";
@@ -47,7 +46,6 @@ export async function openSandbox<R>(state: LiveSessionSandbox<R>): Promise<Open
   // An execution takes the sandbox back from the idle window (design §0.0b A.10).
   if (state.execution() !== undefined && state.idleSince !== null) await disarmIdle(state);
   await state.warming?.catch(() => undefined);
-  if (state.options.isolateExecutionAttempts?.()) await isolateSandboxAttempt(state, await state.load());
   if (state.current !== null) return state.current;
   return state.opening ??= start(state).finally(() => { state.opening = null; });
 }
@@ -102,7 +100,7 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
     state.abandon();
     throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was opened");
   };
-  let record = await isolateSandboxAttempt(state, await state.load());
+  let record = await state.load();
   // The Session ended: nothing opens, before any provider call.
   if (record.phase === "released") throw new SessionSandboxTransitionError("released", "acquire");
   state.stores = mergeStores(record.stores, state.stores);
@@ -267,7 +265,7 @@ async function startNew<R>(
   };
   // A pause in place is gone with the sandbox; one that is a snapshot is the
   // latest snapshot (or older than the host's), tried below.
-  if (!record.requireSnapshot && "pauseRef" in record && record.pauseRef !== undefined && !isSnapshotRef(record.pauseRef)) {
+  if ("pauseRef" in record && record.pauseRef !== undefined && !isSnapshotRef(record.pauseRef)) {
     const resumed = await tryResume(record.pauseRef).catch((error) => {
       state.options.warn(`workspace_restore_failed ref=${record.pauseRef!.ref} kind=${record.pauseRef!.kind} error=${errorText(error)}`);
       return "gone" as const;
@@ -283,7 +281,6 @@ async function startNew<R>(
     await giveUp();
     throw new SandboxRestoreError(`The Session's sandbox is gone and its latest snapshot ${snapshot.ref} could not be started`);
   }
-  if (record.requireSnapshot) throw new SandboxRestoreError("Attempt recovery requires a usable Session snapshot");
   const acquired = await firstCreate(state, record, plan, signal);
   return { opened: acquired, restored: false, publish: (handle, at) => ({ type: "acquire", handle, at }) };
 }
@@ -319,7 +316,7 @@ async function warm<R>(state: LiveSessionSandbox<R>): Promise<void> {
     }
     await writeMarker(state.options.executor(acquired.runtime), generation);
     state.stores = mergeStores(plan.stores, state.stores);
-    if (await state.apply(saved, { type: "acquire", handle: acquired.handle, at: state.now() }, true) === null) {
+    if (await state.apply(saved, { type: "acquire", handle: acquired.handle, at: state.now() }) === null) {
       throw conflict("its sandbox was warmed");
     }
   } catch (error) {

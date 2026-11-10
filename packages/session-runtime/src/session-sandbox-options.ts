@@ -90,8 +90,6 @@ export interface PortsSessionSandboxOptions<R> {
    * runs again at the next exec boundary when it changes. Omitted =
    * SessionDO's single-writer placeholder fence. */
   execution?(): SessionSandboxExecution | undefined;
-  /** Native management cannot contain escaped process groups across attempts. */
-  isolateExecutionAttempts?(): boolean;
   /** Whether `execution` (undefined = the owner between executions) still
    * holds the Session (design §0.0 rule 10); checked before pause and
    * before a new "changes" handle is recorded. Default: always. */
