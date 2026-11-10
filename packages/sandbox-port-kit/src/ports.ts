@@ -27,7 +27,13 @@ export interface SandboxAdapterPort<R> {
     storage?(deps: SandboxStorageDepsPort): SandboxStoragePort<R>;
     /** `ingress`: an entry the composition layer mounts for routes 3 / 4
      * (a callback route, a tunnel listener). Omitted when there is none. */
-    egress?(deps: SandboxEgressDepsPort): { port: SandboxEgressPort<R>; ingress?: EgressIngress };
+    egress?(deps: SandboxEgressDepsPort): {
+      port: SandboxEgressPort<R>; ingress?: EgressIngress;
+      /** Native attach/update owns token binding, including typed legacy/no-token
+       * handling. It must reject managed authorization/store failures. Default:
+       * composition binds before delivery (also for native/no-relay adapters). */
+      tokenBinding?: "native";
+    };
   };
 }
 
