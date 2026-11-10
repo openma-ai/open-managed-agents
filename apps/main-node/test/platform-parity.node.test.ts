@@ -1,3 +1,4 @@
+import { runNodeContextBuildFailure } from "./node-context-build-failure.fixture";
 // Multi-platform parity gate — Node runner (design §0.7 gate 3).
 // Drives the in-process Node control plane (createNodeControlPlane +
 // nodeDefaults + loadNodeConfig, sqlite, local-subprocess sandbox double) only
@@ -58,8 +59,8 @@ beforeAll(async () => {
   controlPlane = await createNodeControlPlane(await nodeDefaults(loadNodeConfig({
     NODE_ENV: "test",
     AUTH_DISABLED: "1",
-    // As the CF suite: with the root secret set, the ACP context-build
-    // scenario fails on the missing PUBLIC_BASE_URL on both platforms.
+    // Context dependency fixture calls the real missing-channel configuration
+    // path on the SessionExecution lane, matching the CF fixture.
     PLATFORM_ROOT_SECRET: "test-platform-root-secret-padded-to-thirtytwo",
     OPENMA_TEST_SANDBOX_PROVIDER: "local-subprocess",
     MEMORY_QUEUE: "disabled",
@@ -107,10 +108,11 @@ registerParityRunner({ describe, test, expect }, {
   goldenFile: (name) => `../../../packages/platform-parity/golden/${name}.json`,
   knownDifferences: KNOWN_DIFFERENCES,
   run: async (scenario) => {
-    const context = new ScenarioContext((request) => controlPlane.fetch(request), {}, {
+    const context = new ScenarioContext(async (request) => controlPlane.fetch(request), {}, {
       hostPaths: { [dir]: "host-workdir" },
     });
-    await scenario.run(context);
+    if (scenario.name === "context-build-failure") await runNodeContextBuildFailure(context, controlPlane.components.database.sql);
+    else await scenario.run(context);
     const observation = await context.observe();
     console.log(`PARITY_OBSERVATION node ${scenario.name} ${JSON.stringify(observation)}`);
     return observation;
@@ -127,7 +129,7 @@ registerHarness(ACP_REVISION_TIMEOUT_HARNESS, () => {
 
 const originalFetch = globalThis.fetch;
 beforeAll(() => {
-  vi.stubGlobal("fetch", async (input, init) => {
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(init?.body).includes("parity-revision-timeout")) return revisionJudgeResponse();
     return originalFetch(input, init);
   });

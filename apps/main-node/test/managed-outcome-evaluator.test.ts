@@ -204,7 +204,12 @@ describe("NodeManagedOutcomeEvaluator", () => {
         outcomeId: "outc_03",
         processedAt: "2026-08-26T01:00:00.000Z",
       },
-      historyEvents: [],
+      historyEvents: [{
+        id: "event_message_file_rubric",
+        type: "agent.message",
+        content: [{ type: "text", text: "Completed the file-rubric task." }],
+        processedAt: "2026-08-26T01:01:00.000Z",
+      }],
       iteration: 0,
       abortSignal: new AbortController().signal,
     });
