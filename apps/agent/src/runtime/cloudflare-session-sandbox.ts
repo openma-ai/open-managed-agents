@@ -98,7 +98,7 @@ export function createCloudflareSessionSandbox(deps: CloudflareSessionSandboxDep
       const { ports } = createSandboxPorts({
         ...adapter,
         lifecycle: sessionLifecycle,
-        native: { ...adapter.native, egress: () => ({ port: executionEgress(deps) }) },
+        native: { ...adapter.native, egress: () => ({ port: executionEgress(deps), tokenBinding: "native" }) },
       }, { storage: {} as never, egress: { gateway: {
         endpoint: { url: deps.env.PUBLIC_BASE_URL ?? "https://unconfigured.invalid" },
         issueToken: ({ attempt, sandbox }) => {
@@ -242,6 +242,10 @@ export function executionEgress(deps: Pick<CloudflareSessionSandboxDeps, "sessio
       if (tokenSha256 === null) throw new Error("Sandbox token is malformed");
       return tokenSha256;
     } catch (error) {
+      // Only a missing legacy Session may continue without credential egress.
+      // Managed authorization, stale fences, malformed tokens and store errors
+      // must fail the execution rather than become a no-token binding.
+      if (!attempt.sessionId.startsWith("sess-") || !(error instanceof Error) || error.message !== `Session ${attempt.sessionId} was not found`) throw error;
       deps.warn(`Vault and GitHub credentials are unavailable this execution: no sandbox token (${error instanceof Error ? error.message : String(error)})`);
       return null;
     }
