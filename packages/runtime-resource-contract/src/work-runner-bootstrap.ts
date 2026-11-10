@@ -4,8 +4,23 @@ import type { RuntimeResourceScope } from "./scope";
  * Environment key and no ACP stdio. The runner owns existing ACK/heartbeat. */
 export interface EnvironmentWorkRuntimeDelivery extends RuntimeResourceScope {
   apiBaseUrl: string;
-  /** Exact per-claim Work secret returned by poll; sensitive, never log. */
+  /** Exact base64url(JSON{sessions_token,api_base_url}) returned by poll.
+   * Not a raw HTTP bearer; do not re-encode, rotate, or log it here. */
   workSecret: string;
+}
+
+/** Deployment adapter over the EXISTING installed-harness inventory or common
+ * release manifest. The caller supplies its authority-loaded pinned Session,
+ * not Work metadata. No new registry or Agent id/version-to-harness fallback.
+ * null/rejection blocks bootstrap; this callback does not sign tokens or ACK.
+ * Resolve before the existing holder issues its placement-scoped token.
+ */
+export interface EnvironmentWorkInstalledHarnessResolver<TPinnedSession> {
+  resolve(input: {
+    scope: RuntimeResourceScope;
+    pinnedSession: TPinnedSession;
+    signal: AbortSignal;
+  }): Promise<{ id: string; version: string } | null>;
 }
 
 /** Trusted placement is resolved from the pinned Session, never Work metadata.
