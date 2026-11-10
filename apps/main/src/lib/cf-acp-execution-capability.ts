@@ -1,13 +1,6 @@
-// ACP model / MCP channels on Cloudflare (design §0.6 item 4): the sandbox
-// token (#561) an in-sandbox ACP harness uses for the model gateway, the MCP
-// proxy and the sandbox API, with the workspace model card. SessionDO holds
-// the attempt's one token (attemptSandboxTokens, shared with the egress
-// relay, issued by the main worker's issueSandboxToken RPC) and passes it
-// in; this checks it with the shared @open-managed-agents/sandbox-gateway
-// code, the same as Node (node-managed-acp-capability). The harness runs
-// inside the sandbox here, so the token's scope must be `all`.
-
-import type { Env } from "@open-managed-agents/shared";
+// ACP channels on the existing execution-token authority. Typed mode keeps
+// failures off the workerd RPC rejection channel; callers throw locally.
+import type { Env, ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult } from "@open-managed-agents/shared";
 import { resolveProtocolEndpointsFromModelCard } from "@open-managed-agents/inference-proxy";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { authenticateSandboxToken } from "@open-managed-agents/sandbox-gateway";
@@ -15,31 +8,43 @@ import { buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-a
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { cfSandboxTokenStore } from "./cf-sandbox-token-store";
 
-/** One execution's ACP channels (HarnessContext.env mcpProxy + hostedInference)
- * over `sessionsToken`, that execution's sandbox token. */
-export async function cfAcpExecutionChannels(env: Env, input: { tenantId: string; sessionId: string; sessionsToken: string }) {
-  if (!env.PLATFORM_ROOT_SECRET) throw new Error("PLATFORM_ROOT_SECRET is required for ACP sandbox model and MCP channels");
+type Failure = Extract<ManagedAcpExecutionChannelsResult, { type: "failed" }>;
+const failed = (phase: Failure["phase"], code: Failure["code"], message: string): Failure => ({ type: "failed", phase, code, message });
+
+export async function cfAcpExecutionChannelsResult(env: Env, input: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannelsResult> {
+  if (!input || typeof input.tenantId !== "string" || !input.tenantId || typeof input.sessionId !== "string" || !input.sessionId || typeof input.sessionsToken !== "string" || !input.sessionsToken) return failed("validation", "invalid_request", "ACP sandbox channels require a Session and execution token");
+  if (!env.PLATFORM_ROOT_SECRET) return failed("configuration", "missing_configuration", "PLATFORM_ROOT_SECRET is required for ACP sandbox model and MCP channels");
   const gatewayBaseUrl = env.PUBLIC_BASE_URL?.replace(/\/+$/u, "");
-  if (!gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)");
-  const tenantDb = await buildCfTenantDbProvider(env).resolve(input.tenantId);
-  const session = await new SqlSessionSource(new CfD1SqlClient(tenantDb)).find({ workspaceId: input.tenantId, sessionId: input.sessionId });
-  if (session === null) throw new Error(`Session ${input.sessionId} was not found`);
-  const model = session.agent.model as string | { id: string };
-  const handle = typeof model === "string" ? model : model.id;
-  const card = await (await getCfServicesForTenant(env, input.tenantId)).modelCards.findByModelId({ tenantId: input.tenantId, modelId: handle });
-  if (!card || card.archived_at) throw new Error(`ACP sandbox requires an active workspace model card for "${handle}"`);
-  // The token must open this Session's API channels now (running attempt, scope all).
-  const checked = await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: input.sessionId, token: input.sessionsToken, channel: "api" });
-  if (checked.type !== "accepted" || checked.session.workspaceId !== input.tenantId) {
-    throw new Error("ACP sandbox channels need this Session's current sandbox token (scope all)");
+  if (!gatewayBaseUrl) return failed("configuration", "missing_configuration", "PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)");
+  let phase: Failure["phase"] = "session_lookup";
+  try {
+    const tenantDb = await buildCfTenantDbProvider(env).resolve(input.tenantId);
+    const session = await new SqlSessionSource(new CfD1SqlClient(tenantDb)).find({ workspaceId: input.tenantId, sessionId: input.sessionId });
+    if (session === null) return failed(phase, "session_not_found", "ACP sandbox Session was not found");
+    if (session.archivedAt !== null) return failed(phase, "archived", "Archived Session cannot receive ACP sandbox channels");
+    phase = "model_lookup";
+    const model = session.agent.model as string | { id: string };
+    const handle = typeof model === "string" ? model : model.id;
+    const card = await (await getCfServicesForTenant(env, input.tenantId)).modelCards.findByModelId({ tenantId: input.tenantId, modelId: handle });
+    if (!card || card.archived_at) return failed(phase, "model_unavailable", "ACP sandbox requires an active workspace model card");
+    phase = "token_validation";
+    const checked = await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: input.sessionId, token: input.sessionsToken, channel: "api" });
+    if (checked.type === "unavailable") throw checked.error;
+    if (checked.type !== "accepted" || checked.session.workspaceId !== input.tenantId) return failed(phase, "token_rejected", "ACP sandbox channels need this Session's current sandbox token (scope all)");
+    const capability = { gatewayBaseUrl, sessionsToken: input.sessionsToken };
+    return { type: "ready", channels: {
+      mcpProxy: capability,
+      hostedInference: { ...capability, model: { providerId: card.provider, baseUrl: card.base_url ?? null, wireModel: card.model, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url }) } },
+    } };
+  } catch (error) {
+    console.error("acp_channels_authority_unavailable", error);
+    return { ...failed(phase, "unavailable", "ACP sandbox channel authority is unavailable"), cause: { name: "AcpChannelsAuthorityUnavailable", code: "unavailable" } };
   }
-  const capability = { gatewayBaseUrl, sessionsToken: input.sessionsToken };
-  return {
-    mcpProxy: capability,
-    hostedInference: {
-      ...capability,
-      // The card's upstream model id: pi falls back silently on an unknown id (the handle).
-      model: { providerId: card.provider, baseUrl: card.base_url ?? null, wireModel: card.model, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url }) },
-    },
-  };
+}
+
+/** Compatibility for direct/raw callers; actual SessionDO uses typed RPC. */
+export async function cfAcpExecutionChannels(env: Env, input: ManagedAcpExecutionChannelsRequest) {
+  const result = await cfAcpExecutionChannelsResult(env, input);
+  if (result.type === "ready") return result.channels;
+  throw Object.assign(new Error(result.message), { phase: result.phase, code: result.code });
 }

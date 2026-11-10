@@ -134,7 +134,8 @@ import {
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { authenticateSandboxEgress, authenticateSandboxEgressSha256, issueSandboxToken, sandboxHarnessPlacement, sandboxTokenScopeFor, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
-import { cfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
+import { cfAcpExecutionChannels, cfAcpExecutionChannelsResult } from "./lib/cf-acp-execution-capability";
+import type { ManagedAcpExecutionChannels, ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult } from "@open-managed-agents/shared";
 import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
 import { issueCfSandboxTokenResult } from "./lib/cf-sandbox-token-rpc";
 import type { SandboxTokenIssueRequest, SandboxTokenIssueResult } from "@open-managed-agents/shared";
@@ -2005,8 +2006,10 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
 
   /** ACP model / MCP channels for one SessionDO execution (design §0.6),
    * over that execution's sandbox token. */
-  async managedAcpExecutionChannels(opts: Parameters<typeof cfAcpExecutionChannels>[1]) {
-    return cfAcpExecutionChannels(this.env, opts);
+  async managedAcpExecutionChannels(opts: ManagedAcpExecutionChannelsRequest & { resultFormat: "typed" }): Promise<ManagedAcpExecutionChannelsResult>;
+  async managedAcpExecutionChannels(opts: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannels>;
+  async managedAcpExecutionChannels(opts: ManagedAcpExecutionChannelsRequest & { resultFormat?: "typed" }): Promise<ManagedAcpExecutionChannelsResult | ManagedAcpExecutionChannels> {
+    return opts.resultFormat === "typed" ? await cfAcpExecutionChannelsResult(this.env, opts) : await cfAcpExecutionChannels(this.env, opts);
   }
 
   /** A sandbox token (#561) for the SessionDO's current execution attempt,

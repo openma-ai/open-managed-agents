@@ -36,5 +36,11 @@ export async function acpSandboxExecutionEnv(env: MainBinding, fence: SessionExe
   const main = env.MAIN_MCP;
   if (main?.managedAcpExecutionChannels === undefined) return {};
   const sessionsToken = await held.token(fence, issue(env, fence, harness));
-  return { ANTHROPIC_API_KEY: "", ...await main.managedAcpExecutionChannels({ tenantId: fence.workspaceId, sessionId: fence.sessionId, sessionsToken }) };
+  const result = await main.managedAcpExecutionChannels({ tenantId: fence.workspaceId, sessionId: fence.sessionId, sessionsToken, resultFormat: "typed" });
+  if (!result || (result.type !== "ready" && result.type !== "failed")) throw new Error("Invalid ACP sandbox channel authority response");
+  if (result.type === "failed") {
+    const cause = result.cause === undefined ? undefined : Object.assign(new Error(result.cause.name), result.cause);
+    throw Object.assign(new Error(result.message, { cause }), { phase: result.phase, code: result.code });
+  }
+  return { ANTHROPIC_API_KEY: "", ...result.channels };
 }

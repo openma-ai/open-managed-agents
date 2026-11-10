@@ -25,6 +25,17 @@ it("explicit legacy result binds no token and denies Vault placeholders", async 
   expect(denied.status).toBe(403);
 });
 
+it.each(["configuration", "session_lookup", "model_lookup", "token_validation"])("typed channel %s refusal is local and never returns empty configuration", async phase => {
+  const env = { MAIN_MCP: { issueSandboxToken: async () => ({ type: "issued", token: "token" }), managedAcpExecutionChannels: async () => ({ type: "failed", phase, code: "unavailable", message: "safe channel refusal", cause: { name: "ChannelAuthorityUnavailable", code: "unavailable" } }) } };
+  await expect(acpSandboxExecutionEnv(env as never, { workspaceId: "ws", sessionId: `channel-${phase}`, executionId: "e", attemptId: "a", ownerId: "o", generation: 1
+  }, "acp-sandbox")).rejects.toMatchObject({ message: "safe channel refusal", phase, code: "unavailable", cause: { name: "ChannelAuthorityUnavailable", code: "unavailable" } });
+});
+
+it("malformed channels RPC response fails closed instead of empty configuration", async () => {
+  const env = { MAIN_MCP: { issueSandboxToken: async () => ({ type: "issued", token: "token" }), managedAcpExecutionChannels: async () => ({ type: "unknown" }) } };
+  await expect(acpSandboxExecutionEnv(env as never, { workspaceId: "ws", sessionId: "channel-malformed", executionId: "e", attemptId: "a", ownerId: "o", generation: 1 }, "acp-sandbox")).rejects.toThrow("Invalid ACP sandbox channel authority response");
+});
+
 it("channel failure reaches the caller with no agent-side PUBLIC_BASE_URL prerequisite", async () => {
   const failure = new Error("channel authority refused");
   const env = { MAIN_MCP: {
