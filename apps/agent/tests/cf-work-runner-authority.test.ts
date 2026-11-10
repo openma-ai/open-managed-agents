@@ -119,3 +119,17 @@ it("actual entry rejects missing scope and mismatched secret without provider la
     expect((await post({...f.delivery,workSecret:"not-current"})).status).toBe(409); expect(starts).toBe(0);
   } finally {setCloudflareSandboxForTest(undefined);}
 });
+
+it.each(["sandbox", "egress", "network"])("cached holder cannot authorize launch after Work stops during %s", async boundary => {
+  const f=await fixture(); const {createCfSqlWorkRunnerDispatch}=await import("../../main/src/lib/cf-work-runner-authority");
+  const {CloudflareSandbox,setCloudflareSandboxForTest}=await import("../src/runtime/sandbox"); const {attemptSandboxTokens}=await import("@open-managed-agents/sandbox-gateway");
+  let starts=0, deliveries=0, stop=false;
+  const lose=async()=>{await f.sql.prepare("UPDATE managed_environment_work SET state='stopped' WHERE workspace_id='default' AND id=?").bind(f.delivery.workId).run();};
+  setCloudflareSandboxForTest({async setOutboundHandler(){if(stop&&boundary==="egress")await lose();},async setOutboundByHost(){},async restrictOutboundToHosts(){if(stop&&boundary==="network")await lose();},async startProcess(){starts++;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+  try {
+    const runtime=new CloudflareSandbox({SANDBOX:{},MAIN_MCP:{}} as never,f.delivery.sessionId);
+    const dispatcher=await createCfSqlWorkRunnerDispatch({sql:f.sql,work:f.work,controlPlaneOrigin:"https://control.test",command:"/opt/openma/bin/runner",tokens:attemptSandboxTokens(),sandbox:async()=>{deliveries++;if(stop&&boundary==="sandbox")await lose();return runtime;}});
+    await dispatcher.dispatch({...f.delivery,signal:new AbortController().signal}); expect(starts).toBe(1);
+    stop=true; await expect(dispatcher.dispatch({...f.delivery,signal:new AbortController().signal})).rejects.toThrow(); expect(starts).toBe(1); expect(deliveries).toBe(2);
+  } finally {setCloudflareSandboxForTest(undefined);}
+});

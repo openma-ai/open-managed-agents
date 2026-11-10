@@ -17,10 +17,10 @@ function fixture(options: { current?: boolean; outside?: boolean } = {}) {
 }
 it("trusted pin fixes all before first issuance and shares the same token with egress and runner", async () => {
   const f = fixture(); await f.dispatch.dispatch({ ...delivery, signal: new AbortController().signal, selection: { sandboxTokenScope: "egress" } } as never);
-  expect(f.calls.map(c => (c as unknown[])[0])).toEqual(["authorize", "sandbox", "issue", "egress", "start"]);
-  expect(f.calls[2]).toEqual(["issue", "all"]);
-  const egress = (f.calls[3] as unknown[])[1] as { tokenSha256: string }; expect(egress.tokenSha256).toBe(await sandboxTokenSha256(f.token));
-  const launch = (f.calls[4] as unknown[])[1] as { env: Record<string, string> };
+  expect(f.calls.filter(c => (c as unknown[])[0] !== "authorize").map(c => (c as unknown[])[0])).toEqual(["sandbox", "issue", "egress", "start"]);
+  expect(f.calls.find(c => (c as unknown[])[0] === "issue")).toEqual(["issue", "all"]);
+  const egress = (f.calls.find(c => (c as unknown[])[0] === "egress") as unknown[])[1] as { tokenSha256: string }; expect(egress.tokenSha256).toBe(await sandboxTokenSha256(f.token));
+  const launch = (f.calls.find(c => (c as unknown[])[0] === "start") as unknown[])[1] as { env: Record<string, string> };
   expect(launch.env.OPENMA_HARNESS_ID).toBe("pinned-acp"); expect(launch.env.OPENMA_HARNESS_VERSION).toBe("1.2.3");
   expect(launch.env.ANTHROPIC_WORK_SECRET).toBe(delivery.workSecret);
   expect(launch.env.OPENMA_SANDBOX_TOKEN).toBe(f.token);

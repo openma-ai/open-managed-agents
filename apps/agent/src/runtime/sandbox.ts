@@ -675,8 +675,14 @@ export class CloudflareSandbox
   async startWorkRunner(input: {
     command: string;
     controlPlaneOrigin: string;
+    /** Local authority guard, never serialized into provider env/RPC. */
+    beforeLaunch?: () => Promise<void>;
+    signal?: AbortSignal;
     env: Record<string, string>;
   }): Promise<Pick<ProcessHandle, "id" | "pid" | "kill" | "getStatus">> {
+    const beforeLaunch = input.beforeLaunch;
+    const signal = input.signal;
+    signal?.throwIfAborted();
     const environment = { ...input.env };
     const command = input.command;
     const origin = new URL(input.controlPlaneOrigin);
@@ -698,6 +704,9 @@ export class CloudflareSandbox
     const sandbox = await this.getSandbox();
     if (typeof sandbox.restrictOutboundToHosts !== "function" || typeof sandbox.startProcess !== "function") throw new Error("Work runner requires network enforcement and managed process launch");
     await sandbox.restrictOutboundToHosts([origin.hostname]);
+    signal?.throwIfAborted();
+    await beforeLaunch?.();
+    signal?.throwIfAborted();
     const process = await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace", environmentMode: "replace" });
     if (!process?.id || typeof process.kill !== "function" || typeof process.getStatus !== "function") throw new Error("Work runner dispatch is unconfirmed");
     return { id: process.id, pid: process.pid, kill: (signal: string) => process.kill(signal), getStatus: () => process.getStatus() };

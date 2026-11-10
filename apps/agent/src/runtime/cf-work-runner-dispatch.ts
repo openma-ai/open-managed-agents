@@ -40,16 +40,25 @@ export function createCfWorkRunnerDispatch(deps: CfWorkRunnerDispatchDependencie
       const harness = { ...authorized.harness };
       if (!harness.id || !harness.version) throw new Error("Pinned harness identity is required");
       const generation = authorized.generation;
+      const assertCurrent = async () => {
+        signal.throwIfAborted();
+        const current = await deps.authorize(delivery, signal);
+        signal.throwIfAborted();
+        if (!current || current.generation !== generation || current.session.id !== delivery.sessionId || current.session.environmentId !== delivery.environmentId || current.harness.id !== harness.id || current.harness.version !== harness.version || sessionExecutionPlacement(current.environment, current.session).harnessPlacement !== "in_sandbox") throw new Error("Work bootstrap authority was lost");
+      };
       const runtime = await deps.sandbox(delivery);
+      await assertCurrent();
       signal.throwIfAborted();
       const fence = environmentWorkSandboxTokenRef({ ...delivery, generation });
       const token = await deps.tokens.relayDelivery(fence, () => deps.issueToken({ ...delivery, generation }, "all"), runtime.runtimeHandle().runtimeId);
       signal.throwIfAborted();
       const tokenSha256 = await sandboxTokenSha256(token);
       if (!tokenSha256) throw new Error("Work runner requires the existing sandbox token holder");
+      await assertCurrent();
       await runtime.setOutboundContext({ tenantId: delivery.workspaceId, environmentId: delivery.environmentId, sessionId: delivery.sessionId, workId: delivery.workId, tokenSha256, required: true, controlPlaneBaseUrl: delivery.apiBaseUrl });
       signal.throwIfAborted();
-      await runtime.startWorkRunner({ command: deps.command, controlPlaneOrigin: delivery.apiBaseUrl, env: {
+      await assertCurrent();
+      await runtime.startWorkRunner({ beforeLaunch: assertCurrent, signal, command: deps.command, controlPlaneOrigin: delivery.apiBaseUrl, env: {
         ANTHROPIC_BASE_URL: delivery.apiBaseUrl, ANTHROPIC_ENVIRONMENT_ID: delivery.environmentId,
         ANTHROPIC_SESSION_ID: delivery.sessionId, ANTHROPIC_WORK_ID: delivery.workId,
         ANTHROPIC_WORK_SECRET: delivery.workSecret, OPENMA_WORKSPACE_ID: delivery.workspaceId,
