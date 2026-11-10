@@ -12,7 +12,7 @@ function fixture(lostDuringLaunch = false, installedHarnesses = inventory) {
     runtimeHandle: () => ({ provider: "e2b", runtimeId: "physical" }),
     async startManagedProcess(spec: unknown, identity: unknown) {
       launches.push({ spec, identity }); if (lostDuringLaunch) current = false;
-      return { id: "native", pid: 19, getStatus: async () => "running", kill: async (signal: string) => { killed.push(signal); } };
+      return { created: true, id: "native", pid: 19, getStatus: async () => "running", kill: async (signal: string) => { killed.push(signal); } };
     },
   };
   const dispatcher = createCfWorkRunnerDispatch({

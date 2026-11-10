@@ -64,7 +64,7 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env, ow
           workAuthority: { attempt, async isCurrent() { await authority.assertCurrent(); return true; }, token },
         });
         const runtime = await sandbox.runtime();
-        return { provider: "e2b" as const, runtimeHandle: () => runtime.runtimeHandle(), startManagedProcess: (spec, identity) => startE2BWorkProcess({ runtime, work, delivery, assertCurrent: authority.assertCurrent, spec, identity }) };
+        return { provider: "e2b" as const, runtimeHandle: () => runtime.runtimeHandle(), startManagedProcess: (spec, identity) => startE2BWorkProcess({ runtime, work, sql, delivery, assertCurrent: authority.assertCurrent, spec, identity }) };
       },
     });
     // The factory compares the presented per-claim secret against the encrypted

@@ -9,7 +9,7 @@ import type { SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
 export type CfWorkRunnerSandbox = Pick<CloudflareSandbox, "runtimeHandle" | "setOutboundContext" | "startWorkRunner"> | {
   provider: "e2b";
   runtimeHandle(): { provider: string; runtimeId: string };
-  startManagedProcess: (spec: Parameters<SandboxManagedProcessPort["startManagedProcess"]>[0], identity: { workspaceId: string; sessionId: string; workId: string; attemptId: string }) => ReturnType<SandboxManagedProcessPort["startManagedProcess"]>;
+  startManagedProcess: (spec: Parameters<SandboxManagedProcessPort["startManagedProcess"]>[0], identity: { workspaceId: string; sessionId: string; workId: string; attemptId: string }) => Promise<Awaited<ReturnType<SandboxManagedProcessPort["startManagedProcess"]>> & { created: boolean }>;
 };
 
 type Authorized = {
@@ -81,7 +81,14 @@ export function createCfWorkRunnerDispatch(deps: CfWorkRunnerDispatchDependencie
         const handle = await runtime.startManagedProcess({ command: "/usr/local/bin/node", args: ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"], cwd: "/workspace", env: environment }, { workspaceId: delivery.workspaceId, sessionId: delivery.sessionId, workId: delivery.workId, attemptId: fence.attemptId });
         let transferred = false;
         try { await assertCurrent(); transferred = true; }
-        finally { if (!transferred) await handle.kill("SIGKILL"); }
+        finally {
+          if (!transferred) {
+            // A cancelled duplicate request does not own the existing worker.
+            // Only an independently confirmed loss of its SQL claim may kill it.
+            const current = handle.created ? null : await deps.authorize(delivery);
+            if (handle.created || current === null || current.generation !== generation) await handle.kill("SIGKILL");
+          }
+        }
       } else {
         await runtime.startWorkRunner({ beforeLaunch: assertCurrent, signal, command: deps.command, controlPlaneOrigin: delivery.apiBaseUrl, env: environment });
       }
