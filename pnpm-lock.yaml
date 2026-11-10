@@ -2315,6 +2315,9 @@ importers:
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../acp-runtime
+      '@open-managed-agents/agent-harness':
+        specifier: workspace:*
+        version: link:../agent-harness
       '@open-managed-agents/harness-inference-adapters':
         specifier: workspace:*
         version: link:../harness-inference-adapters

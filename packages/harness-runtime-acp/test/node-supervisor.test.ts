@@ -9,6 +9,8 @@ import { zipSync } from "fflate";
 import { generateSandboxToken } from "@open-managed-agents/sandbox-gateway";
 const executionToken = generateSandboxToken();
 
+import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
+import { answerAcpPermission } from "@open-managed-agents/agent-harness";
 import type { AcpRuntime, SessionOptions } from "@open-managed-agents/acp-runtime";
 import {
   createNodeManagedAcpSupervisorApp,
@@ -168,6 +170,108 @@ describe("preinstalled Node managed ACP supervisor", () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  it.each(["always_allow", "always_ask"] as const)("wires the default permission callback from the public Session snapshot: %s", async (defaultPolicy) => {
+    const seen: SessionOptions[] = [];
+    const session: BetaManagedAgentsSession = {
+      id: scope.sessionId, environment_id: scope.environmentId, type: "session",
+      created_at: "2026-11-10T00:00:00Z", updated_at: "2026-11-10T00:00:00Z",
+      status: "running", archived_at: null, budget: null, title: null, metadata: {},
+      outcome_evaluations: [], resources: [], stats: {}, usage: {}, vault_ids: [],
+      agent: {
+        id: "agent_1", version: 1, model: { id: "deepseek-chat" },
+        name: "Permission agent", type: "agent", description: null,
+        execution_identity: { type: "service_account" }, multiagent: null,
+        mcp_servers: [{ type: "url", name: "docs", url: "https://docs.test" }],
+        skills: [], system: null,
+        tools: [{
+          type: "agent_toolset_20260401",
+          default_config: { enabled: true, permission_policy: { type: defaultPolicy } },
+          configs: [
+            { type: "bash", name: "bash", enabled: true, permission_policy: { type: "always_allow" } },
+            { type: "read", name: "read", enabled: true, permission_policy: { type: "always_ask" } },
+            { type: "edit", name: "edit", enabled: true, permission_policy: { type: "auto" } },
+          ],
+        }, {
+          type: "mcp_toolset", mcp_server_name: "docs",
+          default_config: { enabled: true, permission_policy: { type: "always_ask" } },
+          configs: [{ name: "query", enabled: true, permission_policy: { type: "always_allow" } }],
+        }],
+      },
+    };
+    const control = productionFetch({});
+    const app = createNodeManagedAcpSupervisorApp({
+      environment: claimedEnvironment,
+      agentId: "codex-acp",
+      acpRuntime: fakeAcpRuntime(seen),
+      stateIo: {
+        async readFile() { throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+        async writeFile() {}, async writeFileBytes() {}, async exec() { return ""; },
+      },
+      fetch: async (input, init) => new Request(input, init).url.endsWith(`/v1/sessions/${scope.sessionId}`)
+        ? json(session) : control(input, init),
+      resolveExecutionChannels: async () => ({ type: "ready", channels: {
+        mcpProxy: { gatewayBaseUrl: "https://gateway.openma.test", sessionsToken: executionToken },
+        hostedInference: { gatewayBaseUrl: "https://gateway.openma.test", sessionsToken: executionToken,
+          model: { providerId: "openai", baseUrl: null } },
+      } }),
+      control: { pollIntervalMs: 1, scheduler: { sleep: async () => {} } },
+    });
+    const harness = await app.resolveHarness({ id: "acp", version: "1" });
+    const run = await harness!.start({
+      scope, harness: { id: "acp", version: "1" }, workspacePath: "/workspace",
+      outputPath: null, checkpoint: async () => {}, signal: new AbortController().signal,
+    });
+    await run.completed;
+    await run.drain();
+    const permission = seen[0]?.clientCallbacks?.requestPermission;
+    expect(permission).toBeTypeOf("function");
+    type Request = Parameters<NonNullable<NonNullable<SessionOptions["clientCallbacks"]>["requestPermission"]>>[0];
+    const options: Request["options"] = [
+      { optionId: "allow", kind: "allow_once", name: "Allow" },
+      { optionId: "always", kind: "allow_always", name: "Always allow" },
+      { optionId: "reject", kind: "reject_once", name: "Reject" },
+      { optionId: "never", kind: "reject_always", name: "Always reject" },
+    ];
+    const request = (toolName?: string, choices = options): Request => ({
+      sessionId: "native_1",
+      // Deliberately misleading presentation fields must not determine identity.
+      toolCall: { toolCallId: "tool_1", title: "Bash", kind: "execute",
+        ...(toolName === undefined ? {} : { _meta: { claudeCode: { toolName } } }) },
+      options: choices,
+    });
+    const legacyAgent = { id: session.agent.id, name: session.agent.name,
+      version: session.agent.version, model: session.agent.model.id,
+      system: session.agent.system ?? "", created_at: session.created_at, tools: session.agent.tools };
+    const inherited = defaultPolicy === "always_allow" ? "allow" : "reject";
+    const cases = [
+      ["Bash", "allow"], ["BashOutput", "allow"], ["KillShell", "allow"], ["bash", "allow"],
+      ["Read", "reject"], ["Edit", "reject"], ["MultiEdit", "reject"], ["NotebookEdit", "reject"],
+      ["mcp__docs__query", "allow"], ["mcp__docs__drop", "reject"],
+      // Characterization, NOT a claim that these are safely identified.
+      [undefined, inherited], ["UnknownTool", inherited], ["mcp__unconfigured__delete", "allow"],
+    ] as const;
+    for (const [toolName, optionId] of cases) {
+      const want = { outcome: { outcome: "selected", optionId } };
+      expect(answerAcpPermission(legacyAgent, request(toolName))).toEqual(want);
+      await expect(permission!(request(toolName))).resolves.toEqual(want);
+    }
+    for (const [toolName, choices, want] of [
+      ["Bash", [options[1]!], { outcome: { outcome: "selected", optionId: "always" } }],
+      ["Read", [options[3]!], { outcome: { outcome: "selected", optionId: "never" } }],
+      ["Bash", [options[2]!], { outcome: { outcome: "cancelled" } }],
+      ["Read", [options[0]!], { outcome: { outcome: "cancelled" } }],
+      ["Bash", [], { outcome: { outcome: "cancelled" } }],
+    ] as const) {
+      const input = request(toolName, [...choices]);
+      expect(answerAcpPermission(legacyAgent, input)).toEqual(want);
+      await expect(permission!(input)).resolves.toEqual(want);
+    }
+    // Existing helper throws for this inherited-object key. The production
+    // callback must reject, not swallow the exception and return an allow.
+    expect(() => answerAcpPermission(legacyAgent, request("constructor"))).toThrow(TypeError);
+    await expect(permission!(request("constructor"))).rejects.toThrow(TypeError);
   });
 
   it("projects the real Session Agent into ACP without exposing Work credentials", async () => {

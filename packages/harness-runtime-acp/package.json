@@ -59,6 +59,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "1.3.0",
     "@open-managed-agents/acp-runtime": "workspace:*",
+    "@open-managed-agents/agent-harness": "workspace:*",
     "@open-managed-agents/harness-inference-adapters": "workspace:*",
     "@open-managed-agents/harness-supervisor": "workspace:*",
     "@open-managed-agents/managed-runtime-host": "workspace:*",

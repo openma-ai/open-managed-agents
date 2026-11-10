@@ -1,3 +1,4 @@
+import { answerAcpPermission } from "@open-managed-agents/agent-harness";
 import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/installed-harnesses";
 import { createExecutionChannelsHttpResolver } from "./execution-channels-http.js";
 import {
@@ -275,6 +276,22 @@ export function createNodeManagedAcpSupervisorApp(
         }
         return {
           agent,
+          // ACP options are answered locally using the existing harness policy;
+          // platform policies are not an ACP wire capability. Tool identity is
+          // currently recognized only through Claude Code's metadata extension.
+          clientCallbacks: {
+            requestPermission: async (request) => answerAcpPermission({
+              id: session.agent.id,
+              name: session.agent.id,
+              version: session.agent.version,
+              model: session.agent.model.id,
+              system: session.agent.system ?? "",
+              created_at: typeof session.created_at === "string" ? session.created_at : "",
+              // The authority supplies resolved public tool configs; keep their
+              // policy fields intact rather than rebuilding toolset defaults.
+              tools: [...session.agent.tools] as unknown as Parameters<typeof answerAcpPermission>[0]["tools"],
+            }, request),
+          },
           mcpServers: projectAcpSandboxMcpServers({
             sessionId: session.id,
             gatewayBaseUrl: active.channels?.mcpProxy.gatewayBaseUrl,
