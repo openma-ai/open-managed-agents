@@ -61,17 +61,8 @@ const leaks = installLeakCapture([
     message: "Connection error.",
     stack: ["generateWithPi"],
   }),
-  // context-build-failure: not a product leak. In this single test isolate the
-  // MAIN_MCP service binding runs through the vitest-plugin entrypoint wrapper
-  // (@cloudflare/vitest-plugin test-internal.mjs:468), which reports the RPC
-  // callee's rejection as unhandled even when the caller catches it (checked
-  // 2026-11-09: a bare try/catch around env.MAIN_MCP.issueManagedAcpExecutionChannels
-  // still fires unhandledRejection). SessionDO awaits it inside the turn try and
-  // settles session.error exhausted (golden). In deploys main is its own worker.
-  errorSignature("apps/main/src/lib/cf-acp-execution-capability.ts:33 (RPC callee, test isolate)", {
-    message: "PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)",
-    stack: ["issueCfAcpExecutionChannels"],
-  }),
+  // ACP channel configuration failures must propagate through the awaited
+  // RPC boundary without a detached rejection; no leak exception is allowed.
   // user.interrupt aborts the in-flight turn; the abort reason rejects a
   // promise nobody awaits (apps/agent/src/runtime/session-do.ts:2986).
   errorSignature("apps/agent/src/runtime/session-do.ts:2986 (interrupt abort)", {
