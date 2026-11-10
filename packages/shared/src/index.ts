@@ -10,6 +10,7 @@ export * from "@open-managed-agents/api-types";
 export * from "@open-managed-agents/eval-core";
 
 export * from "./env";
+export type * from "./sandbox-token-rpc";
 export * from "./session-admission";
 export * from "./auth-providers";
 export * from "./errors";

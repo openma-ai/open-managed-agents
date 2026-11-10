@@ -1,3 +1,5 @@
+import type { SandboxTokenIssueRequest, SandboxTokenIssueResult } from "./sandbox-token-rpc";
+
 export interface Env {
   OMA_SESSION_EXECUTION_LEASE_TTL_MS?: string;
   CONFIG_KV: KVNamespace;
@@ -243,6 +245,10 @@ export interface Env {
     /** A sandbox token (#561) for an execution attempt, appended to it;
      * SessionDO shares one per attempt (attemptSandboxTokens).
      * `harness` (the agent's harness name) fixes its scope. */
+    /** Typed transport on the SAME authority RPC. Callers request it explicitly
+     * during rollout; server returns failures as values, caller throws locally. */
+    issueSandboxToken?(opts: SandboxTokenIssueRequest & { resultFormat: "typed" }): Promise<SandboxTokenIssueResult>;
+    /** @deprecated Raw throwing RPC; migrate both server/caller to typed mode. */
     issueSandboxToken?(opts: {
       tenantId: string;
       sessionId: string;
