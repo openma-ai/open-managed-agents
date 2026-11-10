@@ -51,7 +51,7 @@
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
     "@open-managed-agents/runtime": "workspace:*",
-    "@openma/common": "^0.9.1",
+    "@openma/common": "^0.13.1",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.5.0",
     "esbuild": "^0.25.0",

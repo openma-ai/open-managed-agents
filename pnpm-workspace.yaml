@@ -52,3 +52,5 @@ allowBuilds:
 # Drop once those packages declare mysql2 as a range/peer dependency.
 overrides:
   mysql2: 3.24.6
+  # Keep third-party Matter consumers on the same published common contract.
+  "@openma/common": 0.13.1

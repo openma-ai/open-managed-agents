@@ -25,7 +25,7 @@
   "dependencies": {
     "@open-managed-agents/inference-proxy": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
-    "@openma/common": "^0.9.1",
+    "@openma/common": "^0.13.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
