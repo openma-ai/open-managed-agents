@@ -18,6 +18,8 @@ import {
   TrajectoryOutcomeChip,
   TrajectoryRewardChip,
   TrajectoryViewerModal,
+  trajectoryNeedsFetch,
+  useTrajectoryLoader,
 } from "./session-detail/Trajectory";
 import { TimelineView } from "../components/timeline/TimelineView";
 import type { Event } from "../lib/events";
@@ -173,13 +175,13 @@ export function SessionDetail() {
     publicationId?: string;
   } | null>(null);
   const [status, setStatus] = useState("idle");
-  /** Lazy-fetched Trajectory v1 envelope. Drives the outcome + reward
-   *  chips in the header strip and the Trajectory viewer modal. We don't
-   *  block initial render on this — chips render as `—` until it lands.
-   *  Sentinels mirror EvalRunDetail: "loading" while in flight, "error"
-   *  if the fetch failed (404 = trajectory not built yet, 5xx = sandbox
-   *  flaky); both keep the trigger from re-firing every render. */
-  const [trajectory, setTrajectory] = useState<Trajectory | "loading" | "error" | undefined>(undefined);
+  /** On-demand Trajectory v1 envelope (GET /v1/oma/sessions/:id/trajectory).
+   *  Fetched when the Trajectory button is clicked; drives the outcome +
+   *  reward chips in the header strip and the Trajectory viewer modal.
+   *  "loading" while in flight, "error" if the fetch failed (404 =
+   *  trajectory not built yet, 5xx = sandbox flaky). The hook resets it
+   *  whenever the session id changes. */
+  const { trajectory, load: loadTrajectory } = useTrajectoryLoader(id);
   /** Sub-agent threads in this session. Primary is implicit at index 0
    *  (label "Main"). Empty when the session has only the primary thread,
    *  in which case the selector UI is hidden entirely. Refreshed on
@@ -503,7 +505,6 @@ export function SessionDetail() {
     setTitleDraft("");
     setSavingTitle(false);
     setStatus("idle");
-    setTrajectory(undefined);
     setThreads([]);
     setActiveThreadId("sthr_primary");
     setLocalPending(null);
@@ -1169,19 +1170,22 @@ export function SessionDetail() {
           <span className="ml-auto text-xs text-fg-subtle font-mono">{events.length} events</span>
         )}
         {/* Trajectory viewer trigger — pushed to the right edge of the tab
-            row. Disabled until the lazy fetch resolves so the click never
-            opens an empty modal. Errors keep the button enabled (the modal
-            shows the error). */}
+            row. Opens the modal immediately and fetches the envelope when
+            needed (never loaded, last attempt failed, or the run was still
+            in progress); the modal shows loading / error / ready. */}
         <Button variant="ghost"
-          onClick={() => setShowTrajectory(true)}
-          disabled={trajectory === undefined || trajectory === "loading"}
+          onClick={() => {
+            setShowTrajectory(true);
+            if (trajectoryNeedsFetch(trajectory)) void loadTrajectory();
+          }}
+          disabled={!id}
           className={`${view === "timeline" ? "ml-3" : "ml-auto"} inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed bg-bg-surface/60 hover:bg-bg-surface rounded px-2 py-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] my-1.5`}
           title={
             trajectory === "loading"
               ? "Loading trajectory…"
               : trajectory === "error"
-              ? "Trajectory unavailable — click to inspect error"
-              : "View raw Trajectory v1 envelope"
+              ? "Trajectory unavailable — click to retry"
+              : "Inspect this run: turns, tool steps, timeline, and raw JSON"
           }
         >
           Trajectory
@@ -1362,6 +1366,8 @@ export function SessionDetail() {
         onClose={() => setShowTrajectory(false)}
         sessionId={id ?? ""}
         trajectory={trajectory}
+        liveEvents={events}
+        onRetry={() => void loadTrajectory()}
       />
     </div>
   );

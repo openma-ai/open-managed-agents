@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   rewardHeadline,
   outcomeToStatusTone,
@@ -6,6 +7,8 @@ import {
 import { StatusPill } from "../../components/Badge";
 import { Modal } from "../../components/Modal";
 import { Button } from "@/components/ui/button";
+import { TrajectoryInspector } from "../../components/trajectory/TrajectoryInspector";
+import { useApi } from "../../lib/api";
 
 /**
  * Session-detail trajectory views.
@@ -16,9 +19,9 @@ import { Button } from "@/components/ui/button";
  *     is still running.
  *   - `TrajectoryRewardChip` — paired pill showing the verifier's reward
  *     score. Tooltip reveals the verifier id + computed-at timestamp.
- *   - `TrajectoryViewerModal` — Phase-3 viewer: pretty-printed JSON with
- *     a Download button. Anthropic Messages / Inspect AI / OTel
- *     projections are Phase 4.
+ *   - `TrajectoryViewerModal` — structured run inspector (see
+ *     components/trajectory/TrajectoryInspector) plus Raw JSON + Download.
+ *   - `useTrajectoryLoader` — on-demand envelope fetch used by SessionDetail.
  *
  * Lifted out of SessionDetail to keep the orchestrator focused on event
  * stream + chat scaffolding.
@@ -27,7 +30,7 @@ import { Button } from "@/components/ui/button";
 export function TrajectoryOutcomeChip({
   trajectory,
 }: {
-  trajectory: Trajectory | "loading" | "error" | undefined;
+  trajectory: TrajectoryState;
 }) {
   if (!trajectory || trajectory === "loading" || trajectory === "error") return null;
   if (trajectory.outcome === "running") return null;
@@ -45,7 +48,7 @@ export function TrajectoryOutcomeChip({
 export function TrajectoryRewardChip({
   trajectory,
 }: {
-  trajectory: Trajectory | "loading" | "error" | undefined;
+  trajectory: TrajectoryState;
 }) {
   if (!trajectory || trajectory === "loading" || trajectory === "error") return null;
   const r = trajectory.reward;
@@ -68,35 +71,90 @@ export function TrajectoryRewardChip({
   );
 }
 
-/** Trajectory viewer modal — Phase 3 minimum-viable: pretty-printed
- *  JSON with a Download button. The download uses an in-memory blob URL
- *  so we don't have to round-trip to a server endpoint. */
+/** True when clicking the Trajectory button should (re)fetch the envelope:
+ *  nothing loaded yet, the last attempt failed, or the run was still going
+ *  when we fetched it. */
+export function trajectoryNeedsFetch(trajectory: TrajectoryState): boolean {
+  if (trajectory === undefined || trajectory === "error") return true;
+  if (trajectory === "loading") return false;
+  return trajectory.outcome === "running";
+}
+
+export type TrajectoryState = Trajectory | "loading" | "error" | undefined;
+
+/**
+ * On-demand loader for `GET /v1/oma/sessions/:id/trajectory` (OpenMA
+ * product route, so plain `api()` rather than `managedApi`). State resets
+ * whenever `sessionId` changes, and responses for a stale session id or a
+ * superseded request are dropped.
+ */
+export function useTrajectoryLoader(sessionId: string | undefined) {
+  const { api } = useApi();
+  const [trajectory, setTrajectory] = useState<TrajectoryState>(undefined);
+  const ticket = useRef(0);
+
+  useEffect(() => {
+    ticket.current += 1;
+    setTrajectory(undefined);
+  }, [sessionId]);
+
+  const load = useCallback(async () => {
+    if (!sessionId) return;
+    const mine = ++ticket.current;
+    setTrajectory("loading");
+    try {
+      const t = await api<Trajectory>(`/v1/oma/sessions/${encodeURIComponent(sessionId)}/trajectory`);
+      if (ticket.current === mine) setTrajectory(t);
+    } catch {
+      if (ticket.current === mine) setTrajectory("error");
+    }
+  }, [api, sessionId]);
+
+  return { trajectory, load };
+}
+
+/** Download the envelope as `trajectory-<session>.json` via an in-memory
+ *  blob URL, so there's no second round-trip to the server. */
+export function downloadTrajectoryJson(sessionId: string, json: string) {
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `trajectory-${sessionId}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Trajectory viewer modal: structured inspector (stats, turn strip,
+ * conversation/execution split, paired tool steps, wall-clock timeline,
+ * filters, copy-all) above a Raw JSON view with Download.
+ *
+ * The envelope drives outcome, reward, summary and the download. When it
+ * is still loading (or failed) and `liveEvents` are supplied, a
+ * provisional transcript renders from those so the modal isn't empty.
+ */
 export function TrajectoryViewerModal({
   open,
   onClose,
   sessionId,
   trajectory,
+  liveEvents,
+  onRetry,
 }: {
   open: boolean;
   onClose: () => void;
   sessionId: string;
-  trajectory: Trajectory | "loading" | "error" | undefined;
+  trajectory: TrajectoryState;
+  liveEvents?: readonly unknown[];
+  onRetry?: () => void;
 }) {
-  const ready = trajectory && trajectory !== "loading" && trajectory !== "error";
-  const json = ready ? JSON.stringify(trajectory, null, 2) : "";
-
-  function download() {
-    if (!ready) return;
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `trajectory-${sessionId}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
+  const ready = trajectory !== undefined && trajectory !== "loading" && trajectory !== "error";
+  const json = useMemo(() => (ready ? JSON.stringify(trajectory, null, 2) : ""), [ready, trajectory]);
+  const envelopeEvents = ready ? trajectory.events : undefined;
+  const fallback = !ready && liveEvents && liveEvents.length > 0 ? liveEvents : undefined;
 
   return (
     <Modal
@@ -104,31 +162,45 @@ export function TrajectoryViewerModal({
       onClose={onClose}
       title="Trajectory"
       subtitle={ready ? `${trajectory.trajectory_id} · session ${sessionId}` : `session ${sessionId}`}
-      maxWidth="max-w-4xl"
+      maxWidth="max-w-6xl"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>Close</Button>
-          <Button onClick={download} disabled={!ready}>Download JSON</Button>
+          <Button onClick={() => ready && downloadTrajectoryJson(sessionId, json)} disabled={!ready}>
+            Download JSON
+          </Button>
         </>
       }
     >
       {trajectory === "loading" && (
-        <div className="text-sm text-fg-subtle">Loading trajectory…</div>
+        <div className="text-sm text-fg-subtle mb-3">Loading trajectory…</div>
       )}
       {trajectory === "error" && (
-        <div className="text-sm text-danger">
-          Trajectory unavailable. The session may not have any events yet, or the
-          sandbox worker is unreachable. Retry by reloading the page.
+        <div className="text-sm text-danger mb-3 flex flex-wrap items-center gap-2">
+          <span>
+            Trajectory unavailable. The session may not have any events yet, or the
+            sandbox worker is unreachable.
+          </span>
+          {onRetry && (
+            <Button variant="outline" size="xs" onClick={onRetry}>Retry</Button>
+          )}
         </div>
       )}
-      {trajectory === undefined && (
+      {trajectory === undefined && !fallback && (
         <div className="text-sm text-fg-subtle">No trajectory loaded yet.</div>
       )}
       {ready && (
-        <pre className="font-mono text-xs bg-bg-surface rounded px-3 py-2 overflow-auto max-h-[60vh] text-fg whitespace-pre">
-          {json}
-        </pre>
+        <div className="flex flex-col gap-4">
+          <TrajectoryInspector trajectory={trajectory} events={envelopeEvents ?? []} />
+          <section aria-label="Raw JSON" className="flex flex-col gap-1">
+            <h3 className="text-[11px] uppercase tracking-wide text-fg-subtle">Raw JSON · oma.trajectory.v1</h3>
+            <pre className="font-mono text-xs bg-bg-surface rounded px-3 py-2 overflow-auto max-h-[40vh] text-fg whitespace-pre">
+              {json}
+            </pre>
+          </section>
+        </div>
       )}
+      {fallback && <TrajectoryInspector events={fallback} />}
     </Modal>
   );
 }

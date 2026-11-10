@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 // our chosen width over it. Add new entries here if a caller starts
 // passing a wider value.
 //
-// !max-w-sm !max-w-md !max-w-lg !max-w-xl !max-w-2xl !max-w-3xl !max-w-4xl
+// !max-w-sm !max-w-md !max-w-lg !max-w-xl !max-w-2xl !max-w-3xl !max-w-4xl !max-w-6xl
 
 /**
  * Project-level modal convention built on shadcn `Dialog` primitives.
