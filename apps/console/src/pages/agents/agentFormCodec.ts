@@ -8,6 +8,7 @@
  */
 import type { AgentRecord as Agent } from "../../types/agent";
 import yaml from "js-yaml";
+import { normalizeAcpFormTools, type PermissionMode } from "./acpPermissions";
 
 export function parseAgentConfigText(
   source: string,
@@ -154,7 +155,8 @@ export interface CallableEntry {
   version?: number;
 }
 
-export type ToolOverride = "default" | "always_allow" | "always_ask" | "disabled";
+/** `enabled` turns a tool on without a per-tool permission (ACP harness agents). */
+export type ToolOverride = "default" | "always_allow" | "always_ask" | "auto" | "enabled" | "disabled";
 
 export type FormState = {
   name: string;
@@ -172,8 +174,10 @@ export type FormState = {
   skills: SkillEntry[];
   callableAgents: CallableEntry[];
   toolDefaultEnabled: boolean;
-  toolDefaultPermission: "always_allow" | "always_ask";
+  toolDefaultPermission: PermissionMode;
   toolOverrides: Record<string, ToolOverride>;
+  /** User-touched availability rows must not recover a saved legacy policy. */
+  editedToolOverrides?: string[];
 };
 
 export const INITIAL_FORM: FormState = {
@@ -238,7 +242,7 @@ export function agentToPreservedConfig(agent: Agent): Record<string, unknown> {
 /** Pull default_config + per-tool overrides out of an agent_toolset_20260401 entry. */
 export function parseToolPolicy(tools: unknown[] | undefined): {
   toolDefaultEnabled: boolean;
-  toolDefaultPermission: "always_allow" | "always_ask";
+  toolDefaultPermission: PermissionMode;
   toolOverrides: Record<string, ToolOverride>;
 } {
   const toolset = Array.isArray(tools)
@@ -255,17 +259,20 @@ export function parseToolPolicy(tools: unknown[] | undefined): {
     enabled?: boolean;
     permission_policy?: { type?: string };
   }>;
+  const defaultType = dc.permission_policy?.type;
   const overrides: Record<string, ToolOverride> = {};
   for (const c of cfgs) {
     if (!c?.name) continue;
     if (c.enabled === false) overrides[c.name] = "disabled";
     else if (c.permission_policy?.type === "always_ask") overrides[c.name] = "always_ask";
     else if (c.permission_policy?.type === "always_allow") overrides[c.name] = "always_allow";
+    else if (c.permission_policy?.type === "auto") overrides[c.name] = "auto";
+    else if (c.enabled === true) overrides[c.name] = "enabled";
   }
   return {
     toolDefaultEnabled: dc.enabled ?? true,
     toolDefaultPermission:
-      dc.permission_policy?.type === "always_ask" ? "always_ask" : "always_allow",
+      defaultType === "always_ask" || defaultType === "auto" ? defaultType : "always_allow",
     toolOverrides: overrides,
   };
 }
@@ -389,6 +396,7 @@ export function buildModelValue(
 export function buildManagedToolset(
   form: FormState,
   existing?: Record<string, unknown>,
+  preserveUntouched = false,
 ): Record<string, unknown> {
   const priorConfigs = Array.isArray(existing?.configs)
     ? existing.configs.filter(
@@ -402,10 +410,13 @@ export function buildManagedToolset(
     ),
   );
   const configs: Record<string, unknown>[] = [];
+  const baselineOverrides = preserveUntouched ? parseToolPolicy(existing ? [existing] : []).toolOverrides : {};
 
   for (const prior of priorConfigs) {
     const name = typeof prior.name === "string" ? prior.name : undefined;
-    if (name === undefined || !Object.hasOwn(form.toolOverrides, name)) {
+    if (name === undefined || !Object.hasOwn(form.toolOverrides, name)
+      || (preserveUntouched && !form.editedToolOverrides?.includes(name)
+        && form.toolOverrides[name] === baselineOverrides[name])) {
       configs.push(structuredClone(prior));
       continue;
     }
@@ -420,8 +431,8 @@ export function buildManagedToolset(
       if (meaningfulKeys.length > 0) configs.push(next);
       continue;
     }
-    if (mode === "disabled") {
-      next.enabled = false;
+    if (mode === "disabled" || mode === "enabled") {
+      next.enabled = mode === "enabled";
       delete next.permission_policy;
     } else {
       next.enabled = true;
@@ -433,8 +444,8 @@ export function buildManagedToolset(
   for (const [name, mode] of Object.entries(form.toolOverrides)) {
     if (priorByName.has(name) || mode === "default") continue;
     configs.push(
-      mode === "disabled"
-        ? { name, enabled: false }
+      mode === "disabled" || mode === "enabled"
+        ? { name, enabled: mode === "enabled" }
         : { name, enabled: true, permission_policy: { type: mode } },
     );
   }
@@ -465,6 +476,7 @@ export function buildManagedToolset(
 export function mergeToolsField(
   existingTools: unknown[] | undefined,
   form: FormState,
+  preserveUntouched = false,
 ): unknown[] {
   const existing = Array.isArray(existingTools) ? existingTools : [];
   const priorManagedToolset = existing.find(
@@ -474,7 +486,7 @@ export function mergeToolsField(
       !Array.isArray(tool) &&
       (tool as { type?: unknown }).type === "agent_toolset_20260401",
   );
-  const managedToolset = buildManagedToolset(form, priorManagedToolset);
+  const managedToolset = buildManagedToolset(form, priorManagedToolset, preserveUntouched);
   const handledMcp = new Set<McpEntry>();
   let handledManagedToolset = false;
   const result: unknown[] = [];
@@ -642,7 +654,13 @@ export function mergeMcpServers(
 export function mergeFormIntoConfig(
   form: FormState,
   base: Record<string, unknown> | null | undefined,
-  opts: { forUpdate: boolean },
+  opts: {
+    forUpdate: boolean;
+    /** ACP harness: emit only the global permission mode (see acpPermissions). */
+    acp?: boolean;
+    /** Code preview: keep per-tool policies visible instead of throwing. */
+    keepAcpViolations?: boolean;
+  },
 ): Record<string, unknown> {
   const { forUpdate } = opts;
   const existingTools = Array.isArray(base?.tools) ? (base!.tools as unknown[]) : undefined;
@@ -660,7 +678,15 @@ export function mergeFormIntoConfig(
 
   payload.name = form.name;
   payload.model = buildModelValue(form, base?.model);
-  payload.tools = mergeToolsField(existingTools, form);
+  payload.tools = mergeToolsField(existingTools, form, opts.acp);
+  if (opts.acp) {
+    const baselineGlobal = existingTools
+      ? parseToolPolicy(existingTools).toolDefaultPermission
+      : form.toolDefaultPermission;
+    const acp = normalizeAcpFormTools(payload.tools as unknown[], baselineGlobal);
+    if (!acp.error) payload.tools = acp.tools;
+    else if (!opts.keepAcpViolations) throw new Error(acp.error);
+  }
   const metadata = parseMetadataJson(form.metadataJson);
   if (forUpdate) {
     const currentMetadata =

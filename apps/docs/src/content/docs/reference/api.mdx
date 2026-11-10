@@ -15,6 +15,13 @@ List all agents in the tenant. Query params: `archived` (bool), `limit`, `cursor
 ### `POST /v1/agents`
 Create an agent. Body: `AgentConfig` minus the platform-assigned fields (`id`, `version`, timestamps).
 
+For ACP sandbox Agents, permission configuration is global. Explicit per-tool
+permission policies and conflicting toolset defaults return
+`400 invalid_request_error`; tool enabled/disabled settings are still accepted.
+The same validation applies when updating an Agent or creating/updating a Session
+with tool overrides. See [ACP sandbox permission mode](/reference/configuration/#acp-sandbox-permission-mode)
+for the three modes and the historical-data limitation.
+
 ### `GET /v1/agents/:id`
 Get a single agent's current version.
 
