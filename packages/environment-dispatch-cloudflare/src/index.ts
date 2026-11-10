@@ -59,6 +59,9 @@ export function createManagedEnvironmentWorkDispatchPort(
         throw new Error("Cloudflare dispatcher only accepts Session Work");
       }
       input.signal.throwIfAborted();
+      if (typeof input.workspaceId !== "string" || input.workspaceId.trim().length === 0) {
+        throw new TypeError("Session Work requires a non-empty workspace scope");
+      }
       const sessionId = input.work.data.id;
       if (!input.work.secret) throw new Error("Session Work requires its current claim secret");
       const backend = await options.resolveBackend({
