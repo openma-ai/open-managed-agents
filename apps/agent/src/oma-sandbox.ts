@@ -1,3 +1,6 @@
+import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
+import { sameNativeWorkProcess, type NativeWorkProcess, type NativeWorkIO, type NativeWorkCheckpoint } from "./runtime/cf-native-work-process";
+import { nativeWorkLaunchAuthority, nativeWorkProcessIsCurrent } from "./runtime/cf-native-work-authority";
 // OMA Sandbox Durable Object for @cloudflare/sandbox 1.x.
 // Legacy note: wires the @cloudflare/sandbox 0.8.x outbound
 // handler API so vault credentials get injected into outbound requests
@@ -731,6 +734,8 @@ export class OmaSandbox extends DurableObject<Env> {
   private setupPending = false;
   /** In-flight RPCs; the idle alarm never stops a container under one. */
   private inflight = 0;
+  /** Coalesce warm alarm/RPC checks; durable wake + slot survive eviction. */
+  private nativeMaintenance: Promise<boolean> | null = null;
   private readonly files = new Files(this.container);
   private readonly backups = new DirectoryBackup(
     this.container,
@@ -747,9 +752,13 @@ export class OmaSandbox extends DurableObject<Env> {
     const container = ctx.container;
     if (container?.running) {
       // A restarted Durable Object starts without an inactivity timeout.
-      void ctx.blockConcurrencyWhile(() =>
-        container.setInactivityTimeout(sandboxIdleTimeoutMs(env) + CONTAINER_BACKSTOP_GRACE_MS),
-      );
+      void ctx.blockConcurrencyWhile(async () => {
+        const work = ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+        // A cold object must not grant a new provider lease without checking
+        // SQL. Persist an immediate wake; alarm reconstructs authority.
+        if (work && work.status !== "exited") await ctx.storage.setAlarm(Date.now());
+        else await container.setInactivityTimeout(sandboxIdleTimeoutMs(env) + CONTAINER_BACKSTOP_GRACE_MS);
+      });
     }
   }
 
@@ -997,6 +1006,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
    * absorbs an alarm the 0.12 Container class left behind at the switch. */
   async alarm(): Promise<void> {
     if (!this.ctx.container?.running) return;
+    if (await this.maintainNativeWork()) return;
     if (this.inflight > 0) {
       await this.ctx.storage.setAlarm(Date.now() + this.idleTimeoutMs());
       return;
@@ -1008,6 +1018,63 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
       return;
     }
     await this.onActivityExpired();
+  }
+
+  private async scheduleNativeWorkCheck(): Promise<void> {
+    const at = Date.now() + Math.min(30_000, Math.max(1, Math.floor(this.idleTimeoutMs() / 3)));
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || existing <= Date.now() || existing > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  private maintainNativeWork(): Promise<boolean> {
+    if (this.nativeMaintenance) return this.nativeMaintenance;
+    const task = this.checkNativeWork();
+    this.nativeMaintenance = task;
+    return task.finally(() => { if (this.nativeMaintenance === task) this.nativeMaintenance = null; });
+  }
+
+  private async checkNativeWork(): Promise<boolean> {
+    const saved = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (!saved || saved.status === "exited") return false;
+    // Schedule BEFORE remote/SQL IO: an interrupted request is not the clock.
+    await this.scheduleNativeWorkCheck();
+    try {
+      const physical = await this.inspectWorkProcess();
+      if (!physical) {
+        const current = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+        if (current && sameNativeWorkProcess(current, saved) && current.status === "exited") this.recordActivity(false);
+        return true;
+      }
+      if (!sameNativeWorkProcess(saved, physical)) return true;
+      if (!await nativeWorkProcessIsCurrent(this.env, physical)) return true;
+      const checked = await this.inspectWorkProcess();
+      if (!checked || !sameNativeWorkProcess(checked, physical)) return true;
+      // Recheck SQL after physical IO, then compare the local slot without an
+      // await before issuing provider renewal. Never renew from an old closure.
+      if (!await nativeWorkProcessIsCurrent(this.env, physical)) return true;
+      const latest = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+      if (!latest || latest.status !== "running" || !sameNativeWorkProcess(latest, physical)
+        || this.plan().incarnation !== physical.epoch || !this.container.running) return true;
+      await this.container.setInactivityTimeout(this.backstopTimeoutMs());
+      return true;
+    } catch {
+      // Unknown is not gone. No renewal, destroy, slot clear, or broad cleanup.
+      // Confirmed loss likewise leaves the provider backstop to expire; only
+      // exact process cleanup could be safe, never container destruction here.
+      return true;
+    } finally {
+      // An alarm may have fired while remote IO was pending and joined this
+      // single flight. Restore a future durable wake after that consumed alarm.
+      await this.scheduleNativeWorkCheck();
+    }
+  }
+
+  private retireNativeWork(expected: NativeWorkProcess): void {
+    const current = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (current && sameNativeWorkProcess(current, expected) && current.status === expected.status
+      && this.container.running && this.plan().incarnation === expected.epoch) {
+      this.ctx.storage.kv.put("oma_work_process", { ...current, status: "exited" });
+    }
   }
 
   /** Starts a container with its complete mount set, or reports the running
@@ -1533,6 +1600,140 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
         `[oma-sandbox] recordSandboxActiveOnStop failed: ${(err as Error).message ?? err}`,
       );
     }
+  }
+
+  async startNativeWorkProcess(command: string, environment: Record<string, string>) {
+    const authority = await nativeWorkLaunchAuthority(this.env, environment);
+    await this.ensureRunning();
+    const epoch = this.plan().incarnation;
+    if (!epoch) throw new Error("Native Work requires container incarnation");
+    // Serial reservation in DO storage before any await/native launch. No
+    // second Work ledger; this is the single managed process slot.
+    await this.inspectWorkProcess(); // only positive exact death retires the slot
+    const previous = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (previous?.epoch === epoch && previous.status !== "exited") throw new Error("Native Work process slot occupied");
+    const id = crypto.randomUUID();
+    const pending: NativeWorkProcess = { ...authority.binding, id, epoch, pid: 0, startTicks: "", status: "starting", mounts: this.plan().mounts.filter(m => m.endpoint !== undefined).map(({ mountPath, keyPrefix, access }) => ({ mountPath, keyPrefix, access })) };
+    this.ctx.storage.kv.put("oma_work_process", pending);
+    await this.scheduleNativeWorkCheck();
+    await authority.assertCurrent();
+    // ExecProcess gives the kernel PID, unlike the legacy shell background
+    // shim. env -i drops image/inherited credentials; no shell-owned pidfile.
+    const env = { ...CONTAINER_ENV, ...environment };
+    const process = await this.container.exec(["/usr/bin/env", "-i", ...Object.entries(env).map(([k,v]) => `${k}=${v}`), "/bin/bash", "--noprofile", "--norc", "-c", command], { cwd: "/workspace", env, stdout: "ignore", stderr: "ignore" });
+    if (!Number.isSafeInteger(process.pid) || process.pid < 1) throw new Error("Native process launch unconfirmed");
+    const stat = await (await this.container.exec(["cat", `/proc/${process.pid}/stat`])).output();
+    const text = new TextDecoder().decode(stat.stdout).trim();
+    const startTicks = text.slice(text.lastIndexOf(")") + 2).split(/\s+/)[19];
+    if (stat.exitCode !== 0 || !text.startsWith(`${process.pid} (`) || !/^\d+$/.test(startTicks ?? "")
+      || !["R", "S", "D", "I"].includes(text.slice(text.lastIndexOf(")") + 2).split(/\s+/)[0])) throw new Error("Native process launch unconfirmed");
+    await authority.assertCurrent();
+    const current = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (current?.id !== id || this.plan().incarnation !== epoch) throw new Error("Native process reservation lost");
+    const locator = { ...pending, pid: process.pid, startTicks, status: "running" as const };
+    this.ctx.storage.kv.put("oma_work_process", locator);
+    await this.scheduleNativeWorkCheck();
+    return { id, pid: process.pid, getStatus: async () => {
+      if ((await this.inspectWorkProcess())?.id === id) return "running";
+      const stored = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+      if (stored && sameNativeWorkProcess(stored, locator) && stored.status === "exited") return "exited";
+      throw new Error("Native Work process status unknown");
+    },
+      getLogs: async () => ({ stdout: "", stderr: "" }),
+      kill: async (signal = "SIGTERM") => { await this.assertWorkProcess(locator); process.kill(signal === "SIGKILL" ? 9 : 15); },
+    };
+  }
+
+  /** Only trusted DO state plus a live /proc start time can identify a Work
+   * process. A new container, PID reuse, stopped/paused process fails closed.
+   * Direct container.exec never starts a stopped container. */
+  async inspectWorkProcess(): Promise<NativeWorkProcess | null> {
+    const saved = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (!saved || saved.status !== "running" || !this.container.running || !saved.epoch || this.plan().incarnation !== saved.epoch
+      || !Number.isSafeInteger(saved.pid) || saved.pid < 1) return null;
+    const result = await (await this.container.exec(["cat", `/proc/${saved.pid}/stat`])).output();
+    if (result.exitCode !== 0) {
+      // cat failure can be transport/permission/IO: not proof of death. A
+      // separate successful kernel-directory absence probe is affirmative.
+      const absent = await (await this.container.exec(["/bin/sh", "-c", `test ! -d /proc/${saved.pid}`])).output();
+      if (absent.exitCode === 0) this.retireNativeWork(saved);
+      return null;
+    }
+    const stat = new TextDecoder().decode(result.stdout).trim();
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
+    if (!stat.startsWith(`${saved.pid} (`) || !/^\d+$/.test(fields[19] ?? "")) return null;
+    if (["Z", "X", "x"].includes(fields[0]) || fields[19] !== saved.startTicks) {
+      this.retireNativeWork(saved);
+      return null;
+    }
+    if (!["R", "S", "D", "I"].includes(fields[0])) return null;
+    for (const binding of saved.mounts) {
+      const planned = this.plan().mounts.find(m => m.mountPath === binding.mountPath);
+      if (!planned?.endpoint || planned.keyPrefix !== binding.keyPrefix || planned.access !== binding.access) return null;
+      const inspection = await this.mounts.inspect(binding.mountPath);
+      if (inspection.attachment.status !== "managed" || !("fuse" in inspection) || inspection.fuse.status !== "connected"
+        || inspection.gateway.status !== "reachable" || inspection.gateway.upstream.status !== "usable") return null;
+      const config = inspection.attachment.configuration;
+      if (config.source.bucket !== planned.bucket || config.source.endpoint !== planned.endpoint || config.access !== planned.access
+        || (config.keyPrefix ?? "").replace(/\/$/, "") !== planned.keyPrefix) return null;
+    }
+    const latest = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (!latest || !sameNativeWorkProcess(saved, latest) || latest.status !== "running" || !this.container.running || this.plan().incarnation !== saved.epoch) return null;
+    return saved;
+  }
+
+  private async assertWorkProcess(expected: NativeWorkProcess): Promise<void> {
+    const actual = await this.inspectWorkProcess();
+    if (!actual || !sameNativeWorkProcess(expected, actual)) throw new Error("Native Work process lost");
+  }
+
+  async workProcessIO(expected: NativeWorkProcess, operation: NativeWorkIO): Promise<unknown> {
+    return this.track(false, async () => {
+      await this.assertWorkProcess(expected);
+      let result: unknown;
+      if (operation.type === "run") {
+        const output = await (await this.container.exec(["/bin/bash", "--noprofile", "--norc", "-c", operation.command], { cwd: "/workspace" })).output();
+        result = { exitCode: output.exitCode, stdout: new TextDecoder().decode(output.stdout), stderr: new TextDecoder().decode(output.stderr) };
+      } else if (operation.type === "write") {
+        const parent = operation.path.slice(0, operation.path.lastIndexOf("/")) || "/";
+        await this.files.mkdir(parent, { recursive: true });
+        await this.files.writeFile(operation.path, operation.encoding === "base64" ? Uint8Array.from(atob(operation.content), c => c.charCodeAt(0)) : operation.content);
+      } else {
+        const response = await this.files.readFile(operation.path);
+        result = operation.type === "read" ? await response.text() : new Uint8Array(await response.arrayBuffer());
+      }
+      await this.assertWorkProcess(expected);
+      return result;
+    });
+  }
+
+  async checkpointWorkProcess(expected: NativeWorkProcess): Promise<NativeWorkCheckpoint> {
+    return this.track(false, async () => {
+      await this.assertWorkProcess(expected);
+      const backup = await this.backups.backup({ dir: "/workspace" });
+      // SDK allocates a fresh UUID per backup, and waits for verified multipart
+      // completion. Seal an exact allocation receipt; no extra ledger.
+      if (!this.env.PLATFORM_ROOT_SECRET) throw new Error("Native allocation signing unavailable");
+      const allocationId = await new WebCryptoAesGcm(this.env.PLATFORM_ROOT_SECRET, "native-work.checkpoint-allocation").encrypt(JSON.stringify({ process: expected, backup }));
+      const candidate = { allocationId, backup };
+      try { await this.assertWorkProcess(expected); }
+      catch (error) { await this.discardWorkCheckpoint(expected, candidate); throw error; }
+      return candidate;
+    });
+  }
+
+  async discardWorkCheckpoint(expected: NativeWorkProcess, candidate: NativeWorkCheckpoint): Promise<void> {
+    if (!this.env.PLATFORM_ROOT_SECRET) return;
+    let proof: { process: NativeWorkProcess; backup: DirectoryBackupRecord };
+    try { proof = JSON.parse(await new WebCryptoAesGcm(this.env.PLATFORM_ROOT_SECRET, "native-work.checkpoint-allocation").decrypt(candidate.allocationId)); }
+    catch { return; }
+    if (!sameNativeWorkProcess(proof.process, expected) || JSON.stringify(proof.backup) !== JSON.stringify(candidate.backup)) return;
+    const db = await buildCfTenantDbProvider(this.env).resolve(expected.workspaceId);
+    const referenced = await db.prepare("SELECT id FROM workspace_backups WHERE json_extract(backup_handle,'$.id')=? LIMIT 1").bind(proof.backup.id).first();
+    if (referenced) return;
+    // Exact allocation proof survives claim/slot replacement. No live slot,
+    // successor, mount, alarm or credentials are mutated by this deletion.
+    await this.backups.delete(proof.backup);
   }
 
   /** Starts a process with piped stdio for ACP-style protocols. The idle

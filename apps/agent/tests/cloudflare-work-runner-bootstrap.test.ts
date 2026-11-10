@@ -83,8 +83,9 @@ it("real OmaSandbox start and exec replace stale env while preserving only platf
   let received: any, argv: string[] = [];
   Object.defineProperty(native, "ctx", { value: { storage: { kv: { get: () => inherited } }, container: { async exec(a: string[], options: any) { argv = a; received = options.env; return { async output() { return { stdout: new Uint8Array(), stderr: new Uint8Array(), exitCode: 0 }; } }; } } } });
   native.ensureRunning = async () => {}; native.recordActivity = () => {}; native.track = async (_dirty: boolean, run: () => unknown) => run(); native.restrictOutboundToHosts = async () => {}; native.readFile = async () => ({ content: "42" });
-  setCloudflareSandboxForTest(native);
-  await new CloudflareSandbox({ SANDBOX: {} } as never, "sess").startWorkRunner(input());
+  // Generic process env replacement is independent of SQL-authorized Work
+  // launch (covered by cf-native-finalization's real Work/DO launch test).
+  await native.startProcess("exec /usr/local/bin/runner", { env: input().env, cwd: "/workspace", environmentMode: "replace" });
   expect(received).not.toHaveProperty("ANTHROPIC_API_KEY"); expect(received).not.toHaveProperty("ANTHROPIC_ENVIRONMENT_KEY"); expect(received).not.toHaveProperty("NODE_OPTIONS");
   expect(received).toMatchObject(input().env); expect(received.NODE_EXTRA_CA_CERTS).toBeTruthy(); expect(received.SSL_CERT_FILE).toBeTruthy();
   expect(argv.slice(0, 2)).toEqual(["/usr/bin/env", "-i"]);

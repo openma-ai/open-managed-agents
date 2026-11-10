@@ -892,7 +892,7 @@ export type E2BCreateOptions = E2BConnectionOptions & {
   timeoutMs?: number;
   lifecycle: {
     onTimeout: { action: "pause"; keepMemory: true };
-    autoResume: true;
+    autoResume: boolean;
   };
 };
 
@@ -948,7 +948,7 @@ function creationOptions(opts: E2BSandboxOptions): E2BCreateOptions {
     // next command or stdin write.
     lifecycle: {
       onTimeout: { action: "pause", keepMemory: true },
-      autoResume: true,
+      autoResume: opts.managedBootstrap?.disableAutoResume !== true,
     },
   };
 }

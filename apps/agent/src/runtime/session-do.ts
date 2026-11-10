@@ -1,3 +1,6 @@
+import { handleCfWorkFinalization, CF_WORK_FINALIZATION_PREFIX } from "./cf-work-finalization-host";
+import { CfE2BWorkLease } from "./cf-work-provider-lease";
+import { recoverCfWorkLease, type CfWorkLeaseScope } from "./cf-work-lease-recovery";
 import { CF_WORK_DISPATCH_PATH, dispatchCfWorkRunnerRequest } from "./cf-work-runner-entry";
 import { waitForAlarmMaintenance } from "./alarm-maintenance";
 import { publishAgentsApiArtifacts } from "./artifact-publication";
@@ -449,6 +452,41 @@ function nextCronFireSeconds(cron: string, nowMs = Date.now()): number {
 }
 
 export class SessionDO extends DurableObject<Env> {
+  private readonly _cfWorkLease = new CfE2BWorkLease();
+  // Recovered native handles have hashes, never the raw token needed by egress.
+  private _cfWorkLeaseRecovered = false;
+
+  /** Existing durable schedules provide routing/retry, not ownership. A failed
+   * or unresolved provider RPC leaves this interval intact. No request timer. */
+  async maintainCfWorkLease(scope: CfWorkLeaseScope): Promise<void> {
+    if (this.env.SANDBOX_ADAPTER !== "e2b") return;
+    if (this.env.SESSION_DO?.idFromName(JSON.stringify([scope.workspaceId, scope.sessionId])).toString() !== this.ctx.id.toString()) {
+      throw new Error("Work lease maintenance scope mismatch");
+    }
+    if (this._cfWorkLease.active) {
+      await this._cfWorkLease.maintain();
+      if (this._cfWorkLease.active) return;
+    } else {
+      const sql = new CfD1SqlClient(await buildCfTenantDbProvider(this.env).resolve(scope.workspaceId));
+      this._cfWorkLeaseRecovered = true;
+      await recoverCfWorkLease({ sql, storage: this.ctx.storage, scope, env: this.env, lease: this._cfWorkLease });
+      if (this._cfWorkLease.active) {
+        await this._cfWorkLease.maintain();
+        if (!this._cfWorkLease.active) {
+          for (const schedule of this.getSchedules()) {
+            if (schedule.callback === "maintainCfWorkLease") await this.cancelSchedule(schedule.id);
+          }
+        }
+      }
+      // A pre-launch wake may race a pending native start. Do not delete it
+      // merely because there is no local target or sandbox record yet.
+      return;
+    }
+    for (const schedule of this.getSchedules()) {
+      if (schedule.callback === "maintainCfWorkLease") await this.cancelSchedule(schedule.id);
+    }
+  }
+
   // ── cf-agents-replacement state (see _ensureCfAgentsSchema below) ─────
   private _state: SessionState | undefined;
   private _initialized = false;
@@ -1029,6 +1067,13 @@ export class SessionDO extends DurableObject<Env> {
       }
       await this._sweepExpiredLeases(nowMs);
     });
+    if (reason === "cold_start") {
+      for (const schedule of this.getSchedules()) {
+        if (schedule.callback === "maintainCfWorkLease" && !this._cfWorkLease.active) {
+          await phase(`schedule:${schedule.id}`, () => this.maintainCfWorkLease(schedule.payload as CfWorkLeaseScope));
+        }
+      }
+    }
     await phase("recovery_renew", () => this._applyPolicyLeaseRenewals(nowMs));
     await phase("recovery_finalize", () => inFlightFinalize ?? this._finalizeStaleTurns());
     await this.recoverExecutionQueue();
@@ -2430,8 +2475,28 @@ export class SessionDO extends DurableObject<Env> {
    * handle everything here and only delegate alarm() to Agent's scheduler.
    */
   async fetch(request: Request): Promise<Response> {
+    // Dedicated Work storage barrier bypasses MA recovery/init. Lease alarms
+    // remain independent and continue through storage, terminal and artifacts.
+    if (new URL(request.url).pathname.startsWith(CF_WORK_FINALIZATION_PREFIX)) {
+      return handleCfWorkFinalization(request, this.env, {
+        storage: this.ctx.storage, id: this.ctx.id.toString(),
+        hasSessionExecution: this._executionFences.size > 0,
+      });
+    }
     // Work owns its SQL claim; never enter the SessionExecution recovery/brain.
-    if (request.method === "POST" && new URL(request.url).pathname === CF_WORK_DISPATCH_PATH) return dispatchCfWorkRunnerRequest(request, this.env, { storage: this.ctx.storage, id: this.ctx.id.toString(), hasSessionExecution: this._executionFences.size > 0 });
+    if (request.method === "POST" && new URL(request.url).pathname === CF_WORK_DISPATCH_PATH) {
+      return dispatchCfWorkRunnerRequest(request, this.env, {
+        storage: this.ctx.storage, id: this.ctx.id.toString(),
+        hasSessionExecution: this._executionFences.size > 0,
+        workLease: this._cfWorkLease,
+        beforeWorkStart: async ({ workspaceId, environmentId, sessionId }) => {
+          if (this._cfWorkLeaseRecovered && this._cfWorkLease.active) throw new Error("Recovered Work is maintenance-only; bootstrap must not rotate its holder");
+          await this.scheduleEvery(30, "maintainCfWorkLease", { workspaceId, environmentId, sessionId });
+          // scheduleEvery may reuse a row; explicitly rearm a previously lost wake.
+          await this._multiplexAlarm({ reason: "work_provider_lease", backstop: true });
+        },
+      });
+    }
     // Cold-start orphan flush: first request after DO activation triggers
     // a one-shot scan of unpaired tool_use + stale 'running' turns and
     // emits abort events for them. Idempotent (cheap when there's nothing
@@ -6939,6 +7004,9 @@ export class SessionDO extends DurableObject<Env> {
 
   /** Unprocessed inbound rows (events.processed_at IS NULL), one per lane. */
   private _localQueuedInputs(): QueuedInputRecord[] {
+    // Work-only owners route by their durable schedule and deliberately never
+    // /init the MA brain. Merely arming its alarm must not initialize a queue.
+    if (!this.state.session_id) return [];
     const out: QueuedInputRecord[] = [];
     try {
       for (const laneId of this.queue.threadsWithQueueInputs()) {
@@ -7495,11 +7563,11 @@ export class SessionDO extends DurableObject<Env> {
     // request / ensureSchema) calls this exact same hook, so the lease sweep,
     // renewal, stale-turn finalization, and queue re-drive are identical no
     // matter what woke the DO.
-    await this._runRecovery("alarm");
+    if (this.state.session_id) await this._runRecovery("alarm");
 
-    // No sandbox keepalive from the alarm (design §0.0b A.10): an idle
-    // sandbox is never renewed, background tasks included; work that must
-    // outlive the execution has to hold one.
+    // No idle sandbox keepalive (design §0.0b A.10). The Work maintenance
+    // schedule above renews only under the SQL claim AND original holder,
+    // including leased stopping finalization; it never heartbeats SQL Work.
 
     await this.runAlarmMaintenance("rearm", () => this._multiplexAlarm({ reason: "alarm" }));
   }

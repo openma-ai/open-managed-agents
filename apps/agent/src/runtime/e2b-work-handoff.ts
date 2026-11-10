@@ -58,3 +58,22 @@ export async function startE2BWorkProcess(input: {
   await input.assertCurrent();
   return { ...await input.runtime.startManagedProcess(input.spec, input.identity), created: true };
 }
+
+/** Read-only discovery for provider maintenance, not dispatch/claim recovery.
+ * Legacy locators remain readable by old callers, but never authorize renewal.
+ */
+export async function restoreE2BWorkLeaseProcess(input: {
+  runtime: E2BSandboxExecutor;
+  scope: { workspaceId: string; sessionId: string };
+}) {
+  const locator = await input.runtime.inspectManagedProcessSlot();
+  const match = /^environment-work-claim:([1-9][0-9]*)$/.exec(locator.identity.attemptId);
+  if (locator.sandboxId !== input.runtime.runtimeHandle().runtimeId
+    || locator.identity.workspaceId !== input.scope.workspaceId || locator.identity.sessionId !== input.scope.sessionId
+    || !match || !Number.isSafeInteger(Number(match[1]))) throw new Error("Work lease locator scope mismatch");
+  if (!locator.holderHash || !/^[a-f0-9]{64}$/.test(locator.holderHash)) throw new Error("Work lease recovery requires a process-bound holder hash");
+  if (locator.status !== "running") throw new Error("Work lease management process has exited");
+  const handle = await input.runtime.restoreManagedProcess(locator);
+  if (await handle.getStatus() !== "running") throw new Error("Work lease management process has exited");
+  return { locator, handle, generation: Number(match[1]), holderHash: locator.holderHash };
+}

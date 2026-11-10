@@ -1,3 +1,4 @@
+import { e2bMountControlDirectory } from "./native-drain";
 // Native Sandbox SDK v2 adapter for E2B (design §0.1 / §0.2). Reuses the
 // v1 executor (E2BSandboxExecutor) as the runtime; the SDK module is
 // injected so Workers can bundle it statically.
@@ -375,8 +376,12 @@ export function e2bObjectStorage(
   const mount = async (runtime: E2BSandboxExecutor, owner: string, target: string, entry: Mount) => {
     const credentials = await entry.issue();
     const remote = `:s3:${credentials.bucket}/${credentials.prefix.replace(/\/$/u, "")}`;
+    const control = e2bMountControlDirectory(target);
     const flags = [
       "--daemon",
+      "--rc",
+      "--rc-no-auth", // Unix socket is reachable only inside root-owned 0700 directories.
+      `--rc-addr=unix://${control}/rc.sock`,
       "--s3-no-check-bucket",
       "--allow-other",
       "--allow-non-empty",
@@ -388,7 +393,7 @@ export function e2bObjectStorage(
     await asRoot(
       runtime,
       `(mountpoint -q ${quote(target)} && (umount ${quote(target)} || umount -l ${quote(target)})) || true; `
-        + `mkdir -p ${quote(target)} && rclone mount ${quote(remote)} ${quote(target)} ${flags}`,
+        + `install -d -m 700 /run/oma-rclone ${quote(control)} && rm -f ${quote(control + "/rc.sock")} && mkdir -p ${quote(target)} && rclone mount ${quote(remote)} ${quote(target)} ${flags}`,
       {
         RCLONE_S3_PROVIDER: "Cloudflare",
         RCLONE_S3_ENDPOINT: credentials.endpoint,

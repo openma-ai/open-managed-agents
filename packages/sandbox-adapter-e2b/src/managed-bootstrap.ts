@@ -5,6 +5,8 @@ import type { E2BSandboxLike } from "./e2b";
  * Never install/start this through Commands.run in a live sandbox. */
 export interface E2BManagedBootstrapOptions {
   directory?: string;
+  /** Opt-in for read-only lease recovery; legacy callers retain auto-resume. */
+  disableAutoResume?: boolean;
 }
 
 export async function startE2BManagedProcess(
@@ -24,7 +26,7 @@ export async function startE2BManagedProcess(
   const boundIdentity = identity === undefined ? undefined : checkedIdentity(identity);
   const request = await managementRequest(sandbox, options);
   let result: Record<string, unknown>;
-  try { result = await request({ op: "start", spec, identity: boundIdentity }); }
+  try { result = await request({ op: "start", spec, identity: boundIdentity, sandboxId: sandbox.sandboxId }); }
   catch (error) {
     if ((error as { outcome?: string }).outcome === "rejected") throw error;
     throw Object.assign(new Error("E2B management launch outcome unknown; recover only the exact management locator", { cause: error }), { outcome: "unknown" });
@@ -59,6 +61,8 @@ export interface E2BManagedLocator {
   pid: number;
   identity: E2BManagedIdentity;
   status: "running" | "exited";
+  /** Optional for old launchers. SHA-256 of original token random part. */
+  holderHash?: string;
 }
 function checkedIdentity(identity: E2BManagedIdentity): E2BManagedIdentity {
   const keys = ["workspaceId", "sessionId", "workId", "attemptId"] as const;
@@ -100,13 +104,17 @@ export async function inspectE2BManagedSlot(sandbox: E2BSandboxLike, options: E2
   const result = await request({ op: "inspect-slot" });
   const locator = result.locator as Omit<E2BManagedLocator, "sandboxId">;
   if (!sandbox.sandboxId || !locator || typeof locator.id !== "string" || typeof locator.epoch !== "string" || !Number.isSafeInteger(locator.pid) || locator.pid <= 0 || !["running", "exited"].includes(locator.status)) throw new Error("Invalid management locator");
+  if (locator.holderHash !== undefined && (typeof locator.holderHash !== "string" || !/^[a-f0-9]{64}$/.test(locator.holderHash) || (locator as E2BManagedLocator).sandboxId !== sandbox.sandboxId)) throw new Error("Invalid process-bound holder hash or sandbox");
   return { ...locator, identity: checkedIdentity(locator.identity), sandboxId: sandbox.sandboxId };
 }
 export async function restoreE2BManagedProcess(sandbox: E2BSandboxLike, options: E2BManagedBootstrapOptions, locator: E2BManagedLocator): Promise<SandboxManagedProcessHandle> {
   if (!sandbox.sandboxId || locator.sandboxId !== sandbox.sandboxId) throw new Error("Management locator belongs to another sandbox");
   const identity = checkedIdentity(locator.identity);
   const request = await managementRequest(sandbox, options);
-  const body = { target: locator.id, epoch: locator.epoch, identity, requireBound: true };
+  if (locator.holderHash !== undefined && !/^[a-f0-9]{64}$/.test(locator.holderHash)) throw new Error("Invalid process-bound holder hash");
+  const body = { target: locator.id, epoch: locator.epoch, identity, requireBound: true,
+    ...(locator.holderHash === undefined ? {} : { holderHash: locator.holderHash, sandboxId: locator.sandboxId }),
+  };
   const getStatus = async () => {
     const result = await request({ ...body, op: "status" });
     if (result.status !== "running" && result.status !== "exited") throw new Error("Invalid management status");

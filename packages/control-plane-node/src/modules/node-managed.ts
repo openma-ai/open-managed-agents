@@ -64,7 +64,7 @@ import { SqlSkillStore } from "@open-managed-agents/skill-store-sql";
 import { SqlTunnelStore } from "@open-managed-agents/tunnel-store-sql";
 import { SqlUserProfileStore } from "@open-managed-agents/user-profile-store-sql";
 import { SqlEnvironmentWorkStore, type EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
-import { SqlMcpOAuthCliStore, SqlDeploymentAgentSource, SqlDeploymentVaultSource, SqlEnvironmentPersistence, SqlFileMetadataPersistence, SqlMemoryStoreSource, SqlManagedSessionsComposition, SqlPersistedSessionEventStream, SqlReplicatedSessionEventStream, SqlSessionEnvironmentSource, SqlSessionSource, SqlSessionRuntimeProjectionPersistence, SqlSessionEventPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
+import { ensureMysqlWorkInputsSchema, SqlMcpOAuthCliStore, SqlDeploymentAgentSource, SqlDeploymentVaultSource, SqlEnvironmentPersistence, SqlFileMetadataPersistence, SqlMemoryStoreSource, SqlManagedSessionsComposition, SqlPersistedSessionEventStream, SqlReplicatedSessionEventStream, SqlSessionEnvironmentSource, SqlSessionSource, SqlSessionRuntimeProjectionPersistence, SqlSessionEventPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
 import { createSqlSessionRuntimeReaders, ensureSessionExecutionClaimLockSchema, ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
 import { encodeRuntimeSessionEvent, AnthropicMessagesDreamCurator, ApplicationDreamMemoryWorkspace, ModelCardCatalogSource, CronDeploymentSchedulePlanner, EnvironmentAwareSessionEventDispatchRouter, EnvironmentAwareSessionEventStreamRouter, EnvironmentAwareSessionLifecycleRouter, TimerEnvironmentWorkAvailabilityWaiter, McpOAuthCredentialValidationProbe, inProcessDreamExecutionSchedulerModule, LocalTunnelProvisioner, SealedEnvironmentWorkSessionCredentialIssuer, StandardWebhookEnvironmentWorkWakeup, DeduplicatingDreamCurator, WebCryptoTunnelCertificateAuthority, WebCryptoTunnelTokenManager, WebCryptoMemoryContentDescriptor, ZipSkillPackageCompiler } from "@open-managed-agents/managed-agents-adapters-runtime";
@@ -293,6 +293,7 @@ export async function createManagedNodeRuntime(
       },
       ...(sharedSessionOutputs === undefined ? {} : { sharedOutputs: sharedSessionOutputs }),
       outputs: managedSessionOutputCollector,
+      workOutputs: { synchronize: input => managedSessionOutputCollector.synchronizeWork(input) },
       inputs: managedSessionInputs,
       isFenceActive: isManagedSessionExecutionFenceActive,
       warn: (fields, message) => logger.warn(fields, message),
@@ -714,8 +715,10 @@ export async function createManagedNodeRuntime(
   const managedResourceCipher = secrets === null
     ? null
     : secrets.cipherFor("managed.sessions.resources");
+  if (foundation.dialect === "mysql") await ensureMysqlWorkInputsSchema(sql);
   const managedSessionsComposition = new SqlManagedSessionsComposition({
     client: sql,
+    workInputs: { sourcePositionsValidated: true, dialect: foundation.dialect },
     // Same shared admission policy as Cloudflare. Self-hosted Node has no
     // rate-limit, quota or billing adapters, so every create is admitted,
     // except Vault sandbox credentials without the forwarder gateway (400).

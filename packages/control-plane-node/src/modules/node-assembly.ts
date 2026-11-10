@@ -76,7 +76,7 @@ async function buildNodeControlPlane(
     logger[level]({ ...record, op: record.op }, "db boundary");
   });
 
-  const app = await mountNodeHttp(runtime, disposables);
+  const app = await mountNodeHttp(runtime, disposables, runtime.workFinalizationHost);
 
   // Cron — eval-tick + memory retention sweep + (when integrations schema is
   // applied) webhook-events retention. Linear dispatch is left un-wired here

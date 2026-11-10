@@ -2,6 +2,8 @@
 The directory and this file must be owned by root and inaccessible to agents.
 Only the provider Files API (user=root) may submit management requests.
 """
+import hashlib
+import zlib
 import json
 import fcntl
 import stat
@@ -20,6 +22,8 @@ os.chmod(root, 0o700)
 os.umask(0o077)
 children = {}
 identities = {}
+# Immutable launch binding alongside existing child/identity, never a Work ledger.
+holders = {}
 epoch = str(uuid.uuid4())
 slot = None
 # Management is trusted root; agent processes MUST use agent-spawner.mjs.
@@ -39,6 +43,24 @@ signal.signal(signal.SIGINT, stop)
 def text(value):
     return isinstance(value, str) and "\0" not in value
 
+def holder_binding(token, sandbox_id):
+    # Same digest contract as sandboxTokenSha256: hash the 43-char random part,
+    # not the prefix/checksum. The root-only request supplies the provider ID.
+    if not isinstance(token, str) or not isinstance(sandbox_id, str) or not sandbox_id:
+        return None
+    match = re.fullmatch(r"oma_sbx_([0-9A-Za-z]{43})([0-9A-Za-z]{6})", token)
+    if not match:
+        return None
+    value = zlib.crc32(("oma_sbx_" + match[1]).encode())
+    alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    checksum = ""
+    for _ in range(6):
+        checksum = alphabet[value % 62] + checksum
+        value //= 62
+    if checksum != match[2]:
+        return None
+    return {"sandboxId": sandbox_id, "holderHash": hashlib.sha256(match[1].encode()).hexdigest()}
+
 def dispatch(request):
     global slot
     op = request.get("op")
@@ -49,7 +71,7 @@ def dispatch(request):
         status = slot in cleaned or os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
         if identities[slot] is None:
             raise ValueError("management identity unavailable")
-        return {"locator": {"id": slot, "epoch": epoch, "pid": child.pid, "identity": identities[slot], "status": "exited" if status else "running"}}
+        return {"locator": {"id": slot, "epoch": epoch, "pid": child.pid, "identity": identities[slot], "status": "exited" if status else "running", **(holders.get(slot) or {})}}
     if op == "start":
         if request["id"] in children:
             raise ValueError("duplicate managed start")
@@ -90,6 +112,7 @@ def dispatch(request):
             os.close(descriptor)
         children[request["id"]] = child
         identities[request["id"]] = identity
+        holders[request["id"]] = holder_binding(env.get("OPENMA_SANDBOX_TOKEN"), request.get("sandboxId"))
         slot = request["id"]
         return {"id": request["id"], "pid": child.pid, "epoch": epoch}
     child = children[request["target"]]
@@ -102,6 +125,10 @@ def dispatch(request):
         raise ValueError("management locator epoch mismatch")
     if expected is not None and (request.get("identity") != expected or request.get("epoch") != epoch):
         raise ValueError("management locator identity mismatch")
+    if "holderHash" in request or "sandboxId" in request:
+        binding = holders.get(request["target"])
+        if not binding or request.get("holderHash") != binding["holderHash"] or request.get("sandboxId") != binding["sandboxId"]:
+            raise ValueError("management holder binding mismatch")
     status = request["target"] in cleaned or os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
     if op == "kill":
         sig = request["signal"]

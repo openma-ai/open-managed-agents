@@ -4,6 +4,7 @@
 // adapter only declares it as an optional peer), so it is loaded here and
 // handed to the adapter.
 
+import { E2BSandboxExecutor, type E2BSandboxOptions, type E2BSandboxLike } from "@open-managed-agents/sandbox-adapter-e2b";
 import type { NodeSessionSandboxAdapter } from "@open-managed-agents/control-plane-node";
 import { assertLeaseCoversIdle, readS3MemoryBucket, SANDBOX_LEASE_MARGIN_MS } from "@open-managed-agents/sandbox";
 import {
@@ -34,8 +35,9 @@ export async function createNodeE2BSessionAdapter(
   const leaseMs = positiveMs(env, "E2B_SANDBOX_TIMEOUT_MS") ?? defaultE2BLeaseMs(idlePauseMs);
   assertLeaseCoversIdle("E2B_SANDBOX_TIMEOUT_MS", leaseMs, idlePauseMs);
   const memoryBucket = readS3MemoryBucket(env);
+  const sdk = await loadSdk();
   const adapter = createE2BV2Adapter({
-    sdk: (await loadSdk()) as E2BV2Module,
+    sdk: sdk as E2BV2Module,
     connection: {
       ...(env.E2B_API_KEY === undefined ? {} : { apiKey: env.E2B_API_KEY }),
       ...(env.E2B_API_URL === undefined ? {} : { apiUrl: env.E2B_API_URL }),
@@ -55,6 +57,11 @@ export async function createNodeE2BSessionAdapter(
   const template = env.SANDBOX_IMAGE;
   return {
     adapter,
+    ...(memoryBucket ? {nativeWorkBucket:memoryBucket} : {}),
+    connectWorkReadonly: runtimeId => readNodeWorkRuntime(sdk as Parameters<typeof readNodeWorkRuntime>[0], {
+      apiKey:env.E2B_API_KEY,apiUrl:env.E2B_API_URL,sandboxUrl:env.E2B_SANDBOX_URL,domain:env.E2B_DOMAIN,
+      ...(memoryBucket ? {memoryBucket} : {}),
+    },runtimeId),
     // An Environment-selected catalog image overrides the process default.
     image: (catalogImage) => catalogImage?.reference ?? template ?? "base",
     keepAliveMs: Math.floor(leaseMs / 3),
@@ -67,4 +74,28 @@ function positiveMs(env: Readonly<Record<string, string | undefined>>, name: str
   const ms = Number(value);
   if (!Number.isSafeInteger(ms) || ms <= 0) throw new TypeError(`${name} must be a positive integer of milliseconds`);
   return ms;
+}
+
+
+/** Same GET-only contract as CF finalization. Inject the installed SDK at the
+ * Node composition boundary; never call connect, even for a paused VM. */
+export async function readNodeWorkRuntime(
+  sdk: {
+    ApiClient: new (config: unknown) => {api:{GET(path:"/sandboxes/{sandboxID}",input:{params:{path:{sandboxID:string}}}):Promise<{data?:{sandboxID:string;state?:string;lifecycle?:{autoResume?:boolean};envdVersion?:string;envdAccessToken?:string;domain?:string}|null;error?:unknown}>}};
+    ConnectionConfig: new (options: E2BSandboxOptions) => unknown;
+    Sandbox: new (options: E2BSandboxOptions & {sandboxId:string;envdVersion:string;envdAccessToken:string;sandboxDomain?:string}) => E2BSandboxLike;
+  },
+  options: E2BSandboxOptions,
+  runtimeId: string,
+): Promise<E2BSandboxExecutor> {
+  const {data,error} = await new sdk.ApiClient(new sdk.ConnectionConfig(options)).api.GET("/sandboxes/{sandboxID}",{params:{path:{sandboxID:runtimeId}}});
+  if (error || !data) throw new Error("Work finalization provider read unavailable");
+  if (data.sandboxID !== runtimeId || data.state !== "running" || data.lifecycle?.autoResume !== false
+    || !data.envdVersion || !data.envdAccessToken) throw new Error("Work finalization requires exact running sandbox with auto-resume disabled");
+  const sandbox = new sdk.Sandbox({...options,sandboxId:data.sandboxID,envdVersion:data.envdVersion,envdAccessToken:data.envdAccessToken,...(data.domain?{sandboxDomain:data.domain}:{})});
+  return new E2BSandboxExecutor({sandboxId:sandbox.sandboxId,
+    files:{read:(path,opts)=>sandbox.files.read(path,opts),write:(path,bytes,opts)=>sandbox.files.write(path,bytes,opts)},
+    commands:{run:(cmd,opts)=>sandbox.commands.run(cmd,opts)},
+    kill:async()=>{throw new Error("Finalization cannot destroy a sandbox");},
+  },{...options,user:"oma-worker",managedBootstrap:{disableAutoResume:true}});
 }

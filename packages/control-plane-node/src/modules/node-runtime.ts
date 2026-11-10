@@ -1,3 +1,6 @@
+import { createNodeWorkFinalizationHost } from "../lib/work-finalization-host/index.js";
+import { createNodeWorkArtifactPublisher } from "../openai-artifact-publication.js";
+import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 /**
  * Combine the foundation and official Managed Sessions stages, then assemble
  * the legacy route-service bundle and API-key storage. HTTP mounting and
@@ -104,9 +107,19 @@ export async function createNodeRuntime(
     managedUserProfilesRoutes,
   } = managed;
 
+  const workFinalizationHost = await createNodeWorkFinalizationHost({
+    sql, dialect, blobs: filesBlob, sandboxes: sessionSandboxes,
+    afterExecution: createNodeWorkArtifactPublisher({
+      historyForWorkspace: workspaceId => new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),
+      filesForWorkspace: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
+      secrets: openAIAgentsSecrets, environmentId: session => `oai_env_${session.id}`, logger,
+    }),
+  });
+
   const managedEnvironmentWorkWorker = createNodeEnvironmentWorkWorker({
     sql, config, work: managedEnvironmentWorkStore, sandboxes: sessionSandboxes, capabilities: managedAcpCapabilities,
     application: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.environmentWork),
+    recovery: managedSessionsComposition,
     onError: () => logger.error({ op: "main-node.environment_work.dispatch_failed" }, "Work dispatch failed; durable poll will retry"),
   });
 
@@ -262,6 +275,8 @@ export async function createNodeRuntime(
   };
 
   return {
+    workFinalizationHost,
+    sessionSandboxes,
     config,
     processMode,
     ownsLongLivedProcesses,

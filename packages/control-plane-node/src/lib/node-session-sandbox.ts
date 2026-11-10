@@ -1,3 +1,4 @@
+import { configureNodeNativeStorage, type NodeNativeBucket } from "./work-finalization-host/native-storage.js";
 // The Node Session sandbox (research/sandbox-sdk-v2-design.md §0.0 rule 15,
 // §0.7): composition only. The lifecycle is the shared core
 // (PortsSessionSandbox, @open-managed-agents/session-runtime); this module
@@ -94,6 +95,14 @@ export interface NodeSandboxWorkAuthority {
   attempt: SessionExecutionAttemptRef;
   isCurrent(): Promise<boolean>;
   token(sandbox: object | string): Promise<string>;
+  /** Existing issued holder hash, resolved after bootstrap; never issues a token. */
+  holderHash?(): string | undefined;
+}
+
+export interface NodeWorkStorageInput extends NodeSessionSandboxContext {
+  sandbox: SandboxPort;
+  runtimeGeneration: string;
+  workAuthority: Pick<NodeSandboxWorkAuthority, "attempt" | "isCurrent"> & { holderHash?: string };
 }
 
 export interface NodeSessionSandboxContext {
@@ -110,6 +119,9 @@ export interface NodeSessionSandboxProvider {
 
 /** A deployment's Sandbox SDK v2 adapter for Session sandboxes (design §0.2). */
 export interface NodeSessionSandboxAdapter {
+  nativeWorkBucket?: NodeNativeBucket;
+  /** GET-only provider attachment for finalization; no resume or renewal. */
+  connectWorkReadonly?(runtimeId: string): Promise<SandboxPort & SandboxRuntimePort>;
   adapter: SandboxAdapterPort<SandboxPort>;
   /** plan.from.image: the Environment's catalog image, else the deployment default. */
   image(catalogImage: { alias: string; reference: string } | undefined): string;
@@ -147,6 +159,8 @@ export interface NodeSessionSandboxOptions {
       authorizeMemoryMutation?(): Promise<boolean>;
       signal: AbortSignal;
     }): Promise<void>;
+    /** Work turn barrier; separate authority, never a fabricated MA fence. */
+    synchronizeWork?(input: NodeWorkStorageInput): Promise<void>;
     /** turn_end / before_stop under the execution fence: Memory write-back and outputs. */
     synchronize(input: NodeSessionSandboxContext & {
       sandbox: SandboxPort;
@@ -204,6 +218,15 @@ export class NodeSessionSandboxes {
   /** Only unresolved discovery RPCs; shared across claim facades, removed on settle. */
   private readonly managementDiscoveries = new Map<string, ManagementDiscovery>();
 
+  private restoreCheckpoint?: (physical: Awaited<ReturnType<NodeSessionSandbox["captureWork"]>>) => Promise<void>;
+  configureWorkCheckpointRestore(restore: (physical: Awaited<ReturnType<NodeSessionSandbox["captureWork"]>>) => Promise<void>): void { this.restoreCheckpoint = restore; }
+  async restoreWorkCheckpoint(sandbox: NodeSessionSandbox, attempt: SessionExecutionAttemptRef): Promise<void> {
+    await sandbox.restoreWorkCheckpoint(async () => {
+      if (!this.restoreCheckpoint) throw new Error("Work checkpoint restore is not configured");
+      await this.restoreCheckpoint(await sandbox.captureWork(attempt));
+    });
+  }
+
   constructor(private readonly options: NodeSessionSandboxOptions) {
     // Design §0.0b A.10: the provider's own reclaim must outlast the idle pause.
     if (options.adapter === undefined && options.provider !== undefined && options.v1LeaseTtlMs !== undefined) {
@@ -237,6 +260,71 @@ export class NodeSessionSandboxes {
     });
     this.current.set(key, sandbox);
     return sandbox;
+  }
+
+  /** Exact reconnect only: no core.open(), storage hydration, token issuance or
+   * provider allocation. The caller supplies server-read context and authority. */
+  async reconnectWork(input: NodeSessionSandboxContext & {
+    workAuthority: NodeSandboxWorkAuthority;
+    sourceAttempt: SessionExecutionAttemptRef;
+    terminal: boolean;
+  }): Promise<NodeWorkStorageInput & { handle: NonNullable<ReturnType<typeof recordedHandle>> }> {
+    const records = this.options.records ?? (this.options.sql ? new SqlSessionSandboxRecords(this.options.sql) : undefined);
+    const state = await records?.load(input.workspaceId, input.session.id);
+    const authority = input.workAuthority;
+    const holderHash = authority.holderHash?.();
+    if (!state || state.phase !== "running" || !holderHash || !await authority.isCurrent()) throw new Error("Current recorded Work runtime required");
+    // E2B currently supplies the only trusted process-bound holder locator.
+    // A local directory/provider.resume is not a process identity proof.
+    const adapter = this.options.adapter?.adapter;
+    if (state.handle.provider !== "e2b" || adapter?.name !== "e2b") throw new Error("Trusted Work process reconnect unsupported by provider");
+    const read = this.options.adapter?.connectWorkReadonly;
+    if (!read) throw new Error("Trusted Work read-only reconnect unsupported by provider");
+    const attachedRuntime = await read(state.handle.runtimeId);
+    if (this.options.adapter?.nativeWorkBucket) configureNodeNativeStorage(attachedRuntime,this.options.adapter.nativeWorkBucket);
+    const attachedHandle = attachedRuntime.runtimeHandle();
+    if (attachedHandle.provider !== state.handle.provider || attachedHandle.runtimeId !== state.handle.runtimeId) throw new Error("Work reconnect returned a different runtime");
+    const runtime = attachedRuntime as SandboxPort & {
+      inspectManagedProcessSlot?(): Promise<{sandboxId:string;id:string;epoch:string;pid:number;status:string;holderHash?:string;identity:{workspaceId:string;sessionId:string;workId:string;attemptId:string}}>;
+      restoreManagedProcess?(locator: unknown): Promise<SandboxManagedProcessHandle>;
+    };
+    if (!runtime.inspectManagedProcessSlot || !runtime.restoreManagedProcess) throw new Error("Trusted Work process reconnect unsupported by runtime");
+    const inspect = runtime.inspectManagedProcessSlot.bind(runtime);
+    const locator = await inspect();
+    const source = input.sourceAttempt;
+    if (source.executionId !== authority.attempt.executionId || source.generation > authority.attempt.generation
+      || !locator.id || !locator.epoch || !Number.isSafeInteger(locator.pid) || locator.pid <= 0
+      || !["running","exited"].includes(locator.status) || locator.sandboxId !== state.handle.runtimeId || locator.identity.workspaceId !== input.workspaceId
+      || locator.identity.sessionId !== input.session.id || locator.identity.workId !== source.executionId
+      || locator.identity.attemptId !== source.attemptId || !/^[a-f0-9]{64}$/.test(locator.holderHash ?? "")
+      || (!input.terminal && locator.status !== "running")
+      || (source.generation === authority.attempt.generation && locator.holderHash !== holderHash)
+      || (source.generation !== authority.attempt.generation && (!input.terminal || locator.status !== "exited"))) {
+      throw new Error("Work process locator does not prove the authorized source attempt");
+    }
+    const handle = await runtime.restoreManagedProcess(locator);
+    if (handle.id !== locator.id || handle.pid !== locator.pid) throw new Error("Restored Work process differs from locator");
+    const fingerprint = (l: typeof locator) => JSON.stringify([l.sandboxId,l.id,l.epoch,l.pid,l.holderHash,l.identity]);
+    const isCurrent = async () => {
+      if (!await authority.isCurrent() || authority.holderHash?.() !== holderHash) return false;
+      const saved = await records!.load(input.workspaceId,input.session.id);
+      if (JSON.stringify(saved) !== JSON.stringify(state)) return false;
+      const latest = await inspect();
+      return fingerprint(latest) === fingerprint(locator)
+        && (input.terminal ? source.generation === authority.attempt.generation || latest.status === "exited" : latest.status === "running") && await authority.isCurrent();
+    };
+    if (!await isCurrent()) throw new Error("Work reconnect authority changed");
+    const generation = (await runtime.readFile("/tmp/.oma-warm")).trim();
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(generation)) throw new Error("Recorded Work physical generation unavailable");
+    return {...input,sandbox:runtime,runtimeGeneration:generation,handle:state.handle,
+      workAuthority:{attempt:authority.attempt,holderHash,isCurrent}};
+  }
+
+  async synchronizeReconnectedWork(input: NodeWorkStorageInput): Promise<void> {
+    if (!await input.workAuthority.isCurrent()) throw new Error("Work reconnect authority lost");
+    if (!this.options.storage.synchronizeWork) throw new Error("Work storage synchronization unsupported");
+    await this.options.storage.synchronizeWork(input);
+    if (!await input.workAuthority.isCurrent()) throw new Error("Work reconnect authority lost");
   }
 
   /** Session creation (design §0.0 rule 10): acquire the sandbox and keep
@@ -307,9 +395,20 @@ export class NodeSessionSandbox implements SandboxPort {
   private context: NodeSessionSandboxContext;
   private executionFence: SessionExecutionFence | undefined;
   private workAuthority: NodeSandboxWorkAuthority | undefined;
+  private managedWorkProcess?: {handle: SandboxManagedProcessHandle; authority: NodeSandboxWorkAuthority; runtime: SandboxPort};
   private runtimeGeneration = "";
+  /** Unsettled native calls stay single-flight; a caller timeout cannot cancel them. */
+  private workRenewing: Promise<void> | undefined;
+  private workSynchronizing: Promise<void> | undefined;
   /** The core open plan's warm-marker generation, never a Work claim generation. */
   private physicalGeneration = "";
+  private acquiredWorkRuntime = false;
+  private restoringWorkCheckpoint?: Promise<void>;
+  async restoreWorkCheckpoint(restore: () => Promise<void>): Promise<void> {
+    if (!this.acquiredWorkRuntime) return;
+    await (this.restoringWorkCheckpoint ??= restore().then(() => { this.acquiredWorkRuntime = false; })
+      .finally(() => { this.restoringWorkCheckpoint = undefined; }));
+  }
   private state: SessionSandboxState | undefined;
   /** The runtime the core last opened (kept after an idle pause for probes). */
   private live: SandboxPort | null = null;
@@ -375,7 +474,26 @@ export class NodeSessionSandbox implements SandboxPort {
               ...(options.v1LeaseTtlMs === undefined ? {} : { leaseTtlMs: options.v1LeaseTtlMs }),
               held,
             }));
-        const { ports } = createSandboxPorts({ ...adapter, native: { ...adapter.native, storage: () => this.storagePort() } }, {
+        const lifecycle = adapter.lifecycle;
+        const trackedAdapter = {...adapter,lifecycle:{...lifecycle,
+          checkpoint: (input: Parameters<typeof lifecycle.checkpoint>[0]) => lifecycle.checkpoint(input),
+          attach: async (input: Parameters<typeof lifecycle.attach>[0]) => {
+            const result = await lifecycle.attach(input);
+            if (result !== "gone") this.acquiredWorkRuntime = false;
+            return result;
+          },
+          acquire: async (input: Parameters<typeof lifecycle.acquire>[0]) => {
+            const result = await lifecycle.acquire(input);
+            if (result !== "gone") this.acquiredWorkRuntime = true;
+            return result;
+          },
+          resume: async (input: Parameters<typeof lifecycle.resume>[0]) => {
+            const result = await lifecycle.resume(input);
+            if (result !== "gone" && input.ref.kind === "snapshot") this.acquiredWorkRuntime = true;
+            return result;
+          },
+        }};
+        const { ports } = createSandboxPorts({ ...trackedAdapter, native: { ...adapter.native, storage: () => this.storagePort() } }, {
           // Storage is Node's own (native above), so the generic deps are never read.
           storage: {} as never,
           egress: {
@@ -464,7 +582,8 @@ export class NodeSessionSandbox implements SandboxPort {
         cancel: () => this.cancelIdle(),
       },
       ...(options.adapter === undefined || options.environmentCache === undefined ? {} : {
-        environmentCache: options.environmentCache.forSession(
+        environmentCache: (() => {
+          const cache = options.environmentCache!.forSession(
           () => this.environmentSetup(),
           (warning) => {
             const message = `${warning.reason}: ${warning.message}`;
@@ -474,7 +593,13 @@ export class NodeSessionSandbox implements SandboxPort {
               options.warn(`session_warning_failed error=${error instanceof Error ? error.message : String(error)}`, context);
             });
           },
-        ),
+          );
+          return {...cache,acquire:async (...args: Parameters<typeof cache.acquire>) => {
+            const acquired = await cache.acquire(...args);
+            if (acquired !== "gone") this.acquiredWorkRuntime = true;
+            return acquired;
+          }};
+        })(),
       }),
     });
   }
@@ -500,8 +625,11 @@ export class NodeSessionSandbox implements SandboxPort {
 
   /** Execution end (design §0.1 step 7); the sandbox keeps running until the idle pause. */
   async endExecution(): Promise<void> {
+    const authority = this.workAuthority;
     try {
+      if (authority !== undefined && !await this.isCurrentWork(authority)) throw new Error("Work claim lost before finalization");
       await this.core.endExecution();
+      if (authority !== undefined && !await this.isCurrentWork(authority)) throw new Error("Work claim lost during finalization");
     } finally {
       this.executionFence = undefined;
     }
@@ -535,6 +663,7 @@ export class NodeSessionSandbox implements SandboxPort {
   async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
     const authority = this.workAuthority;
     if (authority === undefined || !await authority.isCurrent()) throw new Error("Current Work claim required for management launch");
+    if (this.managedWorkProcess?.authority === authority) throw new Error("Work management process already launched for this attempt");
     const runtime = await this.core.runtime();
     if (!("startManagedProcess" in runtime) || typeof runtime.startManagedProcess !== "function") throw new Error("Sandbox lacks safe native management launch");
     if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost before launch");
@@ -545,6 +674,7 @@ export class NodeSessionSandbox implements SandboxPort {
     let transferred = false;
     try {
       if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during launch");
+      this.managedWorkProcess = {handle,authority,runtime};
       transferred = true;
       return handle;
     } finally {
@@ -598,7 +728,53 @@ export class NodeSessionSandbox implements SandboxPort {
   }
   setEnvVars(env: Record<string, string>): Promise<void> { return this.core.setEnvVars(env); }
   spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> { return this.core.spawnDuplexProcess(spec); }
-  renewActivityTimeout(): Promise<void> { return this.core.renewActivityTimeout(); }
+  renewActivityTimeout(): Promise<void> {
+    const authority = this.workAuthority;
+    if (authority === undefined) return this.core.renewActivityTimeout();
+    return this.workRenewing ??= (async () => {
+      if (!await this.isCurrentWork(authority)) throw new Error("Work claim lost before provider renewal");
+      await this.core.renewActivityTimeout();
+      if (!await this.isCurrentWork(authority)) throw new Error("Work claim lost during provider renewal");
+    })().finally(() => { this.workRenewing = undefined; });
+  }
+
+  /** A trusted runner calls this after draining a turn, before Work stop/settlement.
+   * Keep the Work alive through this barrier; never use the polling timer. */
+  async synchronizeWork(attempt: SessionExecutionAttemptRef): Promise<void> {
+    const authority = this.workAuthority;
+    if (authority === undefined || !sameWorkAttempt(attempt, authority.attempt) || !await this.isCurrentWork(authority)) {
+      throw new Error("Current Work claim required for storage synchronization");
+    }
+    await this.core.syncStorage("turn_end");
+    if (!await this.isCurrentWork(authority)) throw new Error("Work claim lost during storage synchronization");
+  }
+
+  /** Capture the already-open physical runtime under its issued Work authority.
+   * Never open/rebind here: a finalizer must not create a replacement runtime. */
+  async captureWork(attempt: SessionExecutionAttemptRef, requireProcess = false): Promise<NodeWorkStorageInput & { handle: NonNullable<ReturnType<typeof recordedHandle>> }> {
+    const authority = this.workAuthority;
+    const runtime = this.live;
+    const generation = this.physicalGeneration;
+    const holderHash = authority?.holderHash?.();
+    const handle = this.state && recordedHandle(this.state);
+    if (!authority || !runtime || !generation || !holderHash || !handle
+      || !sameWorkAttempt(attempt, authority.attempt) || !await this.isCurrentWork(authority)) {
+      throw new Error("Current physical Work runtime and issued holder required");
+    }
+    const process = this.managedWorkProcess;
+    const processCurrent = async () => !requireProcess || !!process && this.managedWorkProcess === process
+      && process.authority === authority && process.runtime === runtime && await process.handle.getStatus() === "running";
+    if (!await processCurrent()) throw new Error("Current exact Work management process required");
+    return { ...this.context, sandbox: runtime, runtimeGeneration: generation, handle,
+      workAuthority: { attempt: authority.attempt, holderHash, isCurrent: async () =>
+        this.live === runtime && this.physicalGeneration === generation
+        && authority.holderHash?.() === holderHash && await this.isCurrentWork(authority) && await processCurrent() },
+    };
+  }
+
+  private async isCurrentWork(authority: NodeSandboxWorkAuthority): Promise<boolean> {
+    return authority === this.workAuthority && await authority.isCurrent() && authority === this.workAuthority;
+  }
 
   async resolveWorkspaceRoot(): Promise<string> {
     return (await (await this.core.runtime()).resolveWorkspaceRoot?.()) ?? DEFAULT_WORKSPACE_ROOT;
@@ -651,15 +827,33 @@ export class NodeSessionSandbox implements SandboxPort {
     return {
       attach: async ({ runtime, fence, signal }) => {
         const executionFence = this.fenceOf(fence);
+        const authority = this.workAuthority;
+        if (authority !== undefined) this.runtimeGeneration = this.physicalGeneration;
         await this.options.storage.attach({
           ...this.context, sandbox: runtime, runtimeGeneration: this.runtimeGeneration, signal,
           ...(executionFence === undefined ? {} : { executionFence }),
-          ...(this.workAuthority === undefined ? {} : { authorizeMemoryMutation: () => this.workAuthority!.isCurrent() }),
+          ...(authority === undefined ? {} : { authorizeMemoryMutation: () => this.isCurrentWork(authority) }),
         });
       },
       sync: async ({ runtime, fence, reason }) => {
         // Node's Memory sync rebases the store directories: only at turn boundaries.
         if (reason === "interval" || reason === "checkpoint") return;
+        const authority = this.workAuthority;
+        if (authority !== undefined) {
+          const execution = executionOfFence(fence);
+          if (execution === undefined || !sameWorkAttempt(execution, authority.attempt) || !await this.isCurrentWork(authority)) {
+            throw new Error("Work claim lost before storage synchronization");
+          }
+          const synchronize = this.options.storage.synchronizeWork;
+          if (synchronize === undefined) throw new Error("Work storage synchronization is not configured");
+          await (this.workSynchronizing ??= synchronize({
+            ...this.context, sandbox: runtime, runtimeGeneration: this.runtimeGeneration,
+            workAuthority: { attempt: authority.attempt, isCurrent: () => this.isCurrentWork(authority),
+              ...(authority.holderHash?.() === undefined ? {} : { holderHash: authority.holderHash!()! }) },
+          }).finally(() => { this.workSynchronizing = undefined; }));
+          if (!await this.isCurrentWork(authority)) throw new Error("Work claim lost during storage synchronization");
+          return;
+        }
         // Without the attempt nothing may be written back (design §0.0 rule 10).
         const executionFence = this.fenceOf(fence);
         if (executionFence === undefined) return;
@@ -678,6 +872,7 @@ export class NodeSessionSandbox implements SandboxPort {
   /** The core opened `runtime`: expose what it can do and replay command secrets. */
   private track(runtime: SandboxPort): SessionSandboxExecutor {
     if (this.live !== runtime) {
+      if (this.options.adapter?.nativeWorkBucket) configureNodeNativeStorage(runtime,this.options.adapter.nativeWorkBucket);
       this.live = runtime;
       for (const [prefix, secrets] of this.commandSecrets) runtime.registerCommandSecrets?.(prefix, secrets);
       this.expose(runtime);
@@ -729,7 +924,7 @@ export class NodeSessionSandbox implements SandboxPort {
     this.status = async () => port()?.status() ?? "unknown";
     // The runner's lease heartbeat goes through the core: it renews only
     // inside an execution (design §0.0b A.10), never in the idle window.
-    this.renewLease = async () => { await this.core.renewActivityTimeout(); };
+    this.renewLease = async () => { await this.renewActivityTimeout(); };
     this.suspend = async (input) => (port() ?? runtime).suspend(input);
     this.resume = async (checkpoint) => (port() ?? runtime).resume(checkpoint);
     this.checkpoint = async (input) => (port() ?? runtime).checkpoint(input);
@@ -758,4 +953,11 @@ function scopeOf(context: NodeSessionSandboxContext): RuntimeResourceScope {
 
 function keyOf(workspaceId: string, sessionId: string): string {
   return `${workspaceId}\u0000${sessionId}`;
+}
+
+function sameWorkAttempt(a: SessionExecutionAttemptRef | Omit<SessionExecutionAttemptRef, "workspaceId" | "sessionId">, b: SessionExecutionAttemptRef): boolean {
+  return a.executionId === b.executionId && a.attemptId === b.attemptId
+    && a.ownerId === b.ownerId && a.generation === b.generation
+    && (!("workspaceId" in a) || a.workspaceId === b.workspaceId)
+    && (!("sessionId" in a) || a.sessionId === b.sessionId);
 }

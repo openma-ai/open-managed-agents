@@ -8,6 +8,7 @@ import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/instal
 import { parseAcpRegistryRef } from "@open-managed-agents/acp-runtime/registry-pins";
 import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import { environmentWorkSandboxTokenRef } from "@open-managed-agents/sandbox-gateway-sql";
+import { sandboxTokenSha256 } from "@open-managed-agents/sandbox-gateway";
 import type { EnvironmentWorkStore } from "@open-managed-agents/environment-work-store";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { NodeConfig } from "../config.js";
@@ -22,6 +23,7 @@ export function createNodeEnvironmentWorkWorker(input: {
   config: NodeConfig;
   work: EnvironmentWorkStore;
   application(workspaceId: string): EnvironmentWorkApplicationPort;
+  recovery?: { recoverSchedulingPage(input: { limit: number; after?: { workspaceId: string; sessionId: string }; onError(error: unknown): void }): Promise<{ next: { workspaceId: string; sessionId: string } | null }> };
   sandboxes: NodeSessionSandboxes;
   capabilities: ReturnType<typeof createNodeManagedAcpCapabilities>;
   onError(): void;
@@ -39,7 +41,7 @@ export function createNodeEnvironmentWorkWorker(input: {
   const controller = new AbortController();
   const workers = new Map<string, { worker: ManagedEnvironmentWorker; completed: Promise<void> }>();
   // Management handles only, never ownership/lease state. SQL remains authority.
-  type ManagedProcess = { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; takeover?: { authorize(): Promise<boolean> }; pending?: { op: string; result: Promise<unknown> } };
+  type ManagedProcess = { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; renew?(): Promise<void>; renewal?: Promise<void>; takeover?: { authorize(): Promise<boolean> }; pending?: { op: string; result: Promise<unknown> } };
   const processes = new Map<string, ManagedProcess>();
   // The Port has no cancellation signal. Bound our wait, NOT the native call:
   // retain an unresolved exact-handle RPC and never start a concurrent duplicate.
@@ -57,6 +59,22 @@ export function createNodeEnvironmentWorkWorker(input: {
     try {
       return await Promise.race([result, new Promise<never>((_, reject) => {
         timeout = setTimeout(() => reject(new Error("Management RPC wait timed out; native outcome is unknown")), 1_000);
+      })]);
+    } finally { if (timeout !== undefined) clearTimeout(timeout); }
+  }
+  // Provider renewal is independent of exact-process cleanup. A stuck renewal
+  // must not block a lost claim's SIGTERM, nor be mistaken for cancellation.
+  async function renew(process: ManagedProcess): Promise<void> {
+    if (process.renew === undefined) return;
+    if (process.renewal === undefined) {
+      const pending = Promise.resolve().then(() => process.renew!());
+      process.renewal = pending;
+      void pending.finally(() => { if (process.renewal === pending) process.renewal = undefined; }).catch(() => {});
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([process.renewal, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Provider renewal wait timed out; native outcome remains pending")), 1_000);
       })]);
     } finally { if (timeout !== undefined) clearTimeout(timeout); }
   }
@@ -91,10 +109,20 @@ export function createNodeEnvironmentWorkWorker(input: {
   const sessions = new SqlSessionSource(input.sql);
   const environments = new SqlSessionEnvironmentSource(input.sql);
 
+  let recoveryAfter: { workspaceId: string; sessionId: string } | undefined;
+  let recoverAfterMs = 0;
   const tick = () => draining ??= (async () => {
-    if (controller.signal.aborted || command === undefined || origin === undefined) return;
+    if (controller.signal.aborted) return;
+    if (input.recovery && Date.now() >= recoverAfterMs) {
+      recoverAfterMs = Date.now() + 30_000;
+      const page = await input.recovery.recoverSchedulingPage({ limit: 20, after: recoveryAfter, onError: () => input.onError() });
+      recoveryAfter = page.next ?? undefined;
+    }
+    if (command === undefined || origin === undefined) return;
     await Promise.all([...processes].map(([key, process]) => handoff(process.slot, async () => {
-      if (processes.get(key) === process && !await processCall(process, "current", () => process.current())) await retire(key);
+      if (processes.get(key) !== process) return;
+      if (!await processCall(process, "current", () => process.current())) await retire(key);
+      else await renew(process);
     }).catch(() => { if (!controller.signal.aborted) input.onError(); })));
     const rows = await input.sql.prepare(
       "SELECT DISTINCT workspace_id, environment_id FROM managed_environment_work WHERE state IN ('queued', 'starting', 'active')"
@@ -132,12 +160,26 @@ export function createNodeEnvironmentWorkWorker(input: {
               const stored = await input.work.find(delivery);
               if (!capability || !stored?.claim || stored.work.environmentId !== scope.environmentId || stored.secret.sessionsToken !== capability.sessionsToken || capability.gatewayBaseUrl !== origin) throw new Error("Work delivery rejected");
               const generation = stored.claim.generation;
-              const current = async () => {
+              let holderHash: string | undefined;
+              const current = async (includeStopping = false) => {
                 const row = await input.work.find(delivery);
-                return !signal.aborted && row?.claim?.generation === generation && row.secret.sessionsToken === capability.sessionsToken
+                return !signal.aborted && row?.claim?.generation === generation && row.claim.workerId === stored.claim!.workerId && row.secret.sessionsToken === capability.sessionsToken
                   && row.work.data.type === "session" && row.work.data.id === delivery.sessionId
-                  && ["queued", "starting", "active"].includes(row.work.state)
+                  && (includeStopping ? ["queued", "starting", "active", "stopping"] : ["queued", "starting", "active"]).includes(row.work.state)
                   && Date.parse(row.claim.claimedAt) + row.heartbeatTtlSeconds * 1000 > Date.now();
+              };
+              // Stop-requested is a finalization window only while this exact
+              // claim's SQL lease remains valid. Never extend the SQL lease here.
+              const owned = async () => {
+                if (!await current(true)) return false;
+                if (holderHash === undefined) return true; // bootstrap has not issued its holder yet
+                // Reuse the existing holder row. Unlike gateway access, provider
+                // maintenance also covers the still-leased stopping window.
+                const holder = await input.sql.prepare(
+                  "SELECT sandbox_token_hashes FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_generation = ? AND claim_at + heartbeat_ttl_seconds * 1000 > ? AND state IN ('queued', 'starting', 'active', 'stopping')"
+                ).bind(scope.workspaceId, scope.environmentId, work.id, delivery.sessionId, generation, Date.now()).first<{ sandbox_token_hashes: string | null }>();
+                const hashes: unknown = JSON.parse(holder?.sandbox_token_hashes ?? "[]");
+                return Array.isArray(hashes) && hashes.some(entry => entry?.h === holderHash && entry?.s === "all");
               };
               const session = await sessions.find(delivery);
               const pinnedEnvironment = await environments.find(scope);
@@ -159,11 +201,26 @@ export function createNodeEnvironmentWorkWorker(input: {
                 }
                 const claim = { ...delivery, generation };
                 const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
-                  workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: current, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
+                  workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: owned, holderHash: () => holderHash, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
                 });
                 await sandbox.open();
                 if (!await current()) throw new Error("Work claim lost before bootstrap");
                 const token = await sandbox.workToken();
+                holderHash = (await sandboxTokenSha256(token)) ?? undefined;
+                if (holderHash === undefined || !await owned()) throw new Error("Work sandbox holder lost before launch");
+                // Strict canonical workspace/native-state restore before any
+                // management worker can bootstrap. Exact attaches are never
+                // overwritten, and a failed restore never launches a model.
+                try {
+                  await input.sandboxes.restoreWorkCheckpoint(sandbox, environmentWorkSandboxTokenRef(claim));
+                  if (!await owned()) throw new Error("Work claim lost during checkpoint restore");
+                } catch (error) {
+                  // Never let the next dispatcher attach a partially restored
+                  // runtime as though it were a completed initialization.
+                  // failExecution already refuses release after authority loss.
+                  await sandbox.failExecution();
+                  throw error;
+                }
                 const spec = { command, args: args as string[], env: {
                   ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
                   ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
@@ -184,7 +241,7 @@ export function createNodeEnvironmentWorkWorker(input: {
                     const locatedGeneration = Number(identity.attemptId.split(":").at(-1));
                     const located = environmentWorkSandboxTokenRef({...scope, sessionId: delivery.sessionId, workId: identity.workId, generation: locatedGeneration});
                     if (!Number.isSafeInteger(locatedGeneration) || locatedGeneration < 1 || located.attemptId !== identity.attemptId || locatedGeneration > old.claim.generation) throw new Error("Unrecognized management attempt identity");
-                    return locatedGeneration < old.claim.generation || expected.attemptId === identity.attemptId && (!["queued", "starting", "active"].includes(old.work.state)
+                    return locatedGeneration < old.claim.generation || expected.attemptId === identity.attemptId && (!["queued", "starting", "active", "stopping"].includes(old.work.state)
                       || Date.parse(old.claim.claimedAt) + old.heartbeatTtlSeconds * 1000 <= Date.now());
                   };
                   if (!await current() || !await obsolete()) throw new Error("Management worker remains current or takeover claim lost");
@@ -198,7 +255,7 @@ export function createNodeEnvironmentWorkWorker(input: {
                   if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before replacement launch");
                   handle = await sandbox.startManagedProcess(spec);
                 }
-                processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { slot, handle, current });
+                processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { slot, handle, current: owned, renew: () => sandbox.renewActivityTimeout() });
               });
             },
           },
@@ -215,8 +272,8 @@ export function createNodeEnvironmentWorkWorker(input: {
     async start() {
       if (started) return;
       started = true;
-      if (command === undefined) return;
-      if (!origin) throw new Error("PUBLIC_BASE_URL is required for Work runner bootstrap");
+      if (command === undefined && !input.recovery) return;
+      if (command !== undefined && !origin) throw new Error("PUBLIC_BASE_URL is required for Work runner bootstrap");
       await tick();
       if (controller.signal.aborted) return;
       timer = setInterval(() => { void tick(); }, 1_000);

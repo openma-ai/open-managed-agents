@@ -12,9 +12,9 @@ import { E2B_WORKER_INVENTORY } from "../src/runtime/e2b-work-handoff";
 
 // Actual SessionDO.fetch + SQL + PortsSessionSandbox + E2B Files adapter.
 // Only E2B SDK remote operations/launcher are simulated, not cloud certified.
-const provider=vi.hoisted(()=>({creates:0,starts:0,kills:0,ops:[] as string[],files:new Map<string,string>(),slot:null as any,hold:undefined as undefined|{entered:()=>void;wait:Promise<void>;op?:string;skip?:number}}));
+const provider=vi.hoisted(()=>({creates:0,starts:0,kills:0,renewals:0,ops:[] as string[],files:new Map<string,string>(),slot:null as any,hold:undefined as undefined|{entered:()=>void;wait:Promise<void>;op?:string;skip?:number}}));
 vi.mock("e2b",()=>{
- const sandbox={sandboxId:"physical",kill:async()=>{},updateNetwork:async()=>{},
+ const sandbox={sandboxId:"physical",setTimeout:async()=>{provider.renewals++;},kill:async()=>{},updateNetwork:async()=>{},
  commands:{run:async(command:string)=>({exitCode:0,stdout:command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""})},
  files:{read:async(path:string)=>{
   if(path.endsWith("/ready"))return "oma-managed-v2";
@@ -39,7 +39,7 @@ vi.mock("e2b",()=>{
 });
 beforeAll(async()=>{await exports.default.fetch(new Request("http://localhost/health"));});
 async function fixture() {
-  const sql = new CfD1SqlClient(env.MAIN_DB), suffix = crypto.randomUUID();
+  const sql = new CfD1SqlClient((env as typeof env & { MAIN_DB: D1Database }).MAIN_DB), suffix = crypto.randomUUID();
   const delivery = { workspaceId: "default", environmentId: "env_"+suffix, sessionId: "sess_"+suffix, workId: "new_"+suffix, apiBaseUrl: "https://control.test", workSecret: "" };
   await seedSandboxGatewaySessionRows(sql, "default", {id:delivery.sessionId,environmentId:delivery.environmentId,vaultIds:[],agent:{id:"agent",version:1},archivedAt:null});
   await sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:delivery.sessionId,environmentId:delivery.environmentId,agent:{id:"agent",version:1,openma:{harness:"acp-sandbox",acp:{agent:{registry:"codex-acp@1.8.0"}}}}}),delivery.sessionId).run();
@@ -60,14 +60,14 @@ async function cold(f:Awaited<ReturnType<typeof fixture>>) {
  const stored=await f.work.find(f.delivery),cipher=new WebCryptoAesGcm(root,"managed.environment-work.secret");
  await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
  const configured={...env,PLATFORM_ROOT_SECRET:root,PUBLIC_BASE_URL:f.delivery.apiBaseUrl,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",E2B_TEMPLATE:"trusted",E2B_MAX_LIFETIME_MS:"3600000",OPENMA_ACP_HARNESSES:E2B_WORKER_INVENTORY,MAIN_MCP:undefined};
- const stub=env.SESSION_DO.get(env.SESSION_DO.idFromName(JSON.stringify(["default",f.delivery.sessionId])));
+ const stub=env.SESSION_DO!.get(env.SESSION_DO!.idFromName(JSON.stringify(["default",f.delivery.sessionId])));
  provider.creates=0;provider.starts=0;provider.kills=0;provider.ops=[];provider.files.clear();provider.slot=null;provider.hold=undefined;
  return {stub,configured};
 }
 function request(delivery:unknown,signal?:AbortSignal){return new Request("https://internal/__internal/work/dispatch",{method:"POST",body:JSON.stringify(delivery),signal});}
 it("fully configured cold SessionDO.fetch succeeds without /init and persists the original E2B record",async()=>{
  const f=await fixture(),c=await cold(f);
- const namespace={idFromName:(name:string)=>env.SESSION_DO.idFromName(name),get:(id:DurableObjectId)=>({async fetch(inbound:Request){
+ const namespace={idFromName:(name:string)=>env.SESSION_DO!.idFromName(name),get:(id:DurableObjectId)=>({async fetch(inbound:Request){
   expect(id.toString()).toBe(c.stub.id.toString());const body=await inbound.text();
   const result=await runInDurableObject(c.stub,async(_instance,state)=>{
    expect(state.storage.kv.get("e2b_sandbox_state")).toBeUndefined();
@@ -155,4 +155,18 @@ it("real cold DO/native Files handoff replaces a stopped claim:null worker using
   expect((await instance.fetch(request(next))).status).toBe(200);
  });
  expect(provider.starts).toBe(2);expect(provider.kills).toBe(1);expect(provider.slot.identity.workId).toBe(nextId);
+});
+
+
+it("dispatch registers the real native E2B lease with the owner, including leased stopping finalization", async () => {
+ const {CfE2BWorkLease}=await import("../src/runtime/cf-work-provider-lease");
+ const f=await fixture(),c=await cold(f),lease=new CfE2BWorkLease();provider.renewals=0;
+ await runInDurableObject(c.stub,async(_instance,state)=>{
+  const response=await dispatchCfWorkRunnerRequest(request(f.delivery),c.configured as never,{storage:state.storage,id:state.id.toString(),hasSessionExecution:false,workLease:lease});
+  expect(response.status).toBe(200);expect(provider.renewals).toBe(1);
+  await f.sql.prepare("UPDATE managed_environment_work SET state='stopping' WHERE id=?").bind(f.delivery.workId).run();
+  await lease.maintain();expect(provider.renewals).toBe(2);
+  await f.sql.prepare("UPDATE managed_environment_work SET sandbox_token_hashes='[]' WHERE id=?").bind(f.delivery.workId).run();
+  await lease.maintain();expect(provider.renewals).toBe(2);expect(provider.kills).toBe(1);expect(lease.active).toBe(false);
+ });
 });

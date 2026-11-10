@@ -233,7 +233,7 @@ export function createE2BSessionSandbox(input: {
         leaseMs,
         maxLifetimeMs,
         user: "oma-worker",
-        managedBootstrap: {},
+        managedBootstrap: { ...(input.workAuthority ? { disableAutoResume: true } : {}) },
         ...(storage.kind === "native"
           ? { setup: E2B_SANDBOX_SETUP, channels: [new URL(env.R2_ENDPOINT!).hostname], objectStorage: storage.objectStorage }
           : { setup: E2B_SANDBOX_DIRECTORIES }),

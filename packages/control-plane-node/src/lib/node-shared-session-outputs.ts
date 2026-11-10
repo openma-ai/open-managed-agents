@@ -6,6 +6,8 @@ import type { SessionExecutionFence } from "@open-managed-agents/session-runtime
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { guessSessionOutputMime } from "@open-managed-agents/shared";
 
+import type { NodeWorkStorageInput } from "./node-session-sandbox.js";
+
 const PREFIX = "managed-session-outputs";
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 export const MAX_SESSION_OUTPUT_FILE_BYTES = 256 * 1024 * 1024;
@@ -130,27 +132,37 @@ export class NodeSharedSessionOutputs {
   }
 
   async publish(input: {
-    workspaceId: string; sessionId: string; fence: SessionExecutionFence;
+    workspaceId: string; sessionId: string;
     files: AsyncIterable<readonly [string, Uint8Array]> | Iterable<readonly [string, Uint8Array]>;
     /** The sandbox whose outputs are published; its hydration base is the CAS value. */
     runtimeGeneration?: string;
-  }): Promise<void> {
-    const { workspaceId, sessionId, fence, files } = input;
+  } & ({ fence: SessionExecutionFence; workAuthority?: never } | {
+    fence?: never; workAuthority: NodeWorkStorageInput["workAuthority"];
+  })): Promise<void> {
+    const { workspaceId, sessionId, files } = input;
+    const identity = input.workAuthority?.attempt ?? input.fence;
+    if (!identity) throw new Error("Output publication requires an authority");
+    const work = input.workAuthority;
+    if (work && (!work.holderHash || !/^[a-f0-9]{64}$/.test(work.holderHash))) throw new Error("Work output holder required");
+    if (work && (!input.runtimeGeneration || identity.attemptId !== "environment-work-claim:" + identity.generation)) throw new Error("Work output claim or hydrated generation missing");
     const baseKey = input.runtimeGeneration === undefined ? null
       : this.baseKey(workspaceId, sessionId, input.runtimeGeneration);
     if (baseKey !== null && !this.bases.has(baseKey)) {
       throw new Error("Session output sandbox was not hydrated from a canonical version");
     }
+    // Capture before uploads: a concurrent hydration/publication must never
+    // replace this invocation's expected pointer with the new owner's base.
+    const hydratedBase = baseKey === null ? undefined : this.bases.get(baseKey)!;
     const root = prefix(workspaceId, sessionId);
-    if (fence.workspaceId !== workspaceId || fence.sessionId !== sessionId) throw new Error("Session output fence scope mismatch");
+    if (identity.workspaceId !== workspaceId || identity.sessionId !== sessionId) throw new Error("Session output fence scope mismatch");
     const id = `out_${randomUUID()}`;
     const uploadedAt = new Date().toISOString();
     await this.deps.sql.prepare(`INSERT INTO managed_session_output_candidates
       (workspace_id, session_id, candidate_id, execution_id, attempt_id, owner_id,
         generation, status, file_paths_json, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'building', '[]', ?)`)
-      .bind(workspaceId, sessionId, id, fence.executionId, fence.attemptId, fence.ownerId,
-        fence.generation, Date.now()).run();
+      .bind(workspaceId, sessionId, id, identity.executionId, identity.attemptId, identity.ownerId,
+        identity.generation, Date.now()).run();
     const entries: Entry[] = [];
     const seen = new Set<string>();
     try {
@@ -180,11 +192,21 @@ export class NodeSharedSessionOutputs {
         precondition: { type: "ifNoneMatch", value: "*" }, httpMetadata: { contentType: "application/json" },
       });
       if (written === null) throw new Error("Session output manifest already exists");
-      const expected = baseKey === null ? await this.pointer(workspaceId, sessionId) : this.bases.get(baseKey)!;
+      const expected = baseKey === null ? await this.pointer(workspaceId, sessionId) : hydratedBase!;
       const now = Date.now();
-      const where = `workspace_id = ? AND id = ? AND session_id = ? AND state = 'running'
-        AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?`;
-      const args = [workspaceId, fence.executionId, sessionId, fence.attemptId, fence.ownerId, fence.generation, now];
+      const table = work ? "managed_environment_work" : "managed_session_executions";
+      let where = "workspace_id = ? AND id = ? AND session_id = ? AND state = 'running' AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?";
+      let args: Array<string | number> = [workspaceId, identity.executionId, sessionId, identity.attemptId, identity.ownerId, identity.generation, now];
+      if (work) {
+        // Parse outside SQL for dialect portability, then compare the exact
+        // stored holder array again in the same transaction as pointer CAS.
+        const holder = await this.deps.sql.prepare("SELECT sandbox_token_hashes FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_generation = ?")
+          .bind(workspaceId, identity.ownerId, identity.executionId, sessionId, identity.generation).first<{ sandbox_token_hashes: string | null }>();
+        const hashes: unknown = JSON.parse(holder?.sandbox_token_hashes ?? "[]");
+        if (!Array.isArray(hashes) || !hashes.some(entry => entry?.h === work.holderHash && entry?.s === "all")) throw new Error("Work output claim holder lost");
+        where = "workspace_id = ? AND id = ? AND session_id = ? AND environment_id = ? AND claim_generation = ? AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > ? AND state IN ('starting', 'active', 'stopping') AND sandbox_token_hashes = ?";
+        args = [workspaceId, identity.executionId, sessionId, identity.ownerId, identity.generation, Date.now(), holder!.sandbox_token_hashes!];
+      }
       // Claim this candidate row in the same transaction as the fenced pointer
       // CAS. A concurrent sweeper can mark it purging only before or after the
       // transaction, never between these statements.
@@ -194,18 +216,18 @@ export class NodeSharedSessionOutputs {
       const results = await this.deps.sql.batch([
         this.deps.sql.prepare(`UPDATE managed_session_output_candidates SET status = 'publishing'
           WHERE workspace_id = ? AND session_id = ? AND candidate_id = ? AND status = 'building'
-          AND EXISTS (SELECT 1 FROM managed_session_executions WHERE ${where})`)
+          AND EXISTS (SELECT 1 FROM ${table} WHERE ${where})`)
           .bind(...candidateArgs, ...args),
-        this.deps.sql.prepare(`UPDATE managed_session_executions SET revision = revision + 1 WHERE ${where}`).bind(...args),
+        this.deps.sql.prepare(`UPDATE ${table} SET revision = revision + 1 WHERE ${where}`).bind(...args),
         this.deps.sql.prepare(`INSERT INTO managed_session_output_snapshots
           (workspace_id, session_id, candidate_id, published_at_ms)
-          SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM managed_session_executions WHERE ${where})
+          SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM ${table} WHERE ${where})
             AND ${publishing}
           ON CONFLICT (workspace_id, session_id) DO NOTHING`)
           .bind(workspaceId, sessionId, id, now, ...args, ...candidateArgs),
         this.deps.sql.prepare(`UPDATE managed_session_output_snapshots SET candidate_id = ?, published_at_ms = ?
           WHERE workspace_id = ? AND session_id = ? AND candidate_id = ?
-          AND EXISTS (SELECT 1 FROM managed_session_executions WHERE ${where}) AND ${publishing}`)
+          AND EXISTS (SELECT 1 FROM ${table} WHERE ${where}) AND ${publishing}`)
           .bind(id, now, workspaceId, sessionId, expected, ...args, ...candidateArgs),
         this.deps.sql.prepare(`UPDATE managed_session_output_candidates SET status = 'published'
           WHERE workspace_id = ? AND session_id = ? AND candidate_id = ? AND status = 'publishing'
@@ -294,7 +316,7 @@ export class NodeSharedSessionOutputs {
     // Exclude canonical/live rows in the SELECT itself: otherwise more than
     // `limit` old canonical rows would starve every later sweep.
     const candidates = await this.deps.sql.prepare(`SELECT c.workspace_id, c.session_id, c.candidate_id,
-        c.file_paths_json, c.status, c.updated_at_ms
+        c.file_paths_json, c.status, c.updated_at_ms, c.attempt_id, c.execution_id, c.owner_id, c.generation
       FROM managed_session_output_candidates c
       WHERE (c.status IN ('failed', 'purging') OR c.updated_at_ms < ?)
         AND NOT EXISTS (SELECT 1 FROM managed_session_output_snapshots s
@@ -304,10 +326,16 @@ export class NodeSharedSessionOutputs {
             AND e.owner_id = c.owner_id AND e.generation = c.generation AND e.state = 'running'
             AND e.lease_expires_at_ms > ? AND c.status IN ('building', 'publishing'))
       ORDER BY c.updated_at_ms ASC LIMIT ?`).bind(before, now, limit)
-      .all<{ workspace_id: string; session_id: string; candidate_id: string; file_paths_json: string; status: string; updated_at_ms: number | string }>();
+      .all<{ workspace_id: string; session_id: string; candidate_id: string; file_paths_json: string; status: string; updated_at_ms: number | string; attempt_id: string; execution_id: string; owner_id: string; generation: number }>();
     let removed = 0;
     for (const row of candidates.results ?? []) {
       const values = [row.workspace_id, row.session_id, row.candidate_id];
+      const workCandidate = row.attempt_id.startsWith("environment-work-claim:");
+      const workWhere = "workspace_id = ? AND id = ? AND session_id = ? AND environment_id = ? AND claim_generation = ? AND state IN ('starting','active','stopping') AND claim_at + heartbeat_ttl_seconds * 1000 > ?";
+      const workArgs = [row.workspace_id, row.execution_id, row.session_id, row.owner_id, row.generation, now];
+      if (workCandidate && ["building", "publishing"].includes(row.status) && await this.deps.sql.prepare("SELECT 1 AS held FROM managed_environment_work WHERE " + workWhere).bind(...workArgs).first()) continue;
+      // Recheck in the update as well: the preflight is not a GC authority.
+      const workGuard = workCandidate ? " AND NOT EXISTS (SELECT 1 FROM managed_environment_work WHERE " + workWhere + ")" : "";
       if (row.status !== "purging") {
         const claimed = await this.deps.sql.prepare(`UPDATE managed_session_output_candidates SET status = 'purging', updated_at_ms = ?
           WHERE workspace_id = ? AND session_id = ? AND candidate_id = ? AND status = ?
@@ -320,8 +348,8 @@ export class NodeSharedSessionOutputs {
                 AND owner_id = managed_session_output_candidates.owner_id
                 AND generation = managed_session_output_candidates.generation
                 AND state = 'running' AND lease_expires_at_ms > ?
-                AND managed_session_output_candidates.status IN ('building', 'publishing'))`)
-          .bind(now, ...values, row.status, before, ...values, row.workspace_id, now).run();
+                AND managed_session_output_candidates.status IN ('building', 'publishing'))${workGuard}`)
+          .bind(now, ...values, row.status, before, ...values, row.workspace_id, now, ...(workCandidate ? workArgs : [])).run();
         if (claimed.meta.changes !== 1) continue;
       }
       const paths = JSON.parse(row.file_paths_json) as string[];

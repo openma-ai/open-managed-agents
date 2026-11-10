@@ -1,3 +1,8 @@
+import { nodeWorkBootstrapRoutes } from "./node-work-bootstrap.js";
+import { SqlWorkFinalization } from "@open-managed-agents/managed-agents-adapters-sql";
+import { WorkFinalizationApplication, type WorkFinalizationHostPort } from "@open-managed-agents/managed-agents-application";
+import { buildWorkFinalizationRoutes } from "@open-managed-agents/http-routes";
+import { authenticateWorkFinalizationBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 /**
  * apps/main-node — Node control-plane assembly for the Open Managed Agents API.
@@ -19,8 +24,8 @@ import { SqlWorkModelEgress, SqlSessionSource } from "@open-managed-agents/manag
 import { authenticateSandboxToken } from "@open-managed-agents/sandbox-gateway";
 import { extractHostedInferenceProxyToken } from "@open-managed-agents/inference-proxy";
 import { SqlSessionRuntimeProjectionPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
-import { buildWorkStartupFailureRoutes } from "@open-managed-agents/http-routes";
-import { authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { buildWorkInputRoutes, buildWorkStartupFailureRoutes } from "@open-managed-agents/http-routes";
+import { authenticateWorkInputBearer, authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { nodeExecutionChannelsHttp } from "../lib/node-execution-channels-http.js";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
@@ -92,7 +97,7 @@ import { Disposables } from "../lifecycle.js";
 import type { NodeRuntime } from "./node-runtime.js";
 import type { NodeControlPlaneApp } from "./node-assembly.js";
 
-export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposables): Promise<NodeControlPlaneApp> {
+export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposables, workFinalizationHost?: WorkFinalizationHostPort): Promise<NodeControlPlaneApp> {
   const {
     config,
     ownsLongLivedProcesses,
@@ -311,6 +316,24 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   app.route("/v1/oma/egress", managedCredentialEgressRoutes);
   app.use("/v1/oma/oauth/callback", managedMcpOAuthCliCallback);
 
+  app.route("/v1/oma/sessions", nodeWorkBootstrapRoutes(runtime));
+
+  app.route("/v1/oma/sessions", buildWorkFinalizationRoutes({
+    authenticate: async (token, method, path) => managedEnvironmentWorkSessionTokenCrypto === null ? null
+      : authenticateWorkFinalizationBearer({ token, method, path, crypto: managedEnvironmentWorkSessionTokenCrypto,
+          now: () => new Date(), find: claim => managedEnvironmentWorkStore.find(claim) }),
+    applicationFor: async () => new WorkFinalizationApplication({
+      persistence: new SqlWorkFinalization(sql, { dialect }), host: workFinalizationHost,
+    }),
+  }));
+
+  app.route("/v1/oma/sessions", buildWorkInputRoutes({
+    authenticate: async (token, method, path) => managedEnvironmentWorkSessionTokenCrypto === null ? null
+      : authenticateWorkInputBearer({ token, method, path, crypto: managedEnvironmentWorkSessionTokenCrypto,
+          now: () => new Date(), find: claim => managedEnvironmentWorkStore.find(claim) }),
+    applicationFor: async () => managedSessionsComposition.workInputs(),
+  }));
+
   app.route("/v1/oma/sessions", buildWorkStartupFailureRoutes({
     authenticate: async (token, path) => {
       if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
@@ -349,6 +372,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       return c.json({ error: "Request body must be valid JSON" }, 400);
     }
     const result = await ingestEnvironmentWorkRuntimeEvents({
+      dialect: dialect === "postgres" || dialect === "mysql" ? dialect : "sqlite",
       claim: {
         workspaceId: c.get("tenant_id"),
         environmentId: credential.environmentId,

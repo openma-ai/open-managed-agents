@@ -1,3 +1,4 @@
+import type { NativeWorkProcess, NativeWorkCheckpoint, NativeWorkIO } from "./cf-native-work-process";
 import type {
   SandboxCheckpointHandle,
   SandboxDuplexProcess,
@@ -707,9 +708,30 @@ export class CloudflareSandbox
     signal?.throwIfAborted();
     await beforeLaunch?.();
     signal?.throwIfAborted();
-    const process = await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace", environmentMode: "replace" });
+    const process = typeof sandbox.startNativeWorkProcess === "function"
+      ? await sandbox.startNativeWorkProcess("exec " + shellQuote(command), environment)
+      : await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace", environmentMode: "replace" });
     if (!process?.id || typeof process.kill !== "function" || typeof process.getStatus !== "function") throw new Error("Work runner dispatch is unconfirmed");
     return { id: process.id, pid: process.pid, kill: (signal: string) => process.kill(signal), getStatus: () => process.getStatus() };
+  }
+
+  /** Read-only native attachment: none of these ports provision or resume. */
+  async inspectWorkProcess(): Promise<NativeWorkProcess | null> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.describe === "function" && !(await sandbox.describe()).running) return null;
+    return typeof sandbox.inspectWorkProcess === "function" ? sandbox.inspectWorkProcess() : null;
+  }
+
+  async workProcessIO(expected: NativeWorkProcess, operation: NativeWorkIO): Promise<unknown> {
+    return (await this.getSandbox()).workProcessIO(expected, operation);
+  }
+
+  async checkpointWorkProcess(expected: NativeWorkProcess): Promise<NativeWorkCheckpoint> {
+    return (await this.getSandbox()).checkpointWorkProcess(expected);
+  }
+
+  async discardWorkCheckpoint(expected: NativeWorkProcess, candidate: NativeWorkCheckpoint): Promise<void> {
+    await (await this.getSandbox()).discardWorkCheckpoint(expected, candidate);
   }
 
   async startProcess(command: string): Promise<ProcessHandle | null> {

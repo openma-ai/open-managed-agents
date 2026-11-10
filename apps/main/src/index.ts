@@ -353,6 +353,31 @@ for (const action of ["startup-boundary", "startup-failed"]) {
   });
 }
 
+app.post("/v1/oma/sessions/:sessionId/work-bootstrap", async c => {
+  const { cfWorkBootstrapRoutes } = await import("./lib/cf-work-bootstrap");
+  const url = new URL(c.req.url);
+  url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/work-bootstrap";
+  return cfWorkBootstrapRoutes(c.env).fetch(new Request(url, c.req.raw));
+});
+
+for (const action of ["work-recovery", "work-checkpoint", "work-finalize", "work-publish", "work-failed"]) {
+  app.post("/v1/oma/sessions/:sessionId/" + action, async c => {
+    const { cfWorkFinalizationRoutes } = await import("./lib/cf-work-finalization");
+    const url = new URL(c.req.url);
+    url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/" + action;
+    return cfWorkFinalizationRoutes(c.env).fetch(new Request(url, c.req.raw));
+  });
+}
+
+for (const action of ["inputs-read", "inputs-consume"]) {
+  app.post("/v1/oma/sessions/:sessionId/" + action, async c => {
+    const { cfWorkInputRoutes } = await import("./lib/cf-work-inputs");
+    const url = new URL(c.req.url);
+    url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/" + action;
+    return cfWorkInputRoutes(c.env).fetch(new Request(url, c.req.raw));
+  });
+}
+
 // API routes (require authentication)
 app.use("/v1/*", authMiddleware);
 app.use("/v1/*", rateLimitMiddleware);
@@ -949,6 +974,7 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
   const services = (ctx.var as unknown as { services: { kv: KvStore } }).services;
   return new SqlManagedSessionsComposition({
     client,
+    workInputs: { sourcePositionsValidated: true, dialect: "sqlite" },
     // Rate limit + daily cap + optional usage-meter port, evaluated by the shared
     // Sessions application before any Session row or work is persisted.
     admission: cfSessionCreateAdmission(ctx.env, services.kv),
@@ -1097,6 +1123,7 @@ const managedRuntimeIngressRoutes = new Hono<{
   const ctx = c as unknown as AppCtx;
   const composition = managedSessionsCompositionFor(ctx);
   const result = await ingestEnvironmentWorkRuntimeEvents({
+    dialect: "sqlite",
     claim: {
       workspaceId: ctx.var.tenant_id,
       environmentId: credential.environmentId,

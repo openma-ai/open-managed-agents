@@ -14,6 +14,8 @@ import type {
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { MAX_SESSION_OUTPUT_FILE_BYTES, type NodeSharedSessionOutputs } from "./node-shared-session-outputs.js";
 
+import type { NodeWorkStorageInput } from "./node-session-sandbox.js";
+
 const OUTPUTS_DIR = "/mnt/session/outputs";
 const MANIFEST_BEGIN = "__OPENMA_OUTPUT_MANIFEST_BEGIN__";
 const MANIFEST_END = "__OPENMA_OUTPUT_MANIFEST_END__";
@@ -104,7 +106,24 @@ export class NodeManagedSessionOutputCollector {
     private readonly dependencies: NodeManagedSessionOutputCollectorDependencies,
   ) {}
 
+  async synchronizeWork(input: NodeWorkStorageInput): Promise<void> {
+    if (!input.workAuthority.holderHash) throw new Error("Work output publication requires an issued holder");
+    const attempt = input.workAuthority.attempt;
+    if (attempt.workspaceId !== input.workspaceId || attempt.sessionId !== input.session.id || !await input.workAuthority.isCurrent()) {
+      throw new Error("Work output claim lost or scope mismatch");
+    }
+    await this.collect({ workspaceId: input.workspaceId, sessionId: input.session.id,
+      sandbox: input.sandbox, runtimeGeneration: input.runtimeGeneration, workAuthority: input.workAuthority });
+  }
+
   async synchronize(input: SynchronizeNodeManagedSessionOutputs): Promise<void> {
+    await this.collect(input);
+  }
+
+  private async collect(input: SynchronizeNodeManagedSessionOutputs | {
+    workspaceId: string; sessionId: string; sandbox: SandboxExecutor; runtimeGeneration: string;
+    workAuthority: NodeWorkStorageInput["workAuthority"];
+  }): Promise<void> {
     const outputMount = input.sandbox as SandboxExecutor &
       Partial<SandboxSessionOutputMountPort>;
     const capabilities = typeof outputMount.sessionOutputMountCapabilities === "function"
@@ -117,7 +136,9 @@ export class NodeManagedSessionOutputCollector {
     if (input.sandbox.readFileBytes === undefined) {
       throw new Error("Sandbox cannot read provider-local Session outputs");
     }
-    await this.assertFence(input.executionFence);
+    if ("workAuthority" in input) {
+      if (!await input.workAuthority.isCurrent()) throw new Error("Work output claim lost");
+    } else await this.assertFence(input.executionFence);
 
     assertSafeId("workspace id", input.workspaceId);
     assertSafeId("session id", input.sessionId);
@@ -158,19 +179,21 @@ export class NodeManagedSessionOutputCollector {
       // read-only in the image and is not visible to other replicas anyway.
       await sharedOutputs.publish({
         workspaceId: input.workspaceId, sessionId: input.sessionId,
-        fence: input.executionFence, files: readFiles(),
+        ...("workAuthority" in input ? { workAuthority: input.workAuthority } : { fence: input.executionFence }), files: readFiles(),
         ...(input.runtimeGeneration === undefined ? {} : { runtimeGeneration: input.runtimeGeneration }),
       });
       return;
     }
 
+    const attemptId = "workAuthority" in input ? input.workAuthority.attempt.attemptId : input.executionFence.attemptId;
+    assertSafeId("output attempt id", attemptId);
     const workspaceRoot = join(this.dependencies.outputsRoot, input.workspaceId);
     await mkdir(workspaceRoot, { recursive: true });
     const staging = await mkdtemp(join(workspaceRoot, `.${input.sessionId}.collect-`));
     const target = join(workspaceRoot, input.sessionId);
     const previous = join(
       workspaceRoot,
-      `.${input.sessionId}.previous-${input.executionFence.attemptId}`,
+      `.${input.sessionId}.previous-${attemptId}`,
     );
 
     try {
@@ -181,7 +204,12 @@ export class NodeManagedSessionOutputCollector {
         await writeFile(destination, bytes);
       }
 
-      await this.assertFence(input.executionFence);
+      // main's local publication boundary: check just before staging/rename.
+      // This is not atomic with SQL authority changes; retain that TOCTOU
+      // limitation rather than inventing a different local output backend.
+      if ("workAuthority" in input) {
+        if (!await input.workAuthority.isCurrent()) throw new Error("Work output claim lost before local publication");
+      } else await this.assertFence(input.executionFence);
       await rm(previous, { recursive: true, force: true });
       let movedPrevious = false;
       try {
