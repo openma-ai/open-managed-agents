@@ -11,6 +11,9 @@ import type {
 } from "@open-managed-agents/managed-agents-application";
 import {
   workStartupFailureEvents,
+  planWorkBootstrap,
+  sessionBudgetExhausted,
+  type WorkFinalizationProjectionGuard,
   inspectWorkApprovalResolution,
   validateWorkThreadLineage,
   type SettleWorkStartupFailure,
@@ -65,15 +68,18 @@ export class SqlSessionRuntimeProjectionPersistence
   implements SessionRuntimeProjectionPersistencePort, WorkStartupFailurePersistencePort
 {
   readonly #now: () => Date;
+  readonly #dialect: "sqlite" | "postgres" | "mysql";
   readonly #warn: (entry: ReturnType<typeof projectionEventIdCollisionWarning>) => void;
 
   constructor(
     private readonly client: SqlClient,
     options: {
       now?: () => Date;
+      dialect?: "sqlite" | "postgres" | "mysql";
       warn?: (entry: ReturnType<typeof projectionEventIdCollisionWarning>) => void;
     } = {},
   ) {
+    this.#dialect = options.dialect ?? "sqlite";
     this.#now = options.now ?? (() => new Date());
     this.#warn = options.warn ?? ((entry) => {
       console.warn(JSON.stringify({ level: "warn", ...entry }));
@@ -94,11 +100,64 @@ export class SqlSessionRuntimeProjectionPersistence
     return row === null ? null : storedSession(row);
   }
 
+  /** Reuse canonical bootstrap selection, not latest idle as admission. The
+   * private startup transport supplies only a sealed claim, so the holder and
+   * exact pending root are resolved here from authoritative storage. */
+  private async idleStartupRoot(claim: EnvironmentWorkExecutionFence, current: StoredSession): Promise<WorkFinalizationProjectionGuard | null> {
+    if (current.session.status !== "idle" || current.session.archivedAt !== null || current.session.environmentId !== claim.environmentId) return null;
+    const work = await this.client.prepare("SELECT claim_worker_id FROM managed_environment_work WHERE workspace_id=? AND environment_id=? AND session_id=? AND id=? AND claim_generation=? AND state IN ('starting','active')")
+      .bind(claim.workspaceId,claim.environmentId,claim.sessionId,claim.workId,claim.generation).first<{claim_worker_id:string|null}>();
+    if (!work?.claim_worker_id) return null;
+    const [events, initial] = await Promise.all([
+      this.client.prepare("SELECT document FROM managed_session_events WHERE workspace_id=? AND session_id=? LIMIT 10001").bind(claim.workspaceId,claim.sessionId).all<{document:string}>(),
+      this.client.prepare("SELECT document,sequence FROM managed_session_initial_events WHERE workspace_id=? AND session_id=? LIMIT 10001").bind(claim.workspaceId,claim.sessionId).all<{document:string;sequence?:number}>(),
+    ]);
+    const rawRows = [...(events.results ?? []),...(initial.results ?? [])];
+    if (rawRows.length > 10000) return null;
+    // Corrupt canonical JSON is a typed admission refusal, not a transport
+    // failure. Keep database IO outside this catch so outages still propagate.
+    try {
+      const rows = rawRows.map(row => ({...row,decoded:decodeSessionEventDocument(row.document)}));
+      if (rows.some(({decoded:{event}}) => !event || typeof event.id !== "string" || typeof event.type !== "string" ||
+        (event.type === "user.message" && !Array.isArray(event.content)))) return null;
+      const candidate = planWorkBootstrap({claim:{...claim,holder:work.claim_worker_id},revision:current.revision,rows,budgetExhausted:sessionBudgetExhausted(current.session)});
+      if (candidate.type !== "run") return null;
+      const root = rows.find(row => row.decoded.event.id === candidate.root.inputId)!;
+      return {holder:work.claim_worker_id,turnId:candidate.root.turnId,inputId:candidate.root.inputId,inputDocument:root.document,
+        bootstrapSequence:"sequence" in root && typeof root.sequence === "number" ? root.sequence : undefined,dialect:this.#dialect};
+    } catch { return null; }
+  }
+
+  private startupClock(): string {
+    return this.#dialect === "postgres" ? "floor(extract(epoch FROM clock_timestamp())*1000)::bigint"
+      : this.#dialect === "mysql" ? "floor(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3))*1000)"
+      : "(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
+  }
+
   async captureStartupBoundary(claim: EnvironmentWorkExecutionFence): Promise<number | null> {
     const current = await this.findCurrent(claim);
-    if (current === null || current.session.status !== "running") return null;
-    // Later inputs invalidate this boundary. Only proven same-claim startup
-    // running facts may advance it at settlement.
+    if (current === null) return null;
+    if (current.session.status === "idle") {
+      const root = await this.idleStartupRoot(claim,current);
+      if (!root) return null;
+      // No status/revision mutation. Evaluate all authority and raw input
+      // conditions in one DB statement, including the clock AFTER queued I/O.
+      const rawCas = this.#dialect === "mysql" ? "BINARY document=BINARY ?" : "document=?";
+      const result = await this.client.prepare(`UPDATE managed_sessions SET revision=revision
+        WHERE workspace_id=? AND id=? AND revision=? AND environment_id=? AND archived_at IS NULL AND status='idle'
+        AND EXISTS(SELECT 1 FROM managed_environment_work WHERE workspace_id=? AND environment_id=? AND session_id=? AND id=?
+          AND state IN ('starting','active') AND claim_generation=? AND claim_worker_id=? AND claim_at IS NOT NULL
+          AND claim_at+heartbeat_ttl_seconds*1000>${this.startupClock()})
+        AND EXISTS(SELECT 1 FROM ${root.bootstrapSequence===undefined?"managed_session_events":"managed_session_initial_events"}
+          WHERE workspace_id=? AND session_id=? AND ${root.bootstrapSequence===undefined?"id":"sequence"}=? AND ${rawCas})`)
+        .bind(claim.workspaceId,claim.sessionId,current.revision,claim.environmentId,
+          claim.workspaceId,claim.environmentId,claim.sessionId,claim.workId,claim.generation,root.holder,
+          claim.workspaceId,claim.sessionId,root.bootstrapSequence??root.inputId,root.inputDocument).run();
+      return result.meta.changes === 1 ? current.revision : null;
+    }
+    if (current.session.status !== "running") return null;
+    // Preserve existing running startup protocol. Idle followup admission is
+    // the narrow canonical-root path above, never a fabricated running event.
     const active = await this.isFenceActive({ ...claim, expectedRevision: current.revision,
       next: current.session, events: [], environmentWorkFence: claim }, this.#now().getTime());
     return active ? current.revision : null;
@@ -124,8 +183,10 @@ export class SqlSessionRuntimeProjectionPersistence
       return "committed";
     }
     const current = await this.findCurrent(claim);
-    if (current === null || current.revision < input.revision ||
-      (current.session.status !== "running" && current.session.status !== "rescheduling")) return "rejected";
+    if (current === null || current.revision < input.revision) return "rejected";
+    const idleRoot = current.session.status === "idle" && current.revision === input.revision
+      ? await this.idleStartupRoot(claim,current) : null;
+    if (current.session.status !== "running" && current.session.status !== "rescheduling" && idleRoot === null) return "rejected";
     if (current.revision > input.revision) {
       const rows = await this.client.prepare(
         "SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ?",
@@ -149,7 +210,7 @@ export class SqlSessionRuntimeProjectionPersistence
     const result = await this.projectState({ ...claim, expectedRevision: current.revision,
       environmentWorkFence: claim, events,
       next: { ...current.session, status: "idle", updatedAt: input.processedAt > current.session.updatedAt ? input.processedAt : current.session.updatedAt },
-    }, { workRevision: Number(work.revision), workDocument: work.document, processedAt: input.processedAt });
+    }, { workRevision: Number(work.revision), workDocument: work.document, processedAt: input.processedAt, ...(idleRoot ? {root:idleRoot} : {}) });
     return result.type === "projected" ? "committed" : "rejected";
   }
 
@@ -161,7 +222,7 @@ export class SqlSessionRuntimeProjectionPersistence
 
   private async projectState(
     input: ProjectSessionRuntimeState,
-    startup?: { workRevision: number; workDocument: string; processedAt: string },
+    startup?: { workRevision: number; workDocument: string; processedAt: string; root?: WorkFinalizationProjectionGuard },
   ): Promise<ProjectSessionRuntimeStateResult> {
     if (input.next.id !== input.sessionId) {
       throw new Error("Projected session ID does not match the target session");
@@ -189,7 +250,7 @@ export class SqlSessionRuntimeProjectionPersistence
     }
     const rootGuard = input.workRoot === undefined ? undefined : await this.verifyWorkRoot(input);
     if (input.workRoot !== undefined && (rootGuard === null || finalization !== undefined)) return { type: "execution_fence_lost" };
-    const guarded = finalization ?? rootGuard ?? undefined;
+    const guarded = finalization ?? rootGuard ?? startup?.root ?? undefined;
     const now = this.#now().getTime();
     const workClock = guarded === undefined ? "?" : guarded.dialect === "postgres"
       ? "floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
@@ -417,7 +478,7 @@ export class SqlSessionRuntimeProjectionPersistence
     const updateIndex = eventStart + eventStatements.length + threadStatements.length;
     const rejected = new Error("Runtime projection admission changed inside transaction");
     let results;
-    const assertChange = (index: number) => index <= updateIndex;
+    const assertChange = (index: number) => index <= updateIndex || (startup?.root !== undefined && index === statements.length - 1);
     const originalIndexes: number[] = [];
     let batchIndex = 0;
     const checkedStatements = statements.flatMap((statement, index) => {

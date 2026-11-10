@@ -91,6 +91,6 @@ export default createInferenceProxyRoutes<{
   if (!session) throw new Error("Work model Session unavailable");
   const model = session.agent.model;
   const card = await context.var.services.modelCards.findByModelId({tenantId:workspaceId,modelId:typeof model === "string" ? model : model.id});
-  const meter = await new SqlWorkModelEgress(sql).open(work.resolution,card?.archived_at ? null : card?.pricing ?? null);
+  const meter = await new SqlWorkModelEgress(sql, { dialect: "sqlite" }).open(work.resolution,card?.archived_at ? null : card?.pricing ?? null);
   return {...ports,budget:()=>meter};
 });

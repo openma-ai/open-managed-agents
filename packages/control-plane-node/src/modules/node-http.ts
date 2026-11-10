@@ -346,7 +346,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
         },
       });
     },
-    persistenceFor: async () => new SqlSessionRuntimeProjectionPersistence(sql),
+    persistenceFor: async () => new SqlSessionRuntimeProjectionPersistence(sql, { dialect }),
   }));
   app.route("/v1/oma/sessions", nodeExecutionChannelsHttp({ tokens: managedAcpCapabilities.tokens, sql, modelCards: modelCardsService, gatewayBaseUrl: config.http.gatewayOrigin }));
 
@@ -601,7 +601,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     if (!session) throw new Error("Work model Session unavailable");
     const model = session.agent.model;
     const card = await modelCardsService.findByModelId({tenantId:workspaceId,modelId:typeof model === "string" ? model : model.id});
-    const meter = await new SqlWorkModelEgress(sql).open(work.resolution,card?.archived_at ? null : card?.pricing ?? null);
+    const meter = await new SqlWorkModelEgress(sql, { dialect }).open(work.resolution,card?.archived_at ? null : card?.pricing ?? null);
     return {...inferenceProxyPorts,budget:()=>meter};
   }));
   v1.route("/vaults", managedVaultsRoutes);

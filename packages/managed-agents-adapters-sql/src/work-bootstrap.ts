@@ -28,7 +28,7 @@ export class SqlWorkBootstrap implements WorkBootstrapPersistencePort {
   const [events,initial,session]=await Promise.all([
    this.sql.prepare("SELECT document FROM managed_session_events WHERE workspace_id=? AND session_id=? LIMIT 10001").bind(claim.workspaceId,claim.sessionId).all<{document:string}>(),
    this.sql.prepare("SELECT document,sequence FROM managed_session_initial_events WHERE workspace_id=? AND session_id=? LIMIT 10001").bind(claim.workspaceId,claim.sessionId).all<{document:string;sequence:number}>(),
-   new SqlSessionRuntimeProjectionPersistence(this.sql).findCurrent(claim),
+   new SqlSessionRuntimeProjectionPersistence(this.sql, this.options).findCurrent(claim),
   ]);
   if((events.results?.length??0)+(initial.results?.length??0)>10000)return {type:"gap",reason:"bootstrap_history_limit"};
   if(!session||session.revision!==current.revision)return {type:"rejected",reason:"authority_changed"};

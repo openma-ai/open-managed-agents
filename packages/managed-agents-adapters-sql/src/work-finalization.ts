@@ -64,7 +64,7 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
       });
       const pending=outstandingRequiresAction(wire);
       if(pending && pending.length>0)return {state:gap("requires_action_pending")};
-      const current=await new SqlSessionRuntimeProjectionPersistence(this.sql).findCurrent(c);
+      const current=await new SqlSessionRuntimeProjectionPersistence(this.sql, { dialect: this.dialect }).findCurrent(c);
       if(current && sessionBudgetExhausted(current.session))return {state:gap("budget_paused")};
       const work=await this.sql.prepare("SELECT state FROM managed_environment_work WHERE workspace_id=? AND id=?")
         .bind(c.workspaceId,c.workId).first<{state:string}>();
@@ -79,7 +79,7 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
     if(state.type!=="current")return state;
     if(state.terminal)return state;
     if(state.revision!==input.revision || !state.consumed || !source)return reject("turn_revision");
-    const persistence=new SqlSessionRuntimeProjectionPersistence(this.sql);
+    const persistence=new SqlSessionRuntimeProjectionPersistence(this.sql, { dialect: this.dialect });
     const current=await persistence.findCurrent(input.claim);
     if(!current || current.revision!==input.revision)return reject("turn_revision");
     const id=`work-terminal:${encodeURIComponent(input.claim.workId)}:${input.claim.generation}:${encodeURIComponent(input.turnId)}:${input.revision}`;

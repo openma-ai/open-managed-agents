@@ -7,10 +7,10 @@ import { SqlSessionRuntimeProjectionPersistence } from "./session-runtime-projec
  * a replica-local gate. Completion CAS retries rebase a delta, never a stale
  * total; the domain remains the only pricing and allow/charge implementation. */
 export class SqlWorkModelEgress {
-  constructor(private readonly sql: SqlClient) {}
+  constructor(private readonly sql: SqlClient, private readonly options: { dialect?: "sqlite" | "postgres" | "mysql" } = {}) {}
 
   async open(claim: EnvironmentWorkExecutionFence, pricing: ListPricing | null) {
-    const projection = new SqlSessionRuntimeProjectionPersistence(this.sql);
+    const projection = new SqlSessionRuntimeProjectionPersistence(this.sql, this.options);
     const active = async () => (await this.sql.prepare(
       "SELECT 1 FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND state IN ('starting','active') AND claim_generation = ? AND claim_at + heartbeat_ttl_seconds * 1000 > ?",
     ).bind(claim.workspaceId,claim.environmentId,claim.workId,claim.sessionId,claim.generation,Date.now()).first()) !== null;

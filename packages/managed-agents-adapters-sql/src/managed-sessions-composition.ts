@@ -253,7 +253,7 @@ export class SqlManagedSessionsComposition {
     this.memoryStores = new SqlMemoryStoreSource(client);
     const runtimeReaders = createSqlSessionRuntimeReaders(client);
     this.runtimeHistory = runtimeReaders.history;
-    this.runtimeProjection = new SqlSessionRuntimeProjectionPersistence(client);
+    this.runtimeProjection = new SqlSessionRuntimeProjectionPersistence(client, { dialect: dependencies.workInputs?.dialect ?? "sqlite" });
     this.executionContext = new ComposedSessionExecutionContextSource(
       runtimeReaders.executionContext,
       this.sessions,

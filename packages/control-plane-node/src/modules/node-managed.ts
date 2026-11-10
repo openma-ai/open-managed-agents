@@ -305,7 +305,7 @@ export async function createManagedNodeRuntime(
     isFenceActive: isManagedSessionExecutionFenceActive,
     idlePauseMs: sandboxIdlePauseMs(config.sandbox.environment.SANDBOX_IDLE_PAUSE_MS),
     warmAtCreate: config.workspace.strategy !== "checkpoint_restore", mountOutputsAtCreate: sharedSessionOutputs === undefined && components.sandbox.capabilities?.mountsFixedAtCreate === true,
-    warn: nodeSessionSandboxWarning(sql, logger),
+    warn: nodeSessionSandboxWarning(sql, logger, foundation.dialect),
   });
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     backgroundPiSandbox: true,
@@ -610,7 +610,7 @@ export async function createManagedNodeRuntime(
     projectionFor: (workspaceId) =>
       new SessionRuntimeProjectionApplicationService({
         workspaceId,
-        persistence: new SqlSessionRuntimeProjectionPersistence(sql),
+        persistence: new SqlSessionRuntimeProjectionPersistence(sql, { dialect: foundation.dialect }),
       }),
     eventProcessing: {
       storeFor: () => new SqlSessionEventPersistence(sql),

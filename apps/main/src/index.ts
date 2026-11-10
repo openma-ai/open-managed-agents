@@ -2178,7 +2178,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       opts.workspaceId,
     );
     const persistence = new SqlSessionRuntimeProjectionPersistence(
-      new CfD1SqlClient(tenantDb),
+      new CfD1SqlClient(tenantDb), { dialect: "sqlite" },
     );
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await new SessionRuntimeProjectionApplicationService({

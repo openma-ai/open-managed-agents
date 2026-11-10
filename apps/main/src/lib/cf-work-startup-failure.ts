@@ -28,6 +28,6 @@ export function cfWorkStartupFailureRoutes(env: Env) {
       });
     },
     persistenceFor: async claim => new SqlSessionRuntimeProjectionPersistence(
-      new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(claim.workspaceId))),
+      new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(claim.workspaceId)), { dialect: "sqlite" }),
   });
 }
