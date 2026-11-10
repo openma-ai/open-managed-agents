@@ -88,6 +88,13 @@ const workClaimPublicationMigration = {
   toSnapshot: "6f23cfa4-a1c3-4c7a-8efa-040a495a1191",
 } as const;
 
+/** 0034 changes expression indexes only. Its Drizzle identity is distinct;
+ * native Work-input generated columns/indexes are validated by composition. */
+const workInputsMigration = {
+  fromSnapshot: workClaimPublicationMigration.toSnapshot,
+  toSnapshot: "7a941c58-b1de-4d32-83e6-545034000001",
+} as const;
+
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -155,6 +162,7 @@ export async function migrateNodeMysqlSchema(
       runtimeResourceTablesMigration.toSnapshot,
       sandboxTokenHashesMigration.toSnapshot,
       workClaimPublicationMigration.toSnapshot,
+      workInputsMigration.toSnapshot,
     ];
     // Walk the known additive chain toward the journal tip. Each step is
     // idempotent so an interrupted upgrade can resume on the next boot.
@@ -162,6 +170,10 @@ export async function migrateNodeMysqlSchema(
       const installedIndex = migrationSnapshots.indexOf(installed.snapshot_id);
       const targetIndex = migrationSnapshots.indexOf(snapshot.id);
       if (installedIndex >= 0 && installedIndex < targetIndex) {
+        if (installed.snapshot_id === workInputsMigration.fromSnapshot) {
+          installed = { snapshot_id: workInputsMigration.toSnapshot };
+          continue;
+        }
         if (installed.snapshot_id === usageAttributionMigration.fromSnapshot) {
           await migrateUsageAttributionIndex(sql);
           installed = { snapshot_id: usageAttributionMigration.toSnapshot };

@@ -10,6 +10,7 @@ export default defineConfig({
       "apps/main-node/test/pg-queue.test.ts",
       "apps/main-node/test/s3-memory.test.ts",
       "packages/managed-agents-adapters-sql/test/agents-sql-persistence.pg.test.ts",
+      "packages/managed-agents-adapters-sql/test/work-inputs.pg.test.ts",
       "packages/managed-agents-adapters-sql/test/sessions-sql-persistence.pg.test.ts",
       "packages/sandbox-orphan-store-sql/test/orphan-store.pg.test.ts",
     ],

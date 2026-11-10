@@ -1,3 +1,4 @@
+export { buildWorkInputRoutes } from "./work-inputs";
 // Public surface — every mount factory and the shared types.
 //
 // CF + Node both `import { buildXxxRoutes, type RouteServices } from

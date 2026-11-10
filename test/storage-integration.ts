@@ -3,6 +3,7 @@ import { inject } from "vitest";
 export interface StorageIntegrationConfig {
   postgres: {
     agentsSql: string;
+    workInputs: string;
     sessionsSql: string;
     feishuSchema: string;
     betterAuth: string;

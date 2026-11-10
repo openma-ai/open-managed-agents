@@ -218,6 +218,13 @@
       "when": 1794224138567,
       "tag": "0030_retire_resource_fences",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1794300000000,
+      "tag": "0031_work_inputs",
+      "breakpoints": true
     }
   ]
 }

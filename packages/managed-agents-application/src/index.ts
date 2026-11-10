@@ -1,3 +1,4 @@
+export * from "./session-execution/work-inputs";
 export * from "./credentials/mcp-oauth-cli";
 export * from "./agents/application";
 export * from "./agents/pi-model-catalog";

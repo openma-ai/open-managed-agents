@@ -22,6 +22,7 @@ const MINIO_IMAGE =
 const REGION = "us-east-1";
 const POSTGRES_DATABASES = {
   agentsSql: "openma_agents_sql_test",
+  workInputs: "openma_work_inputs_test_ci",
   sessionsSql: "openma_sessions_sql_test",
   feishuSchema: "openma_feishu_schema_test",
   betterAuth: "openma_better_auth_test",
@@ -103,6 +104,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
     const config: StorageIntegrationConfig = {
       postgres: {
         agentsSql: databaseUrl(connectionUri, POSTGRES_DATABASES.agentsSql),
+        workInputs: databaseUrl(connectionUri, POSTGRES_DATABASES.workInputs),
         sessionsSql: databaseUrl(connectionUri, POSTGRES_DATABASES.sessionsSql),
         feishuSchema: databaseUrl(connectionUri, POSTGRES_DATABASES.feishuSchema),
         betterAuth: databaseUrl(connectionUri, POSTGRES_DATABASES.betterAuth),
