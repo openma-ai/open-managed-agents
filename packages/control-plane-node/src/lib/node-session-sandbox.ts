@@ -529,7 +529,9 @@ export class NodeSessionSandbox implements SandboxPort {
     const runtime = await this.core.runtime();
     if (!("startManagedProcess" in runtime) || typeof runtime.startManagedProcess !== "function") throw new Error("Sandbox lacks safe native management launch");
     if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost before launch");
-    const handle = await (runtime as SandboxPort & SandboxManagedProcessPort).startManagedProcess(spec);
+    const identity = { workspaceId: authority.attempt.workspaceId, sessionId: authority.attempt.sessionId,
+      workId: authority.attempt.executionId, attemptId: authority.attempt.attemptId };
+    const handle = await (runtime as SandboxPort & { startManagedProcess(spec: SandboxManagedProcessSpec, trustedIdentity: typeof identity): Promise<SandboxManagedProcessHandle> }).startManagedProcess(spec, identity);
     // Until returned, this wrapper owns cleanup even when authority lookup throws.
     let transferred = false;
     try {
@@ -539,6 +541,24 @@ export class NodeSessionSandbox implements SandboxPort {
     } finally {
       if (!transferred) await handle.kill("SIGKILL");
     }
+  }
+  /** E2B's trusted Files management channel only; not a general sandbox Port.
+   * Discovery grants no kill authority. The dispatcher must prove the located
+   * Work attempt is obsolete and use its ordinary exact-handle handoff. */
+  async recoverManagedProcessSlot() {
+    const authority = this.workAuthority;
+    if (!authority || !await authority.isCurrent()) throw new Error("Current Work claim required for management discovery");
+    const runtime = await this.core.runtime();
+    type Locator = { sandboxId: string; id: string; epoch: string; pid: number;
+      identity: {workspaceId: string; sessionId: string; workId: string; attemptId: string}; status: "running" | "exited" };
+    const managed = runtime as SandboxPort & { inspectManagedProcessSlot?(): Promise<Locator>; restoreManagedProcess?(locator: Locator): Promise<SandboxManagedProcessHandle> };
+    if (typeof managed.inspectManagedProcessSlot !== "function" || typeof managed.restoreManagedProcess !== "function") throw new Error("Trusted management discovery unsupported");
+    const locator = await managed.inspectManagedProcessSlot();
+    if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management discovery");
+    if (locator.identity.workspaceId !== authority.attempt.workspaceId || locator.identity.sessionId !== authority.attempt.sessionId) throw new Error("Management slot scope mismatch");
+    const handle = await managed.restoreManagedProcess(locator);
+    if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management restore");
+    return {locator, handle};
   }
   setEnvVars(env: Record<string, string>): Promise<void> { return this.core.setEnvVars(env); }
   spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> { return this.core.spawnDuplexProcess(spec); }

@@ -159,13 +159,39 @@ export function createNodeEnvironmentWorkWorker(input: {
                 await sandbox.open();
                 if (!await current()) throw new Error("Work claim lost before bootstrap");
                 const token = await sandbox.workToken();
-                const handle = await sandbox.startManagedProcess({ command, args: args as string[], env: {
+                const spec = { command, args: args as string[], env: {
                   ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
                   ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
                   OPENMA_WORKSPACE_ID: scope.workspaceId, OPENMA_SANDBOX_TOKEN: token,
                   OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
                   ...(inventory === null ? {} : { OPENMA_ACP_HARNESSES: JSON.stringify(inventory) }),
-                } });
+                } };
+                let handle: SandboxManagedProcessHandle;
+                try { handle = await sandbox.startManagedProcess(spec); }
+                catch (error) {
+                  if ((error as {outcome?: string}).outcome !== "rejected" || (error as Error).message !== "management worker busy") throw error;
+                  const recovered = await sandbox.recoverManagedProcessSlot();
+                  const identity = recovered.locator.identity;
+                  const obsolete = async () => {
+                    const old = await input.work.find({...scope, workId: identity.workId});
+                    if (!old || old.work.data.type !== "session" || old.work.data.id !== delivery.sessionId || !old.claim) throw new Error("Management identity cannot be verified");
+                    const expected = environmentWorkSandboxTokenRef({...scope, sessionId: delivery.sessionId, workId: identity.workId, generation: old.claim.generation});
+                    const locatedGeneration = Number(identity.attemptId.split(":").at(-1));
+                    const located = environmentWorkSandboxTokenRef({...scope, sessionId: delivery.sessionId, workId: identity.workId, generation: locatedGeneration});
+                    if (!Number.isSafeInteger(locatedGeneration) || locatedGeneration < 1 || located.attemptId !== identity.attemptId || locatedGeneration > old.claim.generation) throw new Error("Unrecognized management attempt identity");
+                    return locatedGeneration < old.claim.generation || expected.attemptId === identity.attemptId && (!["queued", "starting", "active"].includes(old.work.state)
+                      || Date.parse(old.claim.claimedAt) + old.heartbeatTtlSeconds * 1000 <= Date.now());
+                  };
+                  if (!await current() || !await obsolete()) throw new Error("Management worker remains current or takeover claim lost");
+                  const recoveredKey = JSON.stringify([scope.workspaceId, identity.workId, identity.attemptId, recovered.handle.id]);
+                  processes.set(recoveredKey, {slot, handle: recovered.handle, current: async () => {
+                    if (!await current()) throw new Error("Takeover claim lost; old handle cleanup unauthorized");
+                    return !await obsolete();
+                  }});
+                  await retire(recoveredKey);
+                  if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before replacement launch");
+                  handle = await sandbox.startManagedProcess(spec);
+                }
                 processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { slot, handle, current });
               });
             },
