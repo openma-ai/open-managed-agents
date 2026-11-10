@@ -8,8 +8,6 @@ export interface InstalledAcpHarness {
 }
 const pinnedVersion = /^[0-9]+(?:\.[0-9]+)*(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
 const identity = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-// Executable paths are argv, not shell tokens: spaces/Unicode/@ are literal.
-const absoluteCommand = /^\/(?:[^/\x00-\x1f\x7f]+\/)*[^/\x00-\x1f\x7f]+$/;
 const invalid = () => new TypeError("OPENMA_ACP_HARNESSES entries require id, pinned version, absolute command and optional string args");
 
 export function parseInstalledHarnesses(raw: string | undefined): InstalledAcpHarness[] | null {
@@ -24,8 +22,8 @@ export function parseInstalledHarnesses(raw: string | undefined): InstalledAcpHa
     const {id,version,command,args} = entry as Record<string,unknown>;
     if (typeof id !== "string" || !identity.test(id)
       || typeof version !== "string" || !pinnedVersion.test(version)
-      || typeof command !== "string" || !absoluteCommand.test(command)
-      || command.split("/").some(part => part === "." || part === "..")
+      // POSIX absolute executable, passed as argv without a shell. Not a confinement or canonicalization check.
+      || typeof command !== "string" || !command.startsWith("/") || command.includes("\0")
       || (args !== undefined && (!Array.isArray(args) || args.some(arg => typeof arg !== "string" || arg.includes("\0"))))) throw invalid();
     const key = JSON.stringify([id,version]);
     if (seen.has(key)) throw new TypeError("OPENMA_ACP_HARNESSES contains a duplicate identity");
