@@ -1,3 +1,4 @@
+import { CF_WORK_DISPATCH_PATH, dispatchCfWorkRunnerRequest } from "./cf-work-runner-entry";
 import { waitForAlarmMaintenance } from "./alarm-maintenance";
 import { publishAgentsApiArtifacts } from "./artifact-publication";
 import { readSandboxFileBytes } from "./sandbox-output";
@@ -2429,6 +2430,8 @@ export class SessionDO extends DurableObject<Env> {
    * handle everything here and only delegate alarm() to Agent's scheduler.
    */
   async fetch(request: Request): Promise<Response> {
+    // Work owns its SQL claim; never enter the SessionExecution recovery/brain.
+    if (request.method === "POST" && new URL(request.url).pathname === CF_WORK_DISPATCH_PATH) return dispatchCfWorkRunnerRequest(request, this.env, { storage: this.ctx.storage, id: this.ctx.id.toString(), hasSessionExecution: this._executionFences.size > 0 });
     // Cold-start orphan flush: first request after DO activation triggers
     // a one-shot scan of unpaired tool_use + stale 'running' turns and
     // emits abort events for them. Idempotent (cheap when there's nothing

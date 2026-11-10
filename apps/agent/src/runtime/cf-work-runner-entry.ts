@@ -7,24 +7,39 @@ import { attemptSandboxTokens } from "@open-managed-agents/sandbox-gateway";
 import { createCfSqlWorkRunnerDispatch } from "../../../main/src/lib/cf-work-runner-authority";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 import { CloudflareSandbox } from "./sandbox";
+import { createE2BSessionSandbox } from "./e2b-session-sandbox";
+import { E2B_WORKER_INVENTORY, startE2BWorkProcess } from "./e2b-work-handoff";
+import type { SessionSandboxStateStorage } from "./session-sandbox-do-state";
+import { environmentWorkSandboxTokenRef, createSqlEnvironmentWorkSandboxTokenStore } from "@open-managed-agents/sandbox-gateway-sql";
+import { issueSandboxToken } from "@open-managed-agents/sandbox-gateway";
+import type { SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
 import type { EnvironmentWorkRuntimeDelivery } from "@open-managed-agents/runtime-resource-contract";
 
 export const CF_WORK_DISPATCH_PATH = "/__internal/work/dispatch";
 // Existing owner-scoped token holder only. No dispatch/claim ledger here.
 const holders = new WeakMap<object, ReturnType<typeof attemptSandboxTokens>>();
-export async function dispatchCfWorkRunnerRequest(request: Request, env: Env): Promise<Response> {
+export async function dispatchCfWorkRunnerRequest(request: Request, env: Env, owner?: { storage: SessionSandboxStateStorage; id: string; hasSessionExecution: boolean }): Promise<Response> {
   let input: EnvironmentWorkRuntimeDelivery;
   try { input = await request.json(); } catch { return Response.json({ error: "Invalid Work delivery" }, { status: 400 }); }
   if (!input || [input.workspaceId, input.environmentId, input.sessionId, input.workId, input.workSecret].some(value => typeof value !== "string" || !value.trim())) return Response.json({ error: "Incomplete Work scope" }, { status: 400 });
-  const command = (env as Env & { OPENMA_WORK_RUNNER_COMMAND?: string }).OPENMA_WORK_RUNNER_COMMAND;
+  const provider = env.SANDBOX_ADAPTER ?? "cloudflare";
+  if (provider !== "cloudflare" && provider !== "e2b") return Response.json({ error: "Unknown Work sandbox provider" }, { status: 503 });
+  const command = provider === "e2b" ? "/usr/local/bin/node" : (env as Env & { OPENMA_WORK_RUNNER_COMMAND?: string }).OPENMA_WORK_RUNNER_COMMAND;
   if (!command || !env.PUBLIC_BASE_URL || !env.PLATFORM_ROOT_SECRET) return Response.json({ error: "Work bootstrap is not configured" }, { status: 503 });
   const origin = env.PUBLIC_BASE_URL.replace(/\/+$/, "");
   if (input.apiBaseUrl !== origin) return Response.json({ error: "Work origin rejected" }, { status: 403 });
   try {
+    if (provider === "e2b" && !owner) {
+      if (!env.SESSION_DO) return Response.json({ error: "Work resource owner is not configured" }, { status: 503 });
+      const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(JSON.stringify([input.workspaceId, input.sessionId])));
+      return await stub.fetch(new Request("https://internal" + CF_WORK_DISPATCH_PATH, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input), signal: request.signal }));
+    }
+    if (owner && (provider !== "e2b" || env.SESSION_DO?.idFromName(JSON.stringify([input.workspaceId, input.sessionId])).toString() !== owner.id || owner.hasSessionExecution)) throw new Error("Work resource owner mismatch");
     // Validate the complete deployment inventory before DB/token/provider work,
     // using the same pure parser as the in-sandbox supervisor.
     const inventoryRaw = (env as Env & { OPENMA_ACP_HARNESSES?: string }).OPENMA_ACP_HARNESSES;
     const inventory = parseInstalledHarnesses(inventoryRaw);
+    if (provider === "e2b" && inventoryRaw !== E2B_WORKER_INVENTORY) throw new Error("E2B worker requires the certified installed inventory");
     const sql = new CfD1SqlClient(await buildCfTenantDbProvider(env).resolve(input.workspaceId));
     const cipher = new WebCryptoAesGcm(env.PLATFORM_ROOT_SECRET, "managed.environment-work.secret");
     const work = new SqlEnvironmentWorkStore(sql, { seal: async ({ plaintext }) => ({ ciphertext: await cipher.encrypt(plaintext) }), open: async ({ ciphertext }) => ({ plaintext: await cipher.decrypt(ciphertext) }) });
@@ -39,7 +54,18 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env): P
         if (matches.length !== 1) return null;
         return { id: matches[0].id, version: matches[0].version };
       } },
-      sandbox: async delivery => new CloudflareSandbox(env, delivery.sessionId),
+      sandbox: async (delivery, authority) => {
+        if (provider === "cloudflare") return new CloudflareSandbox(env, delivery.sessionId);
+        if (!owner) throw new Error("E2B requires its existing Session resource owner");
+        const attempt = environmentWorkSandboxTokenRef({ ...delivery, generation: authority.generation });
+        const token = (sandbox: object | string) => tokens!.relayDelivery(attempt, () => issueSandboxToken(createSqlEnvironmentWorkSandboxTokenStore(sql), attempt, { scope: "all" }), sandbox);
+        const sandbox = createE2BSessionSandbox({ env, storage: owner.storage, scope: () => delivery,
+          networking: async () => (authority.environment.config as { networking?: SessionNetworking }).networking, fence: () => undefined, relayToken: async () => { throw new Error("Work cannot use a SessionExecution token"); },
+          workAuthority: { attempt, async isCurrent() { await authority.assertCurrent(); return true; }, token },
+        });
+        const runtime = await sandbox.runtime();
+        return { provider: "e2b" as const, runtimeHandle: () => runtime.runtimeHandle(), startManagedProcess: (spec, identity) => startE2BWorkProcess({ runtime, work, sql, delivery, assertCurrent: authority.assertCurrent, spec, identity }) };
+      },
     });
     // The factory compares the presented per-claim secret against the encrypted
     // Work row and reads the pinned Session before any token/provider mutation.

@@ -2,7 +2,15 @@ import { sessionExecutionPlacement } from "@open-managed-agents/domain/environme
 import { environmentWorkSandboxTokenRef } from "@open-managed-agents/sandbox-gateway-sql";
 import { sandboxTokenSha256, type AttemptSandboxTokens } from "@open-managed-agents/sandbox-gateway";
 import type { EnvironmentWorkRuntimeDelivery } from "@open-managed-agents/runtime-resource-contract";
+import { E2B_WORKER_INVENTORY } from "./e2b-work-handoff";
 import type { CloudflareSandbox } from "./sandbox";
+import type { SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
+
+export type CfWorkRunnerSandbox = Pick<CloudflareSandbox, "runtimeHandle" | "setOutboundContext" | "startWorkRunner"> | {
+  provider: "e2b";
+  runtimeHandle(): { provider: string; runtimeId: string };
+  startManagedProcess: (spec: Parameters<SandboxManagedProcessPort["startManagedProcess"]>[0], identity: { workspaceId: string; sessionId: string; workId: string; attemptId: string }) => Promise<Awaited<ReturnType<SandboxManagedProcessPort["startManagedProcess"]>> & { created: boolean }>;
+};
 
 type Authorized = {
   generation: number;
@@ -20,7 +28,7 @@ export interface CfWorkRunnerDispatchDependencies {
   /** The existing owner-scoped holder, shared with every egress attach. */
   tokens: AttemptSandboxTokens;
   issueToken(input: EnvironmentWorkRuntimeDelivery & { generation: number }, scope: "all"): Promise<string>;
-  sandbox(input: EnvironmentWorkRuntimeDelivery): Promise<Pick<CloudflareSandbox, "runtimeHandle" | "setOutboundContext" | "startWorkRunner">>;
+  sandbox(input: EnvironmentWorkRuntimeDelivery, authority: { generation: number; environment: Authorized["environment"]; assertCurrent(): Promise<void> }): Promise<CfWorkRunnerSandbox>;
 }
 
 /** CF management composition only. Work runner owns ACK/heartbeat and ACP HTTP.
@@ -48,26 +56,42 @@ export function createCfWorkRunnerDispatch(deps: CfWorkRunnerDispatchDependencie
         signal.throwIfAborted();
         if (!current || current.generation !== generation || current.session.id !== delivery.sessionId || current.session.environmentId !== delivery.environmentId || current.harness.id !== harness.id || current.harness.version !== harness.version || sessionExecutionPlacement(current.environment, current.session).harnessPlacement !== "in_sandbox") throw new Error("Work bootstrap authority was lost");
       };
-      const runtime = await deps.sandbox(delivery);
+      const runtime = await deps.sandbox(delivery, { generation, environment: authorized.environment, assertCurrent });
       await assertCurrent();
       signal.throwIfAborted();
+      if ("provider" in runtime && (deps.installedHarnesses !== E2B_WORKER_INVENTORY || harness.id !== "codex-acp" || harness.version !== "1.8.0")) throw new Error("E2B worker requires the certified installed inventory");
       const fence = environmentWorkSandboxTokenRef({ ...delivery, generation });
       const token = await deps.tokens.relayDelivery(fence, () => deps.issueToken({ ...delivery, generation }, "all"), runtime.runtimeHandle().runtimeId);
       signal.throwIfAborted();
       const tokenSha256 = await sandboxTokenSha256(token);
       if (!tokenSha256) throw new Error("Work runner requires the existing sandbox token holder");
       await assertCurrent();
-      await runtime.setOutboundContext({ tenantId: delivery.workspaceId, environmentId: delivery.environmentId, sessionId: delivery.sessionId, workId: delivery.workId, tokenSha256, required: true, controlPlaneBaseUrl: delivery.apiBaseUrl });
+      if (!("provider" in runtime)) await runtime.setOutboundContext({ tenantId: delivery.workspaceId, environmentId: delivery.environmentId, sessionId: delivery.sessionId, workId: delivery.workId, tokenSha256, required: true, controlPlaneBaseUrl: delivery.apiBaseUrl });
       signal.throwIfAborted();
       await assertCurrent();
-      await runtime.startWorkRunner({ beforeLaunch: assertCurrent, signal, command: deps.command, controlPlaneOrigin: delivery.apiBaseUrl, env: {
+      const environment = {
         ANTHROPIC_BASE_URL: delivery.apiBaseUrl, ANTHROPIC_ENVIRONMENT_ID: delivery.environmentId,
         ANTHROPIC_SESSION_ID: delivery.sessionId, ANTHROPIC_WORK_ID: delivery.workId,
         ANTHROPIC_WORK_SECRET: delivery.workSecret, OPENMA_WORKSPACE_ID: delivery.workspaceId,
         OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
         OPENMA_SANDBOX_TOKEN: token,
         ...(deps.installedHarnesses ? { OPENMA_ACP_HARNESSES: deps.installedHarnesses } : {}),
-      } });
+      };
+      if ("provider" in runtime) {
+        const handle = await runtime.startManagedProcess({ command: "/usr/local/bin/node", args: ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"], cwd: "/workspace", env: environment }, { workspaceId: delivery.workspaceId, sessionId: delivery.sessionId, workId: delivery.workId, attemptId: fence.attemptId });
+        let transferred = false;
+        try { await assertCurrent(); transferred = true; }
+        finally {
+          if (!transferred) {
+            // A cancelled duplicate request does not own the existing worker.
+            // Only an independently confirmed loss of its SQL claim may kill it.
+            const current = handle.created ? null : await deps.authorize(delivery);
+            if (handle.created || current === null || current.generation !== generation) await handle.kill("SIGKILL");
+          }
+        }
+      } else {
+        await runtime.startWorkRunner({ beforeLaunch: assertCurrent, signal, command: deps.command, controlPlaneOrigin: delivery.apiBaseUrl, env: environment });
+      }
       // A late abort must remain unknown, never a safe-to-retry launch failure.
       signal.throwIfAborted();
       return { created: true };
