@@ -343,6 +343,16 @@ app.post("/v1/oma/sessions/:sessionId/execution-channels", async c => {
   return c.json(result, status);
 });
 
+for (const action of ["startup-boundary", "startup-failed"]) {
+  app.post("/v1/oma/sessions/:sessionId/" + action, async c => {
+    const { cfWorkStartupFailureRoutes } = await import("./lib/cf-work-startup-failure");
+    const route = cfWorkStartupFailureRoutes(c.env);
+    const url = new URL(c.req.url);
+    url.pathname = "/" + encodeURIComponent(c.req.param("sessionId") ?? "") + "/" + action;
+    return route.fetch(new Request(url, c.req.raw));
+  });
+}
+
 // API routes (require authentication)
 app.use("/v1/*", authMiddleware);
 app.use("/v1/*", rateLimitMiddleware);

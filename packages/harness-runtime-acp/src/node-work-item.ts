@@ -97,11 +97,24 @@ export function createNodeManagedAcpWorkItemRunner(
       ? { agentId: environment.OPENMA_ACP_AGENT_ID.trim() }
       : {}),
   });
+  const client = options.lifecycleClient ?? lifecycleClientFromEnvironment({capability,fetch:options.fetch});
+  let suppressFinallyStop = false;
+  const requestStartup = async (action: string, body: unknown) => {
+    const response = await (options.fetch ?? globalThis.fetch)(
+      capability.gatewayBaseUrl.replace(/\/+$/u, "") + "/v1/oma/sessions/" + encodeURIComponent(sessionId) + "/" + action,
+      {method:"POST",headers:{authorization:"Bearer " + capability.sessionsToken,"content-type":"application/json"},body:JSON.stringify(body)},
+    );
+    if (!response.ok) throw new Error("ACP startup settlement rejected: " + response.status);
+    return response;
+  };
   const lifecycle = createClaimedEnvironmentWorkRunner({
-    client: options.lifecycleClient ?? lifecycleClientFromEnvironment({
-      capability,
-      fetch: options.fetch,
-    }),
+    client: {
+      ack: (...args) => client.ack(...args),
+      heartbeat: (...args) => client.heartbeat(...args),
+      // common finally is cleanup, not authority to discard a failed turn.
+      // The private settlement already stops Work, or leaves it recoverable.
+      stop: (...args) => suppressFinallyStop ? Promise.resolve({}) : client.stop(...args),
+    },
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     heartbeatTtlSeconds: options.heartbeatTtlSeconds,
     scheduler: options.scheduler,
@@ -116,12 +129,16 @@ export function createNodeManagedAcpWorkItemRunner(
         workId,
         signal,
         execute: async (workSignal) => {
-          const resolved = await supervisorApp.resolveHarness(harness);
-          if (resolved === null) {
-            throw new Error(`Harness ${harness.id}@${harness.version} is not installed`);
-          }
-          let active: Awaited<ReturnType<typeof resolved.start>> | null = null;
+          suppressFinallyStop = true;
+          let revision: number | undefined;
+          let active: Awaited<ReturnType<NonNullable<Awaited<ReturnType<typeof supervisorApp.resolveHarness>>>["start"]>> | null = null;
           try {
+            const boundary = await (await requestStartup("startup-boundary", {})).json() as {revision?: unknown};
+            if (!Number.isSafeInteger(boundary.revision) || Number(boundary.revision) < 0) throw new Error("ACP startup boundary unavailable");
+            revision = Number(boundary.revision);
+            const resolved = await supervisorApp.resolveHarness(harness);
+            if (resolved === null) throw new Error(`Harness ${harness.id}@${harness.version} is not installed`);
+
             active = await resolved.start({
               scope: {
                 workspaceId: environment.OPENMA_WORKSPACE_ID?.trim() || "default",
@@ -141,8 +158,21 @@ export function createNodeManagedAcpWorkItemRunner(
               throw new Error(`ACP harness exited with code ${String(result.exitCode)}`);
             }
             await active.drain();
+            suppressFinallyStop = false;
           } catch (error) {
             await active?.stop(workSignal.aborted ? "aborted" : "failed").catch(() => {});
+            if (workSignal.aborted) {
+              // Existing interrupt / lease_lost semantics belong to common.
+              suppressFinallyStop = false;
+            } else if (revision !== undefined) {
+              const body = {revision,processedAt:new Date().toISOString()};
+              try {
+                // Same body on response loss: only exact committed facts may
+                // be confirmed after the first request revoked Work authority.
+                try { await requestStartup("startup-failed",body); }
+                catch { await requestStartup("startup-failed",body); }
+              } catch (settlementError) { await options.onError?.(settlementError); }
+            }
             throw error;
           }
         },

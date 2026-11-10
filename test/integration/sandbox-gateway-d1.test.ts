@@ -266,3 +266,32 @@ describe("Cloudflare ACP execution channels", () => {
     await expect(cfAcpExecutionChannels(a.env, { tenantId: a.workspaceId, sessionId: a.sessionId, sessionsToken: (await import("../../packages/sandbox-gateway/src/index")).generateSandboxToken() })).rejects.toThrow(/current sandbox token/);
   });
 });
+
+
+it("actual CF HTTP commits Work startup failure and allows only exact stopped replay", async () => {
+  const { default: app } = await import("../../apps/main/src/index");
+  const { WebCryptoAesGcm } = await import("../../packages/integrations-adapters-cf/src/index");
+  const root = "startup-fixture-root-secret-0123456789";
+  const testEnv = {...env,PLATFORM_ROOT_SECRET:root};
+  const sql = sqlClientFromD1(env.MAIN_DB);
+  const sessionId = "startup_" + runId, workId = "startup_work_" + runId;
+  const now = new Date().toISOString();
+  await seedSandboxGatewaySessionRows(sql,"default",{id:sessionId,environmentId:"env",vaultIds:[],agent:{id:"agent",version:1},archivedAt:null});
+  const doc = {id:sessionId,agent:{id:"agent",version:1},environmentId:"env",status:"running",updatedAt:now,archivedAt:null};
+  await sql.prepare("UPDATE managed_sessions SET document = ?,status = 'running',revision = 3 WHERE workspace_id = 'default' AND id = ?").bind(JSON.stringify(doc),sessionId).run();
+  const tokenCipher = new WebCryptoAesGcm(root,"managed.environment-work.session-token");
+  const token = "sk-ant-req-v1." + await tokenCipher.encrypt(JSON.stringify({version:1,workspaceId:"default",environmentId:"env",sessionId,workId,issuedAt:now,expiresAt:new Date(Date.now()+60000).toISOString(),claimedAt:now,generation:1,skills:[],files:[],memoryStores:[]}));
+  const secret = await new WebCryptoAesGcm(root,"managed.environment-work.secret").encrypt(JSON.stringify({sessionsToken:token}));
+  await sql.prepare("INSERT INTO managed_environment_work (workspace_id,environment_id,id,session_id,document,sealed_secret,claim_at,claim_generation,heartbeat_ttl_seconds,revision,state,created_at) VALUES ('default','env',?,?,?,?,?,1,90,4,'active',?)").bind(workId,sessionId,JSON.stringify({id:workId,environmentId:'env',data:{type:'session',id:sessionId},state:'active'}),secret,Date.now(),Date.now()).run();
+  const send = (action,body,bearer=token) => app.fetch(new Request("https://oma.example/v1/oma/sessions/"+sessionId+"/"+action,{method:"POST",headers:{authorization:"Bearer "+bearer,"content-type":"application/json"},body:JSON.stringify(body)}),testEnv);
+  expect((await send("startup-boundary",{})).status).toBe(200);
+  expect((await send("startup-failed",{revision:3,processedAt:now},"admin")).status).toBe(401);
+  expect((await send("startup-failed",{revision:3,processedAt:now})).status).toBe(200);
+  expect((await send("startup-failed",{revision:3,processedAt:now})).status).toBe(200);
+  expect((await send("startup-failed",{revision:4,processedAt:now})).status).toBe(409);
+  expect((await send("startup-boundary",{})).status).toBe(409);
+  expect(await sql.prepare("SELECT state FROM managed_environment_work WHERE id = ?").bind(workId).first()).toEqual({state:"stopped"});
+  expect(await sql.prepare("SELECT status,revision FROM managed_sessions WHERE id = ?").bind(sessionId).first()).toEqual({status:"idle",revision:4});
+  const read = await app.fetch(new Request("https://oma.example/v1/sessions/"+sessionId,{headers:{authorization:"Bearer "+token}}),testEnv);
+  expect(read.status).toBe(401);
+});

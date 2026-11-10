@@ -13,6 +13,8 @@ export type {
 } from "./types";
 export { resolveServices } from "./types";
 
+export { buildWorkStartupFailureRoutes } from "./work-startup-failure";
+
 export { buildAgentRoutes } from "./agents";
 export type { AgentRoutesDeps } from "./agents";
 

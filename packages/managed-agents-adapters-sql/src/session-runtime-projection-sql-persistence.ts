@@ -8,6 +8,10 @@ import type {
   SessionThread,
 } from "@open-managed-agents/managed-agents-application";
 import {
+  workStartupFailureEvents,
+  type SettleWorkStartupFailure,
+  type WorkStartupFailurePersistencePort,
+  type EnvironmentWorkExecutionFence,
   projectionEventIdCollision,
   projectionEventIdCollisionWarning,
 } from "@open-managed-agents/managed-agents-application";
@@ -47,7 +51,7 @@ function storedSession(row: ProjectionSessionRow): StoredSession {
 }
 
 export class SqlSessionRuntimeProjectionPersistence
-  implements SessionRuntimeProjectionPersistencePort
+  implements SessionRuntimeProjectionPersistencePort, WorkStartupFailurePersistencePort
 {
   readonly #now: () => Date;
   readonly #warn: (entry: ReturnType<typeof projectionEventIdCollisionWarning>) => void;
@@ -79,8 +83,52 @@ export class SqlSessionRuntimeProjectionPersistence
     return row === null ? null : storedSession(row);
   }
 
+  async captureStartupBoundary(claim: EnvironmentWorkExecutionFence): Promise<number | null> {
+    const current = await this.findCurrent(claim);
+    if (current === null || current.session.status !== "running") return null;
+    // A later input/projection invalidates this boundary at settlement.
+    const active = await this.isFenceActive({ ...claim, expectedRevision: current.revision,
+      next: current.session, events: [], environmentWorkFence: claim }, this.#now().getTime());
+    return active ? current.revision : null;
+  }
+
+  async settleStartupFailure(input: SettleWorkStartupFailure): Promise<"committed" | "rejected"> {
+    const claim = input.claim;
+    if (!Number.isSafeInteger(input.revision) || input.revision < 0 || !Number.isFinite(Date.parse(input.processedAt))) return "rejected";
+    const events = workStartupFailureEvents(input);
+    const work = await this.client.prepare(
+      "SELECT document, revision, state, claim_generation FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ?",
+    ).bind(claim.workspaceId, claim.environmentId, claim.workId, claim.sessionId)
+      .first<{ document: string; revision: number; state: string; claim_generation: number }>();
+    if (work === null || Number(work.claim_generation) !== claim.generation) return "rejected";
+    if (work.state === "stopped") {
+      // Confirmation only: stopped credentials cannot publish a fresh terminal.
+      // Require the exact immutable bodies, never infer completion from status.
+      for (const event of events) {
+        const row = await this.client.prepare("SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ? AND id = ?")
+          .bind(claim.workspaceId, claim.sessionId, event.id).first<{ document: string }>();
+        if (row === null || JSON.stringify(decodeSessionEventDocument(row.document).event) !== JSON.stringify(event)) return "rejected";
+      }
+      return "committed";
+    }
+    const current = await this.findCurrent(claim);
+    if (current === null || current.revision !== input.revision || current.session.status !== "running") return "rejected";
+    const result = await this.projectState({ ...claim, expectedRevision: input.revision,
+      environmentWorkFence: claim, events,
+      next: { ...current.session, status: "idle", updatedAt: input.processedAt > current.session.updatedAt ? input.processedAt : current.session.updatedAt },
+    }, { workRevision: Number(work.revision), workDocument: work.document, processedAt: input.processedAt });
+    return result.type === "projected" ? "committed" : "rejected";
+  }
+
   async project(
     input: ProjectSessionRuntimeState,
+  ): Promise<ProjectSessionRuntimeStateResult> {
+    return this.projectState(input);
+  }
+
+  private async projectState(
+    input: ProjectSessionRuntimeState,
+    startup?: { workRevision: number; workDocument: string; processedAt: string },
   ): Promise<ProjectSessionRuntimeStateResult> {
     if (input.next.id !== input.sessionId) {
       throw new Error("Projected session ID does not match the target session");
@@ -104,7 +152,7 @@ export class SqlSessionRuntimeProjectionPersistence
     ) return { type: "execution_fence_lost" };
     const now = this.#now().getTime();
     const failedSql = fence?.settlement === "failed_unclaimed" ? FAILED_ATTEMPT_SQL.replace("old.attempt_id = ? AND old.owner_id = ? AND old.generation = ?", "old.attempt_id IS NULL AND old.attempt_count = 0") : FAILED_ATTEMPT_SQL;
-    const fenceSql = fence?.settlement !== undefined
+    let fenceSql = fence?.settlement !== undefined
       ? `AND EXISTS (${failedSql})`
       : fence !== undefined
       ? `AND EXISTS (
@@ -140,6 +188,18 @@ export class SqlSessionRuntimeProjectionPersistence
             now,
           ]
         : [];
+    if (startup !== undefined && environmentWorkFence !== undefined) {
+      // Work revision includes heartbeat updates: a racing renewal or reclaim
+      // rejects this whole batch. Other/newer Work must not be closed by us.
+      fenceSql += `AND EXISTS (SELECT 1 FROM managed_environment_work WHERE workspace_id = ? AND id = ? AND revision = ?)
+        AND NOT EXISTS (SELECT 1 FROM managed_environment_work newer
+          WHERE newer.workspace_id = ? AND newer.session_id = ? AND newer.id <> ?
+            AND (newer.state <> 'stopped' OR newer.created_at >=
+              (SELECT created_at FROM managed_environment_work WHERE workspace_id = ? AND id = ?)))`;
+      fenceBindings.push(environmentWorkFence.workspaceId, environmentWorkFence.workId, startup.workRevision,
+        environmentWorkFence.workspaceId, environmentWorkFence.sessionId, environmentWorkFence.workId,
+        environmentWorkFence.workspaceId, environmentWorkFence.workId);
+    }
     const existingEvents = await Promise.all(input.events.map((event) =>
       this.client.prepare(
         `SELECT document FROM managed_session_events
@@ -149,6 +209,9 @@ export class SqlSessionRuntimeProjectionPersistence
       }>()
     ));
     if (existingEvents.some((row) => row !== null)) {
+      // Startup replay is confirmed only by settleStartupFailure after checking
+      // the stopped Work. Ordinary projection replay cannot prove that stop.
+      if (startup !== undefined) return { type: "execution_fence_lost" };
       const exactReplay = existingEvents.every((row, index) =>
         row !== null && JSON.stringify(decodeSessionEventDocument(row.document).event) === JSON.stringify(input.events[index])
       );
@@ -261,7 +324,17 @@ export class SqlSessionRuntimeProjectionPersistence
       `UPDATE managed_sessions SET revision = revision
         WHERE workspace_id = ? AND id = ? AND revision = ? ${fenceSql}`,
     ).bind(input.workspaceId, input.sessionId, input.expectedRevision, ...fenceBindings);
-    const statements = [revisionGuard, ...eventStatements, ...threadStatements, update];
+    const stop = startup === undefined || environmentWorkFence === undefined ? [] : [this.client.prepare(
+      `UPDATE managed_environment_work SET document = ?, state = 'stopped', claim_worker_id = NULL, revision = revision + 1
+       WHERE workspace_id = ? AND environment_id = ? AND id = ? AND revision = ?
+         AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND revision = ?) ${fenceSql}`,
+    ).bind(JSON.stringify({ ...JSON.parse(startup.workDocument), state: "stopped",
+      stopRequestedAt: JSON.parse(startup.workDocument).stopRequestedAt ?? startup.processedAt,
+      stoppedAt: startup.processedAt }),
+      environmentWorkFence.workspaceId, environmentWorkFence.environmentId, environmentWorkFence.workId,
+      startup.workRevision, input.workspaceId, input.sessionId, input.expectedRevision + 1, ...fenceBindings)];
+    const statements = [revisionGuard, ...eventStatements, ...threadStatements, update, ...stop];
+    const updateIndex = 1 + eventStatements.length + threadStatements.length;
     const rejected = new Error("Runtime projection admission changed inside transaction");
     let results;
     try {
@@ -269,14 +342,14 @@ export class SqlSessionRuntimeProjectionPersistence
       // earlier events/threads when the final CAS or an event write rejects.
       results = this.client.batchChecked
         ? await this.client.batchChecked(statements, rows => {
-          if (rows.at(-1)?.meta.changes !== 1 || rows.slice(1, 1 + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
+          if (rows[updateIndex]?.meta.changes !== 1 || (stop.length > 0 && rows.at(-1)?.meta.changes !== 1) || rows.slice(1, 1 + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
         })
         : await this.client.batch(statements); // D1: one atomic SQLite snapshot.
     } catch (error) {
       if (error !== rejected) throw error;
       results = [{ meta: { changes: 0 } }];
     }
-    const updateResult = results[results.length - 1];
+    const updateResult = results[updateIndex] ?? results[0];
     if (updateResult === undefined) {
       throw new Error("Runtime projection batch returned no update result");
     }

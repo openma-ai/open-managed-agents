@@ -19,6 +19,11 @@ const environment = {
   OPENMA_HARNESS_ID: "pi-acp",
 };
 
+const startupFetch: typeof globalThis.fetch = async (raw, init) => {
+  const request = new Request(raw, init);
+  return request.url.endsWith("startup-boundary") ? Response.json({revision:3}) : Response.json({type:"committed"});
+};
+
 function lifecycle(): ClaimedEnvironmentWorkLifecycleClient {
   return {
     ack: vi.fn(async () => ({})),
@@ -80,6 +85,7 @@ describe("Node ACP claimed Work item", () => {
     const runner = createNodeManagedAcpWorkItemRunner({
       environment,
       lifecycleClient: client,
+      fetch: startupFetch,
       supervisorApp: app,
       checkpoint,
       workspacePath: "/workspace",
@@ -111,7 +117,7 @@ describe("Node ACP claimed Work item", () => {
           ttl_seconds: 90,
         });
       }
-      return Response.json({});
+      return request.url.endsWith("startup-boundary") ? Response.json({revision:3}) : Response.json({});
     });
     const runner = createNodeManagedAcpWorkItemRunner({
       environment: {
@@ -129,9 +135,9 @@ describe("Node ACP claimed Work item", () => {
 
     await runner.run();
     expect(requests.map((request) => new URL(request.url).origin))
-      .toEqual(["https://control.openma.test", "https://control.openma.test", "https://control.openma.test"]);
+      .toEqual(Array(4).fill("https://control.openma.test"));
     expect(requests.map((request) => request.headers.get("authorization")))
-      .toEqual(["Bearer scoped-session-token", "Bearer scoped-session-token", "Bearer scoped-session-token"]);
+      .toEqual(Array(4).fill("Bearer scoped-session-token"));
     expect(requests.every((request) => request.headers.get("x-api-key") === null)).toBe(true);
     expect(requests.every((request) => ![...request.headers.values()].includes("standing-key-must-not-be-used")))
       .toBe(true);
@@ -142,6 +148,7 @@ describe("Node ACP claimed Work item", () => {
     expect(() => createNodeManagedAcpWorkItemRunner({
       environment: { ...environment, OPENMA_HARNESS_ID: undefined },
       lifecycleClient: client,
+      fetch: startupFetch,
       supervisorApp: supervisor([]),
     })).toThrow("OPENMA_HARNESS_ID");
     expect(client.ack).not.toHaveBeenCalled();
@@ -152,6 +159,7 @@ describe("Node ACP claimed Work item", () => {
     expect(() => createNodeManagedAcpWorkItemRunner({
       environment: { ...environment, ANTHROPIC_WORK_SECRET: "invalid" },
       lifecycleClient: client,
+      fetch: startupFetch,
       supervisorApp: supervisor([]),
     })).toThrow("scoped sessions_token");
     expect(client.ack).not.toHaveBeenCalled();
@@ -162,6 +170,7 @@ describe("Node ACP claimed Work item", () => {
     const runner = createNodeManagedAcpWorkItemRunner({
       environment,
       lifecycleClient: client,
+      fetch: startupFetch,
       supervisorApp: {
         resolveHarness: vi.fn(async () => null),
         serve: vi.fn(),
@@ -174,7 +183,7 @@ describe("Node ACP claimed Work item", () => {
     });
 
     await expect(runner.run()).rejects.toThrow("pi-acp@1 is not installed");
-    expect(client.stop).toHaveBeenCalledOnce();
+    expect(client.stop).not.toHaveBeenCalled();
   });
 
   it("stops a non-zero harness as failed and preserves the original failure", async () => {
@@ -183,6 +192,7 @@ describe("Node ACP claimed Work item", () => {
     const runner = createNodeManagedAcpWorkItemRunner({
       environment: { ...environment, OPENMA_WORKSPACE_ID: "workspace_01" },
       lifecycleClient: client,
+      fetch: startupFetch,
       outputPath: null,
       supervisorApp: {
         resolveHarness: vi.fn(async () => ({
@@ -214,6 +224,7 @@ describe("Node ACP claimed Work item", () => {
     const runner = createNodeManagedAcpWorkItemRunner({
       environment,
       lifecycleClient: client,
+      fetch: startupFetch,
       supervisorApp: {
         resolveHarness: vi.fn(async () => ({
           start: vi.fn(async () => { throw new Error("start failed"); }),
@@ -228,6 +239,7 @@ describe("Node ACP claimed Work item", () => {
     });
 
     await expect(runner.run()).rejects.toThrow("start failed");
+    expect(client.stop).not.toHaveBeenCalled();
   });
 
   it("marks an active harness aborted when its external Work claim is cancelled", async () => {
@@ -239,6 +251,7 @@ describe("Node ACP claimed Work item", () => {
     const runner = createNodeManagedAcpWorkItemRunner({
       environment,
       lifecycleClient: client,
+      fetch: startupFetch,
       supervisorApp: {
         resolveHarness: vi.fn(async () => ({
           start: vi.fn(async (input) => {
@@ -268,3 +281,28 @@ describe("Node ACP claimed Work item", () => {
     expect(stop).toHaveBeenCalledWith("aborted");
   });
 });
+
+for (const mode of ["response_lost", "unavailable", "boundary_rejected"] as const) {
+  it("does not let common finally stop Work after " + mode, async () => {
+    const client = lifecycle();
+    const bodies: string[] = [];
+    let starts = 0;
+    const runner = createNodeManagedAcpWorkItemRunner({
+      environment,lifecycleClient:client,
+      fetch: async (raw,init) => {
+        const request = new Request(raw,init);
+        if (request.url.endsWith("startup-boundary")) return mode === "boundary_rejected" ? new Response(null,{status:409}) : Response.json({revision:3});
+        bodies.push(await request.text());
+        if (mode === "unavailable" || bodies.length === 1) throw new Error("response unavailable");
+        return Response.json({type:"committed"});
+      },
+      supervisorApp:{resolveHarness:async()=>({start:async()=>{starts++;throw new Error("startup failed");}}),serve:vi.fn()},
+      scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_resolve,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))},
+    });
+    await expect(runner.run()).rejects.toThrow(mode === "boundary_rejected" ? "settlement rejected" : "startup failed");
+    expect(client.stop).not.toHaveBeenCalled();
+    expect(starts).toBe(mode === "boundary_rejected" ? 0 : 1);
+    expect(bodies).toHaveLength(mode === "boundary_rejected" ? 0 : 2);
+    if (bodies.length > 0) expect(bodies[0]).toBe(bodies[1]);
+  });
+}

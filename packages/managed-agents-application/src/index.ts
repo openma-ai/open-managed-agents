@@ -86,6 +86,7 @@ export * from "./session-execution/context-source";
 export * from "./session-execution/history-source";
 export * from "./session-execution/history-application";
 export * from "./session-execution/projection-persistence";
+export * from "./session-execution/work-startup-failure";
 export * from "./session-execution/threads";
 export * from "./session-resources/application";
 export * from "./session-resources/file-source";

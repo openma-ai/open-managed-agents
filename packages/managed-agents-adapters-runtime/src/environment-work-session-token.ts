@@ -284,7 +284,7 @@ function authorized(claims: EnvironmentWorkSessionTokenClaims, method: string, p
     && parts[1] === "oma"
     && parts[2] === "sessions"
     && parts[3] === claims.sessionId
-    && parts[4] === "runtime-events"
+    && (parts[4] === "runtime-events" || parts[4] === "startup-boundary" || parts[4] === "startup-failed")
   ) return verb === "POST";
 
   // Model and MCP gateways require oma_sbx_; the Work bearer is protocol-only.

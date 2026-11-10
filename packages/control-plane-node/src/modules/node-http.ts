@@ -15,6 +15,9 @@
  * index.ts is the executable entrypoint (process.env, listen, signals).
  */
 
+import { SqlSessionRuntimeProjectionPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
+import { buildWorkStartupFailureRoutes } from "@open-managed-agents/http-routes";
+import { authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { nodeExecutionChannelsHttp } from "../lib/node-execution-channels-http.js";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
@@ -305,6 +308,20 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   app.route("/v1/oma/egress", managedCredentialEgressRoutes);
   app.use("/v1/oma/oauth/callback", managedMcpOAuthCliCallback);
 
+  app.route("/v1/oma/sessions", buildWorkStartupFailureRoutes({
+    authenticate: async (token, path) => {
+      if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
+      return authenticateEnvironmentWorkSessionBearer({ token, path, method: "POST",
+        crypto: managedEnvironmentWorkSessionTokenCrypto, now: () => new Date(),
+        isCurrent: async claim => {
+          const work = await managedEnvironmentWorkStore.find(claim);
+          return work !== null && work.secret.sessionsToken === token &&
+            work.work.data.type === "session" && work.work.data.id === claim.sessionId;
+        },
+      });
+    },
+    persistenceFor: async () => new SqlSessionRuntimeProjectionPersistence(sql),
+  }));
   app.route("/v1/oma/sessions", nodeExecutionChannelsHttp({ tokens: managedAcpCapabilities.tokens, sql, modelCards: modelCardsService, gatewayBaseUrl: config.http.gatewayOrigin }));
 
   const v1 = new Hono<{
