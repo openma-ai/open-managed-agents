@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else "/run/oma-managed")
@@ -18,6 +19,9 @@ root.mkdir(mode=0o700, parents=True, exist_ok=True)
 os.chmod(root, 0o700)
 os.umask(0o077)
 children = {}
+identities = {}
+epoch = str(uuid.uuid4())
+slot = None
 # Management is trusted root; agent processes MUST use agent-spawner.mjs.
 # WNOWAIT retains the exited leader PID, pinning its PGID until group cleanup.
 if not hasattr(os, "waitid") or os.getuid() != 0:
@@ -36,12 +40,24 @@ def text(value):
     return isinstance(value, str) and "\0" not in value
 
 def dispatch(request):
+    global slot
     op = request.get("op")
+    if op == "inspect-slot":
+        if slot is None:
+            raise ValueError("no trustworthy management locator")
+        child = children[slot]
+        status = slot in cleaned or os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+        if identities[slot] is None:
+            raise ValueError("management identity unavailable")
+        return {"locator": {"id": slot, "epoch": epoch, "pid": child.pid, "identity": identities[slot], "status": "exited" if status else "running"}}
     if op == "start":
         if request["id"] in children:
             raise ValueError("duplicate managed start")
         if len(children) >= 128:
             raise ValueError("management capacity exhausted; recycle sandbox")
+        identity = request.get("identity")
+        if identity is not None and (not isinstance(identity, dict) or set(identity) != {"workspaceId", "sessionId", "workId", "attemptId"} or not all(text(value) and 0 < len(value) <= 256 for value in identity.values())):
+            raise ValueError("invalid management identity")
         spec = request["spec"]
         command, args, env = spec["command"], spec.get("args", []), spec["env"]
         if not text(command) or not command.startswith("/") or not isinstance(args, list) or not all(text(a) for a in args):
@@ -73,8 +89,15 @@ def dispatch(request):
         finally:
             os.close(descriptor)
         children[request["id"]] = child
-        return {"id": request["id"], "pid": child.pid}
+        identities[request["id"]] = identity
+        slot = request["id"]
+        return {"id": request["id"], "pid": child.pid, "epoch": epoch}
     child = children[request["target"]]
+    expected = identities[request["target"]]
+    if request.get("epoch") is not None and request.get("epoch") != epoch:
+        raise ValueError("management locator epoch mismatch")
+    if expected is not None and (request.get("identity") != expected or request.get("epoch") != epoch):
+        raise ValueError("management locator identity mismatch")
     status = request["target"] in cleaned or os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
     if op == "kill":
         sig = request["signal"]

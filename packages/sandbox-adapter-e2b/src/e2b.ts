@@ -34,7 +34,7 @@ import type {
   SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
 import { readS3MemoryBucket, type SandboxManagedProcessSpec, type SandboxManagedProcessHandle, type SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
-import { startE2BManagedProcess, type E2BManagedBootstrapOptions } from "./managed-bootstrap";
+import { startE2BManagedProcess, inspectE2BManagedSlot, restoreE2BManagedProcess, type E2BManagedIdentity, type E2BManagedLocator, type E2BManagedBootstrapOptions } from "./managed-bootstrap";
 
 // Structural types so this file compiles without `e2b` installed. The
 // driver shape is matched at runtime; mismatches surface as adapter
@@ -376,10 +376,10 @@ export class E2BSandboxExecutor
     return combined;
   }
 
-  async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
+  async startManagedProcess(spec: SandboxManagedProcessSpec, identity?: E2BManagedIdentity): Promise<SandboxManagedProcessHandle> {
     if (this.managedClosed) throw new Error("E2B management launcher is closed");
     if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
-    const starting = startE2BManagedProcess(this.sandbox, this.managedBootstrap, spec);
+    const starting = startE2BManagedProcess(this.sandbox, this.managedBootstrap, spec, identity);
     this.managedStarts.add(starting);
     try { return await starting; }
     catch (error) {
@@ -387,6 +387,16 @@ export class E2BSandboxExecutor
       if ((error as { outcome?: string }).outcome === "unknown") this.managedClosed = true;
       throw error;
     } finally { this.managedStarts.delete(starting); }
+  }
+
+  async inspectManagedProcessSlot(): Promise<E2BManagedLocator> {
+    if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
+    return inspectE2BManagedSlot(this.sandbox, this.managedBootstrap);
+  }
+
+  async restoreManagedProcess(locator: E2BManagedLocator): Promise<SandboxManagedProcessHandle> {
+    if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
+    return restoreE2BManagedProcess(this.sandbox, this.managedBootstrap, locator);
   }
 
   async startProcess(command: string): Promise<ProcessHandle | null> {
