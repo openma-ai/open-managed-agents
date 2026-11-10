@@ -117,6 +117,7 @@ export class EnvironmentAwareSessionLifecycleRouter
 
 export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
   runtime: SessionEventDispatchPort;
+  selfHostedWork: Pick<EnvironmentSessionWorkEnqueuerPort, "stop">;
 }
 
 /**
@@ -124,7 +125,8 @@ export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
  * committed these events to the canonical log before this hook runs. A
  * self-hosted Environment Work keeps its sandbox-side control channel open
  * and consumes that log, so dispatching here as well would execute the same
- * turn a second time outside the sandbox.
+ * turn a second time outside the sandbox. Interrupt is a control-plane stop
+ * request, not a second execution: revoke the existing Work through its CAS.
  */
 export class EnvironmentAwareSessionEventDispatchRouter
   implements SessionEventDispatchPort
@@ -136,6 +138,15 @@ export class EnvironmentAwareSessionEventDispatchRouter
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
     if (environmentExecutionAuthority(input.environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionEventsAccepted(input);
+      return;
+    }
+    if (input.events.some(event => event.type === "user.interrupt")) {
+      const result = await this.dependencies.selfHostedWork.stop({
+        workspaceId: input.workspaceId,
+        session: input.session,
+        reason: "interrupted",
+      });
+      if (result.type === "conflict") throw new Error(result.message);
     }
   }
 }

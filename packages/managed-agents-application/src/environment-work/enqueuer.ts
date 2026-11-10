@@ -22,7 +22,7 @@ export interface EnvironmentSessionWorkEnqueuerPort {
 export interface StopEnvironmentSessionWork {
   workspaceId: string;
   session: Session;
-  reason: "archived" | "deleted";
+  reason: "archived" | "deleted" | "interrupted";
 }
 
 export type StopEnvironmentSessionWorkResult =

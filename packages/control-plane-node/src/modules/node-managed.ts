@@ -729,6 +729,9 @@ export async function createManagedNodeRuntime(
     runtime: managedSessionRuntime,
     eventDispatch: new EnvironmentAwareSessionEventDispatchRouter({
       runtime: managedSessionRuntime,
+      selfHostedWork: {
+        stop: input => managedEnvironmentWorkEnqueuerFor(input.workspaceId).stop(input),
+      },
     }),
     eventStream: new EnvironmentAwareSessionEventStreamRouter({
       environments: nodeManagedEnvironments,

@@ -944,7 +944,7 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
       },
     }),
     runtime,
-    eventDispatch: new EnvironmentAwareSessionEventDispatchRouter({ runtime }),
+    eventDispatch: new EnvironmentAwareSessionEventDispatchRouter({ runtime, selfHostedWork }),
     eventStream: new EnvironmentAwareSessionEventStreamRouter({
       environments,
       runtime,
