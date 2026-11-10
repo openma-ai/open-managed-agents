@@ -44,7 +44,16 @@ it("requires a real idle after the accepted input, even when its consumer is ter
 it("does not accept a completed steering admission while its actual consumer is running", async () => {
   const f = await fixture(); await f.execution("admission", "steered"); await f.input("steered", "actual-consumer"); await f.idle();
   await f.store.admit({ execution: { workspaceId: f.workspaceId, sessionId: f.id, id: "actual-consumer", admittedAt: new Date().toISOString(), events: [{ id: "trigger", type: "user.message", content: [{ type: "text", text: "trigger" }], processedAt: null }] } });
+  // Hold the actual consumer with a live lease. Leaving it merely queued lets
+  // the real DO recovery loop claim and fail it while this oracle test polls.
+  const active = await f.store.claim({ workspaceId: f.workspaceId, sessionId: f.id,
+    ownerId: "oracle-consumer", attemptId: crypto.randomUUID(),
+    claimedAt: new Date().toISOString(), leaseTtlMs: 30_000 });
+  expect(active.type).toBe("claimed");
+  expect(active.execution.id).toBe("actual-consumer");
+  expect((await f.store.find({workspaceId:f.workspaceId,executionId:"actual-consumer"})).state).toBe("running");
   await expect(waitForSessionExecution(f.id, ["steered"], 150)).rejects.toThrow("did not finish");
+  expect((await f.store.find({workspaceId:f.workspaceId,executionId:"actual-consumer"})).state).toBe("running");
 });
 it("uses the consumer link, not the input's own execution or future inputs", async () => {
   const f = await fixture(); await f.execution("consumer", "input"); await f.input("input", "consumer"); await f.idle();

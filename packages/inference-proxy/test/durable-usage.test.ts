@@ -10,7 +10,7 @@ it("does not finish the model response until durable usage commit succeeds",asyn
 });
 it("propagates durable usage persistence failure to the response stream",async()=>{
  const response=await withHostedInferenceBudget({durable:true,begin:()=>true,complete:async()=>{throw new Error("usage persistence unavailable")}},async()=>Response.json({usage:{input_tokens:1}}));
- await expect(response.text()).rejects.toThrow("usage persistence unavailable");
+ await expect(readObserved(response)).rejects.toThrow("usage persistence unavailable");
 });
 
 it("merges split Anthropic SSE usage and refuses a successful unmetered response",async()=>{
@@ -20,5 +20,14 @@ it("merges split Anthropic SSE usage and refuses a successful unmetered response
  const response=await withHostedInferenceBudget({durable:true,begin:()=>true,complete:u=>{usage=u}},async()=>new Response(stream,{headers:{"content-type":"text/event-stream"}}));
  await response.text();expect(usage).toEqual({input_tokens:4,output_tokens:3});
  const missing=await withHostedInferenceBudget({durable:true,begin:()=>true,complete:()=>{}},async()=>Response.json({ok:true}));
- await expect(missing.text()).rejects.toThrow("no usage");
+ await expect(readObserved(missing)).rejects.toThrow("no usage");
 });
+
+// Explicitly observe both stream rejection surfaces. workerd exposes reader.closed
+// separately from read(); asserting only Response.text leaves that promise unobserved.
+async function readObserved(response: Response): Promise<void> {
+ const reader=response.body!.getReader();
+ const closed=reader.closed.catch(()=>undefined);
+ try { while(!(await reader.read()).done) {} }
+ finally { await closed; reader.releaseLock(); }
+}

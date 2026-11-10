@@ -1,11 +1,14 @@
 // @ts-nocheck
 // Multi-platform parity gate — Cloudflare runner (design §0.7 gate 3).
 // Drives the real combined worker (apps/main routes + apps/agent SessionDO,
-// test/test-worker.ts) only through the public /v1 API. Model: the shared
+// test/test-worker.ts) through the public /v1 API. The context-failure case
+// injects a scoped dependency failure inside the DO (see its fixture).
+// Model: the shared
 // scripted model via the "platform-parity" harness. Sandbox: the existing CF
 // test double (test/sandbox-stub.ts). Platforms using this runner:
 // @open-managed-agents/agent, @open-managed-agents/main
 // (packages/platform-parity/platforms.mjs).
+import { runCfContextBuildFailure } from "../fixtures/cf-context-build-failure";
 import { exports } from "cloudflare:workers";
 import { installParityModelTransport } from "../fixtures/cf-parity-outbound";
 const modelTransport = installParityModelTransport();
@@ -181,7 +184,8 @@ registerParityRunner({ describe, test, expect }, {
   run: async (scenario) => {
     const context = new ScenarioContext(fetchPublic, AUTH);
     const beforeModelCalls = modelTransport.calls();
-    await scenario.run(context);
+    if (scenario.name === "context-build-failure") await runCfContextBuildFailure(context);
+    else await scenario.run(context);
     if (scenario.name === "outcome-evaluation") expect(modelTransport.calls() - beforeModelCalls).toBe(4);
     const observation = await context.observe();
     console.log(`PARITY_OBSERVATION cloudflare ${scenario.name} ${JSON.stringify(observation)}`);
@@ -201,7 +205,9 @@ const originalFetch = globalThis.fetch;
 beforeAll(() => {
   vi.stubGlobal("fetch", async (input, init) => {
     if (String(init?.body).includes("parity-revision-timeout")) return revisionJudgeResponse();
-    return originalFetch(input, init);
+    // Keep the source rejection observed in this workerd async wrapper. Bare
+    // promise adoption leaked it even though the provider handled its failure.
+    return await originalFetch(input, init);
   });
 });
 afterAll(() => vi.unstubAllGlobals());

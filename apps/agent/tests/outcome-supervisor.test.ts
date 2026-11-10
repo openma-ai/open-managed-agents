@@ -337,6 +337,7 @@ describe("runOutcomeSupervisor", () => {
         rubric: { type: "text", content: "rubric" },
         max_iterations: 3,
       },
+      initialEvents: [agentMessage("first outcome deliverable", "first-deliverable")],
       judge: async () => ({
         text: JSON.stringify({ result: "satisfied", explanation: "ok" }),
       }),
@@ -356,6 +357,7 @@ describe("runOutcomeSupervisor", () => {
       rubric: { type: "text", content: "second rubric" },
       max_iterations: 3,
     };
+    h.events.push(agentMessage("second outcome deliverable", "second-deliverable"));
     h.state.outcome = secondOutcome;
     h.state.outcome_iteration = 0;
     h.deps.outcome = secondOutcome;
@@ -387,6 +389,7 @@ describe("runOutcomeSupervisor", () => {
         rubric: { type: "file", file_id: "file-abc" },
         max_iterations: 2,
       },
+      initialEvents: [agentMessage("deliverable for the file rubric", "file-deliverable")],
       filesBucketGet: async (key) => {
         getCalls.push(key);
         return { text: async () => "rubric loaded from R2" };

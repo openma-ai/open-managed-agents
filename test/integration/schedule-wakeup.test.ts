@@ -7,16 +7,15 @@
 // user.message lands in the event log with the right metadata, and cron
 // list/cancel works.
 //
-// Bypasses REST/D1 entirely (the env image_strategy migration drift in
-// apps/main isn't ours to fix here): we mint a session_id, get a direct
-// SESSION_DO stub, and use runInDurableObject to invoke the schedule tool
-// the same way the AI SDK does when the model emits a tool call.
+// Canonical Sessions are created through the public API. The real schedule
+// tool and DO alarm own event generation; tests never seed wakeup events.
 
-import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, it, expect } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
 import { buildTools } from "../../packages/agent-harness/src/tools";
+import { ensureModelCards } from "./_model-cards";
+import { createScheduleSession } from "../fixtures/schedule-session";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 
 registerTestHarnesses();
@@ -33,68 +32,18 @@ const AGENT_CFG = {
   created_at: new Date().toISOString(),
 };
 
-async function ensureMainDbSessionsForTest() {
-  await env.MAIN_DB.prepare(
-    `CREATE TABLE IF NOT EXISTS sessions (
-       id              TEXT PRIMARY KEY NOT NULL,
-       tenant_id       TEXT NOT NULL,
-       agent_id        TEXT,
-       environment_id  TEXT,
-       title           TEXT NOT NULL DEFAULT '',
-       status          TEXT NOT NULL,
-       vault_ids       TEXT,
-       agent_snapshot  TEXT,
-       environment_snapshot TEXT,
-       metadata        TEXT,
-       created_at      INTEGER NOT NULL,
-       updated_at      INTEGER,
-       archived_at     INTEGER,
-       turn_id         TEXT,
-       turn_started_at INTEGER,
-       terminated_at   INTEGER
-     )`,
-  ).run();
-  for (const stmt of [
-    `ALTER TABLE sessions ADD COLUMN turn_id TEXT`,
-    `ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER`,
-    `ALTER TABLE sessions ADD COLUMN terminated_at INTEGER`,
-  ]) {
-    try {
-      await env.MAIN_DB.prepare(stmt).run();
-    } catch (err) {
-      const msg = (err as Error).message ?? "";
-      if (!/duplicate column name/i.test(msg)) throw err;
-    }
-  }
-}
-
-function newStub(label: string): { stub: DurableObjectStub; sessionId: string } {
-  // Unique per test run + per name, so DOs don't share state across cases.
-  const sessionId = `sess_sched_${label}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
-  return { stub, sessionId };
-}
-
-async function ensureAlive(stub: DurableObjectStub, sessionId: string): Promise<void> {
-  // Hitting any endpoint runs ensureSchema() and warms the DO so this.schedule()
-  // can write to cf_agents_schedules. /status is the lightest endpoint.
-  // (setName workaround removed — partyserver was dropped in Phase 3 of
-  // the unified-runtime refactor; the .name read no longer happens.)
-  await stub.fetch(new Request("http://internal/status"));
-}
-
 async function getEvents(stub: DurableObjectStub): Promise<any[]> {
   const ev = await stub.fetch(new Request("http://internal/events"));
+  expect(ev.status, await ev.clone().text()).toBe(200);
   const json = await ev.json();
   return (json as { data: any[] }).data;
 }
 
 describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
-  beforeAll(ensureMainDbSessionsForTest);
+  beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
   it("delay_seconds: tool execute writes a real schedule row + span event", async () => {
-    const { stub, sessionId } = newStub("oneshot");
-    await ensureAlive(stub, sessionId);
+    const { stub } = await createScheduleSession("oneshot");
 
     // Simulate the model emitting a `schedule` tool call. buildTools is
     // exactly what the harness uses; the env closure binds to the live DO
@@ -120,9 +69,7 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
       const listOut = await tools.list_schedules.execute({}, TOOL_EXEC_OPTS);
       listedAfter = (listOut as { schedules: any[] }).schedules;
 
-      // Cleanup so the alarm doesn't actually fire and trigger drainEventQueue
-      // (which would loop forever without a fully-initialised harness — see
-      // the "onScheduledWakeup" test below for the wakeup contract).
+      // Keep this case about registration; the real alarm is exercised below.
       await tools.cancel_schedule.execute({ id: scheduleResult.id }, TOOL_EXEC_OPTS);
     });
 
@@ -152,15 +99,12 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
     // we can verify the synthesized event without standing up a full
     // harness/sandbox/agent_snapshot.
     //
-    // Status="running" is set before the call so drainEventQueue (which
-    // onScheduledWakeup fires) hits the "already running" early-return guard
-    // at session-do.ts:621-625 instead of looping on a missing harness.
-    const { stub, sessionId } = newStub("dispatch");
-    await ensureAlive(stub, sessionId);
+    // The canonical Session has a deterministic harness; wakeup admission and
+    // its subsequent drain run normally rather than pinning a fake status.
+    const { stub } = await createScheduleSession("dispatch");
 
     const scheduledAt = new Date(Date.now() - 1000).toISOString();
     await runInDurableObject(stub, async (instance) => {
-      instance.setState({ ...instance.state, status: "running" });
       await instance.onScheduledWakeup({
         prompt: "wake up: ping the user",
         scheduled_at: scheduledAt,
@@ -187,8 +131,7 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
   }, 10000);
 
   it("onScheduledWakeup is a no-op on terminated sessions (no resurrection)", async () => {
-    const { stub, sessionId } = newStub("terminated");
-    await ensureAlive(stub, sessionId);
+    const { stub } = await createScheduleSession("terminated");
 
     let userMsgCount: number;
     await runInDurableObject(stub, async (instance) => {
@@ -208,8 +151,7 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
   }, 10000);
 
   it("cron: registered, listed, cancelled (no wait for fire)", async () => {
-    const { stub, sessionId } = newStub("cron");
-    await ensureAlive(stub, sessionId);
+    const { stub } = await createScheduleSession("cron");
 
     let cronResult: any;
     let listed: any[];
@@ -256,8 +198,7 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
   }, 15000);
 
   it("cancel_schedule refuses non-existent id", async () => {
-    const { stub, sessionId } = newStub("guard");
-    await ensureAlive(stub, sessionId);
+    const { stub } = await createScheduleSession("guard");
 
     let result: any;
     await runInDurableObject(stub, async (instance) => {
@@ -275,8 +216,7 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
   }, 10000);
 
   it("at: ISO timestamp registers a one_shot schedule", async () => {
-    const { stub, sessionId } = newStub("at");
-    await ensureAlive(stub, sessionId);
+    const { stub } = await createScheduleSession("at");
 
     const fireAt = new Date(Date.now() + 30_000).toISOString();
     let result: any;
@@ -311,18 +251,11 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
     // `onScheduledWakeup` by name when the timer expires (vs us calling it
     // synchronously in the dispatch test above).
     //
-    // Setup: status="running" so the post-wakeup drainEventQueue hits the
-    // "already running" early-return guard at session-do.ts:621-625 and
-    // doesn't try to spin up a real harness (which we don't have here).
-    const { stub, sessionId } = newStub("alarmfire");
-    await ensureAlive(stub, sessionId);
+    // A real, deterministic harness handles the wakeup after admission.
+    const { stub } = await createScheduleSession("alarmfire");
 
     let scheduleResult: any;
     await runInDurableObject(stub, async (instance) => {
-      // Pin status BEFORE scheduling so any drainEventQueue triggered later
-      // (by alarm or by anything else) skips harnessing.
-      instance.setState({ ...instance.state, status: "running" });
-
       const sandbox = new TestSandbox();
       const tools = await buildTools(AGENT_CFG, sandbox, {
         scheduleWakeup: (a) => instance.scheduleWakeup(a),
@@ -367,8 +300,7 @@ describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
     // Failsafe vs runaway cron loops. Without the cap, an agent can pile up
     // unbounded schedules and burn token quota on each fire. See
     // session-do.ts:MAX_PENDING_WAKEUPS (20).
-    const { stub, sessionId } = newStub("cap");
-    await ensureAlive(stub, sessionId);
+    const { stub } = await createScheduleSession("cap");
 
     let firstId: string;
     let lastIdAtCap: string;

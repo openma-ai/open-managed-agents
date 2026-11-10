@@ -9,12 +9,13 @@ vi.mock("e2b", () => ({ Sandbox: { create: async () => {
 
 const scope = { workspaceId: "ws", sessionId: "sess", environmentId: "env", workId: "exe" };
 function sandbox(substitutions: boolean, url?: string) {
+  const state = new Map<string, unknown>();
   return createE2BSessionSandbox({
     env: { E2B_API_KEY: "unused", E2B_TEMPLATE: "template", E2B_MAX_LIFETIME_MS: "3600000", MEMORY_BUCKET: {} as never, FILES_BUCKET: {} as never,
       ...(url === undefined ? {} : { PUBLIC_BASE_URL: url }),
       MAIN_MCP: { resolveManagedCapCliEnvironment: async () => ({ type: "found", env: substitutions ? { TOKEN: "oma_vault_placeholder" } : {} }) },
     },
-    storage: { get: async () => undefined, put: async () => {}, delete: async () => true } as never,
+    storage: { kv: { get: (key: string) => state.get(key), put: (key: string, value: unknown) => { state.set(key, value); } } } as never,
     scope: () => scope, networking: async () => undefined,
     fence: () => ({ executionId: "exe", attemptId: "att", ownerId: "owner", generation: 1 }),
     relayToken: async () => { observed.tokens++; return "oma_sbx_test"; },

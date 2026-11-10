@@ -1,8 +1,11 @@
-import { env } from "cloudflare:workers";
+import { createScheduleSession } from "../fixtures/schedule-session";
+import { registerTestHarnesses } from "../harnesses";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 import { toSessionEventResponse } from "../../packages/managed-agents-api/src/mappers/session-events";
+
+registerTestHarnesses();
 
 // Characterization (design §0.7 regression rule 1) of CF requires_action
 // bookkeeping, locked before it moved into packages/session-runtime: a
@@ -21,7 +24,7 @@ const settle = (room: any, history: SqliteHistory, call: string) =>
 
 function seed(room: any, sessionId: string, pending: Array<{ toolCallId: string; toolName: string }>) {
   room._ensureCfAgentsSchema(); room.ensureSchema(); room._coldStartFlushDone = true;
-  room.setState({ ...room.state, session_id: sessionId, tenant_id: "workspace", agent_id: "a",
+  room.setState({ ...room.state, session_id: sessionId, tenant_id: room.state.tenant_id, agent_id: room.state.agent_id,
     pending_tool_calls: pending.map((p) => ({ ...p, args: {} })) });
   room._ensurePrimaryThread();
 }
@@ -33,8 +36,7 @@ describe("CF requires_action batch bookkeeping", () => {
     ["custom tool", "lookup_user"],
     ["tool confirmation", "bash"],
   ])("stores the same stop_reason shape as Node renders (%s)", async (_label, toolName) => {
-    const sessionId = `requires_action_batch_${crypto.randomUUID()}`;
-    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const { stub, sessionId } = await createScheduleSession("requires-action-batch");
     await runInDurableObject(stub, async (instance, state) => {
       const room = instance as any;
       seed(room, sessionId, [
@@ -56,8 +58,7 @@ describe("CF requires_action batch bookkeeping", () => {
   });
 
   it("re-announces outstanding ids that are still open", async () => {
-    const sessionId = `requires_action_batch_${crypto.randomUUID()}`;
-    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const { stub, sessionId } = await createScheduleSession("requires-action-batch");
     await runInDurableObject(stub, async (instance, state) => {
       const room = instance as any;
       seed(room, sessionId, [
@@ -79,8 +80,7 @@ describe("CF requires_action batch bookkeeping", () => {
   });
 
   it("stays parked while a custom call is open, then resumes once settled", async () => {
-    const sessionId = `requires_action_batch_${crypto.randomUUID()}`;
-    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const { stub, sessionId } = await createScheduleSession("requires-action-batch");
     await runInDurableObject(stub, async (instance, state) => {
       const room = instance as any;
       seed(room, sessionId, [
@@ -109,8 +109,7 @@ describe("CF requires_action batch bookkeeping", () => {
   });
 
   it("stores a duplicate answer with no effect and rejects an unknown id", async () => {
-    const sessionId = `requires_action_batch_${crypto.randomUUID()}`;
-    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const { stub, sessionId } = await createScheduleSession("requires-action-batch");
     await runInDurableObject(stub, async (instance, state) => {
       const room = instance as any;
       seed(room, sessionId, []);
