@@ -29,30 +29,6 @@ function projection(
 }
 
 describe("Environment Work runtime event ingress", () => {
-  it("forwards raw host payload under the trusted fence and ACKs only committed canonical output", async () => {
-    const payload = { type: "session.event", sessionId: claim.sessionId, turnId: "turn", event: { future: { data: [1, "two"] } } };
-    let submitted: object | undefined; let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const published: string[] = []; let acknowledged = false;
-    const service: SessionRuntimeProjectionApplicationPort = {
-      recordSessionRuntimeEvents: async () => { throw new Error("canonical path must not run"); },
-      recordRawSessionRuntimeEvents: async command => { submitted = command; await gate; return { type: "recorded", events: [] }; },
-    };
-    const pending = ingestEnvironmentWorkRuntimeEvents({ claim, sessionId: claim.sessionId, body: { event_format: "raw", events: [{ seq: 1, event: payload }] }, projection: service, publish: async event => { published.push(event.id); } }).then(result => { acknowledged = true; return result; });
-    await Promise.resolve();
-    expect(acknowledged).toBe(false); expect(published).toEqual([]);
-    expect(submitted).toEqual({ sessionId: claim.sessionId, events: [{ seq: 1, event: payload }], environmentWorkFence: claim });
-    release(); expect(await pending).toEqual({ type: "recorded", eventIds: [] });
-  });
-
-  it("rejects malformed raw envelopes and never enters canonical fallback", async () => {
-    const unused = projection(async () => { throw new Error("must not project"); });
-    const event = { type: "session.complete", sessionId: claim.sessionId, turnId: "turn" };
-    expect((await ingestEnvironmentWorkRuntimeEvents({claim,sessionId:claim.sessionId,body:{event_format:"raw",events:[{seq:1,event:{type:"session.event",sessionId:claim.sessionId,turnId:"turn",event:"x".repeat(1_048_577)}}]},projection:unused,publish:async()=>{throw new Error("must not publish");}})).type).toBe("invalid_request");
-    for (const envelope of [{ seq: 0, event }, { seq: 1, event: { ...event, sessionId: "other" } }, { seq: 1, event: { ...event, type: "user.message" } }, { seq: 1, event, workId: "untrusted" }]) {
-      expect((await ingestEnvironmentWorkRuntimeEvents({ claim, sessionId: claim.sessionId, body: { event_format: "raw", events: [envelope] }, projection: unused, publish: async () => { throw new Error("must not publish"); } })).type).toBe("invalid_request");
-    }
-  });
   it("rejects malformed batches and a route/session scope mismatch", async () => {
     const unused = projection(async () => {
       throw new Error("projection must not run");

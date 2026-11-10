@@ -42,39 +42,6 @@ export type RuntimeProducedSessionEvent = Exclude<
   SentSessionEvent
 >;
 
-/** Runtime host envelope only; ACP payload remains uninterpreted until the shared projector. */
-export type RawSessionHostEvent =
-  | { type: "session.ready"; sessionId: string; acpSessionId: string }
-  | { type: "session.event"; sessionId: string; turnId: string; event: unknown }
-  | { type: "session.complete"; sessionId: string; turnId: string }
-  | { type: "session.error"; sessionId: string; turnId?: string; message: string }
-  | { type: "session.disposed"; sessionId: string }
-  | { type: "session.warning"; sessionId: string; source: "acp_semantic_recovery"; message: string; details: { reason: "native-state-missing" | "native-state-stale" } };
-
-export interface RawRuntimePublication {
-  seq: number;
-  event: RawSessionHostEvent;
-}
-
-/** The projector is supplied by the control-plane composition, never by the worker. */
-export interface RawRuntimeProjectorPort {
-  project(state: string | null, event: RawSessionHostEvent): {
-    state: string;
-    events: RuntimeProducedSessionEvent[];
-  };
-}
-
-export interface RecordRawSessionRuntimeEventsCommand {
-  sessionId: string;
-  events: RawRuntimePublication[];
-  environmentWorkFence: EnvironmentWorkExecutionFence;
-}
-
-export type RecordRawSessionRuntimeEventsResult =
-  | { type: "recorded"; events: RuntimeProducedSessionEvent[] }
-  | { type: "invalid_request"; message: string }
-  | Exclude<RecordSessionRuntimeEventsResult, { type: "recorded" }>;
-
 export interface RecordSessionRuntimeEventsCommand {
   sessionId: string;
   events: RuntimeProducedSessionEvent[];
@@ -90,7 +57,6 @@ export type RecordSessionRuntimeEventsResult =
   | ProjectionEventIdCollision;
 
 export interface SessionRuntimeProjectionApplicationPort {
-  recordRawSessionRuntimeEvents?(command: RecordRawSessionRuntimeEventsCommand): Promise<RecordRawSessionRuntimeEventsResult>;
   recordSessionRuntimeEvents(
     command: RecordSessionRuntimeEventsCommand,
   ): Promise<RecordSessionRuntimeEventsResult>;

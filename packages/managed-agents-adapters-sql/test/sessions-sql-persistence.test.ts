@@ -187,26 +187,6 @@ beforeEach(async () => {
   await client.exec(SCHEMA_SQL);
 });
 
-describe("raw runtime checkpoint persistence prerequisite (schema not yet deployed)",()=>{
- it("stores checkpoint and empty canonical output in the same fenced Session commit",async()=>{
-  await client.exec("ALTER TABLE managed_environment_work ADD COLUMN runtime_projection text");
-  await new SqlSessionPersistence(client,testSealer).insert({workspaceId:"workspace_01",session,initialEvents:[],resourceSecrets:[]});
-  const now=Date.parse(session.updatedAt);await client.prepare("INSERT INTO managed_environment_work(workspace_id,environment_id,id,session_id,document,sealed_secret,claim_at,claim_generation,heartbeat_ttl_seconds,revision,state,created_at) VALUES(?,?,?,?,?, ?,?,1,60,1,'active',?)").bind("workspace_01","env_01","work","session_01","{}","sealed",now,now).run();
-  const fence={workspaceId:"workspace_01",environmentId:"env_01",sessionId:"session_01",workId:"work",generation:1};
-  const persistence=new SqlSessionRuntimeProjectionPersistence(client,{now:()=>new Date(now)});
-  expect(await persistence.findRawProjection({...fence,environmentWorkFence:fence})).toEqual({type:"found",checkpoint:null});
-  const current=await persistence.findCurrent(fence);if(current===null)throw new Error("missing fixture");
-  const next={generation:1,seq:1,lastEvent:'{"type":"session.ready"}',projectorState:'{"version":1}'};
-  expect((await persistence.project({...fence,expectedRevision:current.revision,next:session,events:[],environmentWorkFence:fence,rawProjection:{expected:null,next}})).type).toBe("projected");
-  expect(await persistence.findRawProjection({...fence,environmentWorkFence:fence})).toEqual({type:"found",checkpoint:next});
-  const revision=(await persistence.findCurrent(fence))!.revision;
-  expect((await persistence.project({...fence,expectedRevision:revision,next:session,events:[],environmentWorkFence:fence,rawProjection:{expected:null,next:{...next,seq:2}}})).type).toBe("revision_conflict");
-  expect((await persistence.findCurrent(fence))!.revision).toBe(revision);
-  await client.prepare("UPDATE managed_environment_work SET claim_generation=2").run();
-  expect(await persistence.findRawProjection({...fence,environmentWorkFence:fence})).toEqual({type:"execution_fence_lost"});
- });
-});
-
 describe("SqlSessionPersistence", () => {
   it.each([false, true])("honors the per-environment execution outbox decision: %s", async (enabled) => {
     await ensureSessionExecutionCoordinatorSchema(client);

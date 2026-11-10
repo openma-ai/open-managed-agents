@@ -1,8 +1,5 @@
 import type { Session, SessionStatus } from "../domain/session";
 import type {
-  RecordRawSessionRuntimeEventsCommand,
-  RecordRawSessionRuntimeEventsResult,
-  RawRuntimeProjectorPort,
   RecordSessionRuntimeEventsCommand,
   RecordSessionRuntimeEventsResult,
   RuntimeProducedSessionEvent,
@@ -13,7 +10,6 @@ import type { SessionRuntimeProjectionPersistencePort } from "./projection-persi
 export interface SessionRuntimeProjectionApplicationServiceDependencies {
   workspaceId: string;
   persistence: SessionRuntimeProjectionPersistencePort;
-  rawProjector?: RawRuntimeProjectorPort;
 }
 
 function statusFromEvent(
@@ -94,49 +90,6 @@ export class SessionRuntimeProjectionApplicationService
   constructor(
     private readonly dependencies: SessionRuntimeProjectionApplicationServiceDependencies,
   ) {}
-
-  async recordRawSessionRuntimeEvents(command: RecordRawSessionRuntimeEventsCommand): Promise<RecordRawSessionRuntimeEventsResult> {
-    const { persistence, rawProjector, workspaceId } = this.dependencies;
-    if (rawProjector === undefined || persistence.findRawProjection === undefined) {
-      return { type: "invalid_request", message: "Raw runtime projection is not configured" };
-    }
-    // One event per ACK makes the last committed input sufficient for exact
-    // retry detection. Older input is rejected, never silently reprojected.
-    if (command.events.length !== 1) return { type: "invalid_request", message: "Raw publication requires exactly one event" };
-    const publication = command.events[0]!;
-    if (publication.event.sessionId !== command.sessionId || !Number.isSafeInteger(publication.seq) || publication.seq < 1) {
-      return { type: "invalid_request", message: "Invalid raw event scope or sequence" };
-    }
-    const query = { workspaceId, sessionId: command.sessionId, environmentWorkFence: command.environmentWorkFence };
-    const found = await persistence.findRawProjection(query);
-    if (found.type !== "found") return found;
-    const stored = found.checkpoint;
-    const prior = stored?.generation === command.environmentWorkFence.generation ? stored : null;
-    const serialized = JSON.stringify(publication.event);
-    const replay = prior !== null && publication.seq === prior.seq;
-    if (replay && serialized !== prior.lastEvent) return { type: "invalid_request", message: "Raw sequence reused with different input" };
-    if (!replay && publication.seq !== (prior?.seq ?? 0) + 1) return { type: "invalid_request", message: "Raw sequence is not the next committed input" };
-    const current = await persistence.findCurrent(query);
-    if (current === null) return { type: "not_found" };
-    // Even an exact retry gets the same transactional fence/CAS admission;
-    // a read-only preflight is not permission to acknowledge after reclaim.
-    const candidate = replay ? { state: prior.projectorState, events: [] }
-      : rawProjector.project(prior?.projectorState ?? null, publication.event);
-    if (new TextEncoder().encode(candidate.state).byteLength > 1_048_576) {
-      return { type: "invalid_request", message: "Raw projector checkpoint exceeds 1 MiB; input was not committed" };
-    }
-    const projected = await persistence.project({
-      ...query, expectedRevision: current.revision, events: candidate.events,
-      next: applyRuntimeEvents(current.session, candidate.events),
-      rawProjection: { expected: stored === null ? null : JSON.stringify(stored), next: {
-        generation: command.environmentWorkFence.generation, seq: publication.seq,
-        lastEvent: serialized, projectorState: candidate.state,
-      } },
-    });
-    if (projected.type === "revision_conflict") return { type: "version_conflict", message: "Raw runtime projection changed concurrently" };
-    if (projected.type !== "projected") return projected;
-    return { type: "recorded", events: candidate.events };
-  }
 
   async recordSessionRuntimeEvents(
     command: RecordSessionRuntimeEventsCommand,
