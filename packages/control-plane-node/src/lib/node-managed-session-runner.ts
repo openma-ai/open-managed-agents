@@ -877,14 +877,14 @@ export class DefaultNodeManagedSessionRunner
           policy,
           resolveSession: this.dependencies.resolveSubagentSession === undefined ? undefined :
             (request) => this.dependencies.resolveSubagentSession!({ ...context, request }),
-          run: async ({ session, runtime: childRuntime, sandbox: childSandbox }) => {
+          run: async ({ session, runtime: childRuntime, sandbox: childSandbox, acceptedEvents }) => {
             const childContext = { ...context, session };
             let childTools: HarnessContext["tools"] | undefined;
             try {
               const model = await this.dependencies.buildModel(childContext);
               childTools = await this.dependencies.buildTools({ ...childContext, sandbox: childSandbox });
               const harnessContext = await this.dependencies.buildHarnessContext({
-                ...childContext, acceptedEvents: [], sandbox: childSandbox,
+                ...childContext, acceptedEvents, executionFence: input.executionFence, sandbox: childSandbox,
                 runtime: childRuntime, model, tools: childTools,
               });
               // One session egress meter: child model calls are gated and
