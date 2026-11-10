@@ -3,7 +3,7 @@ import { CloudflareSandbox, setCloudflareSandboxForTest } from "../src/runtime/s
 
 afterEach(() => setCloudflareSandboxForTest(undefined));
 const input = () => ({ command: "/opt/openma/bin/openma-acp-work-item", controlPlaneOrigin: "https://control.test", env: {
-  ANTHROPIC_BASE_URL: "https://control.test", ANTHROPIC_ENVIRONMENT_ID: "env", ANTHROPIC_SESSION_ID: "sess", ANTHROPIC_WORK_ID: "work", ANTHROPIC_WORK_SECRET: JSON.stringify({ sessions_token: "scoped-work-bearer" }), OPENMA_HARNESS_ID: "agent", OPENMA_HARNESS_VERSION: "1", OPENMA_WORKSPACE_ID: "ws",
+  ANTHROPIC_BASE_URL: "https://control.test", ANTHROPIC_ENVIRONMENT_ID: "env", ANTHROPIC_SESSION_ID: "sess", ANTHROPIC_WORK_ID: "work", ANTHROPIC_WORK_SECRET: btoa(JSON.stringify({ sessions_token: "sk-ant-req-v1.scoped-work-bearer", api_base_url: "https://control.test", claim_generation: 1 })).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""), OPENMA_HARNESS_ID: "agent", OPENMA_HARNESS_VERSION: "1", OPENMA_WORKSPACE_ID: "ws",
 } });
 function fixture(failure?: Error) {
   const calls: unknown[] = [];
@@ -64,4 +64,14 @@ it("takes immutable bootstrap env before an asynchronous network boundary", asyn
   setCloudflareSandboxForTest({ async restrictOutboundToHosts() { spec.env.ANTHROPIC_SESSION_ID = "other"; }, async startProcess(_command: string, options: { env: Record<string, string> }) { launched = options.env; return { id: "p", pid: 1, async kill() {}, async getStatus() { return "running"; } }; } });
   await new CloudflareSandbox({ SANDBOX: {} } as never, "sess").startWorkRunner(spec);
   expect(launched?.ANTHROPIC_SESSION_ID).toBe("sess");
+});
+
+it.each([
+  JSON.stringify({ sessions_token: "sk-ant-req-v1.not-encoded" }),
+  btoa(JSON.stringify({ sessions_token: "oma_sbx_not-work", api_base_url: "https://control.test" })),
+  btoa(JSON.stringify({ sessions_token: "sk-ant-req-v1.control", api_base_url: "https://other.test" })),
+  btoa(JSON.stringify({ api_base_url: "https://control.test" })),
+])("malformed or wrong-origin Work delivery never reaches provider", async ANTHROPIC_WORK_SECRET => {
+  const f = fixture(); const spec = input(); spec.env.ANTHROPIC_WORK_SECRET = ANTHROPIC_WORK_SECRET;
+  await expect(f.sandbox.startWorkRunner(spec)).rejects.toThrow(); expect(f.calls).toEqual([]);
 });

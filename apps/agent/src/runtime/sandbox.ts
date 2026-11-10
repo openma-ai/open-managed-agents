@@ -11,6 +11,7 @@ import type {
   ProcessHandle,
 } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
+import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import { r2FilesCredentials } from "./r2-files-credentials";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { cloudflareWorkspaceMountPrefix } from "@open-managed-agents/managed-runtime-cloudflare";
@@ -689,6 +690,11 @@ export class CloudflareSandbox
       if (!environment[key]?.trim()) throw new TypeError("Work runner scope is incomplete");
     }
     if (environment.ANTHROPIC_BASE_URL !== origin.origin || environment.ANTHROPIC_SESSION_ID !== this.sessionId) throw new TypeError("Work runner scope differs from its sandbox");
+    // Decode the existing official Work wire; this is structural validation,
+    // NOT claim authority. The trusted dispatcher must validate the current
+    // reservation; runner ACK/CAS remains the execution admission barrier.
+    const delivery = managedMcpProxyFromWorkEnvironment(environment);
+    if (!delivery || delivery.gatewayBaseUrl !== origin.origin || !delivery.sessionsToken.startsWith("sk-ant-req-v1.")) throw new TypeError("Work runner requires an origin-bound Work delivery");
     const sandbox = await this.getSandbox();
     if (typeof sandbox.restrictOutboundToHosts !== "function" || typeof sandbox.startProcess !== "function") throw new Error("Work runner requires network enforcement and managed process launch");
     await sandbox.restrictOutboundToHosts([origin.hostname]);
