@@ -194,8 +194,37 @@ describe("Cloudflare ACP execution channels", () => {
     expect((await authenticateSandboxToken(cfSandboxTokenStore(env), { sessionId: a.sessionId, token: redelivered, channel: "api" })).type).toBe("accepted");
   });
 
+  it.each(["model", "provider"])("rejects an incomplete model card (%s) rather than starting without inference", async field => {
+    const a = await acpAttempt("incomplete_" + field);
+    const token = await issue(a)();
+    const sql = sqlClientFromD1(env.MAIN_DB);
+    const previous = await sql.prepare("SELECT model, provider FROM model_cards WHERE tenant_id = ? AND model_id = ?").bind("default", "acp-handle-" + runId).first();
+    try {
+      await sql.prepare("UPDATE model_cards SET " + field + " = '' WHERE tenant_id = ? AND model_id = ?").bind("default", "acp-handle-" + runId).run();
+      await expect(cfAcpExecutionChannels(a.env, { tenantId: "default", sessionId: a.sessionId, sessionsToken: token })).rejects.toThrow(/active workspace model card/);
+    } finally {
+      await sql.prepare("UPDATE model_cards SET model = ?, provider = ? WHERE tenant_id = ? AND model_id = ?").bind(previous.model, previous.provider, "default", "acp-handle-" + runId).run();
+    }
+  });
+
+  it("Work claim holder supplies both channels with the same all-scope oma_sbx and is revoked on stop", async () => {
+    const a = await acpAttempt("work_channels");
+    const sql = sqlClientFromD1(env.MAIN_DB);
+    const { createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef } = await import("../../packages/sandbox-gateway-sql/src/index");
+    const { issueSandboxToken } = await import("../../packages/sandbox-gateway/src/index");
+    const workId = "work_channels_" + runId, environmentId = "env_" + a.sessionId;
+    await sql.prepare("INSERT INTO managed_environment_work (workspace_id, environment_id, id, session_id, document, sealed_secret, claim_at, claim_generation, heartbeat_ttl_seconds, revision, state, created_at) VALUES (?, ?, ?, ?, '{}', 'unused', ?, 1, 90, 1, 'active', ?)").bind("default", environmentId, workId, a.sessionId, Date.now(), Date.now()).run();
+    const token = await issueSandboxToken(createSqlEnvironmentWorkSandboxTokenStore(sql), environmentWorkSandboxTokenRef({ workspaceId: "default", environmentId, sessionId: a.sessionId, workId, generation: 1 }), { scope: "all" });
+    const channels = await cfAcpExecutionChannels(a.env, { tenantId: "default", sessionId: a.sessionId, sessionsToken: token });
+    expect(channels.mcpProxy.sessionsToken).toBe(token);
+    expect(channels.hostedInference.sessionsToken).toBe(token);
+    expect(channels.hostedInference.model).toMatchObject({ providerId: "anthropic", wireModel: "claude-sonnet-5-5" });
+    await sql.prepare("UPDATE managed_environment_work SET state = 'stopped' WHERE workspace_id = ? AND id = ?").bind("default", workId).run();
+    await expect(cfAcpExecutionChannels(a.env, { tenantId: "default", sessionId: a.sessionId, sessionsToken: token })).rejects.toThrow(/current sandbox token/);
+  });
+
   it("refuse a token that does not open the Session's API channels", async () => {
     const a = await acpAttempt("refuse");
-    await expect(cfAcpExecutionChannels(a.env, { tenantId: a.workspaceId, sessionId: a.sessionId, sessionsToken: "oma_sbx_not-a-token" })).rejects.toThrow(/current sandbox token/);
+    await expect(cfAcpExecutionChannels(a.env, { tenantId: a.workspaceId, sessionId: a.sessionId, sessionsToken: (await import("../../packages/sandbox-gateway/src/index")).generateSandboxToken() })).rejects.toThrow(/current sandbox token/);
   });
 });
