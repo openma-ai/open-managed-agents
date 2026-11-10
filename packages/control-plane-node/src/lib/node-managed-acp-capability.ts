@@ -6,10 +6,11 @@ import {
   sandboxHarnessPlacement,
   sandboxTokenAuthDecision,
   sandboxTokenScopeFor,
+  sandboxTokenSha256,
   type SandboxTokenStore,
   type SessionExecutionAttemptRef,
 } from "@open-managed-agents/sandbox-gateway";
-import { createSqlGatewaySandboxTokenStore } from "@open-managed-agents/sandbox-gateway-sql";
+import { createSqlGatewaySandboxTokenStore, createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef, type EnvironmentWorkTokenClaim } from "@open-managed-agents/sandbox-gateway-sql";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 
 /** The sandbox token (#561) on Node: issued once per execution attempt into the
@@ -29,6 +30,7 @@ export function createNodeManagedAcpCapabilities(dependencies: {
   if (tokens === null) throw new Error("Node sandbox tokens need a store or a SQL client");
   // One token per attempt, shared by the harness channels and the relay.
   const attemptTokens = attemptSandboxTokens();
+  const workTokens = dependencies.sql === undefined ? null : createSqlEnvironmentWorkSandboxTokenStore(dependencies.sql);
   return {
     tokens,
     /** The in-sandbox ACP harness's channels: scope `all`. */
@@ -53,6 +55,18 @@ export function createNodeManagedAcpCapabilities(dependencies: {
      * the Session agent's harness name (scope all / egress). */
     async issueEgress(attempt: SessionExecutionAttemptRef, harness: string | null | undefined, sandbox?: object | string) {
       return attemptTokens.relayDelivery(attempt, () => issueSandboxToken(tokens, attempt, { scope: sandboxTokenScopeFor(sandboxHarnessPlacement(harness)), now }), sandbox);
+    },
+    /** Work bootstrap uses the same holder but an explicit Work-only issuer.
+     * Revalidate cached delivery against the claim: a live process is not a lease. */
+    async issueWork(claim: EnvironmentWorkTokenClaim, harness: string | null | undefined, sandbox: object | string) {
+      if (workTokens === null) throw new Error("Work sandbox tokens require SQL");
+      const attempt = environmentWorkSandboxTokenRef(claim);
+      const scope = sandboxTokenScopeFor(sandboxHarnessPlacement(harness));
+      const token = await attemptTokens.relayDelivery(attempt, () => issueSandboxToken(workTokens, attempt, { scope, now }), sandbox);
+      if (!await workTokens.isCurrentDelivery({ claim, tokenSha256: (await sandboxTokenSha256(token))!, scope, nowMs: now() })) {
+        throw new Error("Work sandbox token claim is stale or scope differs");
+      }
+      return token;
     },
     /** authMiddleware: the sandbox token on the model gateway, MCP gateway and sandbox API. */
     authenticateToken(request: { headers: Headers; method: string; path: string }) {
