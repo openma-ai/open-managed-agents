@@ -224,7 +224,11 @@ export async function materializeHostedInferenceConfigFiles(
   files: readonly InferenceConfigFile[],
 ): Promise<void> {
   for (const file of files) {
-    await sandbox.writeFile(file.path, file.content);
+    // Native config lives outside the task workspace. Use the process Port,
+    // like native capture/restore, rather than widening the file API allowlist.
+    const path = sandboxShellPath(file.path);
+    const result = parseExecResult(await sandbox.exec(`umask 077; mkdir -p -- ${shellQuote(posixDirname(path))} && printf %s ${shellQuote(file.content)} > ${shellQuote(path)}`));
+    if (result.exitCode !== 0) throw new Error("Failed to materialize ACP inference configuration");
   }
 }
 

@@ -12,6 +12,7 @@ import {
   hasRequiredAcpSandboxAgentState,
   managedMcpProxyFromWorkEnvironment,
   materializeAcpSandboxAgentState,
+  materializeHostedInferenceConfigFiles,
   projectAcpSandboxHostedInferenceEnv,
   projectAcpSandboxMcpServers,
   prepareAcpSandboxAgent,
@@ -23,6 +24,19 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("Harbor-style ACP sandbox agent preparation", () => {
+  it("materializes native inference config through exec without widening the workspace file API", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "openma-acp-config-"));
+    const path = join(workdir, "native's config", "settings.json");
+    const content = "{\"model\":\"test\"}\n'$(touch injected)'\n";
+    try {
+      await materializeHostedInferenceConfigFiles({ writeFile: async () => { throw new Error("file API only supports workspace paths"); }, exec: async command => (await execFileAsync("/bin/sh", ["-c", command], {cwd:workdir})).stdout }, [{path, content}]);
+      expect(await readFile(path, "utf8")).toBe(content);
+      await expect(access(join(workdir, "injected"))).rejects.toMatchObject({code:"ENOENT"});
+    } finally { await rm(workdir, {recursive:true,force:true}); }
+  });
+  it("does not report config materialization success when the exec Port reports failure", async () => {
+    await expect(materializeHostedInferenceConfigFiles({ writeFile: async () => {}, exec: async () => "exit=1\npermission denied" }, [{path:"/tmp/openma-harness-state/config.json",content:"{}"}])).rejects.toThrow("Failed to materialize ACP inference configuration");
+  });
   it("derives the MCP gateway capability from the official Work secret", () => {
     const secret = Buffer.from(JSON.stringify({
       sessions_token: "sk-ant-req-current-claim",
