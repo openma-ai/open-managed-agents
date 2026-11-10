@@ -35,6 +35,6 @@ it("rejects a module without the isolation export rather than using NodeSpawner"
  await expect(loadE2BAgentSpawner(async () => ({}))).rejects.toThrow(/isolateE2BAgentSpawner/);
 });
 it("uses only the isolated spawner at the actual process launch boundary", async () => {
- const isolated = await loadE2BAgentSpawner(async () => ({ isolateE2BAgentSpawner: () => ({ spawn: async () => { throw new Error("isolated-launch-boundary"); } }) }));
+ const isolated = await loadE2BAgentSpawner(async () => ({ isolateE2BAgentSpawner: () => ({ spawn: async (spec: {env?:Record<string,string|undefined>}) => { expect(spec.env).toMatchObject({PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/home/oma-worker"}); throw new Error("isolated-launch-boundary"); } }) }));
  await expect(isolated.spawn({ command: "/must-not-run", args: [], env: {} })).rejects.toThrow("isolated-launch-boundary");
 });

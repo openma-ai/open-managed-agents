@@ -20,5 +20,5 @@ export async function loadE2BAgentSpawner(
   }
   const isolated = module.isolateE2BAgentSpawner(new NodeSpawner());
   if (!isolated || typeof isolated.spawn !== "function") throw new TypeError("Invalid isolated E2B agent spawner");
-  return isolated;
+  return {spawn: spec => isolated.spawn({...spec, env: {PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/home/oma-worker",...spec.env}})};
 }
