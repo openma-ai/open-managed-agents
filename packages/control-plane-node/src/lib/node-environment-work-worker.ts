@@ -39,7 +39,27 @@ export function createNodeEnvironmentWorkWorker(input: {
   const controller = new AbortController();
   const workers = new Map<string, { worker: ManagedEnvironmentWorker; completed: Promise<void> }>();
   // Management handles only, never ownership/lease state. SQL remains authority.
-  const processes = new Map<string, { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean> }>();
+  type ManagedProcess = { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; pending?: { op: string; result: Promise<unknown> } };
+  const processes = new Map<string, ManagedProcess>();
+  // The Port has no cancellation signal. Bound our wait, NOT the native call:
+  // retain an unresolved exact-handle RPC and never start a concurrent duplicate.
+  async function processCall<T>(process: ManagedProcess, op: string, action: () => Promise<T>): Promise<T> {
+    if (process.pending && process.pending.op !== op) throw new Error("Previous management RPC outcome is pending");
+    if (!process.pending) {
+      const pending = { op, result: Promise.resolve().then(action) };
+      process.pending = pending;
+      void pending.result.finally(() => {
+        if (process.pending === pending) process.pending = undefined;
+      }).catch(() => {});
+    }
+    const result = process.pending.result as Promise<T>;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([result, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Management RPC wait timed out; native outcome is unknown")), 1_000);
+      })]);
+    } finally { if (timeout !== undefined) clearTimeout(timeout); }
+  }
   // Serialize local handle cleanup and registration, not ownership. The sandbox
   // OS lock remains the exclusion boundary across hosts/restarts.
   const handoffs = new Map<string, Promise<void>>();
@@ -53,10 +73,14 @@ export function createNodeEnvironmentWorkWorker(input: {
     const process = processes.get(key);
     if (!process) return;
     // Unknown authority throws: never interpret lookup failure as lost ownership.
-    if (await process.current()) throw new Error("Previous management worker is still current");
-    await process.handle.kill("SIGTERM");
+    if (await processCall(process, "current", () => process.current())) throw new Error("Previous management worker is still current");
+    await processCall(process, "kill", () => process.handle.kill("SIGTERM"));
     for (let attempt = 0; attempt < 5; attempt++) {
-      if (["exited", "killed", "completed", "error"].includes(await process.handle.getStatus())) { processes.delete(key); return; }
+      const status = await processCall(process, "status", () => process.handle.getStatus());
+      if (["exited", "killed", "completed", "error"].includes(status)) {
+        if (processes.get(key) === process) processes.delete(key);
+        return;
+      }
       if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 50));
     }
     throw new Error("Previous management worker exit is unconfirmed");
@@ -69,11 +93,9 @@ export function createNodeEnvironmentWorkWorker(input: {
 
   const tick = () => draining ??= (async () => {
     if (controller.signal.aborted || command === undefined || origin === undefined) return;
-    for (const [key, process] of processes) {
-      await handoff(process.slot, async () => {
-        if (processes.get(key) === process && !await process.current()) await retire(key);
-      });
-    }
+    await Promise.all([...processes].map(([key, process]) => handoff(process.slot, async () => {
+      if (processes.get(key) === process && !await processCall(process, "current", () => process.current())) await retire(key);
+    }).catch(() => { if (!controller.signal.aborted) input.onError(); })));
     const rows = await input.sql.prepare(
       "SELECT DISTINCT workspace_id, environment_id FROM managed_environment_work WHERE state IN ('queued', 'starting', 'active')"
     ).all<{ workspace_id: string; environment_id: string }>();
@@ -174,7 +196,7 @@ export function createNodeEnvironmentWorkWorker(input: {
       await draining;
       await Promise.all([...workers.values()].map(worker => worker.completed));
       workers.clear();
-      await Promise.all([...processes].map(([key, process]) => handoff(process.slot, () => retire(key))));
+      await Promise.all([...processes].map(([key, process]) => handoff(process.slot, () => retire(key)).catch(() => input.onError())));
     },
   };
 }
