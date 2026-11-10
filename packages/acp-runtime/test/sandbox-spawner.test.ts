@@ -51,6 +51,27 @@ function openStdoutProcess(dieOn: "initialize" | "session/prompt") {
 const agent = { command: "open-stdout-agent", cwd: "/workspace" };
 
 describe("SandboxSpawner stdout", () => {
+  it("drains diagnostic stderr so a multiplexed transport can deliver session/new stdout", async () => {
+    const stdout = new TransformStream<Uint8Array, Uint8Array>();
+    const stderr = new TransformStream<Uint8Array, Uint8Array>();
+    const output = stdout.writable.getWriter(), diagnostics = stderr.writable.getWriter();
+    let exit!: (value: {code:number;signal:null}) => void;
+    const exited = new Promise<{code:number;signal:null}>(resolve => { exit = resolve; });
+    let delivery = Promise.resolve();
+    const process: SandboxDuplexProcess = { stdout:stdout.readable,stderr:stderr.readable,exited,
+      stdin:new WritableStream({write(chunk){
+        const request=JSON.parse(decoder.decode(chunk));
+        delivery=delivery.then(async()=>{
+          if(request.method==="session/new") await diagnostics.write(encoder.encode("diagnostic only\n"));
+          await output.write(encoder.encode(JSON.stringify({jsonrpc:"2.0",id:request.id,result:request.method==="initialize"?{protocolVersion:1,agentCapabilities:{}}:{sessionId:"stderr-drained"}})+"\n"));
+        });
+      }}),kill:async()=>{exit({code:0,signal:null});await delivery;await Promise.all([output.close(),diagnostics.close()]);},
+    };
+    const started=createAcpRuntime({type:"sandbox",sandbox:{spawnDuplexProcess:async()=>process}}).start({agent});
+    const result=await Promise.race([started.then(session=>({session})),new Promise<{session:null}>(resolve=>setTimeout(()=>resolve({session:null}),200))]);
+    if(result.session) await result.session.dispose();
+    expect(result.session?.acpSessionId).toBe("stderr-drained");
+  });
   it("preserves failed exit observation on a blocked stdin write instead of claiming process exit", async () => {
     const child = openStdoutProcess("session/prompt");
     let rejectExit!: (error: Error) => void;

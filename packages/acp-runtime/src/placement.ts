@@ -78,6 +78,16 @@ class PlacementAcpRuntime implements AcpRuntime {
           throw new Error("ACP runtime attempted to spawn more than one child for a session");
         }
         child = await this.spawner.spawn(spec);
+        // The protocol engine consumes stdout only. Always drain diagnostics:
+        // bridge transports multiplex stderr and stdout on one SSE reader, so
+        // an unread stderr write otherwise blocks the next protocol response.
+        // Do not log raw diagnostics (they can contain provider configuration).
+        void (async () => {
+          const reader = child!.stderr.getReader();
+          try { while (!(await reader.read()).done) { /* diagnostic bytes are not protocol */ } }
+          catch { /* stdout/exit observers retain the authoritative failure */ }
+          finally { reader.releaseLock(); }
+        })();
         // The common engine's diagnostic observer assumes exit never rejects.
         // A transport failure is no exit result: leave that observer pending,
         // while placement retains the ORIGINAL rejection for liveness and the
