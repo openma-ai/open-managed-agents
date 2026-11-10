@@ -530,11 +530,15 @@ export class NodeSessionSandbox implements SandboxPort {
     if (!("startManagedProcess" in runtime) || typeof runtime.startManagedProcess !== "function") throw new Error("Sandbox lacks safe native management launch");
     if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost before launch");
     const handle = await (runtime as SandboxPort & SandboxManagedProcessPort).startManagedProcess(spec);
-    if (authority !== this.workAuthority || !await authority.isCurrent()) {
-      await handle.kill("SIGTERM");
-      throw new Error("Work claim lost during launch");
+    // Until returned, this wrapper owns cleanup even when authority lookup throws.
+    let transferred = false;
+    try {
+      if (authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during launch");
+      transferred = true;
+      return handle;
+    } finally {
+      if (!transferred) await handle.kill("SIGKILL");
     }
-    return handle;
   }
   setEnvVars(env: Record<string, string>): Promise<void> { return this.core.setEnvVars(env); }
   spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> { return this.core.spawnDuplexProcess(spec); }

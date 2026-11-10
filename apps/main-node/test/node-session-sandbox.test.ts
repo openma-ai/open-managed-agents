@@ -16,6 +16,17 @@ import {
 } from "../../../packages/control-plane-node/src/lib/node-session-sandbox.js";
 
 const IDLE_MS = 60_000;
+it("retains launch cleanup ownership when the post-launch Work lookup throws", async () => {
+ const t=setup();let launched=false;let killed=0;
+ Object.assign(t.box.sandbox,{startManagedProcess:async()=>{launched=true;return{id:"native",pid:1,getStatus:async()=>"running",kill:async()=>{killed++;}};}});
+ const sandbox=t.sandboxes.build({...context,workAuthority:{
+  attempt:{workspaceId:"ws_1",sessionId:"sess_1",executionId:"work",attemptId:"environment-work-claim:1",ownerId:"env_1",generation:1},
+  isCurrent:async()=>{if(launched)throw new Error("lookup unavailable");return true;},token:async()=>"token",
+ }});
+ await sandbox.open();
+ await expect(sandbox.startManagedProcess({command:"/bin/true",env:{}})).rejects.toThrow("lookup unavailable");
+ expect(killed).toBe(1);
+});
 const context = {
   workspaceId: "ws_1",
   session: { id: "sess_1", resources: [], vaultIds: [], agent: { id: "agent", version: 1 } },

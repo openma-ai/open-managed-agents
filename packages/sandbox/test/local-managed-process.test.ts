@@ -17,6 +17,16 @@ it("destroy waits for a starting native child and forbids launches once closing"
  }finally{await handle?.kill("SIGKILL");await sandbox.destroy();await rm(root,{recursive:true,force:true});}
 });
 
+it("destroy waits for process exit, not descendants holding inherited output pipes",async()=>{
+ const root=await mkdtemp(join(process.cwd(),".local-managed-pipe-"));const sandbox=new LocalSubprocessSandbox({workdir:root});let pid:number|undefined;let closing:Promise<void>|undefined;
+ try {
+  await sandbox.startProcess("sleep 30 & echo $! > descendant.pid");
+  for(let i=0;i<100;i++){try{pid=Number(await readFile(join(root,"descendant.pid"),"utf8"));if(pid)break;}catch{}await new Promise(r=>setTimeout(r,5));}
+  await new Promise(r=>setTimeout(r,100));closing=sandbox.destroy();
+  expect(await Promise.race([closing.then(()=>"closed"),new Promise(r=>setTimeout(()=>r("hung"),400))])).toBe("closed");
+ }finally{if(pid)try{process.kill(pid,"SIGKILL");}catch{}await closing;await sandbox.destroy();await rm(root,{recursive:true,force:true});}
+});
+
 it("failed native startup is observed while destroy drains starting processes",async()=>{
  const root=await mkdtemp(join(process.cwd(),".local-managed-fail-"));const sandbox=new LocalSubprocessSandbox({workdir:root});
  try {

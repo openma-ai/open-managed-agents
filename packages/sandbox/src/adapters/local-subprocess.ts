@@ -259,7 +259,7 @@ export class LocalSubprocessSandbox
     const ready = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     // Register before yielding: destroy owns starting children as well as running ones.
     const id = "managed_" + randomUUID();
-    const proc = new BackgroundProcess(id, child);
+    const proc = new BackgroundProcess(id, child, true);
     this.processes.set(id, proc);
     child.once("close", () => this.processes.delete(id));
     await ready;
@@ -794,26 +794,27 @@ class BackgroundProcess implements ProcessHandle {
   private stderr = "";
   private exitCode: number | null = null;
   private exitSignal: NodeJS.Signals | null = null;
-  private readonly closed: Promise<void>;
+  private readonly exited: Promise<void>;
 
-  constructor(public id: string, child: ChildProcess) {
+  constructor(public id: string, child: ChildProcess, private readonly managed = false) {
     this.child = child;
     this.pid = child.pid ?? 0;
     child.stdout?.on("data", (b: Buffer) => { this.stdout += b.toString(); });
     child.stderr?.on("data", (b: Buffer) => { this.stderr += b.toString(); });
-    this.closed = new Promise(resolve => {
-      child.once("close", (code, signal) => {
-        this.exitCode = code;
-        this.exitSignal = signal as NodeJS.Signals | null;
+    child.on("close", (code, signal) => { this.exitCode = code; this.exitSignal = signal; });
+    this.exited = new Promise(resolve => {
+      child.once("exit", (code, signal) => {
+        if (this.managed) { this.exitCode = code; this.exitSignal = signal; }
         resolve();
       });
+      child.once("error", () => resolve());
     });
   }
 
   async kill(signal: string): Promise<void> {
     try {
       this.child.kill(signal as NodeJS.Signals);
-      if (signal === "SIGKILL") await this.closed;
+      if (this.managed && signal === "SIGKILL" && !await childExitedWithin(this.exited, 2_000)) throw new Error("Managed process exit timed out");
     } catch (err) {
       throw new Error(`kill failed: ${(err as Error).message}`);
     }
