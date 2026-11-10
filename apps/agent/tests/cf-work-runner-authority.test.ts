@@ -154,15 +154,18 @@ it("production Worker webhook rejects unsigned wakeups before poll or dispatch",
  expect(response.status).toBe(403);
 });
 
-it("actual HTTP entry resolves command-only pin from trusted installed inventory, never Agent identity", async () => {
+it.each(["valid", "latest", "duplicate", "relative-command", "invalid-argv", "unselected-invalid"]) ("actual HTTP entry validates complete installed inventory before mutation: %s", async mode => {
  const f=await fixture(); const {WebCryptoAesGcm}=await import("@open-managed-agents/integrations-adapters-cf"); const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox");
  await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"business-agent",version:9,openma:{harness:"acp-sandbox",acp:{agent:{command:"/opt/agents/fixed",args:["--acp"]}}}}}),f.delivery.sessionId).run();
  const secret="inventory-root-012345678901234567890"; const cipher=new WebCryptoAesGcm(secret,"managed.environment-work.secret"); const stored=await f.work.find(f.delivery); await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
- let launched:any; setCloudflareSandboxForTest({async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(_c:any,o:any){launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+ let launched:any; let mutations=0; setCloudflareSandboxForTest({async setOutboundHandler(){mutations++;},async setOutboundByHost(){mutations++;},async restrictOutboundToHosts(){mutations++;},async startProcess(_c:any,o:any){mutations++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
  try {
   const app=(await import("../src/index")).default;
-  const response=await app.fetch(new Request("https://agent.test/__internal/work/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...f.delivery,selection:{harness:{id:"forged",version:"99"}}})}),{...env,PLATFORM_ROOT_SECRET:secret,PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner",OPENMA_ACP_HARNESSES:JSON.stringify([{id:"installed-release",version:"2.4.6",command:"/opt/agents/fixed",args:["--acp"]}])} as never);
-  expect(response.status).toBe(200);expect(launched.OPENMA_HARNESS_ID).toBe("installed-release");expect(launched.OPENMA_HARNESS_VERSION).toBe("2.4.6");expect(JSON.parse(launched.OPENMA_ACP_HARNESSES)[0].command).toBe("/opt/agents/fixed");
+  const item={id:"installed-release",version:"2.4.6",command:"/opt/agents/fixed",args:["--acp"]};
+  const inventory=mode==="duplicate"?[item,{...item,command:"/opt/other"}]:mode==="unselected-invalid"?[item,{...item,id:"other",args:["bad\0arg"]}]:[{...item,...(mode==="latest"?{version:"latest"}:mode==="relative-command"?{command:"relative"}:mode==="invalid-argv"?{args:[1]}:{})}];
+  const response=await app.fetch(new Request("https://agent.test/__internal/work/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...f.delivery,selection:{harness:{id:"forged",version:"99"}}})}),{...env,PLATFORM_ROOT_SECRET:secret,PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner",OPENMA_ACP_HARNESSES:JSON.stringify(inventory)} as never);
+  if(mode==="valid"){expect(response.status).toBe(200);expect(launched.OPENMA_HARNESS_ID).toBe("installed-release");expect(launched.OPENMA_HARNESS_VERSION).toBe("2.4.6");expect(JSON.parse(launched.OPENMA_ACP_HARNESSES)[0].command).toBe("/opt/agents/fixed");}
+  else{expect(response.status).toBe(409);expect(mutations).toBe(0);expect(launched).toBeUndefined();}
  } finally {setCloudflareSandboxForTest(undefined);}
 });
 
