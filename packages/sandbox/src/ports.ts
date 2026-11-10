@@ -23,6 +23,19 @@ export interface ProcessHandle {
   getStatus(): Promise<string>;
 }
 
+/** Native management launch. env replaces inherited/image/session env before
+ * executable startup. Reject if unsupported; no stdio, retries or Work lease. */
+export interface SandboxManagedProcessSpec {
+  command: string;
+  args?: readonly string[];
+  env: Readonly<Record<string, string>>;
+  cwd?: string;
+}
+export type SandboxManagedProcessHandle = Pick<ProcessHandle, "id" | "pid" | "kill" | "getStatus">;
+export interface SandboxManagedProcessPort {
+  startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle>;
+}
+
 /** Structured command used when a caller needs a live stdio channel instead
  * of the log-oriented `startProcess` handle. Kept in the sandbox package so
  * protocol runtimes (ACP today, other harnesses later) do not leak their own
