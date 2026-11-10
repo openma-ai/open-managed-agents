@@ -42,5 +42,7 @@ export async function acpSandboxExecutionEnv(env: MainBinding, fence: SessionExe
     const cause = result.cause === undefined ? undefined : Object.assign(new Error(result.cause.name), result.cause);
     throw Object.assign(new Error(result.message, { cause }), { phase: result.phase, code: result.code });
   }
-  return { ANTHROPIC_API_KEY: "", ...result.channels };
+  const channels = result.channels;
+  if (!channels?.mcpProxy || !channels.hostedInference?.model || channels.mcpProxy.sessionsToken !== sessionsToken || channels.hostedInference.sessionsToken !== sessionsToken || typeof channels.mcpProxy.gatewayBaseUrl !== "string" || !channels.mcpProxy.gatewayBaseUrl || typeof channels.hostedInference.gatewayBaseUrl !== "string" || !channels.hostedInference.gatewayBaseUrl || typeof channels.hostedInference.model.providerId !== "string" || !channels.hostedInference.model.providerId) throw new Error("Invalid ACP sandbox channel authority response");
+  return { ANTHROPIC_API_KEY: "", ...channels };
 }

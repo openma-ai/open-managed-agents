@@ -31,8 +31,8 @@ it.each(["configuration", "session_lookup", "model_lookup", "token_validation"])
   }, "acp-sandbox")).rejects.toMatchObject({ message: "safe channel refusal", phase, code: "unavailable", cause: { name: "ChannelAuthorityUnavailable", code: "unavailable" } });
 });
 
-it("malformed channels RPC response fails closed instead of empty configuration", async () => {
-  const env = { MAIN_MCP: { issueSandboxToken: async () => ({ type: "issued", token: "token" }), managedAcpExecutionChannels: async () => ({ type: "unknown" }) } };
+it.each([{ type: "unknown" }, { type: "ready" }, { type: "ready", channels: {} }])("malformed channels RPC response fails closed instead of empty configuration: %j", async result => {
+  const env = { MAIN_MCP: { issueSandboxToken: async () => ({ type: "issued", token: "token" }), managedAcpExecutionChannels: async () => result } };
   await expect(acpSandboxExecutionEnv(env as never, { workspaceId: "ws", sessionId: "channel-malformed", executionId: "e", attemptId: "a", ownerId: "o", generation: 1 }, "acp-sandbox")).rejects.toThrow("Invalid ACP sandbox channel authority response");
 });
 
