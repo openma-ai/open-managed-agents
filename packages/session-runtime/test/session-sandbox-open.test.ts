@@ -100,11 +100,31 @@ describe("Session sandbox recovery order (design §0.0b A.4)", () => {
     expect(h.log).not.toContain("acquire");
   });
 
-  it("the latest snapshot gone too: SandboxRestoreError, never an empty sandbox; the record forgets the handle", async () => {
-    const h = fakeSessionSandbox({ saved: paused(), attachGone: true });
-    await expect(h.sandbox.exec("x")).rejects.toBeInstanceOf(SandboxRestoreError);
-    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0"]);
-    expect(h.stored()).toMatchObject({ phase: "lost", latestSnapshot: latest });
+  it.each(["hit", "miss"] as const)("unavailable Session snapshot falls back through prepared environment: %s", async preparedBase => {
+    const h = fakeSessionSandbox({saved: paused(), attachGone: true, preparedBase});
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0", "prepared:" + preparedBase, "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
+    expect(h.warnings.some(w => w.includes("workspace") && w.includes("lost"))).toBe(true);
+  });
+
+  it("prepared environment failure is explicit after Session snapshots are gone", async () => {
+    const h = fakeSessionSandbox({saved: paused(), attachGone: true, preparedBase: "fail"});
+    await expect(h.sandbox.exec("x")).rejects.toThrow("Environment preparation failed");
+    expect(h.log.at(-1)).toBe("prepared:fail");
+  });
+
+  it("live original sandbox wins before any prepared fallback", async () => {
+    const h = fakeSessionSandbox({saved: runningRecord("r0"), preparedBase: "fail"});
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "egress.attach", "exec:x"]);
+  });
+
+  it("a gone Session snapshot uses the initial Environment preparation path", async () => {
+    const h = fakeSessionSandbox({saved: paused(), attachGone: true});
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "resume:snap-0", "acquire", "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
   });
 
   it("loss before the first snapshot recreates through the initial path, warns and is not restored", async () => {

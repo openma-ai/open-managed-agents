@@ -272,11 +272,6 @@ async function startNew<R>(
     else state.options.warn(`workspace_restore_failed ref=${ref.ref} kind=${ref.kind} elapsed_ms=${state.now() - started} error=gone`);
     return opened;
   };
-  // The record no longer names a sandbox (only while this owner holds the Session).
-  const giveUp = async () => {
-    if (record.phase !== "running" && record.phase !== "paused") return;
-    if (await state.isCurrent(state.execution()).catch(() => false)) await state.apply(record, { type: "lose" }).catch(() => null);
-  };
   // A pause in place is gone with the sandbox; one that is a snapshot is the
   // latest snapshot (or older than the host's), tried below.
   if ("pauseRef" in record && record.pauseRef !== undefined && !isSnapshotRef(record.pauseRef)) {
@@ -289,11 +284,10 @@ async function startNew<R>(
       throw new SandboxRestoreError(`The Session latest snapshot ${snapshot.ref} could not be started: ${errorText(error)}`, { cause: error });
     });
     if (restored !== "gone") return { opened: restored, restored: true, publish: (handle, at) => ({ type: "restoreFromSnapshot", handle, at, ref: snapshot }) };
-    await giveUp();
-    throw new SandboxRestoreError(`The Session's sandbox is gone and its latest snapshot ${snapshot.ref} could not be started`);
+    await state.options.warn(`workspace_restore_fallback ref=${snapshot.ref} kind=snapshot: Session snapshot unavailable; restoring prepared Environment; Session workspace changes may be lost`);
   }
   const acquired = await firstCreate(state, record, plan, signal);
-  return { opened: acquired, restored: false, publish: (handle, at) => ({ type: "acquire", handle, at }) };
+  return { opened: acquired, restored: false, publish: (handle, at) => ({ type: "acquire", handle, at, ...(snapshot === null ? {} : {preparedFallback: true as const}) }) };
 }
 
 /** Acquire the Session's sandbox ahead of its first execution, once. A

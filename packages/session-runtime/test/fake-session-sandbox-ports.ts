@@ -25,6 +25,7 @@ export function fakeSessionSandbox(opts: {
   attachGone?: boolean;
   attachErrors?: Error[];
   resumeErrors?: Error[];
+  preparedBase?: "hit" | "miss" | "fail";
   markerError?: Error;
   resumeFails?: string[];
   storageDetach?: () => Promise<void>;
@@ -124,6 +125,14 @@ export function fakeSessionSandbox(opts: {
       from: { image: "img" }, egress: null, stores, outputs: { bindingId: "o", mountPath: "/mnt/session/outputs" }, idleMs: 300_000, labels: { workspaceId: "ws", sessionId: "sess" },
     }),
     resumeRef: async () => null,
+    ...(opts.preparedBase === undefined ? {} : {environmentCache: {
+      acquire: async () => {
+        log.push("prepared:" + opts.preparedBase);
+        if (opts.preparedBase === "fail") throw new Error("Environment preparation failed");
+        return {runtime: {}, handle: {provider: "fake", runtimeId: "prepared"}};
+      },
+      prepared: () => {},
+    }}),
     warn: (message) => { warnings.push(message); },
     outputDurability: () => null,
     egressRenewMs: null,
