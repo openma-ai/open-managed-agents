@@ -37,19 +37,25 @@ export interface OrderedSessionEvent {
   consumedByExecutionId?: string;
 }
 
+export interface SessionEventEnvironmentWorkSource {
+  workId: string;
+  generation: number;
+}
+
 /** Storage metadata is internal and must never become a public Managed event field. */
 export function encodeSessionEventDocument(
   event: SessionEventView,
   position: SessionEventSourcePosition,
   executionId?: string,
   consumedByExecutionId?: string,
+  environmentWork?: SessionEventEnvironmentWorkSource,
 ): string {
   if (!Number.isSafeInteger(position.revision) || position.revision < 1 || !Number.isSafeInteger(position.index) || position.index < 0) {
     throw new Error('Invalid session event source position');
   }
   return JSON.stringify({
     ...event,
-    source_position: { ...position, ...(executionId === undefined ? {} : { execution_id: executionId }), ...(consumedByExecutionId === undefined ? {} : { consumed_by_execution_id: consumedByExecutionId }) },
+    source_position: { ...position, ...(executionId === undefined ? {} : { execution_id: executionId }), ...(consumedByExecutionId === undefined ? {} : { consumed_by_execution_id: consumedByExecutionId }), ...(environmentWork === undefined ? {} : { environment_work: environmentWork }) },
   });
 }
 
@@ -58,9 +64,10 @@ export function decodeSessionEventDocument(document: string): {
   position?: SessionEventSourcePosition;
   executionId?: string;
   consumedByExecutionId?: string;
+  environmentWork?: SessionEventEnvironmentWorkSource;
 } {
   const { source_position: source, ...event } = JSON.parse(document) as SessionEventView & {
-    source_position?: { revision?: unknown; index?: unknown; execution_id?: unknown; consumed_by_execution_id?: unknown };
+    source_position?: { revision?: unknown; index?: unknown; execution_id?: unknown; consumed_by_execution_id?: unknown; environment_work?: { workId?: unknown; generation?: unknown } };
   };
   const valid = source !== null && typeof source === 'object' &&
     typeof source.revision === 'number' && Number.isSafeInteger(source.revision) && source.revision >= 1 &&
@@ -70,6 +77,9 @@ export function decodeSessionEventDocument(document: string): {
     event: event as SessionEventView,
     ...(typeof source.consumed_by_execution_id === 'string' && source.consumed_by_execution_id.length > 0 ? { consumedByExecutionId: source.consumed_by_execution_id } : {}),
     position: { revision: source.revision as number, index: source.index as number },
+    ...(typeof source.environment_work?.workId === "string" && source.environment_work.workId.length > 0 &&
+      Number.isSafeInteger(source.environment_work.generation) && Number(source.environment_work.generation) > 0
+      ? { environmentWork: { workId: source.environment_work.workId, generation: Number(source.environment_work.generation) } } : {}),
     ...(typeof source.execution_id === 'string' && source.execution_id.length > 0 ? { executionId: source.execution_id } : {}),
   };
 }

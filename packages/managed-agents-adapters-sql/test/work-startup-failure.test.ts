@@ -118,3 +118,108 @@ it("rolls back terminal events and leaves Work active when the final Session CAS
   expect(await sql.prepare("SELECT state FROM managed_environment_work").first()).toEqual({state:"active"});
   expect(await sql.prepare("SELECT count(*) AS n FROM managed_session_events").first()).toEqual({n:0});
 });
+
+import {createNodeManagedAcpWorkItemRunner} from '../../harness-runtime-acp/src/node-work-item';
+import {createManagedHarnessHttpControlChannel} from '../../harness-runtime-acp/src/http-control';
+it('settles startup failure after this Work projected running, without relying on heartbeat survival',async()=>{
+ const {sql,persistence,input}=await fixture();let sleepAborted=false;let stops=0;const statuses:number[]=[];
+ const runner=createNodeManagedAcpWorkItemRunner({environment:{ANTHROPIC_ENVIRONMENT_ID:'env',ANTHROPIC_SESSION_ID:'session',ANTHROPIC_WORK_ID:'work',OPENMA_HARNESS_ID:'acp',ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:'token',api_base_url:'https://test'})).toString('base64url')},
+ lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:'beat',lease_extended:true,state:'running',ttl_seconds:90}),stop:async()=>{stops++;return {}; }},
+ scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_,reject)=>signal.addEventListener('abort',()=>{sleepAborted=true;reject(signal.reason);},{once:true}))},
+ fetch:async(raw,init)=>{const req=new Request(raw,init);if(req.url.endsWith('startup-boundary'))return Response.json({revision:await persistence.captureStartupBoundary(input.claim)});const body=await req.json() as {revision:number;processedAt:string};const result=await persistence.settleStartupFailure({claim:input.claim,...body});const status=result==='committed'?200:409;statuses.push(status);return Response.json({type:result},{status});},
+ supervisorApp:{serve:async()=>{},resolveHarness:async()=>({start:async()=>{const current=(await persistence.findCurrent(input.claim))!;const projected=await persistence.project({...input.claim,expectedRevision:current.revision,environmentWorkFence:input.claim,next:current.session,events:[{id:'own-running',type:'session.status_running',processedAt:input.processedAt}]});expect(projected.type).toBe('projected');throw new Error('start rejected after running');}})}});
+ await expect(runner.run()).rejects.toThrow('start rejected after running');
+ const session=await sql.prepare('SELECT status,revision FROM managed_sessions').first();const work=await sql.prepare('SELECT state FROM managed_environment_work').first();const events=await sql.prepare('SELECT type FROM managed_session_events').all();
+ expect(statuses).toEqual([200]);expect(session).toEqual({status:'idle',revision:5});expect(work).toEqual({state:'stopped'});expect(events.results).toEqual([{type:'session.status_running'},{type:'session.error'},{type:'session.status_idle'}]);expect(sleepAborted).toBe(true);expect(stops).toBe(0);
+});
+it('probe: successful settlement leaves pre-boundary queued input null and blocks real common next startup',async()=>{
+ const {sql,persistence,input}=await fixture();
+ await sql.prepare("INSERT INTO managed_session_events VALUES ('ws','session',NULL,'queued','user.message',?,?)").bind(JSON.stringify({id:'queued',type:'user.message',content:[{type:'text',text:'original'}],processedAt:null}),Date.now()).run();
+ expect(await persistence.captureStartupBoundary(input.claim)).toBe(3);expect(await persistence.settleStartupFailure(input)).toBe('committed');
+ const row=await sql.prepare("SELECT document FROM managed_session_events WHERE id='queued'").first<{document:string}>();expect(JSON.parse(row!.document).processedAt).toBe(null);
+ const channel=createManagedHarnessHttpControlChannel({scope:{workspaceId:'ws',environmentId:'env',sessionId:'session',workId:'next-work'},harness:{id:'acp',version:'1'},workspacePath:'/workspace',apiBaseUrl:'https://test',sessionsToken:'token',fetch:async(raw)=>String(raw).includes('/events')?Response.json({data:[{id:'queued',type:'user.message',processed_at:null,content:[{type:'text',text:'original'}]},{id:'idle',type:'session.status_idle',processed_at:input.processedAt},{id:'new',type:'user.message',processed_at:null,content:[{type:'text',text:'new'}]}],next_page:null}):Response.json({id:'session',environment_id:'env',status:'running',agent:{}})});
+ const iter=channel.commands(new AbortController().signal)[Symbol.asyncIterator]();await expect(iter.next()).rejects.toThrow('Session event is invalid');await channel.close();
+});
+
+for (const mutation of ["accepted_input", "foreign_running", "unattributed_running", "revision_gap"] as const) {
+  it("does not cross " + mutation + " after own startup running", async () => {
+    const {sql,persistence,input} = await fixture();
+    const current = (await persistence.findCurrent(input.claim))!;
+    expect((await persistence.project({...input.claim,expectedRevision:3,environmentWorkFence:input.claim,next:current.session,
+      events:[{id:"own-running",type:"session.status_running",processedAt:input.processedAt}]})).type).toBe("projected");
+    if (mutation === "accepted_input") {
+      await sql.prepare("INSERT INTO managed_session_events VALUES ('ws','session',NULL,'later','user.message',?,NULL)")
+        .bind(JSON.stringify({id:"later",type:"user.message",content:[],processedAt:null,source_position:{revision:5,index:0}})).run();
+      await sql.exec("UPDATE managed_sessions SET revision = 5");
+    } else if (mutation === "revision_gap") {
+      await sql.exec("UPDATE managed_sessions SET revision = 5");
+    } else {
+      await sql.exec(mutation === "foreign_running"
+        ? "UPDATE managed_session_events SET document = json_set(document, '$.source_position.environment_work.generation', 2)"
+        : "UPDATE managed_session_events SET document = json_remove(document, '$.source_position.environment_work')");
+    }
+    expect(await persistence.settleStartupFailure(input)).toBe("rejected");
+    expect(await sql.prepare("SELECT state FROM managed_environment_work").first()).toEqual({state:"active"});
+    expect(await sql.prepare("SELECT count(*) AS n FROM managed_session_events WHERE type = 'session.status_idle'").first()).toEqual({n:0});
+    if (mutation === "accepted_input") expect(await sql.prepare("SELECT processed_at FROM managed_session_events WHERE id = 'later'").first()).toEqual({processed_at:null});
+  });
+}
+
+it("allows pre-boundary positioned queued input to remain unstamped after own startup running", async () => {
+  const {sql,persistence,input} = await fixture();
+  await sql.prepare("INSERT INTO managed_session_events VALUES ('ws','session',NULL,'original','user.message',?,0)")
+    .bind(JSON.stringify({id:"original",type:"user.message",content:[],processedAt:null,source_position:{revision:3,index:0}})).run();
+  const current = (await persistence.findCurrent(input.claim))!;
+  await persistence.project({...input.claim,expectedRevision:3,environmentWorkFence:input.claim,next:current.session,
+    events:[{id:"own-running",type:"session.status_running",processedAt:input.processedAt}]});
+  expect(await persistence.settleStartupFailure(input)).toBe("committed");
+  expect(await persistence.settleStartupFailure(input)).toBe("committed");
+  expect(await persistence.settleStartupFailure({...input,processedAt:new Date(Date.parse(input.processedAt)+1).toISOString()})).toBe("rejected");
+  const row = await sql.prepare("SELECT document FROM managed_session_events WHERE id = 'original'").first<{document:string}>();
+  expect(JSON.parse(row!.document).processedAt).toBe(null);
+});
+
+it("does not cross same-claim non-startup output", async () => {
+  const {persistence,input} = await fixture();
+  const current = (await persistence.findCurrent(input.claim))!;
+  await persistence.project({...input.claim,expectedRevision:3,environmentWorkFence:input.claim,next:current.session,
+    events:[{id:"output",type:"agent.message",content:[{type:"text",text:"side effect"}],processedAt:input.processedAt}]});
+  expect(await persistence.settleStartupFailure(input)).toBe("rejected");
+});
+
+it("rejects an input committed after same-claim source validation but before final CAS", async () => {
+  const {sql,persistence,input} = await fixture();
+  const current = (await persistence.findCurrent(input.claim))!;
+  await persistence.project({...input.claim,expectedRevision:3,environmentWorkFence:input.claim,next:current.session,
+    events:[{id:"own-running",type:"session.status_running",processedAt:input.processedAt}]});
+  const raced = new SqlSessionRuntimeProjectionPersistence({prepare:text=>sql.prepare(text),exec:text=>sql.exec(text),batch:stmts=>sql.batch(stmts),
+    batchChecked: async (stmts,validate) => {
+      await sql.exec("UPDATE managed_sessions SET revision = 5");
+      return sql.batchChecked!(stmts,validate);
+    },
+  });
+  expect(await raced.settleStartupFailure(input)).toBe("rejected");
+  expect(await sql.prepare("SELECT state FROM managed_environment_work").first()).toEqual({state:"active"});
+  expect(await sql.prepare("SELECT count(*) AS n FROM managed_session_events WHERE type = 'session.status_idle'").first()).toEqual({n:0});
+});
+
+for (const mutation of ["reclaim", "expired", "new_work", "work_cas", "session_cas"] as const) {
+  it("preserves " + mutation + " guard after accepting own startup running source", async () => {
+    const {sql,persistence,input} = await fixture();
+    const current = (await persistence.findCurrent(input.claim))!;
+    await persistence.project({...input.claim,expectedRevision:3,environmentWorkFence:input.claim,next:current.session,
+      events:[{id:"own-running",type:"session.status_running",processedAt:input.processedAt}]});
+    const statement = {
+      reclaim:"UPDATE managed_environment_work SET claim_generation = 2,revision = 5",
+      expired:"UPDATE managed_environment_work SET claim_at = 0",
+      new_work:"INSERT INTO managed_environment_work SELECT workspace_id,environment_id,'new',session_id,'queued',0,NULL,90,1,'{}',NULL,1 FROM managed_environment_work",
+      work_cas:"CREATE TRIGGER refuse_stop BEFORE UPDATE ON managed_environment_work WHEN NEW.state = 'stopped' BEGIN SELECT RAISE(IGNORE); END",
+      session_cas:"CREATE TRIGGER refuse_idle BEFORE UPDATE ON managed_sessions WHEN NEW.status = 'idle' BEGIN SELECT RAISE(IGNORE); END",
+    }[mutation];
+    await sql.exec(statement);
+    expect(await persistence.settleStartupFailure(input)).toBe("rejected");
+    expect(await sql.prepare("SELECT status,revision FROM managed_sessions").first()).toEqual({status:"running",revision:4});
+    expect(await sql.prepare("SELECT state FROM managed_environment_work WHERE id = 'work'").first()).toEqual({state:"active"});
+    expect(await sql.prepare("SELECT count(*) AS n FROM managed_session_events").first()).toEqual({n:1});
+  });
+}

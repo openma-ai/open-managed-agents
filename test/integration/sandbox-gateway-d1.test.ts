@@ -285,13 +285,14 @@ it("actual CF HTTP commits Work startup failure and allows only exact stopped re
   await sql.prepare("INSERT INTO managed_environment_work (workspace_id,environment_id,id,session_id,document,sealed_secret,claim_at,claim_generation,heartbeat_ttl_seconds,revision,state,created_at) VALUES ('default','env',?,?,?,?,?,1,90,4,'active',?)").bind(workId,sessionId,JSON.stringify({id:workId,environmentId:'env',data:{type:'session',id:sessionId},state:'active'}),secret,Date.now(),Date.now()).run();
   const send = (action,body,bearer=token) => app.fetch(new Request("https://oma.example/v1/oma/sessions/"+sessionId+"/"+action,{method:"POST",headers:{authorization:"Bearer "+bearer,"content-type":"application/json"},body:JSON.stringify(body)}),testEnv);
   expect((await send("startup-boundary",{})).status).toBe(200);
+  expect((await send("runtime-events",{events:[{id:"own-running",type:"session.status_running",processed_at:now}]})).status).toBe(200);
   expect((await send("startup-failed",{revision:3,processedAt:now},"admin")).status).toBe(401);
   expect((await send("startup-failed",{revision:3,processedAt:now})).status).toBe(200);
   expect((await send("startup-failed",{revision:3,processedAt:now})).status).toBe(200);
   expect((await send("startup-failed",{revision:4,processedAt:now})).status).toBe(409);
   expect((await send("startup-boundary",{})).status).toBe(409);
   expect(await sql.prepare("SELECT state FROM managed_environment_work WHERE id = ?").bind(workId).first()).toEqual({state:"stopped"});
-  expect(await sql.prepare("SELECT status,revision FROM managed_sessions WHERE id = ?").bind(sessionId).first()).toEqual({status:"idle",revision:4});
+  expect(await sql.prepare("SELECT status,revision FROM managed_sessions WHERE id = ?").bind(sessionId).first()).toEqual({status:"idle",revision:5});
   const read = await app.fetch(new Request("https://oma.example/v1/sessions/"+sessionId,{headers:{authorization:"Bearer "+token}}),testEnv);
   expect(read.status).toBe(401);
 });

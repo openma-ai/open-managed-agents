@@ -30,12 +30,13 @@ it("actual Node HTTP atomically settles startup failure, fences later inputs and
     const a = await seed("startup_http");
     const send = (sessionId:string,action:string,body:unknown,bearer=a.token) => cp.fetch(new Request("https://control.test/v1/oma/sessions/"+sessionId+"/"+action,{method:"POST",headers:{authorization:"Bearer "+bearer,"content-type":"application/json"},body:JSON.stringify(body)}));
     expect((await send("startup_http","startup-boundary",{})).status).toBe(200);
+    expect((await send("startup_http","runtime-events",{events:[{id:"own-running",type:"session.status_running",processed_at:now}]})).status).toBe(200);
     expect((await send("startup_http","startup-failed",{revision:3,processedAt:now},"admin")).status).toBe(401);
     expect((await send("startup_http","startup-failed",{revision:3,processedAt:now})).status).toBe(200);
     expect((await send("startup_http","startup-failed",{revision:3,processedAt:now})).status).toBe(200);
     expect((await send("startup_http","startup-failed",{revision:4,processedAt:now})).status).toBe(409);
     expect(await sql.prepare("SELECT state FROM managed_environment_work WHERE id = ?").bind(a.workId).first()).toEqual({state:"stopped"});
-    expect(await sql.prepare("SELECT status,revision FROM managed_sessions WHERE id = 'startup_http'").first()).toEqual({status:"idle",revision:4});
+    expect(await sql.prepare("SELECT status,revision FROM managed_sessions WHERE id = 'startup_http'").first()).toEqual({status:"idle",revision:5});
     await sql.exec("DELETE FROM managed_environments WHERE workspace_id = 'default' AND id = 'env'");
     const b = await seed("later_input");
     expect((await send("later_input","startup-boundary",{},b.token)).status).toBe(200);

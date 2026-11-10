@@ -86,7 +86,8 @@ export class SqlSessionRuntimeProjectionPersistence
   async captureStartupBoundary(claim: EnvironmentWorkExecutionFence): Promise<number | null> {
     const current = await this.findCurrent(claim);
     if (current === null || current.session.status !== "running") return null;
-    // A later input/projection invalidates this boundary at settlement.
+    // Later inputs invalidate this boundary. Only proven same-claim startup
+    // running facts may advance it at settlement.
     const active = await this.isFenceActive({ ...claim, expectedRevision: current.revision,
       next: current.session, events: [], environmentWorkFence: claim }, this.#now().getTime());
     return active ? current.revision : null;
@@ -112,8 +113,28 @@ export class SqlSessionRuntimeProjectionPersistence
       return "committed";
     }
     const current = await this.findCurrent(claim);
-    if (current === null || current.revision !== input.revision || current.session.status !== "running") return "rejected";
-    const result = await this.projectState({ ...claim, expectedRevision: input.revision,
+    if (current === null || current.revision < input.revision || current.session.status !== "running") return "rejected";
+    if (current.revision > input.revision) {
+      const rows = await this.client.prepare(
+        "SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ?",
+      ).bind(claim.workspaceId, claim.sessionId).all<{ document: string }>();
+      const revisions = new Set<number>();
+      for (const row of rows.results ?? []) {
+        const source = decodeSessionEventDocument(row.document);
+        // Legacy/unpositioned facts cannot prove they preceded the boundary.
+        if (source.position === undefined) return "rejected";
+        if (source.position.revision <= input.revision) continue;
+        if (source.position.revision > current.revision ||
+          source.environmentWork?.workId !== claim.workId || source.environmentWork.generation !== claim.generation ||
+          source.consumedByExecutionId !== undefined || source.event.type !== "session.status_running") return "rejected";
+        revisions.add(source.position.revision);
+      }
+      // Every intervening Session revision must be explained by this claim's
+      // startup running facts, not merely a latest running status. CAS below
+      // still rejects a new input/projection after this read.
+      if (revisions.size !== current.revision - input.revision) return "rejected";
+    }
+    const result = await this.projectState({ ...claim, expectedRevision: current.revision,
       environmentWorkFence: claim, events,
       next: { ...current.session, status: "idle", updatedAt: input.processedAt > current.session.updatedAt ? input.processedAt : current.session.updatedAt },
     }, { workRevision: Number(work.revision), workDocument: work.document, processedAt: input.processedAt });
@@ -255,7 +276,8 @@ export class SqlSessionRuntimeProjectionPersistence
           "sessionThreadId" in event ? event.sessionThreadId ?? null : null,
           event.id,
           event.type,
-          encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }, fence?.executionId),
+          encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }, fence?.executionId, undefined,
+            environmentWorkFence === undefined ? undefined : { workId: environmentWorkFence.workId, generation: environmentWorkFence.generation }),
           timestamp(event.processedAt),
           input.workspaceId,
           input.sessionId,
