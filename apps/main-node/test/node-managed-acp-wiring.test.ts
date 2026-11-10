@@ -22,10 +22,12 @@ const native = process.env.CLAUDE_CONFIG_DIR + '/projects/transcript.json';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 readline.createInterface({ input: process.stdin }).on('line', async line => {
   const msg = JSON.parse(line); const reply = result => send({ jsonrpc: '2.0', id: msg.id, result });
-  if (msg.method === 'initialize') return reply({ protocolVersion: 1, agentInfo:{name:'@agentclientprotocol/claude-agent-acp',version:'0.94.0'}, agentCapabilities: { sessionCapabilities: { resume: {} }, mcpCapabilities: { http: true } } });
+  if (msg.method === 'initialize') return reply({ protocolVersion: 1, agentInfo:{name:'@agentclientprotocol/claude-agent-acp',version:'0.94.0'}, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} }, mcpCapabilities: { http: true } } });
   if (msg.method === 'session/new') { servers = msg.params.mcpServers; return reply({ sessionId: 'fake-acp',configOptions }); }
   if(msg.method==='session/set_config_option'){configOptions[0].currentValue=msg.params.value;return reply({configOptions});}
-  if (msg.method === 'session/resume') { servers = msg.params.mcpServers; mode = 'resumed:' + fs.readFileSync(native, 'utf8'); return reply({}); }
+  // Official claude-agent-acp 0.94.0 resume/load return the complete setup
+  // config (getOrCreateSession/createSessionWhileReplaying), not an empty ACK.
+  if (msg.method === 'session/resume' || msg.method === 'session/load') { servers = msg.params.mcpServers; mode = 'resumed:' + fs.readFileSync(native, 'utf8'); return reply({ sessionId: msg.params.sessionId, configOptions }); }
   if (msg.method === 'session/prompt') {
     try {
       fs.appendFileSync('prompts.jsonl', JSON.stringify(msg.params.prompt) + '\n');
