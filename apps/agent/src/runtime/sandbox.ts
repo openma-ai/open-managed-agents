@@ -668,6 +668,35 @@ export class CloudflareSandbox
     }
   }
 
+  /** Start a preinstalled Work runner only. Work HTTP owns ACK/heartbeat and
+   * execution IO; this management handle cannot carry ACP frames or logs.
+   * Caller owns dispatch identity/recovery: a launch failure is never retried. */
+  async startWorkRunner(input: {
+    command: string;
+    controlPlaneOrigin: string;
+    env: Record<string, string>;
+  }): Promise<Pick<ProcessHandle, "id" | "pid" | "kill" | "getStatus">> {
+    const environment = { ...input.env };
+    const command = input.command;
+    const origin = new URL(input.controlPlaneOrigin);
+    if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== input.controlPlaneOrigin || origin.username || origin.password) throw new TypeError("Work runner requires a control-plane origin");
+    if (!/^\/[A-Za-z0-9_./-]+$/.test(command) || command.split("/").includes("..")) throw new TypeError("Work runner command must be an installed absolute path");
+    const allowed = new Set(["ANTHROPIC_BASE_URL", "ANTHROPIC_ENVIRONMENT_ID", "ANTHROPIC_SESSION_ID", "ANTHROPIC_WORK_ID", "ANTHROPIC_WORK_SECRET", "OPENMA_HARNESS_ID", "OPENMA_HARNESS_VERSION", "OPENMA_WORKSPACE_ID", "OPENMA_OUTPUT_PATH"]);
+    for (const [key, value] of Object.entries(environment)) {
+      if (!allowed.has(key) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Work runner bootstrap environment is invalid");
+    }
+    for (const key of ["ANTHROPIC_ENVIRONMENT_ID", "ANTHROPIC_SESSION_ID", "ANTHROPIC_WORK_ID", "ANTHROPIC_WORK_SECRET", "OPENMA_HARNESS_ID", "OPENMA_WORKSPACE_ID"]) {
+      if (!environment[key]?.trim()) throw new TypeError("Work runner scope is incomplete");
+    }
+    if (environment.ANTHROPIC_BASE_URL !== origin.origin || environment.ANTHROPIC_SESSION_ID !== this.sessionId) throw new TypeError("Work runner scope differs from its sandbox");
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.restrictOutboundToHosts !== "function" || typeof sandbox.startProcess !== "function") throw new Error("Work runner requires network enforcement and managed process launch");
+    await sandbox.restrictOutboundToHosts([origin.hostname]);
+    const process = await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace" });
+    if (!process?.id || typeof process.kill !== "function" || typeof process.getStatus !== "function") throw new Error("Work runner dispatch is unconfirmed");
+    return { id: process.id, pid: process.pid, kill: (signal: string) => process.kill(signal), getStatus: () => process.getStatus() };
+  }
+
   async startProcess(command: string): Promise<ProcessHandle | null> {
     const sandbox = await this.getSandbox();
     if (typeof sandbox.startProcess !== "function") return null;
