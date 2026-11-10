@@ -207,6 +207,44 @@ describe("Cloudflare ACP execution channels", () => {
     }
   });
 
+  it("actual CF HTTP composition accepts only current all-scope Work channels without minting a token", async () => {
+    const a = await acpAttempt("work_http");
+    const { default: app } = await import("../../apps/main/src/index");
+    const sql = sqlClientFromD1(env.MAIN_DB);
+    const { createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef } = await import("../../packages/sandbox-gateway-sql/src/index");
+    const { issueSandboxToken } = await import("../../packages/sandbox-gateway/src/index");
+    const workId = "work_http_" + runId, environmentId = "env_" + a.sessionId;
+    await sql.prepare("INSERT INTO managed_environment_work (workspace_id, environment_id, id, session_id, document, sealed_secret, claim_at, claim_generation, heartbeat_ttl_seconds, revision, state, created_at) VALUES (?, ?, ?, ?, '{}', 'unused', ?, 1, 90, 1, 'active', ?)").bind("default", environmentId, workId, a.sessionId, Date.now(), Date.now()).run();
+    const fence = environmentWorkSandboxTokenRef({ workspaceId: "default", environmentId, sessionId: a.sessionId, workId, generation: 1 });
+    const store = createSqlEnvironmentWorkSandboxTokenStore(sql);
+    const token = await issueSandboxToken(store, fence, { scope: "all" });
+    const call = (bearer: string, sessionId = a.sessionId) => app.fetch(new Request("https://oma.example/v1/oma/sessions/" + sessionId + "/execution-channels", { method: "POST", headers: { authorization: "Bearer " + bearer, "content-type": "application/json" }, body: "{}" }), a.env);
+    const hashes = async () => (await sql.prepare("SELECT sandbox_token_hashes FROM managed_environment_work WHERE workspace_id = 'default' AND id = ?").bind(workId).first()).sandbox_token_hashes;
+    const before = await hashes();
+    const response = await call(token);
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toMatchObject({ type: "ready", channels: { mcpProxy: { sessionsToken: token }, hostedInference: { sessionsToken: token, model: { wireModel: "claude-sonnet-5-5" } } } });
+    expect(JSON.stringify(result)).not.toContain("sk-ant-test-key");
+    expect(await hashes()).toBe(before);
+    expect((await call(token, "wrong-session")).status).toBe(401);
+    expect((await call("test-key")).status).toBe(401);
+    expect((await call("sk-ant-req-v1.work-bearer")).status).toBe(401);
+    // A managed execution token is NOT a Work claim token even for this Session.
+    const executionToken = await issueSandboxToken(cfSandboxTokenStore(env), a.fence, { scope: "all" });
+    expect((await call(executionToken)).status).toBe(401);
+    const entries = JSON.parse(before); entries[0].s = "egress";
+    await sql.prepare("UPDATE managed_environment_work SET sandbox_token_hashes = ? WHERE id = ?").bind(JSON.stringify(entries), workId).run();
+    expect((await call(token)).status).toBe(401);
+    await sql.prepare("UPDATE managed_environment_work SET sandbox_token_hashes = ?, claim_generation = 2 WHERE id = ?").bind(null, workId).run();
+    expect((await call(token)).status).toBe(401);
+    const replacement = await issueSandboxToken(store, { ...fence, attemptId: "environment-work-claim:2", generation: 2 }, { scope: "all" });
+    expect((await call(replacement)).status).toBe(200);
+    expect((await call(token)).status).toBe(401);
+    await sql.prepare("UPDATE managed_environment_work SET state = 'stopped' WHERE id = ?").bind(workId).run();
+    expect((await call(replacement)).status).toBe(401);
+  });
+
   it("Work claim holder supplies both channels with the same all-scope oma_sbx and is revoked on stop", async () => {
     const a = await acpAttempt("work_channels");
     const sql = sqlClientFromD1(env.MAIN_DB);

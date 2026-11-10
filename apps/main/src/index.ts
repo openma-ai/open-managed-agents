@@ -330,6 +330,19 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   });
 }));
 
+// Sandbox-side Work discovery precedes workspace auth. It reuses the typed
+// channel authority and never treats a Work/admin bearer as model capability.
+app.post("/v1/oma/sessions/:sessionId/execution-channels", async c => {
+  const token = /^Bearer (\S+)$/i.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+  const { cfWorkAcpExecutionChannelsResult } = await import("./lib/cf-acp-execution-capability");
+  const result = await cfWorkAcpExecutionChannelsResult(c.env, c.req.param("sessionId"), token);
+  if (result.type === "ready") return c.json(result);
+  const status = result.code === "token_rejected" || result.code === "invalid_request" ? 401
+    : result.code === "session_not_found" || result.code === "archived" ? 404
+    : result.code === "model_unavailable" ? 409 : 503;
+  return c.json(result, status);
+});
+
 // API routes (require authentication)
 app.use("/v1/*", authMiddleware);
 app.use("/v1/*", rateLimitMiddleware);
