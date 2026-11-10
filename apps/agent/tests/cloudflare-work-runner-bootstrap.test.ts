@@ -95,3 +95,9 @@ it("ordinary native startProcess retains existing merged environment semantics",
   native.ensureRunning = async () => {}; native.recordActivity = () => {}; native.exec = async (_command: string, options: any) => { received = options.env; return { stdout: "", exitCode: 0 }; }; native.readFile = async () => ({ content: "42" });
   await native.startProcess("true", { env: { EXPLICIT: "yes" } }); expect(received.ORDINARY_ENV).toBe("kept"); expect(received.EXPLICIT).toBe("yes"); expect(received.NODE_EXTRA_CA_CERTS).toBeTruthy();
 });
+
+it("accepts the existing all-scope holder token as bootstrap delivery without minting another", async () => {
+  const { generateSandboxToken } = await import("@open-managed-agents/sandbox-gateway"); const f = fixture(); const token = generateSandboxToken();
+  await f.sandbox.startWorkRunner({ ...input(), env: { ...input().env, OPENMA_SANDBOX_TOKEN: token } });
+  expect(((f.calls[1] as unknown[])[2] as { env: Record<string,string> }).env.OPENMA_SANDBOX_TOKEN).toBe(token);
+});

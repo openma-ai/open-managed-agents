@@ -578,6 +578,9 @@ importers:
       '@open-managed-agents/deployment-store-sql':
         specifier: workspace:*
         version: link:../../packages/deployment-store-sql
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-domain
       '@open-managed-agents/dreams-pipeline':
         specifier: workspace:*
         version: link:../../packages/dreams-pipeline
@@ -671,6 +674,9 @@ importers:
       '@open-managed-agents/runtime-relay':
         specifier: workspace:*
         version: link:../../packages/runtime-relay
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../../packages/runtime-resource-contract
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
