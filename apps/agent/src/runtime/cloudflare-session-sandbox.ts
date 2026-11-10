@@ -30,6 +30,7 @@ import type { Env } from "@open-managed-agents/shared";
 import { sandboxTokenSha256, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { buildCfTenantDbProvider } from "@open-managed-agents/services";
 import { CloudflareSandbox, type CloudflareSandboxImage } from "./sandbox";
+import { LegacySandboxTokenUnavailable } from "./sandbox-token-rpc-error";
 import { createCloudflareSandboxAdapter, type CloudflareSandboxRuntime } from "./cloudflare-sandbox-ports";
 import { loadManagedSessionResources } from "./managed-session-resources";
 import { sandboxIdlePauseMs, initialSandboxState, memoryStoreMountTarget, PortsSessionSandbox, type SessionSandboxIdleTimer, type SessionEnvironmentCache } from "@open-managed-agents/session-runtime";
@@ -245,7 +246,7 @@ export function executionEgress(deps: Pick<CloudflareSessionSandboxDeps, "sessio
       // Only a missing legacy Session may continue without credential egress.
       // Managed authorization, stale fences, malformed tokens and store errors
       // must fail the execution rather than become a no-token binding.
-      if (!attempt.sessionId.startsWith("sess-") || !(error instanceof Error) || error.message !== `Session ${attempt.sessionId} was not found`) throw error;
+      if (!(error instanceof LegacySandboxTokenUnavailable)) throw error;
       deps.warn(`Vault and GitHub credentials are unavailable this execution: no sandbox token (${error instanceof Error ? error.message : String(error)})`);
       return null;
     }

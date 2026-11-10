@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { attemptSandboxTokens, sandboxTokenSha256, generateSandboxToken } from "@open-managed-agents/sandbox-gateway";
 import { executionEgress, type SandboxExecutionFence } from "../src/runtime/cloudflare-session-sandbox";
+import { LegacySandboxTokenUnavailable } from "../src/runtime/sandbox-token-rpc-error";
 
 const session = () => ({ tenantId: "ws", environmentId: "env", sessionId: "sess", agentId: null });
 const fence = (attemptId: string): SandboxExecutionFence => ({ executionId: "exe", attemptId, ownerId: "owner", generation: 1 });
@@ -66,7 +67,7 @@ describe("Cloudflare Session egress binding: the attempt's sandbox token (#561, 
 
   it("a token that cannot be issued binds none and warns (no Vault; the turn goes on)", async () => {
     const bound: unknown[] = []; const warnings: string[] = [];
-    const port = executionEgress({ session: () => ({ ...session(), sessionId: "sess-legacy" }), fence: () => fence("a1"), relayToken: async () => { throw new Error("Session sess-legacy was not found"); }, warn: (m) => warnings.push(m) });
+    const port = executionEgress({ session: () => ({ ...session(), sessionId: "sess-legacy" }), fence: () => fence("a1"), relayToken: async () => { throw new LegacySandboxTokenUnavailable("Session sess-legacy was not found"); }, warn: (m) => warnings.push(m) });
     await port.attach({ runtime: { describeSandbox: async () => ({ running: true, incarnation: "box-1", mounts: [] }), setOutboundContext: async (input: unknown) => { bound.push(input); } } } as never);
     expect(bound).toEqual([{ tenantId: "ws", sessionId: "sess-legacy" }]);
     expect(warnings).toEqual([expect.stringContaining("no sandbox token (Session sess-legacy was not found)")]);
@@ -74,11 +75,14 @@ describe("Cloudflare Session egress binding: the attempt's sandbox token (#561, 
 
   it.each([
     ["session_managed", "Session session_managed was not found"],
+    ["session_managed", "Sandbox token requires a current Session Execution fence"],
+    ["session_managed", "Session session_managed is archived and cannot receive new events"],
     ["session_managed", "Sandbox token Session Execution fence is stale"],
     ["session_managed", "Sandbox token scope egress differs from this execution attempt's"],
     ["session_managed", "store unavailable"],
     ["sess-legacy", "Sandbox token Session Execution fence is stale"],
     ["sess-legacy", "store unavailable"],
+    ["sess-legacy", "Session sess-legacy was not found"],
     ["sess-legacy", "Sandbox token is malformed"],
   ])("rejects token failure without binding or warning: %s / %s", async (sessionId, message) => {
     const failure = new Error(message);
