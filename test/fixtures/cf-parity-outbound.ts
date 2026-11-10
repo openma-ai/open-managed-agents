@@ -7,10 +7,12 @@ export function installParityModelTransport(): Installed {
   const original = globalThis.fetch;
   let count = 0;
   const wrapped: typeof fetch = async (input, init) => {
-    const request = new Request(input, init);
-    const url = new URL(request.url);
+    // Inspect metadata only: constructing a Request transfers its body even
+    // when this origin is not ours. Preserve original fetch input/init exactly.
+    const url = new URL(input instanceof Request ? input.url : String(input));
     if (url.origin !== "http://parity-model.invalid") return await original(input, init);
-    if (url.pathname !== "/v1/messages" || !["", "?beta=true"].includes(url.search) || request.method !== "POST") throw new Error(`Unexpected parity model endpoint: ${request.method} ${url.pathname}${url.search}`);
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    if (url.pathname !== "/v1/messages" || !["", "?beta=true"].includes(url.search) || method !== "POST") throw new Error(`Unexpected parity model endpoint: ${method} ${url.pathname}${url.search}`);
     count++;
     throw new TypeError("parity model transport refused");
   };
