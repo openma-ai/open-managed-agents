@@ -18,10 +18,45 @@
 #   - Larger sessions tables (PG handles 100M+ row indices better).
 
 services:
+  # One-shot, exits before oma-server starts. Docker creates a missing
+  # bind-mount source directory as root:root 0755, but the server runs as
+  # uid 1000 (`node`) and binds ./data at /app/data — so on a fresh
+  # checkout the sandbox workdir / blob dirs are unwritable. This fixes
+  # the ownership first.
+  oma-init:
+    image: openma/main-node:dev
+    container_name: oma-init
+    user: "0:0"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /app/data
+        # Fast path: already ours, skip a recursive chown on every restart.
+        if [ "$$(stat -c %u /app/data)" = "1000" ]; then
+          echo "oma-init: /app/data is already owned by uid 1000"
+          exit 0
+        fi
+        echo "oma-init: taking ownership of /app/data for uid 1000"
+        chown -R 1000:1000 /app/data
+    volumes:
+      - ./data:/app/data
+    # Runs to completion and stays stopped. It exits non-zero — blocking
+    # oma-server — only when the mount cannot be chowned (e.g. NFS with
+    # root squash); chown ./data on the host instead.
+    restart: "no"
+
   oma-server:
     build:
       context: .
       dockerfile: apps/main-node/Dockerfile
+      args:
+        # Vendor SDKs the selected adapters import lazily. They are optional
+        # peers, so the image installs none unless named here — without it
+        # `SANDBOX_PROVIDER=e2b` starts fine and then fails on the first
+        # session turn. `boxrun` needs none (it calls `boxlite serve`).
+        SANDBOX_PROVIDERS: ${SANDBOX_PROVIDERS:-}
     image: openma/main-node:dev
     container_name: oma-server
     ports:
@@ -51,6 +86,8 @@ services:
     volumes:
       - ./data:/app/data
     depends_on:
+      oma-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     restart: unless-stopped

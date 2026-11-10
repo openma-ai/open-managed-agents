@@ -30,6 +30,7 @@ import { openNodeDatabase } from "./database.js";
 import { createNodeE2BSessionAdapter } from "./e2b-session-adapter.js";
 import { createNodeRealtime } from "./realtime.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
+import { assertSandboxProviderSdk } from "./sandbox-provider-sdk.js";
 
 // Building blocks. Each default is an ordinary exported constructor, so a
 // composition root can call the ones it wants and hand-build the rest.
@@ -145,10 +146,15 @@ async function createBridgeComposition(config: NodeConfig, checkpointStore: impo
  * and its module loaded at startup (a bad SANDBOX_PROVIDER fails fast).
  * Serverless processes hand sessions to an Environment Worker and may never
  * need a sandbox; resolution is deferred to first use, as before.
+ *
+ * The adapter's vendor SDK is an optional peer, so the provider can resolve and
+ * the module load while the SDK is absent — that used to surface only on the
+ * first session turn. Probe it here so it fails at startup instead.
  */
 async function loadSandboxFactory(config: NodeConfig): Promise<SandboxFactory> {
   const load = async (): Promise<SandboxFactory> => {
     const selection = resolveSandboxProviderForEnvironment(config.sandbox.environment);
+    assertSandboxProviderSdk(selection);
     if (selection.provider === "e2b") {
       // The adapter declares `e2b` only as an optional peer: main-node's own
       // dependency is the install that resolves, so the SDK is injected.

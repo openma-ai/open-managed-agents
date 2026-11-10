@@ -49,6 +49,22 @@ COPY packages packages
 RUN corepack enable \
   && pnpm install --frozen-lockfile
 
+# Optional sandbox provider SDKs. Each isolated adapter imports its vendor SDK
+# lazily and declares it as an *optional* peer, because the monorepo install
+# stays provider-neutral (autoInstallPeers: false in pnpm-workspace.yaml). An
+# image built without this installs no peer at all, so `SANDBOX_PROVIDER=e2b`
+# would start fine and then fail on the first session turn. Name the SDKs this
+# deployment needs, comma or space separated:
+#   --build-arg SANDBOX_PROVIDERS=e2b
+#   --build-arg "SANDBOX_PROVIDERS=e2b,@daytonaio/sdk"
+# `boxrun` needs none (it talks to `boxlite serve` over HTTP).
+ARG SANDBOX_PROVIDERS=""
+RUN for pkg in $(echo "$SANDBOX_PROVIDERS" | tr ',' ' '); do \
+      [ -z "$pkg" ] && continue; \
+      echo "Installing sandbox provider SDK: $pkg"; \
+      pnpm add -w "$pkg"; \
+    done
+
 # Now bring in the source code (cache-busts only on src changes, not deps).
 COPY apps/main-node apps/main-node
 # The OpenMatter service (Feishu). Same image; run it with

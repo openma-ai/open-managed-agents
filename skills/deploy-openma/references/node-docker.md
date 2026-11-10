@@ -11,7 +11,11 @@ resource and recovery requirements, read the relevant sections of
 `apps/docs/src/content/docs/self-host/managed-runtime-host.mdx`.
 
 Check OS/architecture, available disk, Docker daemon and Compose version, port
-availability, and permissions on the chosen persistent directory. Compare image
+availability, and permissions on the chosen persistent directory. The container
+runs as uid 1000, so a bind-mounted `./data` must be owned by that uid; the
+bundled compose files handle it with a one-shot `oma-init` service, and a
+hand-written compose or `docker run` needs
+`mkdir -p data && chown -R 1000:1000 data` before the first start. Compare image
 Node/pnpm versions with the checked-out workspace requirements before a lengthy
 build. Do not silently change runtime versions or ignore engine checks.
 
@@ -32,7 +36,11 @@ network names and paths do not apply to a native process.
    configuration, not terminal output. Use owner-only file permissions where
    supported, exclude secrets from Git, and explain that the root key must be
    backed up with encrypted data.
-3. Set `PUBLIC_BASE_URL` to the actual origin. Keep authentication on. Let the user
+3. Set `PUBLIC_BASE_URL` to the actual origin, without a trailing slash, and
+   keep the scheme honest: `http://host:8787` for a plain-HTTP port, `https://`
+   only when TLS terminates in front. With it unset, better-auth issues the
+   session cookie `Secure`, browsers drop it over http, and every sign-in
+   returns 200 before redirecting back to `/login`. Leave authentication on. Let the user
    add model credentials in Console Model Cards; a global Anthropic key is not a
    prerequisite for every model choice.
 4. Set a supported isolated `SANDBOX_PROVIDER` and its required configuration.
@@ -44,6 +52,11 @@ network names and paths do not apply to a native process.
      proof that a nested sandbox can run.
    - BoxRun: needs an existing reachable service and matching runtime capabilities.
    Do not treat an adapter name as proof that all resource/security features work.
+   Every provider except BoxRun needs its vendor SDK installed — an optional peer
+   the monorepo does not install (`autoInstallPeers: false`). Native deployment:
+   `pnpm add -w e2b`. Docker image: `SANDBOX_PROVIDERS=e2b` before
+   `docker compose build`. The server now refuses to start without it; verify by
+   starting the container, not by reading `.env`.
 5. Check sandbox reachability to the ordinary HTTPS `PUBLIC_BASE_URL`.
    Vault egress uses `/v1/oma/egress`; no additional TCP listener is required.
    Local interception belongs to the sandbox (or its native outbound adapter).

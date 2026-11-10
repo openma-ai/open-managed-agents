@@ -14,7 +14,11 @@ export default defineConfig({
   test: {
     pool: "threads",
     setupFiles: ["test/_helpers/temp-hygiene.setup.ts"],
-    include: ["test/**/*.test.ts"],
+    include: [
+      "test/**/*.test.ts",
+      "src/sandbox-provider-sdk.test.ts",
+      "../../packages/control-plane-node/src/auth-cookie-warning.test.ts",
+    ],
     // PostgreSQL/MinIO contracts own real containers and run through the
     // repository-level `test:integration:storage` project.
     exclude: [
