@@ -155,15 +155,30 @@ async function supervisedDispose(
 ): Promise<void> {
   // Protocol close/kill acknowledgement does not prove process exit. Native
   // state may only be captured or deleted after the child exit signal settles.
+  const startedAt = Date.now();
+  let exitCause: unknown;
+  const observedExit = child.exited.catch(cause => { exitCause = cause; throw cause; });
   void session.dispose().catch(() => undefined);
-  if (await finishesWithin(child.exited, cancelGraceMs)) {
+  if (await finishesWithin(observedExit, cancelGraceMs)) {
     markDead();
     return;
   }
   markDead();
-  const stopped = Promise.all([child.kill("SIGKILL"), child.exited]);
+  let killCause: unknown;
+  const stopped = Promise.all([
+    child.kill("SIGKILL").catch(cause => { killCause = cause; throw cause; }),
+    observedExit,
+  ]);
   if (!await finishesWithin(stopped, 2_000)) {
-    throw new Error("ACP child exit was not confirmed within 2000ms after SIGKILL; native state must not be captured or deleted");
+    throw Object.assign(new Error(
+      "ACP child exit was not confirmed after SIGKILL (confirmation window 2000ms); native state must not be captured or deleted",
+      { cause: exitCause ?? killCause },
+    ), {
+      phase: "cleanup_failed",
+      acpSessionId: session.acpSessionId,
+      startedAt: new Date(startedAt).toISOString(),
+      elapsedMs: Date.now() - startedAt,
+    });
   }
 }
 
