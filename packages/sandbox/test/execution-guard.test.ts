@@ -57,6 +57,16 @@ describe("withSandboxExecutionGuard", () => {
     await expect(guarded.exec("echo late")).rejects.toBeInstanceOf(SandboxExecutionFencedError);
   });
 
+  it("checks the durable async fence before dispatch and rejects results after revocation", async () => {
+    const { sandbox } = sandboxFixture();
+    let active = true, dispatches = 0;
+    sandbox.exec = async () => { dispatches++; active = false; return "late"; };
+    const guarded = withSandboxExecutionGuard(sandbox, { isValid: async () => active });
+    await expect(guarded.exec("in flight")).rejects.toBeInstanceOf(SandboxExecutionFencedError);
+    await expect(guarded.exec("stale")).rejects.toBeInstanceOf(SandboxExecutionFencedError);
+    expect(dispatches).toBe(1);
+  });
+
   it("kills a process handle when the parent fence is revoked", async () => {
     const { sandbox, process } = sandboxFixture();
     const controller = new AbortController();

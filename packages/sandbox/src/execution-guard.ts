@@ -10,8 +10,8 @@ import type { ProcessHandle, SandboxPort } from "./ports";
  */
 export interface SandboxExecutionGuard {
   signal?: AbortSignal;
-  /** Optional fast check for lease expiry or a provider-specific revocation. */
-  isValid?: () => boolean;
+  /** Check the existing lease authority or a provider-specific revocation. */
+  isValid?: () => boolean | Promise<boolean>;
 }
 
 export class SandboxExecutionFencedError extends Error {
@@ -32,7 +32,7 @@ const SAFE_METHODS = new Set([
   "registerCommandSecrets",
 ]);
 
-function assertValid(guard: SandboxExecutionGuard): void {
+async function assertValid(guard: SandboxExecutionGuard): Promise<void> {
   if (guard.signal?.aborted) {
     throw new SandboxExecutionFencedError(
       guard.signal.reason instanceof Error
@@ -40,7 +40,7 @@ function assertValid(guard: SandboxExecutionGuard): void {
         : "sandbox execution was aborted",
     );
   }
-  if (guard.isValid && !guard.isValid()) {
+  if (guard.isValid && (!await guard.isValid() || guard.signal?.aborted)) {
     throw new SandboxExecutionFencedError();
   }
 }
@@ -49,11 +49,11 @@ async function invokeWithGuard<T>(
   guard: SandboxExecutionGuard,
   operation: () => Promise<T>,
 ): Promise<T> {
-  assertValid(guard);
+  await assertValid(guard);
   const operationPromise = Promise.resolve().then(operation);
   if (!guard.signal) {
     const result = await operationPromise;
-    assertValid(guard);
+    await assertValid(guard);
     return result;
   }
 
@@ -68,7 +68,7 @@ async function invokeWithGuard<T>(
   });
   try {
     const result = await Promise.race([operationPromise, abortPromise]);
-    assertValid(guard);
+    await assertValid(guard);
     return result;
   } finally {
     guard.signal.removeEventListener("abort", onAbort);

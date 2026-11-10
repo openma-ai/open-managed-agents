@@ -33,6 +33,7 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
   native?: boolean;
   output?(frame: Record<string, unknown>): Promise<void>;
   executionFence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence;
+  isExecutionFenceActive?: DefaultNodeManagedSessionRunnerDependencies["isExecutionFenceActive"];
   inspectContext?(input: Parameters<DefaultNodeManagedSessionRunnerDependencies["buildHarnessContext"]>[0]): void;
 } = {}) {
   const activeSession = structuredClone(session);
@@ -42,6 +43,7 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
   let id = 0;
   const deps: DefaultNodeManagedSessionRunnerDependencies = {
     buildSandbox: async () => sandbox,
+    isExecutionFenceActive: options.isExecutionFenceActive,
     buildModel: async () => ({}) as HarnessContext["model"],
     buildTools: async () => ({}),
     buildHarnessContext: async (input) => { options.inspectContext?.(input); return input as unknown as HarnessContext; },
@@ -88,6 +90,43 @@ describe("Managed Node native subagents", () => {
     expect(inputs.map(i => i.fence)).toEqual([fence, fence]);
     expect(inputs[0]!.threadId).not.toBe("sthr_primary");
     expect(inputs[1]!.threadId).toBe(inputs[0]!.threadId);
+  });
+  it("shares the root execution identity without replacing the child's control-plane agent", async () => {
+    const fence = { workspaceId: "workspace", sessionId: session.id, executionId: "exec", attemptId: "attempt", ownerId: "owner", generation: 1, expiresAt: "2099-01-01T00:00:00Z" };
+    const contexts: Array<Parameters<DefaultNodeManagedSessionRunnerDependencies["buildHarnessContext"]>[0]> = [];
+    const f = fixture(async ({ session: active, subagents, runtime }) => {
+      if (active.agent.name === "Parent") {
+        const child = await subagents!.create({ name: "Restricted", instructions: "Child instructions", message: "Child input" });
+        await subagents!.wait({ threadIds: [child.threadId] });
+      } else runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Child output" }] });
+    }, undefined, { executionFence: fence, inspectContext: input => { contexts.push(input); } });
+    await f.run();
+    expect(contexts).toHaveLength(2);
+    const [parent, child] = contexts;
+    expect(child!.executionSession).toBe(parent!.session);
+    expect(child!.executionFence).toBe(parent!.executionFence);
+    expect(child!.session.agent.name).toBe("Restricted");
+    expect(child!.session.agent.system).toBe("Child instructions");
+    expect(child!.session.id).toBe(parent!.session.id);
+    expect(JSON.stringify(child!.runtime.history.getMessages())).not.toContain("Parent task");
+  });
+  it("refuses a child's sandbox call after the parent's durable execution fence is revoked", async () => {
+    const fence = { workspaceId: "workspace", sessionId: session.id, executionId: "exec", attemptId: "attempt", ownerId: "owner", generation: 1, expiresAt: "2099-01-01T00:00:00Z" };
+    let active = true, rejected = false;
+    const f = fixture(async ({ session: current, sandbox, subagents, runtime }) => {
+      if (current.agent.name === "Parent") {
+        const child = await subagents!.create({ name: "Worker", message: "Work" });
+        await subagents!.wait({ threadIds: [child.threadId] });
+      } else {
+        expect(await sandbox.exec("pwd")).toMatchObject({ stdout: "shared" });
+        active = false;
+        try { await sandbox.exec("must not dispatch"); }
+        catch (error) { rejected = error instanceof Error && error.name === "SandboxExecutionFencedError"; }
+        runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Done" }] });
+      }
+    }, undefined, { executionFence: fence, isExecutionFenceActive: async received => { expect(received).toBe(fence); return active; } });
+    await f.run();
+    expect(rejected).toBe(true);
   });
   it("propagates the child's actual budget short circuit to its external idle event", async () => {
     const {createSessionBudgetGate,memoryListCostPicoStore,beginModelEgress}=await import("../../../packages/agent-harness/src/budget");
