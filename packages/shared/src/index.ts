@@ -11,6 +11,7 @@ export * from "@open-managed-agents/eval-core";
 
 export * from "./env";
 export type * from "./sandbox-token-rpc";
+export type * from "./acp-execution-channels-rpc";
 export * from "./session-admission";
 export * from "./auth-providers";
 export * from "./errors";
