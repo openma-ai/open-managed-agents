@@ -5,11 +5,8 @@ import type {
   Model,
   ModelCatalogSourcePort,
 } from "@open-managed-agents/managed-agents-application";
-import {
-  getSupportedThinkingLevels,
-  type Api,
-  type Model as PiModel,
-} from "@earendil-works/pi-ai";
+import type { Api, Model as PiModel } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { findPiCatalogModel } from "@open-managed-agents/managed-agents-application/agents/pi-model-catalog";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
