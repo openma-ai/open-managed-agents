@@ -43,6 +43,39 @@ describe("native bridge non-PTY process contract", () => {
   });
 });
 
+it.each(["OUTPUT_INCOMPLETE", "PROCESS_LOST"])("keeps output failure separate from a following real exit: %s", async code => {
+  const runtime = new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:new InMemoryBlobStore(),fetch:async input => {
+    if(String(input).endsWith("/process")) return Response.json({id:"output-loss"});
+    if(String(input).endsWith("/events")) return new Response('event: error\ndata: '+JSON.stringify({code,error:"output unavailable"})+'\n\nevent: exit\ndata: {"exit_code":143}\n\n',{headers:{"content-type":"text/event-stream"}});
+    return new Response(null,{status:204});
+  }});
+  const process = await runtime.spawnDuplexProcess({command:"worker"});
+  const settled = await Promise.allSettled([bytes(process.stdout),bytes(process.stderr),process.exited]);
+  if(code === "OUTPUT_INCOMPLETE") {
+    expect(settled[2]).toEqual({status:"fulfilled",value:{code:143,signal:null}});
+    expect(settled[0]).toMatchObject({status:"rejected",reason:{code:"OUTPUT_INCOMPLETE"}});
+  } else expect(settled[2].status).toBe("rejected");
+});
+
+it.each(["eof", "hang", "invalid"])("does not invent exit after OUTPUT_INCOMPLETE and %s", async ending => {
+  vi.useFakeTimers();
+  let cancelled = false;
+  const runtime = new CloudflareBridgeRuntime({baseUrl:"https://bridge.test",apiKey:"key",runtimeId:"sandbox",checkpointStore:new InMemoryBlobStore(),fetch:async input => {
+    if(String(input).endsWith("/process")) return Response.json({id:"no-exit"});
+    return new Response(new ReadableStream({start(controller){
+      controller.enqueue(new TextEncoder().encode('event: error\ndata: {"code":"OUTPUT_INCOMPLETE","error":"truncated"}\n\n'+(ending==="invalid"?'event: exit\ndata: {"exit_code":null}\n\n':'')));
+      if(ending!=="hang") controller.close();
+    },cancel(){cancelled=true;}}),{headers:{"content-type":"text/event-stream"}});
+  }});
+  try {
+    const process = await runtime.spawnDuplexProcess({command:"worker"});
+    const result = Promise.allSettled([bytes(process.stdout),bytes(process.stderr),process.exited]);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect((await result)[2].status).toBe("rejected");
+    if(ending==="hang") expect(cancelled).toBe(true);
+  } finally { vi.useRealTimers(); }
+});
+
 it("persists the runtime handle before acknowledging allocation ownership", async () => {
   const {createCloudflareBridgeProvider} = await import("../src/cloudflare-bridge");
   const store = new InMemoryBlobStore();
