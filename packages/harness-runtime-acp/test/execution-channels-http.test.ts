@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { expect, it } from "vitest";
 import { createExecutionChannelsHttpResolver } from "../src/execution-channels-http";
 
@@ -36,4 +37,24 @@ it.each(["transport", "json", "failed"])("does not expose untrusted %s diagnosti
 it.each(["http", "malformed"])("never downgrades %s failure to Work channels", async kind=>{
   const resolve=createExecutionChannelsHttpResolver({apiBaseUrl:"https://control.test",fetch:async()=>kind==="http"?new Response(null,{status:503}):Response.json({mcpProxy:{sessionsToken:"oma_sbx_test-only"}})});
   await expect(resolve({tenantId:"tenant",sessionId:"session",sessionsToken:"oma_sbx_test-only"})).rejects.toThrow();
+});
+
+
+it("never follows a same-origin 307 with sandbox credentials or POST body", async () => {
+  let recipients=0;
+  const server=createServer((request,response)=>{
+    if(request.url==="/unexpected-credential-recipient") {recipients++;response.writeHead(200,{"content-type":"application/json"});response.end("{}");}
+    else {response.writeHead(307,{location:"/unexpected-credential-recipient"});response.end();}
+  });
+  await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+  try {
+    const base="http://127.0.0.1:"+(server.address() as {port:number}).port;
+    const resolve=createExecutionChannelsHttpResolver({apiBaseUrl:base});
+    await expect(resolve({tenantId:"tenant",sessionId:"session",sessionsToken:"oma_sbx_test-only"})).rejects.toThrow();
+    expect(recipients).toBe(0);
+  } finally {server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+});
+it("rejects an authority response replacing the bootstrap holder token", async () => {
+  const resolve=createExecutionChannelsHttpResolver({apiBaseUrl:"https://control.test",fetch:async()=>Response.json({type:"ready",channels:{mcpProxy:{sessionsToken:"oma_sbx_other",gatewayBaseUrl:"https://control.test"},hostedInference:{sessionsToken:"oma_sbx_other",gatewayBaseUrl:"https://control.test",model:{providerId:"anthropic",baseUrl:null}}}})});
+  await expect(resolve({tenantId:"tenant",sessionId:"session",sessionsToken:"oma_sbx_bootstrap"})).rejects.toThrow();
 });

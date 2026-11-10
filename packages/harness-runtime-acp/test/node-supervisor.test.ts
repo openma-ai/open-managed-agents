@@ -393,7 +393,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
     expect(channelCalls).toBe(1);expect(seen).toHaveLength(1);
   });
 
-  it.each(["http", "transport", "malformed", "failed"])("default HTTP authority %s failure never starts ACP or falls back to Work", async mode => {
+  it.each(["http", "transport", "malformed", "failed", "replaced-token"])("default HTTP authority %s failure never starts ACP or falls back to Work", async mode => {
     const workspace = await mkdtemp(join(tmpdir(), "openma-http-failed-")); roots.push(workspace);
     const seen: SessionOptions[] = []; let calls = 0;
     const app = createNodeManagedAcpSupervisorApp({
@@ -403,6 +403,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
         const request = new Request(input, init); calls++;
         expect(request.url).toContain("/execution-channels");
         expect(request.headers.get("authorization")).toBe("Bearer " + executionToken);
+        if (mode === "replaced-token") { const other=generateSandboxToken(); return Response.json({type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://control.test",sessionsToken:other},hostedInference:{gatewayBaseUrl:"https://control.test",sessionsToken:other,model:{providerId:"anthropic",baseUrl:null}}}}); }
         if (mode === "http") return new Response(null, { status: 503 });
         if (mode === "transport") throw new Error("sensitive-provider-detail");
         return Response.json(mode === "failed"

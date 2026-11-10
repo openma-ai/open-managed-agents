@@ -20,7 +20,7 @@ export function createExecutionChannelsHttpResolver(options: {
     try {
       response = await (options.fetch ?? globalThis.fetch)(
         new URL("/v1/oma/sessions/" + encodeURIComponent(input.sessionId) + "/execution-channels", base),
-        { method: "POST", headers: { authorization: "Bearer " + input.sessionsToken, "content-type": "application/json" }, body: "{}" },
+        { method: "POST", redirect: "error", headers: { authorization: "Bearer " + input.sessionsToken, "content-type": "application/json" }, body: "{}" },
       );
     } catch { throw new Error("Execution channels transport unavailable"); }
     if (!response.ok) {
@@ -39,7 +39,7 @@ export function createExecutionChannelsHttpResolver(options: {
     }
     if (result?.type === "ready") {
       const { mcpProxy, hostedInference } = result.channels ?? {};
-      if (mcpProxy?.sessionsToken?.startsWith("oma_sbx_") && hostedInference?.sessionsToken === mcpProxy.sessionsToken
+      if (mcpProxy?.sessionsToken === input.sessionsToken && hostedInference?.sessionsToken === input.sessionsToken
         && typeof mcpProxy.gatewayBaseUrl === "string" && typeof hostedInference.gatewayBaseUrl === "string" && hostedInference.model) return result;
     }
     throw new Error("Execution channels response is invalid");
