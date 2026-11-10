@@ -1,4 +1,5 @@
 import type { SandboxTokenIssueRequest, SandboxTokenIssueResult } from "./sandbox-token-rpc";
+import type { ManagedAcpExecutionChannels, ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult } from "./acp-execution-channels-rpc";
 
 export interface Env {
   OMA_SESSION_EXECUTION_LEASE_TTL_MS?: string;
@@ -255,29 +256,11 @@ export interface Env {
       attempt: { workspaceId: string; sessionId: string; executionId: string; attemptId: string; ownerId: string; generation: number };
       harness: string | null;
     }): Promise<string>;
-    /** ACP model / MCP channels for one execution (design §0.6) over its sandbox token. */
-    managedAcpExecutionChannels?(opts: {
-      tenantId: string;
-      sessionId: string;
-      sessionsToken: string;
-    }): Promise<{
-      mcpProxy: { gatewayBaseUrl: string; sessionsToken: string };
-      hostedInference: {
-        gatewayBaseUrl: string;
-        sessionsToken: string;
-        model: {
-          providerId: string;
-          baseUrl: string | null;
-          /** The card's upstream model id (not the handle). */
-          wireModel?: string;
-          protocolEndpoints?: readonly {
-            protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
-            proxyPathSegment: string;
-            upstreamBaseUrl: string;
-          }[];
-        };
-      };
-    }>;
+    /** ACP model / MCP channels over the SAME attempt token. Expected server
+     * failures are values; the caller throws locally, without fallback. */
+    managedAcpExecutionChannels?(opts: ManagedAcpExecutionChannelsRequest & { resultFormat: "typed" }): Promise<ManagedAcpExecutionChannelsResult>;
+    /** @deprecated Raw throwing RPC; migrate both server/caller to typed mode. */
+    managedAcpExecutionChannels?(opts: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannels>;
     resolveManagedSkillVersion?(opts: {
       tenantId: string;
       skillId: string;
