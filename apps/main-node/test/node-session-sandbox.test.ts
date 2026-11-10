@@ -5,6 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxPort } from "@open-managed-agents/sandbox";
+import { fromV1SandboxFactory } from "../../../packages/sandbox-port-kit/src/v1-bridge";
 import { LocalSubprocessSandbox } from "../../../packages/sandbox/src/adapters/local-subprocess";
 import { ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -109,6 +110,42 @@ it("does not transfer a settled discovery result to a different claim wrapper", 
  await new Promise(resolve=>setTimeout(resolve,5));release();
  await pending;await waiting;expect(inspected).toBe(1);
  await second.recoverManagedProcessSlot();expect(inspected).toBe(2);await second.destroy();
+});
+
+
+it.each(["inspect", "restore"] as const)("separates fixed-handle physical incarnations while old %s remains pending", async phase => {
+ const states=new Map<string,import("@open-managed-agents/session-runtime").SessionSandboxState>();
+ const records={load:async(w:string,s:string)=>states.get(w+":"+s),save:async(w:string,s:string,next:import("@open-managed-agents/session-runtime").SessionSandboxState,version:number)=>{if((states.get(w+":"+s)?.version??0)!==version)return false;states.set(w+":"+s,next);return true;}};
+ const old=fakeSandbox(),fresh=fakeSandbox();let runtime=old.sandbox;let oldCurrent=true;let oldInspects=0,newInspects=0,oldRestores=0,newRestores=0;
+ let releaseOld!:()=>void,releaseNew!:()=>void;
+ const oldGate=new Promise<void>(resolve=>{releaseOld=resolve;}),newGate=new Promise<void>(resolve=>{releaseNew=resolve;});
+ const locator={sandboxId:"physical",id:"old",epoch:"epoch",pid:123,identity:{workspaceId:"ws_1",sessionId:"sess_1",workId:"work",attemptId:"claim:1"},status:"running" as const};
+ const handle={id:"old",pid:123,kill:async()=>{},getStatus:async()=>"running" as const};
+ Object.assign(old.sandbox,{startManagedProcess:async()=>handle,inspectManagedProcessSlot:async()=>{oldInspects++;if(phase==="inspect")await oldGate;return locator;},restoreManagedProcess:async()=>{oldRestores++;if(phase==="restore")await oldGate;return handle;}});
+ Object.assign(fresh.sandbox,{startManagedProcess:async()=>handle,inspectManagedProcessSlot:async()=>{newInspects++;await newGate;return locator;},restoreManagedProcess:async()=>{newRestores++;return handle;}});
+ const adapter=fromV1SandboxFactory({name:"fixed-test",create:async()=>runtime});const fixed={provider:"fixed-test",runtimeId:"logical-session"};
+ Object.assign(adapter.lifecycle,{handle:"fixed",acquire:async()=>({runtime,handle:fixed}),attach:async()=>({runtime,handle:fixed}),release:async()=>{}});
+ const t=setup({records,adapter:{adapter,image:()=>"image",keepAliveMs:60_000},storage:{attach:async()=>{},synchronize:async()=>{}}});
+ const authority=(current:()=>boolean)=>({attempt:{workspaceId:"ws_1",sessionId:"sess_1",executionId:"work",attemptId:"claim:2",ownerId:"owner",generation:2},isCurrent:async()=>current(),token:async()=>"token"});
+ const first=t.sandboxes.build({...context,workAuthority:authority(()=>oldCurrent)});await first.open();
+ const marker1=await old.sandbox.readFile("/tmp/.oma-warm");expect(marker1).not.toBe("");
+ const pending=first.recoverManagedProcessSlot().then(value=>({value}),error=>({error}));
+ while((phase==="inspect"?oldInspects:oldRestores)===0)await new Promise(resolve=>setTimeout(resolve,1));
+ runtime=fresh.sandbox;oldCurrent=false;
+ const second=t.sandboxes.build({...context,workAuthority:authority(()=>true)});await second.open();
+ const marker2=await fresh.sandbox.readFile("/tmp/.oma-warm");expect(marker2).not.toBe(marker1);
+ expect(states.get("ws_1:sess_1")).toMatchObject({handle:fixed});
+ const next=second.recoverManagedProcessSlot().then(value=>({value}),error=>({error}));
+ try {
+  for(let i=0;i<100&&newInspects===0;i++)await new Promise(resolve=>setTimeout(resolve,2));
+  expect(newInspects,"fresh marker must not join old physical discovery").toBe(1);
+  releaseOld();expect(await pending).toHaveProperty("error");expect(oldRestores).toBe(phase==="restore"?1:0);
+  // Settling the old incarnation must not remove the new incarnation's entry.
+  const joining=second.recoverManagedProcessSlot().then(value=>({value}),error=>({error}));
+  await new Promise(resolve=>setTimeout(resolve,20));expect(newInspects).toBe(1);
+  releaseNew();expect(await next).toHaveProperty("value.handle",handle);expect(await joining).toHaveProperty("value.handle",handle);expect(newRestores).toBe(1);
+  await second.recoverManagedProcessSlot();expect(newInspects).toBe(2);
+ }finally{releaseOld();releaseNew();await pending;await next;await second.destroy();}
 });
 
 const context = {

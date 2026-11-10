@@ -308,6 +308,8 @@ export class NodeSessionSandbox implements SandboxPort {
   private executionFence: SessionExecutionFence | undefined;
   private workAuthority: NodeSandboxWorkAuthority | undefined;
   private runtimeGeneration = "";
+  /** The core open plan's warm-marker generation, never a Work claim generation. */
+  private physicalGeneration = "";
   private state: SessionSandboxState | undefined;
   /** The runtime the core last opened (kept after an idle pause for probes). */
   private live: SandboxPort | null = null;
@@ -418,7 +420,8 @@ export class NodeSessionSandbox implements SandboxPort {
         },
       },
       scope,
-      plan: async ({ scope: s, stores }) => {
+      plan: async ({ scope: s, generation, stores }) => {
+        this.physicalGeneration = generation;
         const substitutions = await options.substitutions(this.context);
         if (substitutions.length > 0 && !nodeCredentialEgress(options.relay())) throw new Error(NO_CREDENTIAL_EGRESS);
         return {
@@ -556,11 +559,12 @@ export class NodeSessionSandbox implements SandboxPort {
     // stays bound to the original authority checks in discoverManagedProcessSlot.
     const runtime = await this.core.runtime();
     const physical = this.state && recordedHandle(this.state);
-    if (!physical) throw new Error("Recorded physical sandbox required for management discovery");
-    const key = JSON.stringify([this.context.workspaceId, this.context.session.id, physical.provider, physical.runtimeId]);
+    const generation = this.physicalGeneration; // core.runtime() above confirmed this open.
+    if (!physical || !generation) throw new Error("Recorded physical sandbox required for management discovery");
+    const key = JSON.stringify([this.context.workspaceId, this.context.session.id, physical.provider, physical.runtimeId, generation]);
     let discovery = this.managementDiscoveries.get(key);
     if (!discovery) {
-      discovery = { owner: this, pending: this.discoverManagedProcessSlot(runtime) };
+      discovery = { owner: this, pending: this.discoverManagedProcessSlot(runtime, generation) };
       this.managementDiscoveries.set(key, discovery);
       const exact = discovery;
       void exact.pending.finally(() => { if (this.managementDiscoveries.get(key) === exact) this.managementDiscoveries.delete(key); }).catch(() => {});
@@ -570,11 +574,12 @@ export class NodeSessionSandbox implements SandboxPort {
       const result = await Promise.race([discovery.pending, new Promise<never>((_, reject) => {
         timeout = setTimeout(() => reject(new Error("Management discovery wait timed out; native outcome remains pending")), 1_000);
       })]);
+      if (this.live !== runtime || this.physicalGeneration !== generation) throw new Error("Physical sandbox changed during management discovery");
       if (discovery.owner !== this) throw new Error("Prior management discovery settled; current claim must rediscover");
       return result;
     } finally { if (timeout !== undefined) clearTimeout(timeout); }
   }
-  private async discoverManagedProcessSlot(runtime: SandboxPort) {
+  private async discoverManagedProcessSlot(runtime: SandboxPort, generation: string) {
     const authority = this.workAuthority;
     if (!authority || !await authority.isCurrent()) throw new Error("Current Work claim required for management discovery");
     type Locator = { sandboxId: string; id: string; epoch: string; pid: number;
@@ -585,10 +590,10 @@ export class NodeSessionSandbox implements SandboxPort {
     const inspect = managed.inspectManagedProcessSlot.bind(managed);
     const restore = managed.restoreManagedProcess.bind(managed);
     const locator = await inspect();
-    if (this.live !== runtime || authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management discovery");
+    if (this.live !== runtime || this.physicalGeneration !== generation || authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management discovery");
     if (locator.identity.workspaceId !== authority.attempt.workspaceId || locator.identity.sessionId !== authority.attempt.sessionId) throw new Error("Management slot scope mismatch");
     const handle = await restore(locator);
-    if (this.live !== runtime || authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management restore");
+    if (this.live !== runtime || this.physicalGeneration !== generation || authority !== this.workAuthority || !await authority.isCurrent()) throw new Error("Work claim lost during management restore");
     return {locator, handle};
   }
   setEnvVars(env: Record<string, string>): Promise<void> { return this.core.setEnvVars(env); }
