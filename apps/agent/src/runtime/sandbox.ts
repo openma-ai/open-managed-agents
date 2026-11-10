@@ -698,7 +698,7 @@ export class CloudflareSandbox
     const sandbox = await this.getSandbox();
     if (typeof sandbox.restrictOutboundToHosts !== "function" || typeof sandbox.startProcess !== "function") throw new Error("Work runner requires network enforcement and managed process launch");
     await sandbox.restrictOutboundToHosts([origin.hostname]);
-    const process = await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace" });
+    const process = await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace", environmentMode: "replace" });
     if (!process?.id || typeof process.kill !== "function" || typeof process.getStatus !== "function") throw new Error("Work runner dispatch is unconfirmed");
     return { id: process.id, pid: process.pid, kill: (signal: string) => process.kill(signal), getStatus: () => process.getStatus() };
   }

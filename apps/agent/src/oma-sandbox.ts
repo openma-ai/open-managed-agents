@@ -1127,13 +1127,17 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
   /** 0.x-compatible: string command → bash -lc, return buffered result. */
   async exec(
     command: string,
-    options?: { timeout?: number; cwd?: string; env?: Record<string, string> },
+    options?: { timeout?: number; cwd?: string; env?: Record<string, string>; environmentMode?: "replace" },
   ): Promise<{ stdout: string; stderr: string; exitCode: number; success: boolean }> {
     return this.track(true, async () => {
       await this.ensureRunning();
-      const env = { ...CONTAINER_ENV, ...this.processEnv(), ...(options?.env ?? {}) };
+      const replace = options?.environmentMode === "replace";
+      const env = { ...CONTAINER_ENV, ...(replace ? {} : this.processEnv()), ...(options?.env ?? {}) };
       const timeoutMs = options?.timeout;
-      const argv = ["/bin/bash", "-lc", loginCommand(command, env)];
+      // env -i also drops image/init-process inheritance before bash starts.
+      const argv = replace
+        ? ["/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), "/bin/bash", "--noprofile", "--norc", "-c", command]
+        : ["/bin/bash", "-lc", loginCommand(command, env)];
       const proc = await this.container.exec(argv, {
         cwd: options?.cwd ?? "/workspace",
         env,
@@ -1572,7 +1576,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
    */
   async startProcess(
     command: string,
-    options?: { env?: Record<string, string>; cwd?: string },
+    options?: { env?: Record<string, string>; cwd?: string; environmentMode?: "replace" },
   ): Promise<{
     id: string;
     pid?: number;
@@ -1584,10 +1588,11 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     this.recordActivity(true);
     const id = crypto.randomUUID();
     const dir = `/tmp/oma-proc-${id}`;
-    const env = { ...CONTAINER_ENV, ...this.processEnv(), ...(options?.env ?? {}) };
+    const replace = options?.environmentMode === "replace";
+    const env = { ...CONTAINER_ENV, ...(replace ? {} : this.processEnv()), ...(options?.env ?? {}) };
     await this.exec(
-      `mkdir -p ${dir} && nohup /bin/bash -lc ${JSON.stringify(loginCommand(command, env))} >${dir}/stdout 2>${dir}/stderr & echo $! >${dir}/pid`,
-      { timeout: 30_000, cwd: options?.cwd ?? "/workspace", env },
+      `mkdir -p ${dir} && nohup /bin/bash ${replace ? "--noprofile --norc -c" : "-lc"} ${JSON.stringify(loginCommand(command, env))} >${dir}/stdout 2>${dir}/stderr & echo $! >${dir}/pid`,
+      { timeout: 30_000, cwd: options?.cwd ?? "/workspace", env, ...(replace ? { environmentMode: "replace" as const } : {}) },
     );
     const pidText = await this.readFile(`${dir}/pid`);
     const pid = Number.parseInt(pidText.content.trim(), 10) || undefined;

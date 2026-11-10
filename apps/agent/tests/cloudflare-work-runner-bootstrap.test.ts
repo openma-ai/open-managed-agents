@@ -18,7 +18,7 @@ function fixture(failure?: Error) {
 it("starts only the installed Work runner with explicit scoped env after limiting control-plane network", async () => {
   const f = fixture();
   const process = await f.sandbox.startWorkRunner(input());
-  expect(f.calls).toEqual([["restrict", ["control.test"]], ["start", "exec '/opt/openma/bin/openma-acp-work-item'", { env: input().env, cwd: "/workspace" }]]);
+  expect(f.calls).toEqual([["restrict", ["control.test"]], ["start", "exec '/opt/openma/bin/openma-acp-work-item'", { env: input().env, cwd: "/workspace", environmentMode: "replace" }]]);
   expect(process.id).toBe("process");
   expect(await process.getStatus()).toBe("running");
   expect("stdin" in process).toBe(false); expect("stdout" in process).toBe(false); expect("getLogs" in process).toBe(false);
@@ -74,4 +74,24 @@ it.each([
 ])("malformed or wrong-origin Work delivery never reaches provider", async ANTHROPIC_WORK_SECRET => {
   const f = fixture(); const spec = input(); spec.env.ANTHROPIC_WORK_SECRET = ANTHROPIC_WORK_SECRET;
   await expect(f.sandbox.startWorkRunner(spec)).rejects.toThrow(); expect(f.calls).toEqual([]);
+});
+
+it("real OmaSandbox start and exec replace stale env while preserving only platform CA defaults", async () => {
+  const { OmaSandbox } = await import("../src/oma-sandbox");
+  const native = Object.create(OmaSandbox.prototype) as any;
+  const inherited = { ANTHROPIC_API_KEY: "stale", ANTHROPIC_ENVIRONMENT_KEY: "standing", NODE_OPTIONS: "--require=/tmp/old.js" };
+  let received: any, argv: string[] = [];
+  Object.defineProperty(native, "ctx", { value: { storage: { kv: { get: () => inherited } }, container: { async exec(a: string[], options: any) { argv = a; received = options.env; return { async output() { return { stdout: new Uint8Array(), stderr: new Uint8Array(), exitCode: 0 }; } }; } } } });
+  native.ensureRunning = async () => {}; native.recordActivity = () => {}; native.track = async (_dirty: boolean, run: () => unknown) => run(); native.restrictOutboundToHosts = async () => {}; native.readFile = async () => ({ content: "42" });
+  setCloudflareSandboxForTest(native);
+  await new CloudflareSandbox({ SANDBOX: {} } as never, "sess").startWorkRunner(input());
+  expect(received).not.toHaveProperty("ANTHROPIC_API_KEY"); expect(received).not.toHaveProperty("ANTHROPIC_ENVIRONMENT_KEY"); expect(received).not.toHaveProperty("NODE_OPTIONS");
+  expect(received).toMatchObject(input().env); expect(received.NODE_EXTRA_CA_CERTS).toBeTruthy(); expect(received.SSL_CERT_FILE).toBeTruthy();
+  expect(argv.slice(0, 2)).toEqual(["/usr/bin/env", "-i"]);
+});
+it("ordinary native startProcess retains existing merged environment semantics", async () => {
+  const { OmaSandbox } = await import("../src/oma-sandbox"); const native = Object.create(OmaSandbox.prototype) as any; let received: any;
+  Object.defineProperty(native, "ctx", { value: { storage: { kv: { get: () => ({ ORDINARY_ENV: "kept" }) } } } });
+  native.ensureRunning = async () => {}; native.recordActivity = () => {}; native.exec = async (_command: string, options: any) => { received = options.env; return { stdout: "", exitCode: 0 }; }; native.readFile = async () => ({ content: "42" });
+  await native.startProcess("true", { env: { EXPLICIT: "yes" } }); expect(received.ORDINARY_ENV).toBe("kept"); expect(received.EXPLICIT).toBe("yes"); expect(received.NODE_EXTRA_CA_CERTS).toBeTruthy();
 });
