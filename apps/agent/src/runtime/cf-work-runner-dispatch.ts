@@ -13,6 +13,8 @@ type Authorized = {
 type Delivery = EnvironmentWorkRuntimeDelivery & { signal: AbortSignal };
 export interface CfWorkRunnerDispatchDependencies {
   command: string;
+  /** Operator-owned installed inventory, same declaration as supervisor. */
+  installedHarnesses?: string;
   /** Existing Work claim validation + pinned Session read; never caller selection. */
   authorize(input: EnvironmentWorkRuntimeDelivery, signal?: AbortSignal): Promise<Authorized | null>;
   /** The existing owner-scoped holder, shared with every egress attach. */
@@ -64,6 +66,7 @@ export function createCfWorkRunnerDispatch(deps: CfWorkRunnerDispatchDependencie
         ANTHROPIC_WORK_SECRET: delivery.workSecret, OPENMA_WORKSPACE_ID: delivery.workspaceId,
         OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
         OPENMA_SANDBOX_TOKEN: token,
+        ...(deps.installedHarnesses ? { OPENMA_ACP_HARNESSES: deps.installedHarnesses } : {}),
       } });
       // A late abort must remain unknown, never a safe-to-retry launch failure.
       signal.throwIfAborted();

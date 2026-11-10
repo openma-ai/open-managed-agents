@@ -53,13 +53,14 @@ export function createCfWorkRunnerAuthority(input: {
  * holder and selected sandbox. No second token cache or claim lifecycle. */
 export async function createCfSqlWorkRunnerDispatch(input: Parameters<typeof createCfWorkRunnerAuthority>[0] & {
   command: string;
+  installedHarnesses?: string;
   tokens: import("@open-managed-agents/sandbox-gateway").AttemptSandboxTokens;
   sandbox: import("../../../agent/src/runtime/cf-work-runner-dispatch").CfWorkRunnerDispatchDependencies["sandbox"];
 }) {
   const { createCfWorkRunnerDispatch } = await import("../../../agent/src/runtime/cf-work-runner-dispatch");
   const { createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef } = await import("@open-managed-agents/sandbox-gateway-sql");
   const { issueSandboxToken } = await import("@open-managed-agents/sandbox-gateway");
-  return createCfWorkRunnerDispatch({ command: input.command, tokens: input.tokens, sandbox: input.sandbox,
+  return createCfWorkRunnerDispatch({ command: input.command, installedHarnesses: input.installedHarnesses, tokens: input.tokens, sandbox: input.sandbox,
     authorize: createCfWorkRunnerAuthority(input),
     issueToken: (delivery, scope) => issueSandboxToken(createSqlEnvironmentWorkSandboxTokenStore(input.sql), environmentWorkSandboxTokenRef(delivery), { scope }),
   });

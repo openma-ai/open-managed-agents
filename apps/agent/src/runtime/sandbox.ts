@@ -688,7 +688,7 @@ export class CloudflareSandbox
     const origin = new URL(input.controlPlaneOrigin);
     if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== input.controlPlaneOrigin || origin.username || origin.password) throw new TypeError("Work runner requires a control-plane origin");
     if (!/^\/[A-Za-z0-9_./-]+$/.test(command) || command.split("/").includes("..")) throw new TypeError("Work runner command must be an installed absolute path");
-    const allowed = new Set(["ANTHROPIC_BASE_URL", "ANTHROPIC_ENVIRONMENT_ID", "ANTHROPIC_SESSION_ID", "ANTHROPIC_WORK_ID", "ANTHROPIC_WORK_SECRET", "OPENMA_HARNESS_ID", "OPENMA_HARNESS_VERSION", "OPENMA_WORKSPACE_ID", "OPENMA_OUTPUT_PATH", "OPENMA_SANDBOX_TOKEN"]);
+    const allowed = new Set(["ANTHROPIC_BASE_URL", "ANTHROPIC_ENVIRONMENT_ID", "ANTHROPIC_SESSION_ID", "ANTHROPIC_WORK_ID", "ANTHROPIC_WORK_SECRET", "OPENMA_HARNESS_ID", "OPENMA_HARNESS_VERSION", "OPENMA_WORKSPACE_ID", "OPENMA_OUTPUT_PATH", "OPENMA_SANDBOX_TOKEN", "OPENMA_ACP_HARNESSES"]);
     for (const [key, value] of Object.entries(environment)) {
       if (!allowed.has(key) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Work runner bootstrap environment is invalid");
     }

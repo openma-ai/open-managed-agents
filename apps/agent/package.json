@@ -9,6 +9,8 @@
     "./runtime/managed-runtime": "./src/runtime/managed-runtime.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.3.0",
+    "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@ai-sdk/anthropic": "^4.0.94",
     "@ai-sdk/provider": "4.0.35",
     "@cloudflare/containers": "^0.3.7",

@@ -24,7 +24,21 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env): P
     const cipher = new WebCryptoAesGcm(env.PLATFORM_ROOT_SECRET, "managed.environment-work.secret");
     const work = new SqlEnvironmentWorkStore(sql, { seal: async ({ plaintext }) => ({ ciphertext: await cipher.encrypt(plaintext) }), open: async ({ ciphertext }) => ({ plaintext: await cipher.decrypt(ciphertext) }) });
     let tokens = holders.get(env); if (!tokens) { tokens = attemptSandboxTokens(); holders.set(env, tokens); }
-    const dispatcher = await createCfSqlWorkRunnerDispatch({ sql, work, controlPlaneOrigin: origin, command, tokens,
+    const inventoryRaw = (env as Env & { OPENMA_ACP_HARNESSES?: string }).OPENMA_ACP_HARNESSES;
+    const dispatcher = await createCfSqlWorkRunnerDispatch({ sql, work, controlPlaneOrigin: origin, command, tokens, installedHarnesses: inventoryRaw,
+      installedHarnessResolver: { async resolve({ pinnedSession, signal }) {
+        signal.throwIfAborted();
+        if (!inventoryRaw) return null;
+        // Same operator-owned OPENMA_ACP_HARNESSES inventory consumed by the
+        // in-sandbox supervisor, never Work metadata or caller selection.
+        const inventory: unknown = JSON.parse(inventoryRaw);
+        if (!Array.isArray(inventory)) throw new TypeError("Installed harness inventory is invalid");
+        const pin = pinnedSession.agent.openma?.acp?.agent;
+        if (!pin?.command) return null;
+        const matches = inventory.filter(entry => entry && typeof entry.id === "string" && entry.id && typeof entry.version === "string" && entry.version && entry.command === pin.command && JSON.stringify(entry.args ?? []) === JSON.stringify(pin.args ?? []));
+        if (matches.length !== 1) return null;
+        return { id: matches[0].id, version: matches[0].version };
+      } },
       sandbox: async delivery => new CloudflareSandbox(env, delivery.sessionId),
     });
     // The factory compares the presented per-claim secret against the encrypted

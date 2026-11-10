@@ -133,3 +133,35 @@ it.each(["sandbox", "egress", "network"])("cached holder cannot authorize launch
     stop=true; await expect(dispatcher.dispatch({...f.delivery,signal:new AbortController().signal})).rejects.toThrow(); expect(starts).toBe(1); expect(deliveries).toBe(2);
   } finally {setCloudflareSandboxForTest(undefined);}
 });
+
+it("existing dispatched EnvironmentWorker poll automatically reaches real CF entry and bootstrap without forwarding standing key", async () => {
+  const f=await fixture(); const {WebCryptoAesGcm}=await import("@open-managed-agents/integrations-adapters-cf");
+  const cipher=new WebCryptoAesGcm("auto-root-012345678901234567890123", "managed.environment-work.secret"); const stored=await f.work.find(f.delivery);
+  await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
+  const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox"); let starts=0,polls=0; let launched:any;
+  setCloudflareSandboxForTest({async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(_c:any,o:any){starts++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+  try {
+    const {createCfDispatchedEnvironmentWorker}=await import("../src/runtime/cf-environment-worker");
+    const worker=createCfDispatchedEnvironmentWorker({...env,PLATFORM_ROOT_SECRET:"auto-root-012345678901234567890123",PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner"} as never,{environmentId:f.delivery.environmentId,workspaceId:"default",environmentKey:"standing-must-stay-host"},{baseURL:"https://control.test",beta:{webhooks:{unwrap:()=>({id:"event",type:"event",data:{type:"session.status_run_started",workspace_id:"default"}})}},withOptions:()=>({beta:{environments:{work:{poll:async()=>++polls===1?{id:f.delivery.workId,environment_id:f.delivery.environmentId,data:{type:"session",id:f.delivery.sessionId},secret:f.delivery.workSecret,metadata:{}}:null,stop:async()=>{throw Error("Host must not stop claimed Work");}}}}})} as never);
+    const waits:Promise<unknown>[]=[]; expect(worker.handleWebhook({body:"signed",headers:{},waitUntil:p=>waits.push(p)}).type).toBe("triggered"); await Promise.all(waits);
+    expect(starts).toBe(1); expect(polls).toBe(2); expect(launched.ANTHROPIC_WORK_SECRET).toBe(f.delivery.workSecret); expect(JSON.stringify(launched)).not.toContain("standing-must-stay-host");
+  } finally {setCloudflareSandboxForTest(undefined);}
+});
+
+it("production Worker webhook rejects unsigned wakeups before poll or dispatch", async () => {
+ const app=(await import("../src/index")).default;
+ const response=await app.fetch(new Request("https://agent.test/__internal/work/webhook",{method:"POST",body:"{}"}),{...env,PUBLIC_BASE_URL:"https://control.test",OPENMA_WORK_ENVIRONMENT_ID:"env",OPENMA_WORK_WORKSPACE_ID:"default",OPENMA_WORK_ENVIRONMENT_KEY:"standing",OPENMA_WORK_WEBHOOK_KEY:"whsec_dGVzdC10ZXN0LXRlc3QtdGVzdA=="} as never,{waitUntil(){throw Error("Unsigned request must not schedule Work");}} as never);
+ expect(response.status).toBe(403);
+});
+
+it("actual HTTP entry resolves command-only pin from trusted installed inventory, never Agent identity", async () => {
+ const f=await fixture(); const {WebCryptoAesGcm}=await import("@open-managed-agents/integrations-adapters-cf"); const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox");
+ await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"business-agent",version:9,openma:{harness:"acp-sandbox",acp:{agent:{command:"/opt/agents/fixed",args:["--acp"]}}}}}),f.delivery.sessionId).run();
+ const secret="inventory-root-012345678901234567890"; const cipher=new WebCryptoAesGcm(secret,"managed.environment-work.secret"); const stored=await f.work.find(f.delivery); await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
+ let launched:any; setCloudflareSandboxForTest({async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(_c:any,o:any){launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+ try {
+  const app=(await import("../src/index")).default;
+  const response=await app.fetch(new Request("https://agent.test/__internal/work/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...f.delivery,selection:{harness:{id:"forged",version:"99"}}})}),{...env,PLATFORM_ROOT_SECRET:secret,PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner",OPENMA_ACP_HARNESSES:JSON.stringify([{id:"installed-release",version:"2.4.6",command:"/opt/agents/fixed",args:["--acp"]}])} as never);
+  expect(response.status).toBe(200);expect(launched.OPENMA_HARNESS_ID).toBe("installed-release");expect(launched.OPENMA_HARNESS_VERSION).toBe("2.4.6");expect(JSON.parse(launched.OPENMA_ACP_HARNESSES)[0].command).toBe("/opt/agents/fixed");
+ } finally {setCloudflareSandboxForTest(undefined);}
+});
