@@ -8,6 +8,8 @@ import type { Env } from "@open-managed-agents/shared";
 import { attemptSandboxTokens, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 
+import { LegacySandboxTokenUnavailable, sandboxTokenResultError } from "./sandbox-token-rpc-error";
+
 type MainBinding = Pick<Env, "MAIN_MCP">;
 
 const held = attemptSandboxTokens();
@@ -17,7 +19,10 @@ const issue = (env: MainBinding, attempt: SessionExecutionAttemptRef, harness: s
   const main = env.MAIN_MCP;
   if (main?.issueSandboxToken === undefined) throw new Error("Sandbox tokens require the MAIN_MCP binding");
   const { workspaceId, sessionId, executionId, attemptId, ownerId, generation } = attempt;
-  return main.issueSandboxToken({ tenantId: workspaceId, sessionId, attempt: { workspaceId, sessionId, executionId, attemptId, ownerId, generation }, harness });
+  const result = await main.issueSandboxToken({ tenantId: workspaceId, sessionId, attempt: { workspaceId, sessionId, executionId, attemptId, ownerId, generation }, harness, resultFormat: "typed" });
+  if (result.type === "issued") return result.token;
+  if (result.type === "legacy_without_token") throw new LegacySandboxTokenUnavailable(result.message);
+  throw sandboxTokenResultError(result);
 };
 
 /** The token for one egress relay delivery of `attempt`. */

@@ -136,6 +136,8 @@ import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { authenticateSandboxEgress, authenticateSandboxEgressSha256, issueSandboxToken, sandboxHarnessPlacement, sandboxTokenScopeFor, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
 import { cfAcpExecutionChannels } from "./lib/cf-acp-execution-capability";
 import { cfSandboxTokenStore } from "./lib/cf-sandbox-token-store";
+import { issueCfSandboxTokenResult } from "./lib/cf-sandbox-token-rpc";
+import type { SandboxTokenIssueRequest, SandboxTokenIssueResult } from "@open-managed-agents/shared";
 import { isSessionExecutionFenceActive } from "@open-managed-agents/session-runtime/execution-lease";
 import { createSqlSessionExecutionLeases } from "@open-managed-agents/session-runtime-sql/execution-lease";
 import {
@@ -2011,7 +2013,21 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
    * appended to the attempt. SessionDO asks once per attempt and shares it
    * (attemptSandboxTokens); a relay re-delivery asks again. `harness` is the
    * agent's harness name: it fixes the scope (sandboxHarnessPlacement). */
-  async issueSandboxToken(opts: { tenantId: string; sessionId: string; attempt: SessionExecutionAttemptRef; harness: string | null }): Promise<string> {
+  async issueSandboxToken(opts: SandboxTokenIssueRequest & { resultFormat: "typed" }): Promise<SandboxTokenIssueResult>;
+  async issueSandboxToken(opts: SandboxTokenIssueRequest): Promise<string>;
+  async issueSandboxToken(opts: SandboxTokenIssueRequest & { resultFormat?: "typed" }): Promise<string | SandboxTokenIssueResult> {
+    if (opts.resultFormat === "typed") {
+      return await issueCfSandboxTokenResult({
+        store: cfSandboxTokenStore(this.env),
+        legacySession: async (input) => {
+          const services = await getCfServicesForTenant(this.env, input.tenantId);
+          const session = await services.sessions.get({ tenantId: input.tenantId, sessionId: input.sessionId });
+          return session === null ? null : { archivedAt: session.archived_at };
+        },
+        legacyFenceActive: async (input) => isSessionExecutionFenceActive(createSqlSessionExecutionLeases(new CfD1SqlClient(await buildCfTenantDbProvider(this.env).resolve(input.tenantId))), input.attempt),
+        report: (error) => console.error("sandbox_token_authority_unavailable", error),
+      }, opts);
+    }
     if (opts.attempt.workspaceId !== opts.tenantId || opts.attempt.sessionId !== opts.sessionId) {
       throw new Error("Sandbox token fence does not name this Session");
     }
