@@ -6,6 +6,8 @@ export interface EnqueueEnvironmentSessionWork {
   workspaceId: string;
   environment: Environment;
   session: Session;
+  expectedSessionRevision?: number;
+  recoveryEventIds?: string[];
 }
 
 export type EnqueueEnvironmentSessionWorkResult =

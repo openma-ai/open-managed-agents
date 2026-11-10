@@ -21,6 +21,10 @@ export interface SqlSessionStoreOptions {
   /** Commit bootstrap execution work atomically with the new Session. */
   executionOutbox?: boolean | ((scope: { workspaceId: string; environmentId: string; session: InsertSessionRecord["session"] }) => Promise<boolean>);
   executionPolicy?: { maxAttempts: number; timeoutMs: number };
+  /** Store bootstrap events in canonical form (id, processedAt null, source
+   * position revision 1/index sequence) even without the execution outbox.
+   * Required where the Environment Work input feed consumes the log. */
+  canonicalBootstrap?: boolean | ((scope: { workspaceId: string; environmentId: string; session: InsertSessionRecord["session"] }) => Promise<boolean>);
 }
 
 interface SessionRow {
@@ -75,6 +79,9 @@ export class SqlSessionStore implements SessionStore {
     const executionOutbox = typeof this.options.executionOutbox === "function"
       ? await this.options.executionOutbox({ workspaceId: input.workspaceId, environmentId: session.environmentId, session })
       : this.options.executionOutbox;
+    const canonicalBootstrap = executionOutbox === true || (typeof this.options.canonicalBootstrap === "function"
+      ? await this.options.canonicalBootstrap({ workspaceId: input.workspaceId, environmentId: session.environmentId, session })
+      : this.options.canonicalBootstrap === true);
     const bootstrapBatches = executionOutbox === true
       ? sessionExecutionEventBatches(sessionBootstrapExecutionEvents({
           sessionId: session.id, createdAt: session.createdAt, initialEvents: input.initialEvents,
@@ -121,7 +128,7 @@ export class SqlSessionStore implements SessionStore {
               (session_id, workspace_id, sequence, document)
              VALUES (?, ?, ?, ?)`,
           )
-          .bind(session.id, input.workspaceId, sequence, executionOutbox === true
+          .bind(session.id, input.workspaceId, sequence, canonicalBootstrap
             ? encodeSessionEventDocument({ ...event, id: `bootstrap_${session.id}:${sequence}`, processedAt: null } as never,
                 { revision: 1, index: sequence }, bootstrapBatches.find(batch => batch.events.some(input => input.id === `bootstrap_${session.id}:${sequence}`))?.id)
             : JSON.stringify(event)),

@@ -42,7 +42,17 @@ export type RuntimeProducedSessionEvent = Exclude<
   SentSessionEvent
 >;
 
+/** Client supplies exact consumed root bytes, never a trusted execution id.
+ * Persistence proves current claim/holder, root and open-turn state under CAS. */
+export interface WorkRuntimeRootProof {
+  inputId: string;
+  turnId: string;
+  expectedDocument: string;
+}
+
 export interface RecordSessionRuntimeEventsCommand {
+  workRoot?: WorkRuntimeRootProof;
+  workRootDialect?: "sqlite" | "postgres" | "mysql";
   sessionId: string;
   events: RuntimeProducedSessionEvent[];
   executionFence?: SessionExecutionFence;

@@ -1,4 +1,5 @@
 import { validateBudgetUpdate } from "./budget";
+import { sessionBootstrapExecutionEvents } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { Agent } from "../domain/agent";
 import type { Session, SessionAgent } from "../domain/session";
 import type { SessionBootstrapEvent } from "../domain/session-bootstrap";
@@ -366,7 +367,15 @@ export class SessionsApplicationService
       createdAt: timestamp,
       environmentId: command.environmentId,
       metadata: command.metadata ?? {},
-      outcomeEvaluations: [],
+      // Bootstrap definitions use the same stable identity as canonical input
+      // encoding. End spans update this aggregate; they must not invent it.
+      outcomeEvaluations: sessionBootstrapExecutionEvents({
+        sessionId, createdAt: timestamp, initialEvents: command.initialEvents,
+      }).flatMap(event => event.type === "user.define_outcome" ? [{
+        type: "outcome_evaluation" as const, completedAt: null,
+        description: event.description, explanation: null, iteration: 0,
+        outcomeId: event.outcomeId, result: "pending" as const,
+      }] : []),
       resources: resolvedResources.resources,
       stats: {},
       status: "running",

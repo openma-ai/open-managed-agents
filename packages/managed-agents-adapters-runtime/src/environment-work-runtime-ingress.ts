@@ -1,5 +1,6 @@
 import type {
   EnvironmentWorkExecutionFence,
+  WorkRuntimeRootProof,
   ProjectionEventIdCollision,
   RuntimeProducedSessionEvent,
   SessionRuntimeProjectionApplicationPort,
@@ -25,11 +26,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function decodeBatch(body: unknown):
-  | { events: RuntimeProducedSessionEvent[] }
+  | { events: RuntimeProducedSessionEvent[]; root?: WorkRuntimeRootProof }
   | { error: string } {
   if (
     !isRecord(body)
-    || Object.keys(body).some((key) => key !== "events")
+    || Object.keys(body).some((key) => key !== "events" && key !== "root")
     || !Array.isArray(body.events)
     || body.events.length < 1
     || body.events.length > MAX_EVENTS_PER_BATCH
@@ -37,6 +38,11 @@ function decodeBatch(body: unknown):
     return {
       error: `Request body must contain 1 to ${MAX_EVENTS_PER_BATCH} runtime events`,
     };
+  }
+  const root = body.root;
+  if (root !== undefined && (!isRecord(root) || Object.keys(root).some(key => !["inputId", "turnId", "expectedDocument"].includes(key)) ||
+      [root.inputId, root.turnId, root.expectedDocument].some(value => typeof value !== "string" || !value))) {
+    return { error: "Invalid consumed Work root proof" };
   }
   const events: RuntimeProducedSessionEvent[] = [];
   const ids = new Set<string>();
@@ -51,7 +57,7 @@ function decodeBatch(body: unknown):
     ids.add(event.id);
     events.push(event);
   }
-  return { events };
+  return { events, ...(root === undefined ? {} : { root: {inputId:String(root.inputId),turnId:String(root.turnId),expectedDocument:String(root.expectedDocument)} }) };
 }
 
 /**
@@ -61,6 +67,7 @@ function decodeBatch(body: unknown):
  */
 export async function ingestEnvironmentWorkRuntimeEvents(input: {
   claim: EnvironmentWorkRuntimeIngressClaim;
+  dialect?: "sqlite" | "postgres" | "mysql";
   sessionId: string;
   body: unknown;
   projection: SessionRuntimeProjectionApplicationPort;
@@ -76,8 +83,9 @@ export async function ingestEnvironmentWorkRuntimeEvents(input: {
       sessionId: input.sessionId,
       events: decoded.events,
       environmentWorkFence: input.claim,
+      ...(decoded.root ? {workRoot: decoded.root, workRootDialect: input.dialect ?? "sqlite"} : {}),
     });
-    if (result.type === "version_conflict") continue;
+    if (result.type === "version_conflict") { if (decoded.root) return result; continue; }
     if (result.type === "not_found") return { type: "not_found" };
     if (result.type === "execution_fence_lost") return { type: "stale_claim" };
     // Keep-first: nothing from this batch was applied or should be published.

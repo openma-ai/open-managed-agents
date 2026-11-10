@@ -69,7 +69,7 @@ describe("Environment-aware Session lifecycle router", () => {
       stop:async input=>{calls.push(`${workspaceId}:${input.workId}`);return {type:"stopped"} as never;},
       interruptTarget:async()=>{calls.push(workspaceId+":bind");return "work_bound";}
     }));
-    const accepted={workspaceId:"workspace_exact",session,environment:selfHostedEnvironment};
+    const accepted={workspaceId:"workspace_exact",sessionId:session.id,session,environment:selfHostedEnvironment};
     expect(await router.bindInterruptTarget(accepted)).toBe("work_bound");
     await router.sessionEventsAccepted({...accepted,events:[{id:"interrupt",type:"user.interrupt",environmentWorkId:"work_bound"}] as never});
     expect(calls).toEqual(["workspace_exact:bind","workspace_exact:work_bound"]);
@@ -266,7 +266,7 @@ describe("Environment-aware Session event dispatch router", () => {
   it("does not start a second host brain for self-hosted events", async () => {
     const runtimeCalls: object[] = [];
     const router = new EnvironmentAwareSessionEventDispatchRouter({
-      selfHostedWork: { stop: async () => { throw new Error("Unexpected Work stop for ordinary input"); } },
+      selfHostedWork: { enqueue: async () => ({ type: "queued", work: {} as never }), stop: async () => { throw new Error("Unexpected Work stop for ordinary input"); } },
       runtime: {
         async sessionEventsAccepted(input) { runtimeCalls.push(input); },
       },

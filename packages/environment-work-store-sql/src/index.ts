@@ -104,6 +104,106 @@ export class SqlEnvironmentWorkStore
             heartbeat_ttl_seconds, revision, state, created_at`;
   }
 
+  async ensureSession(input: InsertEnvironmentWorkRecord): Promise<StoredEnvironmentWork> {
+    const { work, secret, claim, heartbeatTtlSeconds } = input.record;
+    if (work.data.type !== "session" || work.state !== "queued" || claim !== null) {
+      throw new Error("Session ensure requires a fresh queued Work");
+    }
+    const sealed = await this.cipher.seal({ plaintext: JSON.stringify(secret) });
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const session = await this.client.prepare("SELECT revision, document FROM managed_sessions WHERE workspace_id = ? AND id = ?")
+        .bind(input.workspaceId, work.data.id).first<{ revision: number; document: string }>();
+      if (!session) throw new Error("Session not found while ensuring Work");
+      if (input.expectedSessionRevision !== undefined && Number(session.revision) !== input.expectedSessionRevision) {
+        throw new Error("Session Work recovery snapshot changed");
+      }
+      const document = JSON.parse(session.document) as { environmentId: string; archivedAt: string | null };
+      if (document.archivedAt !== null || document.environmentId !== work.environmentId) throw new Error("Session cannot accept Work in this environment");
+      const recoveryRows: Array<{ id: string; document: string }> = [];
+      for (const id of input.recoveryEventIds ?? []) {
+        const row = await this.client.prepare("SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ? AND id = ?")
+          .bind(input.workspaceId, work.data.id, id).first<{ document: string }>();
+        if (!row) throw new Error("Recovery input disappeared");
+        const event = JSON.parse(row.document);
+        if (event.source_position?.consumed_by_execution_id || event.cancelled_at_ms != null || event.deferredUntilToolResults?.length
+          || (["user.message", "system.message", "user.tool_confirmation"].includes(event.type) && event.processedAt !== null)) {
+          throw new Error("Recovery input was consumed or is not executable");
+        }
+        recoveryRows.push({ id, document: row.document });
+      }
+      const conflict = new Error("Session changed while ensuring Work");
+      try {
+        // Match runtime projection: lock the source revision, gate every write,
+        // then advance it. D1 runs the batch in one atomic SQLite snapshot;
+        // Node additionally validates before commit under READ COMMITTED.
+        const statements = [
+          this.client.prepare("UPDATE managed_sessions SET revision = revision WHERE workspace_id = ? AND id = ? AND revision = ?")
+            .bind(input.workspaceId, work.data.id, Number(session.revision)),
+          this.client.prepare(
+            `INSERT INTO managed_environment_work
+              (workspace_id, environment_id, id, session_id, document, sealed_secret,
+               claim_at, claim_worker_id, claim_generation, heartbeat_ttl_seconds, revision, state, created_at)
+             SELECT ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, 1, 'queued', ?
+             WHERE NOT EXISTS (SELECT 1 FROM managed_environment_work
+               WHERE workspace_id = ? AND session_id = ? AND state IN ('queued', 'starting', 'active'))
+               AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND revision = ?)`
+          ).bind(input.workspaceId, work.environmentId, work.id, work.data.id, JSON.stringify(work), sealed.ciphertext,
+            heartbeatTtlSeconds, timestamp(work.createdAt), input.workspaceId, work.data.id,
+            input.workspaceId, work.data.id, Number(session.revision)),
+          this.client.prepare(`SELECT ${this.columns()} FROM managed_environment_work
+            WHERE workspace_id = ? AND session_id = ? AND state IN ('queued', 'starting', 'active')`)
+            .bind(input.workspaceId, work.data.id),
+          this.client.prepare(
+            "UPDATE managed_sessions SET revision = revision + 1 WHERE workspace_id = ? AND id = ? AND revision = ? " +
+            "AND (SELECT count(*) FROM managed_environment_work WHERE workspace_id = ? AND session_id = ? AND state IN ('queued', 'starting', 'active')) = 1 " +
+            "AND EXISTS (SELECT 1 FROM managed_environment_work WHERE workspace_id = ? AND session_id = ? AND environment_id = ? AND state IN ('queued', 'starting', 'active'))"
+          ).bind(input.workspaceId, work.data.id, Number(session.revision), input.workspaceId, work.data.id,
+            input.workspaceId, work.data.id, work.environmentId),
+        ];
+        const eventGuards = recoveryRows.map(row => this.client.prepare(
+          "UPDATE managed_session_events SET document = document WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?"
+        ).bind(input.workspaceId, work.data.id, row.id, row.document));
+        // Lock consumption facts before the Session CAS: markProcessed uses a
+        // document CAS without advancing Session revision. Unknown effects must
+        // not race recovery into another consumer.
+        const recoveryStatements = eventGuards.flatMap(statement => this.client.batchChecked ? [statement] : [statement,
+          this.client.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE abs(-9223372036854775808) END")]);
+        const validate = (results: import("@open-managed-agents/sql-client").SqlRunResult<EnvironmentWorkRow>[]) => {
+          const rows = results[2]?.results ?? [];
+          if (rows.length > 1) throw new Error("Session has ambiguous consumable Work");
+          if (results[3]?.meta.changes !== 1 || rows.length !== 1) throw conflict;
+          const selected = JSON.parse(rows[0]!.document) as StoredEnvironmentWork["work"];
+          if (selected.environmentId !== work.environmentId) throw new Error("Session Work environment mismatch");
+        };
+        const results = this.client.batchChecked
+          ? (await this.client.batchChecked<EnvironmentWorkRow>([...recoveryStatements, ...statements], results => {
+              if (results.slice(0, eventGuards.length).some(row => row.meta.changes !== 1)) throw conflict;
+              validate(results.slice(eventGuards.length));
+            })).slice(eventGuards.length)
+          : (await this.client.batch<EnvironmentWorkRow>([...recoveryStatements, ...statements,
+            // D1 has no JS callback before COMMIT. A SQL assertion must fail
+            // inside its atomic batch, not validate a partial commit afterward.
+            // SQLite abs(INT64_MIN) raises integer overflow (never returns NULL).
+            this.client.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE abs(-9223372036854775808) END"),
+          ])).slice(recoveryStatements.length);
+        validate(results);
+        return this.toStored(results[2]!.results![0]!);
+      } catch (error) {
+        if (input.expectedSessionRevision !== undefined) throw error;
+        if (error === conflict) continue;
+        // A D1 assertion rolls the batch back. Retry only a demonstrated
+        // source revision race; arbitrary SQL/unknown failures are not replayed.
+        if (!this.client.batchChecked && error instanceof Error && error.message.includes("integer overflow")) {
+          const latest = await this.client.prepare("SELECT revision FROM managed_sessions WHERE workspace_id = ? AND id = ?")
+            .bind(input.workspaceId, work.data.id).first<{ revision: number }>();
+          if (latest && Number(latest.revision) !== Number(session.revision)) continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error("Session changed concurrently while ensuring Work");
+  }
+
   async insert(
     input: InsertEnvironmentWorkRecord,
   ): Promise<StoredEnvironmentWork> {

@@ -47,6 +47,11 @@ describe("Managed Agents SQL adapter boundary", () => {
       "../src/tunnels-sql-persistence.ts",
       "../src/user-profiles-sql-persistence.ts",
       "../src/vaults-sql-persistence.ts",
+      "../src/work-bootstrap.ts",
+      "../src/work-finalization.ts",
+      "../src/work-inputs.ts",
+      "../src/work-model-egress.ts",
+      "../src/work-outcome-interrupt.ts",
     ]);
 
     for (const source of Object.values(adapterSources)) {

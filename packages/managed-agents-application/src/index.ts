@@ -1,3 +1,4 @@
+export * from "./session-events/scheduling-recovery";
 export * from "./session-execution/work-inputs";
 export * from "./credentials/mcp-oauth-cli";
 export * from "./agents/application";
@@ -125,3 +126,14 @@ export * from "./credentials/validation";
 export * from "./credentials/vault-source";
 export type * from "./ports";
 export * from "./sessions/budget";
+export * from "./work-finalization/ports";
+export * from "./work-finalization/application";
+
+export { inspectCanonicalWorkTurn, type CanonicalWorkTurnRow, type CanonicalWorkTurnInspection } from "./work-finalization/turn-plan";
+
+export * from "./work-bootstrap/ports";
+export * from "./work-bootstrap/planner";
+
+export * from "./work-bootstrap/application";
+
+export * from "./session-events/work-outcome-interrupt";

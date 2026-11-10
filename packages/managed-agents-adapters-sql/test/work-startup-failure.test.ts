@@ -124,6 +124,9 @@ import {createManagedHarnessHttpControlChannel} from '../../harness-runtime-acp/
 it('settles startup failure after this Work projected running, without relying on heartbeat survival',async()=>{
  const {sql,persistence,input}=await fixture();let sleepAborted=false;let stops=0;const statuses:number[]=[];
  const runner=createNodeManagedAcpWorkItemRunner({environment:{ANTHROPIC_ENVIRONMENT_ID:'env',ANTHROPIC_SESSION_ID:'session',ANTHROPIC_WORK_ID:'work',OPENMA_HARNESS_ID:'acp',ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:'token',api_base_url:'https://test'})).toString('base64url')},
+ // This fixture dies before any turn is dispatched: crossing a checkpoint
+ // would be a bug, not a successful no-op storage implementation.
+ checkpoint:async()=>{throw new Error('unexpected checkpoint during startup');},
  lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:'beat',lease_extended:true,state:'running',ttl_seconds:90}),stop:async()=>{stops++;return {}; }},
  scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_,reject)=>signal.addEventListener('abort',()=>{sleepAborted=true;reject(signal.reason);},{once:true}))},
  fetch:async(raw,init)=>{const req=new Request(raw,init);if(req.url.endsWith('startup-boundary'))return Response.json({revision:await persistence.captureStartupBoundary(input.claim)});const body=await req.json() as {revision:number;processedAt:string};const result=await persistence.settleStartupFailure({claim:input.claim,...body});const status=result==='committed'?200:409;statuses.push(status);return Response.json({type:result},{status});},

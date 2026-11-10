@@ -115,7 +115,7 @@ function makeDependencies(overrides: {
 describe("Environment Work application", () => {
   it("accepts cloud ACP Work without relabeling its environment", async()=>{
     const deps=makeDependencies();let inserted=false;
-    const enqueuer=new EnvironmentWorkEnqueuerService({workspaceId:"workspace_01",store:{...deps.store,insert:async input=>{inserted=true;return {...input.record,revision:1};}},credentials:{issue:async()=>({type:"issued",secret:stored.secret}),bindToClaim:async({secret})=>({secret})},wakeup:{notifyRunStarted:async()=>{}},clock:deps.clock,ids:{nextEnvironmentWorkId:()=>"work_cloud"}});
+    const enqueuer=new EnvironmentWorkEnqueuerService({workspaceId:"workspace_01",store:{...deps.store,ensureSession:async input=>{inserted=true;return {...input.record,revision:1};}},credentials:{issue:async()=>({type:"issued",secret:stored.secret}),bindToClaim:async({secret})=>({secret})},wakeup:{notifyRunStarted:async()=>{}},clock:deps.clock,ids:{nextEnvironmentWorkId:()=>"work_cloud"}});
     const cloud={...environment,config:{type:"cloud",networking:{type:"unrestricted"}}} as typeof environment;
     const acp={...session,agent:{...session.agent,openma:{harness:"acp-sandbox"}}} as typeof session;
     expect(await enqueuer.enqueue({workspaceId:"workspace_01",environment:cloud,session:acp})).toMatchObject({type:"queued"});expect(inserted).toBe(true);expect(cloud.config.type).toBe("cloud");
@@ -133,7 +133,7 @@ describe("Environment Work application", () => {
       workspaceId: "workspace_01",
       store: {
         ...makeDependencies().store,
-        insert: async (input) => {
+        ensureSession: async (input) => {
           insertCalls.push(input);
           return { ...input.record, revision: 1 };
         },
@@ -190,7 +190,7 @@ describe("Environment Work application", () => {
       workspaceId: "workspace_01",
       store: {
         ...makeDependencies().store,
-        insert: async (input) => {
+        ensureSession: async (input) => {
           inserted = true;
           return { ...input.record, revision: 1 };
         },

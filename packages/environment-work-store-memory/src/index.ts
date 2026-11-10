@@ -75,6 +75,29 @@ export class MemoryEnvironmentWorkStore implements EnvironmentWorkStore {
   private readonly records = new Map<string, StoredEnvironmentWork & { claimGeneration: number }>();
   private readonly workerPolls = new Map<string, string>();
 
+  constructor(private readonly recovery?: { sessionRevision(input: { workspaceId: string; sessionId: string }): number | null }) {}
+
+  async ensureSession(input: InsertEnvironmentWorkRecord): Promise<StoredEnvironmentWork> {
+    if (input.expectedSessionRevision !== undefined && this.recovery?.sessionRevision({ workspaceId: input.workspaceId, sessionId: input.record.work.data.id }) !== input.expectedSessionRevision) {
+      throw new Error("Session Work recovery snapshot changed or unavailable");
+    }
+    if (input.record.work.data.type !== "session" || input.record.work.state !== "queued" || input.record.claim !== null) {
+      throw new Error("Session ensure requires a fresh queued Work");
+    }
+    // No await between lookup and insert: the memory adapter's atomic operation.
+    // SQL implementations must instead serialize against the durable Session row.
+    const current = [...this.records.entries()].find(([recordKey, candidate]) =>
+      recordKey.startsWith(input.workspaceId + "\u0000")
+      && candidate.work.data.type === "session"
+      && candidate.work.data.id === input.record.work.data.id
+      && ["queued", "starting", "active"].includes(candidate.work.state));
+    if (current) {
+      if (current[1].work.environmentId !== input.record.work.environmentId) throw new Error("Session Work environment mismatch");
+      return cloneStored(current[1]);
+    }
+    return this.insert(input);
+  }
+
   async insert(input: InsertEnvironmentWorkRecord): Promise<StoredEnvironmentWork> {
     const recordKey = key(
       input.workspaceId,

@@ -38,7 +38,7 @@ const PICO_PER_CENT = 10_000_000_000n;
 
 /** Exact consumed list cost in picodollars from the session's latest usage
  * snapshot (falls back to the rounded cents when no exact value exists). */
-export function consumedListCostPico(session: Session): bigint {
+export function consumedListCostPico(session: Pick<Session, "usage">): bigint {
   const exact = session.usage?.list_cost_pico;
   if (typeof exact === "string" && /^\d+$/.test(exact)) return BigInt(exact);
   const amount = session.usage?.listCost?.amountMinor;
@@ -64,6 +64,12 @@ export function validateBudgetUpdate(
   return null;
 }
 
+/** True when the session has a budget at or below its consumed list cost. */
+export function sessionBudgetExhausted(session: Pick<Session, "budget" | "usage">): boolean {
+  if (session.budget === null || session.budget === undefined) return false;
+  return BigInt(session.budget.amountMinor) * PICO_PER_CENT <= consumedListCostPico(session);
+}
+
 /**
  * True while the session is paused at its cap: its latest idle stopped with
  * `budget_reached` and the current budget is still at or below the consumed
@@ -75,8 +81,7 @@ export function sessionPausedAtBudget(
 ): boolean {
   if (latestIdleStopReason !== "budget_reached") return false;
   if (session.status !== "idle") return false;
-  if (session.budget === null || session.budget === undefined) return false;
-  return BigInt(session.budget.amountMinor) * PICO_PER_CENT <= consumedListCostPico(session);
+  return sessionBudgetExhausted(session);
 }
 
 export function budgetSettleOnlyMessage(): string {

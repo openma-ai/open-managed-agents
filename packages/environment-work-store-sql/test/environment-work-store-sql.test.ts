@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   EnvironmentWorkRecord,
   StoredEnvironmentWork,
@@ -68,6 +70,58 @@ const record: EnvironmentWorkRecord = {
   claim: null,
   heartbeatTtlSeconds: 90,
 };
+
+describe("SqlEnvironmentWorkStore atomic Session ensure", () => {
+  it("fails closed for a missing or archived Session and rolls back an ambiguous consumer set", async () => {
+    const sql = await createBetterSqlite3SqlClient(":memory:");
+    await sql.exec(SCHEMA_SQL + "CREATE TABLE managed_sessions (workspace_id text, id text, revision integer, document text, PRIMARY KEY(workspace_id,id));");
+    const store = new SqlEnvironmentWorkStore(sql, cipher);
+    const input = { workspaceId: "workspace_01", record };
+    await expect(store.ensureSession(input)).rejects.toThrow("Session not found");
+    await sql.prepare("INSERT INTO managed_sessions VALUES (?, ?, 1, ?)")
+      .bind(input.workspaceId, "session_01", JSON.stringify({ environmentId: record.work.environmentId, archivedAt: "2026-11-10T00:00:00.000Z" })).run();
+    await expect(store.ensureSession(input)).rejects.toThrow("cannot accept Work");
+    expect(await store.list({ workspaceId: input.workspaceId, environmentId: record.work.environmentId, limit: 10 })).toEqual([]);
+    await sql.prepare("UPDATE managed_sessions SET document = ?").bind(JSON.stringify({ environmentId: record.work.environmentId, archivedAt: null })).run();
+    await store.insert(input);
+    await store.insert({ ...input, record: { ...record, work: { ...record.work, id: "duplicate" } } });
+    await expect(store.ensureSession({ ...input, record: { ...record, work: { ...record.work, id: "candidate" } } })).rejects.toThrow("ambiguous");
+    expect(await sql.prepare("SELECT revision FROM managed_sessions").first()).toEqual({ revision: 1 });
+    expect(await store.list({ workspaceId: input.workspaceId, environmentId: record.work.environmentId, limit: 10 })).toHaveLength(2);
+  });
+
+  it.each(["queued", "starting", "active", "stopping", "stopped"] as const)("two connections reuse only consumable Work (%s) without touching the old claim", async state => {
+    const base = join(process.cwd(), ".test-artifacts");
+    await mkdir(base, { recursive: true });
+    const directory = await mkdtemp(join(base, "work-ensure-"));
+    try {
+      const left = await createBetterSqlite3SqlClient(join(directory, "work.db"));
+      const right = await createBetterSqlite3SqlClient(join(directory, "work.db"));
+      await left.exec(SCHEMA_SQL +         "CREATE TABLE managed_sessions (workspace_id text, id text, revision integer, document text, PRIMARY KEY(workspace_id,id));");
+      for (const workspaceId of ["workspace_01", "workspace_other"]) await left.prepare("INSERT INTO managed_sessions VALUES (?, ?, 1, ?)")
+        .bind(workspaceId, "session_01", JSON.stringify({ environmentId: record.work.environmentId, archivedAt: null })).run();
+      const a = new SqlEnvironmentWorkStore(left, cipher);
+      const b = new SqlEnvironmentWorkStore(right, cipher);
+      const original = await a.insert({ workspaceId: "workspace_01", record: {
+        ...record, work: { ...record.work, state }, claim: { claimedAt: record.work.createdAt, workerId: "old", generation: 7 },
+      } });
+      const input = (id: string) => ({ workspaceId: "workspace_01", record: { ...record, work: { ...record.work, id } } });
+      const [first, second] = await Promise.all([a.ensureSession!(input("new_a")), b.ensureSession!(input("new_b"))]);
+      expect(first.work.id).toBe(second.work.id);
+      const reusable = state === "queued" || state === "starting" || state === "active";
+      expect(first.work.id === record.work.id).toBe(reusable);
+      expect(await a.list({ workspaceId: "workspace_01", environmentId: record.work.environmentId, limit: 10 })).toHaveLength(reusable ? 1 : 2);
+      expect(await a.find({ workspaceId: "workspace_01", environmentId: record.work.environmentId, workId: record.work.id })).toEqual(original);
+      const other = await b.ensureSession!({ ...input("other"), workspaceId: "workspace_other" });
+      expect(other.work.id).toBe("other");
+      if (!reusable) {
+        await a.replace({ workspaceId: "workspace_01", environmentId: record.work.environmentId, workId: original.work.id,
+          expectedRevision: original.revision, next: { ...original, work: { ...original.work, state: "stopped" }, claim: null } });
+        expect(await b.find({ workspaceId: "workspace_01", environmentId: record.work.environmentId, workId: first.work.id })).toEqual(first);
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
 
 describe("SqlEnvironmentWorkStore", () => {
   let client: SqlClient;

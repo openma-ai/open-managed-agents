@@ -1,7 +1,11 @@
+import { SqlWorkOutcomeInterrupt } from "./work-outcome-interrupt";
 import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import {
   SessionResourceResolverService,
+  SessionSchedulingRecoveryService,
+  SessionRuntimeHistoryApplicationService,
+  WorkInputsApplication,
   type Environment,
   type DeploymentSessionLauncherPort,
   type Session,
@@ -92,6 +96,7 @@ import { SqlSessionSource } from "./session-sql-source";
 import { SqlSessionThreadContextSource } from "./session-thread-context-sql-source";
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
 import type { SessionResourceSecretSealer } from "./session-resource-secret-sealer";
+import { SqlWorkInputs, type SqlWorkInputsDialect } from "./work-inputs";
 
 export interface SqlManagedSessionsApplicationPorts {
   sessions: SessionsApplicationPort;
@@ -144,6 +149,13 @@ export interface SqlManagedSessionsCompositionDependencies {
    * such as Cloudflare Durable Objects dispatch directly instead.
    */
   executionOutbox?: boolean;
+  /**
+   * Private Environment Work input feed. `sourcePositionsValidated` is a
+   * deployment assertion that the validating source-position migration is in
+   * this database's migration chain; it is never accepted from a request.
+   * Absent, the feed fails closed with an explicit gap.
+   */
+  workInputs?: { sourcePositionsValidated: boolean; dialect?: SqlWorkInputsDialect };
 }
 
 interface SqlManagedSessionsWorkspaceApp extends App {
@@ -220,8 +232,16 @@ export class SqlManagedSessionsComposition {
           return sessionExecutionPlacement(environment, scope.session).authority === "session_execution";
         }
       : false;
+    // Environment Work consumes bootstrap input through the canonical log, so
+    // store it in the same positioned form the execution outbox uses.
+    const canonicalBootstrap = async (scope: { workspaceId: string; environmentId: string; session: Session }) => {
+      const environment = await environments.find(scope);
+      if (environment === null) throw new Error("Session environment not found for bootstrap placement");
+      return sessionExecutionPlacement(environment, scope.session).authority === "environment_work";
+    };
     this.sessions = new SqlSessionPersistence(client, sealer, {
       executionOutbox,
+      canonicalBootstrap,
     });
     this.sessionSource = new SqlSessionSource(client);
     this.sessionEvents = new SqlSessionEventPersistence(client, {
@@ -246,6 +266,48 @@ export class SqlManagedSessionsComposition {
 
   portsFor(workspaceId: string): SqlManagedSessionsApplicationPorts {
     return this.workspaceApps.app({ workspaceId }).ports;
+  }
+
+  schedulingRecoveryFor(workspaceId: string): SessionSchedulingRecoveryService {
+    return new SessionSchedulingRecoveryService({ workspaceId, execution: this.executionContext,
+      history: new SessionRuntimeHistoryApplicationService({ workspaceId, source: this.runtimeHistory }),
+      dispatch: this.dependencies.eventDispatch ?? this.dependencies.runtime });
+  }
+
+  /** Bounded keyset discovery only. Eligibility/consumption is decided by the
+   * shared recovery service, never by this approximate SQL candidate query. */
+  async recoverSchedulingPage(input: {
+    limit?: number;
+    after?: { workspaceId: string; sessionId: string };
+    onError?: (error: unknown) => void;
+  } = {}): Promise<{ scanned: number; next: { workspaceId: string; sessionId: string } | null }> {
+    const limit = input.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Recovery page limit must be 1..100");
+    const after = input.after;
+    const rows = await this.dependencies.client.prepare(
+      "SELECT s.workspace_id, s.id FROM managed_sessions s WHERE s.archived_at IS NULL " +
+      (after ? "AND (s.workspace_id > ? OR (s.workspace_id = ? AND s.id > ?)) " : "") +
+      "AND NOT EXISTS (SELECT 1 FROM managed_environment_work w WHERE w.workspace_id = s.workspace_id AND w.session_id = s.id AND w.state IN ('queued','starting','active')) " +
+      "AND EXISTS (SELECT 1 FROM managed_session_events e WHERE e.workspace_id = s.workspace_id AND e.session_id = s.id AND e.type IN ('user.message','user.tool_confirmation','user.custom_tool_result','user.tool_result','user.define_outcome','session.updated')) " +
+      "ORDER BY s.workspace_id, s.id LIMIT ?"
+    ).bind(...(after ? [after.workspaceId, after.workspaceId, after.sessionId] : []), limit)
+      .all<{ workspace_id: string; id: string }>();
+    const candidates = rows.results ?? [];
+    for (const row of candidates) {
+      try { await this.schedulingRecoveryFor(row.workspace_id).recoverSessionScheduling({ sessionId: row.id }); }
+      catch (error) { if (!input.onError) throw error; input.onError(error); }
+    }
+    const last = candidates.at(-1);
+    return { scanned: candidates.length, next: candidates.length === limit && last ? { workspaceId: last.workspace_id, sessionId: last.id } : null };
+  }
+
+  /** Private Work input feed over the canonical log. Workspace, holder and
+   * claim scope come from the authenticated Work claim on every call. */
+  workInputs(): WorkInputsApplication {
+    return new WorkInputsApplication(new SqlWorkInputs(this.dependencies.client, {
+      sourcePositionsValidated: this.dependencies.workInputs?.sourcePositionsValidated === true,
+      dialect: this.dependencies.workInputs?.dialect ?? "sqlite",
+    }));
   }
 
   /** Stops and forgets every workspace-scoped application graph. */
@@ -313,7 +375,7 @@ export class SqlManagedSessionsComposition {
         providePort(sessionThreadEventStorePort, this.sessionEvents),
         providePort(sessionThreadEventStreamPort, eventStream),
         sessionsModule(),
-        sessionEventsModule(),
+        sessionEventsModule({ schedulingRecovery: this.schedulingRecoveryFor(workspaceId), workOutcomeInterrupt: new SqlWorkOutcomeInterrupt(this.dependencies.client, this.dependencies.workInputs?.dialect ?? "sqlite") }),
         sessionResourcesModule(),
         sessionThreadsModule(),
         sessionThreadEventsModule(),

@@ -14,6 +14,8 @@ export interface AcceptedSessionEvents {
 
 export interface SessionEventDispatchPort {
   sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void>;
+  /** Ensure only the consumer of a validated canonical snapshot. Never replay execution. */
+  recoverSessionScheduling?(input: AcceptedSessionEvents & { expectedSessionRevision: number }): Promise<void>;
   /** Bind cancellation to an existing Work before canonical acceptance. */
   bindInterruptTarget?(input: Omit<AcceptedSessionEvents, "events">): Promise<string | null>;
   /** Recover only durable interrupt control effects, never replay turn dispatch. */

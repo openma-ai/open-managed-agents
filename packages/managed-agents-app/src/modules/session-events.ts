@@ -1,6 +1,7 @@
 import {
   SessionEventsApplicationService,
   type SessionSourcePort,
+  type WorkOutcomeInterruptPort,
   type SessionWorkAdmissionPort,
 } from "@open-managed-agents/managed-agents-application";
 import type { SessionEventLogStore } from "@open-managed-agents/session-event-store";
@@ -53,7 +54,7 @@ export const sessionEventDispatchPort =
     "managed-agents.outbound.session-events.dispatch",
   );
 
-export function sessionEventsModule(): AppModule {
+export function sessionEventsModule(options: { workOutcomeInterrupt?: WorkOutcomeInterruptPort; schedulingRecovery?: { recoverSessionScheduling(input: { sessionId: string }): Promise<unknown> } } = {}): AppModule {
   return defineAppModule({
     name: "managed-agents:session-events",
     provides: [managedAgentsPortTokens.sessionEvents],
@@ -77,6 +78,8 @@ export function sessionEventsModule(): AppModule {
           managedAgentsPortTokens.sessionEvents,
           new SessionEventsApplicationService({
             workspaceId: workspace.workspaceId,
+            schedulingRecovery: options.schedulingRecovery,
+            workOutcomeInterrupt: options.workOutcomeInterrupt,
             store: port(sessionEventStorePort),
             sessions: port(sessionEventSourcePort),
             execution: port(sessionEventExecutionContextSourcePort),

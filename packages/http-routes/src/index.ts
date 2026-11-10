@@ -1,4 +1,3 @@
-export { buildWorkInputRoutes } from "./work-inputs";
 // Public surface — every mount factory and the shared types.
 //
 // CF + Node both `import { buildXxxRoutes, type RouteServices } from
@@ -15,6 +14,7 @@ export type {
 export { resolveServices } from "./types";
 
 export { buildWorkStartupFailureRoutes } from "./work-startup-failure";
+export { buildWorkInputRoutes } from "./work-inputs";
 
 export { buildAgentRoutes } from "./agents";
 export type { AgentRoutesDeps } from "./agents";
@@ -81,3 +81,6 @@ export type {
   WebhookHandlers,
   RateLimitHooks,
 } from "./integrations/gateway";
+export { buildWorkFinalizationRoutes } from "./work-finalization";
+
+export * from "./work-bootstrap";

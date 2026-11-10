@@ -1,3 +1,4 @@
+import { sessionExecutionEvents } from "@open-managed-agents/session-runtime-contract/coordination";
 import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type {
   Session,
@@ -117,7 +118,8 @@ export class EnvironmentAwareSessionLifecycleRouter
 
 export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
   runtime: SessionEventDispatchPort;
-  selfHostedWork: Pick<EnvironmentSessionWorkEnqueuerPort, "stop" | "interruptTarget">;
+  selfHostedWork: Pick<EnvironmentSessionWorkEnqueuerPort, "stop" | "interruptTarget">
+    & Partial<Pick<EnvironmentSessionWorkEnqueuerPort, "enqueue">>;
 }
 
 /**
@@ -137,6 +139,11 @@ export class EnvironmentAwareSessionEventDispatchRouter
 
   static forWorkspace(runtime: SessionEventDispatchPort, workFor: (workspaceId: string) => EnvironmentAwareSessionEventDispatchRouterDependencies["selfHostedWork"]): EnvironmentAwareSessionEventDispatchRouter {
     return new EnvironmentAwareSessionEventDispatchRouter({runtime,selfHostedWork:{
+      enqueue: input => {
+        const work = workFor(input.workspaceId);
+        if (!work.enqueue) throw new Error("Atomic Session Work enqueue is not configured");
+        return work.enqueue(input);
+      },
       stop: input => workFor(input.workspaceId).stop(input),
       interruptTarget: input => {
         const work=workFor(input.workspaceId);
@@ -152,6 +159,28 @@ export class EnvironmentAwareSessionEventDispatchRouter
       return;
     }
     await this.stopAcceptedInterrupts(input);
+    // Ensure a Session-level consumer, never dispatch these inputs to a second
+    // brain. Pure interrupts and deferred/cancelled inputs cannot start Work.
+    if (sessionExecutionEvents(input.events.filter(event => event.cancelled_at_ms == null
+      && !("deferredUntilToolResults" in event && event.deferredUntilToolResults?.length))).length > 0) {
+      if (!this.dependencies.selfHostedWork.enqueue) throw new Error("Atomic Session Work enqueue is not configured");
+      const result = await this.dependencies.selfHostedWork.enqueue({
+        workspaceId: input.workspaceId, environment: input.environment, session: input.session,
+      });
+      if (result.type === "rejected") throw new Error(result.message);
+    }
+  }
+
+  async recoverSessionScheduling(input: AcceptedSessionEvents & { expectedSessionRevision: number }): Promise<void> {
+    if (environmentExecutionAuthority(input.environment, input.session) !== "environment_work") return;
+    if (sessionExecutionEvents(input.events).length === 0) return;
+    if (!this.dependencies.selfHostedWork.enqueue) throw new Error("Atomic Session Work enqueue is not configured");
+    const result = await this.dependencies.selfHostedWork.enqueue({
+      workspaceId: input.workspaceId, environment: input.environment, session: input.session,
+      expectedSessionRevision: input.expectedSessionRevision,
+      recoveryEventIds: input.events.map(event => event.id),
+    });
+    if (result.type === "rejected") throw new Error(result.message);
   }
 
   async bindInterruptTarget(input: Omit<AcceptedSessionEvents, "events">): Promise<string | null> {

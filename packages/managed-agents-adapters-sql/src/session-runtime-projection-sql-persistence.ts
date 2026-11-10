@@ -1,7 +1,9 @@
+import { sqliteSourcePositionSql, postgresSourcePositionSql } from "./work-inputs";
 import { decodeSessionEventDocument, encodeSessionEventDocument } from '@open-managed-agents/session-runtime-contract/history';
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   FindRuntimeProjectionSession,
+  RuntimeProducedSessionEvent,
   ProjectSessionRuntimeState,
   ProjectSessionRuntimeStateResult,
   SessionRuntimeProjectionPersistencePort,
@@ -9,6 +11,8 @@ import type {
 } from "@open-managed-agents/managed-agents-application";
 import {
   workStartupFailureEvents,
+  inspectWorkApprovalResolution,
+  validateWorkThreadLineage,
   type SettleWorkStartupFailure,
   type WorkStartupFailurePersistencePort,
   type EnvironmentWorkExecutionFence,
@@ -25,6 +29,13 @@ const FAILED_ATTEMPT_SQL = `SELECT 1 FROM managed_session_executions old
           WHERE newer.workspace_id = old.workspace_id AND newer.session_id = old.session_id AND newer.id <> old.id
             AND (newer.state IN ('queued', 'running') OR newer.admitted_at_ms >= old.admitted_at_ms
               OR newer.settled_at_ms > old.settled_at_ms))`;
+
+/** Side-effect-free startup lifecycle a claim may project before settling:
+ * running, plus the retrying error/rescheduled pair of a failed ACP start. */
+function startupFact(event: ReturnType<typeof decodeSessionEventDocument>["event"]): boolean {
+  return event.type === "session.status_running" || event.type === "session.status_rescheduled"
+    || (event.type === "session.error" && event.error.retryStatus === "retrying");
+}
 
 interface ProjectionSessionRow {
   id: string;
@@ -113,7 +124,8 @@ export class SqlSessionRuntimeProjectionPersistence
       return "committed";
     }
     const current = await this.findCurrent(claim);
-    if (current === null || current.revision < input.revision || current.session.status !== "running") return "rejected";
+    if (current === null || current.revision < input.revision ||
+      (current.session.status !== "running" && current.session.status !== "rescheduling")) return "rejected";
     if (current.revision > input.revision) {
       const rows = await this.client.prepare(
         "SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ?",
@@ -126,11 +138,11 @@ export class SqlSessionRuntimeProjectionPersistence
         if (source.position.revision <= input.revision) continue;
         if (source.position.revision > current.revision ||
           source.environmentWork?.workId !== claim.workId || source.environmentWork.generation !== claim.generation ||
-          source.consumedByExecutionId !== undefined || source.event.type !== "session.status_running") return "rejected";
+          source.consumedByExecutionId !== undefined || !startupFact(source.event)) return "rejected";
         revisions.add(source.position.revision);
       }
       // Every intervening Session revision must be explained by this claim's
-      // startup running facts, not merely a latest running status. CAS below
+      // startup facts, not merely a latest running status. CAS below
       // still rejects a new input/projection after this read.
       if (revisions.size !== current.revision - input.revision) return "rejected";
     }
@@ -171,7 +183,18 @@ export class SqlSessionRuntimeProjectionPersistence
         !Number.isSafeInteger(environmentWorkFence.generation) ||
         environmentWorkFence.generation < 1)
     ) return { type: "execution_fence_lost" };
+    const finalization = input.workFinalization;
+    if (finalization !== undefined && (environmentWorkFence === undefined || !finalization.holder || !finalization.turnId)) {
+      return { type: "execution_fence_lost" };
+    }
+    const rootGuard = input.workRoot === undefined ? undefined : await this.verifyWorkRoot(input);
+    if (input.workRoot !== undefined && (rootGuard === null || finalization !== undefined)) return { type: "execution_fence_lost" };
+    const guarded = finalization ?? rootGuard ?? undefined;
     const now = this.#now().getTime();
+    const workClock = guarded === undefined ? "?" : guarded.dialect === "postgres"
+      ? "floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
+      : guarded.dialect === "mysql" ? "floor(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)"
+      : "(CAST(strftime('%s','now') AS INTEGER)*1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
     const failedSql = fence?.settlement === "failed_unclaimed" ? FAILED_ATTEMPT_SQL.replace("old.attempt_id = ? AND old.owner_id = ? AND old.generation = ?", "old.attempt_id IS NULL AND old.attempt_count = 0") : FAILED_ATTEMPT_SQL;
     let fenceSql = fence?.settlement !== undefined
       ? `AND EXISTS (${failedSql})`
@@ -186,9 +209,9 @@ export class SqlSessionRuntimeProjectionPersistence
         ? `AND EXISTS (
              SELECT 1 FROM managed_environment_work
               WHERE workspace_id = ? AND environment_id = ? AND id = ?
-                AND session_id = ? AND state IN ('starting', 'active')
+                AND session_id = ? AND state IN ('starting', 'active'${finalization === undefined ? "" : ", 'stopping'"})
                 AND claim_generation = ? AND claim_at IS NOT NULL
-                AND claim_at + heartbeat_ttl_seconds * 1000 > ?
+                AND claim_at + heartbeat_ttl_seconds * 1000 > ${workClock}
            )`
         : "";
     const fenceBindings: Array<string | number> = fence !== undefined
@@ -206,9 +229,21 @@ export class SqlSessionRuntimeProjectionPersistence
             environmentWorkFence.workId,
             environmentWorkFence.sessionId,
             environmentWorkFence.generation,
-            now,
+            ...(guarded === undefined ? [now] : []),
           ]
         : [];
+    if (guarded !== undefined && environmentWorkFence !== undefined) {
+      const rawCas = guarded.dialect === "mysql" ? "BINARY document = BINARY ?" : "document = ?";
+      fenceSql += ` AND EXISTS (SELECT 1 FROM managed_environment_work
+        WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_worker_id = ?)
+        AND EXISTS (SELECT 1 FROM ${guarded.bootstrapSequence === undefined ? "managed_session_events" : "managed_session_initial_events"}
+          WHERE workspace_id = ? AND session_id = ? AND ${guarded.bootstrapSequence === undefined ? "id" : "sequence"} = ? AND ${rawCas})
+        AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND environment_id = ? AND archived_at IS NULL)`;
+      fenceBindings.push(environmentWorkFence.workspaceId, environmentWorkFence.environmentId, environmentWorkFence.workId,
+        environmentWorkFence.sessionId, guarded.holder, input.workspaceId, input.sessionId,
+        guarded.bootstrapSequence ?? guarded.inputId, guarded.inputDocument,
+        input.workspaceId, input.sessionId, environmentWorkFence.environmentId);
+    }
     if (startup !== undefined && environmentWorkFence !== undefined) {
       // Work revision includes heartbeat updates: a racing renewal or reclaim
       // rejects this whole batch. Other/newer Work must not be closed by us.
@@ -221,7 +256,8 @@ export class SqlSessionRuntimeProjectionPersistence
         environmentWorkFence.workspaceId, environmentWorkFence.sessionId, environmentWorkFence.workId,
         environmentWorkFence.workspaceId, environmentWorkFence.workId);
     }
-    const existingEvents = await Promise.all(input.events.map((event) =>
+    const replayEvents = input.environmentWorkFence === undefined ? input.events : input.sourceEvents ?? input.events;
+    const existingEvents = await Promise.all(replayEvents.map((event) =>
       this.client.prepare(
         `SELECT document FROM managed_session_events
           WHERE workspace_id = ? AND session_id = ? AND id = ?`,
@@ -232,9 +268,18 @@ export class SqlSessionRuntimeProjectionPersistence
     if (existingEvents.some((row) => row !== null)) {
       // Startup replay is confirmed only by settleStartupFailure after checking
       // the stopped Work. Ordinary projection replay cannot prove that stop.
-      if (startup !== undefined) return { type: "execution_fence_lost" };
+      if (startup !== undefined || input.workRoot !== undefined) return { type: "execution_fence_lost" };
       const exactReplay = existingEvents.every((row, index) =>
-        row !== null && JSON.stringify(decodeSessionEventDocument(row.document).event) === JSON.stringify(input.events[index])
+        row !== null && (() => {
+          const stored = decodeSessionEventDocument(row.document);
+          const source = JSON.parse(row.document).source_position?.runtime_input;
+          // Original inputs and derived facts were committed in one CAS.
+          // Never let another Work generation confirm their publication.
+          if (input.environmentWorkFence !== undefined &&
+            (stored.environmentWork?.workId !== input.environmentWorkFence.workId ||
+             stored.environmentWork.generation !== input.environmentWorkFence.generation)) return false;
+          return JSON.stringify(source ?? stored.event) === JSON.stringify(replayEvents[index]);
+        })()
       );
       if (!await this.isFenceActive(input, now)) {
         return { type: "execution_fence_lost" };
@@ -243,7 +288,7 @@ export class SqlSessionRuntimeProjectionPersistence
         // Event IDs are immutable facts: keep the first recorded body and do
         // not apply any part of the replayed batch.
         const collision = projectionEventIdCollision(
-          input.events
+          replayEvents
             .filter((_event, index) => existingEvents[index] !== null)
             .map((event) => event.id),
         );
@@ -259,7 +304,15 @@ export class SqlSessionRuntimeProjectionPersistence
         ? { type: "not_found" }
         : { type: "projected", record: current };
     }
+    const sourceById = new Map((input.sourceEvents ?? []).map(event => [event.id, event]));
     const eventStatements = input.events.map((event, index) => {
+      const document = JSON.parse(encodeSessionEventDocument(event,
+        { revision: input.expectedRevision + 1, index }, guarded?.turnId ?? fence?.executionId, undefined,
+        environmentWorkFence === undefined ? undefined : { workId: environmentWorkFence.workId, generation: environmentWorkFence.generation }));
+      const source = sourceById.get(event.id);
+      if (environmentWorkFence !== undefined && source !== undefined) {
+        document.source_position.runtime_input = source;
+      }
       return this.client.prepare(
           `INSERT INTO managed_session_events
             (workspace_id, session_id, thread_id, id, type, document, processed_at)
@@ -276,8 +329,7 @@ export class SqlSessionRuntimeProjectionPersistence
           "sessionThreadId" in event ? event.sessionThreadId ?? null : null,
           event.id,
           event.type,
-          encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }, fence?.executionId, undefined,
-            environmentWorkFence === undefined ? undefined : { workId: environmentWorkFence.workId, generation: environmentWorkFence.generation }),
+          JSON.stringify(document),
           timestamp(event.processedAt),
           input.workspaceId,
           input.sessionId,
@@ -355,20 +407,38 @@ export class SqlSessionRuntimeProjectionPersistence
       stoppedAt: startup.processedAt }),
       environmentWorkFence.workspaceId, environmentWorkFence.environmentId, environmentWorkFence.workId,
       startup.workRevision, input.workspaceId, input.sessionId, input.expectedRevision + 1, ...fenceBindings)];
-    const statements = [revisionGuard, ...eventStatements, ...threadStatements, update, ...stop];
-    const updateIndex = 1 + eventStatements.length + threadStatements.length;
+    // Lock Work before event writes on READ COMMITTED hosts. Re-evaluate the
+    // database clock after lock acquisition and again in the final Session CAS.
+    const workLock = guarded === undefined || environmentWorkFence === undefined ? [] : [this.client.prepare(
+      `UPDATE managed_environment_work SET claim_generation = claim_generation WHERE workspace_id = ? AND id = ? AND claim_worker_id = ? AND claim_generation = ?`,
+    ).bind(environmentWorkFence.workspaceId, environmentWorkFence.workId, guarded.holder, environmentWorkFence.generation)];
+    const statements = [revisionGuard, ...workLock, ...eventStatements, ...threadStatements, update, ...stop];
+    const eventStart = 1 + workLock.length;
+    const updateIndex = eventStart + eventStatements.length + threadStatements.length;
     const rejected = new Error("Runtime projection admission changed inside transaction");
     let results;
+    const assertChange = (index: number) => index <= updateIndex;
+    const originalIndexes: number[] = [];
+    let batchIndex = 0;
+    const checkedStatements = statements.flatMap((statement, index) => {
+      originalIndexes.push(batchIndex);
+      const check = guarded !== undefined && assertChange(index);
+      batchIndex += check ? 2 : 1;
+      return check ? [statement, this.client.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE abs(-9223372036854775808) END")] : [statement];
+    });
     try {
       // READ COMMITTED may change the fence between statements. Never commit
       // earlier events/threads when the final CAS or an event write rejects.
       results = this.client.batchChecked
         ? await this.client.batchChecked(statements, rows => {
-          if (rows[updateIndex]?.meta.changes !== 1 || (stop.length > 0 && rows.at(-1)?.meta.changes !== 1) || rows.slice(1, 1 + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
+          if ((guarded !== undefined && (rows[0]?.meta.changes !== 1 || workLock.length > 0 && rows[1]?.meta.changes !== 1)) || rows[updateIndex]?.meta.changes !== 1 || (stop.length > 0 && rows.at(-1)?.meta.changes !== 1) || rows.slice(eventStart, eventStart + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
         })
-        : await this.client.batch(statements); // D1: one atomic SQLite snapshot.
+        : guarded === undefined ? await this.client.batch(statements)
+        // A SQLite statement clock may advance even inside an atomic batch.
+        // Assert changed rows inside SQL to roll back partial terminal writes.
+        : await this.client.batch(checkedStatements).then(rows => originalIndexes.map(index => rows[index]!));
     } catch (error) {
-      if (error !== rejected) throw error;
+      if (error !== rejected && !(guarded !== undefined && !this.client.batchChecked && error instanceof Error && error.message.includes("integer overflow"))) throw error;
       results = [{ meta: { changes: 0 } }];
     }
     const updateResult = results[updateIndex] ?? results[0];
@@ -397,6 +467,114 @@ export class SqlSessionRuntimeProjectionPersistence
       throw new Error("Session vanished after runtime projection");
     }
     return { type: "projected", record: projected };
+  }
+
+  /** Bounded optimistic evidence read. Exact root bytes + current Session
+   * revision + Work holder/generation/DB clock are repeated in EVERY write's
+   * transaction guard. A root/terminal race rolls the complete batch back. */
+  private async verifyWorkRoot(input: ProjectSessionRuntimeState): Promise<import("@open-managed-agents/managed-agents-application").WorkFinalizationProjectionGuard | null> {
+    const proof = input.workRoot!, claim = input.environmentWorkFence;
+    if (!claim || input.executionFence || !proof.inputId || !proof.turnId || !proof.expectedDocument) return null;
+    const dialect = input.workRootDialect ?? "sqlite";
+    let root: ReturnType<typeof decodeSessionEventDocument>;
+    let raw: Record<string, unknown>;
+    try { root = decodeSessionEventDocument(proof.expectedDocument); raw = JSON.parse(proof.expectedDocument); } catch { return null; }
+    const position = raw.source_position as {consumption_claim?: {workId?: unknown; generation?: unknown; holder?: unknown}} | undefined;
+    const consumedClaim = position?.consumption_claim;
+    const runnable = (event: {type: string}, document: Record<string, unknown>) =>
+      ["user.message", "user.define_outcome", "user.tool_result", "user.custom_tool_result"].includes(event.type) || event.type === "session.updated" && document.resume === true;
+    if (!root.position || root.position.revision > input.expectedRevision || root.event.id !== proof.inputId ||
+        (root.executionId ?? root.event.id) !== proof.turnId || root.consumedByExecutionId !== proof.turnId ||
+        consumedClaim?.workId !== claim.workId || consumedClaim.generation !== claim.generation ||
+        typeof consumedClaim.holder !== "string" || !consumedClaim.holder || !runnable(root.event, raw) ||
+        typeof raw.processedAt !== "string" || !Number.isFinite(Date.parse(raw.processedAt)) || raw._queued === true || raw.cancelled_at_ms != null ||
+        raw.deferredUntilToolResults !== undefined || raw.deferred_until_tool_results !== undefined) return null;
+    const bootstrapPrefix = `bootstrap_${input.sessionId}:`;
+    let bootstrapSequence: number | undefined;
+    if (proof.inputId.startsWith(bootstrapPrefix)) {
+      const sequence = proof.inputId.slice(bootstrapPrefix.length);
+      if (!/^(0|[1-9][0-9]*)$/.test(sequence)) return null;
+      bootstrapSequence = Number(sequence);
+      if (!Number.isSafeInteger(bootstrapSequence) || root.position.revision !== 1 || root.position.index !== bootstrapSequence) return null;
+    }
+    const rawCas = dialect === "mysql" ? "BINARY document = BINARY ?" : "document = ?";
+    const row = await this.client.prepare(`SELECT 1 FROM ${bootstrapSequence === undefined ? "managed_session_events" : "managed_session_initial_events"}
+      WHERE workspace_id=? AND session_id=? AND ${bootstrapSequence === undefined ? "id" : "sequence"}=? AND ${rawCas}`)
+      .bind(input.workspaceId, input.sessionId, bootstrapSequence ?? proof.inputId, proof.expectedDocument).first();
+    if (!row) return null;
+    const positions = dialect === "postgres" ? postgresSourcePositionSql : dialect === "mysql"
+      ? {revision:"work_input_revision",ordinal:"work_input_index",invalid:"work_input_invalid=1"} : sqliteSourcePositionSql;
+    // Use the existing source-position and invalid-position indexes. Unknown
+    // facts are never skipped when proving a still-open root.
+    if (await this.client.prepare(`SELECT 1 FROM managed_session_events WHERE workspace_id=? AND session_id=? AND ${positions.invalid} LIMIT 1`)
+      .bind(input.workspaceId,input.sessionId).first()) return null;
+    const rows = await this.client.prepare(`SELECT document FROM managed_session_events WHERE workspace_id=? AND session_id=? AND ${positions.revision}>=? ORDER BY ${positions.revision},${positions.ordinal} LIMIT 201`)
+      .bind(input.workspaceId,input.sessionId,root.position.revision).all<{document:string}>();
+    if ((rows.results?.length ?? 0) > 200) return null;
+    const facts = [];
+    for (const row of rows.results ?? []) {
+      const fact = decodeSessionEventDocument(row.document);
+      const event: Record<string, unknown> = JSON.parse(row.document);
+      if (!fact.position || fact.position.revision > input.expectedRevision) return null;
+      if (fact.position.revision === root.position.revision && fact.position.index <= root.position.index) continue;
+      if (fact.consumedByExecutionId && fact.consumedByExecutionId !== proof.turnId && runnable(fact.event,event)) return null;
+      if (fact.event.type === "session.status_terminated" || fact.event.type === "session.status_idle") {
+        if (!fact.executionId) return null;
+        if (fact.executionId === proof.turnId && (fact.event.type !== "session.status_idle" || fact.event.stopReason.type !== "requires_action" ||
+            fact.environmentWork?.workId !== claim.workId || fact.environmentWork.generation !== claim.generation)) return null;
+      }
+      facts.push(fact);
+    }
+    const lane = raw.sessionThreadId ?? "sthr_primary";
+    const ownedHistory = facts.filter(fact => fact.executionId === proof.turnId && fact.environmentWork?.workId === claim.workId && fact.environmentWork.generation === claim.generation)
+      .map(fact => fact.event as RuntimeProducedSessionEvent);
+    if (!validateWorkThreadLineage({rootLane:String(lane),history:ownedHistory,events:input.events})) return null;
+    // A child id cannot be rebound from an older/different canonical root even
+    // if the caller supplies an otherwise valid new parent tool this turn.
+    for (const event of input.events) if (event.type === "session.thread_created") {
+      const existing = await this.client.prepare("SELECT 1 FROM managed_session_events WHERE workspace_id=? AND session_id=? AND thread_id=? LIMIT 1")
+        .bind(input.workspaceId,input.sessionId,event.sessionThreadId).first();
+      if (existing) return null;
+    }
+    const ownedTools = new Map<string, RuntimeProducedSessionEvent>();
+    for (const fact of facts) {
+      if (fact.executionId === proof.turnId && fact.environmentWork?.workId === claim.workId && fact.environmentWork.generation === claim.generation &&
+          ["agent.tool_use", "agent.custom_tool_use", "agent.mcp_tool_use"].includes(fact.event.type)) {
+        ownedTools.set(fact.event.id, fact.event as RuntimeProducedSessionEvent);
+      }
+    }
+    const approvals = inspectWorkApprovalResolution({root:proof,
+      claim:{workId:claim.workId,generation:claim.generation,holder:consumedClaim.holder},
+      documents:(rows.results ?? []).map(row => row.document)});
+    if (approvals.type === "invalid") return null;
+    const pendingApprovals = new Set(approvals.pendingRequestIds);
+    for (const event of input.events) {
+      const eventLane = ("sessionThreadId" in event ? event.sessionThreadId : undefined) ?? "sthr_primary";
+      // Child approvals are not implicitly granted by parent approval state.
+      // Native foreground descendants are supported; child human-review needs
+      // its own scoped callback/consumption protocol and remains fail-closed.
+      if (eventLane !== lane && (event.type === "agent.tool_use" && event.evaluatedPermission === "ask" || event.type === "agent.custom_tool_use" ||
+          event.type === "session.thread_status_idle" && event.stopReason.type === "requires_action" ||
+          ["session.status_idle","session.status_running","session.status_rescheduled","session.status_terminated"].includes(event.type))) return null;
+      // Ownership is not resolution. Only persisted user inputs consumed under
+      // this root/claim can clear requests; runtime status/results cannot.
+      if (event.type === "agent.tool_use" && event.evaluatedPermission === "ask" || event.type === "agent.custom_tool_use") pendingApprovals.add(event.id);
+      if (event.type === "session.status_running" && pendingApprovals.size > 0) return null;
+      if (event.type === "session.status_idle" && event.stopReason.type === "requires_action") {
+        const remaining = event.stopReason.eventIds;
+        if ([...pendingApprovals].some(id => !remaining.includes(id))) return null;
+      }
+      // This endpoint attributes running facts/approval pauses, NOT completion.
+      if (event.type === "session.status_terminated" || event.type === "session.status_idle" && event.stopReason.type !== "requires_action") return null;
+      if (["agent.tool_use", "agent.custom_tool_use", "agent.mcp_tool_use"].includes(event.type)) ownedTools.set(event.id, event);
+      const toolId = "toolUseId" in event ? event.toolUseId : undefined;
+      if (toolId && !ownedTools.has(toolId)) return null;
+      if (event.type === "session.status_idle" && event.stopReason.type === "requires_action" && event.stopReason.eventIds.some(id => {
+        const tool = ownedTools.get(id);
+        return !tool || tool.type === "agent.tool_use" && tool.evaluatedPermission !== "ask";
+      })) return null;
+    }
+    return {holder:consumedClaim.holder,turnId:proof.turnId,inputId:proof.inputId,inputDocument:proof.expectedDocument,bootstrapSequence,dialect};
   }
 
   private async isFenceActive(

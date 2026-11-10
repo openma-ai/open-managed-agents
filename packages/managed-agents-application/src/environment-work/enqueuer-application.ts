@@ -74,8 +74,11 @@ export class EnvironmentWorkEnqueuerService
       stopRequestedAt: null,
       stoppedAt: null,
     };
-    const inserted = await this.dependencies.store.insert({
+    if (!this.dependencies.store.ensureSession) throw new Error("Atomic Session Work ensure is not configured");
+    const inserted = await this.dependencies.store.ensureSession({
       workspaceId: this.dependencies.workspaceId,
+      ...(input.expectedSessionRevision === undefined ? {} : { expectedSessionRevision: input.expectedSessionRevision }),
+      ...(input.recoveryEventIds === undefined ? {} : { recoveryEventIds: input.recoveryEventIds }),
       record: {
         work,
         secret: issued.secret,
@@ -89,8 +92,8 @@ export class EnvironmentWorkEnqueuerService
       workspaceId: this.dependencies.workspaceId,
       environmentId: input.environment.id,
       sessionId: input.session.id,
-      workId,
-      occurredAt: work.createdAt,
+      workId: inserted.work.id,
+      occurredAt: inserted.work.createdAt,
     }).catch(() => {});
     return { type: "queued", work: inserted.work };
   }
