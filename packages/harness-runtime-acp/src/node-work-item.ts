@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createWorkBootstrapHttpClient, type WorkBootstrapClaim, type WorkBootstrapRoot } from "./work-bootstrap-http.js";
 import type { NodeManagedAcpSupervisorAppOptions } from "./node-supervisor.js";
 import { createWorkFinalizationHttpClient, WorkFinalizationTransportError, type WorkFinalizationResult } from "./work-finalization-http.js";
-import { NodeManagedAcpWorkItemFailure, type NodeManagedAcpWorkItemPhase } from "./work-item-failure.js";
+import { NodeManagedAcpStartupConfigurationFailure, NodeManagedAcpWorkItemFailure, type NodeManagedAcpWorkItemPhase } from "./work-item-failure.js";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   createClaimedEnvironmentWorkRunner,
@@ -351,7 +351,7 @@ export function createNodeManagedAcpWorkItemRunner(
               } catch (settlementError) { errors.push(settlementError); }
             }
             if (!workSignal.aborted && errors.length === 1 && failure.phase === "startup" && revision !== undefined) {
-              const body = {revision,processedAt:new Date().toISOString()};
+              const body = {revision,processedAt:new Date().toISOString(),...(failure instanceof NodeManagedAcpStartupConfigurationFailure ? {reason:failure.reason} : {})};
               try {
                 // Exact replay confirms a response lost after authority ended.
                 try { await requestStartup("startup-failed",body); }

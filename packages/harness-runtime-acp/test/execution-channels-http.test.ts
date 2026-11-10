@@ -58,3 +58,12 @@ it("rejects an authority response replacing the bootstrap holder token", async (
   const resolve=createExecutionChannelsHttpResolver({apiBaseUrl:"https://control.test",fetch:async()=>Response.json({type:"ready",channels:{mcpProxy:{sessionsToken:"oma_sbx_other",gatewayBaseUrl:"https://control.test"},hostedInference:{sessionsToken:"oma_sbx_other",gatewayBaseUrl:"https://control.test",model:{providerId:"anthropic",baseUrl:null}}}})});
   await expect(resolve({tenantId:"tenant",sessionId:"session",sessionsToken:"oma_sbx_bootstrap"})).rejects.toThrow();
 });
+it("retains only typed model-unavailable evidence from a 409, never its message",async()=>{
+ const resolve=createExecutionChannelsHttpResolver({apiBaseUrl:"https://control.test",fetch:async()=>Response.json({type:"failed",phase:"model_lookup",code:"model_unavailable",message:"secret-model-key",cause:{name:"secret"}},{status:409})});
+ const result=await resolve({tenantId:"tenant",sessionId:"s",sessionsToken:"oma_sbx_holder"});
+ expect(result).toMatchObject({type:"failed",phase:"model_lookup",code:"model_unavailable"});expect(JSON.stringify(result)).not.toContain("secret");
+});
+it("does not relabel a 403 as configuration evidence even with a forged known code",async()=>{
+ const resolve=createExecutionChannelsHttpResolver({apiBaseUrl:"https://control.test",fetch:async()=>Response.json({type:"failed",phase:"model_lookup",code:"model_unavailable",message:"secret"},{status:403})});
+ await expect(resolve({tenantId:"t",sessionId:"s",sessionsToken:"oma_sbx_holder"})).rejects.toThrow("HTTP 403");
+});

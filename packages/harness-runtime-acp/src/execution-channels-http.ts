@@ -23,20 +23,18 @@ export function createExecutionChannelsHttpResolver(options: {
         { method: "POST", redirect: "error", headers: { authorization: "Bearer " + input.sessionsToken, "content-type": "application/json" }, body: "{}" },
       );
     } catch { throw new Error("Execution channels transport unavailable"); }
-    if (!response.ok) {
-      void response.body?.cancel().catch(() => undefined);
-      throw new Error("Execution channels HTTP " + response.status);
-    }
     let result: ManagedAcpExecutionChannelsResult;
     try { result = await response.json() as ManagedAcpExecutionChannelsResult; }
-    catch { throw new Error("Execution channels response is not valid JSON"); }
+    catch { throw new Error(response.ok ? "Execution channels response is not valid JSON" : "Execution channels HTTP " + response.status); }
     if (result?.type === "failed") {
       const phases = ["validation", "configuration", "session_lookup", "model_lookup", "token_validation"];
       const codes = ["invalid_request", "missing_configuration", "session_not_found", "archived", "model_unavailable", "token_rejected", "unavailable"];
-      if (phases.includes(result.phase) && codes.includes(result.code)) {
+      if (phases.includes(result.phase) && codes.includes(result.code) &&
+          (response.ok || response.status === 409 && result.phase === "model_lookup" && result.code === "model_unavailable")) {
         return { type: "failed", phase: result.phase, code: result.code, message: "Execution channels authority rejected the request" };
       }
     }
+    if (!response.ok) throw new Error("Execution channels HTTP " + response.status);
     if (result?.type === "ready") {
       const { mcpProxy, hostedInference } = result.channels ?? {};
       if (mcpProxy?.sessionsToken === input.sessionsToken && hostedInference?.sessionsToken === input.sessionsToken

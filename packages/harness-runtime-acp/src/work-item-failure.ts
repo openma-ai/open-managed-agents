@@ -8,3 +8,17 @@ export class NodeManagedAcpWorkItemFailure extends Error {
     this.name = "NodeManagedAcpWorkItemFailure";
   }
 }
+
+/** Construct only at a proven pre-native preparation boundary. Codes are a
+ * closed wire vocabulary, not provider messages. cause stays local. */
+export class NodeManagedAcpStartupConfigurationFailure extends NodeManagedAcpWorkItemFailure {
+  constructor(readonly reason: "model_unavailable" | "anthropic_protocol_required" | "preparation_failed", cause: unknown) {
+    const messages = {
+      model_unavailable: "ACP startup requires an active workspace model card",
+      anthropic_protocol_required: "ACP harness requires [anthropic-messages] on the configured model card",
+      preparation_failed: "ACP session preparation failed",
+    };
+    super("startup", new Error(messages[reason], {cause}));
+    this.name = "NodeManagedAcpStartupConfigurationFailure";
+  }
+}

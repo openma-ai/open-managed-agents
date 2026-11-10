@@ -314,3 +314,17 @@ for (const mode of ["response_lost", "unavailable", "boundary_rejected"] as cons
     if (bodies.length > 0) expect(bodies[0]).toBe(bodies[1]);
   });
 }
+it.each([false,true])("async startup phase marker forwards only whitelisted reason (typed=%s)",async typed=>{
+ const {NodeManagedAcpStartupConfigurationFailure,NodeManagedAcpWorkItemFailure}=await import("../src/work-item-failure");
+ const client=lifecycle(),bodies:Record<string,unknown>[]=[];
+ const error=typed?new NodeManagedAcpStartupConfigurationFailure("anthropic_protocol_required",new Error("private-key-secret")):new NodeManagedAcpWorkItemFailure("startup",new Error("private-key-secret"));
+ const runner=createNodeManagedAcpWorkItemRunner({environment,lifecycleClient:client,checkpoint:async()=>{},
+  fetch:async(raw,init)=>{if(String(raw).endsWith("startup-boundary"))return Response.json({revision:3});bodies.push(JSON.parse(String(init?.body)));return Response.json({type:"committed"});},
+  supervisorApp:{resolveHarness:async()=>({start:async()=>({completed:Promise.reject(error),drain:async()=>{},stop:async()=>{}})}),serve:vi.fn()},
+  scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_resolve,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))},
+ });
+ await expect(runner.run()).rejects.toBe(error);expect(bodies).toHaveLength(1);
+ expect(bodies[0]).toMatchObject({revision:3,processedAt:expect.any(String),...(typed?{reason:"anthropic_protocol_required"}:{})});
+ expect(JSON.stringify(bodies)).not.toContain("private-key-secret");if(!typed)expect(bodies[0]).not.toHaveProperty("reason");
+ expect(client.stop).not.toHaveBeenCalled();
+});

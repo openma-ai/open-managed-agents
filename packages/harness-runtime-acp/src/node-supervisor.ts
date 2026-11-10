@@ -1,4 +1,5 @@
-import { NodeManagedAcpWorkItemFailure } from "./work-item-failure.js";
+import { InferenceProtocolUnsupportedError } from "@open-managed-agents/acp-runtime/inference-config";
+import { NodeManagedAcpStartupConfigurationFailure, NodeManagedAcpWorkItemFailure } from "./work-item-failure.js";
 import { createWorkTurnCoordinator, type WorkTurnCoordinator } from "./work-turn-coordinator.js";
 import type { WorkControlRuntime, WorkFinalizationPort, WorkTurnCompletion } from "./work-control-runtime.js";
 export type { WorkControlRuntime, WorkFinalizationPort, WorkTurnCompletion } from "./work-control-runtime.js";
@@ -228,6 +229,7 @@ export function createNodeManagedAcpSupervisorApp(
     let active!: ActiveRunContext;
     let activeSession!: ManagedAcpSessionSnapshot;
     let startup!: StartupRun;
+    let nativeStartAttempted = false;
     let turns!: WorkTurnCoordinator;
     const startupRetry = options.lifecycle?.startupRetry ?? ACP_STARTUP_RETRY;
     const sleep = options.supervisorScheduler?.sleep ?? abortableSleep;
@@ -239,6 +241,7 @@ export function createNodeManagedAcpSupervisorApp(
     const startupRetryingRuntime: AcpRuntime = {
       async start(sessionOptions) {
         const run = startup;
+        nativeStartAttempted = true;
         for (let attempt = 1; ; attempt += 1) {
           try {
             const session = await acpRuntime.start(sessionOptions);
@@ -313,7 +316,7 @@ export function createNodeManagedAcpSupervisorApp(
         const inference = session.agent.inference;
         if ((inference?.provider_id || session.agent.mcp_servers.some(server => server.type === "url")) && active.channels === null) throw new Error("ACP execution channels authority is required; Work credentials cannot authorize model/MCP");
         if (active.channels !== null) {
-          const hosted = wireHostedInferenceForAcpLaunch({
+          const hosted = (() => { try { return wireHostedInferenceForAcpLaunch({
             sessionId: session.id,
             gatewayBaseUrl: active.channels!.hostedInference.gatewayBaseUrl,
             sessionsToken: active.channels!.hostedInference.sessionsToken,
@@ -327,6 +330,12 @@ export function createNodeManagedAcpSupervisorApp(
               protocolEndpoints: active.channels!.hostedInference.model.protocolEndpoints,
             },
           });
+          } catch (error) {
+            if (error instanceof InferenceProtocolUnsupportedError && binding.agent.id === "claude-acp") {
+              throw new NodeManagedAcpStartupConfigurationFailure("anthropic_protocol_required", error);
+            }
+            throw error;
+          } })();
           for (const file of hosted.files) {
             await stateIo.writeFile(file.path, file.content);
           }
@@ -357,6 +366,23 @@ export function createNodeManagedAcpSupervisorApp(
         };
       },
     });
+    const prepareBeforeNative = async <T>(prepare: () => Promise<T>): Promise<T> => {
+      try { return await prepare(); }
+      catch (error) {
+        if (nativeStartAttempted || startup.signal.aborted) throw error;
+        const failure = error instanceof NodeManagedAcpStartupConfigurationFailure ? error
+          : new NodeManagedAcpWorkItemFailure("startup", error);
+        startup.exhausted(failure);
+        throw failure;
+      }
+    };
+    const guardedSessionState = {
+      beforeStart: (command: Parameters<typeof sessionState.beforeStart>[0]) => prepareBeforeNative(() => sessionState.beforeStart(command)),
+      prepare: (command: Parameters<typeof sessionState.prepare>[0]) => prepareBeforeNative(() => sessionState.prepare(command)),
+      onReady: sessionState.onReady.bind(sessionState),
+      checkpoint: sessionState.checkpoint.bind(sessionState),
+      release: sessionState.release.bind(sessionState),
+    };
     const semanticRecovery = createManagedEventSemanticRecovery({
       history: {
         async list(sessionId) {
@@ -451,7 +477,12 @@ export function createNodeManagedAcpSupervisorApp(
           ? createExecutionChannelsHttpResolver({apiBaseUrl:proxy.gatewayBaseUrl,fetch:options.fetch}) : undefined);
         const resolvedChannels = await resolveChannels?.({tenantId:input.scope.workspaceId,sessionId:input.scope.sessionId,
           sessionsToken:options.resolveExecutionChannels ? proxy.sessionsToken : environment.OPENMA_SANDBOX_TOKEN!});
-        if (resolvedChannels?.type === "failed") throw new Error(resolvedChannels.message);
+        if (resolvedChannels?.type === "failed") {
+          if (resolvedChannels.phase === "model_lookup" && resolvedChannels.code === "model_unavailable") {
+            throw new NodeManagedAcpStartupConfigurationFailure("model_unavailable", new Error("Execution channels model lookup rejected"));
+          }
+          throw new Error(resolvedChannels.message);
+        }
         if (resolvedChannels !== undefined) validateExecutionChannels(resolvedChannels, proxy.sessionsToken);
         active = {
           outputPath: input.outputPath,
@@ -477,8 +508,8 @@ export function createNodeManagedAcpSupervisorApp(
         });
       },
       acpRuntime: startupRetryingRuntime,
-      sessionPreparation: sessionState,
-      sessionState,
+      sessionPreparation: guardedSessionState,
+      sessionState: guardedSessionState,
       semanticRecovery,
       drainDeadlineMs: options.lifecycle?.drainDeadlineMs,
       drainPollIntervalMs: options.lifecycle?.drainPollIntervalMs,
@@ -486,6 +517,7 @@ export function createNodeManagedAcpSupervisorApp(
     });
     return {
       async start(input) {
+        nativeStartAttempted = false;
         const controller = new AbortController();
         const forwardAbort = () => controller.abort(input.signal.reason);
         if (input.signal.aborted) forwardAbort();

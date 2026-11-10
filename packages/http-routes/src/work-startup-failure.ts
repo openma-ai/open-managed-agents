@@ -9,7 +9,7 @@ export function buildWorkStartupFailureRoutes(dependencies: {
   authenticate(token: string, path: string): Promise<WorkClaim | null>;
   persistenceFor(claim: WorkClaim): Promise<{
     captureStartupBoundary(claim: WorkClaim): Promise<number | null>;
-    settleStartupFailure(input: { claim: WorkClaim; revision: number; processedAt: string }): Promise<"committed" | "rejected">;
+    settleStartupFailure(input: { claim: WorkClaim; revision: number; processedAt: string; reason?: "model_unavailable" | "anthropic_protocol_required" | "preparation_failed" }): Promise<"committed" | "rejected">;
   }>;
 }) {
   const routes = new Hono();
@@ -28,10 +28,11 @@ export function buildWorkStartupFailureRoutes(dependencies: {
         try { body = await c.req.json(); } catch { return c.json({error:"Invalid JSON"},400); }
         if (body === null || typeof body !== "object" || Array.isArray(body)) return c.json({error:"Invalid outcome"},400);
         const value = body as Record<string, unknown>;
-        if (Object.keys(value).some(key => key !== "revision" && key !== "processedAt") ||
+        if (Object.keys(value).some(key => key !== "revision" && key !== "processedAt" && key !== "reason") ||
+          (value.reason !== undefined && (typeof value.reason !== "string" || !["model_unavailable","anthropic_protocol_required","preparation_failed"].includes(value.reason))) ||
           !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 ||
           typeof value.processedAt !== "string" || !Number.isFinite(Date.parse(value.processedAt))) return c.json({error:"Invalid outcome"},400);
-        const result = await persistence.settleStartupFailure({claim,revision:Number(value.revision),processedAt:value.processedAt});
+        const result = await persistence.settleStartupFailure({claim,revision:Number(value.revision),processedAt:value.processedAt,...(value.reason === undefined ? {} : {reason:value.reason as "model_unavailable" | "anthropic_protocol_required" | "preparation_failed"})});
         return result === "committed" ? c.json({type:"committed"}) : c.json({type:"rejected"},409);
       } catch { return c.json({error:"Startup settlement unavailable"},503); }
     });
