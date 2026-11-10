@@ -40,6 +40,7 @@
  * `#emittedToolUses`.
  */
 
+import { parseAcpEvent } from "@openma/common/session-events/acp";
 import { ManagedAcpEventProjector } from "@openma/common/managed-runtime";
 import { generateEventId } from "@open-managed-agents/shared";
 import type { HarnessRuntime } from "./interface";
@@ -191,6 +192,14 @@ export class AcpTranslator {
     if (!upd) return;
     if (((upd.sessionUpdate === "agent_message_chunk" || upd.sessionUpdate === "agent_thought_chunk") && chunkText(upd.content) !== "")
       || upd.sessionUpdate === "tool_call" || upd.sessionUpdate === "tool_call_update") this.#producedOutput = true;
+    // Use the common parser for vendor parent correlation; unknown child
+    // parents are still child evidence and must never leak into the root.
+    const parsed = parseAcpEvent(msg.event);
+    if ((parsed.kind === "text" || parsed.kind === "thought")
+      && (parsed.parentToolUseId || ((msg.event as unknown as Record<string, unknown>).session_thread_id))) {
+      this.#publishProjected(this.#projector.project({type:"session.event",sessionId:"translator",turnId:"turn",event:msg.event}));
+      return;
+    }
     switch (upd.sessionUpdate) {
       case "agent_message_chunk":
         // Agent transitioning from "running tools" to "talking" — flush any

@@ -322,3 +322,24 @@ it("preserves nested common child lanes and cancelled lifecycle without root fal
   expect(events.find(e=>e.type==="session.thread_status_idle"&&e.session_thread_id==="acp:claude:inner")).toMatchObject({interrupted:true});
   expect(events.filter(e=>e.type==="agent.tool_result"&&e.tool_use_id==="leaf")).toHaveLength(1);
 });
+
+it("keeps child text in its common lane without duplicating root text", async () => {
+  const {runtime,events}=makeFakeRuntime(); const t=new AcpTranslator(runtime);
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"task",_meta:{claudeCode:{toolName:"Task"}}}));
+  await t.consume(ev({sessionUpdate:"agent_message_chunk",content:{text:"child answer"},_meta:{claudeCode:{parentToolUseId:"task"}}}));
+  await t.consume(ev({sessionUpdate:"agent_message_chunk",content:{text:"root answer"}}));
+  await t.flush();
+  const messages=events.filter(e=>e.type==="agent.message");
+  expect(messages.filter(e=>e.session_thread_id==="acp:claude:task")).toMatchObject([{content:[{type:"text",text:"child answer"}]}]);
+  expect(messages.filter(e=>!e.session_thread_id)).toMatchObject([{content:[{type:"text",text:"root answer"}]}]);
+});
+
+it("does not leak unknown-parent text into root and keeps child thinking attributed", async () => {
+  const {runtime,events}=makeFakeRuntime(); const t=new AcpTranslator(runtime);
+  await t.consume(ev({sessionUpdate:"agent_message_chunk",content:{text:"unattributed child"},_meta:{claudeCode:{parentToolUseId:"missing"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"task",_meta:{claudeCode:{toolName:"Task"}}}));
+  await t.consume(ev({sessionUpdate:"agent_thought_chunk",content:{text:"child reasoning"},_meta:{claudeCode:{parentToolUseId:"task"}}}));
+  await t.flush();
+  expect(events.filter(e=>e.type==="agent.message")).toHaveLength(0);
+  expect(events.filter(e=>e.type==="agent.thinking")).toMatchObject([{session_thread_id:"acp:claude:task"}]);
+});
