@@ -107,17 +107,19 @@ describe("Session sandbox recovery order (design §0.0b A.4)", () => {
     expect(h.stored()).toMatchObject({ phase: "lost", latestSnapshot: latest });
   });
 
-  it.each(["lost", "running"] as const)("previous allocation without snapshot fails closed: %s", async phase => {
-    const saved = phase === "lost" ? {...initialSandboxState(), phase, version: 4} : runningRecord("r0", {version: 4});
-    const h = fakeSessionSandbox({saved, attachGone: true});
-    await expect(h.sandbox.exec("x")).rejects.toBeInstanceOf(SandboxRestoreError);
-    expect(h.log).not.toContain("acquire");
-  });
-
-  it("a fresh Session still creates its initial sandbox", async () => {
-    const h = fakeSessionSandbox();
+  it("loss before the first snapshot recreates through the initial path, warns and is not restored", async () => {
+    const h = fakeSessionSandbox({ saved: { ...initialSandboxState(), phase: "lost", version: 4 }, attachGone: true });
     await h.sandbox.exec("x");
     expect(h.log).toEqual(["acquire", "egress.attach", "exec:x"]);
+    expect(h.sandbox.restoredFromSnapshot()).toBe(false);
+    expect(h.warnings.some((w) => w.startsWith("sandbox_recreated:") && w.includes("changes since its creation were lost"))).toBe(true);
+  });
+
+  it("nothing ever published (or no snapshots in the adapter): a new sandbox, with a warning", async () => {
+    const h = fakeSessionSandbox({ saved: runningRecord("r0", { version: 4 }), attachGone: true });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "acquire", "egress.attach", "exec:x"]);
+    expect(h.warnings.some((w) => w.startsWith("sandbox_recreated"))).toBe(true);
   });
 
   it("a sandbox with no handle to find again (A.7): every open, in every process, starts from the latest snapshot", async () => {
@@ -149,8 +151,8 @@ describe("Session sandbox warm-up at Session creation (design §0.0 rule 10)", (
     await kept.sandbox.warm();
     expect(kept.log).toEqual(["attach:r0"]);
     const gone = fakeSessionSandbox({ attachGone: true, saved: runningRecord("r0") });
-    await expect(gone.sandbox.warm()).rejects.toBeInstanceOf(SandboxRestoreError);
-    expect(gone.log).toEqual(["attach:r0"]);
+    await gone.sandbox.warm();
+    expect(gone.log).toEqual(["attach:r0", "acquire"]);
   });
 
   it("acquires nothing without the fence", async () => {
@@ -213,7 +215,7 @@ describe("PortsSessionSandbox", () => {
     return { sandbox, log, saved: () => saved };
   }
 
-  it("rolls back a failed open and does not silently recreate its lost allocation", async () => {
+  it("rolls back a failed open, surfaces the error, and the next open starts over", async () => {
     let fail = true;
     const h = harness("changes", () => fail);
     await expect(h.sandbox.exec("true")).rejects.toThrow("egress down");
@@ -222,8 +224,8 @@ describe("PortsSessionSandbox", () => {
     expect(h.log).toEqual(["acquire:1", "save:r1", "egress.attach", "egress.revoke:failed", "save:lost", "save:lost", "release:r1", "save:lost"]);
     expect(h.saved()).toEqual({ phase: "lost", latestSnapshot: { status: "none" }, stores: [], outputs: false, version: 4, lifecycleRevision: 2, retiredHandles: [{ handle: { provider: "p", runtimeId: "r1" }, released: true }] });
     fail = false;
-    await expect(h.sandbox.exec("true")).rejects.toBeInstanceOf(SandboxRestoreError);
-    expect(h.log.slice(8)).toEqual([]);
+    expect(await h.sandbox.exec("true")).toBe("exit=0\n");
+    expect(h.log.slice(8)).toEqual(["acquire:2", "save:r2", "egress.attach", "save:r2"]);
   });
 
   it("does not pre-write a fixed handle", async () => {

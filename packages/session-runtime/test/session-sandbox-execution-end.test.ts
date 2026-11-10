@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { SandboxRestoreError } from "../src/session-sandbox-open";
 import { attempt, fakeSessionSandbox, runningRecord } from "./fake-session-sandbox-ports";
 
 // Execution end (research/sandbox-sdk-v2-design.md §0.1 steps 7 and 9;
@@ -58,8 +57,8 @@ describe("Session sandbox execution end", () => {
     expect(h.log).toEqual(["egress.revoke:failed", "release:r0"]);
     // The record no longer names the released sandbox.
     expect(h.stored()).toEqual({ phase: "lost", latestSnapshot: { status: "none" }, stores: [], outputs: true, version: 2, lifecycleRevision: 2 });
-    // A previous allocation without a restore point is not a fresh Session.
-    await expect(h.sandbox.exec("again")).rejects.toBeInstanceOf(SandboxRestoreError);
-    expect(h.log.slice(2)).toEqual([]);
+    // Nothing to restore from and nothing that needs it: a new sandbox.
+    await h.sandbox.exec("again");
+    expect(h.log.slice(2, 3)).toEqual(["acquire"]);
   });
 });
