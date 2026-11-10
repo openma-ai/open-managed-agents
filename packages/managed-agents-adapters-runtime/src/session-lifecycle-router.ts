@@ -140,11 +140,22 @@ export class EnvironmentAwareSessionEventDispatchRouter
       await this.dependencies.runtime.sessionEventsAccepted(input);
       return;
     }
+    await this.stopAcceptedInterrupts(input);
+  }
+
+  async reconcileAcceptedInterrupts(input: AcceptedSessionEvents & { acceptedAt: string }): Promise<void> {
+    if (environmentExecutionAuthority(input.environment, input.session) === "environment_work") {
+      await this.stopAcceptedInterrupts(input, input.acceptedAt);
+    }
+  }
+
+  private async stopAcceptedInterrupts(input: AcceptedSessionEvents, createdAtOrBefore?: string): Promise<void> {
     if (input.events.some(event => event.type === "user.interrupt")) {
       const result = await this.dependencies.selfHostedWork.stop({
         workspaceId: input.workspaceId,
         session: input.session,
         reason: "interrupted",
+        ...(createdAtOrBefore === undefined ? {} : { createdAtOrBefore }),
       });
       if (result.type === "conflict") throw new Error(result.message);
     }

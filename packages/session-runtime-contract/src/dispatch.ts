@@ -14,4 +14,6 @@ export interface AcceptedSessionEvents {
 
 export interface SessionEventDispatchPort {
   sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void>;
+  /** Recover only durable interrupt control effects, never replay turn dispatch. */
+  reconcileAcceptedInterrupts?(input: AcceptedSessionEvents & { acceptedAt: string }): Promise<void>;
 }

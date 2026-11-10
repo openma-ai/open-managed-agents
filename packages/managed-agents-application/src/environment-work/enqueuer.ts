@@ -23,6 +23,8 @@ export interface StopEnvironmentSessionWork {
   workspaceId: string;
   session: Session;
   reason: "archived" | "deleted" | "interrupted";
+  /** Recovery must not cancel Work created after the accepted interrupt. */
+  createdAtOrBefore?: string;
 }
 
 export type StopEnvironmentSessionWorkResult =

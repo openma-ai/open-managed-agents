@@ -255,7 +255,20 @@ export class SessionEventsApplicationService
           if (previous.length !== events.length || events.some(event => !byId.has(event.id) || inputPayload(byId.get(event.id)! as SentSessionEvent) !== inputPayload(event))) {
             return { type: "idempotency_conflict", message: "Idempotency key was already used with different input" };
           }
-          return { type: "accepted", events: events.map(event => byId.get(event.id)! as SentSessionEvent) };
+          // The append is already durable. Recover only cancellation control
+          // effects; never redispatch messages/tools or append duplicate input.
+          const accepted = events.map(event => byId.get(event.id)! as SentSessionEvent);
+          const interrupts = accepted.filter(event => event.type === "user.interrupt");
+          if (interrupts.length > 0 && this.dependencies.dispatch.reconcileAcceptedInterrupts) {
+            const times = interrupts.map(event => sessionEventSortTime(event));
+            if (times.some(time => time === undefined)) throw new Error("Accepted interrupt recovery requires its canonical acceptance time");
+            await this.dependencies.dispatch.reconcileAcceptedInterrupts({
+              workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId,
+              session: execution.session, environment: execution.environment,
+              events: interrupts, acceptedAt: (times as string[]).sort().at(-1)!,
+            });
+          }
+          return { type: "accepted", events: accepted };
         }
       }
       if (command.requireRunningInterrupt && command.events.some(event => event.type === "user.interrupt")
