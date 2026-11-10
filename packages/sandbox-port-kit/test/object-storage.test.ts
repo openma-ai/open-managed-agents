@@ -117,3 +117,21 @@ describe("readSandboxOutputs", () => {
     await expect(readSandboxOutputs(vendor, {}).next()).rejects.toThrow(/boom/);
   });
 });
+
+it("uploads exactly the supplied binary view, excluding backing-buffer padding", async () => {
+  const uploaded: number[][] = [];
+  const sink = createS3OutputSink({ ...parent, keyPrefix: () => "t/ws/session-outputs/sess/",
+    fetch: async input => {
+      const request = input as Request;
+      if (request.method === "GET") return new Response("<IsTruncated>false</IsTruncated>");
+      if (request.method === "PUT") uploaded.push([...new Uint8Array(await request.arrayBuffer())]);
+      return new Response(null, { status: 200 });
+    },
+  });
+  async function* files() {
+    yield ["binary", new Uint8Array([77,0,255,254,13,10,65,88]).subarray(1,7)] as const;
+    yield ["empty", new Uint8Array(0)] as const;
+  }
+  await sink.publish({scope,fence,files:files(),signal:new AbortController().signal});
+  expect(uploaded).toEqual([[0,255,254,13,10,65],[]]);
+});

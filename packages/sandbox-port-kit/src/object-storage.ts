@@ -125,7 +125,7 @@ export function createS3OutputSink(options: {
           throw new Error(`Session output ${logicalPath} exceeds ${options.maxFileBytes} bytes`);
         }
         const key = `${prefix}${logicalPath}`;
-        const response = await send(objectUrl(key), { method: "PUT", body: bytes, signal: input.signal });
+        const response = await send(objectUrl(key), { method: "PUT", body: new Uint8Array(bytes).buffer, signal: input.signal });
         if (!response.ok) throw new Error(`Session output upload failed (${response.status}) for ${logicalPath}`);
         written.add(key);
       }
