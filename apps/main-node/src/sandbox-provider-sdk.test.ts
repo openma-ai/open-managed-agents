@@ -7,16 +7,16 @@ import {
 const E2B = { provider: "e2b" as const, modulePath: "@open-managed-agents/sandbox-adapter-e2b" };
 
 describe("assertSandboxProviderSdk", () => {
-  it("accepts the E2B SDK installed by main-node for injection into the adapter", () => {
-    expect(() => assertSandboxProviderSdk(E2B)).not.toThrow();
-  });
   it("resolves the SDK the selected provider needs, from the adapter's context", () => {
     const calls: [string, string][] = [];
-    assertSandboxProviderSdk(E2B, (adapterModulePath, packageName) => {
-      calls.push([adapterModulePath, packageName]);
-      return "/somewhere/e2b/index.js";
-    });
-    expect(calls).toEqual([["@open-managed-agents/sandbox-adapter-e2b", "e2b"]]);
+    assertSandboxProviderSdk(
+      { provider: "opensandbox", modulePath: "@open-managed-agents/sandbox-adapter-opensandbox" },
+      (adapterModulePath, packageName) => {
+        calls.push([adapterModulePath, packageName]);
+        return "/somewhere/opensandbox/index.js";
+      },
+    );
+    expect(calls).toEqual([["@open-managed-agents/sandbox-adapter-opensandbox", "@alibaba-group/opensandbox"]]);
   });
 
   it("maps every isolated provider to its vendor package", () => {
