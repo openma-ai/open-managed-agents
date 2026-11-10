@@ -3,6 +3,29 @@ import {join} from "node:path";
 import {expect,it} from "vitest";
 import {LocalSubprocessSandbox} from "../src/adapters/local-subprocess";
 
+it("destroy waits for a starting native child and forbids launches once closing",async()=>{
+ const root=await mkdtemp(join(process.cwd(),".local-managed-race-"));const sandbox=new LocalSubprocessSandbox({workdir:root});
+ await sandbox.egressRelayPort();
+ let handle:Awaited<ReturnType<typeof sandbox.startManagedProcess>>|undefined;
+ try {
+  const starting=sandbox.startManagedProcess({command:process.execPath,args:["-e","setInterval(()=>{},1000)"],env:{}});
+  const closing=sandbox.destroy();
+  await expect(sandbox.startManagedProcess({command:process.execPath,args:["-e","setInterval(()=>{},1000)"],env:{}})).rejects.toThrow(/clos/);
+  await closing;handle=await starting;
+  expect(await handle.getStatus()).toBe("killed");
+  expect(()=>process.kill(handle!.pid,0)).toThrow();
+ }finally{await handle?.kill("SIGKILL");await sandbox.destroy();await rm(root,{recursive:true,force:true});}
+});
+
+it("failed native startup is observed while destroy drains starting processes",async()=>{
+ const root=await mkdtemp(join(process.cwd(),".local-managed-fail-"));const sandbox=new LocalSubprocessSandbox({workdir:root});
+ try {
+  const starting=sandbox.startManagedProcess({command:"/nonexistent/openma-runner",env:{}});
+  const observed=expect(starting).rejects.toThrow();
+  await sandbox.destroy();await observed;
+ }finally{await sandbox.destroy();await rm(root,{recursive:true,force:true});}
+});
+
 it("starts a management-only native argv process with replacement env before any shell or Node startup",async()=>{
  const root=await mkdtemp(join(process.cwd(),".local-managed-"));const sandbox=new LocalSubprocessSandbox({workdir:root});
  await sandbox.setEnvVars({NODE_OPTIONS:"--require=/invalid/stale.js",ANTHROPIC_API_KEY:"stale",ANTHROPIC_ENVIRONMENT_KEY:"standing",BASH_ENV:"/invalid/hook",PATH:"/invalid/path"});

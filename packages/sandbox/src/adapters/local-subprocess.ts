@@ -132,6 +132,7 @@ export class LocalSubprocessSandbox
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private processes = new Map<string, BackgroundProcess>();
+  private closing: Promise<void> | undefined;
   private duplexProcesses = new Set<SandboxDuplexProcess>();
   private mounts = new Map<string, MemoryMount>();
   private outputsMount: OutputsMount | null = null;
@@ -246,6 +247,7 @@ export class LocalSubprocessSandbox
   }
 
   async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
+    if (this.closing !== undefined) throw new Error("Sandbox is closing");
     if (!isAbsolute(spec.command) || spec.command.includes("\0")) throw new TypeError("Managed process requires an absolute executable");
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(spec.env)) {
@@ -254,11 +256,13 @@ export class LocalSubprocessSandbox
     }
     if (spec.args?.some(value => typeof value !== "string" || value.includes("\0"))) throw new TypeError("Invalid managed process argv");
     const child = spawn(spec.command, [...(spec.args ?? [])], {cwd:spec.cwd ? this.resolvePath(spec.cwd) : this.workdir, env, stdio:"ignore", detached:false});
-    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    const id = "managed_" + child.pid + "_" + Date.now();
+    const ready = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    // Register before yielding: destroy owns starting children as well as running ones.
+    const id = "managed_" + randomUUID();
     const proc = new BackgroundProcess(id, child);
     this.processes.set(id, proc);
     child.once("close", () => this.processes.delete(id));
+    await ready;
     return {id, pid:child.pid!, kill:signal=>proc.kill(signal), getStatus:()=>proc.getStatus()};
   }
 
@@ -540,7 +544,11 @@ export class LocalSubprocessSandbox
     return { provider: LOCAL_PROVIDER, checkpointId: id, sourceRuntimeId: this.workdir, kind: "filesystem", scope: "portable", metadata: { path } };
   }
 
-  async destroy(): Promise<void> {
+  destroy(): Promise<void> {
+    return this.closing ??= this.close();
+  }
+
+  private async close(): Promise<void> {
     // Port allocation is not a prerequisite for releasing owned processes.
     await this.relayPort.catch(() => undefined);
     await Promise.all(
@@ -786,21 +794,26 @@ class BackgroundProcess implements ProcessHandle {
   private stderr = "";
   private exitCode: number | null = null;
   private exitSignal: NodeJS.Signals | null = null;
+  private readonly closed: Promise<void>;
 
   constructor(public id: string, child: ChildProcess) {
     this.child = child;
     this.pid = child.pid ?? 0;
     child.stdout?.on("data", (b: Buffer) => { this.stdout += b.toString(); });
     child.stderr?.on("data", (b: Buffer) => { this.stderr += b.toString(); });
-    child.on("close", (code, signal) => {
-      this.exitCode = code;
-      this.exitSignal = signal as NodeJS.Signals | null;
+    this.closed = new Promise(resolve => {
+      child.once("close", (code, signal) => {
+        this.exitCode = code;
+        this.exitSignal = signal as NodeJS.Signals | null;
+        resolve();
+      });
     });
   }
 
   async kill(signal: string): Promise<void> {
     try {
       this.child.kill(signal as NodeJS.Signals);
+      if (signal === "SIGKILL") await this.closed;
     } catch (err) {
       throw new Error(`kill failed: ${(err as Error).message}`);
     }
