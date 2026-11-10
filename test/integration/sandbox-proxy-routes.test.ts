@@ -212,7 +212,7 @@ describe("Cloudflare /v1/oma/inference-proxy", () => {
     seen = [];
     upstream = () => new Response("event: message_stop\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
     const response = await call(`/v1/oma/inference-proxy/${id}/v1/messages?beta=true`, message());
-    expect(response.status).toBe(200);
+    expect(response.status, await response.clone().text()).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     expect(await response.text()).toBe("event: message_stop\ndata: {}\n\n");
     expect(seen).toHaveLength(1);

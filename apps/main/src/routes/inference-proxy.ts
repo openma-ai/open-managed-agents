@@ -8,6 +8,7 @@
  */
 
 import type { Env } from "@open-managed-agents/shared";
+import type { ApiKeyResolution } from "@open-managed-agents/auth";
 import { admitViaSessionAdmissionHook, logWarn } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import type { HostedInferenceEgress } from "@open-managed-agents/inference-proxy";
@@ -72,9 +73,12 @@ function cfInferenceProxyPorts(env: Env, tenantDb: D1Database, services: Service
 
 export default createInferenceProxyRoutes<{
   Bindings: Env;
-  Variables: { services: Services; tenantDb: D1Database };
+  Variables: { services: Services; tenantDb: D1Database; auth_credential?: ApiKeyResolution["credential"] };
 }>(async (workspaceId, context) => {
   const ports = cfInferenceProxyPorts(context.env, context.var.tenantDb, context.var.services);
+  // Workspace credentials already passed parent auth. Only Work credentials
+  // use the claim-scoped meter; do not reinterpret an API key as a sandbox token.
+  if (context.var.auth_credential?.type !== "environment_work_session") return ports;
   const sessionId = context.req.param("sessionId") ?? "";
   const presented = extractHostedInferenceProxyToken(context.req.raw.headers);
   if (presented.status !== "ok") return ports;
