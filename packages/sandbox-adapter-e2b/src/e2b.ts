@@ -33,7 +33,8 @@ import type {
   SandboxRuntimePort,
   SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
-import { readS3MemoryBucket } from "@open-managed-agents/sandbox";
+import { readS3MemoryBucket, type SandboxManagedProcessSpec, type SandboxManagedProcessHandle, type SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
+import { startE2BManagedProcess, type E2BManagedBootstrapOptions } from "./managed-bootstrap";
 
 // Structural types so this file compiles without `e2b` installed. The
 // driver shape is matched at runtime; mismatches surface as adapter
@@ -87,6 +88,8 @@ export interface E2BSandboxLike {
 }
 
 export interface E2BSandboxOptions {
+  /** Opt-in trusted template-native launcher; never uses SDK shell launch. */
+  managedBootstrap?: E2BManagedBootstrapOptions;
   /** Probe the new sandbox with a no-op command before returning it. Some
    * E2B-compatible providers (Haven) briefly reject envd calls right after
    * create, e.g. `[unauthenticated] invalid username: 'user'`. Only such
@@ -190,7 +193,10 @@ async function waitForSandboxReady(
 }
 
 export class E2BSandboxExecutor
-  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort {
+  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort, SandboxManagedProcessPort {
+  private managedClosed = false;
+  private readonly managedStarts = new Set<Promise<SandboxManagedProcessHandle>>();
+  private readonly managedBootstrap?: E2BManagedBootstrapOptions;
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -206,12 +212,14 @@ export class E2BSandboxExecutor
     private sandbox: E2BSandboxLike,
     opts: E2BSandboxOptions,
   ) {
+    if (opts.managedBootstrap && opts.user !== undefined && opts.user !== "oma-worker") throw new Error("Managed E2B templates require the unprivileged oma-worker user");
+    this.managedBootstrap = opts.managedBootstrap;
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 120_000;
     this.logger = opts.logger ?? {
       warn: (msg) => console.warn(`[e2b-sandbox] ${msg}`),
     };
     this.memoryBucketConfig = opts.memoryBucket;
-    this.user = opts.user === undefined ? {} : { user: opts.user };
+    this.user = opts.managedBootstrap ? { user: "oma-worker" } : opts.user === undefined ? {} : { user: opts.user };
   }
 
   /** Structured command result. Extra `envs` reach only this process and
@@ -366,6 +374,19 @@ export class E2BSandboxExecutor
       (result.stdout + (result.stderr ? `${separator}${result.stderr}` : "")).replace(/\s+$/, "") +
       (result.exitCode !== 0 ? `\n[exit ${result.exitCode}]` : "");
     return combined;
+  }
+
+  async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
+    if (this.managedClosed) throw new Error("E2B management launcher is closed");
+    if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
+    const starting = startE2BManagedProcess(this.sandbox, this.managedBootstrap, spec);
+    this.managedStarts.add(starting);
+    try { return await starting; }
+    catch (error) {
+      // A failed acknowledgement may hide a dispatched launch. Fail closed until destroy.
+      if ((error as { outcome?: string }).outcome === "unknown") this.managedClosed = true;
+      throw error;
+    } finally { this.managedStarts.delete(starting); }
   }
 
   async startProcess(command: string): Promise<ProcessHandle | null> {
@@ -682,9 +703,12 @@ export class E2BSandboxExecutor
   }
 
   async destroy(): Promise<void> {
+    this.managedClosed = true;
+    await Promise.allSettled(this.managedStarts);
     try {
       await this.sandbox.kill();
     } catch (err) {
+      if (this.managedBootstrap) throw err;
       this.logger.warn(`destroy failed: ${(err as Error).message}`);
     }
   }
