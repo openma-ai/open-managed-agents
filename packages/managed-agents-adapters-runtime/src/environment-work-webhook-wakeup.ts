@@ -45,7 +45,7 @@ export class StandardWebhookEnvironmentWorkWakeup
     this.endpoint = new URL(options.endpoint).toString();
     this.webhook = new Webhook(options.signingKey);
     this.now = options.now ?? (() => new Date());
-    this.send = options.fetch ?? globalThis.fetch;
+    this.send = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.sleep = options.sleep ?? ((milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.random = options.random ?? Math.random;

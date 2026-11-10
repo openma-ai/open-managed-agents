@@ -117,6 +117,7 @@ export class EnvironmentAwareSessionLifecycleRouter
 
 export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
   runtime: SessionEventDispatchPort;
+  selfHostedWork: Pick<EnvironmentSessionWorkEnqueuerPort, "stop" | "interruptTarget">;
 }
 
 /**
@@ -124,7 +125,8 @@ export interface EnvironmentAwareSessionEventDispatchRouterDependencies {
  * committed these events to the canonical log before this hook runs. A
  * self-hosted Environment Work keeps its sandbox-side control channel open
  * and consumes that log, so dispatching here as well would execute the same
- * turn a second time outside the sandbox.
+ * turn a second time outside the sandbox. Interrupt is a control-plane stop
+ * request, not a second execution: revoke the existing Work through its CAS.
  */
 export class EnvironmentAwareSessionEventDispatchRouter
   implements SessionEventDispatchPort
@@ -136,6 +138,37 @@ export class EnvironmentAwareSessionEventDispatchRouter
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
     if (environmentExecutionAuthority(input.environment, input.session) === "session_execution") {
       await this.dependencies.runtime.sessionEventsAccepted(input);
+      return;
+    }
+    await this.stopAcceptedInterrupts(input);
+  }
+
+  async bindInterruptTarget(input: Omit<AcceptedSessionEvents, "events">): Promise<string | null> {
+    if (environmentExecutionAuthority(input.environment, input.session) !== "environment_work") return null;
+    if (!this.dependencies.selfHostedWork.interruptTarget) throw new Error("Environment Work interrupt target binding is not configured");
+    return this.dependencies.selfHostedWork.interruptTarget(input);
+  }
+
+  async reconcileAcceptedInterrupts(input: AcceptedSessionEvents): Promise<void> {
+    if (environmentExecutionAuthority(input.environment, input.session) === "environment_work") await this.stopAcceptedInterrupts(input);
+  }
+
+  private async stopAcceptedInterrupts(input: AcceptedSessionEvents): Promise<void> {
+    // Missing legacy metadata is not the explicit null (no Work) intent.
+    // Without a durable target identity, neither time nor the latest Work can
+    // safely reconstruct cancellation; preserve the input and fail visibly.
+    if (input.events.some(event => event.type === "user.interrupt" && event.environmentWorkId === undefined)) {
+      throw new Error("Cannot safely recover interrupt: missing its accepted Environment Work target");
+    }
+    const targets = new Set(input.events.flatMap(event => event.type === "user.interrupt" && event.environmentWorkId != null ? [event.environmentWorkId] : []));
+    for (const workId of targets) {
+      const result = await this.dependencies.selfHostedWork.stop({
+        workspaceId: input.workspaceId,
+        session: input.session,
+        reason: "interrupted",
+        workId,
+      });
+      if (result.type === "conflict") throw new Error(result.message);
     }
   }
 }

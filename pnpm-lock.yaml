@@ -97,6 +97,9 @@ importers:
       '@ai-sdk/provider':
         specifier: 4.0.35
         version: 4.0.35
+      '@anthropic-ai/sdk':
+        specifier: 1.3.0
+        version: 1.3.0(zod@4.3.6)
       '@cloudflare/containers':
         specifier: ^0.3.7
         version: 0.3.7
@@ -148,6 +151,9 @@ importers:
       '@open-managed-agents/harness-inference-adapters':
         specifier: workspace:*
         version: link:../../packages/harness-inference-adapters
+      '@open-managed-agents/integrations-adapters-cf':
+        specifier: workspace:*
+        version: link:../../packages/integrations-adapters-cf
       '@open-managed-agents/managed-agents-adapters-runtime':
         specifier: workspace:*
         version: link:../../packages/managed-agents-adapters-runtime
@@ -160,6 +166,9 @@ importers:
       '@open-managed-agents/managed-runtime-cloudflare':
         specifier: workspace:*
         version: link:../../packages/managed-runtime-cloudflare
+      '@open-managed-agents/managed-runtime-host':
+        specifier: workspace:*
+        version: link:../../packages/managed-runtime-host
       '@open-managed-agents/markdown':
         specifier: workspace:*
         version: link:../../packages/markdown
@@ -579,6 +588,9 @@ importers:
       '@open-managed-agents/deployment-store-sql':
         specifier: workspace:*
         version: link:../../packages/deployment-store-sql
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-domain
       '@open-managed-agents/dreams-pipeline':
         specifier: workspace:*
         version: link:../../packages/dreams-pipeline
@@ -672,6 +684,9 @@ importers:
       '@open-managed-agents/runtime-relay':
         specifier: workspace:*
         version: link:../../packages/runtime-relay
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../../packages/runtime-resource-contract
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox

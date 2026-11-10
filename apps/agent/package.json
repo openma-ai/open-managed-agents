@@ -9,6 +9,8 @@
     "./runtime/managed-runtime": "./src/runtime/managed-runtime.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.3.0",
+    "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@ai-sdk/anthropic": "^4.0.94",
     "@ai-sdk/provider": "4.0.35",
     "@cloudflare/containers": "^0.3.7",
@@ -32,6 +34,7 @@
     "@open-managed-agents/managed-agents-application": "workspace:*",
     "@open-managed-agents/managed-credential-resolver": "workspace:*",
     "@open-managed-agents/managed-runtime-cloudflare": "workspace:*",
+    "@open-managed-agents/integrations-adapters-cf": "workspace:*",
     "@open-managed-agents/markdown": "workspace:*",
     "@open-managed-agents/mcp": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",

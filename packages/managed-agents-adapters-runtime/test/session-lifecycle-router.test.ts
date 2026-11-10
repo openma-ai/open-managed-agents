@@ -85,7 +85,7 @@ describe("Environment-aware Session lifecycle router", () => {
     const calls:string[]=[];
     const router=new EnvironmentAwareSessionLifecycleRouter({environments:{find:async()=>managedEnvironment},runtime:{sessionStarted:async()=>{calls.push("runtime");},sessionStopped:async()=>{calls.push("runtime-stop");}},selfHostedWork:{enqueue:async input=>{expect(input.environment.config.type).toBe("cloud");calls.push("work");return {type:"queued",work:{} as never};},stop:async()=>{calls.push("work-stop");return {type:"not_found"};}}});
     await router.sessionStarted({workspaceId:"workspace",sessionId:acp.id,session:acp,environment:managedEnvironment,initialEvents:[]});
-    const dispatch=new EnvironmentAwareSessionEventDispatchRouter({runtime:{sessionEventsAccepted:async()=>{calls.push("runtime-events");}}});
+    const dispatch=new EnvironmentAwareSessionEventDispatchRouter({selfHostedWork:{stop:async()=>({type:"not_found"})},runtime:{sessionEventsAccepted:async()=>{calls.push("runtime-events");}}});
     await dispatch.sessionEventsAccepted({workspaceId:"workspace",sessionId:acp.id,session:acp,environment:managedEnvironment,events:[]} as never);
     await router.sessionStopped({workspaceId:"workspace",sessionId:acp.id,session:acp,reason:"archived"});
     expect(calls).toEqual(["work","work-stop"]);
@@ -234,6 +234,7 @@ describe("Environment-aware Session event dispatch router", () => {
   it("delegates managed events to the host runtime", async () => {
     const accepted: object[] = [];
     const router = new EnvironmentAwareSessionEventDispatchRouter({
+      selfHostedWork: { stop: async () => { throw new Error("Unexpected Work stop for ordinary input"); } },
       runtime: {
         async sessionEventsAccepted(input) { accepted.push(input); },
       },
@@ -254,6 +255,7 @@ describe("Environment-aware Session event dispatch router", () => {
   it("does not start a second host brain for self-hosted events", async () => {
     const runtimeCalls: object[] = [];
     const router = new EnvironmentAwareSessionEventDispatchRouter({
+      selfHostedWork: { stop: async () => { throw new Error("Unexpected Work stop for ordinary input"); } },
       runtime: {
         async sessionEventsAccepted(input) { runtimeCalls.push(input); },
       },

@@ -14,4 +14,8 @@ export interface AcceptedSessionEvents {
 
 export interface SessionEventDispatchPort {
   sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void>;
+  /** Bind cancellation to an existing Work before canonical acceptance. */
+  bindInterruptTarget?(input: Omit<AcceptedSessionEvents, "events">): Promise<string | null>;
+  /** Recover only durable interrupt control effects, never replay turn dispatch. */
+  reconcileAcceptedInterrupts?(input: AcceptedSessionEvents): Promise<void>;
 }

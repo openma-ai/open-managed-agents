@@ -1,0 +1,10 @@
+FROM docker.io/openma/sandbox-base:435c9aa272b7444f6aaa36f3ecc10475ec7648c51186b8dfe58256e2e7f2c11e
+
+# Same pinned adapter as Dockerfile.sandbox. No registry install at Work launch.
+RUN npm install --global @openma/pi-acp@0.1.8 \
+    && npm cache clean --force
+# Build first: node scripts/build-cf-work-runner.mjs; Docker context apps/agent.
+COPY build-work-runner/runner.mjs /opt/openma/runner.mjs
+COPY openma-acp-work-item /opt/openma/bin/openma-acp-work-item
+RUN chmod 0555 /opt/openma/bin/openma-acp-work-item \
+    && /usr/local/bin/node --check /opt/openma/runner.mjs

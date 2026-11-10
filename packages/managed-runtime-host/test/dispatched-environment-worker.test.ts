@@ -294,7 +294,6 @@ describe("provider-dispatched Managed Environment Worker", () => {
       force: true,
     }, { signal: expect.any(AbortSignal) });
     expect(poll).toHaveBeenCalledWith("env_01", {
-      block_ms: null,
       reclaim_older_than_ms: 30_000,
       "Anthropic-Worker-ID": "worker",
     }, { signal: expect.any(AbortSignal) });
