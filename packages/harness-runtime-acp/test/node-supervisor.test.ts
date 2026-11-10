@@ -627,6 +627,10 @@ describe("preinstalled Node managed ACP supervisor", () => {
     },
   );
 
+  it.each(["latest", "next", "^1.2.3", "1.x", "*"])("rejects floating installed harness %s before resolution", version => {
+    expect(() => createNodeManagedAcpSupervisorApp({environment:{OPENMA_ACP_HARNESSES:JSON.stringify([{id:"codex-acp",version,command:"/opt/codex-acp"}])}})).toThrow(/OPENMA_ACP_HARNESSES/);
+  });
+
   it("uses the built-in installed-agent registry with safe defaults", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "openma-node-supervisor-default-"));
     roots.push(workspace);

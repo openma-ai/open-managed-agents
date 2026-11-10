@@ -291,3 +291,66 @@ describe("AcpTranslator prompt usage", () => {
     expect(reportedUsage).toEqual([]);
   });
 });
+
+
+describe("common projector child lifecycle", () => {
+  it.each(["flush", "complete", "error"])("preserves pending child tools at %s boundary with a discoverable thread", async boundary => {
+    const {runtime,events}=makeFakeRuntime(); const translator=new AcpTranslator(runtime);
+    await translator.consume(ev({sessionUpdate:"tool_call",toolCallId:"task",_meta:{claudeCode:{toolName:"Task"}}}));
+    await translator.consume(ev({sessionUpdate:"tool_call",toolCallId:"read",title:"Read",_meta:{claudeCode:{parentToolUseId:"task"}}}));
+    if(boundary==="flush") await translator.flush();
+    else await translator.consume(boundary==="complete"?{type:"promptComplete",response:{stopReason:"end_turn"}}:{type:"promptError",error:"failed"});
+    const tools=events.filter(e=>e.type==="agent.tool_use");
+    expect(tools.map(e=>e.id)).toEqual(["task","read"]);
+    const child=tools.find(e=>e.id==="read")!;
+    expect(child.session_thread_id).toBe("acp:claude:task");
+    expect(events.some(e=>e.type==="session.thread_created"&&e.session_thread_id===child.session_thread_id)).toBe(true);
+    expect(events.some(e=>e.type==="session.thread_status_running"&&e.session_thread_id===child.session_thread_id)).toBe(true);
+  });
+});
+
+it("preserves nested common child lanes and cancelled lifecycle without root fallback", async () => {
+  const {runtime,events}=makeFakeRuntime(); const t=new AcpTranslator(runtime);
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"outer",_meta:{claudeCode:{toolName:"Task"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"inner",_meta:{claudeCode:{toolName:"Task",parentToolUseId:"outer"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"leaf",title:"Read",_meta:{claudeCode:{parentToolUseId:"inner"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call_update",toolCallId:"leaf",status:"completed",rawOutput:"ok"}));
+  await t.consume(ev({sessionUpdate:"tool_call_update",toolCallId:"inner",status:"cancelled"}));
+  await t.flush();
+  expect(events.find(e=>e.type==="session.thread_created"&&e.session_thread_id==="acp:claude:inner")).toMatchObject({parent_thread_id:"acp:claude:outer"});
+  expect(events.find(e=>e.type==="agent.tool_use"&&e.id==="leaf")).toMatchObject({session_thread_id:"acp:claude:inner"});
+  expect(events.find(e=>e.type==="session.thread_status_idle"&&e.session_thread_id==="acp:claude:inner")).toMatchObject({interrupted:true});
+  expect(events.filter(e=>e.type==="agent.tool_result"&&e.tool_use_id==="leaf")).toHaveLength(1);
+});
+
+it("keeps child text in its common lane without duplicating root text", async () => {
+  const {runtime,events}=makeFakeRuntime(); const t=new AcpTranslator(runtime);
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"task",_meta:{claudeCode:{toolName:"Task"}}}));
+  await t.consume(ev({sessionUpdate:"agent_message_chunk",content:{text:"child answer"},_meta:{claudeCode:{parentToolUseId:"task"}}}));
+  await t.consume(ev({sessionUpdate:"agent_message_chunk",content:{text:"root answer"}}));
+  await t.flush();
+  const messages=events.filter(e=>e.type==="agent.message");
+  expect(messages.filter(e=>e.session_thread_id==="acp:claude:task")).toMatchObject([{content:[{type:"text",text:"child answer"}]}]);
+  expect(messages.filter(e=>!e.session_thread_id)).toMatchObject([{content:[{type:"text",text:"root answer"}]}]);
+});
+
+it("does not leak unknown-parent text into root and keeps child thinking attributed", async () => {
+  const {runtime,events}=makeFakeRuntime(); const t=new AcpTranslator(runtime);
+  await t.consume(ev({sessionUpdate:"agent_message_chunk",content:{text:"unattributed child"},_meta:{claudeCode:{parentToolUseId:"missing"}}}));
+  await t.consume(ev({sessionUpdate:"tool_call",toolCallId:"task",_meta:{claudeCode:{toolName:"Task"}}}));
+  await t.consume(ev({sessionUpdate:"agent_thought_chunk",content:{text:"child reasoning"},_meta:{claudeCode:{parentToolUseId:"task"}}}));
+  await t.flush();
+  expect(events.filter(e=>e.type==="agent.message")).toHaveLength(0);
+  expect(events.filter(e=>e.type==="agent.thinking")).toMatchObject([{session_thread_id:"acp:claude:task"}]);
+});
+
+it.each(["root","main"])("normalizes %s aliases without losing or duplicating root text/thinking",async lane=>{
+ const {runtime,events}=makeFakeRuntime();const t=new AcpTranslator(runtime);
+ await t.consume({type:"session.event",event:{session_thread_id:lane,update:{sessionUpdate:"agent_message_chunk",content:{text:"root answer"}}}});
+ await t.consume({type:"session.event",event:{session_thread_id:lane,update:{sessionUpdate:"agent_thought_chunk",content:{text:"root thought"}}}});
+ await t.flush();
+ expect(events.filter(e=>e.type==="agent.message")).toMatchObject([{content:[{type:"text",text:"root answer"}]}]);
+ expect(events.filter(e=>e.type==="agent.message")).toHaveLength(1);
+ expect(events.filter(e=>e.type==="agent.thinking")).toMatchObject([{text:"root thought"}]);
+ expect(events.filter(e=>e.type==="agent.thinking")).toHaveLength(1);
+});
