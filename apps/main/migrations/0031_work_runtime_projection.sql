@@ -1,0 +1,1 @@
+ALTER TABLE `managed_environment_work` ADD `runtime_projection` text;
