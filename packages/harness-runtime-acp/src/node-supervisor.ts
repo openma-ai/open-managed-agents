@@ -2,6 +2,7 @@ import {
   resolveAcpRelease, prepareAcpRelease, validateAcpRelease, acpReleaseMatchesSource,
   parseAcpReleaseSource, isPinnedAcpVersion, type AcpRelease, type AcpReleaseSource,
 } from "@openma/common/acp-artifacts";
+import type { ManagedAcpExecutionChannelsRequest, ManagedAcpExecutionChannelsResult, ManagedAcpExecutionChannels } from "@open-managed-agents/shared/acp-execution-channels-rpc";
 import type { AcpRuntime } from "@open-managed-agents/acp-runtime";
 import { posix, join } from "node:path";
 import { homedir } from "node:os";
@@ -103,6 +104,8 @@ export interface NodeManagedAcpSupervisorAppOptions {
   workspacePath?: string;
   heartbeatIntervalMs?: number;
   fetch?: typeof globalThis.fetch;
+  /** Existing control-plane authority; Work bearer never doubles as model/MCP. */
+  resolveExecutionChannels?(request: ManagedAcpExecutionChannelsRequest): Promise<ManagedAcpExecutionChannelsResult>;
   acpRuntime?: AcpRuntime;
   /** Versioned release cache, independent of the environment image. */
   artifacts?: { root?: string; fetch?: typeof globalThis.fetch };
@@ -138,7 +141,7 @@ export interface NodeManagedAcpSupervisorApp {
 
 interface ActiveRunContext {
   outputPath: string | null;
-  proxy: { gatewayBaseUrl: string; sessionsToken: string };
+  channels: ManagedAcpExecutionChannels | null;
   history: ManagedHarnessRecoveryHistoryPort;
   skills: ManagedHarnessHttpSkillSource;
 }
@@ -242,11 +245,12 @@ export function createNodeManagedAcpSupervisorApp(
           : session.agent.model.id;
         let agent: AcpStatefulAgentSpec = baseAgent;
         const inference = session.agent.inference;
+        if ((inference?.provider_id || session.agent.mcp_servers.some(server => server.type === "url")) && active.channels === null) throw new Error("ACP execution channels authority is required; Work credentials cannot authorize model/MCP");
         if (inference?.provider_id) {
           const hosted = wireHostedInferenceForAcpLaunch({
             sessionId: session.id,
-            gatewayBaseUrl: active.proxy.gatewayBaseUrl,
-            sessionsToken: active.proxy.sessionsToken,
+            gatewayBaseUrl: active.channels!.hostedInference.gatewayBaseUrl,
+            sessionsToken: active.channels!.hostedInference.sessionsToken,
             env: baseAgent.env ?? {},
             agent: binding.agent,
             nativePath: binding.nativePath,
@@ -273,8 +277,8 @@ export function createNodeManagedAcpSupervisorApp(
           agent,
           mcpServers: projectAcpSandboxMcpServers({
             sessionId: session.id,
-            gatewayBaseUrl: active.proxy.gatewayBaseUrl,
-            sessionsToken: active.proxy.sessionsToken,
+            gatewayBaseUrl: active.channels?.mcpProxy.gatewayBaseUrl,
+            sessionsToken: active.channels?.mcpProxy.sessionsToken,
             servers: session.agent.mcp_servers,
           }),
           sessionRequestMeta: {
@@ -345,9 +349,11 @@ export function createNodeManagedAcpSupervisorApp(
           scheduler: options.control?.scheduler,
           signal: input.signal,
         });
+        const resolvedChannels = await options.resolveExecutionChannels?.({tenantId:input.scope.workspaceId,sessionId:input.scope.sessionId,sessionsToken:proxy.sessionsToken});
+        if (resolvedChannels?.type === "failed") throw new Error(resolvedChannels.message);
         active = {
           outputPath: input.outputPath,
-          proxy,
+          channels: resolvedChannels?.type === "ready" ? resolvedChannels.channels : null,
           history,
           skills,
         };

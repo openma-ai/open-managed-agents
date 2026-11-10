@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./acp-execution-channels-rpc": "./src/acp-execution-channels-rpc.ts"
   },
   "dependencies": {
     "@open-managed-agents/api-types": "workspace:*",

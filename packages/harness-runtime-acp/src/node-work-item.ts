@@ -17,6 +17,7 @@ export interface NodeManagedAcpWorkItemRunnerOptions {
   environment?: Readonly<Record<string, string | undefined>>;
   lifecycleClient?: ClaimedEnvironmentWorkLifecycleClient;
   supervisorApp?: NodeManagedAcpSupervisorApp;
+  resolveExecutionChannels?: import("./node-supervisor.js").NodeManagedAcpSupervisorAppOptions["resolveExecutionChannels"];
   fetch?: typeof globalThis.fetch;
   harness?: { id: string; version: string };
   workspacePath?: string;
@@ -91,6 +92,7 @@ export function createNodeManagedAcpWorkItemRunner(
     environment,
     workspacePath,
     fetch: options.fetch,
+    resolveExecutionChannels: options.resolveExecutionChannels,
     ...(environment.OPENMA_ACP_AGENT_ID?.trim()
       ? { agentId: environment.OPENMA_ACP_AGENT_ID.trim() }
       : {}),

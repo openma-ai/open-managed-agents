@@ -237,6 +237,10 @@ describe("preinstalled Node managed ACP supervisor", () => {
       throw new Error(`unexpected request ${request.url}`);
     });
     const app = createNodeManagedAcpSupervisorApp({
+      resolveExecutionChannels: async request => {
+        expect(request).toEqual({tenantId:scope.workspaceId,sessionId:scope.sessionId,sessionsToken:"scoped-session-token"});
+        return {type:"ready",channels:{mcpProxy:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:"oma_sbx_test-only"},hostedInference:{gatewayBaseUrl:"https://gateway.openma.test",sessionsToken:"oma_sbx_test-only",model:{providerId:"anthropic",baseUrl:null}}}};
+      },
       environment: {
         ANTHROPIC_BASE_URL: "https://api.openma.test",
         ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
@@ -303,7 +307,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
         type: "http",
         name: "github",
         url: `https://gateway.openma.test/v1/oma/mcp-proxy/${scope.sessionId}/github`,
-        headers: [{ name: "Authorization", value: "Bearer scoped-session-token" }],
+        headers: [{ name: "Authorization", value: "Bearer oma_sbx_test-only" }],
       }, {
         name: "workspace",
         command: "/usr/local/bin/workspace-mcp",
@@ -340,6 +344,22 @@ describe("preinstalled Node managed ACP supervisor", () => {
     expect(runtimePosts.every((request) =>
       request.headers.get("authorization") === "Bearer scoped-session-token"
     )).toBe(true);
+  });
+
+  it.each(["missing", "failed"])("never reuses Work credentials when execution channels are %s", async mode => {
+    const workspace = await mkdtemp(join(tmpdir(), "openma-channel-boundary-")); roots.push(workspace);
+    const seen: SessionOptions[] = [];
+    const app = createNodeManagedAcpSupervisorApp({environment:claimedEnvironment,workspacePath:workspace,
+      acpRuntime:fakeAcpRuntime(seen),agentId:"codex-acp",
+      fetch:productionFetch({agent:agentSnapshot({mcp_servers:[{type:"url",name:"docs",url:"https://upstream.test"}]})}),
+      ...(mode==="failed"?{resolveExecutionChannels:async()=>({type:"failed" as const,phase:"token_validation" as const,code:"token_rejected" as const,message:"execution channels rejected"})}:{}),
+      control:{pollIntervalMs:1,scheduler:{sleep:async()=>{}}},
+    });
+    const harness=await app.resolveHarness({id:"acp",version:"1"});
+    const started = harness!.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});
+    if (mode === "failed") await expect(started).rejects.toThrow("execution channels rejected");
+    else { const run = await started; await expect(run.completed).rejects.toThrow("execution channels authority"); }
+    expect(seen).toHaveLength(0);
   });
 
   it("fails closed when the supervisor scope is not the claimed Work scope", async () => {
