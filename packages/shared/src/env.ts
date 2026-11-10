@@ -88,6 +88,9 @@ export interface Env {
    *  per-host scoping. */
   AUTH_COOKIE_DOMAIN?: string;
   AUTH_COOKIE_NAME?: string;
+  /** "1" requires email verification (needs SEND_EMAIL); "0" disables the
+   * gate. Unset preserves verification with SEND_EMAIL, otherwise disables it. */
+  AUTH_REQUIRE_EMAIL_VERIFY?: string;
   /** From header for auth emails (OTP / verification / reset) sent via
    *  SEND_EMAIL, e.g. "openma <noreply@openma.ai>". The domain must be
    *  onboarded to Cloudflare Email Sending. Defaults to

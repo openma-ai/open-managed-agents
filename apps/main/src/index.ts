@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { WorkerEntrypoint, env as workerEnv } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
+import { resolveAuthEmailPolicy } from "./auth-config";
 import {
   buildCfTenantDbProvider,
   servicesMiddleware,
@@ -290,8 +291,9 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 // Auth info endpoint (public — tells the frontend which providers are enabled
 // and surfaces the Turnstile site key so the Login page can render the widget).
 app.get("/auth-info", (c) => {
+  const policy = resolveAuthEmailPolicy(c.env);
   const providers = listAuthProviders({
-    emailOtp: true,
+    emailOtp: policy.emailAvailable,
     googleClientId: c.env.GOOGLE_CLIENT_ID,
     googleClientSecret: c.env.GOOGLE_CLIENT_SECRET,
     githubClientId: c.env.GITHUB_CLIENT_ID,
@@ -299,6 +301,8 @@ app.get("/auth-info", (c) => {
   });
   return c.json({
     providers,
+    require_email_verification: policy.requireEmailVerification,
+    password_reset: policy.emailAvailable,
     turnstile_site_key: c.env.TURNSTILE_SITE_KEY ?? null,
   });
 });

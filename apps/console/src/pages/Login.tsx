@@ -80,6 +80,8 @@ export function Login() {
     providers?: string[];
     oidc?: { id: string; name: string }[];
     email_password?: boolean;
+    require_email_verification?: boolean;
+    password_reset?: boolean;
     turnstile_site_key?: string | null;
   }>("/auth-info");
   const googleEnabled = !!authInfo?.providers?.includes("google");
@@ -89,13 +91,12 @@ export function Login() {
   // A deployment may turn email and password off and leave only SSO. Older
   // backends omit the field; treat that as on.
   const emailEnabled = authInfo?.email_password !== false;
-  // Whether the backend gates sign-up behind an email-OTP verification.
-  // /auth-info advertises "email-otp" iff AUTH_REQUIRE_EMAIL_VERIFY=1 on
-  // the server. When absent (default self-host), the sign-up flow does
-  // NOT route through verify-signup — sign-up succeeds → session cookie
-  // → straight to /. Avoids stranding the user on a verify screen with
-  // no way to receive the code.
-  const emailVerifyRequired = !!authInfo?.providers?.includes("email-otp");
+  // OTP availability is distinct from the sign-up verification gate. Older
+  // backends used the provider list for both; retain that fallback only when
+  // the explicit capability fields are absent.
+  const emailOtpEnabled = !!authInfo?.providers?.includes("email-otp");
+  const emailVerifyRequired = authInfo?.require_email_verification ?? emailOtpEnabled;
+  const passwordResetEnabled = authInfo?.password_reset ?? emailOtpEnabled;
   // Turnstile site key (public) is read from /auth-info; null when the
   // backend hasn't been configured yet, in which case the auth middleware
   // also soft-passes — both sides agree to skip the check.
@@ -507,7 +508,7 @@ export function Login() {
                 <Label htmlFor="auth-password" className="text-sm text-fg">
                   Password
                 </Label>
-                {mode === "login" && (
+                {mode === "login" && passwordResetEnabled && (
                   <Button
                     type="button"
                     variant="link"
@@ -618,7 +619,7 @@ export function Login() {
                 />
               </motion.div>
             )}
-            {mode === "login" && (
+            {mode === "login" && emailOtpEnabled && (
               <Button
                 type="button"
                 variant="outline"
