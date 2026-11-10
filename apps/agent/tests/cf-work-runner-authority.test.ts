@@ -60,3 +60,62 @@ it("composes real D1 authority and token store through the real CF bootstrap wra
     const work = await f.sql.prepare("SELECT state FROM managed_environment_work WHERE workspace_id='default' AND id=?").bind(f.delivery.workId).first<{state:string}>(); expect(work?.state).toBe("queued");
   } finally { setCloudflareSandboxForTest(undefined); }
 });
+
+it("uses the shared trusted installed resolver with exact scope, pinnedSession and signal", async () => {
+  const f = await fixture(); await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"not-harness",version:9,openma:{harness:"acp-sandbox"}}}), f.delivery.sessionId).run();
+  const signal = new AbortController().signal; let seen: any;
+  const authorize = createCfWorkRunnerAuthority({ sql:f.sql, work:f.work, controlPlaneOrigin:"https://control.test", installedHarnessResolver:{async resolve(input) { seen=input; return {id:"operator-installed",version:"2.3.4"}; }} });
+  expect((await authorize(f.delivery, signal))?.harness).toEqual({id:"operator-installed",version:"2.3.4"});
+  expect(seen.scope).toEqual({workspaceId:"default",environmentId:f.delivery.environmentId,sessionId:f.delivery.sessionId,workId:f.delivery.workId}); expect(seen.signal).toBe(signal); expect(seen.pinnedSession.agent.id).toBe("not-harness");
+});
+it("actual agent HTTP dispatch reaches trusted SQL authority then management bootstrap", async () => {
+  const f = await fixture(); const { WebCryptoAesGcm } = await import("@open-managed-agents/integrations-adapters-cf");
+  const { CloudflareSandbox, setCloudflareSandboxForTest } = await import("../src/runtime/sandbox");
+  const secret = "entry-test-root-012345678901234567890";
+  const crypto = new WebCryptoAesGcm(secret, "managed.environment-work.secret");
+  const stored = await f.work.find(f.delivery); await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await crypto.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
+  let starts=0;
+  setCloudflareSandboxForTest({ async setOutboundHandler(){}, async setOutboundByHost(){}, async restrictOutboundToHosts(){}, async startProcess(){ starts++; return {id:"p",pid:1,async kill(){},async getStatus(){return "running";}}; } });
+  try {
+    const app = (await import("../src/index")).default;
+    const response = await app.fetch(new Request("https://agent.test/__internal/work/dispatch", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(f.delivery)}), {...env,PLATFORM_ROOT_SECRET:secret,PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/openma-acp-work-item"} as never);
+    expect(response.status).toBe(200); expect(starts).toBe(1);
+  } finally { setCloudflareSandboxForTest(undefined); }
+});
+
+it("real Work HTTP ACK CAS admits one of two dispatched runners, heartbeats, and settles", async () => {
+  const f = await fixture();
+  const { EnvironmentWorkApplicationService } = await import("../../../packages/managed-agents-application/src/environment-work/application");
+  const { buildEnvironmentWorkRoutes } = await import("../../../packages/managed-agents-api/src/routes/environment-work");
+  const { createClaimedEnvironmentWorkRunner } = await import("@open-managed-agents/managed-runtime-host");
+  const application = new EnvironmentWorkApplicationService({ workspaceId:"default", work:undefined, store:f.work, environments:{find:async()=>({id:f.delivery.environmentId,archivedAt:null})}, availability:{wait:async()=>{}}, credentials:{issue:async()=>{throw Error("unused");},bindToClaim:async({secret}:any)=>({secret})},clock:{now:()=>new Date()} } as never);
+  const http = buildEnvironmentWorkRoutes(application);
+  const operations: string[] = []; let starts=0, finish!:()=>void, entered!:()=>void;
+  const gate=new Promise<void>(r=>finish=r), started=new Promise<void>(r=>entered=r);
+  async function send(op:string, query="", body?:unknown) {
+    const response=await http.request("/"+f.delivery.environmentId+"/work/"+f.delivery.workId+"/"+op+query,{method:"POST",...(body?{headers:{"content-type":"application/json"},body:JSON.stringify(body)}:{})});
+    operations.push(op+":"+response.status); if(!response.ok) throw Object.assign(Error("Work HTTP "+response.status),{status:response.status}); return response.json();
+  }
+  const runner=()=>createClaimedEnvironmentWorkRunner({client:{ack:()=>send("ack"),heartbeat:(_id:any,p:any)=>send("heartbeat","?expected_last_heartbeat="+encodeURIComponent(p.expected_last_heartbeat)),stop:()=>send("stop","",{force:true})} as never,scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_r,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))}});
+  const input={environmentId:f.delivery.environmentId,sessionId:f.delivery.sessionId,workId:f.delivery.workId,execute:async()=>{starts++; entered(); await gate;}};
+  const first=runner().run(input); await started;
+  await expect(runner().run(input)).rejects.toThrow(); expect(starts).toBe(1);
+  finish(); await first;
+  expect(operations).toContain("ack:200"); expect(operations).toContain("ack:409"); expect(operations).toContain("heartbeat:200"); expect(operations).toContain("stop:200");
+  expect((await f.work.find(f.delivery))?.work.state).toBe("stopped");
+});
+
+it("expired active Work cannot bootstrap via Work control-route grace", async () => {
+  const f=await fixture(); await f.sql.prepare("UPDATE managed_environment_work SET state='active', claim_at=? WHERE workspace_id='default' AND id=?").bind(Date.now()-1000000,f.delivery.workId).run();
+  expect(await f.authorize(f.delivery)).toBeNull();
+});
+it("actual entry rejects missing scope and mismatched secret without provider launch", async () => {
+  const f=await fixture(); const app=(await import("../src/index")).default; const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox"); let starts=0;
+  setCloudflareSandboxForTest({async startProcess(){starts++;}});
+  try {
+    const configured={...env,PLATFORM_ROOT_SECRET:"entry-test-root-012345678901234567890",PUBLIC_BASE_URL:"https://control.test",OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner"};
+    const post=(body:unknown)=>app.fetch(new Request("https://agent.test/__internal/work/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),configured as never);
+    expect((await post({...f.delivery,workspaceId:""})).status).toBe(400);
+    expect((await post({...f.delivery,workSecret:"not-current"})).status).toBe(409); expect(starts).toBe(0);
+  } finally {setCloudflareSandboxForTest(undefined);}
+});

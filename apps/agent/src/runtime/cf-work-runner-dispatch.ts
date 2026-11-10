@@ -14,7 +14,7 @@ type Delivery = EnvironmentWorkRuntimeDelivery & { signal: AbortSignal };
 export interface CfWorkRunnerDispatchDependencies {
   command: string;
   /** Existing Work claim validation + pinned Session read; never caller selection. */
-  authorize(input: EnvironmentWorkRuntimeDelivery): Promise<Authorized | null>;
+  authorize(input: EnvironmentWorkRuntimeDelivery, signal?: AbortSignal): Promise<Authorized | null>;
   /** The existing owner-scoped holder, shared with every egress attach. */
   tokens: AttemptSandboxTokens;
   issueToken(input: EnvironmentWorkRuntimeDelivery & { generation: number }, scope: "all"): Promise<string>;
@@ -32,7 +32,7 @@ export function createCfWorkRunnerDispatch(deps: CfWorkRunnerDispatchDependencie
       for (const value of [delivery.workspaceId, delivery.environmentId, delivery.sessionId, delivery.workId, delivery.workSecret]) if (typeof value !== "string" || !value.trim()) throw new TypeError("Work delivery scope is incomplete");
       const origin = new URL(delivery.apiBaseUrl);
       if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== delivery.apiBaseUrl) throw new TypeError("Work delivery requires a control-plane origin");
-      const authorized = await deps.authorize(delivery);
+      const authorized = await deps.authorize(delivery, signal);
       signal.throwIfAborted();
       if (!authorized || authorized.session.id !== delivery.sessionId || authorized.session.environmentId !== delivery.environmentId || !Number.isSafeInteger(authorized.generation) || authorized.generation < 1) throw new Error("Current Work claim and pinned Session are required");
       const placement = sessionExecutionPlacement(authorized.environment, authorized.session);

@@ -147,6 +147,9 @@ importers:
       '@open-managed-agents/harness-inference-adapters':
         specifier: workspace:*
         version: link:../../packages/harness-inference-adapters
+      '@open-managed-agents/integrations-adapters-cf':
+        specifier: workspace:*
+        version: link:../../packages/integrations-adapters-cf
       '@open-managed-agents/managed-agents-adapters-runtime':
         specifier: workspace:*
         version: link:../../packages/managed-agents-adapters-runtime

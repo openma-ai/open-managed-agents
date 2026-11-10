@@ -7,6 +7,7 @@
  */
 
 import { Hono } from "hono";
+import { CF_WORK_DISPATCH_PATH, dispatchCfWorkRunnerRequest } from "./runtime/cf-work-runner-entry";
 import type { Env } from "@open-managed-agents/shared";
 
 // --- Register harnesses ---
@@ -33,6 +34,7 @@ export { outbound, outboundByHost } from "./outbound";
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/health", (c) => c.json({ status: "ok", version: "2" }));
+app.post(CF_WORK_DISPATCH_PATH, (c) => dispatchCfWorkRunnerRequest(c.req.raw, c.env));
 
 // The apps/main cron (service binding): drain the sandbox orphan queue.
 app.post(SANDBOX_ORPHAN_RECLAIM_PATH, async (c) =>

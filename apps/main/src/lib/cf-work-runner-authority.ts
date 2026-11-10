@@ -16,15 +16,19 @@ export function createCfWorkRunnerAuthority(input: {
   controlPlaneOrigin: string;
   now?: () => Date;
   /** Command-based pins must match the existing installed harness inventory. */
-  resolveInstalledHarness?(session: Session): Promise<{ id: string; version: string } | null>;
+  installedHarnessResolver?: import("@open-managed-agents/runtime-resource-contract").EnvironmentWorkInstalledHarnessResolver<Session>;
 }) {
-  return async (delivery: EnvironmentWorkRuntimeDelivery) => {
+  return async (delivery: EnvironmentWorkRuntimeDelivery, signal: AbortSignal = new AbortController().signal) => {
+    signal.throwIfAborted();
     for (const value of [delivery.workspaceId, delivery.environmentId, delivery.sessionId, delivery.workId, delivery.workSecret]) if (typeof value !== "string" || !value.trim()) return null;
     if (delivery.apiBaseUrl !== input.controlPlaneOrigin) return null;
     const capability = managedMcpProxyFromWorkEnvironment({ ANTHROPIC_BASE_URL: delivery.apiBaseUrl, ANTHROPIC_WORK_SECRET: delivery.workSecret });
     if (!capability || capability.gatewayBaseUrl !== input.controlPlaneOrigin || !capability.sessionsToken.startsWith("sk-ant-req-v1.")) return null;
     const stored = await input.work.find(delivery);
     if (!stored?.claim || !["queued", "starting", "active"].includes(stored.work.state) || stored.secret.sessionsToken !== capability.sessionsToken) return null;
+    // Work control endpoints deliberately allow expired owners to receive
+    // heartbeat 412/cleanup. Bootstrap has no such grace: reuse the row TTL.
+    if (Date.parse(stored.claim.claimedAt) + stored.heartbeatTtlSeconds * 1000 <= (input.now?.() ?? new Date()).getTime()) return null;
     const current = await isCurrentEnvironmentWorkClaim({ store: input.work, now: input.now ?? (() => new Date()) }, {
       ...delivery, generation: stored.claim.generation, claimedAt: stored.claim.claimedAt,
       token: capability.sessionsToken, method: "POST",
@@ -39,7 +43,7 @@ export function createCfWorkRunnerAuthority(input: {
     const selection = sessionExecutionPlacement(environment, session);
     if (selection.authority !== "environment_work" || selection.harnessPlacement !== "in_sandbox") return null;
     const registry = session.agent.openma?.acp?.agent.registry;
-    const harness = registry ? parseAcpRegistryRef(registry) : await input.resolveInstalledHarness?.(session);
+    const harness = registry ? parseAcpRegistryRef(registry) : await input.installedHarnessResolver?.resolve({ scope: { workspaceId: delivery.workspaceId, environmentId: delivery.environmentId, sessionId: delivery.sessionId, workId: delivery.workId }, pinnedSession: session, signal });
     if (!harness?.id || !harness.version) return null;
     return { generation: stored.claim.generation, environment, session, harness };
   };

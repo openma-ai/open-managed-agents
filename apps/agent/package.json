@@ -32,6 +32,7 @@
     "@open-managed-agents/managed-agents-application": "workspace:*",
     "@open-managed-agents/managed-credential-resolver": "workspace:*",
     "@open-managed-agents/managed-runtime-cloudflare": "workspace:*",
+    "@open-managed-agents/integrations-adapters-cf": "workspace:*",
     "@open-managed-agents/markdown": "workspace:*",
     "@open-managed-agents/mcp": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
