@@ -112,6 +112,26 @@ it("cleanup owner generation is separate from immutable terminal source; running
  }finally{await p.close();await provider.close();}
 });
 
+it("relaunched attempt re-publishes an older terminal through its own live holder-bound process only",async()=>{
+ const f=await coldFixture();const done=await (await f.request("finalize",{stopReason:{type:"end_turn"}})).json() as any;
+ const provider=await coldProvider(f);const p=await peer(f,provider);
+ try {
+   await f.sql.prepare("UPDATE managed_environment_work SET claim_generation=2,claim_worker_id='relaunch-B',sandbox_token_hashes=? WHERE id=?").bind(JSON.stringify([{h:"f".repeat(64),s:"all"}]),f.claim.workId).run();
+   const {WorkFinalizationApplication}=await import("@open-managed-agents/managed-agents-application");
+   const {SqlWorkFinalization}=await import("@open-managed-agents/managed-agents-adapters-sql");
+   const app=new WorkFinalizationApplication({persistence:new SqlWorkFinalization(p.b.sql),host:p.b.workFinalizationHost});
+   const claim={...f.claim,generation:2,holder:"relaunch-B"};
+   const input={claim,turnId:f.turnId,revision:done.revision,terminalEventId:done.terminal.eventId};
+   const current=environmentWorkSandboxTokenRef(claim);
+   // The slot now holds the relaunched attempt; a foreign holder is refused.
+   provider.locator.identity.attemptId=current.attemptId;provider.locator.status="running";provider.locator.holderHash="e".repeat(64);
+   expect(await app.publish(input)).toMatchObject({type:"failed"});
+   provider.locator.holderHash="f".repeat(64);
+   expect(await app.publish(input)).toMatchObject({type:"published",terminal:{generation:1,eventId:done.terminal.eventId}});
+   expect(provider.operations).not.toContain("create");
+ }finally{await p.close();await provider.close();}
+});
+
 import { createNodeEnvironmentWorkWorker } from "../../../packages/control-plane-node/src/lib/node-environment-work-worker.js";
 import { managedAgentsPortTokens } from "../../../packages/managed-agents-app/src/managed-agents.js";
 import { rm, readFile } from "node:fs/promises";

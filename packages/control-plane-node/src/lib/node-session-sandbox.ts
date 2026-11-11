@@ -292,14 +292,21 @@ export class NodeSessionSandboxes {
     const inspect = runtime.inspectManagedProcessSlot.bind(runtime);
     const locator = await inspect();
     const source = input.sourceAttempt;
+    // Re-publishing an older generation's committed terminal from a relaunched
+    // attempt: that attempt restored the canonical checkpoint taken at the
+    // terminal, so its own live, holder-bound process is the proof. Never for
+    // finalization (non-terminal), never for a different Work.
+    const republish = input.terminal && source.generation < authority.attempt.generation
+      && locator.identity.attemptId === authority.attempt.attemptId && locator.status === "running" && locator.holderHash === holderHash;
     if (source.executionId !== authority.attempt.executionId || source.generation > authority.attempt.generation
       || !locator.id || !locator.epoch || !Number.isSafeInteger(locator.pid) || locator.pid <= 0
       || !["running","exited"].includes(locator.status) || locator.sandboxId !== state.handle.runtimeId || locator.identity.workspaceId !== input.workspaceId
       || locator.identity.sessionId !== input.session.id || locator.identity.workId !== source.executionId
-      || locator.identity.attemptId !== source.attemptId || !/^[a-f0-9]{64}$/.test(locator.holderHash ?? "")
-      || (!input.terminal && locator.status !== "running")
-      || (source.generation === authority.attempt.generation && locator.holderHash !== holderHash)
-      || (source.generation !== authority.attempt.generation && (!input.terminal || locator.status !== "exited"))) {
+      || !/^[a-f0-9]{64}$/.test(locator.holderHash ?? "")
+      || (!republish && (locator.identity.attemptId !== source.attemptId
+        || (!input.terminal && locator.status !== "running")
+        || (source.generation === authority.attempt.generation && locator.holderHash !== holderHash)
+        || (source.generation !== authority.attempt.generation && (!input.terminal || locator.status !== "exited"))))) {
       throw new Error("Work process locator does not prove the authorized source attempt");
     }
     const handle = await runtime.restoreManagedProcess(locator);
@@ -311,7 +318,8 @@ export class NodeSessionSandboxes {
       if (JSON.stringify(saved) !== JSON.stringify(state)) return false;
       const latest = await inspect();
       return fingerprint(latest) === fingerprint(locator)
-        && (input.terminal ? source.generation === authority.attempt.generation || latest.status === "exited" : latest.status === "running") && await authority.isCurrent();
+        && (republish ? latest.status === "running"
+          : input.terminal ? source.generation === authority.attempt.generation || latest.status === "exited" : latest.status === "running") && await authority.isCurrent();
     };
     if (!await isCurrent()) throw new Error("Work reconnect authority changed");
     const generation = (await runtime.readFile("/tmp/.oma-warm")).trim();
