@@ -235,7 +235,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install native storage test dependency
-        run: sudo apt-get update && sudo apt-get install -y rclone
+        run: bash scripts/install-ci-rclone.sh
 
       - name: Node typecheck
         run: pnpm typecheck:ci:node

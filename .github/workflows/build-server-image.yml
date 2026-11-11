@@ -78,7 +78,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install native storage test dependency
-        run: sudo apt-get update && sudo apt-get install -y rclone
+        run: bash scripts/install-ci-rclone.sh
 
       - name: Build sandbox credential relay
         run: pnpm --filter @open-managed-agents/main-node test:prepare
