@@ -1,3 +1,4 @@
+import { handleWorkPhysicalObservation, isWorkPhysicalObservation } from "./work-physical-observation";
 import { handleCfWorkFinalization, CF_WORK_FINALIZATION_PREFIX } from "./cf-work-finalization-host";
 import { CfE2BWorkLease } from "./cf-work-provider-lease";
 import { recoverCfWorkLease, type CfWorkLeaseScope } from "./cf-work-lease-recovery";
@@ -618,8 +619,6 @@ export class SessionDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this._ensureCfAgentsSchema();
-    this._loadStateFromSql();
     this._wakeupScheduler = new CloudflareSessionWakeupScheduler({
       backend: {
         create: async (input) => {
@@ -690,6 +689,12 @@ export class SessionDO extends DurableObject<Env> {
       clock: { now: () => new Date() },
       ids: { nextEventId: () => generateEventId() },
     });
+  }
+
+  private initializeSessionState(): void {
+    if (this._initialized) return;
+    this._ensureCfAgentsSchema();
+    this._loadStateFromSql();
     this._initialized = true;
   }
 
@@ -2475,6 +2480,10 @@ export class SessionDO extends DurableObject<Env> {
    * handle everything here and only delegate alarm() to Agent's scheduler.
    */
   async fetch(request: Request): Promise<Response> {
+    if (isWorkPhysicalObservation(new URL(request.url).pathname)) {
+      return handleWorkPhysicalObservation(request, this.env, { storage: this.ctx.storage, id: this.ctx.id.toString() });
+    }
+    this.initializeSessionState();
     // Dedicated Work storage barrier bypasses MA recovery/init. Lease alarms
     // remain independent and continue through storage, terminal and artifacts.
     if (new URL(request.url).pathname.startsWith(CF_WORK_FINALIZATION_PREFIX)) {
@@ -6420,10 +6429,9 @@ export class SessionDO extends DurableObject<Env> {
   // ── State (cf_agents_state, single row) ────────────────────────────────
 
   get state(): SessionState {
+    this.initializeSessionState();
     if (this._state === undefined) {
-      // Defensive — constructor calls _loadStateFromSql before any user code
-      // runs, so this should be impossible. If it fires, something called
-      // .state before super() ran.
+      // Defensive: normal requests/RPCs initialize lazily; observation never does.
       throw new Error("SessionDO.state read before init");
     }
     return this._state;
@@ -6442,6 +6450,7 @@ export class SessionDO extends DurableObject<Env> {
    * gate so old sessions don't accept new events post-destroy.
    */
   deriveStatus(): "idle" | "running" | "terminated" {
+    this.initializeSessionState();
     if (this._state?.terminated_at != null || this._state?.status === "terminated") {
       return "terminated";
     }
@@ -6565,6 +6574,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   setState(next: SessionState): void {
+    this.initializeSessionState();
     this._state = next;
     this.ctx.storage.sql.exec(
       `INSERT OR REPLACE INTO cf_agents_state (id, state) VALUES (?, ?)`,
@@ -6832,6 +6842,7 @@ export class SessionDO extends DurableObject<Env> {
     callback: keyof this | string,
     payload?: T,
   ): Promise<{ id: string; callback: string; type: SessionScheduleType; time: number; payload: T; cron?: string; delayInSeconds?: number }> {
+    this.initializeSessionState();
     const callbackName = String(callback);
     if (typeof (this as unknown as Record<string, unknown>)[callbackName] !== "function") {
       throw new Error(`this.${callbackName} is not a function`);
@@ -6882,6 +6893,7 @@ export class SessionDO extends DurableObject<Env> {
     if (typeof intervalSeconds !== "number" || intervalSeconds <= 0) {
       throw new Error("intervalSeconds must be a positive number");
     }
+    this.initializeSessionState();
     const callbackName = String(callback);
     if (typeof (this as unknown as Record<string, unknown>)[callbackName] !== "function") {
       throw new Error(`this.${callbackName} is not a function`);
@@ -6934,6 +6946,7 @@ export class SessionDO extends DurableObject<Env> {
     cron?: string;
   }> {
     let query = "SELECT id, callback, payload, type, time, cron FROM cf_agents_schedules WHERE 1=1";
+    this.initializeSessionState();
     const params: Array<string | number> = [];
     if (criteria.type) { query += " AND type = ?"; params.push(criteria.type); }
     if (criteria.timeRange) {
@@ -6956,6 +6969,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   async cancelSchedule(id: string): Promise<boolean> {
+    this.initializeSessionState();
     const before = this.ctx.storage.sql
       .exec<{ id: string }>(`SELECT id FROM cf_agents_schedules WHERE id = ? LIMIT 1`, id)
       .toArray();
@@ -7476,6 +7490,7 @@ export class SessionDO extends DurableObject<Env> {
    * (execution lease recovery), then re-arms the next alarm.
    */
   async alarm(): Promise<void> {
+    this.initializeSessionState();
     const nowSec = Math.floor(Date.now() / 1000);
     const due = this.ctx.storage.sql
       .exec<{

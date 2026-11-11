@@ -1,3 +1,4 @@
+import { parseWorkProcessObservation, validWorkProcessScope, workProcessScopeKeys, type WorkProcessScope, type WorkProcessObservation } from "./work-process-observation";
 import type { BlobStore } from "@open-managed-agents/blob-store/ports";
 import type {
   ManagedRuntimeProviderDriverPort,
@@ -289,6 +290,59 @@ export class CloudflareBridgeRuntime
   async renewLease(): Promise<void> {
     if (await this.status() !== "running") {
       throw new Error("Cloudflare Bridge sandbox is not running");
+    }
+  }
+
+  /** One bounded GET, no provider attach/renew/start and no fallback. A legacy
+   * bridge without this route is explicitly unavailable, not a stopped runner. */
+  async observeWorkProcess(scope: WorkProcessScope): Promise<WorkProcessObservation> {
+    if (!validWorkProcessScope(scope)) throw new Error("Invalid Work process observation scope");
+    // Snapshot only scope fields before any await; callers cannot rebind a
+    // pending request by mutating their object (or smuggle extra fields out).
+    const expected: WorkProcessScope = { workspaceId: scope.workspaceId, environmentId: scope.environmentId,
+      sessionId: scope.sessionId, workId: scope.workId, generation: scope.generation, holder: scope.holder };
+    const query = new URLSearchParams(workProcessScopeKeys.map(k => [k, String(expected[k])]));
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      return await Promise.race([
+        (async () => {
+          const response = await this.#request(`/work-process?${query}`, { method: "GET", redirect: "error", signal: controller.signal, cache: "no-store" });
+          if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+            void response.body?.cancel().catch(() => undefined);
+            throw new Error("Work process observation unavailable");
+          }
+          const body = response.body?.getReader();
+          if (!body) throw new Error("Work process observation body missing");
+          if (controller.signal.aborted) { void body.cancel().catch(() => undefined); throw new Error("Observation timed out"); }
+          reader = body;
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          for (;;) {
+            const chunk = await body.read();
+            if (chunk.done) break;
+            size += chunk.value.byteLength;
+            if (size > 16384) throw new Error("Work process observation too large");
+            chunks.push(chunk.value);
+          }
+          const bytes = new Uint8Array(size);
+          let offset = 0;
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+          return parseWorkProcessObservation(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)), this.#runtimeId, expected);
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => { controller.abort(); reject(new Error("Observation timed out")); }, 5000);
+        }),
+      ]);
+    } catch {
+      // Never echo remote errors, headers, URLs or capability data.
+      throw new Error("Work process observation unavailable or mismatched");
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      // A remote cancel can hang too; disposal must not defeat the deadline.
+      if (reader) void reader.cancel().catch(() => undefined);
     }
   }
 

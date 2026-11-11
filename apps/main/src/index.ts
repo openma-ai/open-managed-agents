@@ -1,3 +1,4 @@
+import { handleWorkPhysicalObservation, WORK_PHYSICAL_OBSERVATION_ROUTE } from "../../agent/src/runtime/work-physical-observation";
 import { normalizeOpenAIAgentsErrorResponse } from '@open-managed-agents/openai-agents-api';
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode, createOpenAIArtifactPublisher, outputPathsFromManifest, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
@@ -379,6 +380,8 @@ for (const action of ["inputs-read", "inputs-consume"]) {
 }
 
 // API routes (require authentication)
+// Observation authenticates independently, before cookie auth can self-heal.
+app.all(WORK_PHYSICAL_OBSERVATION_ROUTE, c => handleWorkPhysicalObservation(c.req.raw, c.env));
 app.use("/v1/*", authMiddleware);
 app.use("/v1/*", rateLimitMiddleware);
 // Resolve the per-tenant D1 database for this request. Phase 1: returns the

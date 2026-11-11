@@ -747,17 +747,18 @@ export class OmaSandbox extends DurableObject<Env> {
     (this.ctx.exports as unknown as { S3Gateway: ConstructorParameters<typeof S3Mount>[1] }).S3Gateway,
   );
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    const container = ctx.container;
+  private coldMaintenanceRestored = false;
+
+  // Activation may be an operator read: do not arm maintenance or renew here.
+  private restoreColdMaintenance(): void {
+    if (this.coldMaintenanceRestored) return;
+    this.coldMaintenanceRestored = true;
+    const container = this.ctx.container;
     if (container?.running) {
-      // A restarted Durable Object starts without an inactivity timeout.
-      void ctx.blockConcurrencyWhile(async () => {
-        const work = ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
-        // A cold object must not grant a new provider lease without checking
-        // SQL. Persist an immediate wake; alarm reconstructs authority.
-        if (work && work.status !== "exited") await ctx.storage.setAlarm(Date.now());
-        else await container.setInactivityTimeout(sandboxIdleTimeoutMs(env) + CONTAINER_BACKSTOP_GRACE_MS);
+      void this.ctx.blockConcurrencyWhile(async () => {
+        const work = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+        if (work && work.status !== "exited") await this.ctx.storage.setAlarm(Date.now());
+        else await container.setInactivityTimeout(this.backstopTimeoutMs());
       });
     }
   }
@@ -939,6 +940,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
   }
 
   private ensureRunning(): Promise<void> {
+    this.restoreColdMaintenance();
     if (this.setup !== null && (this.setupPending || this.container.running)) {
       return this.setup;
     }
@@ -992,6 +994,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
    * /workspace. Dirt is recorded afterwards: the operation may have started
    * the container, which begins clean. */
   private async track<T>(dirty: boolean, operation: () => Promise<T>): Promise<T> {
+    this.restoreColdMaintenance();
     this.inflight += 1;
     this.recordActivity(false);
     try {
@@ -1642,6 +1645,36 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
       getLogs: async () => ({ stdout: "", stderr: "" }),
       kill: async (signal = "SIGTERM") => { await this.assertWorkProcess(locator); process.kill(signal === "SIGKILL" ? 9 : 15); },
     };
+  }
+
+  /** Operator-only physical observation. Unlike maintenance inspection, this
+   * never retires a slot, updates an alarm, attaches, or renews the container.
+   * The caller must authenticate before RPC and separately recheck SQL claim
+   * authority. Unknown is never proof that the old runner has exited. */
+  async observeWorkProcess(scope: Pick<NativeWorkProcess, "workspaceId" | "environmentId" | "sessionId" | "workId" | "generation" | "holder">) {
+    const unknown = { status: "unknown" as const };
+    try {
+      const saved = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+      if (!saved || saved.status !== "running" || !this.ctx.container?.running || !saved.epoch || this.plan().incarnation !== saved.epoch
+        || !Number.isSafeInteger(saved.pid) || saved.pid < 1 || !/^\d+$/.test(saved.startTicks)
+        || !/^[a-f0-9]{64}$/.test(saved.holderHash) || !saved.id
+        || (["workspaceId", "environmentId", "sessionId", "workId", "generation", "holder"] as const).some(k => saved[k] !== scope[k])) return unknown;
+      // Two kernel samples plus a persisted identity recheck. Direct native exec
+      // cannot start a stopped container; never call ensureRunning()/run().
+      for (let sample = 0; sample < 2; sample++) {
+        const result = await (await this.container.exec(["cat", `/proc/${saved.pid}/stat`])).output();
+        const stat = new TextDecoder().decode(result.stdout).trim();
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
+        if (result.exitCode !== 0 || !stat.startsWith(`${saved.pid} (`) || !["R", "S", "D", "I"].includes(fields[0]) || fields[19] !== saved.startTicks) return unknown;
+        const latest = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+        if (!latest || latest.status !== "running" || !sameNativeWorkProcess(saved, latest) || !this.container.running || this.plan().incarnation !== saved.epoch) return unknown;
+      }
+      // Explicit allowlist: no bearer/hash, mount endpoints, or arbitrary metadata.
+      return { status: "running" as const,
+        process: { id: saved.id, epoch: saved.epoch, pid: saved.pid, startTicks: saved.startTicks },
+        work: { workspaceId: saved.workspaceId, environmentId: saved.environmentId, sessionId: saved.sessionId,
+          workId: saved.workId, generation: saved.generation, holder: saved.holder, attemptId: `environment-work-claim:${saved.generation}` } };
+    } catch { return unknown; }
   }
 
   /** Only trusted DO state plus a live /proc start time can identify a Work

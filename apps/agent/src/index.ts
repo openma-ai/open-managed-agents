@@ -1,3 +1,4 @@
+import { handleWorkPhysicalObservation, WORK_PHYSICAL_OBSERVATION_ROUTE } from "./runtime/work-physical-observation";
 /**
  * Agent Worker — per-environment session runtime.
  *
@@ -34,6 +35,7 @@ export { outbound, outboundByHost } from "./outbound";
 // --- HTTP app: thin router to SessionDO ---
 const app = new Hono<{ Bindings: Env }>();
 
+app.all(WORK_PHYSICAL_OBSERVATION_ROUTE, c => handleWorkPhysicalObservation(c.req.raw, c.env));
 app.get("/health", (c) => c.json({ status: "ok", version: "2" }));
 app.post(CF_WORK_DISPATCH_PATH, (c) => dispatchCfWorkRunnerRequest(c.req.raw, c.env));
 app.post("/__internal/work/webhook", async (c) => {
