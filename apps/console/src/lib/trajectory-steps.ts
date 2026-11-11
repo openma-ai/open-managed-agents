@@ -815,7 +815,8 @@ export interface OverviewStepBar {
   lane: number;
   d0: number;
   d1: number;
-  /** End is not recorded; bar is drawn to the last observed event. */
+  /** End is not recorded; bar is drawn to the owning turn's close, or to
+   *  the last observed event while that turn is still open (stepDrawEndTs). */
   openEnded: boolean;
 }
 
@@ -863,6 +864,22 @@ function markerKind(s: TraceStep): OverviewMarkerKind | null {
   return null;
 }
 
+/**
+ * Wall-clock end used to *draw* a step (never a recorded end). A step with
+ * an end uses it. A pending step (no end event) inside a turn that already
+ * closed is capped at that turn's close: the bar must not run through the
+ * idle gap and later turns. Only while the owning turn is still open does a
+ * pending bar extend to the last observed session event. Schedule waits are
+ * exempt — waiting past the turn close is what they record. The step stays
+ * pending; this does not change its duration.
+ */
+export function stepDrawEndTs(s: TraceStep, turn: Pick<TraceTurn, "endTs"> | undefined, sessionEnd: number | null): number | null {
+  if (s.endTs !== null) return s.endTs;
+  if (!s.pending) return s.startTs;
+  if (s.family !== "schedule" && turn?.endTs != null) return turn.endTs;
+  return sessionEnd ?? s.startTs;
+}
+
 export function layoutOverview(p: TraceProjection, scale: TimeScale): OverviewLayout {
   const sessionEnd = p.endTs ?? scale.endTs;
   const turnBars: OverviewTurnBar[] = [];
@@ -884,7 +901,7 @@ export function layoutOverview(p: TraceProjection, scale: TimeScale): OverviewLa
         continue;
       }
       const openEnded = s.endTs === null;
-      const end = s.endTs ?? (s.pending ? sessionEnd : s.startTs);
+      const end = stepDrawEndTs(s, t, sessionEnd) ?? s.startTs;
       const d0 = scale.toDisplay(s.startTs);
       const d1 = scale.toDisplay(Math.max(end, s.startTs));
       boundaries.push(d0);

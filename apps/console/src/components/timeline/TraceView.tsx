@@ -23,6 +23,7 @@ import {
   isFilterActive,
   layoutOverview,
   nodeSteps,
+  stepDrawEndTs,
   stepMatches,
   toolCounts,
   transcriptText,
@@ -454,8 +455,8 @@ function selectionRange(
   if (!sel) return null;
   let r: { startTs: number | null; endTs: number | null } | null = null;
   if (sel.type === "step") {
-    const s = stepIndex.get(sel.key)?.step;
-    if (s) r = { startTs: s.startTs, endTs: s.endTs ?? (s.pending ? p.endTs : s.startTs) };
+    const hit = stepIndex.get(sel.key);
+    if (hit) r = { startTs: hit.step.startTs, endTs: stepDrawEndTs(hit.step, hit.turn, p.endTs) };
   } else if (sel.type === "turn") {
     const t = p.turns.find((x) => x.key === sel.key);
     if (t) r = { startTs: t.startTs, endTs: t.endTs ?? t.lastTs };

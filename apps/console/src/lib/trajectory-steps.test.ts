@@ -18,6 +18,7 @@ import {
   isShellTool,
   layoutOverview,
   nodeSteps,
+  stepDrawEndTs,
   normalizeEvent,
   normalizeEvents,
   oneLine,
@@ -520,7 +521,7 @@ describe("time scale", () => {
 });
 
 describe("layoutOverview", () => {
-  it("packs overlapping steps into lanes, adds markers, and extends pending bars", () => {
+  it("packs overlapping steps into lanes, adds markers, and caps pending bars at their closed turn", () => {
     const p = buildTrace([
       ev(0, { type: "user.message", text: "go" }),
       ev(10, { type: "agent.tool_use", id: "a", name: "read", input: {} }),
@@ -535,10 +536,89 @@ describe("layoutOverview", () => {
     const layout = layoutOverview(p, buildTimeScale(p.startTs!, p.endTs!));
     expect(layout.stepBars.map((b) => [b.step.toolName, b.lane])).toEqual([["read", 0], ["grep", 1], ["bash", 0]]);
     const bash = layout.stepBars.find((b) => b.step.toolName === "bash")!;
-    expect(bash).toMatchObject({ openEnded: true, d1: 1200 });
+    // Turn 1 closed by session.error at 60: the pending bar stops there.
+    expect(bash).toMatchObject({ openEnded: true, d1: 60 });
     expect(layout.markers.map((m) => m.step.kind)).toEqual(["user", "error", "user"]);
     expect(layout.turnBars.map((t) => [t.d0, t.d1, t.openEnded])).toEqual([[0, 60, false], [1000, 1200, true]]);
     expect(layout.gapBars.map((g) => [g.gap.kind, g.d0, g.d1, g.collapsed])).toEqual([["idle", 60, 1000, false]]);
+  });
+
+  describe("pending bars vs turn close", () => {
+    const H = 3_600_000;
+    // Mirrors the ?scenario=session fixture: pending MCP g1 in turn 1,
+    // turn 1 closes, 1h idle until the scheduled wakeup, later turns.
+    const events = () => [
+      ev(0, { type: "user.message", text: "fix it" }),
+      ev(24_800, { type: "agent.mcp_tool_use", id: "g1", name: "create_comment", mcp_server_name: "github", input: {} }),
+      ev(25_650, { type: "span.wakeup_scheduled", id: "w1" }),
+      ev(25_700, { type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+      ev(25_700 + H, { type: "user.message", parent_event_id: "w1", metadata: { harness: "schedule", kind: "wakeup" }, text: "check" }),
+      ev(29_500 + H, { type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+      ev(95_000 + H, { type: "user.message", text: "deploy" }),
+      ev(141_050 + H, { type: "session.error", error: "overloaded" }),
+    ];
+
+    it("caps a pending step in a closed turn at the turn close, not across idle or later turns", () => {
+      const p = buildTrace(events());
+      const layout = layoutOverview(p, buildTimeScale(p.startTs!, p.endTs!));
+      const g1 = layout.stepBars.find((b) => b.step.callId === "g1")!;
+      const turn1 = layout.turnBars[0]!;
+      const idle = layout.gapBars[0]!;
+      expect(idle.gap.kind).toBe("idle");
+      expect(g1.d0).toBe(24_800);
+      expect(g1.d1).toBe(25_700);
+      expect(g1.d1).toBe(turn1.d1);
+      expect(g1.d1).toBeLessThanOrEqual(idle.d0);
+      for (const later of layout.turnBars.slice(1)) expect(g1.d1).toBeLessThan(later.d0);
+      // Still pending, striped, no invented end / duration / result.
+      expect(g1.openEnded).toBe(true);
+      expect(g1.step).toMatchObject({ pending: true, endTs: null, durationMs: null, output: undefined, isError: false });
+      expect(g1.step.events.map((e) => e.type)).toEqual(["agent.mcp_tool_use"]);
+    });
+
+    it("also caps when the idle gap is collapsed", () => {
+      const p = buildTrace(events());
+      const breaks = p.gaps.map((g) => ({ key: g.key, startTs: g.startTs!, endTs: g.endTs! }));
+      const scale = buildTimeScale(p.startTs!, p.endTs!, breaks);
+      const layout = layoutOverview(p, scale);
+      const g1 = layout.stepBars.find((b) => b.step.callId === "g1")!;
+      expect(g1.d1).toBe(scale.toDisplay(p.turns[0]!.endTs!));
+      expect(g1.d1).toBe(25_700);
+      expect(g1.d1).toBeLessThanOrEqual(layout.gapBars[0]!.d0);
+    });
+
+    it("keeps the paired schedule wait across the idle gap", () => {
+      const p = buildTrace(events());
+      const layout = layoutOverview(p, buildTimeScale(p.startTs!, p.endTs!));
+      const sched = layout.stepBars.find((b) => b.step.family === "schedule")!;
+      expect(sched).toMatchObject({ d0: 25_650, d1: 25_700 + H, openEnded: false });
+      expect(sched.step.pending).toBe(false);
+    });
+
+    it("lets a pending step in the still-open last turn extend to the last observed event", () => {
+      const p = buildTrace([
+        ev(0, { type: "user.message", text: "a" }),
+        ev(100, { type: "session.status_idle" }),
+        ev(5_000, { type: "user.message", text: "b" }),
+        ev(5_100, { type: "agent.tool_use", id: "t1", name: "bash", input: { command: "sleep 99" } }),
+        ev(9_000, { type: "agent.message", text: "still running" }),
+      ]);
+      const layout = layoutOverview(p, buildTimeScale(p.startTs!, p.endTs!));
+      const bar = layout.stepBars.find((b) => b.step.callId === "t1")!;
+      expect(p.turns[1]!.closed).toBe(false);
+      expect(bar).toMatchObject({ d0: 5_100, d1: 9_000, openEnded: true });
+      expect(bar.step).toMatchObject({ pending: true, endTs: null, durationMs: null, output: undefined });
+    });
+  });
+
+  it("stepDrawEndTs: recorded end wins; pending capped only by a closed owning turn; schedule waits exempt", () => {
+    const base = { startTs: 10, endTs: null, pending: true, family: "tool" } as unknown as TraceStep;
+    expect(stepDrawEndTs(base, { endTs: 50 }, 900)).toBe(50);
+    expect(stepDrawEndTs(base, { endTs: null }, 900)).toBe(900);
+    expect(stepDrawEndTs(base, undefined, 900)).toBe(900);
+    expect(stepDrawEndTs({ ...base, endTs: 30, pending: false }, { endTs: 50 }, 900)).toBe(30);
+    expect(stepDrawEndTs({ ...base, pending: false }, { endTs: 50 }, 900)).toBe(10);
+    expect(stepDrawEndTs({ ...base, family: "schedule" }, { endTs: 50 }, 900)).toBe(900);
   });
 
   it("marks collapsed gap bars and shrinks their width", () => {
