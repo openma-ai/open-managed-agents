@@ -20,3 +20,12 @@ test("refuses non-isolated targets or missing authoritative scope", async () => 
   assert.throws(() => prepareCfWorkRunnerConfig({ name: "sandbox-default" }, { environmentId: "env", workspaceId: "ws" }), /isolated/);
   assert.throws(() => prepareCfWorkRunnerConfig({ name: "oma-v2e2b-agent" }, { environmentId: "", workspaceId: "ws" }), /scope/);
 });
+
+test("prepares a newly allocated acceptance namespace without reusing old targets", async () => {
+  const { prepareCfWorkRunnerConfig } = await import("./prepare-cf-work-runner.mjs");
+  const config = { name: "oma-e2e-pr545-ce-agent", containers: [{ class_name: "Sandbox", images: { sandbox: {} } }] };
+  assert.equal(prepareCfWorkRunnerConfig(config, { environmentId: "env", workspaceId: "ws" }).name, config.name);
+  for (const name of ["oma-e2e-", "oma-e2e-prod/agent", "production-agent", "oma-e2e-Agent"]) {
+    assert.throws(() => prepareCfWorkRunnerConfig({ ...config, name }, { environmentId: "env", workspaceId: "ws" }), /isolated/);
+  }
+});

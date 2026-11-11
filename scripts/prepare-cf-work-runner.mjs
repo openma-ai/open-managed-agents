@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
 
 export function prepareCfWorkRunnerConfig(config, { environmentId, workspaceId }) {
-  if (!/^oma-v2e2b-[a-z0-9-]+$/.test(config.name ?? "")) throw new Error("An isolated oma-v2e2b target is required");
+  if (!/^oma-(?:v2e2b|e2e)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.name ?? "")) throw new Error("An isolated oma-v2e2b or oma-e2e target is required");
   if (![environmentId, workspaceId].every(value => typeof value === "string" && value.trim())) throw new Error("Authoritative Work scope is required");
   const result = structuredClone(config);
   delete result.env;
