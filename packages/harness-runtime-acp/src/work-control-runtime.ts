@@ -19,6 +19,8 @@ export interface WorkControlRuntime {
   applyPermissionMode(session: AcpSession, options: {
     harnessId: string;
     mode: WorkPermissionMode;
+    /** Explicit per-tool policies (common ignores; ungated profiles refuse stricter ones). */
+    toolModes?: readonly string[];
     abortSignal: AbortSignal;
   }): Promise<
     | { status: "applied"; nativeModeId: string; verification: "session/set_config_option" }

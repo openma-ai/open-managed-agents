@@ -27,8 +27,8 @@ export function withUngatedPermissionProfiles(apply: Apply): Apply {
     if (session.configOptions.some(option => option.id === "mode")) {
       throw new Error(`Ungated harness ${profile.id} unexpectedly advertises a native permission mode`);
     }
-    if (options.mode !== "always_allow") {
-      throw new Error(`Harness ${profile.id} has no native permission gate; permission policy ${options.mode} cannot be enforced`);
+    if (options.mode !== "always_allow" || options.toolModes?.some(mode => mode !== "always_allow")) {
+      throw new Error(`Harness ${profile.id} has no native permission gate; a permission policy stricter than always_allow cannot be enforced`);
     }
     return { status: "inherent", verification: "ungated-harness-profile" };
   };

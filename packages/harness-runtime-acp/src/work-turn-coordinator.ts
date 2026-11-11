@@ -209,7 +209,7 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
             assertMode();
             const applied = await runtime.applyPermissionMode(nativeSession, {
               harnessId: nativeHarnessId ?? options.fallbackHarnessId,
-              mode: globalPermissionMode(agentTools), abortSignal: signal,
+              mode: globalPermissionMode(agentTools), toolModes: toolPermissionModes(agentTools), abortSignal: signal,
             });
             if (applied.status === "applied") verifiedMode = applied.nativeModeId;
             // Ungated always_allow has no native mode to drift-check.
@@ -321,6 +321,20 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Every explicit per-tool / per-toolset policy. An ungated harness cannot
+ * enforce any of them that is stricter than always_allow. */
+function toolPermissionModes(tools: readonly Readonly<Record<string,unknown>>[]): string[] {
+  const modes: string[] = [];
+  for (const tool of tools) {
+    const configs = Array.isArray(tool.configs) ? tool.configs : [];
+    for (const config of [tool, ...configs]) {
+      const policy = isRecord(config) ? config.permission_policy : undefined;
+      if (isRecord(policy) && typeof policy.type === "string") modes.push(policy.type);
+    }
+  }
+  return modes;
 }
 
 function globalPermissionMode(tools: readonly Readonly<Record<string,unknown>>[]): WorkPermissionMode {

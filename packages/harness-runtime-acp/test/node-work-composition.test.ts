@@ -68,6 +68,7 @@ it.each([
   ["unpinned pi version", piShell("completed"), { name: "openma-pi-acp", version: "0.1.9" }],
   ["codex without exit_code", piShell("completed"), { name: "@agentclientprotocol/codex-acp", version: "1.8.0" }],
   ["pi shell still running", piShell("in_progress"), { name: "openma-pi-acp", version: "0.1.8" }],
+  ["pi execute-labelled MCP tool without a shell command", [{ sessionUpdate: "tool_call", toolCallId: "sh", kind: "execute", status: "in_progress", rawInput: { job: "x" } }, { sessionUpdate: "tool_call_update", toolCallId: "sh", status: "completed" }, { type: "promptComplete", response: { stopReason: "end_turn" } }], { name: "openma-pi-acp", version: "0.1.8" }],
   ["pi background shell", [{ sessionUpdate: "tool_call", toolCallId: "sh", kind: "execute", status: "completed", rawInput: { command: "x", run_in_background: true } }, { type: "promptComplete", response: { stopReason: "end_turn" } }], { name: "openma-pi-acp", version: "0.1.8" }],
 ] as const)("does not certify shell exit for %s", async (_label, events, info) => {
   const f = fixture([...events], info);
@@ -90,6 +91,8 @@ it("loads gated capabilities from the formally installed common package", async 
   const pi = { agentInfo: { name: "openma-pi-acp", version: "0.1.8" }, configOptions: [] } as never;
   await expect(modules.control.applyPermissionMode(pi, { harnessId: "pi-acp", mode: "always_allow", abortSignal: signal }))
     .resolves.toEqual({ status: "inherent", verification: "ungated-harness-profile" });
+  await expect(modules.control.applyPermissionMode(pi, { harnessId: "pi-acp", mode: "always_allow", toolModes: ["always_allow", "always_ask"], abortSignal: signal } as never))
+    .rejects.toThrow(/no native permission gate/);
   for (const mode of ["always_ask", "auto"] as const) {
     await expect(modules.control.applyPermissionMode(pi, { harnessId: "pi-acp", mode, abortSignal: signal })).rejects.toThrow(/no native permission gate/);
   }

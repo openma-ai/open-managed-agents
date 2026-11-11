@@ -64,7 +64,7 @@ export class WorkTurnActivities {
   private inFlightPrompts = 0;
   private joins = new Map<string, Promise<void>>();
   private opaque = new Set<string>();
-  private nativeTools = new Map<string, { kind?: string; status?: string; detached: boolean; exited: boolean }>();
+  private nativeTools = new Map<string, { kind?: string; status?: string; detached: boolean; exited: boolean; shell?: boolean }>();
   private nativeContract = false;
   private terminalStatusProvesExit = false;
   private children = new Map<string, boolean>();
@@ -107,7 +107,7 @@ export class WorkTurnActivities {
     for (const [id, tool] of this.nativeTools) {
       const synchronous = this.nativeContract && !tool.detached
         && (tool.status === "completed" || tool.status === "failed")
-        && tool.kind !== undefined && (tool.kind !== "execute" || tool.exited || this.terminalStatusProvesExit);
+        && tool.kind !== undefined && (tool.kind !== "execute" || tool.exited || (this.terminalStatusProvesExit && tool.shell === true));
       if (!synchronous && !this.joins.has(id)) throw new Error(`Work native activity completion unproven: ${id}`);
     }
     for (const [id, done] of this.children) {
@@ -210,6 +210,9 @@ export class WorkTurnActivities {
         status: typeof tool.status === "string" ? tool.status : previous.status,
         detached: previous.detached || detached,
         exited: previous.exited || Number.isInteger(output.exit_code) || Number.isInteger(record(meta.terminal_exit).exit_code),
+        // Only pi's own shell tool (string command input) awaits child exit;
+        // an MCP/extension tool pi merely labels "execute" proves nothing.
+        shell: previous.shell || typeof input.command === "string",
       });
       if (typeof subagent.threadId === "string") this.children.set(subagent.threadId, subagent.activity === "interrupted");
       const ids = collaboration.receiverThreadIds;
