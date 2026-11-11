@@ -90,6 +90,11 @@ it("publishes real immutable File bytes after completed terminal persistence, be
   });
   await send(id, message("make file"));
   const seen = await until(id, e => e.some(x => x.type === "session.status_idle"));
+  // Idle is durably visible before after-terminal publication. Join the
+  // execution settlement rather than racing that intentionally later phase.
+  await expect.poll(async () => (await env.MAIN_DB.prepare(
+    "SELECT state FROM managed_session_executions WHERE session_id=?",
+  ).bind(id).first())?.state, { timeout: 10000 }).toBe("completed");
   expect(observed).toMatchObject({ phase: null, listed: 1, skips: [] });
   expect(observed.before).toContain("session.status_idle");
   const result = await files.listFiles({ scopeId: id });

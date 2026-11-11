@@ -188,7 +188,9 @@ it.each([
       expect(await state.storage.getAlarm(), "pending maintenance retains a durable wake without queue rows").not.toBeNull();
       enqueue("hang"); // Arrives after the first bounded wait, while RPC is pending.
       await instance.alarm();
-      await new Promise(resolve => timeout(resolve, 100));
+      await expect.poll(() => new SqliteHistory(state.storage.sql, null).getEvents()
+        .filter(event => event.type === "session.status_running").length,
+        { timeout: 5000 }).toBe(1);
       await instance.alarm(); // Must not re-enter RPC or acquire another lane owner.
       const seen = new SqliteHistory(state.storage.sql, null).getEvents();
       const snapshot = {
