@@ -2,6 +2,7 @@ import { workStorageContext } from "./work-storage-fixture.js";
 import { afterEach, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { InMemoryBlobStore, type BlobStore } from "@open-managed-agents/blob-store";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { NodeManagedSessionOutputCollector } from "../../../packages/control-plane-node/src/lib/node-managed-session-outputs.js";
@@ -13,7 +14,7 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
 const holderHash = "a".repeat(64);
 async function fixture() {
-  const root = await mkdtemp(join(process.cwd(), ".test-artifacts/work-output-"));
+  const root = await mkdtemp(join(tmpdir(), "work-output-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const sql = await createBetterSqlite3SqlClient(":memory:");
   await sql.exec("CREATE TABLE managed_environment_work (workspace_id TEXT, environment_id TEXT, id TEXT, session_id TEXT, claim_generation INTEGER, claim_at INTEGER, heartbeat_ttl_seconds INTEGER, state TEXT, sandbox_token_hashes TEXT, revision INTEGER)");
@@ -73,7 +74,7 @@ it.each(["shared", "local"] as const)("serves real %s Work collector output thro
  const {nodeDefaults,createMemoryBlobs}=await import("../src/components.js");
  const {createNodeControlPlane}=await import("../src/control-plane.js");
  const {SqlEnvironmentWorkStore}=await import("../../../packages/environment-work-store-sql/src/index.js");
- const root=await mkdtemp(join(process.cwd(),".test-artifacts/work-output-api-"));cleanup.push(()=>rm(root,{recursive:true,force:true}));
+ const root=await mkdtemp(join(tmpdir(),"work-output-api-"));cleanup.push(()=>rm(root,{recursive:true,force:true}));
  const config=loadNodeConfig({NODE_ENV:"test",AUTH_DISABLED:"1",OPENMA_TEST_SANDBOX_PROVIDER:"local-subprocess",DATABASE_PATH:join(root,"db.sqlite"),AUTH_DATABASE_PATH:join(root,"auth.sqlite"),MEMORY_BLOB_DIR:join(root,"memory"),SESSION_OUTPUTS_DIR:join(root,"outputs"),SANDBOX_WORKDIR:join(root,"sandbox"),MEMORY_QUEUE:"disabled",...(mode==="shared"?{FILES_S3_ENDPOINT:"http://unused.invalid",FILES_S3_BUCKET:"test",FILES_S3_ACCESS_KEY:"test",FILES_S3_SECRET_KEY:"test"}:{})});
  const blobs=new InMemoryBlobStore();const components=await nodeDefaults(config,{blobs:{files:{store:blobs,description:"test shared"},memory:await createMemoryBlobs(config.blobs.memory)}});
  const cp=await createNodeControlPlane(components);cleanup.push(()=>cp.stop("test"));
