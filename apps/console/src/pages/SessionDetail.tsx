@@ -15,11 +15,12 @@ import { Button } from "@/components/ui/button";
 import { AgentIcon, ClockIcon, DurationIcon, EnvIcon, VaultIcon } from "../components/icons";
 import { FilesPanel, ResourcePanel } from "./session-detail/Panels";
 import {
+  SessionTrace,
   TrajectoryOutcomeChip,
   TrajectoryRewardChip,
-  TrajectoryViewerModal,
+  trajectoryNeedsFetch,
+  useTrajectoryLoader,
 } from "./session-detail/Trajectory";
-import { TimelineView } from "../components/timeline/TimelineView";
 import type { Event } from "../lib/events";
 import {
   reduceManagedDeltaFrame,
@@ -69,7 +70,7 @@ import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
 import { useI18n } from "../i18n";
 import { SessionTokenUsage } from "./session-detail/SessionTokenUsage";
 
-type View = "chat" | "timeline";
+type View = "chat" | "trace";
 
 function waitForStreamRetry(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -173,13 +174,13 @@ export function SessionDetail() {
     publicationId?: string;
   } | null>(null);
   const [status, setStatus] = useState("idle");
-  /** Lazy-fetched Trajectory v1 envelope. Drives the outcome + reward
-   *  chips in the header strip and the Trajectory viewer modal. We don't
-   *  block initial render on this — chips render as `—` until it lands.
-   *  Sentinels mirror EvalRunDetail: "loading" while in flight, "error"
-   *  if the fetch failed (404 = trajectory not built yet, 5xx = sandbox
-   *  flaky); both keep the trigger from re-firing every render. */
-  const [trajectory, setTrajectory] = useState<Trajectory | "loading" | "error" | undefined>(undefined);
+  /** On-demand Trajectory v1 envelope (GET /v1/oma/sessions/:id/trajectory).
+   *  Fetched when the Trace tab is opened; drives the outcome + reward
+   *  chips in the header strip and Trace's Download / Raw JSON.
+   *  "loading" while in flight, "error" if the fetch failed (404 =
+   *  trajectory not built yet, 5xx = sandbox flaky). The hook resets it
+   *  whenever the session id changes. */
+  const { trajectory, load: loadTrajectory } = useTrajectoryLoader(id);
   /** Sub-agent threads in this session. Primary is implicit at index 0
    *  (label "Main"). Empty when the session has only the primary thread,
    *  in which case the selector UI is hidden entirely. Refreshed on
@@ -193,7 +194,6 @@ export function SessionDetail() {
    *  the events array at render time. SSE-driven new threads don't
    *  auto-switch — the operator stays on whatever they're watching. */
   const [activeThreadId, setActiveThreadId] = useState<string>("sthr_primary");
-  const [showTrajectory, setShowTrajectory] = useState(false);
   /** Synchronous mirror of `events` so addEvent can decide append/update/
    *  duplicate before React commits. Session history paging + SSE can call
    *  addEvent back-to-back; a state updater cannot drive side effects. */
@@ -503,7 +503,6 @@ export function SessionDetail() {
     setTitleDraft("");
     setSavingTitle(false);
     setStatus("idle");
-    setTrajectory(undefined);
     setThreads([]);
     setActiveThreadId("sthr_primary");
     setLocalPending(null);
@@ -803,9 +802,9 @@ export function SessionDetail() {
         : [],
     [events, needsAction],
   );
-  /** Stable filtered list for Timeline — avoid reallocating on every
+  /** Stable filtered list for Trace — avoid reallocating on every
    *  SessionDetail render (SSE stream updates, keystrokes, etc.), which
-   *  would otherwise invalidate TimelineView's bucketIntoTurns memo. */
+   *  would otherwise invalidate TraceView's buildTrace memo. */
   const timelineEvents = useMemo(
     () =>
       events.filter((e) => {
@@ -1145,7 +1144,7 @@ export function SessionDetail() {
       {/* Thread selector — only when sub-agent threads exist. Primary
           is implicit at index 0 ("Main"); sub-agent tabs appear as new
           threads spawn (live-updated by session.thread_created handler).
-          Selecting a thread filters both Conversation and Timeline views.
+          Selecting a thread filters both Conversation and Trace views.
           Renders as a depth-indented tree when sub-agents themselves
           spawn sub-workers — flat horizontal row for the common case
           (single layer of workers under primary). */}
@@ -1160,32 +1159,21 @@ export function SessionDetail() {
       {/* View tabs */}
       <div role="tablist" aria-label="Session view" className="pl-3 pr-4 flex items-center gap-1 shrink-0">
         <ViewTab label="Conversation" active={view === "chat"} onClick={() => setView("chat")} />
+        {/* Trace = the single execution viewer (overview + turn tree +
+            inspector). Opening it fetches the trajectory envelope on demand
+            (never loaded, last attempt failed, or the run was still going)
+            for outcome / reward / Download JSON. */}
         <ViewTab
-          label="Timeline"
-          active={view === "timeline"}
-          onClick={() => startTransition(() => setView("timeline"))}
+          label="Trace"
+          active={view === "trace"}
+          onClick={() => {
+            startTransition(() => setView("trace"));
+            if (id && trajectoryNeedsFetch(trajectory)) void loadTrajectory();
+          }}
         />
-        {view === "timeline" && (
+        {view === "trace" && (
           <span className="ml-auto text-xs text-fg-subtle font-mono">{events.length} events</span>
         )}
-        {/* Trajectory viewer trigger — pushed to the right edge of the tab
-            row. Disabled until the lazy fetch resolves so the click never
-            opens an empty modal. Errors keep the button enabled (the modal
-            shows the error). */}
-        <Button variant="ghost"
-          onClick={() => setShowTrajectory(true)}
-          disabled={trajectory === undefined || trajectory === "loading"}
-          className={`${view === "timeline" ? "ml-3" : "ml-auto"} inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed bg-bg-surface/60 hover:bg-bg-surface rounded px-2 py-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] my-1.5`}
-          title={
-            trajectory === "loading"
-              ? "Loading trajectory…"
-              : trajectory === "error"
-              ? "Trajectory unavailable — click to inspect error"
-              : "View raw Trajectory v1 envelope"
-          }
-        >
-          Trajectory
-        </Button>
       </div>
 
       {/* Linear context (when triggered by a Linear webhook) */}
@@ -1344,7 +1332,13 @@ export function SessionDetail() {
           turns={canonicalTurns}
         />
       ) : (
-        <TimelineView key={`${id ?? "session"}:${activeThreadId}`} events={timelineEvents} />
+        <SessionTrace
+          key={`${id ?? "session"}:${activeThreadId}`}
+          sessionId={id ?? ""}
+          events={timelineEvents}
+          trajectory={trajectory}
+          onRetry={() => void loadTrajectory()}
+        />
       )}
         </div>
         {resourcePanel && (
@@ -1357,12 +1351,6 @@ export function SessionDetail() {
           <FilesPanel sessionId={id} onClose={() => setShowFiles(false)} />
         )}
       </div>
-      <TrajectoryViewerModal
-        open={showTrajectory}
-        onClose={() => setShowTrajectory(false)}
-        sessionId={id ?? ""}
-        trajectory={trajectory}
-      />
     </div>
   );
 }

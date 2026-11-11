@@ -1,42 +1,104 @@
 import type { Event } from "../../lib/events";
 
-/**
- * Layout constants — kept here as the single source of truth so that
- * Tailwind utility classes (`w-56`, `w-20`) and pixel arithmetic
- * (`224 + chartPx + 80`) stay in sync. Change here, change both.
- */
-export const LABEL_COL_W = 224; // === w-56
-export const DURATION_COL_W = 80; // === w-20
-export const SIDE_PANEL_W = 420;
-/** Hard cap on waterfall chart width. Auto density based on median event
- *  gaps can otherwise produce hundreds of thousands of CSS pixels for a
- *  multi-minute turn (or a schedule wait), which freezes the main thread
- *  when switching to Timeline on long sessions. */
-export const MAX_CHART_PX = 4_000;
-/** Keep time-axis tick DOM nodes bounded regardless of turn duration. */
+/** Keep time-axis tick DOM nodes bounded regardless of session duration. */
 export const MAX_TICKS = 48;
+/** Hard cap on the overview chart width in "auto" density (same budget the
+ *  original per-turn waterfall used). Auto density based on median event
+ *  gaps can otherwise produce hundreds of thousands of CSS pixels for a
+ *  long schedule wait or idle gap. */
+export const MAX_CHART_PX = 4_000;
+/** Manual zoom (+, brush, fit selection) may go further than auto. */
+export const MAX_MANUAL_CHART_PX = 64_000;
+/** Overview step lanes. Steps that overlap beyond this share the last lane. */
+export const MAX_OVERVIEW_LANES = 6;
+/** Display width of a collapsed idle gap, as a fraction of the uncollapsed span. */
+export const COLLAPSED_GAP_FRACTION = 0.03;
+
+export type ModelUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
 
 /**
- * One row in the timeline waterfall. A span can be an instant marker
- * (durationMs === 0) or a paired range (start + end events). Rendering
- * consumes only this shape; deriveSpans converts raw event streams to
- * Span[].
+ * Fields reported by compaction events. Every field is optional and is set
+ * only when the source event carries it — nothing here is estimated.
+ *   - summarize span (span.compaction_summarize_end): finalTextLength
+ *     (model / usage / finish_reason live on the step itself);
+ *   - boundary (agent.thread_context_compacted): summary, counts, trigger,
+ *     preTokens, replacedRange.
  */
-export interface Span {
+export interface CompactionInfo {
+  /** "summarize" span, "boundary" marker, or summarize end with no start. */
+  role: "summarize" | "boundary" | "orphan_end";
+  summary?: string;
+  originalMessageCount?: number;
+  compactedMessageCount?: number;
+  trigger?: string;
+  preTokens?: number;
+  replacedRange?: { startSeq: number; endSeq: number };
+  finalTextLength?: number;
+}
+
+/** Filter / semantic bucket of a trace step. */
+export type TraceStepKind =
+  | "user"
+  | "assistant"
+  | "thinking"
+  | "model"
+  | "tool"
+  | "error"
+  | "lifecycle";
+
+export type ToolSource = "builtin" | "mcp" | "custom";
+
+/**
+ * One leaf in the Trace tree: a model call, tool call, schedule wait,
+ * message, lifecycle marker, … Paired events (start + end, call + result)
+ * collapse into one step. Times are absolute epoch ms and stay `null`
+ * when the source events don't carry them — never 0, never guessed.
+ */
+export interface TraceStep {
   key: string;
   family: SpanFamily;
+  kind: TraceStepKind;
   label: string;
+  /** One-line summary (tool input, message text, finish reason, …). */
   detail?: string;
-  /** ms since the first event */
-  startMs: number;
-  /** 0 for instants */
-  durationMs: number;
-  /** Optional: ms from this span's start to first-token (model spans only).
-   *  Used to render a TTFT divider inside the bar. */
+  startTs: number | null;
+  /** null while pending, for instants, or when the end event has no time. */
+  endTs: number | null;
+  /** 0 for instants; null when unknown (pending or missing timestamps). */
+  durationMs: number | null;
+  instant: boolean;
+  isError: boolean;
+  /** Paired kind whose end/result never arrived. */
+  pending: boolean;
+  /** Result whose call is not in the stream. */
+  orphan: boolean;
+  toolName?: string;
+  toolSource?: ToolSource;
+  mcpServer?: string;
+  callId?: string;
+  input?: unknown;
+  output?: string;
+  /** Full message / thinking text. */
+  text?: string;
+  errorText?: string;
+  model?: string;
+  /** Only what span.model_request_end reported; never estimated. */
+  usage?: ModelUsage;
+  finishReason?: string;
   ttftMs?: number;
-  /** Source events that contributed to this span (1 for instants,
-   *  2 for paired spans, possibly more for tool calls with streaming
-   *  input chunks). Click-to-expand renders the raw JSON of these. */
+  /** Compaction telemetry, copied only from fields present on the
+   *  span.compaction_summarize_end / agent.thread_context_compacted event. */
+  compaction?: CompactionInfo;
+  /** Raw session_thread_id of the first source event, when present. */
+  threadId?: string;
+  parentEventId?: string;
+  /** Position of the first source event in the stream. */
+  order: number;
   events: Event[];
 }
 
@@ -59,19 +121,22 @@ export type SpanFamily =
   | "thinking"     // agent.thinking marker
   | "marker";      // catch-all for unrecognized event types
 
+/** Generation is violet and turns/agents are blue, matching the OpenAI
+ *  Agents trace palette; MCP moves to the brand coral so it stays
+ *  distinguishable from both. */
 export const FAMILY_DOT: Record<SpanFamily, string> = {
-  model: "bg-info",
+  model: "bg-accent-violet",
   tool: "bg-success",
-  mcp: "bg-accent-violet",
+  mcp: "bg-brand",
   custom_tool: "bg-warning",
-  user: "bg-brand",
+  user: "bg-fg-muted",
   agent: "bg-fg-muted",
   system: "bg-fg-subtle",
   warn: "bg-warning",
   error: "bg-danger",
   schedule: "bg-info",
   wakeup: "bg-info",
-  compaction: "bg-accent-violet/70",
+  compaction: "bg-trace-compaction",
   outcome: "bg-success/70",
   thread: "bg-fg-muted",
   aux: "bg-fg-subtle",
@@ -80,18 +145,18 @@ export const FAMILY_DOT: Record<SpanFamily, string> = {
 };
 
 export const FAMILY_BAR: Record<SpanFamily, string> = {
-  model: "bg-info/70",
+  model: "bg-accent-violet/70",
   tool: "bg-success/70",
-  mcp: "bg-accent-violet/70",
+  mcp: "bg-brand/70",
   custom_tool: "bg-warning/70",
-  user: "bg-brand/70",
+  user: "bg-fg-muted/70",
   agent: "bg-fg-muted/70",
   system: "bg-fg-subtle/70",
   warn: "bg-warning/70",
   error: "bg-danger/70",
   schedule: "bg-info/40",
   wakeup: "bg-info/70",
-  compaction: "bg-accent-violet/50",
+  compaction: "bg-trace-compaction/75",
   outcome: "bg-success/50",
   thread: "bg-fg-muted/50",
   aux: "bg-fg-subtle/70",
@@ -156,13 +221,3 @@ export const STATUS_TEXT: Record<TurnStatus, string> = {
   errored: "text-danger",
   terminated: "text-danger",
 };
-
-/**
- * What's currently selected for the side detail panel. Lifted up to
- * TimelineView so a click in any TurnCard updates one shared panel.
- */
-export interface TimelineSelection {
-  spanKey: string;
-  spanLabel: string;
-  events: Event[];
-}

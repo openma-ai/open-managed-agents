@@ -1,4 +1,5 @@
 :root {
+  --trace-compaction: oklch(0.6 0.1 195);
   /* Shared brand ships white-on-coral in light mode (3.41:1). Reuse
      its dark ink for readable action labels without changing the coral. */
   --brand-fg: #1a0e09;
@@ -123,6 +124,7 @@
 }
 
 .dark {
+  --trace-compaction: oklch(0.76 0.1 195);
   --surface-row-hover: color-mix(in srgb, var(--fg) 7%, var(--surface-stage));
   --surface-row-selected: color-mix(in srgb, var(--fg) 11%, var(--surface-stage));
   --data-row-bg: color-mix(in srgb, var(--fg) 5%, var(--surface-route));

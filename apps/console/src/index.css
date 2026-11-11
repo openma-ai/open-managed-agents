@@ -63,6 +63,10 @@
   --color-info-subtle: var(--info-subtle);
   --color-accent-violet: var(--accent-violet);
   --color-accent-violet-subtle: var(--accent-violet-subtle);
+  /* Trace viewer: compaction span / boundary. Teal, distinct from
+     generation (violet), tools (green), schedule wait (blue) and MCP
+     (coral) so summarize work never reads as main-loop model time. */
+  --color-trace-compaction: var(--trace-compaction);
 
   --color-ring: var(--fg);
 
