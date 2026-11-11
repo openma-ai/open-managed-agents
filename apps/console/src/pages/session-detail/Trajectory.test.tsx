@@ -168,7 +168,11 @@ describe("Trace interactions", () => {
     expect(insp.getByText("B body")).toBeInTheDocument();
     expect(insp.getByText("r2")).toBeInTheDocument();
     expect(insp.getByText("agent.tool_use #5, agent.tool_result #8")).toBeInTheDocument();
-    expect(insp.getByText("190ms")).toBeInTheDocument();
+    expect(within(insp.getByRole("region", { name: "Timing" })).getByText("190ms")).toBeInTheDocument();
+    // The inspector header repeats the duration next to the selected label.
+    expect(insp.getByTestId("inspector-header")).toHaveTextContent("190ms");
+    // Selected bar, tree row and inspector share the same selection.
+    expect(screen.getByRole("button", { name: "Select read: /b.ts" }).className).toMatch(/ring-info/);
     // Fit selection is enabled once something is selected.
     expect(screen.getByRole("button", { name: "Fit selection" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Fit selection" }));

@@ -207,11 +207,21 @@ export interface TraceProjection {
   endTs: number | null;
   models: string[];
   tokens: TokenTotals | null;
+  /** Usage reported by span.compaction_summarize_end, kept apart from
+   *  generation tokens (the span type exists so summarize cost is
+   *  attributed separately). null when none was reported. */
+  compactionTokens: TokenTotals | null;
   toolCalls: number;
   errors: number;
 }
 
+/** Generation usage only — compaction summarize usage is tallied apart. */
 function addUsage(acc: TokenTotals | null, s: TraceStep): TokenTotals | null {
+  if (!s.usage || s.kind !== "model") return acc;
+  return addReported(acc, s);
+}
+
+function addReported(acc: TokenTotals | null, s: TraceStep): TokenTotals | null {
   if (!s.usage) return acc;
   const t = acc ?? { input: 0, output: 0, cacheRead: 0, calls: 0 };
   t.input += s.usage.input_tokens ?? 0;
@@ -284,6 +294,7 @@ export function buildTrace(input: readonly unknown[] | undefined | null): TraceP
   for (const s of steps) perTurn[turnOfEvent.get(s.events[0]!) ?? 0]?.push(s);
 
   let sessionTokens: TokenTotals | null = null;
+  let compactionTokens: TokenTotals | null = null;
   const models = new Set<string>();
   const turns: TraceTurn[] = rawTurns.map((turn, index) => {
     const ts = turn.events.map(eventTsOrNull).filter((t): t is number => t !== null);
@@ -297,7 +308,8 @@ export function buildTrace(input: readonly unknown[] | undefined | null): TraceP
     for (const s of own) {
       tokens = addUsage(tokens, s);
       sessionTokens = addUsage(sessionTokens, s);
-      if (s.model) models.add(s.model);
+      if (s.family === "compaction") compactionTokens = addReported(compactionTokens, s);
+      if (s.model && s.kind === "model") models.add(s.model);
     }
     return {
       key: turn.id,
@@ -336,6 +348,7 @@ export function buildTrace(input: readonly unknown[] | undefined | null): TraceP
     endTs: hasTiming ? Math.max(...timed) : null,
     models: [...models],
     tokens: sessionTokens,
+    compactionTokens,
     toolCalls: turns.reduce((n, t) => n + t.toolCalls, 0),
     errors: turns.reduce((n, t) => n + t.errors, 0),
   };
@@ -485,9 +498,18 @@ export function nodeSteps(n: TraceNode): TraceStep[] {
 
 // ─── Filters ─────────────────────────────────────────────────────────
 
-export type StepFilterKind = "user" | "assistant" | "thinking" | "model" | "tool" | "error";
+export type StepFilterKind = "user" | "assistant" | "thinking" | "model" | "tool" | "compaction" | "error";
 
-export const STEP_FILTER_KINDS: StepFilterKind[] = ["user", "assistant", "thinking", "model", "tool", "error"];
+export const STEP_FILTER_KINDS: StepFilterKind[] = ["user", "assistant", "thinking", "model", "tool", "compaction", "error"];
+
+/** The Pi assembly adapter's post-compaction marker (a session.warning). */
+export const CONTEXT_REASSEMBLED_SOURCE = "oma.context_reassembled";
+
+/** Compaction family, or the session.warning that reports re-assembly after it. */
+export function isCompactionRelated(step: TraceStep): boolean {
+  if (step.family === "compaction") return true;
+  return step.family === "warn" && step.events[0]?.source === CONTEXT_REASSEMBLED_SOURCE;
+}
 
 export interface StepFilter {
   /** Empty set = every kind (lifecycle markers included). */
@@ -503,8 +525,13 @@ export function isFilterActive(f: StepFilter): boolean {
   return f.kinds.size > 0 || f.tool !== null || f.query.trim() !== "";
 }
 
-/** Filter bucket of a step. Lifecycle markers only match "error" when failed. */
+/**
+ * Filter bucket of a step. Compaction spans / boundaries (and the
+ * re-assembly warning) have their own bucket; other lifecycle markers only
+ * match "error" when failed and are otherwise hidden by any kind filter.
+ */
 export function stepFilterKind(step: TraceStep): StepFilterKind | null {
+  if (isCompactionRelated(step)) return "compaction";
   if (step.kind === "lifecycle") return step.isError ? "error" : null;
   return step.kind;
 }
@@ -524,6 +551,12 @@ export function stepMatches(s: TraceStep, filter: StepFilter): boolean {
   const q = filter.query.trim().toLowerCase();
   if (q && !stepSearchText(s).includes(q)) return false;
   return true;
+}
+
+/** Lifecycle markers a kind filter hides because they have no kind bucket. */
+export function hiddenLifecycleCount(steps: readonly TraceStep[], filter: StepFilter): number {
+  if (filter.kinds.size === 0) return 0;
+  return steps.filter((s) => stepFilterKind(s) === null && !(filter.kinds.has("error") && s.isError)).length;
 }
 
 export function filterSteps(steps: readonly TraceStep[], filter: StepFilter): TraceStep[] {
@@ -674,6 +707,70 @@ export function autoPxPerMs(boundaries: readonly number[], total: number, viewpo
   return Math.min(MAX_CHART_PX / Math.max(total, 1), Math.max(fit, Math.min(5, candidate)));
 }
 
+// ─── Viewport (zoom / fit / brush) ───────────────────────────────────
+
+export interface Viewport {
+  pxPerMs: number;
+  /** Clamped to [0, chart width − viewport]. */
+  scrollLeft: number;
+}
+
+export interface ViewportBounds {
+  /** Display units of the whole session. */
+  total: number;
+  viewportPx: number;
+  /** Max px per display ms (manual zoom cap). */
+  maxPxPerMs: number;
+}
+
+/** Fit-to-viewport density: the whole session in one screen. */
+export function fitPxPerMs(b: ViewportBounds): number {
+  return b.viewportPx / Math.max(1, b.total);
+}
+
+export function clampScroll(scrollLeft: number, pxPerMs: number, b: ViewportBounds): number {
+  const max = Math.max(0, b.total * pxPerMs - b.viewportPx);
+  return Math.min(max, Math.max(0, scrollLeft));
+}
+
+/**
+ * Viewport showing display range [d0, d1]. The range is clamped to the
+ * session, widened to a minimum span so a zero-length selection (an
+ * instant) still zooms sensibly, and density stays within [fit, max].
+ */
+export function viewportForRange(d0In: number, d1In: number, b: ViewportBounds): Viewport {
+  const fit = fitPxPerMs(b);
+  const lo = Math.max(0, Math.min(d0In, d1In, b.total));
+  const hi = Math.min(b.total, Math.max(d0In, d1In, 0));
+  const minSpan = Math.max(b.total * 0.002, 1);
+  let a = lo;
+  let z = hi;
+  if (z - a < minSpan) {
+    const mid = (a + z) / 2;
+    a = Math.max(0, mid - minSpan / 2);
+    z = Math.min(b.total, a + minSpan);
+    a = Math.max(0, z - minSpan);
+  }
+  const pxPerMs = Math.min(Math.max(fit, b.maxPxPerMs), Math.max(fit, b.viewportPx / (z - a)));
+  // Centre the range when the clamp leaves it narrower than the viewport.
+  const slack = Math.max(0, b.viewportPx - (z - a) * pxPerMs) / 2;
+  return { pxPerMs, scrollLeft: clampScroll(a * pxPerMs - slack, pxPerMs, b) };
+}
+
+/** Zoom by `factor` keeping display point `centerD` in the viewport centre. */
+export function zoomAround(centerD: number, pxPerMs: number, factor: number, b: ViewportBounds): Viewport {
+  const fit = fitPxPerMs(b);
+  const next = Math.min(Math.max(fit, b.maxPxPerMs), Math.max(fit, pxPerMs * factor));
+  return { pxPerMs: next, scrollLeft: clampScroll(centerD * next - b.viewportPx / 2, next, b) };
+}
+
+/** Wall-clock window currently visible (real timestamps, collapsed gaps included). */
+export function visibleWallRange(scale: TimeScale, v: Viewport, viewportPx: number): { startTs: number; endTs: number } {
+  const d0 = v.scrollLeft / v.pxPerMs;
+  const d1 = Math.min(scale.total, (v.scrollLeft + viewportPx) / v.pxPerMs);
+  return { startTs: scale.toWall(d0), endTs: scale.toWall(d1) };
+}
+
 export interface Tick {
   ts: number;
   d: number;
@@ -740,6 +837,7 @@ export interface OverviewMarker {
   step: TraceStep;
   turn: number;
   d: number;
+  kind: OverviewMarkerKind;
 }
 
 export interface OverviewLayout {
@@ -753,6 +851,17 @@ export interface OverviewLayout {
 }
 
 const MARKER_KINDS = new Set(["user", "error"]);
+
+/** Which overview marker style an instant gets ("compaction" = boundary / orphan end). */
+export type OverviewMarkerKind = "user" | "wakeup" | "error" | "compaction";
+
+function markerKind(s: TraceStep): OverviewMarkerKind | null {
+  if (s.isError) return "error";
+  if (s.family === "compaction") return "compaction";
+  if (s.family === "wakeup") return "wakeup";
+  if (MARKER_KINDS.has(s.kind)) return s.kind === "error" ? "error" : "user";
+  return null;
+}
 
 export function layoutOverview(p: TraceProjection, scale: TimeScale): OverviewLayout {
   const sessionEnd = p.endTs ?? scale.endTs;
@@ -770,7 +879,8 @@ export function layoutOverview(p: TraceProjection, scale: TimeScale): OverviewLa
     for (const s of t.steps) {
       if (s.startTs === null) continue;
       if (s.instant) {
-        if (MARKER_KINDS.has(s.kind) || s.isError || s.family === "wakeup") markers.push({ step: s, turn: t.index, d: scale.toDisplay(s.startTs) });
+        const kind = markerKind(s);
+        if (kind) markers.push({ step: s, turn: t.index, d: scale.toDisplay(s.startTs), kind });
         continue;
       }
       const openEnded = s.endTs === null;

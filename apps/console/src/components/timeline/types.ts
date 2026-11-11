@@ -21,6 +21,26 @@ export type ModelUsage = {
   cache_creation_input_tokens?: number;
 };
 
+/**
+ * Fields reported by compaction events. Every field is optional and is set
+ * only when the source event carries it — nothing here is estimated.
+ *   - summarize span (span.compaction_summarize_end): finalTextLength
+ *     (model / usage / finish_reason live on the step itself);
+ *   - boundary (agent.thread_context_compacted): summary, counts, trigger,
+ *     preTokens, replacedRange.
+ */
+export interface CompactionInfo {
+  /** "summarize" span, "boundary" marker, or summarize end with no start. */
+  role: "summarize" | "boundary" | "orphan_end";
+  summary?: string;
+  originalMessageCount?: number;
+  compactedMessageCount?: number;
+  trigger?: string;
+  preTokens?: number;
+  replacedRange?: { startSeq: number; endSeq: number };
+  finalTextLength?: number;
+}
+
 /** Filter / semantic bucket of a trace step. */
 export type TraceStepKind =
   | "user"
@@ -71,6 +91,9 @@ export interface TraceStep {
   usage?: ModelUsage;
   finishReason?: string;
   ttftMs?: number;
+  /** Compaction telemetry, copied only from fields present on the
+   *  span.compaction_summarize_end / agent.thread_context_compacted event. */
+  compaction?: CompactionInfo;
   /** Raw session_thread_id of the first source event, when present. */
   threadId?: string;
   parentEventId?: string;
@@ -113,7 +136,7 @@ export const FAMILY_DOT: Record<SpanFamily, string> = {
   error: "bg-danger",
   schedule: "bg-info",
   wakeup: "bg-info",
-  compaction: "bg-fg-subtle",
+  compaction: "bg-trace-compaction",
   outcome: "bg-success/70",
   thread: "bg-fg-muted",
   aux: "bg-fg-subtle",
@@ -133,7 +156,7 @@ export const FAMILY_BAR: Record<SpanFamily, string> = {
   error: "bg-danger/70",
   schedule: "bg-info/40",
   wakeup: "bg-info/70",
-  compaction: "bg-fg-subtle/60",
+  compaction: "bg-trace-compaction/75",
   outcome: "bg-success/50",
   thread: "bg-fg-muted/50",
   aux: "bg-fg-subtle/70",

@@ -222,7 +222,7 @@ describe("TimelineView collapsible idle gaps", () => {
   it("collapses a gap on the overview, keeps its true duration, and restores the full wall-clock gap", () => {
     const { container } = render(<TimelineView events={hourGap()} />);
     // Wall clock is the default: nothing collapsed.
-    fireEvent.click(screen.getByRole("button", { name: "Fit session to viewport" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset to full session" }));
     const full = gapBarWidth(container);
     expect(full).toBeGreaterThan(700);
     expect(container.querySelector("[data-gap-bar]")).not.toHaveAttribute("data-collapsed");
@@ -270,7 +270,7 @@ describe("TimelineView turn collapse and zoom (original behaviour)", () => {
     const auto = screen.getByRole("button", { name: "Auto-pick scale by event density" });
     expect(auto).toHaveAttribute("aria-pressed", "true");
     const rate = () => screen.getByTestId("overview-rate").textContent;
-    fireEvent.click(screen.getByRole("button", { name: "Fit session to viewport" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset to full session" }));
     const fitRate = rate();
     fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
     expect(rate()).not.toBe(fitRate);

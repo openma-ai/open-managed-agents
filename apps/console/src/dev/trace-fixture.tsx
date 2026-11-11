@@ -1,5 +1,7 @@
 // Dev-only fixture page for the unified Trace view (see trace-fixture.html).
 // Renders SessionTrace from hand-written OMA events — no backend, no auth.
+// SYNTHETIC DEMO DATA for review only: every event, time and token count
+// below is made up; nothing here comes from a real session.
 //
 //   ?scenario=session   multi-turn: models, grouped reads, failed bash,
 //                       pending MCP, 1h idle → scheduled wakeup, schedule
@@ -7,6 +9,10 @@
 //   ?scenario=subagent  sub-agent threads (session_thread_id ancestry)
 //   ?scenario=unknown   unclosed turn → unknown gap, untimed step
 //   ?scenario=untimed   no timestamps at all
+//   ?scenario=compaction summarize span (usage) → thread_context_compacted
+//                       boundary → session.warning oma.context_reassembled,
+//                       plus an unpaired summarize_end and a pending start
+//   ?scenario=gaps      zero-length handoff (no idle), 1h idle, unknown gap
 //   ?theme=dark
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -114,11 +120,71 @@ function untimedScenario(): E[] {
   ];
 }
 
+function compactionScenario(): E[] {
+  return [
+    ev(0, { type: "user.message", id: "c-u1", content: [{ type: "text", text: "Keep refactoring the billing module until the suite passes." }] }),
+    ev(40, { type: "session.status_running" }),
+    ...generation("cm1", 100, 3_200, 148_000, 420),
+    ev(3_300, { type: "agent.tool_use", id: "cr1", name: "read", input: { file_path: "src/billing/invoice.ts" } }),
+    ev(3_700, { type: "agent.tool_result", tool_use_id: "cr1", content: "export function invoice(…) { … }" }),
+    // Context near the limit: the harness summarizes, then writes the boundary.
+    ev(3_800, { type: "span.compaction_summarize_start", model: MODEL }),
+    ev(9_600, {
+      type: "span.compaction_summarize_end",
+      model: MODEL,
+      model_usage: { input_tokens: 151_200, output_tokens: 1_380, cache_read_input_tokens: 147_900, cache_creation_input_tokens: 0 },
+      finish_reason: "stop",
+      final_text_length: 5_412,
+    }),
+    ev(9_650, {
+      type: "agent.thread_context_compacted",
+      summary: [{ type: "text", text: "Goal: refactor billing until tests pass.\nDone: read invoice.ts, extracted tax rules.\nNext: run npm test -- billing." }],
+      original_message_count: 64,
+      compacted_message_count: 1,
+      trigger: "auto",
+      pre_tokens: 152_300,
+    }),
+    ev(9_700, { type: "session.warning", source: "oma.context_reassembled", message: "Context re-assembled after compaction", details: { inlinedSkillIds: [] } }),
+    ...generation("cm2", 9_800, 11_000, 6_100, 210),
+    ev(11_100, { type: "agent.tool_use", id: "cb1", name: "bash", input: { command: "npm test -- billing" } }),
+    ev(19_100, { type: "agent.tool_result", tool_use_id: "cb1", content: "PASS test/billing.test.ts" }),
+    // Synthetic edge cases: an end with no start, and a start with no end.
+    ev(19_200, { type: "span.compaction_summarize_end", finish_reason: "stop" }),
+    ev(19_300, { type: "agent.message", content: [{ type: "text", text: "Billing refactor done; tests pass." }] }),
+    ev(19_400, { type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+    ev(80_000, { type: "user.message", id: "c-u2", content: [{ type: "text", text: "Now the reports module." }] }),
+    ev(80_100, { type: "span.compaction_summarize_start", model: MODEL }),
+  ];
+}
+
+function gapsScenario(): E[] {
+  const H = 3_600_000;
+  return [
+    ev(0, { type: "user.message", content: [{ type: "text", text: "Turn 1" }] }),
+    ...generation("g1", 100, 1_400, 900, 30),
+    ev(1_500, { type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+    // Next trigger at exactly the close time: zero-length, no idle gap.
+    ev(1_500, { type: "user.message", content: [{ type: "text", text: "Turn 2 (zero gap)" }] }),
+    ...generation("g2", 1_600, 2_800, 1_100, 40),
+    ev(2_900, { type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+    // 1h idle.
+    ev(2_900 + H, { type: "user.message", content: [{ type: "text", text: "Turn 3 (after 1h idle)" }] }),
+    ...generation("g3", 3_000 + H, 4_200 + H, 1_300, 50),
+    ev(4_300 + H, { type: "agent.tool_use", id: "gt1", name: "bash", input: { command: "sleep 600" } }),
+    // No status_idle: the next interval is unknown, never idle.
+    ev(60_000 + H, { type: "user.message", content: [{ type: "text", text: "Turn 4 (after unknown gap)" }] }),
+    ev(60_100 + H, { type: "agent.message", content: [{ type: "text", text: "Still here." }] }),
+    ev(60_200 + H, { type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+  ];
+}
+
 const SCENARIOS: Record<string, () => E[]> = {
   session: sessionScenario,
   subagent: subagentScenario,
   unknown: unknownScenario,
   untimed: untimedScenario,
+  compaction: compactionScenario,
+  gaps: gapsScenario,
 };
 
 const name = new URLSearchParams(location.search).get("scenario") ?? "session";
@@ -143,8 +209,10 @@ const envelope: Trajectory = {
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <div className="h-screen flex flex-col">
-      <div className="px-6 py-2 text-xs text-fg-subtle border-b border-border">
-        Trace fixture · scenario <span className="font-mono">{name}</span> · session, subagent, unknown, untimed
+      <div role="note" className="px-6 py-2 text-xs border-b border-warning/40 bg-warning-subtle/60 text-fg-muted" data-fixture-banner>
+        <strong className="text-warning font-medium">Synthetic demo data</strong> — for review only, not a real session.
+        {" "}Scenario <span className="font-mono text-fg">{name}</span> · try{" "}
+        <span className="font-mono">?scenario=</span>session, compaction, gaps, subagent, unknown, untimed (<span className="font-mono">&amp;theme=dark</span>)
       </div>
       <SessionTrace sessionId="sesn_fixture" events={[]} trajectory={envelope} />
     </div>

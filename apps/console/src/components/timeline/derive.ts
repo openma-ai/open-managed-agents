@@ -2,7 +2,7 @@ import { formatDuration } from "../../lib/format";
 import type { Event } from "../../lib/events";
 import { isQueuedSessionEvent } from "../../lib/session-event-queue";
 import { eventTsMs } from "./eventTime";
-import type { ModelUsage, TraceStep, Turn, TurnTriggerKind } from "./types";
+import type { CompactionInfo, ModelUsage, TraceStep, Turn, TurnTriggerKind } from "./types";
 
 type Rec = Record<string, unknown>;
 
@@ -69,6 +69,62 @@ export function summarizeToolInput(input: unknown): string {
   }
   const json = JSON.stringify(input);
   return json === "{}" ? "" : oneLine(json);
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** model_usage only when it really carries token counts. */
+function reportedUsage(v: unknown): ModelUsage | undefined {
+  if (!isRecord(v) || typeof v.input_tokens !== "number" || typeof v.output_tokens !== "number") return undefined;
+  return v as unknown as ModelUsage;
+}
+
+function usageText(u: ModelUsage): string {
+  return `${u.input_tokens}↓ ${u.output_tokens}↑${u.cache_read_input_tokens ? ` ⚡${u.cache_read_input_tokens}` : ""}`;
+}
+
+/** Copy the fields agent.thread_context_compacted actually carries. */
+function boundaryInfo(e: Event): CompactionInfo {
+  const info: CompactionInfo = { role: "boundary" };
+  const summary = field(e, "summary");
+  if (typeof summary === "string" && summary) info.summary = summary;
+  else if (Array.isArray(summary)) {
+    const text = eventText({ content: summary });
+    if (text) info.summary = text;
+  }
+  const orig = num(field(e, "original_message_count"));
+  if (orig !== undefined) info.originalMessageCount = orig;
+  const comp = num(field(e, "compacted_message_count"));
+  if (comp !== undefined) info.compactedMessageCount = comp;
+  const trigger = str(field(e, "trigger"));
+  if (trigger) info.trigger = trigger;
+  const pre = num(field(e, "pre_tokens"));
+  if (pre !== undefined) info.preTokens = pre;
+  const range = field(e, "replaced_range");
+  if (isRecord(range) && num(range.start_seq) !== undefined && num(range.end_seq) !== undefined) {
+    info.replacedRange = { startSeq: range.start_seq as number, endSeq: range.end_seq as number };
+  }
+  return info;
+}
+
+/** Summarize-span fields from span.compaction_summarize_end (if any). */
+function summarizeFields(start: Event | undefined, end: Event | undefined) {
+  const usage = end ? reportedUsage(field(end, "model_usage")) : undefined;
+  const finishReason = end ? str(field(end, "finish_reason")) : undefined;
+  const model = (start ? str(field(start, "model")) : undefined) ?? (end ? str(field(end, "model")) : undefined);
+  const finalTextLength = end ? num(field(end, "final_text_length")) : undefined;
+  // The Pi strategy reports a failed summarize call as finish_reason "error".
+  const isError = finishReason === "error";
+  return {
+    model,
+    usage,
+    finishReason,
+    finalTextLength,
+    isError,
+    detail: [finishReason, usage ? usageText(usage) : undefined].filter(Boolean).join(" · ") || undefined,
+  };
 }
 
 function resultIsError(raw: Rec): boolean {
@@ -173,7 +229,6 @@ export function deriveTraceSteps(events: readonly Event[]): TraceStep[] {
     const pid = str(field(e, "parent_event_id"));
     if (pid && e.type === "user.message") childByParent.set(pid, x);
   }
-  let compactIdx = 0;
   let outcomeIdx = 0;
   const takeAfter = (list: Timed[], i: number): Timed | undefined => {
     const k = list.findIndex((x) => x.i > i);
@@ -264,14 +319,12 @@ export function deriveTraceSteps(events: readonly Event[]): TraceStep[] {
       let ft: Timed | undefined = id ? firstTokById.get(id) : undefined;
       if (!ft) ft = takeAfter(firstTokNoId, i);
       if (ft) base.events.push(ft.e);
-      const usage = end ? (field(end.e, "model_usage") as ModelUsage | undefined) : undefined;
+      const usage = end ? reportedUsage(field(end.e, "model_usage")) : undefined;
       const finishReason = end ? str(field(end.e, "finish_reason")) : undefined;
       const model = str(field(e, "model")) ?? (end ? str(field(end.e, "model")) : undefined);
       const isError = end ? field(end.e, "is_error") === true : false;
       const ttftMs = ft && ft.t !== null && t !== null ? Math.max(0, ft.t - t) : undefined;
-      const tok = usage
-        ? `${usage.input_tokens}↓ ${usage.output_tokens}↑${usage.cache_read_input_tokens ? ` ⚡${usage.cache_read_input_tokens}` : ""}`
-        : undefined;
+      const tok = usage ? usageText(usage) : undefined;
       ranged({
         key: `model-${id ?? i}`,
         family: "model",
@@ -279,15 +332,48 @@ export function deriveTraceSteps(events: readonly Event[]): TraceStep[] {
         label: model ? `Generation · ${model}` : "Generation",
         detail: [finishReason, ttftMs !== undefined ? `TTFT ${formatDuration(ttftMs)}` : undefined, tok].filter(Boolean).join(" · ") || undefined,
         model,
-        usage: usage && typeof usage.input_tokens === "number" ? usage : undefined,
+        usage,
         finishReason,
         ttftMs,
         isError,
         errorText: isError ? str(field(end!.e, "error_message")) ?? "model returned an error" : undefined,
       }, end);
     } else if (e.type === "span.compaction_summarize_start") {
-      const end = compactEnds[compactIdx++];
-      ranged({ key: `compact-${i}`, family: "compaction", kind: "lifecycle", label: "compaction" }, end);
+      // FIFO: the first unclaimed summarize_end after this start.
+      const end = takeAfter(compactEnds, i);
+      const f = summarizeFields(e, end?.e);
+      ranged({
+        key: `compact-${i}`,
+        family: "compaction",
+        kind: "lifecycle",
+        label: "compaction",
+        detail: f.detail,
+        model: f.model,
+        usage: f.usage,
+        finishReason: f.finishReason,
+        isError: f.isError,
+        errorText: f.isError ? "compaction summarize finish_reason: error" : undefined,
+        compaction: { role: "summarize", ...(f.finalTextLength !== undefined ? { finalTextLength: f.finalTextLength } : {}) },
+      }, end);
+    } else if (e.type === "span.compaction_summarize_end") {
+      // Still unclaimed when reached in stream order ⇒ no earlier start can
+      // take it (starts only claim later ends). Surface it, never drop it.
+      if (!compactEnds.some((x) => x.i === i)) continue;
+      const f = summarizeFields(undefined, e);
+      instant({
+        key: `compact-end-${i}`,
+        family: "compaction",
+        kind: "lifecycle",
+        label: "compaction end (no matching start)",
+        detail: f.detail,
+        model: f.model,
+        usage: f.usage,
+        finishReason: f.finishReason,
+        isError: f.isError,
+        errorText: f.isError ? "compaction summarize finish_reason: error" : undefined,
+        orphan: true,
+        compaction: { role: "orphan_end", ...(f.finalTextLength !== undefined ? { finalTextLength: f.finalTextLength } : {}) },
+      });
     } else if (e.type === "span.outcome_evaluation_start") {
       const end = outcomeEnds[outcomeIdx++];
       const result = end ? str(field(end.e, "result")) : undefined;
@@ -295,7 +381,6 @@ export function deriveTraceSteps(events: readonly Event[]): TraceStep[] {
     } else if (
       e.type === "span.model_request_end" ||
       e.type === "span.model_first_token" ||
-      e.type === "span.compaction_summarize_end" ||
       e.type === "span.outcome_evaluation_end" ||
       e.type === "span.outcome_evaluation_ongoing"
     ) {
@@ -348,11 +433,25 @@ export function deriveTraceSteps(events: readonly Event[]): TraceStep[] {
         detail: [name, str(field(e, "session_thread_id")), str(field(e, "to_thread_id")), str(field(e, "from_thread_id"))].filter(Boolean).join(" · ") || undefined,
       });
     } else if (e.type === "agent.thread_context_compacted") {
-      instant({ key: `compact-marker-${i}`, family: "compaction", kind: "lifecycle", label: "thread compacted" });
+      const info = boundaryInfo(e);
+      const counts = info.originalMessageCount !== undefined && info.compactedMessageCount !== undefined
+        ? `${info.originalMessageCount} → ${info.compactedMessageCount} messages`
+        : undefined;
+      instant({
+        key: `compact-marker-${i}`,
+        family: "compaction",
+        kind: "lifecycle",
+        label: "thread compacted",
+        detail: [counts, info.trigger, info.summary ? oneLine(info.summary, 80) : undefined].filter(Boolean).join(" · ") || undefined,
+        text: info.summary,
+        compaction: info,
+      });
     } else if (e.type === "session.error") {
       const msg = typeof e.error === "string" ? e.error : eventText(e as Rec) || JSON.stringify(e.error ?? null);
       instant({ key: `err-${i}`, family: "error", kind: "error", label: "session.error", detail: oneLine(msg) || undefined, isError: true, errorText: msg });
     } else if (e.type === "session.warning") {
+      // Includes the Pi assembly adapter's "oma.context_reassembled" marker:
+      // a real warning with its own source — not a summarize span.
       instant({ key: `warn-${i}`, family: "warn", kind: "lifecycle", label: `warning:${String(e.source ?? "")}`, detail: String(e.message ?? "") || undefined });
     } else if (e.type === "session.outcome_evaluated") {
       const result = str(field(e, "result"));

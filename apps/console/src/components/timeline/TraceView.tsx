@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { toast } from "sonner";
 import { formatDuration } from "../../lib/format";
@@ -13,7 +13,10 @@ import {
   buildTimeScale,
   buildTrace,
   buildTurnTree,
+  clampScroll,
   extractDiff,
+  fitPxPerMs,
+  hiddenLifecycleCount,
   formatClock,
   formatTokens,
   gapLabel,
@@ -24,7 +27,11 @@ import {
   toolCounts,
   transcriptText,
   turnTriggerLabel,
+  viewportForRange,
+  visibleWallRange,
   wallTicks,
+  zoomAround,
+  CONTEXT_REASSEMBLED_SOURCE,
   type StepFilter,
   type StepFilterKind,
   type TimeScale,
@@ -34,6 +41,8 @@ import {
   type TraceNode,
   type TraceProjection,
   type TraceTurn,
+  type Viewport,
+  type ViewportBounds,
 } from "../../lib/trajectory-steps";
 import { resolveTurnExpanded } from "./eventTime";
 import { FAMILY_BAR, FAMILY_DOT, MAX_MANUAL_CHART_PX, type TraceStep } from "./types";
@@ -88,6 +97,7 @@ const FILTER_LABEL: Record<StepFilterKind, string> = {
   thinking: "Thinking",
   model: "Generation",
   tool: "Tools",
+  compaction: "Compaction",
   error: "Errors",
 };
 
@@ -141,7 +151,8 @@ function BarButton({
       type="button"
       className={cn(
         "absolute p-0 min-w-0 h-auto rounded-full border-0 overflow-hidden active:not-aria-[haspopup]:translate-y-0",
-        selected && "ring-2 ring-fg z-10",
+        "hover:z-10 hover:ring-1 hover:ring-fg/30 focus-visible:ring-2 focus-visible:ring-info focus-visible:z-20",
+        selected && "ring-2 ring-info ring-offset-1 ring-offset-bg z-20",
         className,
       )}
       {...props}
@@ -184,7 +195,10 @@ export function TraceView({
   const [nodeOverrides, setNodeOverrides] = useState<Record<string, boolean>>({});
   /** Idle gaps the user collapsed on the overview axis. Default: none (wall clock). */
   const [collapsedGaps, setCollapsedGaps] = useState<ReadonlySet<string>>(() => new Set());
+  /** Selected event / turn / gap / group → inspector. */
   const [selection, setSelection] = useState<Selection | null>(null);
+  /** Brushed wall-clock range on the overview (independent of `selection`). */
+  const [range, setRange] = useState<TimeRange | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
 
   const filterActive = isFilterActive(filter);
@@ -320,8 +334,18 @@ export function TraceView({
         stepIndex={stepIndex}
         nodeIndex={nodeIndex}
         onSelect={(sel) => reveal(sel, true)}
+        range={range}
+        onRangeChange={setRange}
       />
-      <FilterBar filter={filter} setFilter={setFilter} tools={toolCounts(p.steps)} total={p.steps.length} visible={visibleCount} />
+      <FilterBar
+        filter={filter}
+        setFilter={setFilter}
+        tools={toolCounts(p.steps)}
+        total={p.steps.length}
+        visible={visibleCount}
+        hiddenLifecycle={hiddenLifecycleCount(p.steps, filter)}
+        hasCompaction={p.steps.some((s) => s.family === "compaction")}
+      />
       <div className="grid grid-cols-1 md:grid-cols-[minmax(260px,40%)_minmax(0,1fr)] md:flex-1 md:min-h-0 border-t border-border min-w-0">
         <TraceTree
           p={p}
@@ -357,6 +381,26 @@ export function TraceView({
 
 // ─── Header ──────────────────────────────────────────────────────────
 
+/** Header facts for compaction, only when the stream has compaction events. */
+function compactionFacts(p: TraceProjection): TraceFact[] {
+  const spans = p.steps.filter((s) => s.compaction?.role === "summarize").length;
+  const boundaries = p.steps.filter((s) => s.compaction?.role === "boundary").length;
+  const orphans = p.steps.filter((s) => s.compaction?.role === "orphan_end").length;
+  if (!spans && !boundaries && !orphans) return [];
+  const parts = [
+    boundaries ? `${boundaries} boundar${boundaries === 1 ? "y" : "ies"}` : null,
+    spans ? `${spans} summarize` : null,
+    orphans ? `${orphans} unpaired end` : null,
+  ].filter(Boolean);
+  return [
+    { label: "Compactions", value: parts.join(" · ") },
+    {
+      label: "Compaction tokens in / out",
+      value: p.compactionTokens ? `${formatTokens(p.compactionTokens.input)} / ${formatTokens(p.compactionTokens.output)}` : "not reported",
+    },
+  ];
+}
+
 function TraceHeader({ p, facts, actions }: { p: TraceProjection; facts?: TraceFact[]; actions: ReactNode }) {
   const last = p.turns[p.turns.length - 1];
   const status = last ? (last.turn.queued ? "queued" : last.turn.status) : "—";
@@ -373,6 +417,7 @@ function TraceHeader({ p, facts, actions }: { p: TraceProjection; facts?: TraceF
       label: "Tokens in / out",
       value: p.tokens ? `${formatTokens(p.tokens.input)} / ${formatTokens(p.tokens.output)}` : "not reported",
     },
+    ...compactionFacts(p),
     ...(facts ?? []),
   ];
   return (
@@ -380,8 +425,8 @@ function TraceHeader({ p, facts, actions }: { p: TraceProjection; facts?: TraceF
       <dl role="region" aria-label="Trace summary" className="flex flex-wrap gap-x-6 gap-y-2 min-w-0 flex-1">
         {items.map((f) => (
           <div key={f.label} className="min-w-0">
-            <dt className="text-[11px] text-fg-subtle">{f.label}</dt>
-            <dd className="text-xs text-fg font-medium truncate max-w-[18rem]">{f.value}</dd>
+            <dt className="text-[11px] leading-4 text-fg-subtle">{f.label}</dt>
+            <dd className="text-xs leading-5 text-fg font-medium tabular-nums truncate max-w-[18rem]">{f.value}</dd>
           </div>
         ))}
       </dl>
@@ -392,12 +437,20 @@ function TraceHeader({ p, facts, actions }: { p: TraceProjection; facts?: TraceF
 
 // ─── Overview ────────────────────────────────────────────────────────
 
+/** A brushed wall-clock range. Kept in real timestamps so it survives
+ *  collapsing / restoring idle gaps (display coordinates change, wall
+ *  time doesn't). */
+export interface TimeRange {
+  startTs: number;
+  endTs: number;
+}
+
 function selectionRange(
   sel: Selection | null,
   p: TraceProjection,
   stepIndex: StepIndex,
   nodeIndex: NodeIndex,
-): { startTs: number; endTs: number } | null {
+): TimeRange | null {
   if (!sel) return null;
   let r: { startTs: number | null; endTs: number | null } | null = null;
   if (sel.type === "step") {
@@ -417,6 +470,25 @@ function selectionRange(
   return { startTs: r.startTs, endTs: Math.max(r.startTs, r.endTs ?? r.startTs) };
 }
 
+function selectionNoun(sel: Selection): string {
+  return sel.type === "step" ? "event" : sel.type === "node" ? "group" : sel.type;
+}
+
+function fmtRate(ppms: number): string {
+  const pps = ppms * 1000;
+  if (pps >= 100) return `${Math.round(pps)} px/s`;
+  if (pps >= 1) return `${pps.toFixed(1)} px/s`;
+  return `${pps.toFixed(2)} px/s`;
+}
+
+function fmtRange(r: TimeRange, stepMs = 1000): string {
+  return `${formatClock(r.startTs, stepMs)} – ${formatClock(r.endTs, stepMs)}`;
+}
+
+const BRUSH_MIN_PX = 4;
+/** Ticks closer than this to a collapsed-gap label are dropped so labels never overlap. */
+const BREAK_LABEL_CLEAR_PX = 44;
+
 function Overview({
   p,
   collapsedGaps,
@@ -425,6 +497,8 @@ function Overview({
   stepIndex,
   nodeIndex,
   onSelect,
+  range,
+  onRangeChange,
 }: {
   p: TraceProjection;
   collapsedGaps: ReadonlySet<string>;
@@ -433,6 +507,9 @@ function Overview({
   stepIndex: StepIndex;
   nodeIndex: NodeIndex;
   onSelect: (sel: Selection) => void;
+  /** Brushed time range (distinct from the selected event). */
+  range: TimeRange | null;
+  onRangeChange: (r: TimeRange | null) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<HTMLDivElement | null>(null);
@@ -441,6 +518,7 @@ function Overview({
   const [zoom, setZoom] = useState<{ mode: ZoomMode; pxPerMs: number | null }>({ mode: "auto", pxPerMs: null });
   const pendingScroll = useRef<number | null>(null);
   const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null);
+  const helpId = useId();
 
   const scale: TimeScale | null = useMemo(() => {
     if (p.startTs === null || p.endTs === null) return null;
@@ -464,51 +542,78 @@ function Overview({
   }, [hasScale]);
 
   const total = scale?.total ?? 1;
-  const fit = viewportPx / total;
-  const maxPx = Math.max(fit, MAX_MANUAL_CHART_PX / total);
+  const bounds: ViewportBounds = { total, viewportPx, maxPxPerMs: MAX_MANUAL_CHART_PX / total };
+  const fit = fitPxPerMs(bounds);
   const pxPerMs =
     zoom.mode === "fit" || !layout
       ? fit
       : zoom.mode === "auto"
         ? autoPxPerMs(layout.boundaries, total, viewportPx)
-        : Math.min(maxPx, Math.max(fit, zoom.pxPerMs ?? fit));
+        : Math.min(Math.max(fit, bounds.maxPxPerMs), Math.max(fit, zoom.pxPerMs ?? fit));
   const chartPx = Math.max(1, total * pxPerMs);
+  const scrollNow = clampScroll(scrollLeft, pxPerMs, bounds);
 
+  // Collapsing / restoring a gap changes display coordinates: keep the
+  // same wall-clock instant in the middle of the viewport.
+  const prevView = useRef<{ scale: TimeScale | null; pxPerMs: number; scrollLeft: number }>({ scale, pxPerMs, scrollLeft: scrollNow });
   useLayoutEffect(() => {
-    if (pendingScroll.current === null || !scrollRef.current) return;
-    scrollRef.current.scrollLeft = pendingScroll.current;
-    setScrollLeft(pendingScroll.current);
-    pendingScroll.current = null;
+    const prev = prevView.current;
+    if (prev.scale && scale && prev.scale !== scale && prev.scrollLeft > 0 && pendingScroll.current === null) {
+      const centerWall = prev.scale.toWall((prev.scrollLeft + viewportPx / 2) / prev.pxPerMs);
+      pendingScroll.current = clampScroll(scale.toDisplay(centerWall) * pxPerMs - viewportPx / 2, pxPerMs, bounds);
+    }
+  }, [scale]); // only on scale change; reads the previous commit via prevView
+  useLayoutEffect(() => {
+    if (pendingScroll.current !== null && scrollRef.current) {
+      const next = clampScroll(pendingScroll.current, pxPerMs, bounds);
+      scrollRef.current.scrollLeft = next;
+      pendingScroll.current = null;
+      if (next !== scrollLeft) setScrollLeft(next);
+    }
+    prevView.current = { scale, pxPerMs, scrollLeft: scrollNow };
   });
 
-  const zoomTo = (d0: number, d1: number) => {
-    const width = Math.max(d1 - d0, total * 0.002, 1);
-    const next = Math.min(maxPx, Math.max(fit, viewportPx / width));
-    pendingScroll.current = Math.max(0, d0 * next);
-    setZoom({ mode: "manual", pxPerMs: next });
+  const apply = (v: Viewport) => {
+    pendingScroll.current = v.scrollLeft;
+    setZoom({ mode: "manual", pxPerMs: v.pxPerMs });
   };
-  const zoomBy = (factor: number) => {
-    const center = (scrollLeft + viewportPx / 2) / pxPerMs;
-    const next = Math.min(maxPx, Math.max(fit, pxPerMs * factor));
-    pendingScroll.current = Math.max(0, center * next - viewportPx / 2);
-    setZoom({ mode: "manual", pxPerMs: next });
+  const zoomToWall = (r: TimeRange, padFrac = 0) => {
+    if (!scale) return;
+    const d0 = scale.toDisplay(r.startTs);
+    const d1 = scale.toDisplay(r.endTs);
+    const pad = padFrac > 0 ? Math.max((d1 - d0) * padFrac, total * 0.01) : 0;
+    apply(viewportForRange(d0 - pad, d1 + pad, bounds));
   };
+  const zoomBy = (factor: number) => apply(zoomAround((scrollNow + viewportPx / 2) / pxPerMs, pxPerMs, factor, bounds));
+  const fullSession = () => {
+    pendingScroll.current = 0;
+    setZoom({ mode: "fit", pxPerMs: null });
+    onRangeChange(null);
+  };
+  const autoDensity = () => {
+    pendingScroll.current = 0;
+    setZoom({ mode: "auto", pxPerMs: null });
+  };
+
   const selRange = scale ? selectionRange(selection, p, stepIndex, nodeIndex) : null;
-  const fitSelection = () => {
-    if (!scale || !selRange) return;
-    const d0 = scale.toDisplay(selRange.startTs);
-    const d1 = scale.toDisplay(selRange.endTs);
-    const pad = Math.max((d1 - d0) * 0.1, total * 0.01);
-    zoomTo(Math.max(0, d0 - pad), Math.min(total, d1 + pad));
-  };
+  // Fit selection prefers the selected event; with nothing selected it
+  // falls back to the brushed range.
+  const fitTarget: { range: TimeRange; what: string } | null = selRange && selection
+    ? { range: selRange, what: `selected ${selectionNoun(selection)}` }
+    : range
+      ? { range, what: "brushed range" }
+      : null;
+  const fitSelection = () => fitTarget && zoomToWall(fitTarget.range, fitTarget.what === "brushed range" ? 0 : 0.1);
 
   const idleGaps = p.gaps.filter((g) => g.kind === "idle");
   const allIdleCollapsed = idleGaps.length > 0 && idleGaps.every((g) => collapsedGaps.has(g.key));
+  const collapsedIdle = idleGaps.filter((g) => collapsedGaps.has(g.key));
 
   const onMouseDown = (e: ReactMouseEvent<HTMLDivElement>) => {
+    // Bars / markers are buttons: a press there is a click-to-select, never a brush.
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     const rect = chartRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!rect || !scale) return;
     const x0 = e.clientX - rect.left;
     setBrush({ x0, x1: x0 });
     const move = (ev: MouseEvent) => setBrush((b) => (b ? { ...b, x1: ev.clientX - rect.left } : b));
@@ -517,49 +622,85 @@ function Overview({
       window.removeEventListener("mouseup", up);
       setBrush(null);
       const x1 = ev.clientX - rect.left;
-      if (Math.abs(x1 - x0) >= 4) zoomTo(Math.min(x0, x1) / pxPerMs, Math.max(x0, x1) / pxPerMs);
+      // A click on empty space (no drag) changes nothing.
+      if (Math.abs(x1 - x0) < BRUSH_MIN_PX) return;
+      const clampD = (x: number) => Math.min(total, Math.max(0, x / pxPerMs));
+      const d0 = clampD(Math.min(x0, x1));
+      const d1 = clampD(Math.max(x0, x1));
+      const r = { startTs: scale.toWall(d0), endTs: scale.toWall(d1) };
+      onRangeChange(r);
+      apply(viewportForRange(d0, d1, bounds));
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
 
-  const fmtRate = (ppms: number) => {
-    const pps = ppms * 1000;
-    if (pps >= 100) return `${Math.round(pps)} px/s`;
-    if (pps >= 1) return `${pps.toFixed(1)} px/s`;
-    return `${pps.toFixed(2)} px/s`;
+  const onChartKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return; // bars handle their own keys
+    if (e.key === "+" || e.key === "=") zoomBy(2);
+    else if (e.key === "-" || e.key === "_") zoomBy(0.5);
+    else if (e.key === "0") fullSession();
+    else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const next = clampScroll(scrollNow + (e.key === "ArrowLeft" ? -1 : 1) * viewportPx * 0.25, pxPerMs, bounds);
+      if (scrollRef.current) scrollRef.current.scrollLeft = next;
+      setScrollLeft(next);
+    } else return;
+    e.preventDefault();
   };
-  const btn = "h-7 min-w-7 px-2 text-xs";
 
-  const { ticks, step: tickStep } = scale
-    ? wallTicks(scale, scrollLeft / pxPerMs, (scrollLeft + viewportPx) / pxPerMs, pxPerMs)
+  const btn = "h-7 min-w-7 px-2 text-xs";
+  const pressed = "border-info text-info bg-info-subtle/40";
+
+  const { ticks: rawTicks, step: tickStep } = scale
+    ? wallTicks(scale, scrollNow / pxPerMs, (scrollNow + viewportPx) / pxPerMs, pxPerMs)
     : { ticks: [], step: 0 };
+  const breakLabels = (scale?.breaks ?? []).map((b) => {
+    const gap = p.gaps.find((g) => g.key === b.key);
+    return { key: b.key, x: ((b.d0 + b.d1) / 2) * pxPerMs, durationMs: gap?.durationMs ?? b.endTs - b.startTs };
+  });
+  const ticks = rawTicks.filter((t) => breakLabels.every((b) => Math.abs(t.d * pxPerMs - b.x) >= BREAK_LABEL_CLEAR_PX));
   const lanes = layout?.lanes ?? 1;
   const height = Math.max(132, LANE_TOP + lanes * LANE_H + 12 + AXIS_H);
   const isSel = (type: Selection["type"], key: string) => selection?.type === type && selection.key === key;
+  const visible = scale ? visibleWallRange(scale, { pxPerMs, scrollLeft: scrollNow }, viewportPx) : null;
+  const modeLabel = zoom.mode === "auto" ? "auto density" : zoom.mode === "fit" ? "full session" : `${(pxPerMs / fit).toFixed(pxPerMs / fit < 10 ? 1 : 0)}× zoom`;
 
   return (
-    <section aria-label="Session overview" className="px-4 sm:px-6 pb-3 min-w-0 bg-bg-surface/30 border-t border-border">
-      <div className="flex flex-wrap items-center justify-between gap-2 py-2 min-w-0">
-        <Legend />
+    <section aria-label="Session overview" className="px-4 sm:px-6 pt-1 pb-3 min-w-0 bg-bg-surface/30 border-t border-border">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2 min-w-0">
+        <Legend p={p} />
         <div className="flex flex-wrap items-center gap-1" role="toolbar" aria-label="Overview zoom">
-          <Button variant="outline" className={btn} onClick={fitSelection} disabled={!selRange} title="Zoom the overview to the selected row">
+          <Button
+            variant="outline"
+            className={btn}
+            onClick={fitSelection}
+            disabled={!fitTarget || !scale}
+            title={fitTarget ? `Zoom the overview to the ${fitTarget.what}` : "Select an event or drag across the overview first"}
+            aria-describedby={`${helpId}-fit`}
+          >
             Fit selection
           </Button>
-          <Button variant="outline" className={btn} onClick={() => setZoom({ mode: "fit", pxPerMs: null })} aria-label="Fit session to viewport" aria-pressed={zoom.mode === "fit"} title="Fit the whole session to the viewport">
-            fit
+          <span id={`${helpId}-fit`} className="sr-only">{fitTarget ? `Zooms to the ${fitTarget.what}` : "Nothing selected"}</span>
+          <Button
+            variant="outline"
+            className={cn(btn, zoom.mode === "fit" && pressed)}
+            onClick={fullSession}
+            aria-label="Reset to full session"
+            aria-pressed={zoom.mode === "fit"}
+            title="Show the whole session (wall clock) and clear the brushed range. Collapsed idle gaps stay collapsed."
+          >
+            Full session
           </Button>
-          <Button variant="outline" className={`${btn} ${zoom.mode === "auto" ? "border-info text-info" : ""}`} onClick={() => setZoom({ mode: "auto", pxPerMs: null })} aria-label="Auto-pick scale by event density" aria-pressed={zoom.mode === "auto"} title="Auto-pick scale by event density">
+          <Button variant="outline" className={cn(btn, zoom.mode === "auto" && pressed)} onClick={autoDensity} aria-label="Auto-pick scale by event density" aria-pressed={zoom.mode === "auto"} title="Auto-pick scale by event density">
             auto
           </Button>
-          <Button variant="outline" className={btn} onClick={() => zoomBy(0.5)} aria-label="Zoom out" title="Zoom out">−</Button>
-          <Button variant="outline" className={btn} onClick={() => zoomBy(2)} aria-label="Zoom in" title="Zoom in">+</Button>
+          <Button variant="outline" className={btn} onClick={() => zoomBy(0.5)} disabled={!scale || pxPerMs <= fit * 1.0001} aria-label="Zoom out" title="Zoom out">−</Button>
+          <Button variant="outline" className={btn} onClick={() => zoomBy(2)} disabled={!scale || pxPerMs >= Math.max(fit, bounds.maxPxPerMs) * 0.9999} aria-label="Zoom in" title="Zoom in">+</Button>
           {idleGaps.length > 0 && (
-            <Button variant="outline" className={btn} onClick={onToggleAllIdle} aria-pressed={allIdleCollapsed} title="Collapsed idle gaps keep their marker and true duration">
+            <Button variant="outline" className={cn(btn, allIdleCollapsed && pressed)} onClick={onToggleAllIdle} aria-pressed={allIdleCollapsed} title="Collapsed idle gaps keep their marker and true duration">
               {allIdleCollapsed ? "Restore idle gaps" : "Collapse idle gaps"}
             </Button>
           )}
-          {scale && <span className="ml-1 font-mono text-[11px] text-fg-subtle" data-testid="overview-rate">{fmtRate(pxPerMs)}</span>}
         </div>
       </div>
       {!scale || !layout ? (
@@ -567,123 +708,210 @@ function Overview({
           No timestamps in these events — the wall-clock overview needs them. Durations below show as unknown (—).
         </div>
       ) : (
-        <div ref={scrollRef} className="overflow-x-auto max-w-full rounded border border-border bg-bg" onScroll={(e) => setScrollLeft(e.currentTarget.scrollLeft)}>
+        <>
           <div
-            ref={chartRef}
-            className="relative select-none cursor-crosshair"
-            style={{ width: chartPx, height }}
-            onMouseDown={onMouseDown}
-            data-overview-chart
-            data-chart-px={Math.round(chartPx)}
+            ref={scrollRef}
+            className="overflow-x-auto max-w-full rounded-md border border-border bg-bg focus-visible:outline-2 focus-visible:outline-info"
+            onScroll={(e) => setScrollLeft(e.currentTarget.scrollLeft)}
+            tabIndex={0}
+            role="group"
+            aria-label="Session timeline"
+            aria-describedby={`${helpId}-keys`}
+            onKeyDown={onChartKeyDown}
           >
-            {ticks.map((t) => (
-              <div key={t.ts} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: t.d * pxPerMs }}>
-                <div className="absolute top-0 border-l border-dashed border-border" style={{ bottom: AXIS_H }} />
-                <span className="absolute bottom-1 -translate-x-1/2 font-mono text-[10px] text-fg-subtle whitespace-nowrap">
-                  {formatClock(t.ts, tickStep)}
-                </span>
-              </div>
-            ))}
-            {layout.gapBars.map((g) => {
-              const idle = g.gap.kind === "idle";
-              return (
-                <BarButton
-                  key={g.gap.key}
-                  selected={isSel("gap", g.gap.key)}
-                  fill={idle ? "border border-border rounded-sm" : "border border-dashed border-fg-subtle rounded-sm"}
-                  fillStyle={idle ? { backgroundImage: HATCH } : undefined}
-                  aria-label={`Select ${gapLabel(g.gap)}${g.collapsed ? " (collapsed)" : ""}`}
-                  title={`${gapLabel(g.gap)}${g.collapsed ? " — collapsed; true duration kept" : ""}`}
-                  data-gap-bar={g.gap.kind}
-                  data-collapsed={g.collapsed ? "true" : undefined}
-                  onClick={() => onSelect({ type: "gap", key: g.gap.key })}
-                  className="rounded-sm text-[10px] font-mono text-fg-subtle leading-none"
-                  style={{ left: g.d0 * pxPerMs, width: Math.max(4, (g.d1 - g.d0) * pxPerMs), top: ROW0_TOP - 2, height: BAR_H + 4 }}
+            <span id={`${helpId}-keys`} className="sr-only">
+              Click a bar to select an event. Drag across empty space to select and zoom a time range. Keys: left and right arrows pan, plus and minus zoom, 0 resets to the full session.
+            </span>
+            <div
+              ref={chartRef}
+              className="relative select-none cursor-crosshair"
+              style={{ width: chartPx, height }}
+              onMouseDown={onMouseDown}
+              data-overview-chart
+              data-chart-px={Math.round(chartPx)}
+              data-scroll-left={Math.round(scrollNow)}
+              data-zoom-mode={zoom.mode}
+            >
+              {ticks.map((t) => (
+                <div key={t.ts} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: t.d * pxPerMs }} data-tick={t.ts}>
+                  <div className="absolute top-0 border-l border-dashed border-border/80" style={{ bottom: AXIS_H }} />
+                  <span className="absolute bottom-1 -translate-x-1/2 font-mono text-[10px] tabular-nums text-fg-subtle whitespace-nowrap">
+                    {formatClock(t.ts, tickStep)}
+                  </span>
+                </div>
+              ))}
+              {breakLabels.map((b) => (
+                <div
+                  key={b.key}
+                  className="absolute bottom-0 -translate-x-1/2 flex items-center gap-0.5 font-mono text-[10px] text-fg-muted whitespace-nowrap pointer-events-none bg-bg px-1 rounded-sm"
+                  style={{ left: b.x, height: AXIS_H - 2 }}
+                  data-axis-break={b.key}
                 >
-                  <span className="relative">{g.collapsed ? "⋯" : !idle ? "?" : null}</span>
-                </BarButton>
-              );
-            })}
-            {layout.turnBars.map((b) => {
-              const errored = b.turn.turn.status === "errored" || b.turn.turn.status === "terminated";
-              return (
-                <BarButton
-                  key={b.turn.key}
-                  selected={isSel("turn", b.turn.key)}
-                  fill={errored ? "bg-danger/60" : "bg-info/70"}
-                  fillStyle={b.openEnded ? { backgroundImage: STRIPES } : undefined}
-                  aria-label={`Select Turn ${b.turn.index + 1}`}
-                  title={`Turn ${b.turn.index + 1} · ${b.turn.turn.status}${b.turn.durationMs !== null ? ` · ${formatDuration(b.turn.durationMs)}` : ""}${b.openEnded ? " · no close event yet" : ""}`}
-                  onClick={() => onSelect({ type: "turn", key: b.turn.key })}
-                  style={{ left: b.d0 * pxPerMs, width: Math.max(3, (b.d1 - b.d0) * pxPerMs), top: ROW0_TOP, height: BAR_H }}
+                  <span aria-hidden className="text-fg-subtle">⫽</span>
+                  {b.durationMs !== null ? formatDuration(b.durationMs) : "unknown"}
+                </div>
+              ))}
+              <div className="absolute inset-x-0 border-t border-border" style={{ bottom: AXIS_H }} aria-hidden />
+              {range && (
+                <div
+                  className="absolute top-0 bg-info/10 border-x-2 border-info/70 pointer-events-none"
+                  style={{ left: scale.toDisplay(range.startTs) * pxPerMs, width: Math.max(2, (scale.toDisplay(range.endTs) - scale.toDisplay(range.startTs)) * pxPerMs), bottom: AXIS_H }}
+                  data-testid="overview-range"
                 />
-              );
-            })}
-            {layout.markers.map((m) => (
-              <BarButton
-                key={m.step.key}
-                selected={isSel("step", m.step.key)}
-                fill={stepDotClass(m.step)}
-                aria-label={`Select ${m.step.label}${m.step.detail ? `: ${m.step.detail}` : ""}`}
-                title={m.step.label}
-                onClick={() => onSelect({ type: "step", key: m.step.key })}
-                className="rounded-sm"
-                style={{ left: m.d * pxPerMs - 1, width: 3, top: ROW0_TOP - 4, height: BAR_H + 8 }}
-              />
-            ))}
-            {layout.stepBars.map((b) => (
-              <BarButton
-                key={b.step.key}
-                selected={isSel("step", b.step.key)}
-                fill={cn(stepBarClass(b.step), "opacity-90 group-hover/button:opacity-100")}
-                fillStyle={b.openEnded ? { backgroundImage: STRIPES } : undefined}
-                aria-label={`Select ${b.step.label}${b.step.detail ? `: ${b.step.detail}` : ""}`}
-                title={`${b.step.label} · ${stepDurationText(b.step)}${b.step.isError ? " · failed" : ""}${b.openEnded ? " · no end recorded" : ""}`}
-                data-step-bar={b.step.family}
-                data-failed={b.step.isError ? "true" : undefined}
-                onClick={() => onSelect({ type: "step", key: b.step.key })}
-                style={{ left: b.d0 * pxPerMs, width: Math.max(3, (b.d1 - b.d0) * pxPerMs), top: LANE_TOP + b.lane * LANE_H, height: BAR_H }}
-              />
-            ))}
-            {selRange && (
-              <div
-                className="absolute top-0 bg-fg/5 border-x border-fg/20 pointer-events-none"
-                style={{ left: scale.toDisplay(selRange.startTs) * pxPerMs, width: Math.max(1, (scale.toDisplay(selRange.endTs) - scale.toDisplay(selRange.startTs)) * pxPerMs), bottom: AXIS_H }}
-              />
+              )}
+              {selRange && (
+                <div
+                  className="absolute top-0 bg-fg/[0.06] border-x border-fg/30 pointer-events-none"
+                  style={{ left: scale.toDisplay(selRange.startTs) * pxPerMs, width: Math.max(1, (scale.toDisplay(selRange.endTs) - scale.toDisplay(selRange.startTs)) * pxPerMs), bottom: AXIS_H }}
+                  data-testid="overview-selection"
+                />
+              )}
+              {layout.gapBars.map((g) => {
+                const idle = g.gap.kind === "idle";
+                return (
+                  <BarButton
+                    key={g.gap.key}
+                    selected={isSel("gap", g.gap.key)}
+                    fill={idle ? "border border-border rounded-sm" : "border border-dashed border-warning/70 rounded-sm"}
+                    fillStyle={idle ? { backgroundImage: HATCH } : undefined}
+                    aria-label={`Select ${gapLabel(g.gap)}${g.collapsed ? " (collapsed)" : ""}`}
+                    title={`${gapLabel(g.gap)}${g.collapsed ? " — collapsed; true duration kept" : ""}`}
+                    data-gap-bar={g.gap.kind}
+                    data-collapsed={g.collapsed ? "true" : undefined}
+                    onClick={() => onSelect({ type: "gap", key: g.gap.key })}
+                    className="rounded-sm text-[10px] font-mono text-fg-subtle leading-none"
+                    style={{ left: g.d0 * pxPerMs, width: Math.max(4, (g.d1 - g.d0) * pxPerMs), top: ROW0_TOP - 2, height: BAR_H + 4 }}
+                  >
+                    <span className="relative">{g.collapsed ? "⋯" : !idle ? "?" : null}</span>
+                  </BarButton>
+                );
+              })}
+              {layout.turnBars.map((b) => {
+                const errored = b.turn.turn.status === "errored" || b.turn.turn.status === "terminated";
+                return (
+                  <BarButton
+                    key={b.turn.key}
+                    selected={isSel("turn", b.turn.key)}
+                    fill={errored ? "bg-danger/60" : "bg-info/70"}
+                    fillStyle={b.openEnded ? { backgroundImage: STRIPES } : undefined}
+                    aria-label={`Select Turn ${b.turn.index + 1}`}
+                    title={`Turn ${b.turn.index + 1} · ${b.turn.turn.status}${b.turn.durationMs !== null ? ` · ${formatDuration(b.turn.durationMs)}` : ""}${b.openEnded ? " · no close event yet" : ""}`}
+                    onClick={() => onSelect({ type: "turn", key: b.turn.key })}
+                    style={{ left: b.d0 * pxPerMs, width: Math.max(3, (b.d1 - b.d0) * pxPerMs), top: ROW0_TOP, height: BAR_H }}
+                  />
+                );
+              })}
+              {layout.stepBars.map((b) => (
+                <BarButton
+                  key={b.step.key}
+                  selected={isSel("step", b.step.key)}
+                  fill={stepBarClass(b.step)}
+                  fillStyle={b.openEnded ? { backgroundImage: STRIPES } : undefined}
+                  aria-label={`Select ${b.step.label}${b.step.detail ? `: ${b.step.detail}` : ""}`}
+                  title={`${b.step.label} · ${stepDurationText(b.step)}${b.step.isError ? " · failed" : ""}${b.openEnded ? " · no end recorded" : ""}`}
+                  data-step-bar={b.step.family}
+                  data-failed={b.step.isError ? "true" : undefined}
+                  onClick={() => onSelect({ type: "step", key: b.step.key })}
+                  style={{ left: b.d0 * pxPerMs, width: Math.max(3, (b.d1 - b.d0) * pxPerMs), top: LANE_TOP + b.lane * LANE_H, height: BAR_H }}
+                />
+              ))}
+              {layout.markers.map((m) => {
+                const label = `Select ${m.step.label}${m.step.detail ? `: ${m.step.detail}` : ""}`;
+                const common = {
+                  selected: isSel("step", m.step.key),
+                  "aria-label": label,
+                  title: m.step.orphan ? `${m.step.label} — unpaired` : m.step.label,
+                  "data-marker": m.kind,
+                  "data-orphan": m.step.orphan ? "true" : undefined,
+                  onClick: () => onSelect({ type: "step", key: m.step.key }),
+                };
+                if (m.kind === "compaction") {
+                  // Diamond: a point-in-time context boundary, not a duration.
+                  return (
+                    <BarButton
+                      key={m.step.key}
+                      {...common}
+                      fill={m.step.orphan ? "bg-bg border border-dashed border-trace-compaction" : "bg-trace-compaction border border-bg"}
+                      className="rounded-[2px] rotate-45 overflow-visible"
+                      style={{ left: m.d * pxPerMs - 5, width: 10, height: 10, top: ROW0_TOP - 1 }}
+                    />
+                  );
+                }
+                return (
+                  <BarButton
+                    key={m.step.key}
+                    {...common}
+                    fill={stepDotClass(m.step)}
+                    className="rounded-sm"
+                    style={{ left: m.d * pxPerMs - 1, width: 3, top: ROW0_TOP - 4, height: BAR_H + 8 }}
+                  />
+                );
+              })}
+              {brush && (
+                <div
+                  className="absolute top-0 bg-info/15 border-x border-info pointer-events-none"
+                  style={{ left: Math.min(brush.x0, brush.x1), width: Math.abs(brush.x1 - brush.x0), bottom: AXIS_H }}
+                  data-testid="overview-brush"
+                />
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1.5 text-[11px] text-fg-subtle min-w-0" data-testid="overview-status">
+            {visible && (
+              <span className="font-mono tabular-nums" data-testid="overview-window">
+                {fmtRange(visible, tickStep || 1000)} · {formatDuration(Math.max(0, visible.endTs - visible.startTs))} wall clock
+              </span>
             )}
-            {brush && (
-              <div
-                className="absolute top-0 bg-info/15 border-x border-info pointer-events-none"
-                style={{ left: Math.min(brush.x0, brush.x1), width: Math.abs(brush.x1 - brush.x0), bottom: AXIS_H }}
-                data-testid="overview-brush"
-              />
+            <span className="font-mono tabular-nums" data-testid="overview-rate">{fmtRate(pxPerMs)}</span>
+            <span data-testid="overview-mode">{modeLabel}</span>
+            {collapsedIdle.length > 0 && (
+              <span data-testid="overview-collapsed">
+                {collapsedIdle.length} idle gap{collapsedIdle.length === 1 ? "" : "s"} collapsed ·{" "}
+                {formatDuration(collapsedIdle.reduce((n, g) => n + (g.durationMs ?? 0), 0))} kept on markers
+              </span>
+            )}
+            {range && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-info/50 bg-info-subtle/40 pl-2 text-info" data-testid="overview-range-chip">
+                <span className="font-mono tabular-nums">Range {fmtRange(range, range.endTs - range.startTs < 5_000 ? 100 : 1000)} · {formatDuration(range.endTs - range.startTs)}</span>
+                <Button variant="ghost" size="xs" className="h-5 px-1.5 text-[11px] text-info" onClick={() => zoomToWall(range)} title="Zoom to the brushed range">
+                  Zoom
+                </Button>
+                <Button variant="ghost" size="xs" className="h-5 px-1.5 text-[11px] text-info" onClick={() => onRangeChange(null)} aria-label="Clear brushed range">
+                  ×
+                </Button>
+              </span>
             )}
           </div>
-        </div>
+        </>
       )}
     </section>
   );
 }
 
-function Legend() {
+function Legend({ p }: { p: TraceProjection }) {
   const swatch = "inline-block w-3 h-2 rounded-full";
-  const items: Array<{ label: string; className: string; style?: CSSProperties }> = [
+  const has = (f: TraceStep["family"]) => p.steps.some((s) => s.family === f);
+  const hasBoundary = p.steps.some((s) => s.family === "compaction" && s.instant);
+  // Core families are always explained; the rest only when present.
+  const items: Array<{ label: string; className: string; style?: CSSProperties; when?: boolean }> = [
     { label: "Turn", className: "bg-info/70" },
     { label: "Generation", className: FAMILY_BAR.model },
     { label: "Tool", className: FAMILY_BAR.tool },
-    { label: "MCP tool", className: FAMILY_BAR.mcp },
-    { label: "Custom tool", className: FAMILY_BAR.custom_tool },
+    { label: "MCP tool", className: FAMILY_BAR.mcp, when: has("mcp") },
+    { label: "Custom tool", className: FAMILY_BAR.custom_tool, when: has("custom_tool") },
     { label: "Schedule wait", className: FAMILY_BAR.schedule },
+    { label: "Compaction", className: FAMILY_BAR.compaction },
+    { label: "Context boundary", className: "w-2 h-2 rounded-[1px] rotate-45 bg-trace-compaction", when: hasBoundary },
     { label: "Failed", className: "bg-danger/80" },
     { label: "No end yet", className: "bg-fg-subtle/60", style: { backgroundImage: STRIPES } },
     { label: "Idle gap", className: "border border-border", style: { backgroundImage: HATCH } },
-    { label: "Unknown gap", className: "border border-dashed border-fg-subtle" },
+    { label: "Unknown gap", className: "border border-dashed border-warning/70" },
   ];
   return (
     <ul aria-label="Legend" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-muted min-w-0">
-      {items.map((it) => (
+      {items.filter((it) => it.when !== false).map((it) => (
         <li key={it.label} className="inline-flex items-center gap-1.5">
-          <span className={`${swatch} ${it.className}`} style={it.style} />
+          <span aria-hidden className={cn(swatch, it.className)} style={it.style} />
           {it.label}
         </li>
       ))}
@@ -699,12 +927,17 @@ function FilterBar({
   tools,
   total,
   visible,
+  hiddenLifecycle,
+  hasCompaction,
 }: {
   filter: StepFilter;
   setFilter: (f: StepFilter) => void;
   tools: Array<{ name: string; count: number }>;
   total: number;
   visible: number;
+  /** Lifecycle markers hidden because a kind filter is on. */
+  hiddenLifecycle: number;
+  hasCompaction: boolean;
 }) {
   const chip = (pressed: boolean) =>
     `h-6 px-2 rounded-full text-[11px] font-normal ${pressed ? "border-info text-info bg-info-subtle/40" : "text-fg-muted"}`;
@@ -717,7 +950,7 @@ function FilterBar({
   return (
     <div className="px-4 sm:px-6 py-2 flex flex-wrap items-center gap-2 min-w-0 border-t border-border">
       <div role="group" aria-label="Kind filter" className="flex flex-wrap gap-1">
-        {STEP_FILTER_KINDS.map((k) => (
+        {STEP_FILTER_KINDS.filter((k) => k !== "compaction" || hasCompaction || filter.kinds.has(k)).map((k) => (
           <Button key={k} variant="outline" size="xs" className={chip(filter.kinds.has(k))} aria-pressed={filter.kinds.has(k)} onClick={() => toggleKind(k)}>
             {FILTER_LABEL[k]}
           </Button>
@@ -747,7 +980,12 @@ function FilterBar({
         onChange={(e) => setFilter({ ...filter, query: e.target.value })}
         className="h-7 w-full sm:w-56 text-xs md:text-xs"
       />
-      <span className="text-[11px] text-fg-subtle font-mono">{visible === total ? `${total} steps` : `${visible} of ${total} steps`}</span>
+      <span className="text-[11px] text-fg-subtle font-mono tabular-nums">{visible === total ? `${total} steps` : `${visible} of ${total} steps`}</span>
+      {hiddenLifecycle > 0 && (
+        <span className="text-[11px] text-fg-subtle" role="note" data-testid="hidden-lifecycle">
+          {hiddenLifecycle} lifecycle marker{hiddenLifecycle === 1 ? "" : "s"} (status, threads, warnings) hidden by the kind filter
+        </span>
+      )}
       {isFilterActive(filter) && (
         <Button variant="ghost" size="xs" onClick={() => setFilter(EMPTY_FILTER)}>Clear</Button>
       )}
@@ -757,10 +995,25 @@ function FilterBar({
 
 // ─── Tree ────────────────────────────────────────────────────────────
 
-const ROW = "flex items-center gap-2 min-h-8 pr-3 text-xs cursor-pointer border-l-2 outline-none focus-visible:bg-bg-surface min-w-0";
+const ROW =
+  "flex items-center gap-2 min-h-8 pr-3 text-xs cursor-pointer border-l-2 outline-none min-w-0 transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-info/60";
 
+/** Same accent as the selected overview bar and the inspector header. */
 function rowClass(selected: boolean) {
-  return `${ROW} ${selected ? "bg-info-subtle/50 border-info" : "border-transparent hover:bg-bg-surface/60"}`;
+  return `${ROW} ${selected ? "bg-info-subtle/60 border-info text-fg" : "border-transparent hover:bg-bg-surface/70"}`;
+}
+
+/** Tree / inspector dot. Compaction instants are diamonds, like their overview marker. */
+function StepDot({ s }: { s: TraceStep }) {
+  if (s.family === "compaction" && s.instant) {
+    return (
+      <span
+        aria-hidden
+        className={cn("w-2 h-2 shrink-0 rotate-45 rounded-[1px]", s.orphan ? "border border-dashed border-trace-compaction" : s.isError ? "bg-danger" : "bg-trace-compaction")}
+      />
+    );
+  }
+  return <span aria-hidden className={`w-2 h-2 rounded-full shrink-0 ${stepDotClass(s)}`} />;
 }
 
 function Badge({ tone, children }: { tone: "danger" | "warning" | "muted"; children: ReactNode }) {
@@ -847,15 +1100,15 @@ function TraceTree({
             title={s.detail ? `${s.label} — ${s.detail}` : s.label}
           >
             <span className="w-5 shrink-0" />
-            <span className={`w-2 h-2 rounded-full shrink-0 ${stepDotClass(s)}`} />
+            <StepDot s={s} />
             <span className="truncate text-fg shrink-0 max-w-[60%]">{s.label}</span>
             {s.detail && <span className="truncate text-fg-subtle hidden sm:inline min-w-0">{s.detail}</span>}
             <span className="ml-auto flex items-center gap-1.5 shrink-0">
               {s.isError && <Badge tone="danger">Failed</Badge>}
               {s.pending && <Badge tone="warning">pending</Badge>}
-              {s.orphan && <Badge tone="muted">orphan</Badge>}
+              {s.orphan && <Badge tone="muted">{s.compaction ? "unpaired" : "orphan"}</Badge>}
               {s.startTs === null && <Badge tone="muted">no time</Badge>}
-              <span className="font-mono text-fg-subtle w-14 text-right" title={s.durationMs === null && !s.instant ? "duration unknown" : undefined}>
+              <span className="font-mono tabular-nums text-fg-subtle w-14 text-right" title={s.durationMs === null && !s.instant ? "duration unknown" : undefined}>
                 {stepDurationText(s)}
               </span>
             </span>
@@ -886,7 +1139,7 @@ function TraceTree({
             {n.type === "agent" && n.agentName && <span className="truncate text-fg-subtle font-mono hidden sm:inline">{n.threadId}</span>}
             <span className="ml-auto flex items-center gap-1.5 shrink-0">
               {n.errors > 0 && <Badge tone="danger">{n.errors} failed</Badge>}
-              <span className="font-mono text-fg-subtle w-14 text-right">{n.durationMs === null ? "—" : formatDuration(n.durationMs)}</span>
+              <span className="font-mono tabular-nums text-fg-subtle w-14 text-right">{n.durationMs === null ? "—" : formatDuration(n.durationMs)}</span>
             </span>
           </div>
           {open && (
@@ -914,7 +1167,7 @@ function TraceTree({
         aria-selected={sel}
         data-row-id={`turn:${t.key}`}
         tabIndex={sel || (!selection && i === p.turns.length - 1) ? 0 : -1}
-        className={`${rowClass(sel)} font-medium`}
+        className={`${rowClass(sel)} font-medium ${sel ? "" : "bg-bg-surface/30"}`}
         style={{ paddingLeft: 8 }}
         onClick={() => onSelect({ type: "turn", key: t.key })}
         title={`Turn ${t.index + 1} · ${turnTriggerLabel(t)} · ${statusText}`}
@@ -936,7 +1189,7 @@ function TraceTree({
         <span className="ml-auto flex items-center gap-1.5 shrink-0 font-normal">
           {errored && <Badge tone="danger">{t.turn.status}</Badge>}
           {!errored && t.errors > 0 && <Badge tone="danger">{t.errors} failed</Badge>}
-          <span className="font-mono text-fg-subtle w-14 text-right" title={t.closed ? undefined : "no close event yet"}>
+          <span className="font-mono tabular-nums text-fg-subtle w-14 text-right" title={t.closed ? undefined : "no close event yet"}>
             {t.durationMs === null ? "—" : formatDuration(t.durationMs)}
           </span>
         </span>
@@ -1067,7 +1320,7 @@ function GapRow({
 function Section({ title, children, testId }: { title: string; children: ReactNode; testId?: string }) {
   return (
     <section aria-label={title} className="flex flex-col gap-1 min-w-0" data-testid={testId}>
-      <h4 className="text-[11px] uppercase tracking-wide text-fg-subtle">{title}</h4>
+      <h4 className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle">{title}</h4>
       {children}
     </section>
   );
@@ -1075,7 +1328,7 @@ function Section({ title, children, testId }: { title: string; children: ReactNo
 
 function Facts({ rows }: { rows: Array<[string, ReactNode]> }) {
   return (
-    <dl className="grid grid-cols-[minmax(6rem,auto)_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs">
+    <dl className="grid grid-cols-[minmax(7rem,auto)_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs leading-5">
       {rows.map(([k, v]) => (
         <Fragment key={k}>
           <dt className="text-fg-subtle">{k}</dt>
@@ -1122,11 +1375,12 @@ function Inspector({
       const { step: s, turn } = hit;
       title = (
         <>
-          <span className={`w-2 h-2 rounded-full shrink-0 ${stepDotClass(s)}`} />
+          <StepDot s={s} />
           <span className="truncate">{s.label}</span>
           {s.isError && <Badge tone="danger">Failed</Badge>}
           {s.pending && <Badge tone="warning">pending</Badge>}
-          {s.orphan && <Badge tone="muted">orphan</Badge>}
+          {s.orphan && <Badge tone="muted">{s.compaction ? "unpaired" : "orphan"}</Badge>}
+          <span className="ml-auto pl-2 font-mono tabular-nums text-xs font-normal text-fg-subtle shrink-0">{stepDurationText(s)}</span>
         </>
       );
       body = <StepDetails s={s} turn={turn} />;
@@ -1166,7 +1420,7 @@ function Inspector({
               {nodeSteps(n).map((s) => (
                 <li key={s.key}>
                   <Button variant="ghost" size="xs" className="w-full h-auto justify-start text-left font-normal gap-2 py-1 min-w-0" onClick={() => onSelect({ type: "step", key: s.key })}>
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${stepDotClass(s)}`} />
+                    <StepDot s={s} />
                     <span className="truncate">{s.label}{s.detail ? ` · ${s.detail}` : ""}</span>
                     <span className="ml-auto font-mono text-fg-subtle">{stepDurationText(s)}</span>
                   </Button>
@@ -1189,9 +1443,9 @@ function Inspector({
   }
   return (
     <div className="flex flex-col min-w-0" data-testid="trace-inspector">
-      <div className="px-4 py-3 border-b border-border flex items-center gap-2 text-sm font-medium min-w-0">
-        {title}
-        <Button variant="ghost" size="xs" onClick={onClose} aria-label="Close details" className="ml-auto">×</Button>
+      <div className="sticky top-0 z-10 px-4 py-2.5 border-b border-border border-l-2 border-l-info bg-info-subtle/40 backdrop-blur-sm flex items-center gap-2 text-sm font-medium min-w-0" data-testid="inspector-header">
+        <div className="flex items-center gap-2 min-w-0 flex-1">{title}</div>
+        <Button variant="ghost" size="xs" onClick={onClose} aria-label="Close details" className="shrink-0">×</Button>
       </div>
       <div className="p-4 flex flex-col gap-4 min-w-0">{body}</div>
     </div>
@@ -1257,13 +1511,15 @@ function StepDetails({ s, turn }: { s: TraceStep; turn: TraceTurn }) {
           <Section title="Output"><p className="text-xs text-fg-subtle">No result recorded for this call.</p></Section>
         ) : null
       )}
-      {s.text !== undefined && s.kind !== "tool" && (
+      {s.compaction && <CompactionDetails s={s} />}
+      {s.family === "warn" && <WarningDetails s={s} />}
+      {s.text !== undefined && s.kind !== "tool" && !s.compaction && (
         <Section title={s.kind === "thinking" ? "Thinking" : "Message"}><Pre>{s.text || "(empty)"}</Pre></Section>
       )}
       {s.errorText && s.kind !== "tool" && (
         <Section title="Error"><Pre tone="error">{s.errorText}</Pre></Section>
       )}
-      {s.detail && s.kind === "lifecycle" && (
+      {s.detail && s.kind === "lifecycle" && !s.compaction && s.family !== "warn" && (
         <Section title="Detail"><p className="text-xs text-fg break-words">{s.detail}</p></Section>
       )}
       <Section title="Identifiers"><Facts rows={ids} /></Section>
@@ -1278,6 +1534,64 @@ function StepDetails({ s, turn }: { s: TraceStep; turn: TraceTurn }) {
           ))}
         </div>
       </details>
+    </>
+  );
+}
+
+const COMPACTION_KIND: Record<NonNullable<TraceStep["compaction"]>["role"], string> = {
+  summarize: "Summarize span (span.compaction_summarize_start → span.compaction_summarize_end)",
+  boundary: "Context boundary (agent.thread_context_compacted)",
+  orphan_end: "Unpaired span.compaction_summarize_end — no matching start in this stream",
+};
+
+/** Compaction fields exactly as reported; missing ones say so. */
+function CompactionDetails({ s }: { s: TraceStep }) {
+  const c = s.compaction!;
+  const NR = <span className="text-fg-subtle">not reported</span>;
+  const rows: Array<[string, ReactNode]> = [["Kind", COMPACTION_KIND[c.role]]];
+  if (c.role === "boundary") {
+    rows.push(
+      ["Messages before", c.originalMessageCount ?? NR],
+      ["Messages after", c.compactedMessageCount ?? NR],
+      ["Trigger", c.trigger ?? NR],
+      ["Pre-compaction tokens", c.preTokens !== undefined ? `${c.preTokens} (harness estimate)` : NR],
+    );
+    if (c.replacedRange) rows.push(["Replaced seq range", `${c.replacedRange.startSeq} – ${c.replacedRange.endSeq}`]);
+  } else {
+    rows.push(["Model", s.model ?? NR], ["Finish reason", s.finishReason ?? NR]);
+    if (s.usage) {
+      rows.push(["Input tokens", s.usage.input_tokens], ["Output tokens", s.usage.output_tokens]);
+      if (s.usage.cache_read_input_tokens !== undefined) rows.push(["Cache read", s.usage.cache_read_input_tokens]);
+      if (s.usage.cache_creation_input_tokens !== undefined) rows.push(["Cache write", s.usage.cache_creation_input_tokens]);
+    } else rows.push(["Usage", s.pending ? <span className="text-fg-subtle">pending — no end event recorded</span> : NR]);
+    rows.push(["Summary length", c.finalTextLength !== undefined ? `${c.finalTextLength} chars` : NR]);
+  }
+  return (
+    <>
+      <Section title="Compaction" testId="compaction-details"><Facts rows={rows} /></Section>
+      {c.role === "boundary" && (
+        <Section title="Summary">
+          {c.summary ? <Pre>{c.summary}</Pre> : <p className="text-xs text-fg-subtle">Summary not reported on this event.</p>}
+        </Section>
+      )}
+    </>
+  );
+}
+
+function WarningDetails({ s }: { s: TraceStep }) {
+  const e = s.events[0] as Record<string, unknown> | undefined;
+  const source = typeof e?.source === "string" && e.source ? e.source : null;
+  const message = typeof e?.message === "string" && e.message ? e.message : null;
+  const details = e?.details;
+  const rows: Array<[string, ReactNode]> = [
+    ["Source", source ?? "not reported"],
+    ["Message", message ?? "not reported"],
+  ];
+  if (source === CONTEXT_REASSEMBLED_SOURCE) rows.push(["Related to", "compaction — context re-assembled after a boundary (session.warning, not a summarize span)"]);
+  return (
+    <>
+      <Section title="Warning"><Facts rows={rows} /></Section>
+      {details !== undefined && details !== null && <Section title="Warning details"><Pre>{stringifyCapped(details)}</Pre></Section>}
     </>
   );
 }

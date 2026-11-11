@@ -3,10 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Trace fixture · Open Managed Agents</title>
+    <title>Trace fixture (synthetic demo data) · Open Managed Agents</title>
     <!-- Dev-only, backend-free fixture for the unified Trace view.
          `vite build` only bundles index.html, so this page never ships.
-         Open http://localhost:5173/trace-fixture.html?scenario=session -->
+         All events are SYNTHETIC DEMO DATA for review, not a real session.
+         Open http://localhost:5173/trace-fixture.html?scenario=session, or
+         build the file:// copy with vite.trace-fixture.config.ts. -->
     <script>
       const q = new URLSearchParams(location.search);
       if (q.get("theme") === "dark") document.documentElement.classList.add("dark");
