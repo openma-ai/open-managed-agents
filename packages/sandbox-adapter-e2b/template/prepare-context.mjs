@@ -51,6 +51,9 @@ for (const [from, name] of mappings) {
 await writeFile(join(context, "installation.json"), JSON.stringify({ schema: 1, sourceSha: SOURCE,
   sourceLockSha256: lockSha256,
   common: common.version, command: "/usr/local/bin/node", args: ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"],
-  harness: { id: "codex-acp", version: "1.8.0", command: "/opt/oma-harnesses/codex-acp/bin/codex-acp" }, files,
+  harnesses: [
+    { id: "codex-acp", version: "1.8.0", command: "/opt/oma-harnesses/codex-acp/bin/codex-acp" },
+    { id: "pi-acp", version: "0.1.8", command: "/opt/oma-harnesses/pi-acp/bin/openma-pi-acp" },
+  ], files,
 }, null, 2) + "\n");
 console.log(JSON.stringify({ context, sourceSha: SOURCE, common: common.version, bundleSha256: files["worker/node-e2b-work-item-cli.js"] }));

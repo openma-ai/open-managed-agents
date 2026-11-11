@@ -4,9 +4,21 @@ import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 
 /** E2B root management may use only the template-certified installed closure. */
 export function assertE2BInstalledHarness(environment: Readonly<Record<string,string|undefined>>): void {
-  const inventory = JSON.stringify([{id:"codex-acp",version:"1.8.0",command:"/opt/oma-harnesses/codex-acp/bin/codex-acp"}]);
-  if (environment.OPENMA_ACP_SOURCES !== undefined || environment.OPENMA_ACP_PACKAGES !== undefined || environment.OPENMA_ACP_HARNESSES !== inventory) {
-    throw new Error("E2B worker requires the fixed preinstalled codex-acp@1.8.0 inventory");
+  const fail = () => { throw new Error("E2B worker requires the fixed preinstalled codex-acp@1.8.0 / pi-acp@0.1.8 inventory"); };
+  if (environment.OPENMA_ACP_SOURCES !== undefined || environment.OPENMA_ACP_PACKAGES !== undefined) fail();
+  let entries: unknown;
+  try { entries = JSON.parse(environment.OPENMA_ACP_HARNESSES ?? ""); } catch { fail(); }
+  if (!Array.isArray(entries) || entries.length === 0) return fail();
+  const certified = new Map([
+    ["codex-acp", { version: "1.8.0", command: "/opt/oma-harnesses/codex-acp/bin/codex-acp" }],
+    ["pi-acp", { version: "0.1.8", command: "/opt/oma-harnesses/pi-acp/bin/openma-pi-acp" }],
+  ]);
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Object.keys(entry).sort().join(",") !== "command,id,version") return fail();
+    const expected = certified.get(entry.id);
+    if (!expected || entry.version !== expected.version || entry.command !== expected.command || seen.has(entry.id)) return fail();
+    seen.add(entry.id);
   }
 }
 

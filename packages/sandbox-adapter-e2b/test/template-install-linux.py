@@ -19,6 +19,11 @@ shutil.copytree(context / 'harness', harness, dirs_exist_ok=True)
 subprocess.run(['npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=harness, check=True)
 (harness / 'bin').mkdir()
 (harness / 'bin/codex-acp').symlink_to('../node_modules/.bin/codex-acp')
+pi_harness = Path('/opt/oma-harnesses/pi-acp')
+(pi_harness / 'bin').mkdir(parents=True)
+(pi_harness / 'bin/openma-pi-acp').symlink_to('../../codex-acp/node_modules/.bin/openma-pi-acp')
+subprocess.run(['chown', '-R', 'root:root', str(managed), '/opt/oma-harnesses'], check=True)
+subprocess.run(['chmod', '-R', 'go-w', str(managed), '/opt/oma-harnesses'], check=True)
 agent = pwd.getpwnam('oma-worker')
 
 pin = json.loads((context / "installation.json").read_text())
@@ -50,7 +55,7 @@ finally:
     child.kill(); child.wait(timeout=5)
 # Execute the actual specialized CLI with fixed inventory; missing Work env is
 # expected only AFTER loading the mandatory trusted isolation wrapper.
-inventory = json.dumps([{'id':'codex-acp','version':'1.8.0','command':str(harness / 'bin/codex-acp')}], separators=(',', ':'))
+inventory = json.dumps(pin['harnesses'], separators=(',', ':'))
 env = {'PATH':'/usr/local/bin:/usr/bin:/bin', 'OPENMA_ACP_HARNESSES':inventory}
 command = ['/usr/local/bin/node', str(managed / 'worker/node-e2b-work-item-cli.js')]
 result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=15)
@@ -87,4 +92,4 @@ try:
     assert Path('/run/oma-managed/ready').read_text() == 'oma-managed-v2'
 finally:
     launcher.terminate(); launcher.wait(timeout=5)
-print(json.dumps({'installation':'PASS','source':pin['sourceSha'],'common':pin['common'],'harness':'codex-acp@1.8.0','actualCliWrapperRequired':'PASS','permissionTamperSymlinkRejection':'PASS','cloud':False}))
+print(json.dumps({'installation':'PASS','source':pin['sourceSha'],'common':pin['common'],'harnesses':pin['harnesses'],'actualCliWrapperRequired':'PASS','permissionTamperSymlinkRejection':'PASS','cloud':False}))

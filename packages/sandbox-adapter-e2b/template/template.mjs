@@ -11,7 +11,7 @@ export function managedTemplate(sdk, preparedContext, expectedPin) {
   const verify = "/usr/bin/python3 -I -S /opt/oma-managed/verify-install.py --source-sha " + pin.sourceSha + " --lock-sha256 " + pin.lockSha256;
   return sdk.Template({ fileContextPath: preparedContext }).fromImage("node:24.18.0-bookworm-slim")
     .setUser("root")
-    .runCmd("apt-get update -qq && apt-get install -y -qq python3 ca-certificates curl unzip fuse3 && rm -rf /var/lib/apt/lists/* && useradd --create-home oma-worker && mkdir -p /opt/oma-managed/worker /opt/oma-harnesses/codex-acp /workspace /run/oma-managed && chown oma-worker:oma-worker /workspace && chmod 700 /opt/oma-managed /run/oma-managed")
+    .runCmd("apt-get update -qq && apt-get install -y -qq python3 ca-certificates curl unzip fuse3 && rm -rf /var/lib/apt/lists/* && useradd --create-home oma-worker && mkdir -p /opt/oma-managed/worker /opt/oma-harnesses/codex-acp /opt/oma-harnesses/pi-acp/bin /workspace /run/oma-managed && chown oma-worker:oma-worker /workspace && chmod 700 /opt/oma-managed /run/oma-managed")
     // Same release and checksum as scripts/install-ci-rclone.sh. Bookworm's
     // packaged rclone predates the Unix RC/VFS queue protocol used by drain.
     .runCmd([
@@ -32,7 +32,9 @@ export function managedTemplate(sdk, preparedContext, expectedPin) {
     .copy("verify-install.py", "/opt/oma-managed/verify-install.py", { mode: 0o600 })
     .copy("installation.json", "/opt/oma-managed/installation.json", { mode: 0o600 })
     .copy("worker/", "/opt/oma-managed/worker/")
+    // One exact npm lock owns both dependency trees; pi exposes a root-owned
+    // alias into that closure, never a separate runtime package installation.
     .copy("harness/", "/opt/oma-harnesses/codex-acp/")
-    .runCmd("cd /opt/oma-harnesses/codex-acp && npm ci --omit=dev --ignore-scripts --no-audit --no-fund && mkdir -p bin && ln -s ../node_modules/.bin/codex-acp bin/codex-acp && chown -R root:root /opt/oma-managed /opt/oma-harnesses && chmod -R go-w /opt/oma-managed /opt/oma-harnesses && " + verify)
+    .runCmd("cd /opt/oma-harnesses/codex-acp && npm ci --omit=dev --ignore-scripts --no-audit --no-fund && mkdir -p bin && ln -s ../node_modules/.bin/codex-acp bin/codex-acp && ln -s ../../codex-acp/node_modules/.bin/openma-pi-acp /opt/oma-harnesses/pi-acp/bin/openma-pi-acp && /opt/oma-harnesses/pi-acp/bin/openma-pi-acp --version && chown -R root:root /opt/oma-managed /opt/oma-harnesses && chmod -R go-w /opt/oma-managed /opt/oma-harnesses && " + verify)
     .setStartCmd(verify + " && exec /usr/bin/python3 -I -S /opt/oma-managed/launcher.py", sdk.waitForFile("/run/oma-managed/ready"));
 }

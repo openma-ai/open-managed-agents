@@ -19,7 +19,7 @@ const template = resolve(here, '../template');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const commonFile = 'packages/acp-runtime/node_modules/@openma/common/package.json';
 
-function fixture(run) {
+async function fixture(run) {
   const root = mkdtempSync(join(tmpdir(), 'oma-common-template-'));
   const source = join(root, 'source');
   const context = join(root, 'context');
@@ -53,7 +53,7 @@ function fixture(run) {
     } }));
     const prepare = (sha = sourceSha, lock = lockSha256) => spawnSync(process.execPath,
       [join(template, 'prepare-context.mjs'), source, context, sha, lock], { encoding: 'utf8' });
-    return run({ root, source, context, put, prepare, sourceSha, lockSha256 });
+    return await run({ root, source, context, put, prepare, sourceSha, lockSha256 });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -62,6 +62,10 @@ test('prepares exact installed common 0.14.0 and hashes the copied worker and ha
   assert.equal(result.status, 0, result.stderr);
   const manifest = JSON.parse(readFileSync(join(context, 'installation.json')));
   assert.equal(manifest.common, '0.14.0');
+  assert.deepEqual(manifest.harnesses, [
+    { id: 'codex-acp', version: '1.8.0', command: '/opt/oma-harnesses/codex-acp/bin/codex-acp' },
+    { id: 'pi-acp', version: '0.1.8', command: '/opt/oma-harnesses/pi-acp/bin/openma-pi-acp' },
+  ]);
   for (const [name, digest] of Object.entries(manifest.files)) assert.equal(hash(readFileSync(join(context, name))), digest, name);
   assert.notEqual(prepare().status, 0, 'must not overwrite a prepared context');
 }));
@@ -137,3 +141,22 @@ test('template preinstalls FUSE and the checksum-pinned rclone native-storage pr
 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// Explicit opt-in: only this test may contact npm; normal regression stays offline.
+test('real npm installed pi/codex pass version and isolated trusted file-chain', {
+  skip: process.env.OMA_TEMPLATE_REAL_NPM !== '1',
+}, () => fixture(async ({ context, prepare, sourceSha, lockSha256 }) => {
+  assert.ok(process.env.OMA_TEMPLATE_TEST_IMAGE, 'existing Linux Docker image required');
+  const result = prepare();
+  assert.equal(result.status, 0, result.stderr);
+  const require = createRequire(import.meta.url);
+  const sdk = require(require.resolve('e2b', { paths: [join(repository, 'node_modules/.pnpm/node_modules')] }));
+  const plan = JSON.parse(await managedTemplate(sdk, context, { sourceSha, lockSha256 }).toJSON());
+  const install = plan.steps.filter(step => step.type === 'RUN').at(-1).args[0];
+  const installed = spawnSync('docker', ['run', '--rm', '--pull=never', '-i', '--entrypoint', 'python3',
+    '-v', `${context}:/context:ro`, '-v', `${here}:/tests:ro`, process.env.OMA_TEMPLATE_TEST_IMAGE,
+    '/tests/pi-template-install-linux.py'], { input: install, encoding: 'utf8', timeout: 240_000 });
+  assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+  assert.match(installed.stdout, /real npm pi\/codex installation.*PASS/);
+  console.log(installed.stdout);
+}));
