@@ -8,6 +8,7 @@ import { sessionExecutionPlacement } from "@open-managed-agents/domain/environme
 import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/installed-harnesses";
 import { acpInstalledLauncherPath, resolvePinnedAcpRegistryAgent } from "@open-managed-agents/acp-runtime/registry-pins";
 import { installAcpSandboxAgent, prepareAcpSandboxAgent } from "@open-managed-agents/acp-runtime/sandbox-agent";
+import { installEnvironmentPackages } from "./environment-packages";
 import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import { environmentWorkSandboxTokenRef } from "@open-managed-agents/sandbox-gateway-sql";
 import { sandboxTokenSha256 } from "@open-managed-agents/sandbox-gateway";
@@ -256,10 +257,15 @@ export function createNodeEnvironmentWorkWorker(input: {
                   await sandbox.failExecution();
                   throw error;
                 }
+                // Environment setup, exactly as a Session's: packages, then the
+                // pinned ACP agent. A prepared snapshot hit already holds both
+                // (idempotent no-ops); a miss installs here, as the agent user,
+                // before any worker can launch, then queues the snapshot build.
+                await observed("environment-packages", () => installEnvironmentPackages(sandbox, pinnedEnvironment, {
+                  ...(env.SANDBOX_PIP_INDEX_URL ? { pipIndexUrl: env.SANDBOX_PIP_INDEX_URL } : {}),
+                }));
+                if (!await owned()) throw new Error("Work claim lost during Environment setup");
                 if (setupHarness) {
-                  // Cache hit: the snapshot already holds the launcher. Miss:
-                  // run the same Environment-setup install in this sandbox as
-                  // the unprivileged agent user before any worker can launch.
                   await observed("acp-install", async () => {
                     const present = await sandbox.exec(`test -x '${setupHarness.command}' && printf oma-acp-present`, 30_000);
                     if (present.includes("oma-acp-present")) return;
@@ -268,6 +274,7 @@ export function createNodeEnvironmentWorkWorker(input: {
                   });
                   if (!await owned()) throw new Error("Work claim lost during ACP install");
                 }
+                sandbox.environmentPrepared();
                 const spec = { command, args: args as string[], env: {
                   ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
                   ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
