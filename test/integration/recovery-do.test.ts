@@ -182,20 +182,17 @@ async function newSessionDirect(idHint: string): Promise<string> {
   )
     .bind(sessionId, "default", "agent_test", "env_test", "", "idle", now, now)
     .run();
-  // Warm the DO so its storage.sql exists when we go to seed event-log
-  // state and so the runtimeAdapter resolves its lazy state on first
-  // alarm() call.
+  // Persist identity through the normal state API before seeding recovery
+  // records; a cold incarnation must reload it from durable storage.
   const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
   await runInDurableObject(stub, async (instance, _state) => {
-    // _state is loaded lazily inside the DO; force it by reading sessions
-    // through a synthetic POST /init shape. Easiest path: directly set
-    // the field that the runtimeAdapter getter requires.
-    (instance as { _state: unknown })._state = {
+    instance.setState({
+      ...instance.state,
       session_id: sessionId,
       tenant_id: "default",
       agent_id: "agent_test",
       environment_id: "env_test",
-    };
+    });
   });
   return sessionId;
 }
@@ -1129,12 +1126,13 @@ describe("SessionDO recovery — DO-level", () => {
     // (status_running + a custom_tool_use emitted right before death)
     // and arm a due alarm in the same RPC.
     await runInDurableObject(stub, async (instance, state) => {
-      (instance as { _state: unknown })._state = {
+      instance.setState({
+        ...instance.state,
         session_id: sessionId,
         tenant_id: "default",
         agent_id: "agent_test",
         environment_id: "env_test",
-      };
+      });
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
       history.append({ type: "session.status_running" });
@@ -1452,12 +1450,13 @@ describe("SessionDO recovery — DO-level", () => {
 
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
     await runInDurableObject(stub, async (instance, state) => {
-      (instance as { _state: unknown })._state = {
+      instance.setState({
+        ...instance.state,
         session_id: sessionId,
         tenant_id: "default",
         agent_id: "agent_test",
         environment_id: "env_test",
-      };
+      });
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
       history.append({ type: "session.status_running" });
@@ -1533,12 +1532,13 @@ describe("SessionDO recovery — DO-level", () => {
 
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
     await runInDurableObject(stub, async (instance, state) => {
-      (instance as { _state: unknown })._state = {
+      instance.setState({
+        ...instance.state,
         session_id: sessionId,
         tenant_id: "default",
         agent_id: "agent_test",
         environment_id: "env_test",
-      };
+      });
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
       history.append({ type: "session.status_running" });

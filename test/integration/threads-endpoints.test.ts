@@ -14,13 +14,30 @@
 //     refuses to archive sthr_primary
 //   - POST /event with archived session_thread_id returns 409
 
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterEach } from "vitest";
+
+beforeAll(async () => { await exports.default.fetch(new Request("http://localhost/health")); });
+
+const ownedStubs: DurableObjectStub[] = [];
+afterEach(async () => {
+  for (const stub of ownedStubs.splice(0)) {
+    await runInDurableObject(stub, async (room, state) => {
+      await room._recoveryPromise;
+      await room._recoveryRun;
+      await room._finalizePromise;
+      await Promise.all(room._maintenanceRuns.values());
+      await state.storage.deleteAlarm();
+    });
+  }
+});
 
 function freshDoStub(idHint: string) {
   const id = `${idHint}_${Math.random().toString(36).slice(2, 10)}`;
-  return env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+  const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+  ownedStubs.push(stub);
+  return stub;
 }
 
 async function seedSchemaAndState(
@@ -29,17 +46,16 @@ async function seedSchemaAndState(
   agentName = "TestAgent",
 ) {
   await runInDurableObject(stub, async (instance, state) => {
-    // Ensure DO sql tables (events + threads) exist by triggering the
-    // private schema bootstrap.
-    (instance as { _ensureCfAgentsSchema: () => void })._ensureCfAgentsSchema();
-    (instance as { ensureSchema: () => void }).ensureSchema?.();
-    // Stub state — _ensurePrimaryThread reads agent_id + agent_snapshot.name.
-    (instance as { _state: unknown })._state = {
+    // Persist identity before schema recovery starts; primary thread reads
+    // agent_id + agent_snapshot.name from that state.
+    instance.setState({
+      ...instance.state,
       session_id: "sess_test",
       tenant_id: "default",
       agent_id: agentId,
       agent_snapshot: { name: agentName },
-    };
+    });
+    (instance as { ensureSchema: () => void }).ensureSchema();
     (instance as { _ensurePrimaryThread: () => void })._ensurePrimaryThread();
     // Seed two sub-agent threads directly into the SQL table — bypasses
     // runSubAgent so we don't need the full tools/sandbox graph.

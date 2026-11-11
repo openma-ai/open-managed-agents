@@ -6920,6 +6920,7 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   getSchedule<T = unknown>(id: string): { id: string; callback: string; payload: T; type: string; time: number; cron?: string } | undefined {
+    this.initializeSessionState();
     const row = this.ctx.storage.sql
       .exec<{ id: string; callback: string; payload: string; type: string; time: number; cron: string | null }>(
         `SELECT id, callback, payload, type, time, cron FROM cf_agents_schedules WHERE id = ? LIMIT 1`,

@@ -1,19 +1,33 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { expect, it, afterEach } from "vitest";
 import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 import { SqlSessionExecutionStore } from "@open-managed-agents/session-runtime-sql/coordination";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { encodeSessionEventDocument } from "@open-managed-agents/session-runtime-contract/history";
 import { waitForSessionExecution } from "./_session-execution";
 
+const ownedStubs: DurableObjectStub[] = [];
+afterEach(async () => {
+  for (const stub of ownedStubs.splice(0)) {
+    await runInDurableObject(stub, async (room, state) => {
+      await room._recoveryPromise;
+      await room._recoveryRun;
+      await room._finalizePromise;
+      await Promise.all(room._maintenanceRuns.values());
+      await state.storage.deleteAlarm();
+    });
+  }
+});
+
 async function fixture() {
   await exports.default.fetch(new Request("http://localhost/health"));
   const id = crypto.randomUUID(), stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+  ownedStubs.push(stub);
   const workspaceId = crypto.randomUUID();
   await runInDurableObject(stub, (instance, state) => {
-    instance.ensureSchema(); instance._state = { tenant_id: workspaceId, session_id: id };
+    instance.setState({ ...instance.state, tenant_id: workspaceId, session_id: id }); instance.ensureSchema();
     new SqliteHistory(state.storage.sql, null).append({ type: "session.status_idle", stop_reason: { type: "end_turn" } });
   });
   const store = new SqlSessionExecutionStore(new CfD1SqlClient(env.MAIN_DB));

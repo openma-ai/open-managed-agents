@@ -129,3 +129,17 @@ it.each(["none", "paused", "lost", "released"])("reads %s as persisted state, ne
  expect(response.status).toBe(200);
  expect(await response.json()).toMatchObject({source:"e2b_sandbox_state",physical:{phase,provider:phase==="paused"?"e2b":null,runtimeId:phase==="paused"?"physical":null}});
 });
+
+it("normal schedule RPC initializes a cold SessionDO after read-only observation", async () => {
+  const f = await fixture();
+  await runInDurableObject(f.stub, async (_, state) => {
+    const cold = new SessionDO(state, env);
+    expect((await cold.fetch(f.request())).status).toBe(200);
+    expect(cold.getSchedule("missing")).toBeUndefined();
+    const scheduled = await cold.schedule(60, "recoverEventQueue", { test: true });
+    expect(cold.getSchedule(scheduled.id)).toMatchObject({
+      id: scheduled.id, callback: "recoverEventQueue", payload: { test: true },
+    });
+    await cold.cancelSchedule(scheduled.id);
+  });
+});
