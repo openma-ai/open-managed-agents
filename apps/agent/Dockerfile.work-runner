@@ -3,6 +3,17 @@ FROM docker.io/openma/sandbox-base:435c9aa272b7444f6aaa36f3ecc10475ec7648c51186b
 # Same pinned adapter as Dockerfile.sandbox. No registry install at Work launch.
 RUN npm install --global @openma/pi-acp@0.1.8 \
     && npm cache clean --force
+
+# Native Work finalization requires Unix RC and the VFS upload queue contract.
+# Pin the same Linux/amd64 release and archive digest exercised by CI.
+RUN test "$(uname -m)" = x86_64 \
+    && curl --fail --location --retry 3 -o /tmp/rclone.zip https://downloads.rclone.org/v1.74.1/rclone-v1.74.1-linux-amd64.zip \
+    && echo "67df3059a6233b6e32e604bcd637654bb294ff86291b65ede77123e94818d911  /tmp/rclone.zip" | sha256sum --check - \
+    && unzip -q /tmp/rclone.zip -d /tmp \
+    && install -m 0755 /tmp/rclone-v1.74.1-linux-amd64/rclone /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone.zip /tmp/rclone-v1.74.1-linux-amd64 \
+    && rclone version \
+    && command -v fusermount3
 # Build first: node scripts/build-cf-work-runner.mjs; Docker context apps/agent.
 COPY build-work-runner/runner.mjs /opt/openma/runner.mjs
 COPY openma-acp-work-item /opt/openma/bin/openma-acp-work-item

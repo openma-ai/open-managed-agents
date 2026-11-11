@@ -26,7 +26,7 @@ for (const entry of receipt.tree) {
   if (oid !== entry.oid) throw Error("Dirty source archive: " + entry.path);
 }
 const common = JSON.parse(await readFile(join(source, "packages/acp-runtime/node_modules/@openma/common/package.json"), "utf8"));
-if (common.version !== "0.13.1") throw Error("Requires published common 0.13.1");
+if (common.version !== "0.14.0") throw Error("Requires published common 0.14.0");
 const lockSha256 = createHash("sha256").update(await readFile(join(source, "pnpm-lock.yaml"))).digest("hex");
 if (lockSha256 !== pin.lockSha256) throw Error("Fixed source lock digest mismatch");
 const dist = join(source, "packages/harness-runtime-acp/dist");
@@ -50,7 +50,7 @@ for (const [from, name] of mappings) {
 }
 await writeFile(join(context, "installation.json"), JSON.stringify({ schema: 1, sourceSha: SOURCE,
   sourceLockSha256: lockSha256,
-  common: "0.13.1", command: "/usr/local/bin/node", args: ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"],
+  common: common.version, command: "/usr/local/bin/node", args: ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"],
   harness: { id: "codex-acp", version: "1.8.0", command: "/opt/oma-harnesses/codex-acp/bin/codex-acp" }, files,
 }, null, 2) + "\n");
 console.log(JSON.stringify({ context, sourceSha: SOURCE, common: common.version, bundleSha256: files["worker/node-e2b-work-item-cli.js"] }));

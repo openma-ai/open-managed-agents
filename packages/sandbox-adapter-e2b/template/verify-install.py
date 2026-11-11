@@ -50,7 +50,7 @@ def trusted(path):
     return walk(path)
 
 manifest = json.loads(trusted(managed / "installation.json").read_text())
-if manifest.get("sourceSha") != args.source_sha or manifest.get("sourceLockSha256") != args.lock_sha256 or manifest.get("common") != "0.13.1":
+if manifest.get("sourceSha") != args.source_sha or manifest.get("sourceLockSha256") != args.lock_sha256 or manifest.get("common") != "0.14.0":
     raise ValueError("untrusted worker source or common version")
 if manifest.get("command") != "/usr/local/bin/node" or manifest.get("args") != ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"]:
     raise ValueError("unexpected worker command")

@@ -87,4 +87,4 @@ try:
     assert Path('/run/oma-managed/ready').read_text() == 'oma-managed-v2'
 finally:
     launcher.terminate(); launcher.wait(timeout=5)
-print(json.dumps({'installation':'PASS','source':'5e1b0e0edbbba72dae4bce4531da4c46bbf978fa','common':'0.13.1','harness':'codex-acp@1.8.0','actualCliWrapperRequired':'PASS','permissionTamperSymlinkRejection':'PASS','cloud':False}))
+print(json.dumps({'installation':'PASS','source':pin['sourceSha'],'common':pin['common'],'harness':'codex-acp@1.8.0','actualCliWrapperRequired':'PASS','permissionTamperSymlinkRejection':'PASS','cloud':False}))
