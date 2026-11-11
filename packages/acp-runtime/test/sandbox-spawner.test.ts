@@ -51,6 +51,18 @@ function openStdoutProcess(dieOn: "initialize" | "session/prompt") {
 const agent = { command: "open-stdout-agent", cwd: "/workspace" };
 
 describe("SandboxSpawner stdout", () => {
+  it("keeps an already owned diagnostic stream from becoming an unhandled rejection", async () => {
+    const child = openStdoutProcess("session/prompt");
+    const reader = child.process.stderr.getReader();
+    try {
+      await expect(createAcpRuntime({ type: "local", spawner: {
+        async spawn() { return child.process; },
+      } }).start({ agent })).rejects.toThrow(/locked/);
+    } finally {
+      reader.releaseLock();
+      await child.process.kill("SIGTERM");
+    }
+  });
   it("drains diagnostic stderr so a multiplexed transport can deliver session/new stdout", async () => {
     const stdout = new TransformStream<Uint8Array, Uint8Array>();
     const stderr = new TransformStream<Uint8Array, Uint8Array>();

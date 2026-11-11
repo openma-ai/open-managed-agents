@@ -82,8 +82,15 @@ class PlacementAcpRuntime implements AcpRuntime {
         // bridge transports multiplex stderr and stdout on one SSE reader, so
         // an unread stderr write otherwise blocks the next protocol response.
         // Do not log raw diagnostics (they can contain provider configuration).
+        // Reader acquisition is a startup boundary: a reused/locked transport
+        // must reject start, not escape through a detached async rejection.
+        let reader: ReadableStreamDefaultReader<Uint8Array>;
+        try { reader = child.stderr.getReader(); }
+        catch (error) {
+          await child.kill("SIGTERM").catch(() => undefined);
+          throw error;
+        }
         void (async () => {
-          const reader = child!.stderr.getReader();
           try { while (!(await reader.read()).done) { /* diagnostic bytes are not protocol */ } }
           catch { /* stdout/exit observers retain the authoritative failure */ }
           finally { reader.releaseLock(); }
