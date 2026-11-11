@@ -5,15 +5,37 @@ const claim={workspaceId:"trusted-ws",environmentId:"env",sessionId:"s",workId:"
 const root={inputId:"i",turnId:"t",position:{revision:1,index:0}};
 const terminal={eventId:"idle",turnId:"t",workId:"old",generation:1,revision:2,stopReason:{type:"end_turn"}};
 const sleep=async(_ms:number,signal:AbortSignal)=>new Promise<void>((_,reject)=>{if(signal.aborted)reject(signal.reason);else signal.addEventListener("abort",()=>reject(signal.reason),{once:true});});
-it.each(["cleanup-only","parked"] as const)("default CLI bootstraps %s without caller turnId or supervisor construction",async type=>{
- const calls:string[]=[];const receipt={...terminal,stopReason:{type:type==="parked"?"budget_reached":"end_turn"}};
+it("default CLI bootstraps parked without caller turnId or supervisor construction",async()=>{
+ const calls:string[]=[];const receipt={...terminal,stopReason:{type:"budget_reached"}};
  await runNodeWorkItemCli({environment,fetch:async(raw,init)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
   if(action==="ack")return Response.json({});if(action==="heartbeat")return Response.json({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90});
-  if(action==="work-bootstrap"){expect(JSON.parse(String(init?.body))).toEqual({});return Response.json({type,claim,root,revision:3,terminal:receipt});}
-  if(action==="work-recovery"){expect(JSON.parse(String(init?.body))).toEqual({turnId:"t"});return Response.json({type:type==="parked"?"parked":"committed",revision:3,terminal:receipt});}
+  if(action==="work-bootstrap"){expect(JSON.parse(String(init?.body))).toEqual({});return Response.json({type:"parked",claim,root,revision:3,terminal:receipt});}
+  if(action==="work-recovery"){expect(JSON.parse(String(init?.body))).toEqual({turnId:"t"});return Response.json({type:"parked",revision:3,terminal:receipt});}
   if(action==="work-publish")return Response.json({type:"published",revision:3,terminal:receipt});throw Error(action);
  },scheduler:{sleep},composition:async()=>{throw Error("cleanup must not compose runtime");}});
  expect(calls).toEqual(["ack","heartbeat","work-bootstrap","work-recovery","work-publish"]);
+});
+it.each(["end_turn","retries_exhausted"] as const)("default CLI publishes a %s cleanup-only receipt once, then stays resident idle on the same receipt without stopping Work",async stop=>{
+ const controller=new AbortController();const calls:string[]=[];let reads=0;const receipt={...terminal,stopReason:{type:stop}};
+ await expect(runNodeWorkItemCli({environment,signal:controller.signal,bootstrapPollIntervalMs:1,
+  lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("must not stop resident Work");}},
+  fetch:async(raw,init)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
+  if(action==="work-bootstrap"){expect(JSON.parse(String(init?.body))).toEqual({});if(++reads===3)controller.abort(Error("resident cancelled"));return Response.json({type:"cleanup-only",claim,root,revision:3,terminal:receipt});}
+  if(action==="work-recovery"){expect(JSON.parse(String(init?.body))).toEqual({turnId:"t"});return Response.json({type:"committed",revision:3,terminal:receipt});}
+  if(action==="work-publish")return Response.json({type:"published",revision:3,terminal:receipt});throw Error(action);
+ },composition:async()=>{throw Error("cleanup must not compose runtime");}})).rejects.toThrow("resident cancelled");
+ expect(calls).toEqual(["work-bootstrap","work-recovery","work-publish","work-bootstrap","work-bootstrap"]);
+});
+it("a resident consumer that published a cleanup receipt still serves a later run plan",async()=>{
+ const calls:string[]=[];let reads=0;
+ await expect(runNodeWorkItemCli({environment,bootstrapPollIntervalMs:1,
+  lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>({})},
+  fetch:async(raw)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
+  if(action==="work-bootstrap")return ++reads<3?Response.json({type:"cleanup-only",claim,root,revision:3,terminal}):Response.json({type:"run",claim,root:{...root,inputId:"next",turnId:"next",position:{revision:4,index:0}},revision:4});
+  if(action==="work-recovery")return reads<3?Response.json({type:"committed",revision:3,terminal}):Response.json({type:"run",turnId:"next",revision:4});
+  if(action==="work-publish")return Response.json({type:"published",revision:3,terminal});throw Error(action);
+ },composition:async context=>{calls.push("compose:"+context.root.turnId);throw Error("composed");}})).rejects.toThrow("composed");
+ expect(calls).toEqual(["work-bootstrap","work-recovery","work-publish","work-bootstrap","work-bootstrap","work-recovery","compose:next"]);
 });
 it("idle keeps heartbeat alive until cancellation, without constructing runtime or stopping Work",async()=>{
  const controller=new AbortController();let beats=0,reads=0;const calls:string[]=[];
@@ -51,17 +73,18 @@ it.each([["gap","canonical_terminal_root_missing",undefined],["gap","consumed_tu
  }})).rejects.toThrow(reason);
  expect(calls).toEqual(["ack","heartbeat","work-bootstrap"]);
 });
-it("default CLI settles a bootstrap consumed-without-terminal gap as exhausted, without composing or redispatching",async()=>{
- const calls:Array<[string,unknown]>=[];const exhausted={...terminal,workId:"w",generation:2,revision:4,stopReason:{type:"retries_exhausted"}};
- await expect(runNodeWorkItemCli({environment,scheduler:{sleep},composition:async()=>{throw Error("must not compose");},
+it("default CLI settles a bootstrap consumed-without-terminal gap as exhausted, without composing or redispatching, then stays resident",async()=>{
+ const controller=new AbortController();const calls:Array<[string,unknown]>=[];const exhausted={...terminal,workId:"w",generation:2,revision:4,stopReason:{type:"retries_exhausted"}};let settled=false;
+ await expect(runNodeWorkItemCli({environment,signal:controller.signal,scheduler:{sleep},composition:async()=>{throw Error("must not compose");},
   lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("must not stop resident Work");}},
   fetch:async(raw,init)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push([action,JSON.parse(String(init?.body))]);
-  if(action==="work-bootstrap")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",root,revision:3},{status:409});
+  if(action==="work-bootstrap"){if(!settled)return Response.json({type:"gap",reason:"consumed_turn_without_terminal",root,revision:3},{status:409});
+   setTimeout(()=>controller.abort(Error("resident cancelled")),1);return Response.json({type:"cleanup-only",claim,root,revision:4,terminal:exhausted});}
   if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:3},{status:409});
-  if(action==="work-failed")return Response.json({type:"committed",revision:4,terminal:exhausted});
+  if(action==="work-failed"){settled=true;return Response.json({type:"committed",revision:4,terminal:exhausted});}
   if(action==="work-publish")return Response.json({type:"published",revision:4,terminal:exhausted});throw Error(action);
- }})).rejects.toMatchObject({phase:"run",message:expect.stringContaining("retries_exhausted")});
- expect(calls).toEqual([["work-bootstrap",{}],["work-recovery",{turnId:"t"}],["work-failed",{turnId:"t",revision:3,phase:"run"}],["work-publish",{turnId:"t",revision:4,terminalEventId:"idle"}]]);
+ }})).rejects.toThrow("resident cancelled");
+ expect(calls).toEqual([["work-bootstrap",{}],["work-recovery",{turnId:"t"}],["work-failed",{turnId:"t",revision:3,phase:"run"}],["work-publish",{turnId:"t",revision:4,terminalEventId:"idle"}],["work-bootstrap",{}]]);
 });
 it("a bootstrap consumed-without-terminal gap whose claim is lost before work-failed is neither published nor redispatched",async()=>{
  const calls:string[]=[];
@@ -73,16 +96,16 @@ it("a bootstrap consumed-without-terminal gap whose claim is lost before work-fa
  }})).rejects.toThrow("Work finalization rejected: claim");
  expect(calls).toEqual(["ack","heartbeat","work-bootstrap","work-recovery","work-failed"]);
 });
-it("default E2B CLI cleanup uses bootstrap without loading an isolated agent",async()=>{
+it("default E2B CLI cleanup uses bootstrap without loading an isolated agent, then stays resident",async()=>{
  const {runNodeE2BWorkItemCli}=await import("../src/node-e2b-work-item-cli.js");
- const calls:string[]=[];
- await runNodeE2BWorkItemCli({environment:{...environment,OPENMA_ACP_HARNESSES:JSON.stringify([{id:"codex-acp",version:"1.8.0",command:"/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh"}])},scheduler:{sleep},fetch:async(raw)=>{
+ const controller=new AbortController();const calls:string[]=[];let reads=0;
+ await expect(runNodeE2BWorkItemCli({environment:{...environment,OPENMA_ACP_HARNESSES:JSON.stringify([{id:"codex-acp",version:"1.8.0",command:"/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh"}])},signal:controller.signal,scheduler:{sleep},fetch:async(raw)=>{
   const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
   if(action==="ack")return Response.json({});if(action==="heartbeat")return Response.json({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90});
-  if(action==="work-bootstrap")return Response.json({type:"cleanup-only",claim,root,revision:3,terminal});
+  if(action==="work-bootstrap"){if(++reads===2)setTimeout(()=>controller.abort(Error("resident cancelled")),1);return Response.json({type:"cleanup-only",claim,root,revision:3,terminal});}
   return Response.json({type:action==="work-recovery"?"committed":"published",revision:3,terminal});
- }});
- expect(calls).toEqual(["ack","heartbeat","work-bootstrap","work-recovery","work-publish"]);
+ }})).rejects.toThrow("resident cancelled");
+ expect(calls).toEqual(["ack","heartbeat","work-bootstrap","work-recovery","work-publish","work-bootstrap"]);
 });
 it("rejects a composition with no actual drain before resolving any harness",async()=>{
  const calls:string[]=[];

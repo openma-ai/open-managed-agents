@@ -60,7 +60,7 @@ async function controlPlane() {
   await sql.prepare("DELETE FROM managed_environment_work WHERE session_id=?").bind(session.id).run();
   let inserted = false;
 
-  async function generation(generation: number, behaviour: Behaviour, workId = scope.workId) {
+  async function generation(generation: number, behaviour: Behaviour, workId = scope.workId, options: { onResidentPoll?: () => Promise<unknown> } = {}) {
     const scope_ = { ...scope, workId };
     const now = new Date().toISOString();
     const token = "sk-ant-req-v1." + await components.secrets!.cipherFor("managed.environment-work.session-token").encrypt(JSON.stringify({ version: 1, ...scope_, issuedAt: now, expiresAt: new Date(Date.now() + 60000).toISOString(), claimedAt: now, generation, skills: [], files: [], memoryStores: [] }));
@@ -104,12 +104,27 @@ async function controlPlane() {
       };
     } };
     const requests: string[] = [];
+    const plans: string[] = [];
+    let residentPolls = 0;
     const fetcher: typeof fetch = async (raw, init) => {
       const action = new URL(String(raw)).pathname.split("/").at(-1)!; requests.push(action);
       const response = await fetch(raw, init);
+      if (action === "work-bootstrap") {
+        const plan = await response.clone().json() as { type: string; reason?: string; terminal?: { stopReason?: { type?: string } } };
+        plans.push(plan.type + (plan.reason ? ":" + plan.reason : "") + (plan.terminal?.stopReason?.type ? ":" + plan.terminal.stopReason.type : ""));
+        // A resident consumer with nothing left to settle polls forever: a
+        // re-read after this claim published, or a plain idle, is its steady
+        // state. End the generation there unless the test injects new input.
+        if (plan.type !== "run" && (plan.type === "idle" || requests.slice(0, -1).includes("work-publish"))) {
+          residentPolls++;
+          const hook = options.onResidentPoll; options.onResidentPoll = undefined;
+          if (hook) await hook();
+          else setTimeout(() => controller.abort(new Error("resident poll")), 10);
+        }
+      }
       // A healthy resident consumer never exits by itself; end the test run
       // once its one terminal has been durably published.
-      if (behaviour === "ok" && action === "work-publish" && response.ok) setTimeout(() => controller.abort(new Error("test done")), 10);
+      if (behaviour === "ok" && prompts > 0 && action === "work-publish" && response.ok) setTimeout(() => controller.abort(new Error("test done")), 10);
       return response;
     };
     const error = await runNodeWorkItemCli({
@@ -118,7 +133,7 @@ async function controlPlane() {
       runtime: { activities: new WorkTurnActivities(), spawner, modules: { control: { createSupervisor: common.createManagedAcpSupervisorHarness, createControlChannel: common.createManagedHarnessHttpControlChannel, applyPermissionMode: modes.applyAcpPermissionMode }, createAcpRuntime: spawner => new AcpRuntimeImpl(spawner) },
         stateIo: { async readFile() { throw Object.assign(Error("missing"), { code: "ENOENT" }); }, async writeFile() {}, async writeFileBytes() {}, async exec() { return ""; } } },
     }).then(() => undefined, (error: unknown) => error);
-    return { error, prompts, promptTexts, newSessions, requests };
+    return { error, prompts, promptTexts, newSessions, requests, plans, residentPolls };
   }
   const work = async () => (await sql.prepare("SELECT state FROM managed_environment_work WHERE id=?").bind(scope.workId).first<{ state: string }>())!.state;
   const facts = async () => (await sql.prepare("SELECT document FROM managed_session_events WHERE session_id=?").bind(scope.sessionId).all<{ document: string }>()).results!.map(row => JSON.parse(row.document));
@@ -185,3 +200,70 @@ it("class (b): a consumed-without-terminal gap is settled once as retries_exhaus
     expect((await f.facts()).filter(e => e.type === "session.status_idle")).toHaveLength(1);
   } finally { await f.close(); }
 }, 30000);
+
+
+const count = (values: string[], value: string) => values.filter(v => v === value).length;
+
+it("class (b) across claim generations: a committed+published exhausted terminal leaves the Work resident idle, never re-failing or reclaim-looping", async () => {
+  const f = await controlPlane();
+  try {
+    await f.generation(2, "die-after-consume");
+    // Settling generation stays resident instead of exiting into a TTL reclaim.
+    const settle = await f.generation(3, "must-not-prompt");
+    expect(settle.prompts).toBe(0);
+    expect(settle.requests).toContain("work-failed");
+    expect(count(settle.requests, "work-publish")).toBe(1);
+    expect(settle.residentPolls).toBeGreaterThan(0);
+    expect(String((settle.error as Error | undefined)?.message)).toContain("resident poll");
+    const terminal = (await f.facts()).filter(e => e.type === "session.status_idle");
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].stopReason.type).toBe("retries_exhausted");
+
+    // Every later re-launch (sandbox died, lease reclaimed) is the same steady
+    // state: at most one idempotent republish of the SAME receipt, then idle.
+    for (const g of [4, 5, 6]) {
+      const later = await f.generation(g, "must-not-prompt");
+      expect(later.prompts).toBe(0); expect(later.newSessions).toBe(0);
+      expect(later.requests).not.toContain("work-failed");
+      expect(later.requests).not.toContain("inputs-consume");
+      expect(later.requests).not.toContain("startup-boundary");
+      expect(count(later.requests, "work-publish")).toBeLessThanOrEqual(1);
+      expect(later.plans[0]).toBe("cleanup-only:retries_exhausted");
+      expect(later.residentPolls).toBeGreaterThan(0);
+      expect(String((later.error as Error | undefined)?.message)).toContain("resident poll");
+      expect(String((later.error as Error | undefined)?.message)).not.toContain("already ended");
+      expect(await f.work()).toBe("active");
+    }
+    expect((await f.facts()).filter(e => e.type === "session.status_idle")).toHaveLength(1);
+    expect(new Set(f.published)).toEqual(new Set([terminal[0].id]));
+    expect(await f.status()).toBe("idle");
+  } finally { await f.close(); }
+}, 60000);
+
+it("class (b): a new user message after the exhausted turn is served by a fresh turn, never by redispatching the consumed input", async () => {
+  const f = await controlPlane();
+  try {
+    await f.generation(2, "die-after-consume");
+    // Same resident process: settles, idles, then picks up the new message.
+    const resident = await f.generation(3, "ok", undefined, { onResidentPoll: () => f.send("second") });
+    expect(resident.prompts).toBe(1);
+    expect(resident.promptTexts[0]).toContain("second");
+    expect(resident.promptTexts.join()).not.toContain("first");
+    let idles = (await f.facts()).filter(e => e.type === "session.status_idle");
+    expect(idles.map(e => e.stopReason.type)).toEqual(["retries_exhausted", "end_turn"]);
+    expect(idles[0].execution_id ?? idles[0].source_position?.execution_id).not.toBe(idles[1].execution_id ?? idles[1].source_position?.execution_id);
+
+    // A later reclaimed generation serves the next message as its own turn.
+    await f.send("third");
+    const fresh = await f.generation(4, "ok");
+    expect(fresh.prompts).toBe(1);
+    expect(fresh.promptTexts[0]).toContain("third");
+    // Fresh native state is rebuilt from canonical history; the exhausted
+    // consumed input is never replayed, the new message is the request.
+    expect(fresh.promptTexts[0]).toMatch(/Current request:\\nthird/);
+    expect(fresh.promptTexts.join()).not.toContain("first");
+    idles = (await f.facts()).filter(e => e.type === "session.status_idle");
+    expect(idles.map(e => e.stopReason.type)).toEqual(["retries_exhausted", "end_turn", "end_turn"]);
+    expect(await f.work()).toBe("active");
+  } finally { await f.close(); }
+}, 60000);

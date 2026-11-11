@@ -190,6 +190,7 @@ export function createNodeManagedAcpWorkItemRunner(
     }
     if (state.type !== "committed" && state.type !== "parked") throw rejected(state);
     await publish(state, signal);
+    return state.terminal;
   };
   const client = options.lifecycleClient ?? lifecycleClientFromEnvironment({capability,fetch:options.fetch});
   let suppressFinallyStop = true;
@@ -254,21 +255,37 @@ export function createNodeManagedAcpWorkItemRunner(
           let cleanupReceipt: import("./work-finalization-http.js").WorkTerminalReceipt | undefined;
           let runPlan: Extract<import("./work-bootstrap-http.js").WorkBootstrapPlan, {type:"run"}> | undefined;
           if (bootstrapMode) {
+            // Bootstrap is a read-only selection with no publication ledger: it
+            // re-offers the last completed turn as cleanup-only on every read,
+            // end_turn and retries_exhausted alike. Once this claim has published
+            // that exact receipt, the turn is settled and the resident consumer
+            // is idle; exiting instead only gets the Work reclaimed after TTL.
+            let publishedCleanup: string | undefined;
             while (true) {
               const plan = await bootstrap.read(workSignal);
-              if (plan.type === "idle" || (plan.type === "rejected" && plan.reason === "authority_changed")) {
+              if (plan.type === "idle" || (plan.type === "rejected" && plan.reason === "authority_changed")
+                || (plan.type === "cleanup-only" && plan.terminal.eventId === publishedCleanup)) {
                 await pause(pollMs, workSignal);
                 continue;
               }
               // A consumed root with no terminal is the only gap with a canonical
-              // turn to settle. Hand it to exact-turn recovery below, which never
-              // composes a runtime or redispatches the model for it.
+              // turn to settle. Exact-turn recovery ends it exhausted under this
+              // claim's CAS; it never composes a runtime or redispatches the
+              // model for the consumed input. Then stay resident for new input.
               if (plan.type === "gap" && plan.reason === "consumed_turn_without_terminal" && plan.root !== undefined) {
-                selectedTurn = plan.root.turnId;
-                break;
+                publishedCleanup = (await settleFailure(plan.root.turnId, "run", workSignal)).eventId;
+                continue;
               }
               if (!("claim" in plan)) throw new Error(`Work bootstrap ${plan.type}: ${plan.reason}`);
               trustedClaim = plan.claim;
+              if (plan.type === "cleanup-only") {
+                const state = await finalization.recover(plan.root.turnId, workSignal);
+                if (state.type !== "committed") throw rejected(state);
+                if (!isDeepStrictEqual(plan.terminal, state.terminal)) throw new Error("Work bootstrap terminal receipt changed during recovery");
+                await publish(state, workSignal);
+                publishedCleanup = state.terminal.eventId;
+                continue;
+              }
               selectedTurn = plan.root.turnId;
               if (plan.type === "run") runPlan = plan;
               else cleanupReceipt = plan.terminal;
