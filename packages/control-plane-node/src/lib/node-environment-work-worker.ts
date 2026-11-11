@@ -1,3 +1,4 @@
+import { observeWorkOperation, type WorkOperationObservation } from "./work-operation-observation.js";
 import { createDispatchedManagedEnvironmentWorker, type ManagedEnvironmentWorker } from "@open-managed-agents/managed-runtime-host";
 import type { SandboxManagedProcessHandle } from "@open-managed-agents/sandbox";
 import { toEnvironmentWorkResponse } from "@open-managed-agents/managed-agents-api";
@@ -27,6 +28,7 @@ export function createNodeEnvironmentWorkWorker(input: {
   sandboxes: NodeSessionSandboxes;
   capabilities: ReturnType<typeof createNodeManagedAcpCapabilities>;
   onError(): void;
+  observe?(event: WorkOperationObservation): void;
 }) {
   const env = input.config.sandbox.environment;
   const command = env.OPENMA_WORK_RUNNER_COMMAND;
@@ -160,6 +162,7 @@ export function createNodeEnvironmentWorkWorker(input: {
               const stored = await input.work.find(delivery);
               if (!capability || !stored?.claim || stored.work.environmentId !== scope.environmentId || stored.secret.sessionsToken !== capability.sessionsToken || capability.gatewayBaseUrl !== origin) throw new Error("Work delivery rejected");
               const generation = stored.claim.generation;
+              const observed = <T>(operation: string, run: () => Promise<T>) => observeWorkOperation(input.observe, { ...delivery, generation }, operation, run);
               let holderHash: string | undefined;
               const current = async (includeStopping = false) => {
                 const row = await input.work.find(delivery);
@@ -203,16 +206,16 @@ export function createNodeEnvironmentWorkWorker(input: {
                 const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
                   workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: owned, holderHash: () => holderHash, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
                 });
-                await sandbox.open();
+                await observed("sandbox-open", () => sandbox.open());
                 if (!await current()) throw new Error("Work claim lost before bootstrap");
-                const token = await sandbox.workToken();
+                const token = await observed("sandbox-token", () => sandbox.workToken());
                 holderHash = (await sandboxTokenSha256(token)) ?? undefined;
                 if (holderHash === undefined || !await owned()) throw new Error("Work sandbox holder lost before launch");
                 // Strict canonical workspace/native-state restore before any
                 // management worker can bootstrap. Exact attaches are never
                 // overwritten, and a failed restore never launches a model.
                 try {
-                  await input.sandboxes.restoreWorkCheckpoint(sandbox, environmentWorkSandboxTokenRef(claim));
+                  await observed("checkpoint-restore", () => input.sandboxes.restoreWorkCheckpoint(sandbox, environmentWorkSandboxTokenRef(claim)));
                   if (!await owned()) throw new Error("Work claim lost during checkpoint restore");
                 } catch (error) {
                   // Never let the next dispatcher attach a partially restored
@@ -229,7 +232,7 @@ export function createNodeEnvironmentWorkWorker(input: {
                   ...(inventory === null ? {} : { OPENMA_ACP_HARNESSES: JSON.stringify(inventory) }),
                 } };
                 let handle: SandboxManagedProcessHandle;
-                try { handle = await sandbox.startManagedProcess(spec); }
+                try { handle = await observed("native-start", () => sandbox.startManagedProcess(spec)); }
                 catch (error) {
                   if ((error as {outcome?: string}).outcome !== "rejected" || (error as Error).message !== "management worker busy") throw error;
                   const recovered = await sandbox.recoverManagedProcessSlot();
@@ -253,7 +256,7 @@ export function createNodeEnvironmentWorkWorker(input: {
                   }});
                   await retire(recoveredKey);
                   if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before replacement launch");
-                  handle = await sandbox.startManagedProcess(spec);
+                  handle = await observed("native-start", () => sandbox.startManagedProcess(spec));
                 }
                 processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { slot, handle, current: owned, renew: () => sandbox.renewActivityTimeout() });
               });

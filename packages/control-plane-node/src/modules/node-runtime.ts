@@ -120,6 +120,7 @@ export async function createNodeRuntime(
     sql, config, work: managedEnvironmentWorkStore, sandboxes: sessionSandboxes, capabilities: managedAcpCapabilities,
     application: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.environmentWork),
     recovery: managedSessionsComposition,
+    observe: event => logger.info({ op: "main-node.environment_work.operation", ...event }, "Work operation"),
     onError: () => logger.error({ op: "main-node.environment_work.dispatch_failed" }, "Work dispatch failed; durable poll will retry"),
   });
 
