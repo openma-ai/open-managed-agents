@@ -1,7 +1,7 @@
 import { observeWorkOperation, type WorkOperationObservation } from "./work-operation-observation.js";
 import { createDispatchedManagedEnvironmentWorker, type ManagedEnvironmentWorker } from "@open-managed-agents/managed-runtime-host";
 import type { SandboxManagedProcessHandle } from "@open-managed-agents/sandbox";
-import { toEnvironmentWorkResponse } from "@open-managed-agents/managed-agents-api";
+import { toPolledEnvironmentWorkResponse } from "@open-managed-agents/managed-agents-api";
 import type { EnvironmentWorkApplicationPort } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionSource, SqlSessionEnvironmentSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
@@ -167,7 +167,7 @@ export function createNodeEnvironmentWorkWorker(input: {
             withOptions: () => ({ beta: { environments: { work: {
               poll: async (environmentId, query) => {
                 const result = await app.pollEnvironmentWork({ environmentId, blockMilliseconds: 0, workerId: query["Anthropic-Worker-ID"], reclaimOlderThanMilliseconds: query.reclaim_older_than_ms });
-                return result.type === "work" ? toEnvironmentWorkResponse(result.work) : null;
+                return result.type === "work" ? toPolledEnvironmentWorkResponse(result.work) : null;
               },
               stop: async (workId, query) => app.stopEnvironmentWork({ workId, environmentId: query.environment_id, force: query.force }),
             } } } }),

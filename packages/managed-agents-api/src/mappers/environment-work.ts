@@ -102,7 +102,28 @@ export function toListEnvironmentWorkQuery(
   };
 }
 
+/**
+ * Wire view for every Work response except poll. The Work secret is the
+ * claiming worker's session credential; per the official contract it is
+ * "null on all other retrieval paths", so this mapper never encodes it, even
+ * if an application port returns one.
+ */
 export function toEnvironmentWorkResponse(work: EnvironmentWorkView) {
+  return { ...workResponseFields(work), secret: null };
+}
+
+/**
+ * Wire view for the poll/claim response only: the single path that delivers
+ * the encoded Work secret to the worker that claimed it.
+ */
+export function toPolledEnvironmentWorkResponse(work: EnvironmentWorkView) {
+  return {
+    ...workResponseFields(work),
+    secret: encodeEnvironmentWorkSecret(work.secret),
+  };
+}
+
+function workResponseFields(work: EnvironmentWorkView) {
   return {
     id: work.id,
     acknowledged_at: work.acknowledgedAt,
@@ -111,7 +132,6 @@ export function toEnvironmentWorkResponse(work: EnvironmentWorkView) {
     environment_id: work.environmentId,
     latest_heartbeat_at: work.latestHeartbeatAt,
     metadata: work.metadata,
-    secret: encodeEnvironmentWorkSecret(work.secret),
     started_at: work.startedAt,
     state: work.state,
     stop_requested_at: work.stopRequestedAt,

@@ -22,6 +22,7 @@ import {
   toHeartbeatEnvironmentWorkCommand,
   toListEnvironmentWorkQuery,
   toPollEnvironmentWorkQuery,
+  toPolledEnvironmentWorkResponse,
   toRetrieveEnvironmentWorkQuery,
   toStopEnvironmentWorkCommand,
   toUpdateEnvironmentWorkCommand,
@@ -101,8 +102,9 @@ export function buildEnvironmentWorkRoutes(
     }
     if (result.type === "empty") return c.json(null, 200);
 
+    // Poll is the only path that delivers the Work secret (to the claimer).
     const response = environmentWorkResponseSchema.safeParse(
-      toEnvironmentWorkResponse(result.work),
+      toPolledEnvironmentWorkResponse(result.work),
     );
     if (!response.success) {
       return c.json(apiError("Application returned invalid work"), 500);

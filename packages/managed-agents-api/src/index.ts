@@ -55,7 +55,10 @@ export type {
   OpenMaEnvironmentResponse,
 } from "./contracts/environments";
 export { buildEnvironmentWorkRoutes } from "./routes/environment-work";
-export { toEnvironmentWorkResponse } from "./mappers/environment-work";
+export {
+  toEnvironmentWorkResponse,
+  toPolledEnvironmentWorkResponse,
+} from "./mappers/environment-work";
 export { buildFileRoutes } from "./routes/files";
 export { buildMemoryStoreRoutes } from "./routes/memory-stores";
 export { buildMemoryRoutes } from "./routes/memories";
