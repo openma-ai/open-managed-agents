@@ -9,6 +9,16 @@ it("native durable output capability alone cannot acknowledge upload completion"
  expect(published).toBe(false);
 });
 
+it("shared Session outputs are not natively mounted, so a durable-capable provider needs no output drain",async()=>{
+ const commands:string[]=[];
+ const runtime=new E2BSandboxExecutor({sandboxId:"physical",commands:{run:async(command:string)=>{commands.push(command);throw Error("RC unavailable");}},files:{read:async()=>"",write:async()=>{}},kill:async()=>{}} as never,{memoryBucket:{endpoint:"http://unused",accessKey:"unused",secretKey:"unused",bucketName:"unused"}});
+ let published=false;
+ const storage=createNodeSessionStorage({memoryStoreMode:"native",memories:()=>({}) as never,memoryBlobs:{} as never,outputs:{} as never,sharedOutputs:{} as never,workOutputs:{synchronize:async()=>{published=true;}},inputs:()=>({}) as never,isFenceActive:async()=>false,warn:()=>{}});
+ await storage.synchronizeWork!({workspaceId:"ws",session:{id:"session",resources:[]} as never,environment:{id:"env"} as never,sandbox:runtime,runtimeGeneration:"physical",workAuthority:{attempt:{workspaceId:"ws",sessionId:"session",executionId:"work",attemptId:"environment-work-claim:1",ownerId:"env",generation:1},holderHash:"a".repeat(64),isCurrent:async()=>true}});
+ expect(published).toBe(true);
+ expect(commands).toEqual([]);
+});
+
 import { configureNodeNativeStorage } from "../../../packages/control-plane-node/src/lib/work-finalization-host/native-storage.js";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";

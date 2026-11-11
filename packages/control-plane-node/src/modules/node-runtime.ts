@@ -114,6 +114,7 @@ export async function createNodeRuntime(
       filesForWorkspace: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
       secrets: openAIAgentsSecrets, environmentId: session => `oai_env_${session.id}`, logger,
     }),
+    observe: event => logger.info({ op: "main-node.environment_work.operation", ...event }, "Work operation"),
   });
 
   const managedEnvironmentWorkWorker = createNodeEnvironmentWorkWorker({

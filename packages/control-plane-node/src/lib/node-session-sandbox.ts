@@ -749,6 +749,12 @@ export class NodeSessionSandbox implements SandboxPort {
     if (!await this.isCurrentWork(authority)) throw new Error("Work claim lost during storage synchronization");
   }
 
+  /** Identity only (no authority read): was this facade built for exactly this
+   * Work attempt? A facade left behind by a lost/older claim is not. */
+  boundToWorkAttempt(attempt: SessionExecutionAttemptRef): boolean {
+    return this.workAuthority !== undefined && sameWorkAttempt(attempt, this.workAuthority.attempt);
+  }
+
   /** Capture the already-open physical runtime under its issued Work authority.
    * Never open/rebind here: a finalizer must not create a replacement runtime. */
   async captureWork(attempt: SessionExecutionAttemptRef, requireProcess = false): Promise<NodeWorkStorageInput & { handle: NonNullable<ReturnType<typeof recordedHandle>> }> {

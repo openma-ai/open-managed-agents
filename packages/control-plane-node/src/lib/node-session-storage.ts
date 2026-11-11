@@ -38,8 +38,11 @@ export function createNodeSessionStorage(deps: NodeSessionStorageDeps): NodeSess
       }
       // Fail before any Memory mutation if output publication is not composed.
       if (deps.workOutputs === undefined) throw new Error("Work output synchronization is not configured");
-      const nativeOutputs = (sandbox as {sessionOutputMountCapabilities?:()=>{durability:string}|null}).sessionOutputMountCapabilities?.()?.durability === "durable";
-      if (nativeOutputs || deps.memoryStoreMode === "native" && session.resources.some(r=>r.type==="memory_store" && r.access==="read_write")) await drainNodeNativeWorkStorage(input);
+      // Shared outputs never mount /mnt/session/outputs natively (prepareStorage
+      // restores/publishes them instead), whatever the provider could offer.
+      const nativeOutputs = deps.sharedOutputs === undefined
+        && (sandbox as {sessionOutputMountCapabilities?:()=>{durability:string}|null}).sessionOutputMountCapabilities?.()?.durability === "durable";
+      if (nativeOutputs || deps.memoryStoreMode === "native" && session.resources.some(r=>r.type==="memory_store" && r.access==="read_write")) await drainNodeNativeWorkStorage(input, { outputs: nativeOutputs });
       const memories = deps.memories(workspaceId);
       if (deps.memoryStoreMode === "file_sync") {
         await synchronizeNodeManagedMemoryStores({ session, sandbox, memories, authorize, signal: new AbortController().signal });

@@ -49,7 +49,10 @@ export async function createNodeE2BSessionAdapter(
     // SDK agent operations are unprivileged; the opt-in template launcher
     // separately starts trusted management workers as root through private Files API.
     user: "oma-worker",
-    managedBootstrap: {},
+    // Work finalization on ANY replica reads the exact sandbox without
+    // connecting and refuses one E2B could implicitly resume (same contract
+    // as CF Work). The adapter always attaches/resumes via explicit connect.
+    managedBootstrap: env.OPENMA_WORK_RUNNER_COMMAND?.trim() ? { disableAutoResume: true } : {},
     setup: E2B_SANDBOX_DIRECTORIES,
     // The executor's s3fs mounts for Node's outputs and native Memory Store calls.
     ...(memoryBucket === undefined ? {} : { memoryBucket }),

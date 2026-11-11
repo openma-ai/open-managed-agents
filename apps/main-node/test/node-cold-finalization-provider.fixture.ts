@@ -18,8 +18,12 @@ export async function coldProvider(f: Awaited<ReturnType<typeof coldFixture>>, d
     holderHash:physical.workAuthority.holderHash!,status:"running"};
   const operations: string[]=[];
   const requests = new Map<string,string>();
-  const map=(path:string)=>path.replaceAll("/tmp/","/oma/provider-tmp/");
+  // A VM's /tmp and /var/tmp live outside its workspace; emulate both on the
+  // LocalSubprocess root and keep them out of workspace archives like a VM.
+  const map=(path:string)=>path.replaceAll("/var/tmp/","/oma/provider-var-tmp/").replace(/(^|[^r])\/tmp\//g,"$1/oma/provider-tmp/")
+    .replace("tar -C ","tar --exclude=./.mnt/oma/provider-var-tmp --exclude=./.mnt/oma/provider-tmp -C ");
   await runtime.writeFile(map("/tmp/.oma-warm"),physical.runtimeGeneration);
+  await runtime.exec("mkdir -p /oma/provider-var-tmp");
   const server=createServer(async(req,res)=>{
     try {
       const chunks: Buffer[]=[];for await(const c of req)chunks.push(c);

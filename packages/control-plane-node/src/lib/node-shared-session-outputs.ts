@@ -71,11 +71,14 @@ async function boundedJson(blob: { body: ReadableStream<Uint8Array>; size: numbe
 
 /** Immutable output candidates in a shared blob backend, with one fenced SQL
  * pointer per Session. It is intentionally separate from workspace snapshots. */
+/** Retention for per-sandbox hydration bases (well beyond any VM lifetime). */
+const HYDRATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
 export class NodeSharedSessionOutputs {
-  /** Canonical candidate each live sandbox (runtime generation) was hydrated
-   * from. Publication CASes against it, so a warm sandbox that missed another
-   * replica's newer outputs can never replace them with its older full set. */
-  private readonly bases = new Map<string, string | null>();
+  // Canonical candidate each live sandbox (runtime generation) was hydrated
+  // from lives in SQL (managed_session_output_hydrations). Publication CASes
+  // against it, so a sandbox that missed another replica's newer outputs can
+  // never replace them with its older full set.
 
   constructor(private readonly deps: { sql: SqlClient; blobs: BlobStore }) {}
 
@@ -83,33 +86,79 @@ export class NodeSharedSessionOutputs {
     return `${workspaceId}\0${sessionId}\0${runtimeGeneration}`;
   }
 
+  /** The hydration base is also durable: Work finalization may run on a
+   * different replica (cold reconnect) than the one that hydrated the sandbox.
+   * runtimeGeneration identifies one physical sandbox incarnation. */
+  private upsertBase(workspaceId: string, sessionId: string, runtimeGeneration: string, base: string | null) {
+    // Write only while the canonical pointer still equals the recorded base,
+    // so a restore can never roll back a newer base another replica published.
+    const current = base === null
+      ? `NOT EXISTS (SELECT 1 FROM managed_session_output_snapshots WHERE workspace_id = ? AND session_id = ?)`
+      : `EXISTS (SELECT 1 FROM managed_session_output_snapshots WHERE workspace_id = ? AND session_id = ? AND candidate_id = ?)`;
+    return this.deps.sql.prepare(`INSERT INTO managed_session_output_hydrations
+        (workspace_id, session_id, runtime_generation, base_candidate_id, updated_at_ms)
+      SELECT ?, ?, ?, ?, ? WHERE ${current}
+      ON CONFLICT (workspace_id, session_id, runtime_generation)
+      DO UPDATE SET base_candidate_id = excluded.base_candidate_id, updated_at_ms = excluded.updated_at_ms`)
+      .bind(workspaceId, sessionId, runtimeGeneration, base, Date.now(), workspaceId, sessionId, ...(base === null ? [] : [base]));
+  }
+
+  private async recordBase(workspaceId: string, sessionId: string, runtimeGeneration: string, base: string | null): Promise<void> {
+    const result = await this.upsertBase(workspaceId, sessionId, runtimeGeneration, base).run();
+    if (result.meta.changes < 1) throw new Error("Canonical Session outputs changed during restore; reacquire the sandbox");
+  }
+
+  private async hydratedBase(workspaceId: string, sessionId: string, runtimeGeneration: string): Promise<{ base: string | null } | null> {
+    // SQL is authoritative: another replica may have published from this same
+    // sandbox since this process hydrated it, so never trust the local cache.
+    const row = await this.deps.sql.prepare(`SELECT base_candidate_id FROM managed_session_output_hydrations
+      WHERE workspace_id = ? AND session_id = ? AND runtime_generation = ?`).bind(workspaceId, sessionId, runtimeGeneration)
+      .first<{ base_candidate_id: string | null }>();
+    return row === null ? null : { base: row.base_candidate_id };
+  }
+
   /** False when another owner published since this sandbox was hydrated. */
   async isSandboxCurrent(workspaceId: string, sessionId: string, runtimeGeneration: string): Promise<boolean> {
-    const key = this.baseKey(workspaceId, sessionId, runtimeGeneration);
-    if (!this.bases.has(key)) return false;
-    if (await this.pointer(workspaceId, sessionId) === this.bases.get(key)) return true;
-    this.bases.delete(key);
-    return false;
+    const hydrated = await this.hydratedBase(workspaceId, sessionId, runtimeGeneration);
+    return hydrated !== null && await this.pointer(workspaceId, sessionId) === hydrated.base;
   }
 
   async ensureSchema(dialect?: "mysql" | "sqlite" | "postgres"): Promise<void> {
+    // Replicas boot concurrently against one fresh Postgres: CREATE TABLE IF
+    // NOT EXISTS can still collide in pg_type. Retry; the DDL is idempotent.
+    const exec = async (statement: string) => {
+      for (let attempt = 0; ; attempt++) {
+        try { await this.deps.sql.exec(statement); return; }
+        catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (dialect !== "postgres" || attempt >= 4 || !/pg_type|tuple concurrently|already exists/i.test(message)) throw error;
+          await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+        }
+      }
+    };
     // Node's consolidated MySQL execution schema uses utf8mb4_unicode_ci;
     // the database default can be 0900_ai_ci, which breaks cross-table joins.
     const mysqlSuffix = dialect === "mysql" ? " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" : "";
-    await this.deps.sql.exec(`CREATE TABLE IF NOT EXISTS managed_session_output_snapshots (
+    await exec(`CREATE TABLE IF NOT EXISTS managed_session_output_snapshots (
       workspace_id VARCHAR(191) NOT NULL, session_id VARCHAR(191) NOT NULL,
       candidate_id VARCHAR(191) NOT NULL, published_at_ms BIGINT NOT NULL,
       PRIMARY KEY (workspace_id, session_id)
     )${mysqlSuffix}`);
     // Record paths *before* PUT. An interrupted upload still leaves a durable
     // inventory for the eventual sweep, rather than untraceable S3 objects.
-    await this.deps.sql.exec(`CREATE TABLE IF NOT EXISTS managed_session_output_candidates (
+    await exec(`CREATE TABLE IF NOT EXISTS managed_session_output_candidates (
       workspace_id VARCHAR(191) NOT NULL, session_id VARCHAR(191) NOT NULL,
       candidate_id VARCHAR(191) NOT NULL, execution_id VARCHAR(191) NOT NULL,
       attempt_id VARCHAR(191) NOT NULL, owner_id VARCHAR(191) NOT NULL,
       generation BIGINT NOT NULL, status VARCHAR(16) NOT NULL,
       file_paths_json ${dialect === "mysql" ? "MEDIUMTEXT" : "TEXT"} NOT NULL, updated_at_ms BIGINT NOT NULL,
       PRIMARY KEY (workspace_id, session_id, candidate_id)
+    )${mysqlSuffix}`);
+    await exec(`CREATE TABLE IF NOT EXISTS managed_session_output_hydrations (
+      workspace_id VARCHAR(191) NOT NULL, session_id VARCHAR(191) NOT NULL,
+      runtime_generation VARCHAR(191) NOT NULL, base_candidate_id VARCHAR(191),
+      updated_at_ms BIGINT NOT NULL,
+      PRIMARY KEY (workspace_id, session_id, runtime_generation)
     )${mysqlSuffix}`);
   }
 
@@ -147,12 +196,14 @@ export class NodeSharedSessionOutputs {
     if (work && (!input.runtimeGeneration || identity.attemptId !== "environment-work-claim:" + identity.generation)) throw new Error("Work output claim or hydrated generation missing");
     const baseKey = input.runtimeGeneration === undefined ? null
       : this.baseKey(workspaceId, sessionId, input.runtimeGeneration);
-    if (baseKey !== null && !this.bases.has(baseKey)) {
-      throw new Error("Session output sandbox was not hydrated from a canonical version");
-    }
     // Capture before uploads: a concurrent hydration/publication must never
     // replace this invocation's expected pointer with the new owner's base.
-    const hydratedBase = baseKey === null ? undefined : this.bases.get(baseKey)!;
+    const hydrated = input.runtimeGeneration === undefined ? null
+      : await this.hydratedBase(workspaceId, sessionId, input.runtimeGeneration);
+    if (baseKey !== null && hydrated === null) {
+      throw new Error("Session output sandbox was not hydrated from a canonical version");
+    }
+    const hydratedBase = hydrated?.base;
     const root = prefix(workspaceId, sessionId);
     if (identity.workspaceId !== workspaceId || identity.sessionId !== sessionId) throw new Error("Session output fence scope mismatch");
     const id = `out_${randomUUID()}`;
@@ -192,7 +243,7 @@ export class NodeSharedSessionOutputs {
         precondition: { type: "ifNoneMatch", value: "*" }, httpMetadata: { contentType: "application/json" },
       });
       if (written === null) throw new Error("Session output manifest already exists");
-      const expected = baseKey === null ? await this.pointer(workspaceId, sessionId) : hydratedBase!;
+      const expected = baseKey === null ? await this.pointer(workspaceId, sessionId) : hydratedBase ?? null;
       const now = Date.now();
       const table = work ? "managed_environment_work" : "managed_session_executions";
       let where = "workspace_id = ? AND id = ? AND session_id = ? AND state = 'running' AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?";
@@ -234,13 +285,15 @@ export class NodeSharedSessionOutputs {
           AND EXISTS (SELECT 1 FROM managed_session_output_snapshots
             WHERE workspace_id = ? AND session_id = ? AND candidate_id = ?)`)
           .bind(...candidateArgs, ...candidateArgs),
+        // The sandbox's durable base advances in the SAME transaction as the
+        // pointer: a crash in between can never strand its next publication.
+        ...(input.runtimeGeneration === undefined ? [] : [this.upsertBase(workspaceId, sessionId, input.runtimeGeneration, id)]),
       ]);
       if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1 ||
         (expected === null ? results[2]?.meta.changes !== 1 : results[3]?.meta.changes !== 1) ||
-        results[4]?.meta.changes !== 1) {
+        results[4]?.meta.changes !== 1 || (input.runtimeGeneration !== undefined && !(Number(results[5]?.meta.changes) >= 1))) {
         throw new Error("Session output publication lost its execution fence or canonical pointer");
       }
-      if (baseKey !== null) this.bases.set(baseKey, id);
     } catch (error) {
       // Never delete a blob that may have become canonical. The GC scheduler
       // reclaims failed candidates (also covering crashes during upload).
@@ -257,10 +310,10 @@ export class NodeSharedSessionOutputs {
    * not a live mount; read/write on a turn is published at its next safe point. */
   async restoreToSandbox(workspaceId: string, sessionId: string, sandbox: SandboxExecutor, runtimeGeneration?: string): Promise<void> {
     const current = await this.manifest(workspaceId, sessionId);
-    const record = (base: string | null) => {
-      if (runtimeGeneration !== undefined) this.bases.set(this.baseKey(workspaceId, sessionId, runtimeGeneration), base);
+    const record = async (base: string | null) => {
+      if (runtimeGeneration !== undefined) await this.recordBase(workspaceId, sessionId, runtimeGeneration, base);
     };
-    if (current === null) { record(null); return; }
+    if (current === null) { await record(null); return; }
     if (!sandbox.writeFileBytes) throw new Error("Shared Session outputs require binary sandbox writes for restore");
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     for (const entry of current.manifest.files) {
@@ -280,7 +333,7 @@ export class NodeSharedSessionOutputs {
     if (await this.pointer(workspaceId, sessionId) !== current.id) {
       throw new Error("Canonical Session outputs changed during restore; reacquire the sandbox");
     }
-    record(current.id);
+    await record(current.id);
   }
 
   async list(workspaceId: string, sessionId: string) {
@@ -365,6 +418,10 @@ export class NodeSharedSessionOutputs {
         WHERE workspace_id = ? AND session_id = ? AND candidate_id = ? AND status = 'purging'`)
         .bind(...values).run();
     }
+    // A hydration row only matters while its sandbox incarnation can still
+    // publish; E2B caps one at 24h. Keep a wide margin, then reclaim.
+    await this.deps.sql.prepare(`DELETE FROM managed_session_output_hydrations WHERE updated_at_ms < ?`)
+      .bind(now - HYDRATION_RETENTION_MS).run();
     return removed;
   }
 

@@ -204,3 +204,17 @@ it("cold prepare requires its exact source process still running",async()=>{
  try{provider.locator.status="exited";expect((await p.request("checkpoint")).status).toBe(502);expect(await f.checkpoint()).toBeNull();expect(provider.operations).not.toContain("connect");}
  finally{await p.close();await provider.close();}
 });
+
+// Multi-replica: a facade left by this node's lost claim (another replica now
+// holds generation 2) must not answer for the new attempt; finalization takes
+// the exact cold reconnect path instead of failing on the stale binding.
+it("a stale local facade from a lost claim defers to cold reconnect for the current attempt", async () => {
+  const f = await coldFixture();
+  await f.sql.prepare("UPDATE managed_environment_work SET claim_generation=2 WHERE id=?").bind(f.claim.workId).run();
+  const claim = {...f.claim, generation:2};
+  expect(f.sandbox.boundToWorkAttempt(environmentWorkSandboxTokenRef(f.claim))).toBe(true);
+  expect(f.sandbox.boundToWorkAttempt(environmentWorkSandboxTokenRef(claim))).toBe(false);
+  const scope = {claim, turnId:f.turnId, revision:f.revision, isCurrent:async()=>true};
+  await expect(f.runtime.workFinalizationHost.prepare(scope)).rejects.toThrow(/Trusted Work process reconnect unsupported/);
+  expect(await f.checkpoint()).toBeNull();
+});

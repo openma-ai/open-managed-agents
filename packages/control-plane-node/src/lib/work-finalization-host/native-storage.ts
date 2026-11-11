@@ -4,10 +4,12 @@ import type { NodeWorkStorageInput } from "../node-session-sandbox.js";
 import type { SandboxPort, SandboxSessionOutputMountPort } from "@open-managed-agents/sandbox";
 
 export type NodeNativeBucket = NonNullable<E2BSandboxOptions["memoryBucket"]>;
+/** outputs=false: Session outputs are shared (not natively mounted); drain Memory only. */
+export interface NodeNativeDrainOptions { outputs: boolean }
 type NativeRuntime = SandboxPort & {
   run(command:string, options:{user:string;sessionEnv:boolean;timeoutMs:number;envs?:Record<string,string>}):Promise<{stdout:string;stderr:string;exitCode:number}>;
   runtimeHandle():{provider:string;runtimeId:string};
-  drainNodeWorkStorage?(input:NodeWorkStorageInput):Promise<void>;
+  drainNodeWorkStorage?(input:NodeWorkStorageInput, options?:NodeNativeDrainOptions):Promise<void>;
 };
 const quote = (s:string) => "'"+s.replaceAll("'","'\\''")+"'";
 
@@ -50,9 +52,9 @@ export function configureNodeNativeStorage(sandbox: SandboxPort, bucket: NodeNat
   };
   sandbox.mountMemoryStore = i => mount(`/mnt/memory/${i.storeName}`,i.storeId,i.readOnly);
   (sandbox as SandboxPort & SandboxSessionOutputMountPort).mountSessionOutputs = i => mount("/mnt/session/outputs",`session-outputs/${i.tenantId}/${i.sessionId}`,false);
-  runtime.drainNodeWorkStorage = async input => {
+  runtime.drainNodeWorkStorage = async (input, options = { outputs: true }) => {
     const writable=input.session.resources.filter(r=>r.type==="memory_store" && r.access==="read_write");
-    const expected=[{target:"/mnt/session/outputs",remote:`:s3:${bucket.bucketName}/session-outputs/${input.workspaceId}/${input.session.id}`},
+    const expected=[...(options.outputs ? [{target:"/mnt/session/outputs",remote:`:s3:${bucket.bucketName}/session-outputs/${input.workspaceId}/${input.session.id}`}] : []),
       ...writable.map(r=>{if(r.type!=="memory_store")throw Error("invalid Memory resource");return {
         target:`/mnt/memory/${r.name??r.memoryStoreId}`,
         remote:`:s3:${bucket.bucketName}/.openma-managed-memory-workspaces/${encodeURIComponent(input.workspaceId)}/${encodeURIComponent(input.session.id)}/${encodeURIComponent(input.runtimeGeneration)}/${encodeURIComponent(r.memoryStoreId)}/data`,
@@ -64,10 +66,10 @@ export function configureNodeNativeStorage(sandbox: SandboxPort, bucket: NodeNat
   };
 }
 
-export async function drainNodeNativeWorkStorage(input: NodeWorkStorageInput): Promise<void> {
+export async function drainNodeNativeWorkStorage(input: NodeWorkStorageInput, options: NodeNativeDrainOptions = { outputs: true }): Promise<void> {
   const runtime=input.sandbox as Partial<NativeRuntime>;
   // LocalSubprocess mounts are synchronous host filesystem mounts, not VFS.
   if (runtime.runtimeHandle?.().provider !== "e2b") return;
   if (!runtime.drainNodeWorkStorage) throw new Error("Native Node upload drain is not configured; legacy mount cannot acknowledge durability");
-  await runtime.drainNodeWorkStorage(input);
+  await runtime.drainNodeWorkStorage(input, options);
 }

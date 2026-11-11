@@ -4,6 +4,10 @@ import type { NodeManagedWorkspaceCheckpoints } from "../node-managed-workspace-
 
 /** One transfer mapping for strict Work archive AND restore. */
 export function workCheckpointExecutor(sandbox: SandboxExecutor): SandboxExecutor {
+  // /oma is LocalSubprocess's mapped private root. A real VM provider (E2B)
+  // has no /oma and its SDK user cannot create one: transfer through the
+  // provider's own /var/tmp, outside the archived workspace, unchanged.
+  if ((sandbox as {runtimeHandle?: () => {provider: string}}).runtimeHandle?.().provider === "e2b") return sandbox;
   const transfer = (path: string) => path.replaceAll("/var/tmp/openma-workspace-", "/oma/checkpoint-transfer/openma-workspace-");
   return {
     exec: (command, timeout) => sandbox.exec(`mkdir -p /oma/checkpoint-transfer && ${transfer(command).replace("tar -C ", "tar --exclude=./.mnt/oma/checkpoint-transfer -C ")}`, timeout),

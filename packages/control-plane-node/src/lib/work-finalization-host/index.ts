@@ -1,4 +1,5 @@
 import { checkpointAllocations } from "./candidates.js";
+import { observeWorkOperation, type WorkOperationObservation } from "../work-operation-observation.js";
 import { workCheckpointExecutor, restoreWorkCheckpoint } from "./workspace.js";
 import { SqlSessionSource, SqlSessionEnvironmentSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import type { WorkFinalizationHostPort, WorkFinalizationScope } from "@open-managed-agents/managed-agents-application";
@@ -15,6 +16,8 @@ export interface NodeWorkFinalizationHostDependencies {
   blobs: BlobStore;
   sandboxes: NodeSessionSandboxes;
   afterExecution: ReturnType<typeof createNodeWorkArtifactPublisher>;
+  /** Stage timing only; never errors, bodies or credentials. */
+  observe?(event: WorkOperationObservation): void;
 }
 
 /** Physical finalization only. The application owns terminal CAS; the existing
@@ -77,6 +80,9 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
     };
     let facade: ReturnType<NodeSessionSandboxes["get"]> | undefined;
     try { facade = deps.sandboxes.get({workspaceId:c.workspaceId,session:{id:c.sessionId}}); } catch { /* no local binding */ }
+    // A local facade from another (lost or older) claim of this Session is not
+    // this attempt's holder: finalize through the exact cold reconnect instead.
+    if (facade && !facade.boundToWorkAttempt(environmentWorkSandboxTokenRef(c))) facade = undefined;
     const physical = facade ? await facade.captureWork(environmentWorkSandboxTokenRef(c), true) : await (async () => {
       const [session, environment] = await Promise.all([new SqlSessionSource(deps.sql).find(c),new SqlSessionEnvironmentSource(deps.sql).find(c)]);
       if (!session || session.archivedAt !== null || session.environmentId !== c.environmentId || !environment || environment.archivedAt !== null) throw new Error("Work reconnect context unavailable");
@@ -108,9 +114,13 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
     await assertCurrent();
     return { facade, physical, holderDocument, expiresAt: new Date(Number(row.claim_at) + Number(row.heartbeat_ttl_seconds) * 1000).toISOString(), current, assertCurrent };
   }
+  const stage = <T>(scope: WorkFinalizationScope, operation: string, run: () => Promise<T>) => {
+    const c = scope.claim;
+    return observeWorkOperation(deps.observe, {workspaceId:c.workspaceId,environmentId:c.environmentId,sessionId:c.sessionId,workId:c.workId,generation:c.generation}, operation, run);
+  };
   return {
     prepare: scope => serial(scope, async () => {
-      const {facade, physical, holderDocument, expiresAt, assertCurrent} = await capture(scope);
+      const {facade, physical, holderDocument, expiresAt, assertCurrent} = await stage(scope, "finalize-capture", () => capture(scope));
       const c = scope.claim;
       const active = await checkpoints.active(c);
       // Capture the actual persisted handle, not an arbitrary caller runtime ID.
@@ -120,7 +130,7 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
       const state = JSON.parse(record.value);
       if (state.phase !== "running" || state.handle.provider !== physical.handle.provider || state.handle.runtimeId !== physical.handle.runtimeId) throw new Error("Physical Work runtime is not running");
       // Preserve the captured process fence through every canonical storage write.
-      await deps.sandboxes.synchronizeReconnectedWork(physical);
+      await stage(scope, "finalize-synchronize", () => deps.sandboxes.synchronizeReconnectedWork(physical));
       await assertCurrent();
       const allocations = checkpointAllocations(deps.blobs, deps.sql, c.workspaceId, c.sessionId);
       const archive = new NodeManagedWorkspaceCheckpoints({sql:deps.sql,blobs:allocations.store,intervalMs:1});
@@ -129,10 +139,10 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
       // This is the resource Port's native Work fence, NOT a SessionExecution.
       const fence = {...resourceScope, ownerId:c.holder, generation:c.generation, token:physical.workAuthority.holderHash!, expiresAt};
       const signal = new AbortController().signal;
-      const binding = await port.materialize({scope:resourceScope,fence,strategy:"checkpoint_restore",activeCheckpoint:null,idempotencyKey:scope.turnId,signal});
+      const binding = await stage(scope, "finalize-materialize", () => port.materialize({scope:resourceScope,fence,strategy:"checkpoint_restore",activeCheckpoint:null,idempotencyKey:scope.turnId,signal}));
       try {
-        const candidate = await port.checkpoint({scope:resourceScope,fence,strategy:"checkpoint_restore",binding,
-          sandbox:state.handle,idempotencyKey:`${c.workId}:${c.generation}:${scope.turnId}:${scope.revision}`,signal});
+        const candidate = await stage(scope, "finalize-checkpoint", () => port.checkpoint({scope:resourceScope,fence,strategy:"checkpoint_restore",binding,
+          sandbox:state.handle,idempotencyKey:`${c.workId}:${c.generation}:${scope.turnId}:${scope.revision}`,signal}));
         await assertCurrent();
         // Lock Session then Work, in the same order as canonical terminal CAS.
         // Exact holder document, DB time, Session revision and physical record
@@ -144,7 +154,7 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
           AND EXISTS(SELECT 1 FROM managed_sessions WHERE workspace_id=? AND id=? AND environment_id=? AND revision=? AND archived_at IS NULL)
           AND EXISTS(SELECT 1 FROM kv_entries WHERE tenant_id=? AND "key"=? AND value=?)`;
         const guardArgs = [...args,c.workspaceId,c.sessionId,c.environmentId,scope.revision,c.workspaceId,`session_sandbox_state:${c.sessionId}`,record.value];
-        await deps.sql.batchChecked!([
+        await stage(scope, "finalize-publication", () => deps.sql.batchChecked!([
           deps.sql.prepare(`UPDATE managed_sessions SET revision=revision WHERE workspace_id=? AND id=? AND revision=?`).bind(c.workspaceId,c.sessionId,scope.revision),
           deps.sql.prepare(`UPDATE managed_environment_work SET revision=revision+1 WHERE ${work}`).bind(...args),
           deps.sql.prepare(`INSERT INTO managed_session_workspace_checkpoints (workspace_id,session_id,candidate_id,candidate_json,published_at_ms,revision)
@@ -154,7 +164,7 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
             .bind(candidate.id,JSON.stringify(candidate),c.workspaceId,c.sessionId,active === null ? 1 : 0,active?.candidate.id ?? null,...guardArgs),
         ], results => {
           if (results[3]?.meta.changes !== 1) throw new Error("Work checkpoint publication lost canonical CAS");
-        });
+        }));
         await assertCurrent();
       } catch (error) {
         await allocations.discardUnreferenced();
@@ -165,8 +175,8 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
       return {type:"prepared"};
     }),
     publish: scope => serial(scope, async () => {
-      const {physical,current,assertCurrent} = await capture(scope);
-      await deps.afterExecution({...physical, terminal:scope.terminal, isCurrent:current});
+      const {physical,current,assertCurrent} = await stage(scope, "publish-capture", () => capture(scope));
+      await stage(scope, "publish-artifacts", () => deps.afterExecution({...physical, terminal:scope.terminal, isCurrent:current}));
       await assertCurrent();
       return {type:"published"};
     }),

@@ -16,6 +16,20 @@ import type { NodeConfig } from "../config.js";
 import type { NodeSessionSandboxes } from "./node-session-sandbox.js";
 import type { createNodeManagedAcpCapabilities } from "./node-managed-acp-capability.js";
 
+/** Bounds one dispatch from reservation to the sandbox worker's ACK. It is
+ * also the retry delay after a failed dispatch (the dispatcher never ACKs or
+ * stops on failure), and must stay below the 90s Work heartbeat TTL. */
+export const WORK_RESERVATION_RECLAIM_MS = 60_000;
+const WORK_HEARTBEAT_TTL_MS = 90_000;
+function reservationReclaimMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") return WORK_RESERVATION_RECLAIM_MS;
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms <= 0 || ms >= WORK_HEARTBEAT_TTL_MS) {
+    throw new TypeError("OPENMA_WORK_RESERVATION_RECLAIM_MS must be a positive integer below the 90000ms Work heartbeat TTL");
+  }
+  return ms;
+}
+
 /** Node installs the existing unacknowledged-Work dispatcher. SQL discovers
  * environments only; the application's atomic claim remains the sole scheduler
  * authority. Native launch owns no heartbeat and never ACKs on the host. */
@@ -40,6 +54,7 @@ export function createNodeEnvironmentWorkWorker(input: {
     command !== "/usr/local/bin/node" || args.length !== 1 || args[0] !== "/opt/oma-managed/worker/node-e2b-work-item-cli.js"
   )) throw new TypeError("A trusted E2B worker requires the fixed preinstalled command and argv");
   const origin = input.config.http.publicBaseUrl;
+  const reclaimOlderThanMs = reservationReclaimMs(env.OPENMA_WORK_RESERVATION_RECLAIM_MS);
   const controller = new AbortController();
   const workers = new Map<string, { worker: ManagedEnvironmentWorker; completed: Promise<void> }>();
   // Management handles only, never ownership/lease state. SQL remains authority.
@@ -142,6 +157,10 @@ export function createNodeEnvironmentWorkWorker(input: {
           workspaceId: scope.workspaceId, environmentId: scope.environmentId,
           environmentKey: "internal-application-port", workerId: input.config.execution.ownerId,
           maxWorkItemsPerDrain: 8, fallbackPollIntervalMs: 1_000,
+          // An unacknowledged reservation must outlive sandbox open + restore +
+          // native start + the worker's ACK, or another replica's poll reclaims
+          // it mid-launch (the 5s default double-claims multi-replica Node).
+          reclaimOlderThanMs,
           client: {
             baseURL: origin,
             beta: { webhooks: { unwrap() { throw new Error("Node uses durable poll discovery"); } } },
