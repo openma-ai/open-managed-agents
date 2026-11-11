@@ -24,6 +24,7 @@ interface WorkTurnCoordinatorOptions {
   scheduler?: ManagedHarnessHttpScheduler;
   hasOutcomeEvaluator: boolean;
   onTurnAdmitted?(turnId: string): void;
+  onPromptInput?(event: Readonly<Record<string,unknown>>): Promise<void>;
   onTurnPublished?(turnId: string): void;
   loadSession(session: ManagedHarnessWireSession): readonly Readonly<Record<string, unknown>>[];
   failRun(error: unknown): void;
@@ -81,7 +82,7 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
       signal.addEventListener("abort", closePermissions, { once: true });
     },
     selectNativeHarness(harnessId) { nativeHarnessId = harnessId; },
-    nativeReady(session) { nativeSession = session; },
+    nativeReady(session) { nativeSession = session; verifiedMode = undefined; },
     async requestPermission(request) {
       assertMode();
       return permissionBridge?.requestPermission(request)
@@ -204,6 +205,7 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
               await reader.verifyConsumption(context.event, attempt.root, signal);
               return; // same root, already consumed once, no activity re-admission
             }
+            if (kind === "prompt") await options.onPromptInput?.(context.event);
             assertMode();
             const applied = await runtime.applyPermissionMode(nativeSession, {
               harnessId: nativeHarnessId ?? options.fallbackHarnessId,

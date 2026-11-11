@@ -16,7 +16,9 @@ import {
   type AcpSandboxAgentPreparation,
   type AcpSandboxAgentStatePort,
 } from "@open-managed-agents/acp-runtime/sandbox-agent";
-import type { SessionOptions } from "@open-managed-agents/acp-runtime";
+import { randomUUID } from "node:crypto";
+import { buildManagedEventRecoveryPrompt, type ManagedRecoveryEvent } from "./semantic-recovery.js";
+import type { AcpSession, AcpRuntime, SessionOptions } from "@open-managed-agents/acp-runtime";
 import type {
   SessionHostEvent,
   SessionStartCommand,
@@ -211,6 +213,20 @@ export class AcpNativeSessionState implements ManagedHarnessSessionStatePort {
     };
   }
 
+  async hasRuntimeState(sessionId: string): Promise<boolean> {
+    const record = this.#requireRecord(sessionId);
+    if (record.preparation.binding.resume !== "native-and-acp") return true;
+    return hasRequiredAcpSandboxAgentState(this.options.io, {
+      ...record.preparation,
+      binding: {
+        ...record.preparation.binding,
+        sessionArtifacts: record.preparation.binding.sessionArtifacts.map(artifact => ({
+          ...artifact, path: artifact.runtimePath,
+        })),
+      },
+    });
+  }
+
   async onReady(
     event: Extract<SessionHostEvent, { type: "session.ready" }>,
   ): Promise<void> {
@@ -304,4 +320,82 @@ export function createAcpNativeSessionState(
   options: AcpNativeSessionStateOptions,
 ): AcpNativeSessionState {
   return new AcpNativeSessionState(options);
+}
+
+/** Resident consumers check the native allowlist between canonical roots, not
+ * between continuation/revision prompts. A missing allowlist closes the actual
+ * old process and starts a fresh session before permission verification/consume.
+ * The stable proxy lets the common host keep its dispatch identity; it does not
+ * invent a native session or replay any input. */
+export function createRecoverableNativeSession(options: {
+  session: AcpSession;
+  sessionOptions: SessionOptions;
+  runtime: AcpRuntime;
+  state: AcpNativeSessionState;
+  sessionId(): string;
+  nativeReady(session: AcpSession): void;
+  instructions(): string;
+  history(): Promise<readonly ManagedRecoveryEvent[]>;
+  maxCharacters?: number;
+}): {session: AcpSession; beforeRootPrompt(): Promise<void>} {
+  let session = options.session;
+  let firstPrompt = true;
+  let completedPrompt = false;
+  let recover = false;
+  const wrapped = new Proxy(session, {get(_target, property) {
+    if (property === "prompt") return async function*(...args: Parameters<AcpSession["prompt"]>) {
+      let text = args[0];
+      const platform = firstPrompt && options.instructions()
+        ? `<openma-platform>\n${options.instructions()}\n</openma-platform>\n\n` : "";
+      if (recover) {
+        if (typeof text !== "string") throw new Error("Native recovery requires canonical text input");
+        // Never deduplicate canonical history by the current request's text:
+        // a prior, completed input can legitimately have identical wording.
+        const placeholder = `current-${randomUUID()}`;
+        const maximum = Math.max(1024, options.maxCharacters ?? 32000);
+        const template = buildManagedEventRecoveryPrompt(await options.history(), placeholder, {
+          reason: "native-state-missing", maxCharacters: maximum,
+        });
+        const historyStart = template.indexOf("Recovered conversation:\n") + "Recovered conversation:\n".length;
+        const currentStart = template.lastIndexOf(`\nCurrent request:\n${placeholder}\n</openma-recovery>`);
+        if (currentStart < historyStart) throw new Error("Invalid native recovery envelope");
+        const prefix = template.slice(0, historyStart);
+        const closing = "\n</openma-recovery>";
+        const label = "\nCurrent request:\n";
+        const payloadBudget = maximum - platform.length - prefix.length - label.length - closing.length;
+        if (payloadBudget < 256) throw new Error("Platform context exceeds native recovery budget");
+        const currentBudget = Math.floor(payloadBudget * 0.6);
+        const marker = "\n… [current request truncated] …\n";
+        const available = Math.max(0, currentBudget - marker.length);
+        const current = text.length <= currentBudget ? text
+          : text.slice(0, Math.ceil(available / 2)) + marker + text.slice(text.length - Math.floor(available / 2));
+        let history = template.slice(historyStart, currentStart);
+        const historyBudget = payloadBudget - current.length;
+        if (history.length > historyBudget) {
+          const omitted = "… earlier history omitted …\n";
+          history = omitted + history.slice(-(historyBudget - omitted.length));
+        }
+        text = prefix + history + label + current + closing;
+        recover = false;
+      }
+      if (platform && typeof text === "string") text = platform + text;
+      firstPrompt = false;
+      for await (const event of session.prompt(text,args[1])) yield event;
+      completedPrompt = true;
+    };
+    const value = Reflect.get(session,property,session);
+    return typeof value === "function" ? value.bind(session) : value;
+  }});
+  return {
+    session: wrapped,
+    async beforeRootPrompt() {
+      if (!completedPrompt || await options.state.hasRuntimeState(options.sessionId())) return;
+      await session.dispose();
+      session = await options.runtime.start({...options.sessionOptions,resumeAcpSessionId:undefined});
+      options.nativeReady(wrapped);
+      await options.state.onReady({type:"session.ready",sessionId:options.sessionId(),acpSessionId:session.acpSessionId});
+      recover = true;
+      firstPrompt = true;
+    },
+  };
 }

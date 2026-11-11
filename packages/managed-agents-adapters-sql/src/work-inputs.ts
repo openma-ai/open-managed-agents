@@ -289,6 +289,32 @@ export class SqlWorkInputs implements WorkInputsPort {
         typeof decoded.event.processedAt === "string" && Number.isFinite(Date.parse(decoded.event.processedAt)))) || decoded.consumedByExecutionId || raw.cancelled_at_ms != null || raw._queued === true ||
       raw.deferredUntilToolResults !== undefined || raw.deferred_until_tool_results !== undefined) return rejected;
     if (sequence !== null && (decoded.position.revision !== 1 || decoded.position.index !== sequence)) return rejected;
+    const batch = raw.source_position?.input_batch;
+    const siblings: Array<{id:string;document:string;raw:Record<string,any>}> = [];
+    if (batch !== undefined) {
+      if (batch === null || typeof batch !== "object" || Array.isArray(batch) ||
+          sequence !== null || raw.type !== "user.message" || !Array.isArray(batch.ids) ||
+          batch.ids.length < 2 || batch.ids.length > 200 || batch.rootId !== input.inputId ||
+          batch.ids[0] !== input.inputId || new Set(batch.ids).size !== batch.ids.length ||
+          Object.keys(batch).some(key => key !== "rootId" && key !== "ids")) return rejected;
+      let lastIndex = decoded.position.index;
+      for (const id of batch.ids.slice(1)) {
+        if (typeof id !== "string") return rejected;
+        const row = await this.sql.prepare("SELECT document FROM managed_session_events WHERE workspace_id=? AND session_id=? AND id=?")
+          .bind(claim.workspaceId,claim.sessionId,id).first<{document:string}>();
+        if (!row) return rejected;
+        const sibling = JSON.parse(row.document), source = decodeSessionEventDocument(row.document);
+        if (sibling.type !== "user.message" || !source.position ||
+            source.position.revision !== decoded.position.revision || source.position.index <= lastIndex ||
+            (sibling.sessionThreadId ?? "sthr_primary") !== (raw.sessionThreadId ?? "sthr_primary") ||
+            JSON.stringify(sibling.source_position.input_batch) !== JSON.stringify(batch) ||
+            source.consumedByExecutionId || sibling.processedAt !== null || sibling._queued === true ||
+            sibling.cancelled_at_ms != null || sibling.deferredUntilToolResults !== undefined ||
+            sibling.deferred_until_tool_results !== undefined) return rejected;
+        lastIndex = source.position.index;
+        siblings.push({id,document:row.document,raw:sibling});
+      }
+    }
     const fence=this.fence(claim);
     const session=await this.sql.prepare("SELECT revision FROM managed_sessions WHERE workspace_id=? AND id=?").bind(claim.workspaceId,claim.sessionId).first<{revision:number}>();
     if (!session) return rejected;
@@ -331,6 +357,12 @@ export class SqlWorkInputs implements WorkInputsPort {
           .bind(baseDocument,claim.workspaceId,claim.sessionId,input.inputId,input.expectedDocument,...scope)
         : this.sql.prepare("UPDATE managed_session_initial_events SET document=" + documentSql + " WHERE workspace_id=? AND session_id=? AND sequence=? AND " + rawCas + " AND EXISTS (SELECT 1 FROM managed_sessions WHERE " + sessionWhere + ")")
           .bind(baseDocument,claim.workspaceId,claim.sessionId,sequence,input.expectedDocument,...scope),
+      ...siblings.map(sibling=>{
+        const body=JSON.stringify({...sibling.raw,source_position:{...sibling.raw.source_position,consumed_by_execution_id:consumer,consumption_claim:{workId:claim.workId,generation:claim.generation,holder:claim.holder}}});
+        const stamped=this.dialect==="postgres"?"jsonb_set(?::text::jsonb,'{processedAt}',to_jsonb("+this.clockIso+"))::text":"json_set(?, '$.processedAt', "+this.clockIso+")";
+        return this.sql.prepare("UPDATE managed_session_events SET document="+stamped+",processed_at="+this.clockMs+" WHERE workspace_id=? AND session_id=? AND id=? AND "+rawCas+" AND EXISTS (SELECT 1 FROM managed_sessions WHERE "+sessionWhere+")")
+          .bind(body,claim.workspaceId,claim.sessionId,sibling.id,sibling.document,...scope);
+      }),
       this.sql.prepare("UPDATE managed_sessions SET revision=revision+1 WHERE " + sessionWhere).bind(...scope),
     ];
     const conflict=new Error("Work input CAS rejected");

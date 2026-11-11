@@ -61,6 +61,38 @@ describe("SqlSessionEventStore queued input processing", () => {
     store = new SqlSessionEventStore(client);
   });
 
+  it("persists bounded same-lane API message batch membership without grouping separate accepts", async () => {
+    await append([{id:"batch-a",type:"user.message",content:[],processedAt:null},{id:"batch-b",type:"user.message",content:[],processedAt:null}],"2026-11-11T00:00:00Z");
+    await append([{id:"next",type:"user.message",content:[],processedAt:null}],"2026-11-11T00:00:01Z");
+    const rows=await client.prepare("SELECT document FROM managed_session_events ORDER BY id").all<{document:string}>();
+    const events=rows.results!.map(row=>JSON.parse(row.document));
+    expect(events[0].source_position.input_batch).toEqual({rootId:"batch-a",ids:["batch-a","batch-b"]});
+    expect(events[1].source_position.input_batch).toEqual(events[0].source_position.input_batch);
+    expect(events[2].source_position.input_batch).toBeUndefined();
+    expect(events[0].source_position.revision).not.toBe(events[2].source_position.revision);
+  });
+
+  it("records independent same-acceptance lane groups without merging approvals or separate accepts", async () => {
+    await append([
+      {id:"primary-a",type:"user.message",content:[],processedAt:null},
+      {id:"child-a",type:"user.message",sessionThreadId:"child",content:[],processedAt:null},
+      {id:"primary-b",type:"user.message",content:[],processedAt:null},
+      {id:"child-b",type:"user.message",sessionThreadId:"child",content:[],processedAt:null},
+    ],"2026-11-11T00:00:00Z");
+    await append([
+      {id:"approval",type:"user.tool_confirmation",toolUseId:"tool",allow:true,processedAt:null},
+      {id:"after-approval",type:"user.message",content:[],processedAt:null},
+    ],"2026-11-11T00:00:01Z");
+    const rows = await client.prepare("SELECT document FROM managed_session_events").all<{document:string}>();
+    const byId = new Map(rows.results!.map(row => {const raw = JSON.parse(row.document);return [raw.id,raw];}));
+    expect(byId.get("primary-a").source_position.input_batch).toEqual({rootId:"primary-a",ids:["primary-a","primary-b"]});
+    expect(byId.get("primary-b").source_position.input_batch).toEqual(byId.get("primary-a").source_position.input_batch);
+    expect(byId.get("child-a").source_position.input_batch).toEqual({rootId:"child-a",ids:["child-a","child-b"]});
+    expect(byId.get("child-b").source_position.input_batch).toEqual(byId.get("child-a").source_position.input_batch);
+    expect(byId.get("approval").source_position.input_batch).toBeUndefined();
+    expect(byId.get("after-approval").source_position.input_batch).toBeUndefined();
+  });
+
   it("parks canonical deferred input without outbox and atomically releases it with the result", async () => {
     const coordinator = await coordinated();
     const staged = { ...message("deferred"), deferredUntilToolResults: ["call"] };

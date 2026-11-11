@@ -17,13 +17,77 @@ export function createWorkInputReader(client: ReturnType<typeof createWorkInputs
  return {
   async read(input: {cursor:string|null;limit:number;signal:AbortSignal}) {
    const page=await client.read(input);
-   const events=page.rows.map(row=>{
-    const raw: Record<string,unknown> = JSON.parse(row.document);
-    const source = raw.source_position as Record<string,unknown>;
+   const originalLimit = page.rows.length;
+   type Batch = { rootId: string; ids: string[] };
+   const batchOf = (raw: Record<string, any>): Batch | undefined => {
+    const batch = raw.source_position.input_batch;
+    if (batch === undefined) return;
+    if (!batch || typeof batch !== "object" || Array.isArray(batch) ||
+        typeof batch.rootId !== "string" || !Array.isArray(batch.ids) ||
+        batch.ids.length < 2 || batch.ids.length > 200 ||
+        batch.ids.some((id: unknown) => typeof id !== "string" || !id) ||
+        batch.ids[0] !== batch.rootId || new Set(batch.ids).size !== batch.ids.length ||
+        Object.keys(batch).some(key => key !== "rootId" && key !== "ids")) {
+     throw new Error("Invalid canonical input batch");
+    }
+    return batch;
+   };
+   // A same-lane acceptance group may straddle a page with other lanes
+   // interleaved. Finish declared groups with bounded ordered seeks, retaining
+   // each fetched row's actual readback location (never a fabricated cursor).
+   const locations = new Map(page.rows.map(row => [row.event.id, {cursor:input.cursor,limit:originalLimit}]));
+   for (let index = 0; index < page.rows.length; index++) {
+    const batch = batchOf(JSON.parse(page.rows[index]!.document));
+    if (!batch) continue;
+    let remaining = batch.ids.filter(id => !locations.has(id));
+    while (remaining.length && page.hasMore) {
+     if (page.rows.length - originalLimit >= 200) throw new Error("Canonical input batch exceeds bounded read");
+     const location = {cursor:page.cursor,limit:Math.min(remaining.length,200 - (page.rows.length - originalLimit))};
+     const next = await client.read({...location,signal:input.signal});
+     if (!next.rows.length || next.rows.some(row => locations.has(row.event.id))) throw new Error("Incomplete canonical input batch");
+     for (const row of next.rows) locations.set(row.event.id,location);
+     page.rows.push(...next.rows);
+     page.cursor = next.cursor;
+     page.hasMore = next.hasMore;
+     remaining = batch.ids.filter(id => !locations.has(id));
+    }
+    if (remaining.length) throw new Error("Incomplete canonical input batch");
+   }
+   const emitted = new Set<string>();
+   const events = page.rows.flatMap(row => {
+    const raw = JSON.parse(row.document);
+    const source = raw.source_position;
+    const batch = batchOf(raw);
+    if (emitted.has(row.event.id)) return [];
     const event: WorkWireInput = {...wire(raw) as Record<string,unknown>,id:row.event.id,type:row.event.type,processed_at:row.event.processedAt};
-    readLocations.set(event, {cursor:input.cursor,limit:page.rows.length});
-    originals.set(event,{inputId:event.id,turnId:typeof source.execution_id==="string"&&source.execution_id?source.execution_id:event.id,expectedDocument:row.document});
-    return event;
+    readLocations.set(event, locations.get(event.id)!);
+    originals.set(event,{inputId:event.id,turnId:typeof source.execution_id === "string" && source.execution_id ? source.execution_id : event.id,expectedDocument:row.document});
+    if (batch) {
+     if (row.event.id !== batch.rootId) throw new Error("Invalid canonical batch root");
+     const content: unknown[] = [];
+     let previousIndex = row.position.index - 1;
+     for (const id of batch.ids) {
+      const member = page.rows.find(candidate => candidate.event.id === id);
+      if (!member) throw new Error("Incomplete canonical input batch");
+      const value = JSON.parse(member.document);
+      if (member.event.type !== "user.message" || member.position.revision !== row.position.revision ||
+          member.position.index <= previousIndex || (value.sessionThreadId ?? "sthr_primary") !== (raw.sessionThreadId ?? "sthr_primary") ||
+          !isDeepStrictEqual(value.source_position.input_batch,batch) ||
+          (value.processedAt === null) !== (raw.processedAt === null) || value._queued === true || value.cancelled_at_ms != null ||
+          value.deferredUntilToolResults !== undefined || value.deferred_until_tool_results !== undefined ||
+          !isDeepStrictEqual(value.source_position.consumption_claim,source.consumption_claim) ||
+          value.source_position.consumed_by_execution_id !== source.consumed_by_execution_id || !Array.isArray(value.content)) {
+       throw new Error("Invalid canonical input batch");
+      }
+      previousIndex = member.position.index;
+      if (content.length) content.push({type:"text",text:"\n"});
+      content.push(...wire(value.content) as unknown[]);
+      emitted.add(id);
+     }
+     event.content = content.every(block => typeof block === "object" && block !== null && (block as {type?:unknown}).type === "text")
+      ? [{type:"text",text:content.map(block => (block as {text:string}).text).join("")}] : content;
+    }
+    return [event];
    });
    return {events,cursor:page.cursor,hasMore:page.hasMore};
   },

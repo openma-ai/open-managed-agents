@@ -283,3 +283,41 @@ it("MySQL migration refuses legacy canonical rows before issuing additive DDL",a
  await expect(ensureMysqlWorkInputsSchema(sql)).rejects.toThrow(/source.position.*legacy/i);
  expect(ddl).toEqual([]);
 });
+for(const d1 of [false,true]) it(`same acceptance batch consumes atomically under one root (${d1?"D1":"SQLite"})`,async()=>{
+ const f=await fixture(d1);const batch={rootId:"z",ids:["z","a"]};
+ for(const id of batch.ids){const row=await f.sql.prepare("SELECT document FROM managed_session_events WHERE id=?").bind(id).first<{document:string}>();const raw=JSON.parse(row!.document);raw.source_position.input_batch=batch;await f.sql.prepare("UPDATE managed_session_events SET document=? WHERE id=?").bind(JSON.stringify(raw),id).run();}
+ const root=(await f.sql.prepare("SELECT document FROM managed_session_events WHERE id='z'").first<{document:string}>())!.document;
+ expect(await f.store.consume({...f.input,expectedDocument:root})).toMatchObject({type:"consumed"});
+ for(const id of batch.ids){const raw=JSON.parse((await f.sql.prepare("SELECT document FROM managed_session_events WHERE id=?").bind(id).first<{document:string}>())!.document);expect(raw.source_position.consumed_by_execution_id).toBe("z");expect(raw.source_position.consumption_claim).toEqual({workId:"w",generation:2,holder:"worker"});expect(raw.processedAt).toEqual(expect.any(String));}
+ expect(JSON.parse((await f.sql.prepare("SELECT document FROM managed_session_events WHERE id='later'").first<{document:string}>())!.document).processedAt).toBeNull();
+ expect(await f.store.consume({...f.input,expectedDocument:root})).not.toMatchObject({type:"consumed"});
+});
+for(const mode of ["raw","lane","revision","ttl"] as const) it(`batch rejects ${mode} conflict without partially consuming root`,async()=>{
+ const f=await fixture(false);const batch={rootId:"z",ids:["z","a"]};
+ for(const id of batch.ids){const row=await f.sql.prepare("SELECT document FROM managed_session_events WHERE id=?").bind(id).first<{document:string}>();const raw=JSON.parse(row!.document);raw.source_position.input_batch=batch;if(id==="a"&&mode==="lane")raw.sessionThreadId="other";if(id==="a"&&mode==="revision")raw.source_position.revision=3;await f.sql.prepare("UPDATE managed_session_events SET document=? WHERE id=?").bind(JSON.stringify(raw),id).run();}
+ const root=(await f.sql.prepare("SELECT document FROM managed_session_events WHERE id='z'").first<{document:string}>())!.document;
+ const mutate=async()=>{if(mode==="raw")await f.sql.exec("UPDATE managed_session_events SET document=document||' ' WHERE id='a'");if(mode==="ttl")await f.sql.exec("UPDATE managed_environment_work SET claim_at=0");};
+ const raced:SqlClient={prepare:q=>f.sql.prepare(q),exec:q=>f.sql.exec(q),batch:async statements=>{await mutate();return f.sql.batch(statements);},...(f.sql.batchChecked?{batchChecked:async(statements,validate)=>{await mutate();return f.sql.batchChecked!(statements,validate);}}:{})};
+ expect(await new SqlWorkInputs(raced,{sourcePositionsValidated:true}).consume({...f.input,expectedDocument:root})).toEqual({type:"rejected"});expect((await f.sql.prepare("SELECT document FROM managed_session_events WHERE id='z'").first<{document:string}>())!.document).toBe(root);
+});
+
+it.each(["null", "duplicate", "missing", "processed", "queued", "deferred", "cancelled"])("rejects malformed or non-dispatchable batch member (%s) without consuming its root", async mode => {
+ const f=await fixture(false);
+ const batch={rootId:"z",ids:mode==="duplicate"?["z","a","a"]:mode==="missing"?["z","missing"]:["z","a"]};
+ for(const id of ["z","a"]){
+  const row=await f.sql.prepare("SELECT document FROM managed_session_events WHERE id=?").bind(id).first<{document:string}>();
+  const raw=JSON.parse(row!.document);
+  raw.source_position.input_batch=mode==="null"?null:batch;
+  if(id==="a"){
+   if(mode==="processed")raw.processedAt="2026-11-11T00:00:00Z";
+   if(mode==="queued")raw._queued=true;
+   if(mode==="deferred")raw.deferredUntilToolResults=["tool"];
+   if(mode==="cancelled")raw.cancelled_at_ms=1;
+  }
+  await f.sql.prepare("UPDATE managed_session_events SET document=? WHERE id=?").bind(JSON.stringify(raw),id).run();
+ }
+ const root=(await f.sql.prepare("SELECT document FROM managed_session_events WHERE id='z'").first<{document:string}>())!.document;
+ expect(await f.store.consume({...f.input,expectedDocument:root})).toEqual({type:"rejected"});
+ expect((await f.sql.prepare("SELECT document FROM managed_session_events WHERE id='z'").first<{document:string}>())!.document).toBe(root);
+ expect(await f.sql.prepare("SELECT revision FROM managed_sessions").first()).toEqual({revision:4});
+});

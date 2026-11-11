@@ -101,6 +101,17 @@ export class SqlSessionEventStore
     if (executionOutbox === true && (input.events.length > 0 || (input.executionEvents?.length ?? 0) > 0)) {
       return this.appendWithExecutionOutbox(input);
     }
+    // One acceptance transaction/revision is the batch boundary. Keep source
+    // dispatch IDs distinct; Work consumes the declared message group under its
+    // first input root atomically, without a second outbox/ledger.
+    const messageGroups = sessionExecutionEventBatches(input.events)
+      .filter(batch => batch.events.length > 1 && batch.events.every(event => event.type === "user.message"));
+    const workDocument = (event: SentSessionEvent, index: number) => {
+      const document = JSON.parse(encodeSessionEventDocument(event, {revision:input.expectedRevision+1,index}));
+      const batch = messageGroups.find(batch => batch.events.some(member => member.id === event.id));
+      if (batch) document.source_position.input_batch = {rootId:batch.id,ids:batch.events.map(member=>member.id)};
+      return JSON.stringify(document);
+    };
     const eventStatements = input.events.map((event, index) =>
         this.client
           .prepare(
@@ -119,7 +130,7 @@ export class SqlSessionEventStore
             relatedThreadId(event),
             event.id,
             event.type,
-            encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }),
+            workDocument(event, index),
             timestamp(sortTime(event, input.nextSession.updatedAt)),
             input.workspaceId,
             input.sessionId,

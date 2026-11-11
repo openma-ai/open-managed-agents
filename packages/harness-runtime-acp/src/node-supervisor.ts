@@ -1,3 +1,5 @@
+import { createWorkInputsHttpClient } from "./work-inputs-http.js";
+import { createWorkInputReader } from "./work-input-adapter.js";
 import { InferenceProtocolUnsupportedError } from "@open-managed-agents/acp-runtime/inference-config";
 import { NodeManagedAcpStartupConfigurationFailure, NodeManagedAcpWorkItemFailure } from "./work-item-failure.js";
 import { createWorkTurnCoordinator, type WorkTurnCoordinator } from "./work-turn-coordinator.js";
@@ -41,6 +43,7 @@ import {
 } from "./http-control.js";
 import {
   createAcpNativeSessionState,
+  createRecoverableNativeSession,
   createNodeAcpHarnessStateIo,
   type NodeAcpHarnessStateIo,
 } from "./node.js";
@@ -166,6 +169,7 @@ interface ActiveRunContext {
   outputPath: string | null;
   channels: ManagedAcpExecutionChannels | null;
   history: ManagedHarnessRecoveryHistoryPort;
+  recoveryHistory: ManagedHarnessRecoveryHistoryPort;
   skills: ManagedHarnessHttpSkillSource;
   /** Project one retrying startup attempt under this run's Work claim. */
   reportStartupRetry(id: string): Promise<void>;
@@ -231,6 +235,9 @@ export function createNodeManagedAcpSupervisorApp(
     let startup!: StartupRun;
     let nativeStartAttempted = false;
     let turns!: WorkTurnCoordinator;
+    let platformInstructions = "";
+    let currentInputIds = new Set<string>();
+    let prepareNativePrompt: (() => Promise<void>) | undefined;
     const startupRetry = options.lifecycle?.startupRetry ?? ACP_STARTUP_RETRY;
     const sleep = options.supervisorScheduler?.sleep ?? abortableSleep;
     // A failed spawn/initialize leaves no ACP session and no agent output, so
@@ -245,8 +252,18 @@ export function createNodeManagedAcpSupervisorApp(
         for (let attempt = 1; ; attempt += 1) {
           try {
             const session = await acpRuntime.start(sessionOptions);
-            turns.nativeReady(session);
-            return session;
+            const native = createRecoverableNativeSession({
+              session, sessionOptions, runtime: acpRuntime,
+              state: sessionState, sessionId: () => activeSession.id,
+              nativeReady: session => turns.nativeReady(session),
+              instructions: () => platformInstructions,
+              history: async () => (await active.recoveryHistory.list(activeSession.id)).filter(event =>
+                event.type !== "user.message" || event.processed_at != null && !currentInputIds.has(String(event.id))),
+              maxCharacters: options.recovery?.maxCharacters,
+            });
+            prepareNativePrompt = native.beforeRootPrompt;
+            turns.nativeReady(native.session);
+            return native.session;
           } catch (error) {
             if (run.signal.aborted) throw error;
             let retry = attempt < startupRetry.attempts;
@@ -286,9 +303,7 @@ export function createNodeManagedAcpSupervisorApp(
           session.agent.system?.trimEnd() ?? "",
           skillInstructions,
         ].filter((part) => part.length > 0).join("\n\n");
-        if (instructions.length > 0) {
-          await stateIo.writeFile("/workspace/AGENTS.md", `${instructions}\n`);
-        }
+        platformInstructions = instructions;
         const scrubbedEnvironment = Object.fromEntries(
           CONTROL_PLANE_ENV_KEYS.map((key) => [key, undefined]),
         );
@@ -392,8 +407,8 @@ export function createNodeManagedAcpSupervisorApp(
       maxCharacters: options.recovery?.maxCharacters,
     });
     const runtime = options.control?.runtime;
-    // Installed 0.13.1 silently ignores the candidate input hooks. Refuse to
-    // create a public-history runner rather than advertising unsafe support.
+    // The composition must supply the installed gated Work control runtime;
+    // never fall back to a public-history runner without consumption fences.
     if (!runtime) throw new Error("Work input dispatch runtime is unavailable; common capability injection required");
     const createSupervisor = runtime.createSupervisor;
     if (!options.finalization || typeof options.finalization.drainTurn !== "function") {
@@ -407,6 +422,12 @@ export function createNodeManagedAcpSupervisorApp(
       pollIntervalMs: options.control?.pollIntervalMs,
       scheduler: options.control?.scheduler,
       hasOutcomeEvaluator: options.onTurnComplete !== undefined,
+      async onPromptInput(event) {
+        const source = isRecord(event.source_position) ? event.source_position : undefined;
+        const batch = source && isRecord(source.input_batch) ? source.input_batch : undefined;
+        currentInputIds = new Set(batch && Array.isArray(batch.ids) ? batch.ids.map(String) : [String(event.id)]);
+        await prepareNativePrompt?.();
+      },
       onTurnAdmitted: options.onTurnAdmitted,
       onTurnPublished: options.onTurnPublished,
       loadSession(session) {
@@ -457,14 +478,33 @@ export function createNodeManagedAcpSupervisorApp(
           identity!.digest = release.digest;
           prepared = { id: harness.id, command: artifact.command, args: artifact.args, env: artifact.env };
         }
-        const history = createManagedHarnessHttpRecoveryHistory({
+        const recoveryReader = createWorkInputReader(createWorkInputsHttpClient({
           apiBaseUrl: proxy.gatewayBaseUrl,
+          sessionId: input.scope.sessionId,
           sessionsToken: proxy.sessionsToken,
           fetch: options.fetch,
-          retry: options.control?.retry,
-          scheduler: options.control?.scheduler,
-          signal: input.signal,
-        });
+        }));
+        const history: ManagedHarnessRecoveryHistoryPort = {
+          async list() {
+            const events: import("./semantic-recovery.js").ManagedRecoveryEvent[] = [];
+            let cursor: string | null = null;
+            // Canonical append order includes replies persisted after queued
+            // successors. Do not slice at the current input or deduplicate text.
+            do {
+              const page = await recoveryReader.read({cursor, limit:100, signal:input.signal});
+              for (const event of page.events) {
+                if (["user.message", "agent.message", "agent.tool_use", "agent.tool_result",
+                  "agent.custom_tool_use", "agent.mcp_tool_use", "agent.mcp_tool_result",
+                  "user.custom_tool_result", "agent.thread_context_compacted"].includes(event.type)) {
+                  events.push(event as import("./semantic-recovery.js").ManagedRecoveryEvent);
+                }
+              }
+              cursor = page.cursor;
+              if (!page.hasMore) break;
+            } while (true);
+            return events;
+          },
+        };
         const skills = createManagedHarnessHttpSkillSource({
           apiBaseUrl: proxy.gatewayBaseUrl,
           sessionsToken: proxy.sessionsToken,
@@ -487,7 +527,15 @@ export function createNodeManagedAcpSupervisorApp(
         active = {
           outputPath: input.outputPath,
           channels: resolvedChannels?.type === "ready" ? resolvedChannels.channels : null,
-          history,
+          history: createManagedHarnessHttpRecoveryHistory({
+            apiBaseUrl: proxy.gatewayBaseUrl,
+            sessionsToken: proxy.sessionsToken,
+            fetch: options.fetch,
+            retry: options.control?.retry,
+            scheduler: options.control?.scheduler,
+            signal: input.signal,
+          }),
+          recoveryHistory: history,
           skills,
           reportStartupRetry: (id) => publishStartupRetry({
             apiBaseUrl: proxy.gatewayBaseUrl,
