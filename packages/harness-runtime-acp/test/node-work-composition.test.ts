@@ -4,11 +4,11 @@ import * as composition from "../src/node-work-composition.js";
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
 const signal = new AbortController().signal;
 const context = { command: { sessionId: "s", turnId: "t" }, signal, async flush() {} } as never;
-function fixture(events: unknown[]) {
+function fixture(events: unknown[], agentInfo: { name: string; version: string } = { name: "@agentclientprotocol/claude-agent-acp", version: "0.94.0" }) {
   const activity = new composition.WorkTurnActivities();
   let options: any;
   const runtime = activity.wrapRuntime({ async start(input) { options = input; return {
-    options: input, agentInfo: { name: "@agentclientprotocol/claude-agent-acp", version: "0.94.0" }, async *prompt() { yield* events; }, async steer() { return "injected"; },
+    options: input, agentInfo, async *prompt() { yield* events; }, async steer() { return "injected"; },
     isAlive() { return true; },
   } as unknown as AcpSession; } } satisfies AcpRuntime);
   return { activity, runtime, options: () => options };
@@ -53,13 +53,52 @@ it("refuses a failed actual activity and cancels local drain wait without fabric
   for await (const _ of session.prompt("hi")) {}
   await expect(f.activity.drain(context)).rejects.toThrow("child failed");
 });
+const piShell = (status: string) => [
+  { sessionUpdate: "tool_call", toolCallId: "sh", kind: "execute", status: "in_progress", rawInput: { command: "printf ok" } },
+  { sessionUpdate: "tool_call_update", toolCallId: "sh", status, rawOutput: { content: [{ type: "text", text: "ok" }] } },
+  { type: "promptComplete", response: { stopReason: "end_turn" } },
+];
+it.each(["completed", "failed"])("certifies a pinned pi-acp 0.1.8 terminal shell update (%s) as its exit", async status => {
+  const f = fixture(piShell(status), { name: "openma-pi-acp", version: "0.1.8" });
+  f.activity.admit("t"); const session = await f.runtime.start({ agent: { command: "fixture" } });
+  for await (const _ of session.prompt("hi")) {}
+  await expect(f.activity.drain(context)).resolves.toBeUndefined();
+});
+it.each([
+  ["unpinned pi version", piShell("completed"), { name: "openma-pi-acp", version: "0.1.9" }],
+  ["codex without exit_code", piShell("completed"), { name: "@agentclientprotocol/codex-acp", version: "1.8.0" }],
+  ["pi shell still running", piShell("in_progress"), { name: "openma-pi-acp", version: "0.1.8" }],
+  ["pi background shell", [{ sessionUpdate: "tool_call", toolCallId: "sh", kind: "execute", status: "completed", rawInput: { command: "x", run_in_background: true } }, { type: "promptComplete", response: { stopReason: "end_turn" } }], { name: "openma-pi-acp", version: "0.1.8" }],
+] as const)("does not certify shell exit for %s", async (_label, events, info) => {
+  const f = fixture([...events], info);
+  f.activity.admit("t"); const session = await f.runtime.start({ agent: { command: "fixture" } });
+  for await (const _ of session.prompt("hi")) {}
+  await expect(f.activity.drain(context)).rejects.toThrow(/unproven/);
+});
 it("loads gated capabilities from the formally installed common package", async () => {
   const modules = await composition.loadWorkRuntimeModules();
   const managed = await import("@openma/common/managed-runtime");
   const acp = await import("@openma/common/acp-runtime");
   expect(modules.control.createSupervisor).toBe(managed.createManagedAcpSupervisorHarness);
   expect(modules.control.createControlChannel).toBe(managed.createManagedHarnessHttpControlChannel);
-  expect(modules.control.applyPermissionMode).toBe(acp.applyAcpPermissionMode);
+  expect(typeof acp.applyAcpPermissionMode).toBe("function");
+  const signal = new AbortController().signal;
+  // Pinned codex keeps the common setter's verification (no advertised mode -> refused).
+  await expect(modules.control.applyPermissionMode({ agentInfo: { name: "@agentclientprotocol/codex-acp", version: "1.8.0" }, configOptions: [] } as never,
+    { harnessId: "codex-acp", mode: "always_allow", abortSignal: signal })).rejects.toThrow(/advertised/);
+  // Certified ungated pi-acp: always_allow is inherent, stricter modes are refused.
+  const pi = { agentInfo: { name: "openma-pi-acp", version: "0.1.8" }, configOptions: [] } as never;
+  await expect(modules.control.applyPermissionMode(pi, { harnessId: "pi-acp", mode: "always_allow", abortSignal: signal }))
+    .resolves.toEqual({ status: "inherent", verification: "ungated-harness-profile" });
+  for (const mode of ["always_ask", "auto"] as const) {
+    await expect(modules.control.applyPermissionMode(pi, { harnessId: "pi-acp", mode, abortSignal: signal })).rejects.toThrow(/no native permission gate/);
+  }
+  // Unpinned version, mismatched id, or an advertised native mode fall back / fail closed.
+  await expect(modules.control.applyPermissionMode({ agentInfo: { name: "openma-pi-acp", version: "0.1.9" }, configOptions: [] } as never,
+    { harnessId: "pi-acp", mode: "always_allow", abortSignal: signal })).rejects.toThrow(/Unproven/);
+  await expect(modules.control.applyPermissionMode(pi, { harnessId: "codex-acp", mode: "always_allow", abortSignal: signal })).rejects.toThrow(/Unproven/);
+  await expect(modules.control.applyPermissionMode({ agentInfo: { name: "openma-pi-acp", version: "0.1.8" }, configOptions: [{ id: "mode" }] } as never,
+    { harnessId: "pi-acp", mode: "always_allow", abortSignal: signal })).rejects.toThrow(/unexpectedly advertises/);
 });
 it("aborting a join does not turn a still-running child into a completion receipt", async () => {
   const f = fixture([{ type: "promptComplete", response: { stopReason: "end_turn" } }]);

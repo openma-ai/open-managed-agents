@@ -1,5 +1,6 @@
 import { createWorkVerifierExec } from "./node-work-verifier.js";
 import { createExecutionChannelsHttpResolver } from "./execution-channels-http.js";
+import { withUngatedPermissionProfiles } from "./ungated-permission-mode.js";
 import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import type { ManagedAcpExecutionChannels } from "@open-managed-agents/shared/acp-execution-channels-rpc";
 import type { AcpRuntime, AcpSession, Spawner, SessionOptions } from "@open-managed-agents/acp-runtime";
@@ -40,7 +41,7 @@ export async function loadWorkRuntimeModules(): Promise<WorkRuntimeModules> {
     control: {
       createSupervisor: managed.createManagedAcpSupervisorHarness as WorkControlRuntime["createSupervisor"],
       createControlChannel: managed.createManagedHarnessHttpControlChannel as WorkControlRuntime["createControlChannel"],
-      applyPermissionMode: permission as WorkControlRuntime["applyPermissionMode"],
+      applyPermissionMode: withUngatedPermissionProfiles(permission as WorkControlRuntime["applyPermissionMode"]),
     },
     createAcpRuntime: spawner => createPlacedAcpRuntime({ type: "local", spawner }),
   };
@@ -65,6 +66,7 @@ export class WorkTurnActivities {
   private opaque = new Set<string>();
   private nativeTools = new Map<string, { kind?: string; status?: string; detached: boolean; exited: boolean }>();
   private nativeContract = false;
+  private terminalStatusProvesExit = false;
   private children = new Map<string, boolean>();
   private invalid: Error | undefined;
   private sequence = 0;
@@ -105,7 +107,7 @@ export class WorkTurnActivities {
     for (const [id, tool] of this.nativeTools) {
       const synchronous = this.nativeContract && !tool.detached
         && (tool.status === "completed" || tool.status === "failed")
-        && tool.kind !== undefined && (tool.kind !== "execute" || tool.exited);
+        && tool.kind !== undefined && (tool.kind !== "execute" || tool.exited || this.terminalStatusProvesExit);
       if (!synchronous && !this.joins.has(id)) throw new Error(`Work native activity completion unproven: ${id}`);
     }
     for (const [id, done] of this.children) {
@@ -146,8 +148,15 @@ export class WorkTurnActivities {
       // contract or actual host joins; a self-reported generic ACP version is
       // not enough to certify detached execution.
       const info = session.agentInfo;
+      // @openma/pi-acp 0.1.8: pi's agent loop resolves a prompt only after
+      // every tool execution ended, and its shell tool emits the terminal
+      // tool_call_update only after waiting for the shell's exit (no exit_code
+      // field is projected). A terminal execute status is therefore its exit.
+      const pi = info?.version === "0.1.8" && info?.name === "openma-pi-acp";
       this.nativeContract = (["0.75.1", "0.94.0"].includes(info?.version ?? "") && ["claude-agent-acp", "@agentclientprotocol/claude-agent-acp"].includes(info?.name ?? ""))
-        || (info?.version === "1.8.0" && ["codex-acp", "@agentclientprotocol/codex-acp"].includes(info?.name ?? ""));
+        || (info?.version === "1.8.0" && ["codex-acp", "@agentclientprotocol/codex-acp"].includes(info?.name ?? ""))
+        || pi;
+      this.terminalStatusProvesExit = pi;
       const activities = this;
       return new Proxy(session, { get(target, property) {
         if (property === "steer") return async (...args: Parameters<AcpSession["steer"]>) => {

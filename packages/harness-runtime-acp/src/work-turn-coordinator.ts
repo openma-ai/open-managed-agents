@@ -211,8 +211,10 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
               harnessId: nativeHarnessId ?? options.fallbackHarnessId,
               mode: globalPermissionMode(agentTools), abortSignal: signal,
             });
-            if (applied.status !== "applied") throw new Error("Native permission mode was not verified");
-            verifiedMode = applied.nativeModeId;
+            if (applied.status === "applied") verifiedMode = applied.nativeModeId;
+            // Ungated always_allow has no native mode to drift-check.
+            else if (applied.status === "inherent") verifiedMode = undefined;
+            else throw new Error("Native permission mode was not verified");
             signal.throwIfAborted();
             const consumptionIdentity = reader.input(context.event);
             // inputId is the raw canonical event; turnId is its existing

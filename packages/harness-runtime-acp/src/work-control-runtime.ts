@@ -22,6 +22,8 @@ export interface WorkControlRuntime {
     abortSignal: AbortSignal;
   }): Promise<
     | { status: "applied"; nativeModeId: string; verification: "session/set_config_option" }
+    /** Certified ungated harness running always_allow: no native mode exists. */
+    | { status: "inherent"; verification: "ungated-harness-profile" }
     | { status: "not-configured" }
   >;
 }
