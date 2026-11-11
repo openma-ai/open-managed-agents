@@ -61,6 +61,16 @@ interface E2BCommandOptions {
   stdin?: boolean;
   user?: string;
 }
+/** The template start step (template/template.mjs), with pins read from the
+ * root-owned installation manifest the template build already verified. */
+export const E2B_MANAGED_LAUNCHER_START = [
+  "set -eu",
+  "pins=$(/usr/bin/python3 -I -S -c 'import json; m = json.load(open(\"/opt/oma-managed/installation.json\")); print(m[\"sourceSha\"], m[\"sourceLockSha256\"])')",
+  "set -- $pins",
+  "/usr/bin/python3 -I -S /opt/oma-managed/verify-install.py --source-sha \"$1\" --lock-sha256 \"$2\" >/dev/null",
+  "exec /usr/bin/python3 -I -S /opt/oma-managed/launcher.py",
+].join("\n");
+
 export interface E2BSandboxLike {
   sandboxId?: string;
   commands: {
@@ -376,6 +386,30 @@ export class E2BSandboxExecutor
       (result.stdout + (result.stderr ? `${separator}${result.stderr}` : "")).replace(/\s+$/, "") +
       (result.exitCode !== 0 ? `\n[exit ${result.exitCode}]` : "");
     return combined;
+  }
+
+  /**
+   * A sandbox created from a filesystem environment snapshot cold-boots
+   * without the template start command, so the trusted launcher is not
+   * running. Re-run exactly that root start step (verify the root-owned
+   * installation against its manifest pins, then exec the launcher) and wait
+   * for its ready marker. No-op without managed bootstrap or when ready.
+   */
+  async ensureManagedLauncher(timeoutMs = 30_000): Promise<void> {
+    if (!this.managedBootstrap) return;
+    const directory = this.managedBootstrap.directory ?? "/run/oma-managed";
+    const ready = async () => {
+      try { return await this.sandbox.files.read(directory + "/ready", { user: "root" }) === "oma-managed-v2"; }
+      catch { return false; }
+    };
+    if (await ready()) return;
+    await this.sandbox.commands.run(E2B_MANAGED_LAUNCHER_START, { background: true, user: "root", timeoutMs: 0 });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await ready()) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error("Trusted E2B management launcher did not become ready after environment snapshot start");
   }
 
   async startManagedProcess(spec: SandboxManagedProcessSpec, identity?: E2BManagedIdentity): Promise<SandboxManagedProcessHandle> {

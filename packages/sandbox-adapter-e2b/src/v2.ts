@@ -179,6 +179,9 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
       throw mapError(error);
     }
     try {
+      // Template sandboxes resume with the launcher running; a filesystem
+      // snapshot (environment or checkpoint) cold-boots without it.
+      await runtime.ensureManagedLauncher();
       await prepare(runtime);
       return { runtime, handle: handleOf(runtime) };
     } catch (error) {
