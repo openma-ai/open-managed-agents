@@ -5,22 +5,21 @@ import {
   type Trajectory,
 } from "../../lib/trajectory";
 import { StatusPill } from "../../components/Badge";
-import { Modal } from "../../components/Modal";
 import { Button } from "@/components/ui/button";
-import { TrajectoryInspector } from "../../components/trajectory/TrajectoryInspector";
+import { TraceView } from "../../components/timeline/TraceView";
 import { useApi } from "../../lib/api";
 
 /**
  * Session-detail trajectory views.
  *
- * Three pieces:
+ * Pieces:
  *   - `TrajectoryOutcomeChip` — small "Outcome: X" pill rendered in the
  *     session header. Hidden while loading / on error / when the agent
  *     is still running.
  *   - `TrajectoryRewardChip` — paired pill showing the verifier's reward
  *     score. Tooltip reveals the verifier id + computed-at timestamp.
- *   - `TrajectoryViewerModal` — structured run inspector (see
- *     components/trajectory/TrajectoryInspector) plus Raw JSON + Download.
+ *   - `SessionTrace` — the session's Trace tab: unified TraceView plus
+ *     envelope status, Download JSON and a collapsed Raw JSON.
  *   - `useTrajectoryLoader` — on-demand envelope fetch used by SessionDetail.
  *
  * Lifted out of SessionDetail to keep the orchestrator focused on event
@@ -71,7 +70,7 @@ export function TrajectoryRewardChip({
   );
 }
 
-/** True when clicking the Trajectory button should (re)fetch the envelope:
+/** True when opening the Trace tab should (re)fetch the envelope:
  *  nothing loaded yet, the last attempt failed, or the run was still going
  *  when we fetched it. */
 export function trajectoryNeedsFetch(trajectory: TrajectoryState): boolean {
@@ -127,80 +126,85 @@ export function downloadTrajectoryJson(sessionId: string, json: string) {
   URL.revokeObjectURL(url);
 }
 
+/** Full raw envelope JSON, rendered only once the disclosure is opened. */
+function RawJsonDisclosure({ json }: { json: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className="mx-4 my-3 text-xs"
+      aria-label="Raw JSON"
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer text-fg-subtle">Raw JSON · oma.trajectory.v1</summary>
+      {open && (
+        <pre className="mt-2 font-mono text-xs bg-bg-surface rounded px-3 py-2 overflow-auto max-h-[40vh] text-fg whitespace-pre-wrap break-words">
+          {json}
+        </pre>
+      )}
+    </details>
+  );
+}
+
 /**
- * Trajectory viewer modal: structured inspector (stats, turn strip,
- * conversation/execution split, paired tool steps, wall-clock timeline,
- * filters, copy-all) above a Raw JSON view with Download.
+ * The session's single Trace surface: the unified TraceView over the
+ * session's events, plus the on-demand trajectory envelope (outcome,
+ * reward, Download JSON, collapsed Raw JSON).
  *
- * The envelope drives outcome, reward, summary and the download. When it
- * is still loading (or failed) and `liveEvents` are supplied, a
- * provisional transcript renders from those so the modal isn't empty.
+ * Event source: live session events when there are any (they update while
+ * the run continues); otherwise the envelope's events once it is loaded.
  */
-export function TrajectoryViewerModal({
-  open,
-  onClose,
+export function SessionTrace({
   sessionId,
+  events,
   trajectory,
-  liveEvents,
   onRetry,
 }: {
-  open: boolean;
-  onClose: () => void;
   sessionId: string;
+  events: readonly unknown[];
   trajectory: TrajectoryState;
-  liveEvents?: readonly unknown[];
   onRetry?: () => void;
 }) {
   const ready = trajectory !== undefined && trajectory !== "loading" && trajectory !== "error";
   const json = useMemo(() => (ready ? JSON.stringify(trajectory, null, 2) : ""), [ready, trajectory]);
-  const envelopeEvents = ready ? trajectory.events : undefined;
-  const fallback = !ready && liveEvents && liveEvents.length > 0 ? liveEvents : undefined;
+  const source = events.length > 0 ? events : ready ? trajectory.events : [];
+
+  const notice =
+    trajectory === "loading" ? (
+      <div className="px-4 sm:px-6 py-1.5 text-xs text-fg-subtle" role="status">Loading trajectory envelope…</div>
+    ) : trajectory === "error" ? (
+      <div className="px-4 sm:px-6 py-1.5 text-xs text-danger flex flex-wrap items-center gap-2" role="alert">
+        <span>
+          Trajectory unavailable. The session may not have any events yet, or the sandbox worker is unreachable.
+        </span>
+        {onRetry && <Button variant="outline" size="xs" onClick={onRetry}>Retry</Button>}
+      </div>
+    ) : null;
+
+  const facts = ready
+    ? [
+        { label: "Trajectory", value: trajectory.trajectory_id },
+        { label: "Outcome", value: trajectory.outcome },
+        ...(trajectory.reward ? [{ label: "Reward", value: rewardHeadline(trajectory.reward) }] : []),
+      ]
+    : undefined;
 
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Trajectory"
-      subtitle={ready ? `${trajectory.trajectory_id} · session ${sessionId}` : `session ${sessionId}`}
-      maxWidth="max-w-6xl"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>Close</Button>
-          <Button onClick={() => ready && downloadTrajectoryJson(sessionId, json)} disabled={!ready}>
-            Download JSON
-          </Button>
-        </>
+    <TraceView
+      events={source}
+      facts={facts}
+      notice={notice}
+      actions={
+        <Button
+          variant="outline"
+          size="xs"
+          onClick={() => ready && downloadTrajectoryJson(sessionId, json)}
+          disabled={!ready}
+          title={ready ? "Download the oma.trajectory.v1 envelope" : "Available once the trajectory envelope loads"}
+        >
+          Download JSON
+        </Button>
       }
-    >
-      {trajectory === "loading" && (
-        <div className="text-sm text-fg-subtle mb-3">Loading trajectory…</div>
-      )}
-      {trajectory === "error" && (
-        <div className="text-sm text-danger mb-3 flex flex-wrap items-center gap-2">
-          <span>
-            Trajectory unavailable. The session may not have any events yet, or the
-            sandbox worker is unreachable.
-          </span>
-          {onRetry && (
-            <Button variant="outline" size="xs" onClick={onRetry}>Retry</Button>
-          )}
-        </div>
-      )}
-      {trajectory === undefined && !fallback && (
-        <div className="text-sm text-fg-subtle">No trajectory loaded yet.</div>
-      )}
-      {ready && (
-        <div className="flex flex-col gap-4">
-          <TrajectoryInspector trajectory={trajectory} events={envelopeEvents ?? []} />
-          <section aria-label="Raw JSON" className="flex flex-col gap-1">
-            <h3 className="text-[11px] uppercase tracking-wide text-fg-subtle">Raw JSON · oma.trajectory.v1</h3>
-            <pre className="font-mono text-xs bg-bg-surface rounded px-3 py-2 overflow-auto max-h-[40vh] text-fg whitespace-pre">
-              {json}
-            </pre>
-          </section>
-        </div>
-      )}
-      {fallback && <TrajectoryInspector events={fallback} />}
-    </Modal>
+      footer={ready ? <RawJsonDisclosure json={json} /> : null}
+    />
   );
 }

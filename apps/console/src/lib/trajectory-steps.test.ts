@@ -2,27 +2,35 @@ import { describe, expect, it } from "vitest";
 import {
   EMPTY_FILTER,
   MIN_GROUP_SIZE,
-  buildLanes,
+  autoPxPerMs,
+  buildTimeScale,
+  buildTrace,
+  buildTurnTree,
   eventText,
   extractDiff,
   filterSteps,
+  flattenEvents,
+  formatClock,
   formatTokens,
+  gapLabel,
   groupSteps,
-  isGroupRow,
+  isGroupNode,
   isShellTool,
+  layoutOverview,
+  nodeSteps,
   normalizeEvent,
   normalizeEvents,
   oneLine,
-  projectTrajectory,
   resolveEventTime,
-  segmentPosition,
   stepFilterKind,
   summarizeToolInput,
   toolCounts,
   transcriptText,
+  wallTicks,
   type StepFilterKind,
-  type TrajectoryStep,
+  type TraceAgentNode,
 } from "./trajectory-steps";
+import { MAX_CHART_PX, type TraceStep } from "../components/timeline/types";
 
 const T0 = Date.parse("2026-11-07T00:00:00Z");
 const iso = (ms: number) => new Date(T0 + ms).toISOString();
@@ -123,12 +131,15 @@ describe("text helpers", () => {
   });
 });
 
-/** A two-turn run: user asks, model reads twice + runs bash, then answers. */
+/** Flat live-style event with an ISO ts at T0 + ms. */
+const ev = (ms: number, e: Record<string, unknown>) => ({ ...e, ts: iso(ms) });
+
+/** user asks → model → read + mcp search (error) → model → custom tool → answer. */
 function sampleRun() {
   return [
     stored(1, 0, { type: "user.message", id: "u1", content: [{ type: "text", text: "Fix the bug" }] }),
-    stored(2, 100, { type: "span.model_request_start", id: "m1" }),
-    stored(3, 900, { type: "span.model_request_end", model_request_start_id: "m1", model_usage: { input_tokens: 1000, output_tokens: 50 } }),
+    stored(2, 100, { type: "span.model_request_start", id: "m1", model: "claude-sonnet-4-6" }),
+    stored(3, 900, { type: "span.model_request_end", model_request_start_id: "m1", model_usage: { input_tokens: 1000, output_tokens: 50 }, finish_reason: "tool-calls" }),
     stored(4, 1000, { type: "agent.thinking", id: "th1", content: [{ type: "text", text: "Look at files" }] }),
     stored(5, 1000, { type: "agent.tool_use", id: "c1", name: "read", input: { file_path: "/a.ts" } }),
     stored(6, 1100, { type: "agent.mcp_tool_use", id: "c2", name: "search", mcp_server_name: "gh", input: { query: "bug" } }),
@@ -137,293 +148,413 @@ function sampleRun() {
     stored(9, 1700, { type: "span.model_request_start", id: "m2" }),
     stored(10, 2500, { type: "span.model_request_end", data: { model_request_start_id: "m2", model_usage: { input_tokens: 2000, output_tokens: 80 } } }),
     stored(11, 2600, { type: "agent.custom_tool_use", id: "c3", name: "deploy", input: { environment: "staging" } }),
-    stored(12, 3000, { type: "user.custom_tool_result", custom_tool_use_id: "c3", content: [{ type: "text", text: "ok" }] }),
-    stored(13, 3100, { type: "agent.message", id: "a1", content: [{ type: "text", text: "Fixed it." }] }),
-    stored(14, 3200, { type: "session.status_idle" }),
+    stored(12, 2700, { type: "session.status_idle", stop_reason: { type: "requires_action" } }),
+    stored(13, 3000, { type: "user.custom_tool_result", custom_tool_use_id: "c3", content: [{ type: "text", text: "ok" }] }),
+    stored(14, 3100, { type: "agent.message", id: "a1", content: [{ type: "text", text: "Fixed it." }] }),
+    stored(15, 3200, { type: "session.status_idle" }),
   ];
 }
 
-describe("projectTrajectory", () => {
-  it("pairs tool_use with results by call id across sources", () => {
-    const p = projectTrajectory(sampleRun());
-    const tools = p.steps.filter((s) => s.kind === "tool");
-    expect(tools.map((t) => [t.toolName, t.toolSource, t.output, t.isError, t.durationMs])).toEqual([
-      ["read", "builtin", "file body", false, 300],
-      ["search", "mcp", "not found", true, 500],
-      ["deploy", "custom", "ok", false, 400],
-    ]);
-    expect(tools[1]!.mcpServer).toBe("gh");
-    expect(tools[0]!.events.map((e) => e.seq)).toEqual([5, 7]);
-    expect(tools.every((t) => !t.pending)).toBe(true);
+describe("flattenEvents", () => {
+  it("unwraps envelope rows and keeps the row time and seq", () => {
+    const [e] = flattenEvents([stored(4, 250, { type: "agent.message", text: "x" })]);
+    expect(e).toMatchObject({ type: "agent.message", text: "x", seq: 4, ts: iso(250) });
   });
 
-  it("derives question, answer, turns, tokens and time bounds", () => {
-    const p = projectTrajectory(sampleRun());
-    expect(p.question).toBe("Fix the bug");
-    expect(p.answer).toBe("Fixed it.");
-    expect(p.startMs).toBe(T0);
-    expect(p.endMs).toBe(T0 + 3200);
-    // The custom tool result hands control back to the model → third turn.
-    expect(p.turns.map((t) => t.trigger)).toEqual(["user", "tool_results", "tool_results"]);
-    const [t1, t2, t3] = p.turns;
-    expect(t1).toMatchObject({ toolCalls: 2, errors: 1, modelRequests: 1, inputTokens: 1000, outputTokens: 50, isFinal: false });
-    expect(t2).toMatchObject({ toolCalls: 1, errors: 0, modelRequests: 1, inputTokens: 2000, outputTokens: 80, isFinal: false });
-    expect(t3).toMatchObject({ toolCalls: 0, messages: 1, isFinal: true });
-    expect(t1!.durationMs).toBe(1600);
-    expect(t2!.durationMs).toBe(1300);
-    expect(t3!.endMs).toBe(T0 + 3200);
-    expect(p.modelSpans).toHaveLength(2);
-    expect(p.modelSpans[1]).toMatchObject({ turn: 1, endMs: T0 + 2500, outputTokens: 80 });
-  });
-
-  it("starts a new turn when the model resumes after tool results without spans", () => {
-    const p = projectTrajectory([
-      { type: "agent.tool_use", id: "x", name: "bash", input: { command: "ls" } },
-      { type: "agent.tool_result", tool_use_id: "x", content: "a" },
-      { type: "agent.message", content: "done" },
+  it("leaves an event's own time alone and never invents one", () => {
+    const [own, none] = flattenEvents([
+      { type: "agent.message", occurred_at: iso(5), ts: iso(9) },
+      { type: "agent.message" },
     ]);
-    expect(p.turns.map((t) => t.trigger)).toEqual(["start", "tool_results"]);
-    expect(p.steps.map((s) => s.turn)).toEqual([0, 1]);
-  });
-
-  it("starts a new turn per model request once the current one produced output", () => {
-    const p = projectTrajectory([
-      { type: "span.model_request_start", id: "a" },
-      { type: "agent.message", text: "one" },
-      { type: "span.model_request_start", id: "b" },
-      { type: "agent.message", text: "two" },
-    ]);
-    expect(p.turns.map((t) => t.trigger)).toEqual(["start", "model_request"]);
-    expect(p.modelSpans).toEqual([]); // untimed spans are not drawn
-  });
-
-  it("opens a tool_results turn on a model request after results", () => {
-    const p = projectTrajectory([
-      { type: "agent.tool_use", id: "x", name: "read", input: {} },
-      { type: "agent.tool_result", tool_use_id: "x", content: "a" },
-      { type: "span.model_request_start", id: "b", ts: iso(10) },
-      { type: "span.model_request_end", ts: iso(20), model_usage: { input_tokens: 5, output_tokens: 1 } },
-    ]);
-    expect(p.turns.map((t) => t.trigger)).toEqual(["start", "tool_results"]);
-    // FIFO pairing when the end has no start id.
-    expect(p.modelSpans[0]).toMatchObject({ endMs: T0 + 20, inputTokens: 5 });
-  });
-
-  it("keeps orphan results and pending calls visible", () => {
-    const p = projectTrajectory([
-      { type: "agent.tool_result", tool_use_id: "ghost", content: "late" },
-      { type: "agent.tool_use", id: "y", name: "read", input: { path: "/x" } },
-      { type: "agent.tool_result", content: "" },
-    ]);
-    const [orphan, pending, anon] = p.steps;
-    expect(orphan).toMatchObject({ orphan: true, callId: "ghost", output: "late", summary: "late" });
-    expect(pending).toMatchObject({ pending: true, summary: "/x", endMs: null });
-    expect(anon).toMatchObject({ orphan: true, summary: "(orphan tool result)" });
-  });
-
-  it("projects errors, outcomes, interrupts and terminations", () => {
-    const p = projectTrajectory([
-      { type: "session.error", error: { message: "boom" } },
-      { type: "session.error" },
-      { type: "session.outcome_evaluated", result: "failed", explanation: "tests fail" },
-      { type: "session.outcome_evaluated" },
-      { type: "user.interrupt" },
-      { type: "session.status_terminated", reason: "budget" },
-      { type: "session.status_terminated" },
-      { type: "agent.message", content: [] },
-      { type: "agent.thinking" },
-      { type: "user.message", content: "" },
-    ]);
-    expect(p.steps.map((s) => [s.kind, s.summary])).toEqual([
-      ["error", "boom"],
-      ["error", "Session error"],
-      ["outcome", "failed — tests fail"],
-      ["outcome", "evaluated"],
-      ["status", "User interrupted the run"],
-      ["status", "budget"],
-      ["status", "Session terminated"],
-      ["assistant", "(empty message)"],
-      ["thinking", "(redacted thinking)"],
-      ["user", "(empty message)"],
-    ]);
-    expect(p.steps[2]!.isError).toBe(true);
-    expect(p.turns[0]!.errors).toBe(3);
-    expect(p.startMs).toBeNull();
-  });
-
-  it("returns an empty projection for no events", () => {
-    const p = projectTrajectory([]);
-    expect(p).toMatchObject({ steps: [], turns: [], question: null, answer: null, startMs: null });
-    expect(projectTrajectory(undefined).steps).toEqual([]);
-  });
-
-  it("ignores model ends with nothing open and ids for stepIds", () => {
-    const p = projectTrajectory([
-      { type: "span.model_request_end", model_usage: { input_tokens: 1, output_tokens: 1 } },
-      { type: "agent.message", id: "same", text: "a" },
-    ]);
-    expect(p.steps[0]!.id).toBe("agent.message:same");
-    expect(p.modelSpans).toEqual([]);
+    expect(own!.ts).toBe(iso(9));
+    expect(none!.ts).toBeUndefined();
   });
 });
 
-function tool(id: string, name: string, extra: Partial<TrajectoryStep> = {}): TrajectoryStep {
+describe("buildTrace — turns (original Timeline semantics)", () => {
+  it("opens turns only on user triggers and closes them on status_idle", () => {
+    const p = buildTrace(sampleRun());
+    // Tool results never open a turn; the custom tool result does (it is a trigger).
+    expect(p.turns.map((t) => [t.turn.triggerKind, t.turn.status, t.closed])).toEqual([
+      ["user_message", "completed", true],
+      ["custom_tool_result", "completed", true],
+    ]);
+    expect(p.turns[0]).toMatchObject({ startTs: T0, endTs: T0 + 2700, durationMs: 2700, toolCalls: 3, errors: 1 });
+    expect(p.turns[0]!.tokens).toEqual({ input: 3000, output: 130, cacheRead: 0, calls: 2 });
+    expect(p.turns[1]!.tokens).toBeNull();
+    expect(p.turns[0]!.triggerText).toBe("Fix the bug");
+    expect(p).toMatchObject({ startTs: T0, endTs: T0 + 3200, toolCalls: 3, errors: 1, models: ["claude-sonnet-4-6"] });
+  });
+
+  it("pairs tool_use / mcp_tool_use / custom_tool_use with results by call id, across turns", () => {
+    const p = buildTrace(sampleRun());
+    const tools = p.steps.filter((s) => s.kind === "tool");
+    expect(tools.map((t) => [t.label, t.toolSource, t.output, t.isError, t.durationMs, t.pending])).toEqual([
+      ["read", "builtin", "file body", false, 300, false],
+      ["gh:search", "mcp", "not found", true, 500, false],
+      ["deploy", "custom", "ok", false, 400, false],
+    ]);
+    // The deploy call lives in turn 1 even though its result opened turn 2.
+    expect(p.turns[0]!.steps.some((s) => s.toolName === "deploy")).toBe(true);
+    expect(tools[0]!.events.map((e) => e.seq)).toEqual([5, 7]);
+    expect(tools[1]!.errorText).toBe("not found");
+  });
+
+  it("pairs model spans by start id (top level or in data) and reports only real usage", () => {
+    const p = buildTrace(sampleRun());
+    const models = p.steps.filter((s) => s.kind === "model");
+    expect(models.map((m) => [m.label, m.durationMs, m.usage?.output_tokens, m.finishReason])).toEqual([
+      ["Generation · claude-sonnet-4-6", 800, 50, "tool-calls"],
+      ["Generation", 800, 80, undefined],
+    ]);
+  });
+
+  it("keeps an unclosed turn open and never fabricates its end", () => {
+    const p = buildTrace([ev(0, { type: "user.message", text: "go" }), ev(500, { type: "agent.message", text: "working" })]);
+    expect(p.turns[0]).toMatchObject({ closed: false, endTs: null, lastTs: T0 + 500, durationMs: 500 });
+    expect(p.turns[0]!.turn.status).toBe("running");
+  });
+
+  it("marks errored / terminated turns from session.error / status_terminated", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "a" }),
+      ev(10, { type: "session.error", error: { type: "x", message: "boom" } }),
+      ev(20, { type: "user.message", text: "b" }),
+      ev(30, { type: "session.status_terminated" }),
+    ]);
+    expect(p.turns.map((t) => t.turn.status)).toEqual(["errored", "terminated"]);
+    const err = p.steps.find((s) => s.kind === "error")!;
+    expect(err).toMatchObject({ isError: true, errorText: "boom", detail: "boom" });
+  });
+
+  it("keeps orphan results and pending calls visible", () => {
+    const p = buildTrace([
+      { type: "agent.tool_result", tool_use_id: "ghost", content: "late" },
+      { type: "agent.tool_use", id: "y", name: "read", input: { path: "/x" } },
+      { type: "span.model_request_start", id: "open" },
+    ]);
+    const [orphan, pending, model] = p.steps;
+    expect(orphan).toMatchObject({ orphan: true, callId: "ghost", output: "late", kind: "tool" });
+    expect(pending).toMatchObject({ pending: true, endTs: null, durationMs: null, detail: "/x" });
+    expect(model).toMatchObject({ pending: true, durationMs: null, kind: "model" });
+  });
+
+  it("missing timestamps stay null — never 0 — and produce no gaps", () => {
+    const p = buildTrace([
+      { type: "user.message", text: "a" },
+      { type: "agent.tool_use", id: "t", name: "read", input: {} },
+      { type: "agent.tool_result", tool_use_id: "t", content: "x" },
+      { type: "session.status_idle" },
+      { type: "user.message", text: "b" },
+    ]);
+    expect(p.startTs).toBeNull();
+    expect(p.steps.every((s) => s.startTs === null)).toBe(true);
+    expect(p.steps.find((s) => s.kind === "tool")).toMatchObject({ durationMs: null, pending: false });
+    expect(p.turns[0]).toMatchObject({ startTs: null, durationMs: null, closed: false });
+    expect(p.gaps).toEqual([]);
+  });
+
+  it("flags model errors", () => {
+    const p = buildTrace([
+      ev(0, { type: "span.model_request_start", id: "m" }),
+      ev(5, { type: "span.model_request_end", model_request_start_id: "m", is_error: true, error_message: "overloaded" }),
+    ]);
+    expect(p.steps[0]).toMatchObject({ isError: true, errorText: "overloaded", durationMs: 5 });
+  });
+});
+
+describe("buildTrace — gaps between turns", () => {
+  const twoTurns = (extra: Record<string, unknown> = {}) => [
+    ev(0, { type: "user.message", text: "a" }),
+    ev(100, { type: "session.status_idle" }),
+    ev(300_100, { type: "user.message", text: "b", ...extra }),
+    ev(300_200, { type: "session.status_idle" }),
+  ];
+
+  it("known idle: previous turn closed and next trigger is later", () => {
+    const [g] = buildTrace(twoTurns()).gaps;
+    expect(g).toMatchObject({ kind: "idle", afterTurn: 0, startTs: T0 + 100, endTs: T0 + 300_100, durationMs: 300_000, scheduledWakeup: false });
+    expect(gapLabel(g!)).toBe("5m0s idle");
+  });
+
+  it("labels a wakeup-triggered next turn as scheduled wakeup", () => {
+    const [g] = buildTrace(twoTurns({ metadata: { harness: "schedule", kind: "wakeup" } })).gaps;
+    expect(gapLabel(g!)).toBe("5m0s idle · scheduled wakeup");
+  });
+
+  it("no gap when the next trigger is not after the close", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "a" }),
+      ev(100, { type: "session.status_idle" }),
+      ev(100, { type: "user.message", text: "b" }),
+    ]);
+    expect(p.gaps).toEqual([]);
+  });
+
+  it("unknown, not idle, when the previous turn has no close event", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "a" }),
+      ev(50, { type: "agent.message", text: "…" }),
+      ev(2050, { type: "user.message", text: "b" }),
+    ]);
+    expect(p.gaps).toHaveLength(1);
+    expect(p.gaps[0]).toMatchObject({ kind: "unknown", startTs: T0 + 50, endTs: T0 + 2050, durationMs: 2000 });
+    expect(gapLabel(p.gaps[0]!)).toBe("2.00s unknown");
+    expect(p.gaps[0]!.reason).toMatch(/no close event/);
+  });
+
+  it("unknown with unknown duration when the next trigger has no timestamp", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "a" }),
+      ev(100, { type: "session.status_idle" }),
+      { type: "user.message", text: "b" },
+    ]);
+    expect(p.gaps[0]).toMatchObject({ kind: "unknown", durationMs: null });
+    expect(gapLabel(p.gaps[0]!)).toBe("gap unknown");
+  });
+
+  it("span.wakeup_scheduled is an in-turn schedule wait paired via parent_event_id", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "remind me" }),
+      ev(10, { type: "span.wakeup_scheduled", id: "w1" }),
+      ev(20, { type: "session.status_idle" }),
+      ev(60_010, { type: "user.message", parent_event_id: "w1", metadata: { harness: "schedule", kind: "wakeup" }, text: "wake" }),
+      ev(60_020, { type: "span.wakeup_scheduled", id: "w2" }),
+    ]);
+    const [fired, pending] = p.steps.filter((s) => s.family === "schedule");
+    expect(fired).toMatchObject({ label: "schedule waiting", detail: "fired", durationMs: 60_000, pending: false });
+    expect(p.turns[0]!.steps).toContain(fired);
+    expect(pending).toMatchObject({ detail: "pending", durationMs: null, pending: true });
+    // Between-turn idle stays its own thing: close → wakeup trigger.
+    expect(p.gaps[0]).toMatchObject({ kind: "idle", durationMs: 59_990, scheduledWakeup: true });
+    expect(p.turns[1]!.turn.triggerKind).toBe("wakeup");
+  });
+
+  it("session.thread_idle is a zero-duration thread marker, not a turn close or idle", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "a" }),
+      ev(10, { type: "session.thread_idle" }),
+      ev(5000, { type: "agent.message", text: "b" }),
+    ]);
+    expect(p.turns).toHaveLength(1);
+    expect(p.turns[0]!.closed).toBe(false);
+    expect(p.steps.find((s) => s.label === "thread_idle")).toMatchObject({ family: "thread", instant: true, durationMs: 0 });
+    expect(p.gaps).toEqual([]);
+  });
+});
+
+describe("buildTrace — agents only from real ancestry", () => {
+  it("stays flat without session_thread_id: no synthetic root agent", () => {
+    const p = buildTrace(sampleRun());
+    expect(p.multiThread).toBe(false);
+    const tree = buildTurnTree(p.turns[0]!.key, p.turns[0]!.steps, p);
+    expect(tree.some((n) => n.type === "agent")).toBe(false);
+  });
+
+  it("nests sub-agent threads by parent_thread_id; sub-agent messages don't open turns", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "research" }),
+      ev(10, { type: "session.thread_created", session_thread_id: "sthr_a", agent_name: "researcher", parent_thread_id: null }),
+      ev(20, { type: "user.message", session_thread_id: "sthr_a", text: "sub task" }),
+      ev(30, { type: "agent.tool_use", session_thread_id: "sthr_a", id: "x", name: "web_fetch", input: { url: "u" } }),
+      ev(40, { type: "session.thread_created", session_thread_id: "sthr_b", agent_name: "fetcher", parent_thread_id: "sthr_a" }),
+      ev(50, { type: "agent.message", session_thread_id: "sthr_b", text: "deep" }),
+      ev(60, { type: "agent.tool_result", session_thread_id: "sthr_a", tool_use_id: "x", content: "page" }),
+      ev(70, { type: "session.status_idle", session_thread_id: "sthr_a" }),
+      ev(80, { type: "agent.message", text: "done" }),
+      ev(90, { type: "session.status_idle" }),
+    ]);
+    expect(p.multiThread).toBe(true);
+    expect(p.turns).toHaveLength(1);
+    expect(p.turns[0]!.endTs).toBe(T0 + 90);
+    const tree = buildTurnTree(p.turns[0]!.key, p.turns[0]!.steps, p);
+    const a = tree.find((n): n is TraceAgentNode => n.type === "agent")!;
+    expect(a).toMatchObject({ label: "researcher", threadId: "sthr_a" });
+    const b = a.children.find((n): n is TraceAgentNode => n.type === "agent")!;
+    expect(b).toMatchObject({ label: "fetcher", parentThreadId: "sthr_a" });
+    expect(nodeSteps(b).map((s) => s.label)).toContain("agent.message");
+    // Root-thread steps hang directly off the turn.
+    expect(tree.filter((n) => n.type === "step").map((n) => (n.type === "step" ? n.step.label : ""))).toEqual(["user.message", "agent.message", "session.status_idle"]);
+    expect(nodeSteps(a).find((s) => s.toolName === "web_fetch")).toMatchObject({ durationMs: 30 });
+  });
+
+  it("labels a thread with no thread_created record by its id", () => {
+    const p = buildTrace([ev(0, { type: "user.message", text: "a" }), ev(5, { type: "agent.message", session_thread_id: "sthr_z", text: "x" })]);
+    const tree = buildTurnTree(p.turns[0]!.key, p.turns[0]!.steps, p);
+    expect(tree.find((n) => n.type === "agent")).toMatchObject({ label: "sthr_z", agentName: undefined });
+  });
+});
+
+function tool(key: string, name: string, extra: Partial<TraceStep> = {}): TraceStep {
   return {
-    id, kind: "tool", turn: 0, label: name, summary: id, startMs: null, endMs: null,
-    durationMs: null, toolName: name, events: [], ...extra,
+    key, family: "tool", kind: "tool", label: name, startTs: null, endTs: null, durationMs: null, instant: false,
+    isError: false, pending: false, orphan: false, toolName: name, toolSource: "builtin", order: 0, events: [], ...extra,
   };
-}
-function msg(id: string): TrajectoryStep {
-  return { id, kind: "assistant", turn: 0, label: "Assistant", summary: id, text: id, startMs: null, endMs: null, durationMs: null, events: [] };
 }
 
 describe("groupSteps", () => {
   it(`folds ${MIN_GROUP_SIZE}+ consecutive same-tool calls`, () => {
     const rows = groupSteps([
-      tool("r1", "read", { startMs: 10, endMs: 20 }),
-      tool("r2", "read", { startMs: 30, endMs: 40, isError: true }),
-      tool("r3", "read", { startMs: 50 }),
-      msg("m"),
+      tool("r1", "read", { startTs: 10, endTs: 20 }),
+      tool("r2", "read", { startTs: 30, endTs: 40, isError: true }),
+      tool("r3", "read", { startTs: 50 }),
+      tool("m", "x", { kind: "assistant" }),
     ]);
     expect(rows).toHaveLength(2);
     const g = rows[0]!;
-    expect(isGroupRow(g)).toBe(true);
-    if (!isGroupRow(g)) throw new Error("expected group");
-    expect(g).toMatchObject({ toolName: "read", startMs: 10, endMs: 50, errors: 1, id: "group:r1" });
-    expect(isGroupRow(rows[1]!)).toBe(false);
+    if (!isGroupNode(g)) throw new Error("expected group");
+    expect(g).toMatchObject({ toolName: "read", startTs: 10, endTs: 50, durationMs: 40, errors: 1, key: "group:r1" });
   });
 
   it("never folds shell calls, short runs, mixed tools or orphans", () => {
-    const shell = groupSteps([tool("b1", "bash"), tool("b2", "bash"), tool("b3", "bash")]);
-    expect(shell.every((r) => !isGroupRow(r))).toBe(true);
-    expect(groupSteps([tool("a", "read"), tool("b", "read"), tool("c", "grep")]).some(isGroupRow)).toBe(false);
-    expect(groupSteps([tool("a", "read"), tool("b", "read", { orphan: true }), tool("c", "read")]).some(isGroupRow)).toBe(false);
+    expect(groupSteps([tool("b1", "bash"), tool("b2", "bash"), tool("b3", "bash")]).some(isGroupNode)).toBe(false);
+    expect(groupSteps([tool("a", "read"), tool("b", "read"), tool("c", "grep")]).some(isGroupNode)).toBe(false);
+    expect(groupSteps([tool("a", "read"), tool("b", "read", { orphan: true }), tool("c", "read")]).some(isGroupNode)).toBe(false);
     const untimed = groupSteps([tool("a", "glob"), tool("b", "glob"), tool("c", "glob"), tool("d", "glob")]);
     expect(untimed).toHaveLength(1);
-    expect(untimed[0]).toMatchObject({ startMs: null, endMs: null });
+    expect(untimed[0]).toMatchObject({ startTs: null, durationMs: null });
   });
 });
 
 describe("filters", () => {
-  const p = projectTrajectory(sampleRun());
+  const p = buildTrace(sampleRun());
   const kinds = (ks: StepFilterKind[]) => ({ ...EMPTY_FILTER, kinds: new Set(ks) });
 
-  it("empty filter keeps everything", () => {
+  it("empty filter keeps everything, lifecycle markers included", () => {
     expect(filterSteps(p.steps, EMPTY_FILTER)).toHaveLength(p.steps.length);
+    expect(p.steps.some((s) => stepFilterKind(s) === null)).toBe(true);
   });
 
-  it("filters by kind, with errors matching failed tool calls", () => {
+  it("filters by kind, with errors matching failed calls", () => {
     expect(filterSteps(p.steps, kinds(["user"])).map((s) => s.kind)).toEqual(["user"]);
     expect(filterSteps(p.steps, kinds(["tool"]))).toHaveLength(3);
+    expect(filterSteps(p.steps, kinds(["model"]))).toHaveLength(2);
     expect(filterSteps(p.steps, kinds(["error"])).map((s) => s.toolName)).toEqual(["search"]);
-    expect(filterSteps(p.steps, kinds(["assistant", "thinking"]))).toHaveLength(2);
   });
 
-  it("filters by tool and by text search over input/output", () => {
-    expect(filterSteps(p.steps, { ...EMPTY_FILTER, tool: "read" }).map((s) => s.id)).toEqual(["agent.tool_use:c1"]);
+  it("filters by tool and by text over input / output", () => {
+    expect(filterSteps(p.steps, { ...EMPTY_FILTER, tool: "read" }).map((s) => s.callId)).toEqual(["c1"]);
     expect(filterSteps(p.steps, { ...EMPTY_FILTER, query: "FILE BODY" })).toHaveLength(1);
     expect(filterSteps(p.steps, { ...EMPTY_FILTER, query: "staging" })[0]!.toolName).toBe("deploy");
     expect(filterSteps(p.steps, { ...EMPTY_FILTER, query: "zzz" })).toEqual([]);
   });
 
-  it("buckets outcome/status rows only when they failed", () => {
-    const q = projectTrajectory([
-      { type: "session.outcome_evaluated", result: "satisfied" },
-      { type: "session.outcome_evaluated", result: "failed" },
-      { type: "agent.tool_use", id: "s", name: "read", input: "raw string input" },
-    ]);
-    expect(stepFilterKind(q.steps[0]!)).toBeNull();
-    expect(stepFilterKind(q.steps[1]!)).toBe("error");
-    expect(filterSteps(q.steps, kinds(["user"]))).toEqual([]);
-    expect(filterSteps(q.steps, { ...EMPTY_FILTER, query: "raw string" })).toHaveLength(1);
-  });
-
   it("toolCounts sorts by count then name", () => {
-    expect(toolCounts([tool("1", "b"), tool("2", "a"), tool("3", "b"), msg("m")])).toEqual([
+    expect(toolCounts([tool("1", "b"), tool("2", "a"), tool("3", "b")])).toEqual([
       { name: "b", count: 2 },
       { name: "a", count: 1 },
     ]);
   });
 });
 
-describe("buildLanes", () => {
-  it("returns null for untimed or very short runs", () => {
-    expect(buildLanes(projectTrajectory([{ type: "agent.message", text: "x" }]))).toBeNull();
-    expect(buildLanes(projectTrajectory([
-      { type: "agent.message", text: "x", ts: iso(0) },
-      { type: "agent.message", text: "y", ts: iso(200) },
-    ]))).toBeNull();
-  });
-
-  it("uses model spans + tool calls when spans exist", () => {
-    const lanes = buildLanes(projectTrajectory(sampleRun()))!;
-    expect(lanes.totalMs).toBe(3200);
-    const model = lanes.segments.filter((s) => s.lane === "model");
-    const tools = lanes.segments.filter((s) => s.lane === "tools");
-    expect(model.map((m) => [m.startMs, m.endMs, m.tone])).toEqual([[100, 900, "ok"], [1700, 2500, "ok"]]);
-    expect(model[0]!.stepId).toBe("user.message:u1");
-    expect(tools.map((t) => t.tone)).toEqual(["ok", "error", "ok"]);
-  });
-
-  it("falls back to message markers and marks pending/error segments", () => {
-    const p = projectTrajectory([
-      { type: "user.message", text: "go", ts: iso(0) },
-      { type: "agent.tool_use", id: "p", name: "bash", input: { command: "sleep" }, ts: iso(500) },
-      { type: "session.error", message: "bad", ts: iso(1500) },
-      { type: "agent.message", ts: iso(2000) },
-      { type: "span.model_request_start", id: "open", ts: iso(2100) },
-      { type: "span.model_request_end", is_error: true, model_request_start_id: "open", ts: iso(2200) },
-    ]);
-    const lanes = buildLanes(p)!;
-    const tools = lanes.segments.filter((s) => s.lane === "tools");
-    expect(tools[0]).toMatchObject({ tone: "pending", startMs: 500, endMs: 2200 });
-    const model = lanes.segments.filter((s) => s.lane === "model");
-    expect(model.some((s) => s.tone === "error" && s.label.startsWith("Model request"))).toBe(true);
-    expect(model.some((s) => s.tone === "error" && s.label.startsWith("Error"))).toBe(true);
-  });
-
-  it("draws markers for messages without model spans and skips untimed steps", () => {
-    const lanes = buildLanes(projectTrajectory([
-      { type: "user.message", text: "go", ts: iso(0) },
-      { type: "agent.message", text: "no time" },
-      { type: "agent.tool_result", tool_use_id: "o", content: "x", ts: iso(1500) },
-      { type: "span.model_request_start", id: "z", ts: iso(1600) },
-    ]))!;
-    // An open model span is pending until run end.
-    expect(lanes.segments.find((s) => s.label === "Model request 1")).toMatchObject({ tone: "pending", endMs: 1600 });
-    expect(lanes.segments.filter((s) => s.lane === "tools")[0]).toMatchObject({ startMs: 1500, endMs: 1500 });
-  });
-
-  it("segmentPosition clamps and enforces a minimum width", () => {
-    const seg = { lane: "tools" as const, stepId: "s", turn: 0, startMs: 0, endMs: 0, tone: "ok" as const, label: "" };
-    expect(segmentPosition(seg, 1000)).toEqual({ left: 0, width: 0.6 });
-    expect(segmentPosition({ ...seg, startMs: 500, endMs: 750 }, 1000)).toEqual({ left: 50, width: 25 });
-    expect(segmentPosition({ ...seg, startMs: 1000, endMs: 1000 }, 1000)).toEqual({ left: 100, width: 0 });
-  });
-});
-
 describe("transcriptText", () => {
-  it("renders turns, messages and tool input/output", () => {
-    const text = transcriptText(projectTrajectory(sampleRun()).steps);
-    expect(text).toContain("## Turn 1");
-    expect(text).toContain("## Turn 3");
+  it("renders turns, steps and gap markers", () => {
+    const p = buildTrace([
+      ...sampleRun(),
+      stored(16, 303_200, { type: "user.message", text: "again" }),
+    ]);
+    const text = transcriptText(p);
+    expect(text).toContain("## Turn 1 · user message · completed · 2.70s");
     expect(text).toContain("[user] Fix the bug");
     expect(text).toContain("[thinking] Look at files");
     expect(text).toContain("[tool search · error · 500ms]");
     expect(text).toContain('"file_path": "/a.ts"');
     expect(text).toContain("output: file body");
+    expect(text).toContain("[generation · claude-sonnet-4-6 · 800ms");
     expect(text).toContain("[assistant] Fixed it.");
+    expect(text).toContain("--- 5m0s idle ---");
+    expect(text).toContain("## Turn 3 · user message · running");
   });
 
-  it("marks pending calls and handles string / missing inputs", () => {
-    const text = transcriptText([
-      tool("p", "read", { pending: true, input: "raw" }),
-      tool("q", "grep", { output: "" }),
-      { ...msg("e"), kind: "error", label: "Error", text: undefined, summary: "boom" },
-    ]);
+  it("respects a step predicate and marks pending calls", () => {
+    const p = buildTrace([{ type: "user.message", text: "x" }, { type: "agent.tool_use", id: "p", name: "read", input: "raw" }]);
+    const text = transcriptText(p, (s) => s.kind === "tool");
     expect(text).toContain("[tool read · pending]\ninput: raw");
-    expect(text).toContain("[tool grep]\noutput: ");
-    expect(text).toContain("[error] boom");
+    expect(text).not.toContain("[user]");
+  });
+});
+
+describe("time scale", () => {
+  it("is wall-clock identity by default", () => {
+    const s = buildTimeScale(1000, 11_000);
+    expect(s.total).toBe(10_000);
+    expect(s.toDisplay(6000)).toBe(5000);
+    expect(s.toWall(5000)).toBe(6000);
+    expect(s.breaks).toEqual([]);
+  });
+
+  it("a collapsed gap shrinks on the axis, keeps order, and round-trips", () => {
+    // 1s of work, 1h gap, 1s of work.
+    const s = buildTimeScale(0, 3_602_000, [{ key: "g", startTs: 1000, endTs: 3_601_000 }]);
+    expect(s.breaks).toHaveLength(1);
+    const b = s.breaks[0]!;
+    expect(b.d0).toBe(1000);
+    expect(b.d1 - b.d0).toBeCloseTo(60); // 3% of the 2s of non-gap time
+    expect(s.total).toBeCloseTo(2060);
+    expect(s.toDisplay(3_601_000)).toBeCloseTo(1060);
+    expect(s.toDisplay(3_602_000)).toBeCloseTo(2060);
+    expect(s.toWall(s.toDisplay(1_801_000))).toBeCloseTo(1_801_000);
+    expect(s.toWall(1500)).toBeCloseTo(3_601_000 + 440);
+    // Restoring = rebuilding without the interval: full wall clock again.
+    expect(buildTimeScale(0, 3_602_000).total).toBe(3_602_000);
+  });
+
+  it("autoPxPerMs: median boundary gap ≈ 25px, clamped to fit and MAX_CHART_PX", () => {
+    expect(autoPxPerMs([0, 100, 200, 300], 300, 600)).toBeCloseTo(2); // fit wins over 0.25
+    expect(autoPxPerMs([0, 10, 20], 20, 100)).toBeCloseTo(MAX_CHART_PX / 20 > 5 ? 5 : MAX_CHART_PX / 20);
+    expect(autoPxPerMs([0, 1000, 2000], 2000, 400)).toBeCloseTo(0.2);
+    expect(autoPxPerMs([], 10_000_000, 800)).toBeCloseTo(800 / 10_000_000);
+  });
+
+  it("wallTicks skip collapsed gaps and stay bounded; formatClock", () => {
+    const s = buildTimeScale(0, 3_602_000, [{ key: "g", startTs: 1000, endTs: 3_601_000 }]);
+    const { ticks } = wallTicks(s, 0, s.total, 1);
+    expect(ticks.length).toBeGreaterThan(0);
+    expect(ticks.every((t) => t.ts <= 1000 || t.ts >= 3_601_000)).toBe(true);
+    const full = wallTicks(buildTimeScale(0, 86_400_000), 0, 86_400_000, 800 / 86_400_000);
+    expect(full.ticks.length).toBeLessThanOrEqual(96);
+    const d = new Date(2026, 10, 4, 7, 50, 5, 250).getTime();
+    expect(formatClock(d)).toBe("7:50:05");
+    expect(formatClock(d, 100)).toBe("7:50:05.250");
+  });
+});
+
+describe("layoutOverview", () => {
+  it("packs overlapping steps into lanes, adds markers, and extends pending bars", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "go" }),
+      ev(10, { type: "agent.tool_use", id: "a", name: "read", input: {} }),
+      ev(20, { type: "agent.tool_use", id: "b", name: "grep", input: {} }),
+      ev(30, { type: "agent.tool_result", tool_use_id: "a", content: "" }),
+      ev(40, { type: "agent.tool_result", tool_use_id: "b", content: "", is_error: true }),
+      ev(50, { type: "agent.tool_use", id: "c", name: "bash", input: { command: "sleep" } }),
+      ev(60, { type: "session.error", error: "died" }),
+      ev(1000, { type: "user.message", text: "next" }),
+      ev(1200, { type: "agent.message", text: "ok" }),
+    ]);
+    const layout = layoutOverview(p, buildTimeScale(p.startTs!, p.endTs!));
+    expect(layout.stepBars.map((b) => [b.step.toolName, b.lane])).toEqual([["read", 0], ["grep", 1], ["bash", 0]]);
+    const bash = layout.stepBars.find((b) => b.step.toolName === "bash")!;
+    expect(bash).toMatchObject({ openEnded: true, d1: 1200 });
+    expect(layout.markers.map((m) => m.step.kind)).toEqual(["user", "error", "user"]);
+    expect(layout.turnBars.map((t) => [t.d0, t.d1, t.openEnded])).toEqual([[0, 60, false], [1000, 1200, true]]);
+    expect(layout.gapBars.map((g) => [g.gap.kind, g.d0, g.d1, g.collapsed])).toEqual([["idle", 60, 1000, false]]);
+  });
+
+  it("marks collapsed gap bars and shrinks their width", () => {
+    const p = buildTrace([
+      ev(0, { type: "user.message", text: "a" }),
+      ev(1000, { type: "session.status_idle" }),
+      ev(3_601_000, { type: "user.message", text: "b" }),
+      ev(3_602_000, { type: "session.status_idle" }),
+    ]);
+    const g = p.gaps[0]!;
+    const layout = layoutOverview(p, buildTimeScale(p.startTs!, p.endTs!, [{ key: g.key, startTs: g.startTs!, endTs: g.endTs! }]));
+    const bar = layout.gapBars[0]!;
+    expect(bar.collapsed).toBe(true);
+    expect(bar.d1 - bar.d0).toBeCloseTo(60);
+    // True duration stays on the gap.
+    expect(bar.gap.durationMs).toBe(3_600_000);
   });
 });
 

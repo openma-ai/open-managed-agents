@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trace fixture · Open Managed Agents</title>
+    <!-- Dev-only, backend-free fixture for the unified Trace view.
+         `vite build` only bundles index.html, so this page never ships.
+         Open http://localhost:5173/trace-fixture.html?scenario=session -->
+    <script>
+      const q = new URLSearchParams(location.search);
+      if (q.get("theme") === "dark") document.documentElement.classList.add("dark");
+    </script>
+  </head>
+  <body class="bg-bg text-fg antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/dev/trace-fixture.tsx"></script>
+  </body>
+</html>

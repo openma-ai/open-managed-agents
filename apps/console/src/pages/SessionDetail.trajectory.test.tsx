@@ -63,8 +63,8 @@ const envelope = {
   },
 };
 
-describe("SessionDetail Trajectory button", () => {
-  it("opens the modal, fetches the envelope once, and lights up the outcome chip", async () => {
+describe("SessionDetail Trace tab", () => {
+  function setup() {
     managedApi.sessions.retrieve.mockResolvedValue({
       id: "session_ok", status: "idle", agent: { id: "agent_1", metadata: {} },
       created_at: "2026-10-31T00:00:00Z", metadata: {},
@@ -75,25 +75,54 @@ describe("SessionDetail Trajectory button", () => {
     apiMock.mockImplementation(async (path: string) =>
       path.endsWith("/trajectory") ? envelope : { data: [] },
     );
+  }
+  const trajectoryCalls = () => apiMock.mock.calls.filter(([p]) => String(p).endsWith("/trajectory"));
+
+  it("is the single execution viewer: no separate Timeline tab or Trajectory modal", async () => {
+    setup();
     mount("session_ok");
+    const tabs = await screen.findByRole("tablist", { name: "Session view" });
+    expect(within(tabs).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Conversation", "Trace"]);
+    expect(screen.queryByRole("button", { name: "Trajectory" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Nothing is fetched until the Trace tab is opened.
+    expect(trajectoryCalls()).toHaveLength(0);
+  });
 
-    const trigger = await screen.findByRole("button", { name: "Trajectory" });
-    expect(trigger).toBeEnabled();
-    expect(trigger.getAttribute("title")).toMatch(/turns, tool steps, timeline/);
-    expect(apiMock.mock.calls.some(([p]) => String(p).endsWith("/trajectory"))).toBe(false);
-
-    fireEvent.click(trigger);
-    const dialog = await screen.findByRole("dialog", { name: "Trajectory" });
-    await within(dialog).findByText("trj_wired · session session_ok");
-    expect(apiMock).toHaveBeenCalledWith("/v1/oma/sessions/session_ok/trajectory");
-    expect(within(dialog).getByRole("button", { name: "Download JSON" })).toBeEnabled();
+  it("fetches the envelope on demand once, renders Trace, and lights up the outcome chip", async () => {
+    setup();
+    mount("session_ok");
+    fireEvent.click(await screen.findByRole("tab", { name: "Trace" }));
+    await waitFor(() => expect(apiMock).toHaveBeenCalledWith("/v1/oma/sessions/session_ok/trajectory"));
+    // No live events → the envelope's events drive the tree.
+    const tree = await screen.findByRole("tree", { name: "Trace tree" });
+    expect(within(tree).getByRole("treeitem", { name: /agent\.message.*Done\./ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download JSON" })).toBeEnabled();
     expect(screen.getAllByText("Outcome: success").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("complementary", { name: "Event details" })).getByText("Select an event to view details")).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getAllByRole("button", { name: "Close" })[0]!);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Trajectory" })).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Trajectory" }));
-    await screen.findByRole("dialog", { name: "Trajectory" });
-    const trajectoryCalls = apiMock.mock.calls.filter(([p]) => String(p).endsWith("/trajectory"));
-    expect(trajectoryCalls).toHaveLength(1);
+    // Leaving and re-entering Trace doesn't refetch a finished run.
+    fireEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Trace" }));
+    await screen.findByRole("tree", { name: "Trace tree" });
+    expect(trajectoryCalls()).toHaveLength(1);
+  });
+
+  it("retries after an envelope error", async () => {
+    setup();
+    let fail = true;
+    apiMock.mockImplementation(async (path: string) => {
+      if (!path.endsWith("/trajectory")) return { data: [] };
+      if (fail) throw new Error("boom");
+      return envelope;
+    });
+    mount("session_ok");
+    fireEvent.click(await screen.findByRole("tab", { name: "Trace" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Trajectory unavailable/);
+    fail = false;
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download JSON" })).toBeEnabled());
+    expect(trajectoryCalls()).toHaveLength(2);
   });
 });

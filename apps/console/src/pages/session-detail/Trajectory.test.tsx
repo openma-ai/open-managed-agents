@@ -4,9 +4,9 @@ import { http, HttpResponse } from "msw";
 import { server } from "../../mocks/server";
 import type { Trajectory } from "../../lib/trajectory";
 import {
+  SessionTrace,
   TrajectoryOutcomeChip,
   TrajectoryRewardChip,
-  TrajectoryViewerModal,
   trajectoryNeedsFetch,
   useTrajectoryLoader,
 } from "./Trajectory";
@@ -66,13 +66,16 @@ function richEvents() {
   ];
 }
 
-function renderModal(props: Partial<Parameters<typeof TrajectoryViewerModal>[0]> = {}) {
-  const onClose = vi.fn();
+function renderTrace(props: Partial<Parameters<typeof SessionTrace>[0]> = {}) {
+  const onRetry = vi.fn();
   const utils = render(
-    <TrajectoryViewerModal open onClose={onClose} sessionId="sesn_1" trajectory={envelope(richEvents())} {...props} />,
+    <SessionTrace sessionId="sesn_1" events={[]} trajectory={envelope(richEvents())} onRetry={onRetry} {...props} />,
   );
-  return { ...utils, onClose, dialog: screen.getByRole("dialog", { name: "Trajectory" }) };
+  return { ...utils, onRetry };
 }
+
+const tree = () => screen.getByRole("tree", { name: "Trace tree" });
+const details = () => screen.getByRole("complementary", { name: "Event details" });
 
 beforeEach(() => {
   toastMock.success.mockReset();
@@ -80,239 +83,230 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("TrajectoryViewerModal states", () => {
-  it("shows loading with Download disabled", () => {
-    const { dialog } = renderModal({ trajectory: "loading" });
-    expect(within(dialog).getByText("Loading trajectory…")).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Download JSON" })).toBeDisabled();
-    expect(dialog.querySelector("pre")).toBeNull();
+describe("SessionTrace envelope states", () => {
+  it("loading: status strip, Download disabled, no raw JSON", () => {
+    const { container } = renderTrace({ trajectory: "loading" });
+    expect(screen.getByRole("status")).toHaveTextContent("Loading trajectory envelope…");
+    expect(screen.getByRole("button", { name: "Download JSON" })).toBeDisabled();
+    expect(container.querySelector("pre")).toBeNull();
+    expect(screen.getByText(/No events yet/)).toBeInTheDocument();
   });
 
-  it("shows error with Retry", () => {
-    const onRetry = vi.fn();
-    const { dialog } = renderModal({ trajectory: "error", onRetry });
-    expect(within(dialog).getByText(/Trajectory unavailable/)).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+  it("error: Retry calls back and Download stays disabled", () => {
+    const { onRetry } = renderTrace({ trajectory: "error", events: [{ type: "agent.message", text: "live", ts: iso(0) }] });
+    expect(screen.getByRole("alert")).toHaveTextContent(/Trajectory unavailable/);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledTimes(1);
-    expect(within(dialog).getByRole("button", { name: "Download JSON" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Download JSON" })).toBeDisabled();
+    // Live events still render while the envelope is unavailable.
+    expect(within(tree()).getByRole("treeitem", { name: /agent\.message/ })).toBeInTheDocument();
   });
 
-  it("shows the empty state when nothing was loaded", () => {
-    const { dialog } = renderModal({ trajectory: undefined });
-    expect(within(dialog).getByText("No trajectory loaded yet.")).toBeInTheDocument();
-  });
-
-  it("renders a provisional transcript from live events while loading", () => {
-    const { dialog } = renderModal({ trajectory: "loading", liveEvents: [{ type: "agent.message", text: "live hello" }] });
-    expect(within(dialog).getByText("Live events · envelope pending")).toBeInTheDocument();
-    expect(within(dialog).getAllByText("live hello").length).toBeGreaterThan(0);
-    expect(within(dialog).getByRole("button", { name: "Download JSON" })).toBeDisabled();
-  });
-
-  it("ready: renders stats, Q/A, exactly one raw JSON <pre>, and downloads", () => {
+  it("ready: header facts, Download, and a collapsed Raw JSON disclosure", () => {
     const create = vi.fn(() => "blob:x");
     const revoke = vi.fn();
     Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    const { dialog } = renderModal();
+    const { container } = renderTrace({ trajectory: envelope(richEvents(), { reward: { raw_rewards: {}, final_reward: 1 } }) });
 
-    expect(within(dialog).getByText("trj_1 · session sesn_1")).toBeInTheDocument();
-    expect(within(dialog).getByText("Outcome: success")).toBeInTheDocument();
-    expect(within(dialog).getByText("claude-sonnet-4-6")).toBeInTheDocument();
-    const stats = within(dialog).getByRole("region", { name: "Run summary" });
-    expect(within(stats).getByText("Tool calls").nextSibling).toHaveTextContent("5");
-    expect(within(stats).getByText("Tokens in / out").nextSibling).toHaveTextContent("3.0k / 130");
-    expect(within(dialog).getByText("Fix the failing test", { selector: "div" })).toBeInTheDocument();
+    const summary = screen.getByRole("region", { name: "Trace summary" });
+    expect(within(summary).getByText("trj_1")).toBeInTheDocument();
+    expect(within(summary).getByText("success")).toBeInTheDocument();
+    expect(within(summary).getByText("PASS")).toBeInTheDocument();
+    expect(within(summary).getByText("Tool calls").nextSibling).toHaveTextContent("5");
+    expect(within(summary).getByText("Tokens in / out").nextSibling).toHaveTextContent("3.0k / 130");
 
-    const pres = dialog.querySelectorAll("pre");
-    expect(pres).toHaveLength(1);
-    expect(pres[0]!.textContent).toContain('"trajectory_id": "trj_1"');
+    // Raw JSON is secondary: closed and not rendered until opened.
+    const raw = container.querySelector<HTMLDetailsElement>("details[aria-label='Raw JSON']")!;
+    expect(raw.open).toBe(false);
+    expect(raw.querySelector("pre")).toBeNull();
+    raw.open = true;
+    fireEvent(raw, new Event("toggle"));
+    expect(raw.querySelector("pre")!.textContent).toContain('"trajectory_id": "trj_1"');
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Download JSON" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download JSON" }));
     expect(create).toHaveBeenCalledTimes(1);
     expect(click).toHaveBeenCalledTimes(1);
     expect(revoke).toHaveBeenCalledWith("blob:x");
   });
 
-  it("renders the reward pill and a has-errors badge", () => {
-    const events = [{ type: "session.error", message: "boom" }];
-    const { dialog } = renderModal({
-      trajectory: envelope(events, { reward: { raw_rewards: {}, final_reward: 0.5 }, outcome: "failure", started_at: "not-a-date" }),
-    });
-    expect(within(dialog).getByText("Reward: 0.50")).toBeInTheDocument();
-    expect(within(dialog).getByText("Has errors")).toBeInTheDocument();
-    expect(within(dialog).getByText(/started not-a-date/)).toBeInTheDocument();
+  it("prefers live events over envelope events when both exist", () => {
+    renderTrace({ events: [{ type: "user.message", content: [{ type: "text", text: "live question" }], ts: iso(0) }] });
+    expect(within(tree()).getByRole("treeitem", { name: /^user\.message.*live question/ })).toBeInTheDocument();
+    expect(within(tree()).queryByRole("treeitem", { name: /Fix the failing test/ })).toBeNull();
   });
 
-  it("handles the fixture shape: flattened events, no timing, no tools", () => {
-    const events = Array.from({ length: 5 }, (_, i) => ({ id: i, type: "agent.message", text: `Fixture event ${i}` }));
-    const { dialog } = renderModal({ trajectory: envelope(events) });
-    expect(within(dialog).queryByRole("region", { name: "Run timeline" })).toBeNull();
-    expect(within(dialog).getByText("No tool calls in this turn.")).toBeInTheDocument();
-    expect(within(dialog).getByText("No user message.")).toBeInTheDocument();
-    expect(dialog.querySelectorAll("pre")).toHaveLength(1);
-  });
-
-  it("explains an envelope with no transcript events", () => {
-    const { dialog } = renderModal({ trajectory: envelope([{ type: "session.status_idle" }]) });
-    expect(within(dialog).getByText("This trajectory has no transcript events yet.")).toBeInTheDocument();
+  it("untimed fixture events: tree works, overview explains missing timestamps", () => {
+    const events = Array.from({ length: 3 }, (_, i) => ({ id: `e${i}`, type: "agent.message", text: `Fixture event ${i}` }));
+    renderTrace({ trajectory: envelope(events) });
+    expect(screen.getByRole("note")).toHaveTextContent(/No timestamps/);
+    expect(within(tree()).getAllByRole("treeitem", { name: /Fixture event/ })).toHaveLength(3);
+    expect(within(screen.getByRole("region", { name: "Trace summary" })).getByText("Started").nextSibling).toHaveTextContent("unknown");
   });
 });
 
-describe("TrajectoryInspector interactions", () => {
-  it("defaults to the final turn and switches turns by click and arrow keys", () => {
-    const { dialog } = renderModal();
-    const strip = within(dialog).getByRole("listbox", { name: "Turn strip" });
-    const options = within(strip).getAllByRole("option");
-    // reads → edit → bash → final answer: each tool result hands control back.
-    expect(options).toHaveLength(4);
-    expect(options[3]).toHaveAttribute("aria-selected", "true");
-    expect(within(options[3]!).getByText("FINAL")).toBeInTheDocument();
-    expect(within(options[2]!).getByText("ERR 1")).toBeInTheDocument();
-    expect(within(options[0]!).getByText("3 tools")).toBeInTheDocument();
-    expect(within(options[1]!).getByText("1 tool")).toBeInTheDocument();
-
-    fireEvent.click(options[0]!);
-    expect(options[0]).toHaveAttribute("aria-selected", "true");
-    const exec = within(dialog).getByRole("region", { name: "Execution" });
-    expect(within(exec).getByText("3 read calls")).toBeInTheDocument();
-    const convo = within(dialog).getByRole("region", { name: "Conversation" });
-    expect(within(convo).getByText("Fix the failing test")).toBeInTheDocument();
-
-    fireEvent.keyDown(window, { key: "ArrowRight" });
-    expect(options[1]).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
-    expect(options[0]).toHaveAttribute("aria-selected", "true");
-    // Other keys and keys typed into inputs are ignored.
-    fireEvent.keyDown(window, { key: "Enter" });
-    fireEvent.keyDown(within(dialog).getByRole("searchbox", { name: "Search steps" }), { key: "ArrowRight" });
-    expect(options[0]).toHaveAttribute("aria-selected", "true");
+describe("Trace interactions", () => {
+  it("starts with the empty inspector", () => {
+    renderTrace();
+    expect(within(details()).getByText("Select an event to view details")).toBeInTheDocument();
   });
 
-  it("expands grouped calls and opens the inspector with paired output", () => {
-    const { dialog } = renderModal();
-    fireEvent.click(within(dialog).getAllByRole("option")[0]!);
-    const exec = within(dialog).getByRole("region", { name: "Execution" });
-    fireEvent.click(within(exec).getByRole("button", { name: /3 read calls/ }));
-    const row = within(exec).getByRole("button", { name: /\/b\.ts/ });
-    fireEvent.click(row);
-    const inspector = within(exec).getByTestId("step-inspector");
-    expect(inspector).toHaveTextContent("call r2");
-    expect(inspector).toHaveTextContent("B body");
-    expect(inspector).toHaveTextContent("agent.tool_use #5");
-    expect(inspector).toHaveTextContent("agent.tool_result #8");
-    fireEvent.click(row);
-    expect(within(exec).queryByTestId("step-inspector")).toBeNull();
+  it("clicking an overview bar selects its tree row (opening a folded group) and the inspector", () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    renderTrace();
+    // Grouped reads start folded.
+    const group = within(tree()).getByRole("treeitem", { name: /3 read calls/ });
+    expect(group).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select read: /b.ts" }));
+    expect(group).toHaveAttribute("aria-expanded", "true");
+    const row = within(tree()).getByRole("treeitem", { name: /\/b\.ts/ });
+    expect(row).toHaveAttribute("aria-selected", "true");
+    expect(scroll).toHaveBeenCalled();
+    const insp = within(details());
+    expect(insp.getByText("B body")).toBeInTheDocument();
+    expect(insp.getByText("r2")).toBeInTheDocument();
+    expect(insp.getByText("agent.tool_use #5, agent.tool_result #8")).toBeInTheDocument();
+    expect(insp.getByText("190ms")).toBeInTheDocument();
+    // Fit selection is enabled once something is selected.
+    expect(screen.getByRole("button", { name: "Fit selection" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Fit selection" }));
+    expect(screen.getByRole("button", { name: "Auto-pick scale by event density" })).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(insp.getByRole("button", { name: "Close details" }));
+    expect(within(details()).getByText("Select an event to view details")).toBeInTheDocument();
   });
 
-  it("renders file-edit inputs as a diff and error output", () => {
-    const { dialog } = renderModal();
-    fireEvent.click(within(dialog).getAllByRole("option")[1]!);
-    const exec = within(dialog).getByRole("region", { name: "Execution" });
-    fireEvent.click(within(exec).getByRole("button", { name: /edit/ }));
-    const diff = within(exec).getByTestId("step-diff");
+  it("selects a turn from the overview and shows turn timing without inventing an end", () => {
+    renderTrace();
+    fireEvent.click(screen.getByRole("button", { name: "Select Turn 1" }));
+    const insp = within(details());
+    expect(insp.getByText("open — no status_idle / terminated / error yet")).toBeInTheDocument();
+    expect(insp.getByText("4.50s so far")).toBeInTheDocument();
+    expect(insp.getByText("3000 / 130")).toBeInTheDocument();
+  });
+
+  it("shows failed tool state in tree, overview and inspector", () => {
+    const { container } = renderTrace();
+    const bash = within(tree()).getByRole("treeitem", { name: /npm test/ });
+    expect(within(bash).getByText("Failed")).toBeInTheDocument();
+    expect(within(bash).getByText("1.50s")).toBeInTheDocument();
+    expect(container.querySelector("[data-step-bar='tool'][data-failed='true']")).not.toBeNull();
+    fireEvent.click(bash);
+    expect(within(details()).getByText("Output (error)")).toBeInTheDocument();
+    expect(within(details()).getByText("1 failing")).toBeInTheDocument();
+  });
+
+  it("renders file-edit inputs as a diff and model usage", () => {
+    renderTrace();
+    fireEvent.click(within(tree()).getByRole("treeitem", { name: /^edit/ }));
+    const diff = within(details()).getByTestId("step-diff");
+    expect(diff).toHaveTextContent("Edit · /a.ts");
     expect(diff).toHaveTextContent("-bug()");
     expect(diff).toHaveTextContent("+fix()");
-    expect(within(exec).getByText("Edit · /a.ts")).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getAllByRole("option")[2]!);
-    const exec2 = within(dialog).getByRole("region", { name: "Execution" });
-    fireEvent.click(within(exec2).getByRole("button", { name: /npm test/ }));
-    expect(within(exec2).getByText("Output (error)")).toBeInTheDocument();
-    expect(within(exec2).getByText("1 failing")).toBeInTheDocument();
+    fireEvent.click(within(tree()).getAllByRole("treeitem", { name: /^Generation/ })[0]!);
+    const usage = within(within(details()).getByRole("region", { name: "Usage" }));
+    expect(usage.getByText("1000")).toBeInTheDocument();
+    expect(usage.getByText("Model").nextSibling).toHaveTextContent("not reported");
   });
 
-  it("shows text inspectors and pending calls in the all-steps view", () => {
+  it("keeps pending calls, orphans, MCP and errors visible with explicit unknowns", () => {
     const events = [
-      { type: "user.message", text: "hi" },
-      { type: "agent.tool_use", id: "p", name: "custom_thing", input: "raw" },
+      { type: "user.message", text: "hi", ts: iso(0) },
+      { type: "agent.custom_tool_use", id: "p", name: "approve", input: "raw", ts: iso(10) },
       { type: "agent.mcp_tool_use", id: "q", name: "search", mcp_server_name: "gh", input: { query: "x" } },
       { type: "agent.mcp_tool_result", mcp_tool_use_id: "q", content: "" },
-      { type: "session.error", message: "kaput" },
+      { type: "agent.tool_result", tool_use_id: "ghost", content: "late", ts: iso(30) },
+      { type: "session.error", error: "kaput", ts: iso(40) },
     ];
-    const { dialog } = renderModal({ trajectory: envelope(events) });
-    fireEvent.click(within(dialog).getByRole("button", { name: "All steps" }));
-    const list = within(dialog).getByRole("region", { name: "All steps" });
-    expect(within(list).getByText("gh/search")).toBeInTheDocument();
-    fireEvent.click(within(list).getByRole("button", { name: /custom_thing/ }));
-    expect(within(list).getByText("No result recorded for this call.")).toBeInTheDocument();
-    expect(within(list).getByText("pending")).toBeInTheDocument();
-    fireEvent.click(within(list).getByRole("button", { name: /gh\/search/ }));
-    expect(within(list).getByText("(empty)")).toBeInTheDocument();
-    fireEvent.click(within(list).getByRole("button", { name: /kaput/ }));
-    expect(within(list).getAllByText("kaput").length).toBeGreaterThan(1);
+    renderTrace({ trajectory: envelope(events) });
+    const pending = within(tree()).getByRole("treeitem", { name: /approve/ });
+    expect(within(pending).getAllByText("pending").length).toBeGreaterThan(0);
+    fireEvent.click(pending);
+    expect(within(details()).getByText("No result recorded for this call.")).toBeInTheDocument();
+    expect(within(details()).getByText("pending — no result recorded")).toBeInTheDocument();
+
+    const mcp = within(tree()).getByRole("treeitem", { name: /gh:search/ });
+    expect(within(mcp).getByText("no time")).toBeInTheDocument();
+    expect(within(mcp).getByText("—")).toBeInTheDocument();
+    fireEvent.click(mcp);
+    expect(within(details()).getByText("(empty)")).toBeInTheDocument();
+    expect(within(within(details()).getByRole("region", { name: "Timing" })).getAllByText("unknown").length).toBeGreaterThan(0);
+
+    expect(within(tree()).getByRole("treeitem", { name: /no matching call/ })).toHaveTextContent("orphan");
+    fireEvent.click(within(tree()).getByRole("treeitem", { name: /session\.error/ }));
+    expect(within(details()).getByRole("region", { name: "Error" })).toHaveTextContent("kaput");
+    // session.error closes the turn as errored.
+    expect(within(tree()).getByRole("treeitem", { name: /Turn 1/ })).toHaveTextContent("errored");
   });
 
   it("filters by kind, tool and search, and clears", () => {
-    const { dialog } = renderModal();
-    fireEvent.click(within(dialog).getByRole("button", { name: "All steps" }));
-    const list = () => within(dialog).getByRole("region", { name: "All steps" });
-    expect(within(dialog).getByText("7 steps")).toBeInTheDocument();
+    renderTrace();
+    expect(screen.getByText("9 steps")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Errors" }));
+    expect(screen.getByText("1 of 9 steps")).toBeInTheDocument();
+    expect(within(tree()).getByRole("treeitem", { name: /npm test/ })).toBeInTheDocument();
+    expect(within(tree()).queryByRole("treeitem", { name: /3 read calls/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Errors" }));
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Errors" }));
-    expect(within(dialog).getByText("1 of 7 steps")).toBeInTheDocument();
-    expect(within(list()).getByText("npm test")).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Errors" }));
-
-    const toolChips = within(dialog).getByRole("group", { name: "Tools filter" });
-    const readChip = within(toolChips).getByRole("button", { name: "read (3)" });
+    const readChip = within(screen.getByRole("group", { name: "Tools filter" })).getByRole("button", { name: "read (3)" });
     fireEvent.click(readChip);
     expect(readChip).toHaveAttribute("aria-pressed", "true");
-    expect(within(dialog).getByText("3 of 7 steps")).toBeInTheDocument();
+    expect(screen.getByText("3 of 9 steps")).toBeInTheDocument();
     fireEvent.click(readChip);
-    expect(within(dialog).getByText("7 steps")).toBeInTheDocument();
 
-    fireEvent.change(within(dialog).getByRole("searchbox", { name: "Search steps" }), { target: { value: "zzz" } });
-    expect(within(list()).getByText("No steps match the current filters.")).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Clear" }));
-    expect(within(dialog).getByText("7 steps")).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "Clear" })).toBeNull();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "By turn" }));
-    expect(within(dialog).getByRole("region", { name: "Execution" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search steps" }), { target: { value: "zzz" } });
+    expect(screen.getByText("No steps match the current filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByText("9 steps")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
   });
 
-  it("hides conversation rows filtered out in the by-turn view", () => {
-    const { dialog } = renderModal();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Tools" }));
-    const convo = within(dialog).getByRole("region", { name: "Conversation" });
-    expect(within(convo).getByText("No messages in this turn.")).toBeInTheDocument();
+  it("moves through the tree with the keyboard", () => {
+    renderTrace();
+    fireEvent.click(within(tree()).getByRole("treeitem", { name: /Turn 1/ }));
+    fireEvent.keyDown(tree(), { key: "ArrowDown" });
+    expect(within(tree()).getByRole("treeitem", { name: /Fix the failing test/, selected: true })).toBeInTheDocument();
+    fireEvent.keyDown(tree(), { key: "ArrowUp" });
+    const turn = within(tree()).getByRole("treeitem", { name: /Turn 1/ });
+    expect(turn).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(tree(), { key: "ArrowLeft" });
+    expect(turn).toHaveAttribute("aria-expanded", "false");
+    fireEvent.keyDown(tree(), { key: "ArrowRight" });
+    expect(turn).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("seeks from a timeline segment to its step", () => {
-    const scroll = vi.fn();
-    Element.prototype.scrollIntoView = scroll;
-    const { dialog } = renderModal();
-    const timeline = within(dialog).getByRole("region", { name: "Run timeline" });
-    fireEvent.click(within(timeline).getByRole("button", { name: /Seek to read: \/b\.ts/ }));
-    const options = within(dialog).getAllByRole("option");
-    expect(options[0]).toHaveAttribute("aria-selected", "true");
-    const exec = within(dialog).getByRole("region", { name: "Execution" });
-    // Seeking into a folded group opens it and the step inspector.
-    expect(within(exec).getByTestId("step-inspector")).toHaveTextContent("B body");
-    expect(scroll).toHaveBeenCalled();
-    // Model segments seek to the first step of their turn.
-    fireEvent.click(within(timeline).getAllByRole("button", { name: /Seek to Model request/ })[0]!);
-    expect(options[0]).toHaveAttribute("aria-selected", "true");
+  it("brush-drags on the overview to zoom into a time range", () => {
+    const { container } = renderTrace();
+    const chart = container.querySelector<HTMLElement>("[data-overview-chart]")!;
+    vi.spyOn(chart, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 800, bottom: 100, width: 800, height: 100, x: 0, y: 0, toJSON: () => ({}) });
+    const before = Number(chart.dataset.chartPx);
+    fireEvent.mouseDown(chart, { button: 0, clientX: 100 });
+    fireEvent.mouseMove(window, { clientX: 200 });
+    expect(screen.getByTestId("overview-brush")).toBeInTheDocument();
+    fireEvent.mouseUp(window, { clientX: 200 });
+    expect(screen.queryByTestId("overview-brush")).toBeNull();
+    expect(Number(chart.dataset.chartPx)).toBeGreaterThan(before);
   });
 
-  it("copies the full transcript", async () => {
+  it("copies the transcript", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const { dialog } = renderModal();
+    renderTrace();
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole("button", { name: "Copy transcript" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy transcript" }));
     });
-    expect(writeText).toHaveBeenCalledTimes(1);
     const text = writeText.mock.calls[0]![0] as string;
+    expect(text).toContain("## Turn 1 · user message · running");
     expect(text).toContain("[user] Fix the failing test");
     expect(text).toContain("[tool bash · error");
     expect(toastMock.success).toHaveBeenCalledWith("Transcript copied");
 
     writeText.mockRejectedValueOnce(new Error("denied"));
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole("button", { name: "Copy transcript" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy transcript" }));
     });
     expect(toastMock.error).toHaveBeenCalledWith("Could not copy transcript");
   });
