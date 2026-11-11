@@ -42,14 +42,36 @@ it("fails closed before startup when required runtime exports are absent",async(
  expect(calls).not.toContain("startup-failed");expect(calls).not.toContain("stop");
  } finally { vi.doUnmock("@openma/common/managed-runtime"); vi.resetModules(); }
 });
-it.each(["gap","rejected"] as const)("default CLI never dispatches after bootstrap %s",async type=>{
+it.each([["gap","canonical_terminal_root_missing",undefined],["gap","consumed_turn_without_terminal",undefined],["rejected","consumed_turn_without_terminal",root]] as const)("default CLI never dispatches after bootstrap %s %s without a settleable root",async(type,reason,gapRoot)=>{
  const calls:string[]=[];
  await expect(runNodeWorkItemCli({environment,scheduler:{sleep},composition:async()=>{throw Error("must not compose");},fetch:async(raw)=>{
   const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
   if(action==="ack")return Response.json({});if(action==="heartbeat")return Response.json({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90});
-  return Response.json({type,reason:"consumed_turn_without_terminal",root,revision:3},{status:409});
- }})).rejects.toThrow("consumed_turn_without_terminal");
+  return Response.json({type,reason,...(gapRoot?{root:gapRoot}:{}),revision:3},{status:409});
+ }})).rejects.toThrow(reason);
  expect(calls).toEqual(["ack","heartbeat","work-bootstrap"]);
+});
+it("default CLI settles a bootstrap consumed-without-terminal gap as exhausted, without composing or redispatching",async()=>{
+ const calls:Array<[string,unknown]>=[];const exhausted={...terminal,workId:"w",generation:2,revision:4,stopReason:{type:"retries_exhausted"}};
+ await expect(runNodeWorkItemCli({environment,scheduler:{sleep},composition:async()=>{throw Error("must not compose");},
+  lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("must not stop resident Work");}},
+  fetch:async(raw,init)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push([action,JSON.parse(String(init?.body))]);
+  if(action==="work-bootstrap")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",root,revision:3},{status:409});
+  if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:3},{status:409});
+  if(action==="work-failed")return Response.json({type:"committed",revision:4,terminal:exhausted});
+  if(action==="work-publish")return Response.json({type:"published",revision:4,terminal:exhausted});throw Error(action);
+ }})).rejects.toMatchObject({phase:"run",message:expect.stringContaining("retries_exhausted")});
+ expect(calls).toEqual([["work-bootstrap",{}],["work-recovery",{turnId:"t"}],["work-failed",{turnId:"t",revision:3,phase:"run"}],["work-publish",{turnId:"t",revision:4,terminalEventId:"idle"}]]);
+});
+it("a bootstrap consumed-without-terminal gap whose claim is lost before work-failed is neither published nor redispatched",async()=>{
+ const calls:string[]=[];
+ await expect(runNodeWorkItemCli({environment,scheduler:{sleep},composition:async()=>{throw Error("must not compose");},fetch:async(raw)=>{
+  const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
+  if(action==="ack")return Response.json({});if(action==="heartbeat")return Response.json({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90});
+  if(action==="work-failed")return Response.json({type:"rejected",reason:"claim"},{status:409});
+  return Response.json({type:"gap",reason:"consumed_turn_without_terminal",root,revision:3},{status:409});
+ }})).rejects.toThrow("Work finalization rejected: claim");
+ expect(calls).toEqual(["ack","heartbeat","work-bootstrap","work-recovery","work-failed"]);
 });
 it("default E2B CLI cleanup uses bootstrap without loading an isolated agent",async()=>{
  const {runNodeE2BWorkItemCli}=await import("../src/node-e2b-work-item-cli.js");

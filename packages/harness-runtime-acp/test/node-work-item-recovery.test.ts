@@ -32,8 +32,10 @@ function fixture(mode:"run"|"committed"|"parked"|"gap", failRun=false, cleanupFa
 it.each(["committed","parked"] as const)("%s recovery only publishes original terminal without resolving a harness or stopping resident Work",async mode=>{
  const f=fixture(mode);await f.runner.run();expect(f.effects).toEqual(["work-recovery","work-publish","artifacts"]);
 });
-it("refuses consumed-without-terminal redispatch",async()=>{
- const f=fixture("gap");await expect(f.runner.run()).rejects.toThrow(/consumed_turn_without_terminal/);expect(f.effects).toEqual(["work-recovery"]);
+it("settles consumed-without-terminal as exhausted through the current claim, never redispatching the model",async()=>{
+ const f=fixture("gap");
+ await expect(f.runner.run()).rejects.toMatchObject({phase:"run",message:expect.stringContaining("retries_exhausted")});
+ expect(f.effects).toEqual(["work-recovery","work-failed","failure-committed","work-publish","artifacts"]);
 });
 it("settles an admitted run failure through exact-turn recovery and work-failed, then publishes",async()=>{
  const f=fixture("run",true);await expect(f.runner.run()).rejects.toThrow("model failed");
@@ -126,4 +128,45 @@ it("routes a resident consumer failure to its second admitted turn, never the al
  });
  await expect(runner.run()).rejects.toThrow("second failed");
  expect(requests.slice(2)).toEqual([["work-recovery",{turnId:"second"}],["work-failed",{turnId:"second",revision:8,phase:"run"}],["work-publish",{turnId:"second",revision:9,terminalEventId:"idle"}]]);
+});
+
+it.each([200,409] as const)("routes a run refused before any canonical admission to the startup CAS, never work-failed (startup-failed %s)",async status=>{
+ const calls:Array<[string,unknown]>=[];
+ const runner=createNodeManagedAcpWorkItemRunner({environment,recovery:{resolveTurn:async()=>"turn"},
+  // The dispatch gate refused before consuming: hooks.admitted is never called.
+  supervisorFactory:()=>({serve:async()=>{},resolveHarness:async()=>({start:async()=>({completed:Promise.reject(Error("Native permission mode was not verified")),drain:async()=>{},stop:async()=>{calls.push(["stop-model",null]);}})})}),
+  fetch:async(raw,init)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push([action,JSON.parse(String(init?.body))]);
+   if(action==="work-recovery")return Response.json({type:"run",turnId:"turn",revision:3});
+   if(action==="startup-boundary")return Response.json({revision:3});
+   if(action==="startup-failed")return Response.json({type:status===200?"committed":"rejected"},{status});
+   throw Error("unsafe call "+action);
+  },
+  lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("whole-Work stop");}},
+  scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))},
+ });
+ const error=await runner.run().catch(error=>error);
+ if(status===200)expect(error).toMatchObject({name:"NodeManagedAcpWorkItemFailure",phase:"run",message:"Native permission mode was not verified"});
+ else expect(error).toBeInstanceOf(AggregateError); // CAS refused: fail closed, left to exact-turn recovery
+ const failed=calls.filter(([action])=>action==="startup-failed");
+ expect(failed).toHaveLength(status===200?1:2); // one exact replay on rejection, as for startup
+ expect(failed[0]![1]).toEqual({revision:3,processedAt:expect.any(String)});
+ expect(calls.map(([action])=>action)).not.toContain("work-failed");
+});
+
+it("an admitted-then-published turn followed by a refusal does not fabricate a startup settlement for the published turn",async()=>{
+ const calls:string[]=[];let hooks:{admitted(id:string):void;published(id:string):void}|undefined;
+ const runner=createNodeManagedAcpWorkItemRunner({environment,recovery:{resolveTurn:async()=>"turn"},
+  supervisorFactory:observer=>{hooks=observer;return {serve:async()=>{},resolveHarness:async()=>({start:async()=>{hooks!.admitted("turn");hooks!.published("turn");return {completed:Promise.reject(Error("second refused")),drain:async()=>{},stop:async()=>{}};}})};},
+  fetch:async(raw)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
+   if(action==="work-recovery")return Response.json({type:"run",turnId:"turn",revision:3});
+   if(action==="startup-boundary")return Response.json({revision:3});
+   // The server CAS sees revisions advanced by the published turn and refuses.
+   if(action==="startup-failed")return Response.json({type:"rejected"},{status:409});
+   throw Error("unsafe call "+action);
+  },
+  lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("whole-Work stop");}},
+  scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))},
+ });
+ await expect(runner.run()).rejects.toBeInstanceOf(AggregateError);
+ expect(calls).not.toContain("work-failed");expect(calls).not.toContain("work-publish");
 });

@@ -176,9 +176,11 @@ export function createNodeManagedAcpWorkItemRunner(
       throw error;
     }
   };
-  const settleFailure = async (turnId: string, phase: "run" | "finalization", signal: AbortSignal) => {
-    let state = await finalization.recover(turnId, signal);
-    if (state.type === "gap" && state.reason === "consumed_turn_without_terminal" && state.revision !== undefined) {
+  const isOrphanedConsumedTurn = (state: WorkFinalizationResult): state is Extract<WorkFinalizationResult, {reason: string}> & {type: "gap"; revision: number} =>
+    state.type === "gap" && state.reason === "consumed_turn_without_terminal" && state.revision !== undefined;
+  const settleFailure = async (turnId: string, phase: "run" | "finalization", signal: AbortSignal, recovered?: WorkFinalizationResult) => {
+    let state = recovered ?? await finalization.recover(turnId, signal);
+    if (isOrphanedConsumedTurn(state)) {
       try { state = await finalization.fail({ turnId, revision: state.revision, phase }, signal); }
       catch (error) {
         if (!(error instanceof WorkFinalizationTransportError) || signal.aborted) throw error;
@@ -258,6 +260,13 @@ export function createNodeManagedAcpWorkItemRunner(
                 await pause(pollMs, workSignal);
                 continue;
               }
+              // A consumed root with no terminal is the only gap with a canonical
+              // turn to settle. Hand it to exact-turn recovery below, which never
+              // composes a runtime or redispatches the model for it.
+              if (plan.type === "gap" && plan.reason === "consumed_turn_without_terminal" && plan.root !== undefined) {
+                selectedTurn = plan.root.turnId;
+                break;
+              }
               if (!("claim" in plan)) throw new Error(`Work bootstrap ${plan.type}: ${plan.reason}`);
               trustedClaim = plan.claim;
               selectedTurn = plan.root.turnId;
@@ -275,6 +284,14 @@ export function createNodeManagedAcpWorkItemRunner(
                 throw new NodeManagedAcpWorkItemFailure("run", new Error(`Canonical turn ${selectedTurn} already ended with retries_exhausted`));
               }
               return;
+            }
+            if (isOrphanedConsumedTurn(state)) {
+              // A previous owner consumed this input and died before any
+              // terminal. Its side effects are unknown, so it is never replayed;
+              // retrying the gap forever is not recovery either. The current
+              // claim (re-verified by work-failed's CAS) ends it exhausted.
+              await settleFailure(selectedTurn, "run", workSignal, state);
+              throw new NodeManagedAcpWorkItemFailure("run", new Error(`Canonical turn ${selectedTurn} was consumed without a terminal; settled as retries_exhausted`));
             }
             if (state.type !== "run") throw rejected(state);
             workSignal.throwIfAborted();
@@ -339,18 +356,26 @@ export function createNodeManagedAcpWorkItemRunner(
             const errors: unknown[] = [failure];
             try { await active?.stop(workSignal.aborted ? "aborted" : "failed"); }
             catch (cleanupError) { errors.push(cleanupError); }
+            const completion = isFinalizationFailure(error) ? error.completion : undefined;
+            const turnId = completion?.sessionId === sessionId ? completion.turnId : admittedTurn;
+            // A run that failed before this process admitted any canonical turn
+            // (e.g. a not-dispatched permission/readiness refusal in the
+            // dispatch gate) consumed nothing: it is a startup failure of the
+            // selected root. Settling it ends the redispatch loop; the private
+            // startup CAS still refuses if anything was consumed or projected
+            // since the boundary, leaving that case to exact-turn recovery.
+            const preAdmission = recoveryAware && selectedTurn !== undefined && failure.phase === "run" && !turnId
+              && !(error instanceof WorkVerifierExitUnconfirmedError) && !isFinalizationFailure(error);
             // Aborted, failed-run and failed-finalization paths keep Work
             // recoverable. Common finally cannot settle them, even when its
             // heartbeat has not yet observed a successor.
-            if (!workSignal.aborted && errors.length === 1 && recoveryAware && failure.phase !== "startup" && !(error instanceof WorkVerifierExitUnconfirmedError) && !(isFinalizationFailure(error) && error.phase === "drain-turn")) {
-              const completion = isFinalizationFailure(error) ? error.completion : undefined;
-              const turnId = completion?.sessionId === sessionId ? completion.turnId : admittedTurn;
+            if (!workSignal.aborted && errors.length === 1 && recoveryAware && failure.phase !== "startup" && !preAdmission && !(error instanceof WorkVerifierExitUnconfirmedError) && !(isFinalizationFailure(error) && error.phase === "drain-turn")) {
               try {
                 if (!turnId) throw new Error("Current canonical Work turn unavailable for failure settlement");
                 await settleFailure(turnId, failure.phase, workSignal);
               } catch (settlementError) { errors.push(settlementError); }
             }
-            if (!workSignal.aborted && errors.length === 1 && failure.phase === "startup" && revision !== undefined) {
+            if (!workSignal.aborted && errors.length === 1 && (failure.phase === "startup" || preAdmission) && revision !== undefined) {
               const body = {revision,processedAt:new Date().toISOString(),...(failure instanceof NodeManagedAcpStartupConfigurationFailure ? {reason:failure.reason} : {})};
               try {
                 // Exact replay confirms a response lost after authority ended.
