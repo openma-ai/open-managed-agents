@@ -40,7 +40,6 @@ const mappings = [
   [join(dist, "node-e2b-work-item-cli.js"), "worker/node-e2b-work-item-cli.js"],
   [join(dist, "bundle-meta.json"), "worker/bundle-meta.json"],
   ...["launcher.py", "agent-spawner.mjs", "agent-exec.py", "verify-install.py", "template.mjs", "source-pin.mjs"].map(n => [join(here, n), n]),
-  ...["package.json", "package-lock.json"].map(n => [join(here, "harness", n), "harness/" + n]),
 ];
 const files = {};
 for (const [from, name] of mappings) {
@@ -51,9 +50,6 @@ for (const [from, name] of mappings) {
 await writeFile(join(context, "installation.json"), JSON.stringify({ schema: 1, sourceSha: SOURCE,
   sourceLockSha256: lockSha256,
   common: common.version, command: "/usr/local/bin/node", args: ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"],
-  harnesses: [
-    { id: "codex-acp", version: "1.8.0", command: "/opt/oma-harnesses/codex-acp/bin/codex-acp" },
-    { id: "pi-acp", version: "0.1.8", command: "/opt/oma-harnesses/pi-acp/bin/openma-pi-acp" },
-  ], files,
+  harnesses: [], files,
 }, null, 2) + "\n");
 console.log(JSON.stringify({ context, sourceSha: SOURCE, common: common.version, bundleSha256: files["worker/node-e2b-work-item-cli.js"] }));

@@ -57,15 +57,13 @@ async function fixture(run) {
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-test('prepares exact installed common 0.14.0 and hashes the copied worker and harness lock', () => fixture(({ context, prepare }) => {
+test('prepares exact installed common 0.14.0 and hashes the copied worker with no baked ACP harness', () => fixture(({ context, prepare }) => {
   const result = prepare();
   assert.equal(result.status, 0, result.stderr);
   const manifest = JSON.parse(readFileSync(join(context, 'installation.json')));
   assert.equal(manifest.common, '0.14.0');
-  assert.deepEqual(manifest.harnesses, [
-    { id: 'codex-acp', version: '1.8.0', command: '/opt/oma-harnesses/codex-acp/bin/codex-acp' },
-    { id: 'pi-acp', version: '0.1.8', command: '/opt/oma-harnesses/pi-acp/bin/openma-pi-acp' },
-  ]);
+  assert.deepEqual(manifest.harnesses, []);
+  assert.equal(Object.keys(manifest.files).some(name => name.startsWith('harness/')), false);
   for (const [name, digest] of Object.entries(manifest.files)) assert.equal(hash(readFileSync(join(context, name))), digest, name);
   assert.notEqual(prepare().status, 0, 'must not overwrite a prepared context');
 }));
@@ -142,21 +140,8 @@ test('template preinstalls FUSE and the checksum-pinned rclone native-storage pr
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-// Explicit opt-in: only this test may contact npm; normal regression stays offline.
-test('real npm installed pi/codex pass version and isolated trusted file-chain', {
-  skip: process.env.OMA_TEMPLATE_REAL_NPM !== '1',
-}, () => fixture(async ({ context, prepare, sourceSha, lockSha256 }) => {
-  assert.ok(process.env.OMA_TEMPLATE_TEST_IMAGE, 'existing Linux Docker image required');
-  const result = prepare();
-  assert.equal(result.status, 0, result.stderr);
-  const require = createRequire(import.meta.url);
-  const sdk = require(require.resolve('e2b', { paths: [join(repository, 'node_modules/.pnpm/node_modules')] }));
-  const plan = JSON.parse(await managedTemplate(sdk, context, { sourceSha, lockSha256 }).toJSON());
-  const install = plan.steps.filter(step => step.type === 'RUN').at(-1).args[0];
-  const installed = spawnSync('docker', ['run', '--rm', '--pull=never', '-i', '--entrypoint', 'python3',
-    '-v', `${context}:/context:ro`, '-v', `${here}:/tests:ro`, process.env.OMA_TEMPLATE_TEST_IMAGE,
-    '/tests/pi-template-install-linux.py'], { input: install, encoding: 'utf8', timeout: 240_000 });
-  assert.equal(installed.status, 0, installed.stdout + installed.stderr);
-  assert.match(installed.stdout, /real npm pi\/codex installation.*PASS/);
-  console.log(installed.stdout);
-}));
+test('base template bakes no ACP agent: Environment setup installs pinned registry agents', () => {
+  const source = readFileSync(join(template, 'template.mjs'), 'utf8');
+  assert.doesNotMatch(source, /oma-harnesses|npm ci|pi-acp|codex-acp/);
+  assert.equal(existsSync(join(template, 'harness')), false);
+});

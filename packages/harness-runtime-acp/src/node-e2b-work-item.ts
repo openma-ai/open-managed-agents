@@ -1,25 +1,32 @@
+import { acpInstalledLauncherPath, resolvePinnedAcpRegistryAgent } from "@open-managed-agents/acp-runtime/registry-pins";
 export { createE2BStateIo } from "./node-e2b-state-io.js";
 import type { Spawner } from "@open-managed-agents/acp-runtime";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 
 /** E2B root management may use only the template-certified installed closure. */
+/** HOME of the unprivileged E2B agent identity (template `useradd oma-worker`). */
+const E2B_AGENT_HOME = "/home/oma-worker";
+
+/** Accepts exactly one pinned registry agent installed by the Environment
+ * setup step (normally restored from the prepared environment snapshot) at
+ * its deterministic launcher under the agent HOME. The base template bakes no
+ * ACP agent. The launcher runs as the agent identity like any agent process
+ * and never receives management credentials. Sources, packages, other paths
+ * or unpinned versions are refused before ACK. */
 export function assertE2BInstalledHarness(environment: Readonly<Record<string,string|undefined>>): void {
-  const fail = () => { throw new Error("E2B worker requires the fixed preinstalled codex-acp@1.8.0 / pi-acp@0.1.8 inventory"); };
+  const fail = () => { throw new Error("E2B worker requires a pinned ACP harness installed by Environment setup"); };
   if (environment.OPENMA_ACP_SOURCES !== undefined || environment.OPENMA_ACP_PACKAGES !== undefined) fail();
   let entries: unknown;
   try { entries = JSON.parse(environment.OPENMA_ACP_HARNESSES ?? ""); } catch { fail(); }
-  if (!Array.isArray(entries) || entries.length === 0) return fail();
-  const certified = new Map([
-    ["codex-acp", { version: "1.8.0", command: "/opt/oma-harnesses/codex-acp/bin/codex-acp" }],
-    ["pi-acp", { version: "0.1.8", command: "/opt/oma-harnesses/pi-acp/bin/openma-pi-acp" }],
-  ]);
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object" || Object.keys(entry).sort().join(",") !== "command,id,version") return fail();
-    const expected = certified.get(entry.id);
-    if (!expected || entry.version !== expected.version || entry.command !== expected.command || seen.has(entry.id)) return fail();
-    seen.add(entry.id);
-  }
+  if (!Array.isArray(entries) || entries.length !== 1) return fail();
+  const [entry] = entries as unknown[];
+  if (!entry || typeof entry !== "object" || Object.keys(entry).sort().join(",") !== "command,id,version") return fail();
+  const { id, version, command } = entry as Record<string, unknown>;
+  if (typeof id !== "string" || typeof version !== "string" || typeof command !== "string") return fail();
+  try {
+    const pinned = resolvePinnedAcpRegistryAgent(`${id}@${version}`);
+    if (pinned.id !== id || pinned.version !== version || command !== acpInstalledLauncherPath(E2B_AGENT_HOME, id, version)) fail();
+  } catch { fail(); }
 }
 
 /** Fixed root-private module; never discover isolation code through workspace or env. */

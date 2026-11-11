@@ -76,7 +76,7 @@ it("a bootstrap consumed-without-terminal gap whose claim is lost before work-fa
 it("default E2B CLI cleanup uses bootstrap without loading an isolated agent",async()=>{
  const {runNodeE2BWorkItemCli}=await import("../src/node-e2b-work-item-cli.js");
  const calls:string[]=[];
- await runNodeE2BWorkItemCli({environment:{...environment,OPENMA_ACP_HARNESSES:JSON.stringify([{id:"codex-acp",version:"1.8.0",command:"/opt/oma-harnesses/codex-acp/bin/codex-acp"}])},scheduler:{sleep},fetch:async(raw)=>{
+ await runNodeE2BWorkItemCli({environment:{...environment,OPENMA_ACP_HARNESSES:JSON.stringify([{id:"codex-acp",version:"1.8.0",command:"/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh"}])},scheduler:{sleep},fetch:async(raw)=>{
   const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
   if(action==="ack")return Response.json({});if(action==="heartbeat")return Response.json({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90});
   if(action==="work-bootstrap")return Response.json({type:"cleanup-only",claim,root,revision:3,terminal});

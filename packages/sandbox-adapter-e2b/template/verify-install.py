@@ -19,12 +19,8 @@ if not re.fullmatch("[a-f0-9]{40}", args.source_sha) or not re.fullmatch("[a-f0-
     raise ValueError("explicit full source pin required")
 base = Path(args.root).resolve()
 managed = base / "opt/oma-managed"
-harness = base / "opt/oma-harnesses/codex-acp"
-pi_harness = base / "opt/oma-harnesses/pi-acp"
-installed = [
-    {"id": "codex-acp", "version": "1.8.0", "command": "/opt/oma-harnesses/codex-acp/bin/codex-acp"},
-    {"id": "pi-acp", "version": "0.1.8", "command": "/opt/oma-harnesses/pi-acp/bin/openma-pi-acp"},
-]
+# The base template installs no ACP agent (Environment setup does).
+installed = []
 
 def trusted(path):
     # Walk lexical components BEFORE following links; recursively inspect every
@@ -65,20 +61,10 @@ for name in ["launcher.py", "agent-spawner.mjs", "agent-exec.py", "verify-instal
     path = trusted(managed / name)
     if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["files"][name]:
         raise ValueError("trusted installation digest mismatch")
-for name in ["package.json", "package-lock.json"]:
-    path = trusted(harness / name)
-    if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["files"]["harness/" + name]:
-        raise ValueError("installed harness lock mismatch")
-for tree in [managed, harness, pi_harness]:
-    for path in tree.rglob("*"):
-        trusted(path)
-for entry, package_name in zip(installed, ["@agentclientprotocol/codex-acp", "@openma/pi-acp"]):
-    package = json.loads(trusted(harness / "node_modules" / package_name / "package.json").read_text())
-    if package["version"] != entry["version"]:
-        raise ValueError("installed harness version mismatch")
-    command = trusted(base / entry["command"].lstrip("/"))
-    if not os.access(command, os.X_OK):
-        raise ValueError("installed harness command is not executable")
+for path in managed.rglob("*"):
+    trusted(path)
+if (base / "opt/oma-harnesses").exists():
+    raise ValueError("base template must not carry a preinstalled ACP harness")
 # No worker runtime node_modules: bundle contains official common, external=Node builtins.
 if (managed / "worker/node_modules").exists():
     raise ValueError("unexpected worker dependency directory")

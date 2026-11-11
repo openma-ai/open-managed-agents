@@ -77,7 +77,7 @@ it("preserves an exhausted committed outcome after cleanup instead of reporting 
 it("runs the E2B cleanup-only CLI without loading the agent spawner", async () => {
  const {runNodeE2BWorkItemCli}=await import("../src/node-e2b-work-item-cli.js");
  const calls:string[]=[];
- await runNodeE2BWorkItemCli({environment:{...environment,OPENMA_ACP_HARNESSES:JSON.stringify([{id:"codex-acp",version:"1.8.0",command:"/opt/oma-harnesses/codex-acp/bin/codex-acp"}])},recovery:{resolveTurn:async()=>"turn"},
+ await runNodeE2BWorkItemCli({environment:{...environment,OPENMA_ACP_HARNESSES:JSON.stringify([{id:"codex-acp",version:"1.8.0",command:"/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh"}])},recovery:{resolveTurn:async()=>"turn"},
   lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("must not stop later input");}},
   fetch:async(raw)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);return Response.json({type:action==="work-recovery"?"committed":"published",revision:4,terminal});},
   scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))},
