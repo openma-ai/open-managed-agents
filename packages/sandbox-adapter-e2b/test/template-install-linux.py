@@ -8,23 +8,21 @@ from pathlib import Path
 
 context = Path('/context')
 managed = Path('/opt/oma-managed')
-harness = Path('/opt/oma-harnesses/codex-acp')
 managed.mkdir(parents=True, mode=0o700)
-harness.mkdir(parents=True)
 for name in ['launcher.py', 'agent-spawner.mjs', 'agent-exec.py', 'verify-install.py', 'installation.json']:
     shutil.copy(context / name, managed / name)
     (managed / name).chmod(0o600)
 shutil.copytree(context / 'worker', managed / 'worker')
-shutil.copytree(context / 'harness', harness, dirs_exist_ok=True)
-subprocess.run(['npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=harness, check=True)
-(harness / 'bin').mkdir()
-(harness / 'bin/codex-acp').symlink_to('../node_modules/.bin/codex-acp')
-pi_harness = Path('/opt/oma-harnesses/pi-acp')
-(pi_harness / 'bin').mkdir(parents=True)
-(pi_harness / 'bin/openma-pi-acp').symlink_to('../../codex-acp/node_modules/.bin/openma-pi-acp')
-subprocess.run(['chown', '-R', 'root:root', str(managed), '/opt/oma-harnesses'], check=True)
-subprocess.run(['chmod', '-R', 'go-w', str(managed), '/opt/oma-harnesses'], check=True)
+subprocess.run(['chown', '-R', 'root:root', str(managed)], check=True)
+subprocess.run(['chmod', '-R', 'go-w', str(managed)], check=True)
 agent = pwd.getpwnam('oma-worker')
+# The base template bakes no ACP agent. Stand in for the Environment-setup
+# launcher (agent-owned, under the agent HOME) with a minimal ACP fixture.
+harness = Path('/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh')
+harness.parent.mkdir(parents=True)
+harness.write_text('#!/usr/bin/env node\nprocess.stdin.once("data", d => { const m = JSON.parse(String(d)); process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1}})+"\\n"); });\n')
+harness.chmod(0o755)
+subprocess.run(['chown', '-R', 'oma-worker:oma-worker', '/home/oma-worker/.oma'], check=True)
 
 pin = json.loads((context / "installation.json").read_text())
 verify_args = ["--source-sha", pin["sourceSha"], "--lock-sha256", pin["sourceLockSha256"]]
@@ -33,14 +31,12 @@ def verify(ok=True):
     assert (result.returncode == 0) == ok, result.stderr
 
 verify()
-# Agent can execute the harness, but cannot alter harness or trusted worker code.
-result = subprocess.run([str(harness / 'bin/codex-acp'), '--help'], user=agent.pw_uid, group=agent.pw_gid, extra_groups=[], capture_output=True, text=True, timeout=15)
-assert result.returncode == 0, result.stderr
-probe = "import os;from pathlib import Path; p=Path('/opt/oma-harnesses/codex-acp/bin/codex-acp'); assert os.access(p,os.X_OK); assert not os.access(p,os.W_OK); assert not os.access('/opt/oma-managed/worker/node-e2b-work-item-cli.js',os.R_OK)"
+# The agent cannot read or alter trusted worker code.
+probe = "import os; assert not os.access('/opt/oma-managed/worker/node-e2b-work-item-cli.js',os.R_OK); assert not os.access('/opt/oma-managed',os.W_OK)"
 subprocess.run(['/usr/bin/python3', '-c', probe], user=agent.pw_uid, group=agent.pw_gid, extra_groups=[], check=True)
-# Actual installed harness ACP stdio through the same root-private native helper.
+# Environment-setup launcher ACP stdio through the same root-private native helper.
 request = Path('/run/oma-managed/harness-spec.json')
-request.write_text(json.dumps({'command':str(harness / 'bin/codex-acp'),'args':[], 'env':{'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/home/oma-worker'}}))
+request.write_text(json.dumps({'command':str(harness),'args':[], 'env':{'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/home/oma-worker'}}))
 request.chmod(0o600)
 child = subprocess.Popen(['/usr/bin/python3','-I','-S',str(managed / 'agent-exec.py'),str(request)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 try:
@@ -55,7 +51,8 @@ finally:
     child.kill(); child.wait(timeout=5)
 # Execute the actual specialized CLI with fixed inventory; missing Work env is
 # expected only AFTER loading the mandatory trusted isolation wrapper.
-inventory = json.dumps(pin['harnesses'], separators=(',', ':'))
+assert pin['harnesses'] == []
+inventory = json.dumps([{'id':'pi-acp','version':'0.1.8','command':str(harness)}], separators=(',', ':'))
 env = {'PATH':'/usr/local/bin:/usr/bin:/bin', 'OPENMA_ACP_HARNESSES':inventory}
 command = ['/usr/local/bin/node', str(managed / 'worker/node-e2b-work-item-cli.js')]
 result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=15)
@@ -72,11 +69,14 @@ original = bundle.read_bytes(); bundle.write_bytes(original + b'\n//tampered'); 
 bundle.unlink(); target = Path('/workspace/forged-worker.js'); target.write_bytes(original); bundle.symlink_to(target); verify(False); bundle.unlink(); bundle.write_bytes(original)
 verify()
 # A safe resolved target must not conceal a writable lexical parent.
-safe = Path('/opt/safe-harness')
-harness.rename(safe); harness.symlink_to(safe)
-harness.parent.chmod(0o777); verify(False)
-harness.parent.chmod(0o755); verify()
-harness.unlink(); safe.rename(harness)
+worker = managed / 'worker'
+safe = Path('/opt/safe-worker')
+worker.rename(safe); worker.symlink_to(safe)
+managed.chmod(0o777); verify(False)
+managed.chmod(0o700); verify()
+worker.unlink(); safe.rename(worker)
+# A preinstalled ACP harness in the base template is refused.
+Path('/opt/oma-harnesses').mkdir(); verify(False); Path('/opt/oma-harnesses').rmdir(); verify()
 # The expected pin is supplied independently, not accepted from manifest.
 original_manifest = (managed / 'installation.json').read_text()
 mutated = json.loads(original_manifest); mutated['sourceSha'] = '0' * 40

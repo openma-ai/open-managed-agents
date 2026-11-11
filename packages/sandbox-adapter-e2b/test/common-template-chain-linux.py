@@ -1,5 +1,5 @@
 """Run the entire verifier against disposable root-owned files, no network/npm.
-The harness executable is a fixture: this tests installation trust, not ACP execution.
+The base template carries no ACP harness; Environment setup installs it.
 """
 import json
 import os
@@ -14,23 +14,7 @@ assert os.geteuid() == 0, 'run in a disposable Linux container as root'
 with tempfile.TemporaryDirectory(prefix='oma-trusted-install-') as tmp:
     root = Path(tmp)
     managed = root / 'opt/oma-managed'
-    harness = root / 'opt/oma-harnesses/codex-acp'
     shutil.copytree(context, managed)
-    shutil.copytree(context / 'harness', harness)
-    package = harness / 'node_modules/@agentclientprotocol/codex-acp/package.json'
-    package.parent.mkdir(parents=True)
-    package.write_text('{"version":"1.8.0"}')
-    command = harness / 'bin/codex-acp'
-    command.parent.mkdir()
-    command.write_text('#!/bin/sh\nexit 0\n')
-    command.chmod(0o755)
-    pi_package = harness / 'node_modules/@openma/pi-acp/package.json'
-    pi_package.parent.mkdir(parents=True)
-    pi_package.write_text('{"version":"0.1.8"}')
-    pi_command = root / 'opt/oma-harnesses/pi-acp/bin/openma-pi-acp'
-    pi_command.parent.mkdir(parents=True)
-    pi_command.write_text('#!/bin/sh\nexit 0\n')
-    pi_command.chmod(0o755)
     for path in [root / 'opt', *root.rglob('*')]:
         path.chmod(path.stat().st_mode & ~0o022)
     pin = json.loads((managed / 'installation.json').read_text())
@@ -53,8 +37,7 @@ with tempfile.TemporaryDirectory(prefix='oma-trusted-install-') as tmp:
         manifest.write_text(json.dumps({**pin, key: value}))
         check('untrusted worker source or common version')
     manifest.write_text(original)
-    for path, error in [(managed / 'worker/node-e2b-work-item-cli.js', 'digest mismatch'),
-                        (harness / 'package-lock.json', 'lock mismatch')]:
+    for path, error in [(managed / 'worker/node-e2b-work-item-cli.js', 'digest mismatch')]:
         content = path.read_bytes()
         path.write_bytes(content + b'\nTAMPERED')
         check(error)
@@ -72,28 +55,15 @@ with tempfile.TemporaryDirectory(prefix='oma-trusted-install-') as tmp:
     check('escaped /opt')
     bundle.unlink()
     bundle.write_bytes(content)
-    package.write_text('{"version":"1.7.0"}')
-    check('harness version mismatch')
-    package.write_text('{"version":"1.8.0"}')
-    command.chmod(0o644)
-    check('not executable')
-    command.chmod(0o755)
-    pi_package.write_text('{"version":"0.1.9"}')
-    check('harness version mismatch')
-    pi_package.write_text('{"version":"0.1.8"}')
-    pi_command.chmod(0o666)
-    check('root-owned and write-protected')
-    pi_command.chmod(0o755)
-    pi_command.chmod(0o644)
-    check('not executable')
-    pi_command.chmod(0o755)
-    pi_command.unlink()
-    pi_command.symlink_to(root / 'workspace/forged-pi')
-    check('escaped /opt')
-    pi_command.unlink()
-    pi_command.write_text('#!/bin/sh\nexit 0\n')
-    pi_command.chmod(0o755)
-    for entries in [pin['harnesses'][:1], [*pin['harnesses'], pin['harnesses'][1]]]:
+    baked = root / 'opt/oma-harnesses/pi-acp/bin/openma-pi-acp'
+    baked.parent.mkdir(parents=True)
+    baked.write_text('#!/bin/sh\nexit 0\n')
+    for path in [root / 'opt/oma-harnesses', *(root / 'opt/oma-harnesses').rglob('*')]:
+        path.chmod(path.stat().st_mode & ~0o022)
+    check('must not carry a preinstalled ACP harness')
+    shutil.rmtree(root / 'opt/oma-harnesses')
+    forged = {'id': 'pi-acp', 'version': '0.1.8', 'command': '/opt/oma-harnesses/pi-acp/bin/openma-pi-acp'}
+    for entries in [[forged]]:
         manifest.write_text(json.dumps({**pin, 'harnesses': entries}))
         check('unexpected installed harness')
     manifest.write_text(original)
@@ -102,4 +72,4 @@ with tempfile.TemporaryDirectory(prefix='oma-trusted-install-') as tmp:
     check('unexpected worker dependency directory')
     dependencies.rmdir()
     check()
-print('common-0.14.0 file-chain: PASS (fixture harness; no cloud/build certification)')
+print('common-0.14.0 file-chain: PASS (ACP-free base; no cloud/build certification)')
