@@ -141,7 +141,7 @@ it('probe: successful settlement leaves pre-boundary queued input null and block
  expect(await persistence.captureStartupBoundary(input.claim)).toBe(3);expect(await persistence.settleStartupFailure(input)).toBe('committed');
  const row=await sql.prepare("SELECT document FROM managed_session_events WHERE id='queued'").first<{document:string}>();expect(JSON.parse(row!.document).processedAt).toBe(null);
  const channel=createManagedHarnessHttpControlChannel({scope:{workspaceId:'ws',environmentId:'env',sessionId:'session',workId:'next-work'},harness:{id:'acp',version:'1'},workspacePath:'/workspace',apiBaseUrl:'https://test',sessionsToken:'token',fetch:async(raw)=>String(raw).includes('/events')?Response.json({data:[{id:'queued',type:'user.message',processed_at:null,content:[{type:'text',text:'original'}]},{id:'idle',type:'session.status_idle',processed_at:input.processedAt},{id:'new',type:'user.message',processed_at:null,content:[{type:'text',text:'new'}]}],next_page:null}):Response.json({id:'session',environment_id:'env',status:'running',agent:{}})});
- const iter=channel.commands(new AbortController().signal)[Symbol.asyncIterator]();await expect(iter.next()).rejects.toThrow('Session event is invalid');await channel.close();
+ const iter=channel.commands(new AbortController().signal)[Symbol.asyncIterator]();await expect(iter.next()).rejects.toThrow('Queued inputs require a stable eventReader');await channel.close();
 });
 
 for (const mutation of ["accepted_input", "foreign_running", "unattributed_running", "revision_gap"] as const) {

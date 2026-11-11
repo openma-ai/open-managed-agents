@@ -53,6 +53,9 @@ describe("main lifecycle parity: real Work runner + Node HTTP", () => {
       expect((await f.events()).filter(e => e.type === "user.message")).toHaveLength(1);
       expect(effects).toBe(1);
       if (check === "deduplicate") return;
+      const settled = await active.result;
+      expect(settled).toHaveProperty("error");
+      expect(active.responses.filter(response => response.action === "work-failed")).toMatchObject([{status:200}]);
       await expect.poll(async () => (await f.events()).filter(e => e.type === "session.status_idle").at(-1)?.stop_reason, { timeout: 1500 })
         .toEqual({ type: "retries_exhausted" });
       expect(effects).toBe(1);

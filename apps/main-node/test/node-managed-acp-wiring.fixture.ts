@@ -67,7 +67,7 @@ export async function createWiringControl(components: Awaited<ReturnType<typeof 
         OPENMA_HARNESS_ID: "acp", OPENMA_SANDBOX_TOKEN: token };
       const controller = new AbortController();
       const composition = createDefaultWorkComposition({ environment: env, fetch, modules: runtimeModules,
-        spawner: {async spawn(spec){const child=await new SandboxSpawner(sandbox).spawn(spec);void (async()=>{const reader=child.stderr.getReader();try{while(!(await reader.read()).done){/* drain native diagnostics */}}finally{reader.releaseLock();}})();return child;}}, stateIo: {
+        spawner: new SandboxSpawner(sandbox), stateIo: {
           readFile: path => sandbox.readFile(path), writeFile: async (path, value) => { await sandbox.writeFile(path, value); },
           writeFileBytes: async (path, value) => { await sandbox.writeFileBytes!(path, value); }, exec: command => sandbox.exec(command),
         } });
