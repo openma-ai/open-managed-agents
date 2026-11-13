@@ -113,7 +113,11 @@ export function resolveProtocolEndpointsFromModelCard(
     };
     const protocol = protocols[resolved.api];
     if (!protocol) throw new Error(`Hosted inference does not support Pi API "${resolved.api}"`);
-    return [endpoint(protocol, protocol === "gemini" ? resolved.baseUrl.replace(/\/v1beta\/?$/, "") : resolved.baseUrl)];
+    return [endpoint(protocol,
+      protocol === "gemini" ? resolved.baseUrl.replace(/\/v1beta\/?$/, "")
+        : protocol === "openai-chat" || protocol === "openai-responses" || protocol === "anthropic-messages"
+          ? resolved.baseUrl.replace(/\/v1\/?$/, "")
+          : resolved.baseUrl)];
   }
   // Compatibility for older callers without a model identity. Model-card paths
   // always provide wireModel and use Pi's single-api routing above.

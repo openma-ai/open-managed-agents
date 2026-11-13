@@ -10,6 +10,8 @@ import {
   supportsDuplexProcess,
   workspaceRootOf,
   reconcileSandboxResourceEnvironment,
+  SESSION_OUTPUTS_PATH,
+  type SessionResourceFacts,
 } from "@open-managed-agents/sandbox";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
@@ -126,7 +128,7 @@ export class AcpSandboxHarness implements HarnessInterface {
     }
     const stateBinding = preparation.binding;
     this.#contextState = harnessContextFromEvents([...(ctx.acpRecoveryHistory ?? []), ...runtime.history.getEvents()]);
-    const configKey = JSON.stringify({ config, stateAdapter: stateBinding.adapterId, resourceFacts: ctx.resourceFacts });
+    const configKey = JSON.stringify({ config, stateAdapter: stateBinding.adapterId, resourceFacts: resumeResourceFacts(ctx.resourceFacts) });
     await materializeAcpSandboxAgentState(runtime.sandbox, preparation);
     if (!this.#session && this.#configKey !== null && this.#configKey !== configKey) {
       // The previous execution's child ran another configuration: its ACP
@@ -492,6 +494,22 @@ export class AcpSandboxHarness implements HarnessInterface {
   #emitError(runtime: HarnessRuntime, message: string): void {
     runtime.broadcast({ type: "session.error", error: message } as SessionEvent);
   }
+}
+
+/** The resource part of the native-resume configuration key. The standard
+ * Session layout (workspace at /workspace, no Skills, no Memory Stores,
+ * outputs at the standard path) is what a platform that does not model
+ * resource facts runs, so it contributes nothing: the same configuration
+ * yields the same checkpoint digest on every platform. Any attached or
+ * changed resource is part of the key, so stale resource guidance is never
+ * resumed. */
+function resumeResourceFacts(facts: SessionResourceFacts | undefined): SessionResourceFacts | undefined {
+  if (facts === undefined) return undefined;
+  const standard = facts.workspaceRoot === "/workspace"
+    && facts.skills.length === 0
+    && facts.memoryStores.length === 0
+    && facts.outputs?.path === SESSION_OUTPUTS_PATH;
+  return standard ? undefined : facts;
 }
 
 async function configurationDigest(value: string): Promise<string> {

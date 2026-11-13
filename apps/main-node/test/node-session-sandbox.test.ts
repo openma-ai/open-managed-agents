@@ -11,6 +11,7 @@ import { ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
 
 import {
@@ -23,7 +24,7 @@ import {
 
 const IDLE_MS = 60_000;
 it("retries real Node managed cleanup after exit confirmation times out",async()=>{
- const root=await mkdtemp(join(process.cwd(),".node-cleanup-retry-"));const runtime=new LocalSubprocessSandbox({workdir:root});
+ const root=await mkdtemp(join(tmpdir(),".node-cleanup-retry-"));const runtime=new LocalSubprocessSandbox({workdir:root});
  const handle=await runtime.startManagedProcess({command:process.execPath,args:["-e","setInterval(()=>{},1000)"],env:{}});
  const t=setup();t.box.sandbox.destroy=()=>runtime.destroy();const sandbox=t.sandboxes.build(context);await sandbox.open();
  const original=ChildProcess.prototype.kill;const blocked=vi.spyOn(ChildProcess.prototype,"kill").mockImplementation(function(this:ChildProcess,signal){return this.pid===handle.pid?true:original.call(this,signal);});

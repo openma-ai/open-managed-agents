@@ -658,6 +658,7 @@ export class DefaultNodeManagedSessionRunner
     const timeout = setTimeout(() => cleanup.abort(), 5_000);
     try {
       const results = await untilAborted(Promise.allSettled([release(), destroy]), cleanup.signal);
+      if (results === undefined) throw new Error("Sandbox cleanup timed out");
       for (const result of results) {
         if (result.status === "rejected") throw result.reason;
       }
@@ -1100,12 +1101,27 @@ export class DefaultNodeManagedSessionRunner
         }
       }
       const leaseLost = abortController.signal.reason === "lease_lost";
+      // Execution completion and artifact durability are separate. When the
+      // provider is confirmed lost after the turn completed, the turn stands:
+      // keep the runtime/dirty publication state for retry, expose the
+      // failure, and never replay a consumed model turn because an upload
+      // failed. A persistence failure on a sandbox that is not confirmed lost
+      // is a failed finalization (exhausted).
+      let persistenceProviderLost = false;
+      let lostAtPersistence: SandboxExecutor | undefined;
       if (persistenceError !== undefined && !leaseLost) {
-        // Execution completion and artifact durability are separate. Keep the
-        // runtime/dirty publication state for retry and expose the failure;
-        // never replay a consumed model turn because an upload failed.
-        runtime.broadcastProducedEvent({ type: "session.warning", source: "sandbox.persistence",
-          message: sessionErrorMessage(persistenceError, "turn.persistence") });
+        const persisted = currentSandbox();
+        persistenceProviderLost = sandboxLost
+          || await this.probe(persisted).catch((): SandboxLiveness => "unknown") === "lost";
+        if (persistenceProviderLost) {
+          lostAtPersistence = persisted;
+          runtime.broadcastProducedEvent({ type: "session.warning", source: "sandbox.persistence",
+            message: sessionErrorMessage(persistenceError, "turn.persistence") });
+        } else {
+          runtime.broadcastProducedEvent({ type: "session.error", error: {
+            type: "unknown_error", message: sessionErrorMessage(persistenceError, "turn.finalization"), retryStatus: "exhausted",
+          } });
+        }
       }
       if (finalizationError !== undefined && !runFailed && !leaseLost) {
         runtime.broadcastProducedEvent({
@@ -1118,7 +1134,7 @@ export class DefaultNodeManagedSessionRunner
         });
       }
       if (!leaseLost) {
-        const failed = runFailed || finalizationError !== undefined;
+        const failed = runFailed || finalizationError !== undefined || (persistenceError !== undefined && !persistenceProviderLost);
         const parkIds = failed || interrupted ? [] : stillPending(
           [...(parkedStill ? remainingAfterAnswers! : []), ...runtime.pendingConfirmations],
           asWireEvents(runtime.history.getEvents()),
@@ -1168,9 +1184,18 @@ export class DefaultNodeManagedSessionRunner
         if (this.abortControllers.get(input) === abortController) {
           this.abortControllers.delete(input);
         }
+        // A runtime confirmed lost is not a prepared live runtime: uninstall
+        // it so the next turn acquires a replacement restored from the last
+        // committed workspace instead of reporting the dead one as connected.
+        if (lostAtPersistence !== undefined && this.sandboxes.get(input) === lostAtPersistence) {
+          await this.discardSandbox(input, { abortTurn: false }).catch(() => undefined);
+        }
       }
       if (finalizationError !== undefined && !runFailed) {
         throw finalizationError;
+      }
+      if (persistenceError !== undefined && !persistenceProviderLost && !runFailed && !abortController.signal.aborted) {
+        throw persistenceError;
       }
       const finalWorkspace = this.workspaces.get(input);
       if (finalWorkspace !== undefined && !runFailed && persistenceError === undefined && !abortController.signal.aborted) {

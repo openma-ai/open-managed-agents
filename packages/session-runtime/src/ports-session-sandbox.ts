@@ -137,7 +137,6 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
     await disarmIdle(state);
     const scope = state.scope();
     const open = state.current;
-    state.current = null;
     if (open !== null) {
       await ports.storage.detach({ runtime: open.runtime, scope }).catch(() => undefined);
       await ports.egress.revoke({ runtime: open.runtime, scope, fence: state.fence(scope), reason: "completed" }).catch(() => undefined);
@@ -153,9 +152,10 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       }
     }
     if (!released) throw new SessionSandboxStateConflictError("Could not commit terminal sandbox state");
-    if (open !== null) await state.releaseOwn(open.handle);
+    if (open !== null) await state.releaseOwn(open.handle, state.execution(), { awaitOutcome: true });
     await state.retryReleases(await state.load());
     await state.retryDiscards();
+    state.current = null;
   }
 
   /** A store or the outputs added to an open sandbox; a fresh open attaches them itself. */

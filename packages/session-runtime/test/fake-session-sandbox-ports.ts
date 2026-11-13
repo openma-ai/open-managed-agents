@@ -36,6 +36,8 @@ export function fakeSessionSandbox(opts: {
   snapshots?: boolean;
   /** Refs resume starts a sandbox from (runtimeId from-<ref>); any other ref is gone. */
   resumable?: string[];
+  /** Runtime ids whose provider release is logged but never settles (a dead provider that does not fail fast). */
+  releaseHangs?: string[];
 } = {}) {
   const log: string[] = [];
   const fences: unknown[] = [];
@@ -93,7 +95,10 @@ export function fakeSessionSandbox(opts: {
         return { runtime: {}, handle: { provider: "fake", runtimeId: `r${acquired}` } };
       },
       async pause({ handle }: { handle: { runtimeId: string } }) { log.push("pause"); return { provider: "fake", ref: `ref-${handle.runtimeId}` }; },
-      async release({ handle }: { handle: { runtimeId: string } }) { log.push(`release:${handle.runtimeId}`); },
+      async release({ handle }: { handle: { runtimeId: string } }) {
+        log.push(`release:${handle.runtimeId}`);
+        if (opts.releaseHangs?.includes(handle.runtimeId)) await new Promise<never>(() => {});
+      },
       async discard({ ref }: { ref: { ref: string } }) { log.push(`discard:${ref.ref}`); },
       async keepAlive() { log.push("keepAlive"); return opts.keepAliveGone === true ? "gone" : "alive"; },
       ...(opts.snapshots === true ? {

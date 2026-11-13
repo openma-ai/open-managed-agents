@@ -75,8 +75,12 @@ export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<vo
   if (handle !== undefined) {
     // Retirement is durable before external deletion, including transport failures.
     const retired = await state.load();
-    if (retired.retiredHandles?.some(entry => sameHandle(entry.handle, handle))) await state.retryReleases(retired);
-    else await state.releaseOwn(handle);
+    // This attempt owns the handle: wait for the real cleanup outcome. An
+    // unconfirmed managed exit rejects before the local owner is dropped.
+    const entry = retired.retiredHandles?.find(item => sameHandle(item.handle, handle));
+    if (entry === undefined) await state.releaseOwn(handle);
+    else if (!entry.released) await state.releaseRetiredOwned(retired, handle);
+    else await state.retryReleases(retired);
 
     state.current = null;
     await state.retryDiscards();

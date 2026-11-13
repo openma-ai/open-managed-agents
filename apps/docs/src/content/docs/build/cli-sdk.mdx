@@ -1,0 +1,416 @@
+---
+title: CLI & SDK
+description: The open-managed-agents Node CLI and using @anthropic-ai/sdk against openma — your two ways to talk to the API without curl.
+---
+
+import { Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
+
+openma is callable via two routes:
+
+- **`@openma/cli`** — a Node CLI for scripting against the API.
+- **Anthropic's official SDKs** — TypeScript ([`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk)), Python ([`anthropic`](https://pypi.org/project/anthropic/)), and Go ([`anthropic-sdk-go`](https://pkg.go.dev/github.com/anthropics/anthropic-sdk-go)) — pointed at openma's `baseURL`. The openma API is wire-compatible with the Claude Managed Agents API, so the same SDKs work against both.
+
+The CLI lives in this repo (`packages/cli`).
+
+## CLI
+
+### Install
+
+<Tabs syncKey="pkg-mgr">
+  <TabItem label="npm">
+    ```bash
+    npm i -g @openma/cli
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```bash
+    pnpm add -g @openma/cli
+    ```
+  </TabItem>
+  <TabItem label="bun">
+    ```bash
+    bun add -g @openma/cli
+    ```
+  </TabItem>
+</Tabs>
+
+### Configure
+
+The CLI reads two env vars:
+
+```bash
+export OMA_BASE_URL="https://app.openma.ai"
+export OMA_API_KEY="oma_..."
+```
+
+For self-hosters, point `OMA_BASE_URL` at your own deployment.
+
+### Common commands
+
+```bash
+# List agents
+oma agents list
+
+# Create an agent from a JSON file
+oma agents create -f ./my-agent.json
+
+# Start a session
+oma sessions create --agent agent_abc123 --env env_abc123 --title "research"
+
+# Chat — post a turn AND stream the reply token-by-token to your terminal
+oma sessions chat sess_xyz "Summarize the openma docs."
+
+# Fire-and-forget message (no streaming back; useful when something else is tailing)
+oma sessions message sess_xyz "Now also include the integrations."
+
+# Tail a session's full event stream (SSE under the hood)
+oma sessions tail sess_xyz
+
+# Replay a session's full event log
+oma sessions logs sess_xyz
+
+# Show your usage
+oma usage
+```
+
+Run `oma --help` or `oma <command> --help` for the full surface.
+
+<Aside type="tip" title="Pipe-friendly">
+  CLI subcommands accept `--json` and emit machine-readable output. Pipe into `jq` for ad-hoc analysis.
+</Aside>
+
+## SDK
+
+The openma API is **wire-compatible with the [Claude Managed Agents API](https://docs.anthropic.com/)**. Use an Anthropic SDK directly for the standard surface. TypeScript applications that also use OpenMA extensions can use `@openma/sdk`: it composes the official client, adds strong extension types, and does not reimplement requests, pagination, streaming, or errors.
+
+<Aside type="note" title="The Managed API stays official">
+  `new OpenMA().beta` is the exact `@anthropic-ai/sdk` beta resource object. Standard calls remain portable; OpenMA-only Agent settings are isolated under `_oma`.
+</Aside>
+
+### Install
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript">
+    ```bash
+    npm i @openma/sdk
+    # or: pnpm add @openma/sdk
+    # or: bun add @openma/sdk
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```bash
+    pip install anthropic
+    # or: uv add anthropic
+    # or: poetry add anthropic
+    ```
+  </TabItem>
+  <TabItem label="Go">
+    ```bash
+    go get github.com/anthropics/anthropic-sdk-go
+    ```
+  </TabItem>
+</Tabs>
+
+### Quick start
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript">
+    ```ts
+    import { OpenMA } from "@openma/sdk";
+
+    const client = new OpenMA({
+      baseURL: "https://app.openma.ai",
+      apiKey: process.env.OMA_API_KEY!,
+    });
+
+    // Create an environment.
+    const env = await client.beta.environments.create({
+      name: "my-env",
+      config: {
+        type: "cloud",
+        networking: { type: "unrestricted" },
+        packages: { type: "packages", pip: ["pandas"] },
+      },
+    });
+
+    // List sessions.
+    for await (const sess of client.beta.sessions.list({ limit: 10 })) {
+      console.log(sess.id, sess.title);
+    }
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```python
+    import os
+    from anthropic import Anthropic
+
+    client = Anthropic(
+        base_url="https://app.openma.ai",
+        api_key=os.environ["OMA_API_KEY"],
+    )
+
+    # Create an environment.
+    env = client.beta.environments.create(
+        name="my-env",
+        config={
+            "type": "cloud",
+            "networking": {"type": "unrestricted"},
+            "packages": {"type": "packages", "pip": ["pandas"]},
+        },
+    )
+
+    # List sessions.
+    for sess in client.beta.sessions.list(limit=10):
+        print(sess.id, sess.title)
+    ```
+  </TabItem>
+  <TabItem label="Go">
+    ```go
+    import (
+        "context"
+        "fmt"
+        "os"
+
+        "github.com/anthropics/anthropic-sdk-go"
+        "github.com/anthropics/anthropic-sdk-go/option"
+    )
+
+    client := anthropic.NewClient(
+        option.WithBaseURL("https://app.openma.ai"),
+        option.WithAPIKey(os.Getenv("OMA_API_KEY")),
+    )
+
+    // Create an environment.
+    env, _ := client.Beta.Environments.New(
+        context.Background(),
+        anthropic.BetaEnvironmentNewParams{
+            Name: anthropic.F("my-env"),
+            // config: see SDK docs for the typed param shape
+        },
+    )
+
+    // List sessions.
+    iter := client.Beta.Sessions.ListAutoPaging(
+        context.Background(),
+        anthropic.BetaSessionListParams{Limit: anthropic.F(int64(10))},
+    )
+    for iter.Next() {
+        sess := iter.Current()
+        fmt.Println(sess.ID, sess.Title)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+### Resources covered
+
+Every namespace in the official SDK works against openma:
+
+| Namespace | Notes |
+|---|---|
+| `client.beta.environments` | `list`, `create`, `retrieve`, `update`, `archive`, `delete` |
+| `client.beta.agents` | `list`, `create`, `retrieve`, `update`, `archive`, plus `versions` sub-resource |
+| `client.beta.sessions` | `list`, `create`, `retrieve`, `update`, `archive`, `delete`, plus `events`, `resources`, `threads` sub-resources |
+| `client.beta.vaults` | `list`, `create`, `retrieve`, `update`, `archive`, `delete`, plus `credentials` sub-resource |
+| `client.beta.memoryStores` | `list`, `create`, `retrieve`, `archive`, `delete`, plus `memories`, `memoryVersions` sub-resources (`update` not yet implemented server-side) |
+| `client.beta.files` | full `list/upload/retrieve/delete` |
+| `client.beta.skills` | full coverage |
+| `client.beta.models` | full coverage |
+
+### OMA-specific endpoints
+
+Endpoints that don't exist in Anthropic's API (tenants, OAuth, integrations, evals, cost reports, runtimes, …) live under `/v1/oma/*`. `@openma/sdk` provides typed resources for supported extensions and a path-guarded fallback for the rest:
+
+```ts
+const usage = await client.oma.request<{
+  total_cost: number | null;
+  total_estimated_cost: number | null;
+  scope: { type: string; id: string };
+  attribution: {
+    provider: string;
+    source: 'provider_billed' | 'provider_metered' | 'openma_metered' | 'estimated';
+    granularity: string;
+    is_invoice_grade: boolean;
+    data_completeness: 'complete' | 'partial' | 'unavailable';
+    warnings: string[];
+  };
+}>({
+  method: "get",
+  path: "/v1/oma/cost_report",
+});
+```
+
+Cost reports are explicit about their evidence. `total_cost` is only populated
+when a provider reports monetary cost; price-card math stays in
+`total_estimated_cost`. A missing provider dataset is `partial` or `unavailable`,
+never a zero. The current Cloudflare adapter is account-scoped, so this endpoint
+does not claim per-tenant or per-session Cloudflare invoice attribution. The
+account-scoped report and its `/pricing` sub-resource require the deployment's
+operator `API_KEY`; tenant-scoped API keys and Console cookies are rejected.
+
+`CostAttributionPort` is the reusable server-side extension point. The shipped
+Cloudflare and Vercel adapters retain provider FOCUS payloads; Blaxel and Modal
+retain their provider-native rows while returning the same `scope` and
+`attribution` envelope. The OpenMA runtime-ledger adapter supports tenant and
+session allocation using a versioned operator rate card. Provider-specific
+credentials are constructor inputs to their adapter package and are never
+accepted in a report query or returned in a report.
+
+Server compositions can pass an `AbortSignal` with a report query. All shipped
+adapters propagate cancellation to their provider I/O and normalize transport,
+SDK, authorization, scope, response, and pagination failures into stable
+`CostAttributionError` codes. The runtime adapter connects to the platform
+ledger with `createRuntimeUsageReader(services.usage)` and reads billed as well
+as unbilled history; acknowledgement is a billing workflow state, not deletion.
+
+Or use plain `fetch` — every OMA endpoint is JSON, no extra runtime needed.
+
+### OMA-only extensions
+
+A small set of OMA-specific agent fields (auxiliary model, harness selector, sandbox runtime binding) are passed under an `_oma:` body field on Agent create / update calls. OpenMA reads them; do not send `_oma` to an Anthropic endpoint. They are optional — agents that omit `_oma` use the vanilla Claude Managed Agents shape.
+
+Provider-specific inference options are JSON and stay on the model they affect:
+
+```ts
+await client.beta.agents.update("agent_abc123", {
+  model: {
+    id: "deepseek-chat",
+    provider_options: {
+      pi: { reasoning: "off", samplingParams: { temperature: 0 } },
+    },
+  },
+  _oma: {
+    aux_model: {
+      id: "deepseek-chat",
+      provider_options: { pi: { reasoning: "off" } },
+    },
+  },
+});
+```
+
+The main model options reach main-turn and compaction calls. Auxiliary options
+reach tool-internal model calls such as `web_fetch` summarization. Keep custom
+Agent extensions under `_oma`; arbitrary root fields are rejected.
+
+| Field | Purpose |
+|---|---|
+| `aux_model` | Auxiliary model used for tool-internal LLM work (e.g. `web_fetch` summarization). When unset, tools fall back to returning raw content. |
+| `appendable_prompts` | Versioned prompt IDs appended to the Agent system context. |
+| `harness` | Selects the agent loop harness implementation. Reserved for OMA-managed runtimes. |
+| `acp` | Process, restart, idle-timeout, and per-turn-timeout configuration used when `harness` is `acp-sandbox`. The command runs through the selected sandbox provider's duplex-process Port. |
+| `runtime_binding` | Selects which sandbox runtime services the agent's sessions. Reserved for OMA-managed runtimes. |
+
+TypeScript gets strong request and response types from `@openma/sdk`. Python and Go continue to use their official SDK escape hatches:
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript">
+    ```ts
+    import { OpenMA } from "@openma/sdk";
+
+    const client = new OpenMA({
+      baseURL: "https://app.openma.ai",
+      apiKey: process.env.OMA_API_KEY!,
+    });
+
+    const agent = await client.beta.agents.create({
+      name: "researcher",
+      model: { id: "claude-opus-4-7" },
+      _oma: {
+        aux_model: { id: "claude-haiku-4-5" },
+        appendable_prompts: ["prompt_review"],
+      },
+    });
+
+    console.log(agent._oma?.aux_model?.id);
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```python
+    import os
+    from anthropic import Anthropic
+
+    client = Anthropic(
+        base_url="https://app.openma.ai",
+        api_key=os.environ["OMA_API_KEY"],
+    )
+
+    agent = client.beta.agents.create(
+        name="researcher",
+        model={"id": "claude-opus-4-7"},
+        extra_body={"_oma": {"aux_model": {"id": "claude-haiku-4-5"}}},
+    )
+
+    # Pydantic preserves unknown response fields under model_extra.
+    print(agent.model_extra.get("_oma"))
+    ```
+  </TabItem>
+  <TabItem label="Go">
+    ```go
+    import (
+        "context"
+        "os"
+
+        "github.com/anthropics/anthropic-sdk-go"
+        "github.com/anthropics/anthropic-sdk-go/option"
+    )
+
+    client := anthropic.NewClient(
+        option.WithBaseURL("https://app.openma.ai"),
+        option.WithAPIKey(os.Getenv("OMA_API_KEY")),
+    )
+
+    agent, _ := client.Beta.Agents.New(
+        context.Background(),
+        anthropic.BetaAgentNewParams{
+            Name: anthropic.F("researcher"),
+            Model: anthropic.F(anthropic.BetaModelConfigParam{
+                ID: anthropic.F("claude-opus-4-7"),
+            }),
+        },
+        option.WithJSONSet("_oma", map[string]any{
+            "aux_model": map[string]string{"id": "claude-haiku-4-5"},
+        }),
+    )
+    // Response: agent.JSON.ExtraFields["_oma"].Raw()
+    ```
+  </TabItem>
+</Tabs>
+
+### Errors
+
+The server returns Anthropic-standard error envelopes, so the SDK's typed errors work as documented:
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+
+try {
+  await client.beta.sessions.retrieve("sess-bogus");
+} catch (err) {
+  if (err instanceof Anthropic.APIError) {
+    console.error(err.status, err.error); // {error: {type, message}, request_id, type: "error"}
+    if (err.error?.error?.type === "not_found_error") { /* ... */ }
+  }
+}
+```
+
+<Aside type="tip" title="Or just call fetch">
+  Every endpoint is plain JSON or SSE. If you want zero dependencies, point `fetch` at the [REST API](/build/api/) directly — the SDK is sugar, not a requirement.
+</Aside>
+
+## Where to go next
+
+<LinkCard
+  title="REST API"
+  href="/build/api/"
+  description="The full REST surface — what the CLI and SDK call under the hood."
+/>
+<LinkCard
+  title="Skills & Tools"
+  href="/build/skills-and-tools/"
+  description="Add custom tools and skills programmatically."
+/>
+<LinkCard
+  title="Custom Integrations"
+  href="/build/integrations/"
+  description="Implement IntegrationProvider for a new third-party platform."
+/>

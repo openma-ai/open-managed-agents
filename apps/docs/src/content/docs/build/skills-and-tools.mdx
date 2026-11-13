@@ -1,0 +1,218 @@
+---
+title: Skills & Tools
+description: Define custom tools, custom skills, and wire MCP servers into your agent.
+---
+
+import { Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+
+Three ways to give your agent new capabilities: **tools**, **skills**, and **MCP servers**. Each fits a different shape of need.
+
+| Mechanism | Best for | Where it runs |
+|---|---|---|
+| Built-in tools | Filesystem, shell, web | Sandbox container |
+| Custom tools | Your own JSON-schema'd action | Sandbox or your endpoint |
+| Custom skills | Reusable prompt + reference files | Mounted into sandbox |
+| MCP servers | Any MCP-spec capability set | Wherever the MCP server lives |
+
+## Built-in tools
+
+The `agent_toolset_20260401` toolset ships with: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`. Add it to your agent and the model can do filesystem and shell work in the per-session container.
+
+```json
+{
+  "name": "my-agent",
+  "model": "claude-sonnet-4-6",
+  "system": "...",
+  "tools": [
+    { "type": "agent_toolset_20260401" }
+  ]
+}
+```
+
+`web_fetch` and `web_search` route through openma's outbound proxy, so they work without the sandbox having direct internet access.
+
+## Custom tools
+
+Define a tool inline on the agent with a JSON schema:
+
+```json
+{
+  "tools": [
+    {
+      "type": "custom",
+      "name": "lookup_user",
+      "description": "Look up a user by their internal ID.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": { "type": "string" }
+        },
+        "required": ["user_id"]
+      },
+      "execution": {
+        "type": "http",
+        "endpoint": "https://internal.example.com/api/users/lookup",
+        "method": "POST"
+      }
+    }
+  ]
+}
+```
+
+When the model calls the tool:
+
+1. The sandbox sends an outbound HTTPS request to your endpoint.
+2. If the endpoint host is bound to a [Vault](/concepts/#vault), the proxy injects the auth header automatically. The model never sees the credential.
+3. The response is fed back as the tool result.
+
+You can also execute tools entirely inside the sandbox by setting `execution: { type: "sandbox", command: "..." }`.
+
+## Custom skills
+
+A skill is a `SKILL.md` describing the capability, plus any reference files (templates, schemas, examples) the model needs. The platform mounts everything at `/home/user/.skills/{name}/` (using the SKILL.md `name`, not the skill id) and **inlines the SKILL.md body directly into the system prompt** at session start — no lazy read, no follow-up `read` tool call to discover what's there. Format is compatible with Anthropic's [Claude Code skills](https://github.com/anthropics/skills).
+
+### Create a skill
+
+In the Console: **Skills → New skill**. Two API shapes:
+
+```bash
+# (a) JSON — files inlined
+curl -X POST "$OMA_BASE_URL/v1/skills" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "files": [
+      {
+        "filename": "SKILL.md",
+        "content": "---\nname: invoice-parser\ndescription: Extract structured data from supplier invoices.\n---\n\n# Steps\n1. ..."
+      },
+      { "filename": "schema.json", "content": "{...}" }
+    ]
+  }'
+
+# (b) Multipart — zip upload (use for large skills with binary files)
+curl -X POST "$OMA_BASE_URL/v1/skills/upload" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -F "file=@./invoice-parser.zip"
+```
+
+### What goes in `SKILL.md`
+
+```md
+# Invoice parser
+
+Use this skill when the user uploads a PDF or image of an invoice.
+
+## How to extract
+
+1. Read `/home/user/.skills/invoice-parser/schema.json` for the target shape.
+2. Use the `pdf` built-in skill to extract text.
+3. Match fields by label (e.g. "Total Due", "Invoice Number").
+4. Return JSON matching the schema.
+
+## Examples
+
+See `/home/user/.skills/invoice-parser/example_invoice.pdf` for a reference layout.
+```
+
+### Attach to an agent
+
+Skills attach as **objects, not bare strings** (a bare string array silently doesn't bind):
+
+```json
+{ "skills": [{ "skill_id": "skill_abc123", "type": "custom" }] }
+```
+
+On session start the system prompt receives:
+
+```text
+<source name="skill:skill_abc123">
+<skill name="invoice-parser">
+{full SKILL.md body}
+</skill>
+</source>
+```
+
+and the files mount at `/home/user/.skills/invoice-parser/SKILL.md` etc.
+
+### Install from a URL
+
+A self-hosted control plane (`main-node`) can install skills from any site that publishes an [Agent Skills discovery index](https://agentskills.io), the same URL you would pass to `npx skills add <url>`. In the Console: **Skills → Install from URL**, pick the skills, install. **Check for updates** compares each installed skill with its source and publishes a new version when it changed, like `npx skills update`.
+
+The index is looked up the way the `skills` CLI does it, at `<url>/.well-known/agent-skills/index.json`, then the legacy `.well-known/skills/` path, then the same two paths at the origin root. Both index versions work: v1 lists files next to the index, v2 points at a `SKILL.md` or a `.zip`/`.tar.gz` archive with a `sha256` digest that is checked before install. Installed skills are ordinary custom skills; the control plane only remembers which source and digest each one came from.
+
+```bash
+# List what a source offers
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/discover" \
+  -H "content-type: application/json" -d '{"url": "https://skills.example.com"}'
+
+# Install some of them (a new version if already installed and changed)
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/install" \
+  -H "content-type: application/json" \
+  -d '{"url": "https://skills.example.com", "skills": ["code-review"]}'
+
+# Compare installed skills with their sources, then update the changed ones
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/check-updates" -H "content-type: application/json" -d '{}'
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/update" -H "content-type: application/json" -d '{}'
+
+# Installed skills and the source each came from
+curl "$OMA_BASE_URL/v1/oma/skill-sources/installed"
+```
+
+`check-updates` and `update` accept an optional `skill_ids` array. A skill that disappears from its source is reported as `removed` and kept; delete it yourself if you no longer want it. Sources must be `https` and must not resolve to a private address; see [`SKILL_SOURCES_ALLOW_HOSTS`](/self-host/node-docker/#skill-sources-on-a-private-network) for intranet sources.
+
+### Built-in skills
+
+Four ship out of the box (`type: "anthropic"`): `xlsx`, `pdf`, `docx`, `pptx`. Reference them by id from your agent — no upload needed.
+
+<Aside type="tip" title="Skill vs tool">
+  Skills are *prompted instructions* + *files* the model reads. Tools are *callable functions* the model invokes with structured input. Use a skill when the value is in *guidance + reference data*; use a tool when the value is in *taking an action with side effects*.
+</Aside>
+
+## MCP servers
+
+Connect any [Model Context Protocol](https://modelcontextprotocol.io) server and openma auto-generates an `mcp__<server>__<tool>` (double underscore) for every capability the server exposes.
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "github",
+      "type": "url",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "authorization_token": "..."
+    }
+  ]
+}
+```
+
+Auth modes — credentials never enter the sandbox:
+
+| Mode | How |
+|---|---|
+| none | omit `authorization_token`, no matching vault credential |
+| inline bearer | `authorization_token: "..."` on the server entry |
+| vault static bearer | matching `auth.type: "static_bearer"` credential in a session vault (matched by `mcp_server_url` host) |
+| vault OAuth | matching `auth.type: "mcp_oauth"` credential — refreshes on 401 **and 403** (Airtable/Asana/Sentry use 403 for expired tokens), CAS-writes new token to D1, retries once |
+
+Host-side OpenMA harnesses support URL-based MCP servers. Standard `stdio` (`command`, `args`, `env`) is accepted when an external Worker or harness running inside the sandbox owns the child process and speaks MCP over stdin/stdout. There is no localhost HTTP conversion. Harness-out-of-sandbox runtimes reject stdio explicitly. Tool discovery is bounded at 15 s per URL server; up to 20 servers per agent.
+
+`stdio` does not install anything. Its `command` must already exist in the selected Environment, and the Environment owns every supporting package and system dependency. OpenMA-managed base Environments guarantee Node.js/npm (`npx`) and uv (`uvx`) regardless of the sandbox provider; each embedded provider adapter is responsible for launching the equivalent OpenMA image, template, or snapshot. Extra tools belong in the Environment package list or image. BYO images and external Workers must provide their own runtime contents. A missing executable is reported as an MCP startup failure.
+
+## Where to go next
+
+<LinkCard
+  title="Custom Integrations"
+  href="/build/integrations/"
+  description="Build a new third-party publication target (e.g. Jira, Discord) by implementing IntegrationProvider."
+/>
+<LinkCard
+  title="REST API"
+  href="/build/api/"
+  description="Endpoints to manage agents, skills, vaults programmatically."
+/>
+<LinkCard
+  title="Configuration reference"
+  href="/reference/configuration/"
+  description="Full Agent / Skill / Vault schemas."
+/>

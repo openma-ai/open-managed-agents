@@ -141,8 +141,15 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
       const marker = opened === "gone" ? null : await traceSessionSandbox(state, "liveness", async () => readMarker(state.options.executor((opened as Acquired<R>).runtime)));
       if (marker === null) {
         opened = "gone";
-        // A "fixed" handle is reused by the next acquire; a provider-assigned one would be orphaned.
-        if (ports.sandbox.handle === "changes") await ports.sandbox.release({ scope, handle: recorded }).catch(() => undefined);
+        // Reconnect is lookup only: found → attach, not found → unavailable,
+        // and this open continues to a replacement. A "fixed" handle is reused
+        // by the next acquire; a provider-assigned one would be orphaned, so
+        // its release is dispatched in the background. Old-handle cleanup
+        // never gates the replacement (a dead provider may not fail fast).
+        if (ports.sandbox.handle === "changes") {
+          void ports.sandbox.release({ scope, handle: recorded }).catch((error) =>
+            state.options.warn(`sandbox_release_failed runtime=${recorded.runtimeId} error=${errorText(error)}`));
+        }
       } else {
         generation = marker;
       }

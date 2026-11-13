@@ -43,6 +43,30 @@ export function environmentWorkSandboxTokenRef(claim: EnvironmentWorkTokenClaim)
   };
 }
 
+/** Clear a token issued during a Work bootstrap that was rejected before the
+ * native worker launched. The claim identity and holder hash fence this
+ * maintenance write so a later claim cannot be modified by an old bootstrap.
+ */
+export async function clearEnvironmentWorkToken(
+  sql: SqlClient,
+  claim: EnvironmentWorkTokenClaim,
+  holderHash: string,
+): Promise<void> {
+  await sql.prepare(
+    `UPDATE managed_environment_work SET sandbox_token_hashes = NULL
+       WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ?
+         AND claim_generation = ? AND state IN ('queued', 'starting', 'active')
+         AND sandbox_token_hashes LIKE ?`,
+  ).bind(
+    claim.workspaceId,
+    claim.environmentId,
+    claim.workId,
+    claim.sessionId,
+    claim.generation,
+    `%"${holderHash}"%`,
+  ).run();
+}
+
 function claimOf(fence: SessionExecutionAttemptRef): EnvironmentWorkTokenClaim | null {
   if (
     !Number.isSafeInteger(fence.generation) || fence.generation < 1

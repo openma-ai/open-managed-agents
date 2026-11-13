@@ -78,7 +78,7 @@ describe("history projection", () => {
       role: "tool",
       content: [{
         type: "tool-result", toolCallId: "t1", toolName: "bash",
-        output: { type: "content", value: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }] },
+        output: { type: "error-json", value: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }] },
       }],
     },
     { role: "user", content: [{ type: "text", text: "next" }] },

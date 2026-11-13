@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lifecycleFixture, lifecycleWorker as worker } from "./session-lifecycle-parity-worker.helper";
+import { firstNativePrompt, lifecycleFixture, lifecycleWorker as worker } from "./session-lifecycle-parity-worker.helper";
 import type {ParityPeerHooks} from "./session-lifecycle-parity-acp.fixture";
 type Fixture = Awaited<ReturnType<typeof lifecycleFixture>>;
 function deferred(){let resolve!:()=>void;const promise=new Promise<void>(r=>{resolve=r;});return {promise,resolve};}
@@ -112,7 +112,7 @@ describe("main lifecycle parity: real Work runner + Node HTTP", () => {
       await new Promise<void>(resolve => setTimeout(resolve, 0));
       release.resolve(); await first.result;
       second = worker(f, runtime({ async *prompt(text) { prompts.push(String(text)); yield { type: "promptComplete", response: {} }; } }));
-      await second.waitFor(() => prompts,["old-input", "after-interrupt"]);
+      await second.waitFor(() => prompts,[firstNativePrompt("old-input"), firstNativePrompt("after-interrupt")]);
       expect((await f.events()).filter(e => e.type === "user.message")).toHaveLength(2);
     } finally { release.resolve(); await first?.stop(); await second?.stop(); await f.dispose(); }
   });

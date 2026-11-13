@@ -845,7 +845,7 @@ class BackgroundProcess implements ProcessHandle {
       this.child.kill(signal as NodeJS.Signals);
       if (this.managed && signal === "SIGKILL" && !await childExitedWithin(this.exited, 2_000)) throw new Error("Managed process exit timed out");
     } catch (err) {
-      throw new Error(`kill failed: ${(err as Error).message}`);
+      throw Object.assign(new Error(`kill failed: ${(err as Error).message}`), { code: "MANAGED_PROCESS_CLEANUP_FAILED" });
     }
   }
 

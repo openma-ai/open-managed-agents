@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lifecycleFixture as fixture, lifecycleWorker } from "./session-lifecycle-parity-worker.helper";
+import { firstNativePrompt, lifecycleFixture as fixture, lifecycleWorker } from "./session-lifecycle-parity-worker.helper";
 async function startSupervisor(f:Awaited<ReturnType<typeof fixture>>,hooks:{prompt(text:string):Promise<void>;steer?(text:string):Promise<void>}) {
  const worker=lifecycleWorker(f,{async *prompt(text){await hooks.prompt(text);yield {type:"promptComplete",response:{}};},steer:hooks.steer});
  return {run:{stop:async(_reason:string)=>worker.stop()},completion:worker.result,worker};
@@ -80,7 +80,7 @@ describe("main lifecycle parity through production Node HTTP + ACP supervisor", 
       // The prompt callback reads canonical SQL asynchronously. Wait for that
       // evidence, not the earlier prompts.push, before asserting consumption.
       await running.worker.waitFor(() => atDelivery.length,1);
-      expect(prompts).toEqual(["first-real-input"]);
+      expect(prompts).toEqual([firstNativePrompt("first-real-input")]);
       expect(atDelivery).toEqual([expect.any(String)]);
       expect((await f.events()).filter(e => e.type === "user.message")).toHaveLength(1);
     } finally { await running?.run.stop("test complete"); await running?.completion; await f.dispose(); }
@@ -99,7 +99,7 @@ describe("main lifecycle parity through production Node HTTP + ACP supervisor", 
       await running.worker.waitFor(() => prompts.length,1);
       await f.message("live-correction");
       await running.worker.waitFor(() => steers,["live-correction"]);
-      expect(prompts).toEqual(["already-consumed-first-turn"]);
+      expect(prompts).toEqual([firstNativePrompt("already-consumed-first-turn")]);
       expect(atSteer).toEqual([expect.any(String)]);
     } finally { release(); await running?.run.stop("test complete"); await running?.completion; await f.dispose(); }
   });

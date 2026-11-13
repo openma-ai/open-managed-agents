@@ -1,4 +1,4 @@
-import { log, logWarn } from "@open-managed-agents/shared";
+import { log, logWarn } from "@open-managed-agents/shared/log";
 import type {
   AcknowledgeEnvironmentWorkCommand,
   AcknowledgeEnvironmentWorkResult,

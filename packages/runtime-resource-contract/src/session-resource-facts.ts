@@ -18,6 +18,24 @@
  * explicit mount path are checked out here. */
 export const SESSION_WORKSPACE_ROOT = "/workspace";
 
+/** Absolute working directory a supervisor/driver runs a harness in. The
+ * protocol root is {@link SESSION_WORKSPACE_ROOT}; a host adapter may resolve
+ * it to a different absolute host directory (e.g. a per-runtime directory for
+ * a local subprocess sandbox). Relative paths are never valid. */
+export type AbsoluteWorkspacePath = `/${string}`;
+
+export function isAbsoluteWorkspacePath(value: unknown): value is AbsoluteWorkspacePath {
+  return typeof value === "string" && value.startsWith("/");
+}
+
+/** Narrow a resolved workspace path, rejecting anything that is not absolute. */
+export function absoluteWorkspacePath(value: string): AbsoluteWorkspacePath {
+  if (!isAbsoluteWorkspacePath(value)) {
+    throw new TypeError("Workspace path must be an absolute path");
+  }
+  return value;
+}
+
 /** Parent of every attached Memory Store mount (`/mnt/memory/<store>`). */
 export const SESSION_MEMORY_ROOT = "/mnt/memory";
 

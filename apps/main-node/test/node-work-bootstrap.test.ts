@@ -1,4 +1,5 @@
 import {mkdtemp,rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createServer} from "node:http";
 import {getRequestListener} from "@hono/node-server";
@@ -9,7 +10,7 @@ import {createNodeControlPlane} from "../src/control-plane";
 import {LocalSubprocessSandbox} from "../../../packages/sandbox/src/adapters/local-subprocess";
 
 it.each(["recover", "stopped", "missing-native", "uninstalled", "late-launch", "cleanup-failed", "cleanup-unconfirmed", "exit-confirmed"] as const)("production Work bootstrap through real HTTP auth: %s",async mode=>{
- const root=await mkdtemp(join(process.cwd(),".test-artifacts/work-"));
+ const root=await mkdtemp(join(tmpdir(),"oma-work-"));
  const server=createServer();await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
  const base="http://127.0.0.1:"+(server.address() as {port:number}).port;
  let launches=0;let scopeToken="";const handles: Array<{pid:number;getStatus():Promise<string>}> = [];const tokens:string[]=[];let builds=0;

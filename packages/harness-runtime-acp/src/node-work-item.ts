@@ -1,6 +1,7 @@
 import { WorkVerifierExitUnconfirmedError } from "./node-work-verifier.js";
 import { createDefaultWorkComposition, loadWorkRuntimeModules, type DefaultWorkCompositionOptions } from "./node-work-composition.js";
 import { isDeepStrictEqual } from "node:util";
+import { absoluteWorkspacePath, SESSION_WORKSPACE_ROOT } from "@open-managed-agents/runtime-resource-contract";
 import { createWorkBootstrapHttpClient, type WorkBootstrapClaim, type WorkBootstrapRoot } from "./work-bootstrap-http.js";
 import type { NodeManagedAcpSupervisorAppOptions } from "./node-supervisor.js";
 import { createWorkFinalizationHttpClient, WorkFinalizationTransportError, type WorkFinalizationResult } from "./work-finalization-http.js";
@@ -126,7 +127,7 @@ export function createNodeManagedAcpWorkItemRunner(
     id: required(environment, "OPENMA_HARNESS_ID"),
     version: environment.OPENMA_HARNESS_VERSION?.trim() || "1",
   };
-  const workspacePath = options.workspacePath ?? "/workspace";
+  const workspacePath = absoluteWorkspacePath(options.workspacePath ?? SESSION_WORKSPACE_ROOT);
   const outputPath = options.outputPath === undefined
     ? environment.OPENMA_OUTPUT_PATH?.trim() || "/mnt/session/outputs"
     : options.outputPath;
@@ -340,7 +341,11 @@ export function createNodeManagedAcpWorkItemRunner(
                 workId,
               },
               harness,
-              workspacePath: "/workspace",
+              // The sandbox adapter may map the protocol workspace to a
+              // per-test/per-runtime host directory.  Keep the journal,
+              // state IO, and child cwd on that resolved path instead of
+              // forcing the host to create /workspace.
+              workspacePath,
               outputPath: outputPath === null ? null : "/mnt/session/outputs",
               checkpoint: async input => {
                 try {

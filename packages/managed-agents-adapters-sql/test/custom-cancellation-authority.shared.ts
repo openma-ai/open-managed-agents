@@ -26,7 +26,7 @@ export function cancellationAuthorityTests(sql:SqlClient,core:()=>CustomToolInvo
   await sql.batch(statements);
   row=await sql.prepare("SELECT document FROM managed_custom_invocations WHERE receipt=?").bind(receipt.receipt).first<{document:string}>();
   expect(JSON.parse(row!.document).state).toBe('cancelled');
-  const events=(await sql.prepare("SELECT document FROM managed_session_events WHERE type='agent.tool_result'").all<{document:string}>()).results;
+  const events=(await sql.prepare("SELECT document FROM managed_session_events WHERE type='agent.tool_result'").all<{document:string}>()).results ?? [];
   expect(events).toHaveLength(1);expect(JSON.parse(events[0]!.document)).toMatchObject({toolUseId:'original-call',isError:true});
  });
  it('canonical cancellation rejects a lease expired after preparing the append',async()=>{

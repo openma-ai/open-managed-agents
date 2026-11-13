@@ -369,6 +369,17 @@ export function createNodeManagedAcpSupervisorApp(
         const inference = session.agent.inference;
         if ((inference?.provider_id || session.agent.mcp_servers.some(server => server.type === "url")) && active.channels === null) throw new Error("ACP execution channels authority is required; Work credentials cannot authorize model/MCP");
         if (active.channels !== null) {
+          const boundAgentId = binding.agent.id;
+          if (boundAgentId !== undefined && ["claude-acp", "claude-agent-acp", "claude-code-acp"].includes(boundAgentId)) {
+            const endpoints = active.channels.hostedInference.model.protocolEndpoints;
+            const providerId = active.channels.hostedInference.model.providerId?.toLowerCase();
+            const providerSupportsAnthropic = ["anthropic", "ant", "ant-compatible"].includes(providerId ?? "");
+            const endpointSupportsAnthropic = !Array.isArray(endpoints)
+              || endpoints.some(endpoint => endpoint.protocol === "anthropic-messages");
+            if (!providerSupportsAnthropic || !endpointSupportsAnthropic) {
+              throw new NodeManagedAcpStartupConfigurationFailure("anthropic_protocol_required", new Error("Configured model has no anthropic-messages endpoint"));
+            }
+          }
           const hosted = (() => { try { return wireHostedInferenceForAcpLaunch({
             sessionId: session.id,
             gatewayBaseUrl: active.channels!.hostedInference.gatewayBaseUrl,

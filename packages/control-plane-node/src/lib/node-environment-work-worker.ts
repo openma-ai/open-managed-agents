@@ -11,7 +11,7 @@ import { SqlSessionSource, SqlSessionEnvironmentSource } from "@open-managed-age
 import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/installed-harnesses";
 import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
-import { environmentWorkSandboxTokenRef } from "@open-managed-agents/sandbox-gateway-sql";
+import { clearEnvironmentWorkToken, environmentWorkSandboxTokenRef } from "@open-managed-agents/sandbox-gateway-sql";
 import { sandboxTokenSha256 } from "@open-managed-agents/sandbox-gateway";
 import type { EnvironmentWorkStore } from "@open-managed-agents/environment-work-store";
 import type { SqlClient } from "@open-managed-agents/sql-client";
@@ -64,6 +64,9 @@ export function createNodeEnvironmentWorkWorker(input: {
   // Management handles only, never ownership/lease state. SQL remains authority.
   type ManagedProcess = ManagementRpcState & ManagementRetirementState & { observation: Omit<WorkOperationObservation, "operation" | "status" | "durationMs">; slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; renew?(): Promise<void>; renewal?: Promise<void>; takeover?: { authorize(): Promise<boolean> } };
   const processes = new Map<string, ManagedProcess>();
+  // A failed/unconfirmed retirement blocks a second native worker, while the
+  // sandbox lookup/reconnect itself remains free to proceed through open().
+  const cleanupBlocked = new Set<string>();
   const diagnosticRuntimeId = (sandbox: { runtimeHandle?: () => { runtimeId: string } }) => {
     try { return sandbox.runtimeHandle?.().runtimeId; } catch { return undefined; }
   };
@@ -105,8 +108,14 @@ export function createNodeEnvironmentWorkWorker(input: {
   async function retire(key: string, requesting?: { workId: string; generation: number }) {
     const process = processes.get(key);
     if (!process) return;
-    await retireManagementProcess(process, (op, action) => processCall(process, op, action, requesting));
-    if (processes.get(key) === process) processes.delete(key);
+    try {
+      await retireManagementProcess(process, (op, action) => processCall(process, op, action, requesting));
+      cleanupBlocked.delete(key);
+      if (processes.get(key) === process) processes.delete(key);
+    } catch (error) {
+      cleanupBlocked.add(key);
+      throw error;
+    }
   }
   let timer: ReturnType<typeof setInterval> | undefined;
   let draining: Promise<void> | undefined;
@@ -203,12 +212,16 @@ export function createNodeEnvironmentWorkWorker(input: {
                 const slot = JSON.stringify([scope.workspaceId, delivery.sessionId]);
                 await handoff(slot, async () => {
                   if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before handoff");
-                  for (const [key, process] of processes) if (process.slot === slot) {
+                  for (const process of processes.values()) if (process.slot === slot) {
                     // The exact target/pending RPC stays; a new legitimate claim
                     // supplies fresh cleanup authority instead of inheriting a closure.
                     if (process.takeover) process.takeover.authorize = current;
-                    await retire(key, { workId: work.id, generation });
                   }
+                  // Reconnect must enter the unified openSandbox path without
+                  // waiting for synchronous cleanup of an old handle. The
+                  // periodic sweeper owns liveness/retirement of orphaned
+                  // processes; a pending kill/status RPC must never gate lookup,
+                  // attach, or allocation of the replacement runtime.
                   const claim = { ...delivery, generation };
                   const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
                     workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: owned, holderHash: () => holderHash, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
@@ -231,10 +244,26 @@ export function createNodeEnvironmentWorkWorker(input: {
                     await sandbox.failExecution();
                     throw error;
                   }
-                  const prepared = await observed("environment-prepare", () => sandbox.prepareWorkEnvironment({ installedHarnesses: env.OPENMA_ACP_HARNESSES, pipIndexUrl: env.SANDBOX_PIP_INDEX_URL }));
-                  if (!prepared) throw new Error("Work Environment has no prepared ACP launcher");
+                  let prepared: Awaited<ReturnType<typeof sandbox.prepareWorkEnvironment>>;
+                  try {
+                    prepared = await observed("environment-prepare", () => sandbox.prepareWorkEnvironment({ installedHarnesses: env.OPENMA_ACP_HARNESSES, pipIndexUrl: env.SANDBOX_PIP_INDEX_URL }));
+                    if (!prepared) throw new Error("Work Environment has no prepared ACP launcher");
+                  } catch (error) {
+                    // A rejected or unprepared Environment must not leave the
+                    // issued Work token attached to a queued claim. Release
+                    // the failed execution through the sandbox authority so
+                    // the next scheduler pass can retry cleanly.
+                    await sandbox.failExecution().catch(() => {});
+                    if (holderHash !== undefined) {
+                      await clearEnvironmentWorkToken(input.sql, claim, holderHash).catch(() => {});
+                    }
+                    throw error;
+                  }
                   const { harness, inventory: launchInventory } = prepared;
                   if (!await owned()) throw new Error("Work claim lost during Environment setup");
+                  if ([...cleanupBlocked].some(key => processes.get(key)?.slot === slot)) {
+                    throw new Error("Previous management worker cleanup is unresolved");
+                  }
                   const spec = { command, args: args as string[], env: {
                     ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
                     ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,

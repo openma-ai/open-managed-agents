@@ -46,7 +46,12 @@ describe("Node E2B Session sandbox adapter", () => {
     // A trusted-template create returns only after the template start command
     // wrote the launcher ready marker (template.mjs waitForFile).
     const sandbox = { sandboxId: "sb", kill: async () => {},
-      commands: { run: async (cmd: string) => { commands.push(cmd); return { stdout: "", stderr: "", exitCode: 0 }; } },
+      commands: { run: async (cmd: string) => {
+        commands.push(cmd);
+        return cmd === "id -u; id -g"
+          ? { stdout: "1000\n1000\n", stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 0 };
+      } },
       files: { read: async (path: string) => path === "/run/oma-managed/ready" ? "oma-managed-v2" : "", write: async () => {} } };
     const sdk = { Sandbox: { create: async (_template: string, options: { lifecycle?: { autoResume?: boolean } }) => { created.push(options); return sandbox; } } };
     const composition = await createNodeE2BSessionAdapter({ E2B_MAX_LIFETIME_MS: "3600000", ...extra }, IDLE_MS, async () => sdk);

@@ -1,6 +1,7 @@
-import type {
-  HarnessSupervisorCommand,
-  RuntimeResourceScope,
+import {
+  isAbsoluteWorkspacePath,
+  type HarnessSupervisorCommand,
+  type RuntimeResourceScope,
 } from "@open-managed-agents/runtime-resource-contract";
 
 import {
@@ -128,8 +129,8 @@ function parseCommand(line: string): HarnessSupervisorCommand {
   ) {
     throw new Error("Harness supervisor start harness is invalid");
   }
-  if (value.workspacePath !== "/workspace") {
-    throw new Error("Harness supervisor workspacePath must be /workspace");
+  if (!isAbsoluteWorkspacePath(value.workspacePath)) {
+    throw new Error("Harness supervisor workspacePath must be an absolute path");
   }
   if (value.outputPath !== null && value.outputPath !== "/mnt/session/outputs") {
     throw new Error("Harness supervisor outputPath is invalid");

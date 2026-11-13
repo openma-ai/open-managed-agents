@@ -91,6 +91,14 @@ describe("Session sandbox recovery order (design §0.0b A.4)", () => {
     expect(h.sandbox.restoredFromSnapshot()).toBe(false);
   });
 
+  it("handle gone: a provider release of the old handle that never settles does not gate the replacement", async () => {
+    // Reconnect is find+attach or unavailable; old-handle cleanup is not on this path.
+    const h = fakeSessionSandbox({ saved: paused(), attachGone: true, resumable: ["pause-r0"], releaseHangs: ["r0"] });
+    await h.sandbox.exec("x");
+    expect(h.log).toEqual(["attach:r0", "release:r0", "resume:pause-r0", "egress.attach", "exec:x"]);
+    expect(h.stored()).toMatchObject({ phase: "running", handle: { runtimeId: "from-pause-r0" }, latestSnapshot: latest });
+  }, 2_000);
+
   it("pause point gone too: a new sandbox from the latest snapshot, not an error", async () => {
     const h = fakeSessionSandbox({ saved: paused(), attachGone: true, resumable: ["snap-0"] });
     await h.sandbox.exec("x");

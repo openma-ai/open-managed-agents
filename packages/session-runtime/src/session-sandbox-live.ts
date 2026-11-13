@@ -224,7 +224,7 @@ export class LiveSessionSandbox<R> {
 
   /** Retirement is an atomic claim against publication, not a read/fence
    * heuristic. Only provider-assigned handles can be permanently retired. */
-  async releaseOwn(handle: SandboxHandle, execution = this.execution()): Promise<{ before: SessionSandboxState; after: SessionSandboxState } | undefined> {
+  async releaseOwn(handle: SandboxHandle, execution = this.execution(), options: { awaitOutcome?: boolean } = {}): Promise<{ before: SessionSandboxState; after: SessionSandboxState } | undefined> {
     const { ports } = await this.compose();
     if (ports.sandbox.handle !== "changes") return;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -234,7 +234,12 @@ export class LiveSessionSandbox<R> {
       if (!await this.isCurrent(execution)) { this.abandon(); return; }
       const next = transition(saved, { type: "retireHandle", handle });
       if (!await this.options.state.save(next, saved.version)) continue;
-      const after = await this.retryReleases(next, execution);
+      // A local owner ending its runtime (Session end) waits for the real
+      // release outcome; other retirements stay bounded maintenance.
+      const pending = next.retiredHandles?.some(entry => sameHandle(entry.handle, handle) && !entry.released) ?? false;
+      const after = options.awaitOutcome === true && pending
+        ? await this.releaseRetiredOwned(next, handle, execution)
+        : await this.retryReleases(next, execution);
       // A warm adoption may account for OUR two cleanup writes, never an
       // intervening lifecycle writer. Its initial v1 witness stays strict.
       if (after.version === saved.version + 1 || after.version === saved.version + 2) return { before: saved, after };
@@ -254,21 +259,45 @@ export class LiveSessionSandbox<R> {
     if (pending.length === 0) return record;
     // Advance even on permanent failure. A hung item never monopolizes later ticks.
     const entry = pending[this.releaseCursor++ % pending.length]!;
-    const key = JSON.stringify(entry.handle);
-    let operation = this.releaseInflight.get(key);
-    if (operation === undefined) {
-      operation = this.releaseEntry(record, entry.handle, execution);
-      this.releaseInflight.set(key, operation);
-      void operation.finally(() => { if (this.releaseInflight.get(key) === operation) this.releaseInflight.delete(key); });
-    }
+    const operation = this.releaseOperation(record, entry.handle, execution);
     // Deadline bounds caller waiting, NOT the real provider/DB operation.
     // The map retains that operation until it truly settles (no assumed abort).
+    // Maintenance never fails its caller: releaseEntry already warned, and the
+    // durable retired entry stays pending for a later tick.
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([operation, new Promise<SessionSandboxState>(resolve => {
         timer = setTimeout(() => resolve(record), 1_000);
       })]);
+    } catch {
+      return record;
     } finally { if (timer !== undefined) clearTimeout(timer); }
+  }
+
+  /** The local owner releasing its own retired handle (execution failure /
+   * destroy). Unlike a maintenance tick it waits for the real, single-flight
+   * provider outcome: an unconfirmed managed-process exit rejects with
+   * MANAGED_PROCESS_CLEANUP_FAILED so the caller retains ownership and can
+   * retry. Other release failures stay maintenance work (warned, kept
+   * durably pending). */
+  async releaseRetiredOwned(record: SessionSandboxState, handle: SandboxHandle, execution = this.execution()): Promise<SessionSandboxState> {
+    try {
+      return await this.releaseOperation(record, handle, execution);
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "MANAGED_PROCESS_CLEANUP_FAILED") throw error;
+      return record;
+    }
+  }
+
+  private releaseOperation(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {
+    const key = JSON.stringify(handle);
+    let operation = this.releaseInflight.get(key);
+    if (operation === undefined) {
+      operation = this.releaseEntry(record, handle, execution);
+      this.releaseInflight.set(key, operation);
+      void operation.finally(() => { if (this.releaseInflight.get(key) === operation) this.releaseInflight.delete(key); }).catch(() => undefined);
+    }
+    return operation;
   }
 
   private async releaseEntry(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {
@@ -283,7 +312,7 @@ export class LiveSessionSandbox<R> {
         // Caller timeout is not authority loss. Late acknowledgement still
         // requires the current fence and an exact record CAS.
         if (!await this.isCurrent(execution)) return saved;
-          const next = transition(current, { type: "handleReleased", handle });
+        const next = transition(current, { type: "handleReleased", handle });
         if (await this.options.state.save(next, current.version)) {
           saved = next;
           // The ack changes no running runtime. Keep an already armed idle
@@ -297,6 +326,7 @@ export class LiveSessionSandbox<R> {
       }
     } catch (error) {
       this.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
+      throw error;
     }
     return saved;
   }

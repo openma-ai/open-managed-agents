@@ -171,3 +171,19 @@ export function lifecycleWorker(f:Awaited<ReturnType<typeof lifecycleFixture>>,h
   async reached(gate:Promise<unknown>){await Promise.race([gate,result.then(outcome=>{if("error" in outcome)throw outcome.error;throw Error("Runner exited before expected milestone");})]);},
  };
 }
+
+// The first prompt of a native ACP session carries the resolved platform
+// resource guidance (resource contract: the workspace is always named; the
+// outputs directory this run collects is named). Kept literal so lifecycle
+// assertions stay exact and independent of the guidance renderer.
+export const firstNativePrompt = (text: string) => `<openma-platform>
+<source name="session_workspace">
+The session workspace is /workspace/. Resolve task-relative paths from this workspace unless a Skill specifies its own directory.
+</source>
+
+<source name="session_outputs">
+Files you write under \`/mnt/session/outputs/\` persist after the session ends and are downloadable by the user. Use this path for final artifacts the user should keep. Files written anywhere else are scratch and are not collected as Session outputs.
+</source>
+</openma-platform>
+
+${text}`;

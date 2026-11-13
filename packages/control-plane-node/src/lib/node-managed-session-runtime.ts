@@ -282,13 +282,14 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
       const refreshed = await this.dependencies.historyFor(input.workspaceId).loadSessionRuntimeHistory({ sessionId: input.sessionId });
       if (refreshed.type !== "not_found") history.events = refreshed.events;
     }
+    const laterAnswerEventIds = answersAdmittedAfter(history.orderedEvents, input.events);
     await this.dependencies.runner.accept({
       ...input,
       ...(executionFence !== undefined ? { executionFence } : {}),
       ...(committedTerminal !== null ? { committedTerminal } : {}),
       initialEvents: history.initialEvents,
       historyEvents: history.events,
-      laterAnswerEventIds: answersAdmittedAfter(history.orderedEvents, input.events),
+      ...(laterAnswerEventIds.size === 0 ? {} : { laterAnswerEventIds }),
       output,
     });
   }

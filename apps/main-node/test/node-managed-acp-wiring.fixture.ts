@@ -9,6 +9,7 @@ import { createDefaultWorkComposition, type WorkRuntimeModules } from "../../../
 import { SandboxSpawner } from "../../../packages/acp-runtime/src/spawners/sandbox.js";
 import type { nodeDefaults } from "../src/components.js";
 import { expect } from "vitest";
+import { join } from "node:path";
 
 /** Real Work entry for this suite only. Selection, poll, ACK, bootstrap,
  * consumption, model/MCP authority and finalization all stay production code.
@@ -58,6 +59,7 @@ export async function createWiringControl(components: Awaited<ReturnType<typeof 
         token: physical => runtime.managedAcpCapabilities.issueWork(claim, session.agent.openma?.harness, physical),
       } });
       await sandbox.open();
+      const workspacePath = join(components.config.paths.sandboxWorkdir, sessionId);
       const token = await sandbox.workToken(); holderHash = (await sandboxTokenSha256(token))!;
       const runtimeModules = await modules();
       const handle = await sandbox.startManagedProcess({ command: "/bin/sleep", args: ["120"], env: {} });
@@ -66,7 +68,7 @@ export async function createWiringControl(components: Awaited<ReturnType<typeof 
         ANTHROPIC_SESSION_ID: sessionId, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret,
         OPENMA_HARNESS_ID: "acp", OPENMA_SANDBOX_TOKEN: token };
       const controller = new AbortController();
-      const composition = createDefaultWorkComposition({ environment: env, fetch, modules: runtimeModules,
+      const composition = createDefaultWorkComposition({ environment: env, workspacePath, fetch, modules: runtimeModules,
         spawner: new SandboxSpawner(sandbox), stateIo: {
           readFile: path => sandbox.readFile(path), writeFile: async (path, value) => { await sandbox.writeFile(path, value); },
           writeFileBytes: async (path, value) => { await sandbox.writeFileBytes!(path, value); }, exec: command => sandbox.exec(command),
@@ -74,7 +76,7 @@ export async function createWiringControl(components: Awaited<ReturnType<typeof 
       let failure: unknown;
       const responses: Array<{action:string;status:number;body:unknown}> = [];
       let published = 0;
-      const result = runNodeWorkItemCli({ environment: env, signal: controller.signal, heartbeatIntervalMs: 50,
+      const result = runNodeWorkItemCli({ environment: env, workspacePath, signal: controller.signal, heartbeatIntervalMs: 50,
         fetch: async (raw, init) => { const response = await fetch(raw, init); if (!response.ok && !String(raw).includes("heartbeat")) responses.push({action:new URL(String(raw)).pathname.split("/").at(-1)!,status:response.status,body:await response.clone().json().catch(()=>null)}); if (String(raw).endsWith("work-publish") && response.ok) published++; return response; },
         composition: async context => ({ ...await composition(context), resolveAgent: () => agent }),
       }).catch(error => { failure = error; console.error("WIRING RUNNER FAILURE",error,"HTTP failures",responses); throw error; });

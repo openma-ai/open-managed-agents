@@ -1,6 +1,8 @@
 import { expect,it } from 'vitest';
 import {readFile} from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { CfD1SqlClient } from '@open-managed-agents/sql-client/adapters/cf-d1';
 import { CustomToolInvocations } from '@open-managed-agents/managed-agents-application';
 import { SqlCustomToolInvocations } from '../src/custom-tool-invocations';
@@ -16,7 +18,8 @@ it('keeps Core receipts fenced and cancellation durable on actual local Workerd 
   INSERT INTO managed_sessions VALUES('ws','s','env',NULL);
   INSERT INTO managed_environment_work VALUES('ws','s','env','w','active',1,'owner',0,90);`);
   // D1 exec expects each statement on a line; use the prepared DDL normally.
-  for(const statement of (await readFile(new URL('../../../apps/main/migrations/0032_custom_invocations.sql',import.meta.url),'utf8')).split('--> statement-breakpoint'))await sql.prepare(statement).run();
+ const migrationPath=resolve(dirname(fileURLToPath(import.meta.url)),'../../../apps/main/migrations/0032_custom_invocations.sql');
+ for(const statement of (await readFile(migrationPath,'utf8')).split('--> statement-breakpoint'))await sql.prepare(statement).run();
   await sql.prepare('UPDATE managed_environment_work SET claim_at=?').bind(Date.now()).run();
   const scope={workspaceId:'ws',sessionId:'s',environmentId:'env',workId:'w',generation:1,holder:'owner',turnId:'input-1'};
   const core=new CustomToolInvocations(new SqlCustomToolInvocations(sql));
