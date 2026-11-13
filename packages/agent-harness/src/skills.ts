@@ -1,3 +1,5 @@
+import { SESSION_SKILLS_ROOT, sessionSkillVersionRoot } from "@open-managed-agents/sandbox";
+
 export interface Skill {
   id: string;
   name: string;
@@ -18,10 +20,10 @@ export interface SkillMountDescriptor {
 
 /** Platform-owned skill files live outside the task's working directory
  * (ADR 0016), so the workspace is exactly what the image ships. */
-export const SKILLS_ROOT = "/oma/skills";
+export const SKILLS_ROOT = SESSION_SKILLS_ROOT;
 
 export function skillMountRoot(skillId: string, requestedVersion: string): string {
-  return `${SKILLS_ROOT}/${encodeURIComponent(skillId)}/${encodeURIComponent(requestedVersion)}/`;
+  return `${sessionSkillVersionRoot(skillId, requestedVersion)}/`;
 }
 
 export function progressiveSkillReminder(descriptor: SkillMountDescriptor): string {

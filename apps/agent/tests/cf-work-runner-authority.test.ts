@@ -5,12 +5,27 @@ import { createCfWorkRunnerAuthority } from "../../main/src/lib/cf-work-runner-a
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-store-sql";
 import { seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
+// Simulated native provider only; production dispatch/materialization remain real.
+function nativeMountPort(port: any) {
+  let incarnation: string | null = null;
+  let mounts: import("../src/oma-sandbox").OmaMountBucketRequest[] = [];
+  return Object.assign(port, {
+    async describe() { return { running: incarnation !== null, incarnation, mounts: mounts.map(m => m.mountPath) }; },
+    async provision(request: { incarnation: string; mounts: typeof mounts }) { incarnation = request.incarnation; mounts = request.mounts; return { incarnation, started: true, pendingMounts: [] }; },
+    async startNativeWorkProcess(command: string, environment: Record<string, string>, resources: { incarnation: string; mounts: typeof mounts }) {
+      expect(resources.incarnation).toBe(incarnation);
+      expect(resources.mounts).toEqual(mounts);
+      expect(mounts.some(m => m.mountPath === "/mnt/session/outputs")).toBe(true);
+      return port.startProcess(command, { env: environment });
+    },
+  });
+}
 beforeAll(async () => { await exports.default.fetch(new Request("http://localhost/health")); });
 async function fixture() {
   const sql = new CfD1SqlClient(env.MAIN_DB); const suffix = crypto.randomUUID();
   const sessionId = "session_" + suffix, environmentId = "env_" + suffix, workId = "work_" + suffix;
   await seedSandboxGatewaySessionRows(sql, "default", { id: sessionId, environmentId, vaultIds: [], agent: { id: "business-agent", version: 9 }, archivedAt: null });
-  const document = { id: sessionId, environmentId, agent: { id: "business-agent", version: 9, openma: { harness: "acp-sandbox", acp: { agent: { registry: "claude-acp@0.94.0" } } } } };
+  const document = { resources: [], archivedAt: null, id: sessionId, environmentId, agent: { id: "business-agent", version: 9, openma: { harness: "acp-sandbox", acp: { agent: { registry: "claude-acp@0.94.0" } } } } };
   await sql.prepare("UPDATE managed_sessions SET document = ? WHERE workspace_id = ? AND id = ?").bind(JSON.stringify(document), "default", sessionId).run();
   await sql.prepare("INSERT OR REPLACE INTO managed_environments (workspace_id,id,document,revision,created_at,updated_at,archived_at) VALUES ('default',?,?,1,?,?,NULL)").bind(environmentId, JSON.stringify({ id: environmentId, config: { type: "cloud" } }), Date.now(), Date.now()).run();
   const work = new SqlEnvironmentWorkStore(sql, { seal: async ({ plaintext }) => ({ ciphertext: plaintext }), open: async ({ ciphertext }) => ({ plaintext: ciphertext }) });
@@ -63,7 +78,7 @@ it("composes real D1 authority and token store through the real CF bootstrap wra
 });
 
 it("uses the shared trusted installed resolver with exact scope, pinnedSession and signal", async () => {
-  const f = await fixture(); await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"not-harness",version:9,openma:{harness:"acp-sandbox"}}}), f.delivery.sessionId).run();
+  const f = await fixture(); await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({resources:[],archivedAt:null,id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"not-harness",version:9,openma:{harness:"acp-sandbox"}}}), f.delivery.sessionId).run();
   const signal = new AbortController().signal; let seen: any;
   const authorize = createCfWorkRunnerAuthority({ sql:f.sql, work:f.work, controlPlaneOrigin:"https://control.test", installedHarnessResolver:{async resolve(input) { seen=input; return {id:"operator-installed",version:"2.3.4"}; }} });
   expect((await authorize(f.delivery, signal))?.harness).toEqual({id:"operator-installed",version:"2.3.4"});
@@ -76,7 +91,7 @@ it("actual agent HTTP dispatch reaches trusted SQL authority then management boo
   const crypto = new WebCryptoAesGcm(secret, "managed.environment-work.secret");
   const stored = await f.work.find(f.delivery); await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await crypto.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
   let starts=0;
-  setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; }, async setOutboundHandler(){}, async setOutboundByHost(){}, async restrictOutboundToHosts(){}, async startProcess(){ starts++; return {id:"p",pid:1,async kill(){},async getStatus(){return "running";}}; } });
+  setCloudflareSandboxForTest(nativeMountPort({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; }, async setOutboundHandler(){}, async setOutboundByHost(){}, async restrictOutboundToHosts(){}, async startProcess(){ starts++; return {id:"p",pid:1,async kill(){},async getStatus(){return "running";}}; } }));
   try {
     const app = (await import("../src/index")).default;
     const response = await app.fetch(new Request("https://agent.test/__internal/work/dispatch", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(f.delivery)}), {...env,PLATFORM_ROOT_SECRET:secret,PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/openma-acp-work-item"} as never);
@@ -140,7 +155,7 @@ it("existing dispatched EnvironmentWorker poll automatically reaches real CF ent
   const cipher=new WebCryptoAesGcm("auto-root-012345678901234567890123", "managed.environment-work.secret"); const stored=await f.work.find(f.delivery);
   await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
   const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox"); let starts=0,polls=0; let launched:any;
-  setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(_c:any,o:any){starts++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+  setCloudflareSandboxForTest(nativeMountPort({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(_c:any,o:any){starts++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}}));
   try {
     const {createCfDispatchedEnvironmentWorker}=await import("../src/runtime/cf-environment-worker");
     const worker=createCfDispatchedEnvironmentWorker({...env,PLATFORM_ROOT_SECRET:"auto-root-012345678901234567890123",PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner"} as never,{environmentId:f.delivery.environmentId,workspaceId:"default",environmentKey:"standing-must-stay-host"},{baseURL:"https://control.test",beta:{webhooks:{unwrap:()=>({id:"event",type:"event",data:{type:"session.status_run_started",workspace_id:"default"}})}},withOptions:()=>({beta:{environments:{work:{poll:async()=>++polls===1?{id:f.delivery.workId,environment_id:f.delivery.environmentId,data:{type:"session",id:f.delivery.sessionId},secret:f.delivery.workSecret,metadata:{}}:null,stop:async()=>{throw Error("Host must not stop claimed Work");}}}}})} as never);
@@ -157,9 +172,9 @@ it("production Worker webhook rejects unsigned wakeups before poll or dispatch",
 
 it.each(["valid", "latest", "duplicate", "relative-command", "invalid-argv", "unselected-invalid"]) ("actual HTTP entry validates complete installed inventory before mutation: %s", async mode => {
  const f=await fixture(); const {WebCryptoAesGcm}=await import("@open-managed-agents/integrations-adapters-cf"); const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox");
- await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"business-agent",version:9,openma:{harness:"acp-sandbox",acp:{agent:{command:"/opt/agents/fixed",args:["--acp"]}}}}}),f.delivery.sessionId).run();
+ await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({resources:[],archivedAt:null,id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"business-agent",version:9,openma:{harness:"acp-sandbox",acp:{agent:{command:"/opt/agents/fixed",args:["--acp"]}}}}}),f.delivery.sessionId).run();
  const secret="inventory-root-012345678901234567890"; const cipher=new WebCryptoAesGcm(secret,"managed.environment-work.secret"); const stored=await f.work.find(f.delivery); await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
- let launched:any; let mutations=0; setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async setOutboundHandler(){mutations++;},async setOutboundByHost(){mutations++;},async restrictOutboundToHosts(){mutations++;},async startProcess(_c:any,o:any){mutations++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+ let launched:any; let mutations=0; setCloudflareSandboxForTest(nativeMountPort({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async setOutboundHandler(){mutations++;},async setOutboundByHost(){mutations++;},async restrictOutboundToHosts(){mutations++;},async startProcess(_c:any,o:any){mutations++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}}));
  try {
   const app=(await import("../src/index")).default;
   const item={id:"installed-release",version:"2.4.6",command:"/opt/agents/fixed",args:["--acp"]};

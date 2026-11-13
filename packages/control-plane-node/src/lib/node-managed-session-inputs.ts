@@ -18,10 +18,21 @@ import type {
   SkillVersionsApplicationPort,
 } from "@open-managed-agents/managed-agents-application";
 import type { SessionResourceSecretSource } from "@open-managed-agents/session-resource-store";
+import {
+  SESSION_OUTPUTS_PATH,
+  sessionMemoryResourceFact,
+  sessionResourceEnvironment,
+  sessionResourceFacts,
+  sessionResourceReminders,
+  sessionSkillResourceFact,
+  sessionSkillVersionRoot,
+  type SessionMemoryResourceFact,
+  type SessionResourceReminder,
+  type SessionSkillResourceFact,
+} from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedMemorySnapshotPort } from "./node-managed-memory-snapshots.js";
 import {
   materializeNodeManagedMemoryStores,
-  nodeManagedMemoryRoot,
   nodeManagedMemoryStoreName,
 } from "./node-managed-memory-stores.js";
 import {
@@ -134,15 +145,64 @@ export function nodeManagedMemoryStoreModeName(
   return factory.capabilities?.nativeMemoryStoreMount === true ? "native" : "file_sync";
 }
 
-export async function buildNodeManagedSkillReminders(
+/** Host-materialized root of one custom Skill version; {@link
+ * NodeManagedSessionInputPreparer.prepareInputs} writes the archive below it. */
+function nodeManagedSkillVersionRoot(skillId: string, requestedVersion: string): string {
+  return sessionSkillVersionRoot(skillId, requestedVersion, `${PLATFORM_ROOT}/skills`);
+}
+
+/** Skill facts for the custom Skills prepareInputs materializes: the
+ * compiled package roots every archive entry under its `directory`, so the
+ * manifest the sandbox holds is `<version root>/<directory>/SKILL.md`. */
+export async function resolveNodeManagedSkillFacts(
   session: Session,
   skillVersions: SkillVersionSource,
-): Promise<Array<{ source: string; text: string }>> {
-  const mounts = await resolveNodeManagedSkillMounts(session, skillVersions);
-  return mounts.map((mount) => ({
-    source: `skill:${mount.skillId}`,
-    text: `Custom skill ${mount.skillId} is mounted at ${mount.mountRoot}. Locate and read its SKILL.md before applying it.`,
-  }));
+): Promise<SessionSkillResourceFact[]> {
+  const facts: SessionSkillResourceFact[] = [];
+  for (const skill of session.agent.skills) {
+    if (skill.type !== "custom") continue;
+    const requestedVersion = skill.version ?? "latest";
+    const resolved = await resolveConcreteSkillVersion(skillVersions, skill.skillId, requestedVersion);
+    if (!resolved) continue;
+    facts.push(sessionSkillResourceFact({
+      skillId: skill.skillId,
+      name: resolved.name,
+      manifestPath: `${nodeManagedSkillVersionRoot(skill.skillId, requestedVersion)}/${resolved.directory}/SKILL.md`,
+    }));
+  }
+  return facts;
+}
+
+/** Memory facts for the stores prepareStorage attaches: file sync and native
+ * mounts both place a store at `/mnt/memory/<nodeManagedMemoryStoreName>`. */
+export function nodeManagedMemoryFacts(session: Session): SessionMemoryResourceFact[] {
+  return session.resources
+    .filter((resource) => resource.type === "memory_store")
+    .map((resource) => sessionMemoryResourceFact({
+      storeId: resource.memoryStoreId,
+      storeName: nodeManagedMemoryStoreName(resource),
+      access: resource.access === "read_only" ? "read_only" : "read_write",
+      description: resource.description ?? null,
+      instructions: resource.instructions ?? null,
+    }));
+}
+
+/** Model-visible Session resource guidance for a Node turn. Outputs are
+ * always attached (prepareStorage) and already stated by the platform
+ * guidance composeSystemPrompt adds; assembly harnesses expose Skill
+ * locations through their own skill mounts. */
+export async function buildNodeManagedResourceReminders(
+  session: Session,
+  skillVersions: SkillVersionSource,
+  options: { skills: boolean; workspaceRoot?: string; materializedSkills?: readonly SessionSkillResourceFact[] },
+): Promise<SessionResourceReminder[]> {
+  const facts = sessionResourceFacts({
+    workspaceRoot: options.workspaceRoot,
+    skills: options.skills ? (options.materializedSkills ?? await resolveNodeManagedSkillFacts(session, skillVersions)) : [],
+    memoryStores: nodeManagedMemoryFacts(session),
+    outputs: { path: SESSION_OUTPUTS_PATH },
+  });
+  return sessionResourceReminders(facts, { outputsGuidedByPlatform: true, includeWorkspace: options.workspaceRoot !== undefined });
 }
 
 /** @deprecated Prefer {@link resolveNodeManagedSkillMounts} for assembly harnesses. */
@@ -171,7 +231,7 @@ export async function resolveNodeManagedSkillMounts(
       requestedVersion,
     );
     if (!resolved) continue;
-    const mountRoot = `${PLATFORM_ROOT}/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/${resolved.directory}/`;
+    const mountRoot = `${nodeManagedSkillVersionRoot(skill.skillId, requestedVersion)}/${resolved.directory}/`;
 
     let body: string | undefined;
     if (fetchBodies) {
@@ -222,6 +282,15 @@ function safeArchivePath(value: string): string {
   return normalized;
 }
 
+// Facts are retained with the prepared runtime, never re-resolved from a mutable
+// `latest` catalog entry when the model prompt is built.
+const materializedSkillFacts = new WeakMap<SandboxExecutor, readonly SessionSkillResourceFact[]>();
+export function preparedNodeManagedSkillFacts(sandbox: SandboxExecutor): readonly SessionSkillResourceFact[] {
+  const facts = materializedSkillFacts.get(sandbox);
+  if (facts === undefined) throw new Error("Managed Session Skill facts are unavailable before input preparation");
+  return facts;
+}
+
 /** Materializes the immutable inputs needed by the in-process Node harness.
  * This is deliberately an injected adapter: the runner owns ordering while
  * Files/Skills storage and sandbox I/O stay behind their existing ports. */
@@ -249,14 +318,12 @@ export class NodeManagedSessionInputPreparer {
         sessionId: input.session.id,
       });
     }
-    await input.sandbox.setEnvVars?.({
-      OMA_OUTPUTS_DIR: "/mnt/session/outputs",
-    });
+    await input.sandbox.setEnvVars?.(sessionResourceEnvironment({ memoryStores: [], outputs: { path: SESSION_OUTPUTS_PATH } }));
 
     await this.prepareMemoryStores(input);
 
     if (this.dependencies.sharedOutputs) {
-      const command = "mkdir -p /mnt/session/outputs";
+      const command = `mkdir -p ${SESSION_OUTPUTS_PATH}`;
       assertCommandSucceeded(command, await input.sandbox.exec(command, 30_000));
     }
   }
@@ -264,6 +331,8 @@ export class NodeManagedSessionInputPreparer {
   /** Session init after storage (design §0.1 step 3): repositories, files
    * and custom skills. */
   async prepareInputs(input: PrepareNodeManagedSessionInputs): Promise<void> {
+    materializedSkillFacts.delete(input.sandbox);
+    const skills: SessionSkillResourceFact[] = [];
 
     await mountSessionResources(input.sandbox, input.session.resources, {
       downloadFile: async (fileId) => {
@@ -313,9 +382,13 @@ export class NodeManagedSessionInputPreparer {
         if (posix.basename(path) === "SKILL.md") foundManifest = true;
         await writeFileBytes!.call(
           input.sandbox,
-          `${PLATFORM_ROOT}/skills/${encodeURIComponent(skill.skillId)}/${encodeURIComponent(requestedVersion)}/${path}`,
+          `${nodeManagedSkillVersionRoot(skill.skillId, requestedVersion)}/${path}`,
           content,
         );
+        if (posix.basename(path) === "SKILL.md") skills.push(sessionSkillResourceFact({
+          skillId: skill.skillId,
+          manifestPath: `${nodeManagedSkillVersionRoot(skill.skillId, requestedVersion)}/${path}`,
+        }));
       }
       if (!foundManifest) {
         throw new Error(
@@ -323,6 +396,7 @@ export class NodeManagedSessionInputPreparer {
         );
       }
     }
+    materializedSkillFacts.set(input.sandbox, skills);
   }
 
   private async prepareMemoryStores(input: PrepareNodeManagedSessionInputs): Promise<void> {
@@ -376,14 +450,10 @@ export class NodeManagedSessionInputPreparer {
         });
       }
     }
-    for (const resource of memoryStores) {
-      const storeName = nodeManagedMemoryStoreName(resource);
-      await input.sandbox.setEnvVars?.({
-        OMA_MEMORY_DIR: nodeManagedMemoryRoot,
-        [`OMA_MEMORY_${storeName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`]:
-          `${nodeManagedMemoryRoot}/${storeName}`,
-      });
-    }
+    await input.sandbox.setEnvVars?.(sessionResourceEnvironment({
+      memoryStores: nodeManagedMemoryFacts(input.session),
+      outputs: null,
+    }));
   }
 
   /** What git sends for `resource`: its placeholder, once the token it

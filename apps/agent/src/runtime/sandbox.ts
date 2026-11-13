@@ -630,6 +630,7 @@ export class CloudflareSandbox
    * execution IO; this management handle cannot carry ACP frames or logs.
    * Caller owns dispatch identity/recovery: a launch failure is never retried. */
   async startWorkRunner(input: {
+    resources?: { incarnation: string; mounts: OmaMountBucketRequest[] };
     command: string;
     controlPlaneOrigin: string;
     /** Local authority guard, never serialized into provider env/RPC. */
@@ -664,8 +665,9 @@ export class CloudflareSandbox
     signal?.throwIfAborted();
     await beforeLaunch?.();
     signal?.throwIfAborted();
+    if (input.resources && typeof sandbox.startNativeWorkProcess !== "function") throw new Error("Native Work resource launch capability unavailable");
     const process = typeof sandbox.startNativeWorkProcess === "function"
-      ? await sandbox.startNativeWorkProcess("exec " + shellQuote(command), environment)
+      ? await sandbox.startNativeWorkProcess("exec " + shellQuote(command), environment, input.resources)
       : await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace", environmentMode: "replace" });
     if (!process?.id || typeof process.kill !== "function" || typeof process.getStatus !== "function") throw new Error("Work runner dispatch is unconfirmed");
     return { id: process.id, pid: process.pid, kill: (signal: string) => process.kill(signal), getStatus: () => process.getStatus() };

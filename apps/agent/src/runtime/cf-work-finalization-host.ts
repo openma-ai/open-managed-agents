@@ -1,4 +1,5 @@
 import { finalizeCfNativeWork } from "./cf-native-work-finalization";
+import { logError } from "@open-managed-agents/shared";
 import type { Env } from "@open-managed-agents/shared";
 import { buildCfTenantDbProvider } from "@open-managed-agents/services";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
@@ -33,6 +34,7 @@ export async function handleCfWorkFinalization(request: Request, env: Env, owner
   const workspaceId = request.headers.get("x-oma-workspace-id");
   const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
   if (!workspaceId || !token || !env.PLATFORM_ROOT_SECRET) return new Response(null, { status: 401 });
+  let diagnosticStage = "authority";
   try {
     // Workspace header selects a shard, not authority. All scope comes from
     // the sealed token and must match both that shard and this DO's name.
@@ -75,7 +77,9 @@ export async function handleCfWorkFinalization(request: Request, env: Env, owner
     };
     const assertCurrent = async () => { if (!await authorize()) throw new Refused("Work authority lost"); };
     await assertCurrent();
+    diagnosticStage = "runtime_attachment";
     const { runtime, discard } = await openFinalizationRuntime(env, captured.handle.runtimeId);
+    diagnosticStage = "process_attachment";
     const exact = await restoreE2BWorkLeaseProcess({ runtime, scope: claim });
     if (exact.locator.identity.workId !== claim.workId || exact.generation !== claim.generation) throw new Refused("Work process mismatch");
     const physicalCurrent = async () => {
@@ -100,9 +104,11 @@ export async function handleCfWorkFinalization(request: Request, env: Env, owner
     if (!/^[A-Za-z0-9_-]+$/.test(generation)) throw new Error("Missing sandbox incarnation");
     const row = await work.find(claim);
     if (!row?.claim) throw new Refused("Work claim lost");
+    diagnosticStage = "storage_sync";
     await synchronizeCfWorkStorage({ env, sql, claim, session, runtime, runtimeGeneration: generation, record: captured, authorize: physicalCurrent,
       fence: { ...claim, ownerId: claim.holder, token, expiresAt: new Date(Date.parse(row.claim.claimedAt) + row.heartbeatTtlSeconds * 1000).toISOString() } });
     await assertPhysical();
+    diagnosticStage = "workspace_checkpoint";
     const checkpoint = await runtime.checkpoint({ kind: "filesystem" });
     if (!checkpoint.checkpointId || checkpoint.sourceRuntimeId !== captured.handle.runtimeId || checkpoint.provider !== "e2b" || checkpoint.kind !== "filesystem") throw new Error("Invalid physical checkpoint");
     try {
@@ -126,6 +132,7 @@ export async function handleCfWorkFinalization(request: Request, env: Env, owner
     }
     return Response.json({ type: "prepared" });
   } catch (error) {
+    logError({ op: "work.e2b.finalization.failure", stage: diagnosticStage, error_name: error instanceof Error ? error.name : "UnknownError", origin: error instanceof Error ? error.stack?.split("\n").slice(1, 3).join("\n") : undefined }, "E2B Work finalization failed");
     return Response.json({ type: error instanceof Refused ? "rejected" : "failed" }, { status: error instanceof Refused ? 409 : 502 });
   }
 }

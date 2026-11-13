@@ -504,3 +504,13 @@ describe("Session sandbox record compare-and-set (design §0.0b A.10)", () => {
     });
   });
 });
+
+it("a replacement runtime uses its generation-resolved Memory plan, not the retired runtime prefix", async () => {
+ const w=world({...winner("retired"),version:1,stores:[{storeName:"notes",storeId:"retired-generation",readOnly:false}]},["retired"]);
+ w.gates.generationStores=true;
+ let attached="";
+ w.gates.onStorage=async ({stores})=>{attached=stores[0]!.storeId;console.info({op:"resource.generation.attach",storeId:attached});};
+ await w.core({execution:attempt}).sandbox.exec("resource-check");
+ expect(attached).not.toBe("retired-generation");
+ expect(w.store.get()!.stores[0]!.storeId).toBe(attached);
+});

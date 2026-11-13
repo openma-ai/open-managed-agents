@@ -1,4 +1,4 @@
-import { logInfo } from "@open-managed-agents/shared/log";
+import { log as logInfo } from "@open-managed-agents/shared/log";
 import { randomUUID } from "node:crypto";
 import type { AcpSession, ClientCallbacks } from "@openma/common/acp-runtime";
 import type { ManagedHarnessHttpScheduler, ManagedHarnessWireSession, RuntimeResourceScope } from "@openma/common/managed-runtime";

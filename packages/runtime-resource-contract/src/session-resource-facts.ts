@@ -42,9 +42,11 @@ export interface SessionSkillResourceFact {
 
 export interface SessionMemoryResourceFact {
   storeId: string;
-  /** Directory name under {@link SESSION_MEMORY_ROOT} the store is mounted as. */
+  /** Store name shown to the model and used for the `OMA_MEMORY_<NAME>` key. */
   storeName: string;
-  /** Absolute mount path, always `${SESSION_MEMORY_ROOT}/${storeName}`. */
+  /** Absolute directory the runtime actually mounted/materialized the store
+   * at. Session hosts mount by name (`${SESSION_MEMORY_ROOT}/${storeName}`);
+   * Environment Work materializes at the resource's published `mount_path`. */
   path: string;
   access: SessionMemoryAccess;
   description?: string;
@@ -92,17 +94,29 @@ export function sessionMemoryStorePath(storeName: string): string {
   return `${SESSION_MEMORY_ROOT}/${storeName}`;
 }
 
+/** Fact for one attached Memory Store. `path` is where the runtime actually
+ * put it; omit it only when the store was mounted by name under
+ * {@link SESSION_MEMORY_ROOT} (CF SessionDO, Node Session hosts). */
 export function sessionMemoryResourceFact(input: {
   storeId: string;
   storeName: string;
+  path?: string | null;
   access?: SessionMemoryAccess | null;
   description?: string | null;
   instructions?: string | null;
 }): SessionMemoryResourceFact {
+  let path: string;
+  if (input.path === undefined || input.path === null) {
+    path = sessionMemoryStorePath(input.storeName);
+  } else {
+    path = trimTrailingSlash(input.path);
+    assertAbsolute(path, "Memory Store mount path");
+    if (path === "/") throw new Error("Memory Store mount path must be a dedicated directory");
+  }
   return {
     storeId: input.storeId,
     storeName: input.storeName,
-    path: sessionMemoryStorePath(input.storeName),
+    path,
     access: input.access === "read_only" ? "read_only" : "read_write",
     ...(input.description ? { description: input.description } : {}),
     ...(input.instructions ? { instructions: input.instructions } : {}),
@@ -153,10 +167,12 @@ export function sessionResourceFacts(input: {
   if (outputs !== null) assertAbsolute(outputs.path, "Session outputs path");
   const seen = new Set<string>();
   for (const store of input.memoryStores ?? []) {
-    if (store.path !== sessionMemoryStorePath(store.storeName)) {
-      throw new Error(`Memory Store ${store.storeId} path ${store.path} is not where ${store.storeName} mounts`);
+    assertAbsolute(store.path, "Memory Store mount path");
+    for (const other of seen) {
+      if (other === store.path || other.startsWith(`${store.path}/`) || store.path.startsWith(`${other}/`)) {
+        throw new Error(`Memory Store mounts overlap: ${other} and ${store.path}`);
+      }
     }
-    if (seen.has(store.path)) throw new Error(`Two Memory Stores mount at ${store.path}`);
     seen.add(store.path);
   }
   return {
@@ -220,6 +236,8 @@ export interface SessionResourceReminderOptions {
    * (`@open-managed-agents/agent-harness` `composeSystemPrompt`) for the same
    * {@link SESSION_OUTPUTS_PATH}, so the same instruction is not sent twice. */
   outputsGuidedByPlatform?: boolean;
+  /** Include when the caller resolved the runtime workspace, not a guessed default. */
+  includeWorkspace?: boolean;
 }
 
 /** Model-visible guidance for the facts, in a stable order: Skill locations,
@@ -229,6 +247,7 @@ export function sessionResourceReminders(
   options: SessionResourceReminderOptions = {},
 ): SessionResourceReminder[] {
   const reminders = [
+    ...(options.includeWorkspace ? [{ source: "session_workspace", text: `The session workspace is ${facts.workspaceRoot}/. Resolve task-relative paths from this workspace unless a Skill specifies its own directory.` }] : []),
     ...facts.skills.map(sessionSkillReminder),
     ...facts.memoryStores.map(sessionMemoryReminder),
   ];

@@ -1,3 +1,5 @@
+// Sandbox-visible resource conventions are owned by the existing core contract.
+export { SESSION_SKILLS_ROOT, SESSION_OUTPUTS_PATH, sessionSkillVersionRoot, sessionOutputsReminder } from "@open-managed-agents/runtime-resource-contract";
 export { DEFAULT_WORKSPACE_ROOT, PLATFORM_ROOT, workspaceRootFromProbe, workspaceRootOf } from "./ports";
 export type {
   ProcessHandle,

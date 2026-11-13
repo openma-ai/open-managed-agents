@@ -136,10 +136,13 @@ describe("NodeManagedSessionInputPreparer", () => {
         expect.soft(written.get(advertisedPath!)).toEqual(manifest);
         expect.soft(written.get(`${mounts[0]!.mountRoot}references/guide.md`)).toEqual(guide);
         expect.soft(await nodeManagedInputs.buildNodeManagedSkillMounts(session, skillVersions)).toEqual(mounts);
-        expect.soft(await nodeManagedInputs.buildNodeManagedSkillReminders(session, skillVersions)).toEqual([{
-          source: "skill:skill_inputs",
-          text: `Custom skill skill_inputs is mounted at ${mountRoot}. Locate and read its SKILL.md before applying it.`,
-        }]);
+        const [skillFact] = await nodeManagedInputs.resolveNodeManagedSkillFacts(session, skillVersions);
+        expect.soft(skillFact?.manifestPath).toBe(`${mountRoot}SKILL.md`);
+        expect.soft(written.get(skillFact!.manifestPath)).toEqual(manifest);
+        expect.soft(written.get(`${skillFact!.directory}/references/guide.md`)).toEqual(guide);
+        const reminders = await nodeManagedInputs.buildNodeManagedResourceReminders(session, skillVersions, { skills: true });
+        expect.soft(reminders.map((reminder) => reminder.source)).toEqual(["skill_files:skill_inputs"]);
+        expect.soft(reminders[0]?.text).toContain(`installed at ${mountRoot} (manifest: ${mountRoot}SKILL.md)`);
       }
       if (requestedVersion === "123") {
         expect(skillVersions.retrieveSkillVersion).toHaveBeenCalledWith({ skillId: "skill_inputs", version: "123" });

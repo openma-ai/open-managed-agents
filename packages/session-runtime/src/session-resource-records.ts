@@ -5,6 +5,8 @@
 // legacy snake_case wire record (CF `/v1/oma`). Validation runs over the
 // whole set before any side effect.
 
+import { SESSION_WORKSPACE_ROOT } from "@open-managed-agents/runtime-resource-contract";
+
 export type SessionResourceRecord = Readonly<Record<string, unknown>> & { readonly type: string };
 
 export type RepositoryCheckout = { type: "branch"; name: string } | { type: "commit"; sha: string };
@@ -35,6 +37,8 @@ export interface MemoryStoreMount {
   name: string | null;
   mountPath: string | null;
   readOnly: boolean;
+  description?: string;
+  instructions?: string;
 }
 
 export interface EnvMount {
@@ -46,7 +50,7 @@ export interface EnvMount {
 export type SessionResourceMount = FileMount | RepositoryMount | MemoryStoreMount | EnvMount;
 
 const DEFAULT_UPLOADS_ROOT = "/mnt/session/uploads";
-const DEFAULT_REPOSITORY_PATH = "/workspace";
+const DEFAULT_REPOSITORY_PATH = SESSION_WORKSPACE_ROOT;
 
 const text = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
 
@@ -120,6 +124,8 @@ export function planSessionResourceMounts(records: readonly SessionResourceRecor
           name: name === undefined || name.length === 0 ? null : name,
           mountPath: text(record.mountPath) ?? text(record.mount_path) ?? null,
           readOnly: record.access === "read_only",
+          ...(typeof record.description === "string" ? { description: record.description } : {}),
+          ...(typeof record.instructions === "string" ? { instructions: record.instructions } : {}),
         };
       }
       case "env":

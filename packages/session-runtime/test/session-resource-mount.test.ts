@@ -45,10 +45,13 @@ describe("mountSessionResources", () => {
   it("resolves an undeclared Memory name and fails closed when it is unknown", async () => {
     const mountMemoryStore = vi.fn();
     const sandbox = { exec: vi.fn(), readFile: vi.fn(), mountMemoryStore, setEnvVars: vi.fn() };
-    await mountSessionResources(sandbox, [{ type: "memory_store", memory_store_id: "m", mount_path: "/mnt/memory/custom" }],
+    const facts = await mountSessionResources(sandbox, [{ type: "memory_store", memory_store_id: "m", mount_path: "/mnt/memory/custom", instructions: "Read before acting." }],
       ports({ memoryStores: { mode: "native", lookupName: async () => "Notes" } }));
     expect(mountMemoryStore).toHaveBeenCalledWith({ storeName: "Notes", storeId: "m", readOnly: false });
-    expect(sandbox.setEnvVars).toHaveBeenCalledWith({ OMA_MEMORY_DIR: "/mnt/memory", OMA_MEMORY_NOTES: "/mnt/memory/custom" });
+    expect(facts).toEqual([{ storeId: "m", storeName: "Notes", path: "/mnt/memory/Notes", access: "read_write", instructions: "Read before acting." }]);
+    // Every SandboxPort.mountMemoryStore mounts at /mnt/memory/<storeName>; a
+    // record mount_path the port never honours must not leak into the env.
+    expect(sandbox.setEnvVars).toHaveBeenCalledWith({ OMA_MEMORY_DIR: "/mnt/memory", OMA_MEMORY_NOTES: "/mnt/memory/Notes" });
     await expect(mountSessionResources(sandbox, [{ type: "memory_store", memory_store_id: "m" }],
       ports({ memoryStores: { mode: "native", lookupName: async () => null } }))).rejects.toThrow(/Memory Store m was not found/);
     await expect(mountSessionResources(sandbox, [{ type: "memory_store", memory_store_id: "m" }], ports()))

@@ -97,7 +97,7 @@ export interface E2BSessionSandboxOptions {
   /** The handle record; every write is a compare-and-set on its version. */
   state: PortsSessionSandboxOptions<E2BSandboxExecutor>["state"];
   scope(): RuntimeResourceScope;
-  plan(scope: RuntimeResourceScope, stores: MemoryStoreBinding[]): Promise<SandboxPlan>;
+  plan(scope: RuntimeResourceScope, stores: MemoryStoreBinding[], generation: string): Promise<SandboxPlan>;
   now(): number;
   /** The Session's current execution attempt; omitted = egress never rebinds on it. */
   fence?(): SandboxExecutionFence | undefined;
@@ -115,7 +115,7 @@ export class E2BSessionSandbox extends PortsSessionSandbox<E2BSandboxExecutor> {
       executor: e2bExecutor,
       state: options.state,
       scope: options.scope,
-      plan: ({ scope, stores }) => options.plan(scope, stores),
+      plan: ({ scope, stores, generation }) => options.plan(scope, stores, generation),
       // E2B paused sandboxes are found again by attach; there is no
       // separately published restore point on this path.
       resumeRef: async () => null,
@@ -173,7 +173,10 @@ export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStora
   if (memoryKey) {
     const required = ["CLOUDFLARE_ACCOUNT_ID", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MEMORY_BUCKET_NAME", "FILES_BUCKET_NAME"] as const;
     const missing = required.filter((name) => !env[name]);
-    if (missing.length > 0) throw new Error(`SANDBOX_ADAPTER=e2b native storage requires ${missing.join(", ")}`);
+    if (missing.length > 0) {
+      log({ op: "sandbox.persistence.configuration_missing", path: "e2b_native", missing }, "E2B native persistence configuration incomplete");
+      throw new Error(`SANDBOX_ADAPTER=e2b native storage requires ${missing.join(", ")}`);
+    }
     const files = r2FilesCredentials(env);
     const parent = (bucket: string, accessKeyId: string, secretAccessKey: string) =>
       createR2TemporaryCredentials({ accountId: env.CLOUDFLARE_ACCOUNT_ID!, endpoint: env.R2_ENDPOINT!, bucket, accessKeyId, secretAccessKey });
@@ -196,6 +199,7 @@ export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStora
 export function createE2BSessionSandbox(input: {
   env: E2BSandboxEnv;
   workAuthority?: E2BWorkAuthority;
+  resourceStores?(scope: RuntimeResourceScope, generation: string): Promise<MemoryStoreBinding[]>;
   warn?(message: string): void;
   storage: SessionSandboxStateStorage;
   scope(): RuntimeResourceScope;
@@ -282,7 +286,8 @@ export function createE2BSessionSandbox(input: {
     },
     state: durableObjectSandboxState(input.storage, STATE_KEY),
     scope: input.scope,
-    async plan(scope, stores) {
+    async plan(scope, stores, generation) {
+      if (input.resourceStores) stores = await input.resourceStores(scope, generation);
       const substitutions = await capCliSubstitutions(env, scope);
       // Refuse a broken relay before acquire/setup/firewall/proxy side effects.
       if (substitutions.length > 0) relayEndpoint();

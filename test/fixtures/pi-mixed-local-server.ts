@@ -1,3 +1,5 @@
+import { startCfWorkPeer, closeCfWorkPeers } from "./cf-work-process-peer";
+import { executeResourceScript } from "./resource-script-peer";
 // Loopback-only test peer. The accepted shell programs are fixed here;
 // tests cannot use this service to execute arbitrary commands.
 import { createServer } from "node:http";
@@ -19,6 +21,8 @@ export async function startPiMixedPeer(port: number) {
     if(req.method!=="POST"){res.writeHead(405).end();return;}
     const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(chunk);
     const input=JSON.parse(Buffer.concat(chunks).toString());
+    if(route==="work-peer") {json(await startCfWorkPeer());return;}
+    if(route==="resource-script") {json(await executeResourceScript(dir,input));return;}
     if(route==="bash") {
       if(input.command!==MIXED_BASH&&input.command!==RECOVERY_BASH){res.writeHead(400).end("unexpected program");return;}
       const result=await promisify(execFile)("/bin/bash",["-c",input.command],{cwd:dir,timeout:5000,env:{PATH:"/usr/bin:/bin"}});
@@ -34,5 +38,5 @@ export async function startPiMixedPeer(port: number) {
     json({jsonrpc:"2.0",id:input.id,result});
   })().catch(()=>{res.writeHead(500).end("fixture failure");});});
   await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(port,"127.0.0.1",resolve);});server.unref();
-  return async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));await rm(root,{recursive:true,force:true});};
+  return async()=>{await closeCfWorkPeers();await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));await rm(root,{recursive:true,force:true});};
 }

@@ -41,12 +41,27 @@ describe("Session resource facts contract", () => {
     expect(() => sessionSkillVersionRoot("s", "1", "oma/skills")).toThrow("absolute");
   });
 
-  it("refuses facts that contradict where a store mounts or that collide", () => {
+  it("keeps a Work-materialized mount_path as the fact instead of re-deriving it from the name", () => {
+    // Environment Work materializes at the published slug mount_path, not at the raw name.
+    const work = sessionMemoryResourceFact({ storeId: "ms_1", storeName: "Project Knowledge", path: "/mnt/memory/project-knowledge/" });
+    expect(work.path).toBe("/mnt/memory/project-knowledge");
+    expect(sessionResourceEnvironment(sessionResourceFacts({ memoryStores: [work] }))).toEqual({
+      OMA_MEMORY_DIR: SESSION_MEMORY_ROOT,
+      OMA_MEMORY_PROJECT_KNOWLEDGE: "/mnt/memory/project-knowledge",
+    });
+    expect(() => sessionMemoryResourceFact({ storeId: "m", storeName: "n", path: "relative" })).toThrow("absolute");
+    expect(() => sessionMemoryResourceFact({ storeId: "m", storeName: "n", path: "/" })).toThrow("dedicated");
+  });
+
+  it("refuses colliding or nested Memory mounts and a relative workspace", () => {
     const store = sessionMemoryResourceFact({ storeId: "ms_1", storeName: "notes" });
-    expect(() => sessionResourceFacts({ memoryStores: [{ ...store, path: "/elsewhere/notes" }] })).toThrow("is not where");
     expect(() => sessionResourceFacts({
       memoryStores: [store, sessionMemoryResourceFact({ storeId: "ms_2", storeName: "notes" })],
-    })).toThrow("Two Memory Stores");
+    })).toThrow("overlap");
+    expect(() => sessionResourceFacts({
+      memoryStores: [store, sessionMemoryResourceFact({ storeId: "ms_2", storeName: "x", path: "/mnt/memory/notes/inner" })],
+    })).toThrow("overlap");
+    expect(() => sessionResourceFacts({ memoryStores: [{ ...store, path: "rel" }] })).toThrow("absolute");
     expect(() => sessionResourceFacts({ workspaceRoot: "work" })).toThrow("absolute");
   });
 

@@ -15,19 +15,25 @@ const provider=vi.hoisted(()=>({creates:0,starts:0,kills:0,renewals:0,failInstal
 vi.mock("e2b",()=>{
  const sandbox={sandboxId:"physical",setTimeout:async()=>{provider.renewals++;},kill:async()=>{},updateNetwork:async()=>{},
  commands:{run:async(command:string)=>{
+  const marker=command.match(/echo ([a-f0-9]+) > \/tmp\/\.oma-warm/);
+  if(marker)provider.files.set("/tmp/.oma-warm",marker[1]);
+  const probe=command.match(/if \[ -f '([^']+)' \]; then printf 1; else printf 0; fi/);
+  if(probe)return {exitCode:0,stdout:provider.files.has(probe[1])?"1":"0",stderr:""};
+  if(command.includes("id -u; id -g"))return {exitCode:0,stdout:"1000\n1000\n",stderr:""};
   if(command.includes("OMA_ACP_INSTALL_OK")){
    await provider.onInstall?.();
    return {exitCode:provider.failInstall?1:0,stdout:provider.failInstall?"":"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh\nOMA_ACP_INSTALL_OK",stderr:""};
   }
-  return {exitCode:0,stdout:command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""};
+  return {exitCode:0,stdout:command.includes("cat /tmp/.oma-warm")?(provider.files.get("/tmp/.oma-warm")??""):"",stderr:""};
  }},
- files:{read:async(path:string)=>{
+ files:{read:async(path:string,options?:{format?:string})=>{
   if(path.endsWith("/ready"))return "oma-managed-v2";
+  if(!path.endsWith(".response.json")){const content=provider.files.get(path);if(content===undefined)throw Object.assign(Error("missing file"),{name:"NotFoundError"});return options?.format==="bytes"?new TextEncoder().encode(content):content;}
   const req=JSON.parse(provider.files.get(path.replace(/\.response.json$/,".json"))!);
   if(req.op===(provider.hold?.op??"start")&&provider.hold){const hold=provider.hold;if((hold.skip??0)>0)hold.skip!--;else{provider.hold=undefined;hold.entered();await hold.wait;}}
   return provider.files.get(path);
- },write:async(path:string,content:string)=>{
-  provider.files.set(path,content);if(!path.endsWith(".go"))return;
+ },write:async(path:string,content:string|Uint8Array)=>{
+  provider.files.set(path,typeof content==="string"?content:new TextDecoder().decode(content));if(!path.endsWith(".go"))return;
   const req=JSON.parse(provider.files.get(path.replace(/\.go$/,".json"))!);provider.ops.push(req.op);
   let result:any={ok:true};
   if(req.op==="start"){
@@ -47,7 +53,7 @@ async function fixture() {
   const sql = new CfD1SqlClient((env as typeof env & { MAIN_DB: D1Database }).MAIN_DB), suffix = crypto.randomUUID();
   const delivery = { workspaceId: "default", environmentId: "env_"+suffix, sessionId: "sess_"+suffix, workId: "new_"+suffix, apiBaseUrl: "https://control.test", workSecret: "" };
   await seedSandboxGatewaySessionRows(sql, "default", {id:delivery.sessionId,environmentId:delivery.environmentId,vaultIds:[],agent:{id:"agent",version:1},archivedAt:null});
-  await sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:delivery.sessionId,environmentId:delivery.environmentId,agent:{id:"agent",version:1,openma:{harness:"acp-sandbox",acp:{agent:{registry:"codex-acp@1.8.0"}}}}}),delivery.sessionId).run();
+  await sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:delivery.sessionId,environmentId:delivery.environmentId,resources:[],archivedAt:null,agent:{id:"agent",version:1,openma:{harness:"acp-sandbox",acp:{agent:{registry:"codex-acp@1.8.0"}}}}}),delivery.sessionId).run();
   await sql.prepare("INSERT OR REPLACE INTO managed_environments (workspace_id,id,document,revision,created_at,updated_at,archived_at) VALUES ('default',?,?,1,?,?,NULL)").bind(delivery.environmentId,JSON.stringify({id:delivery.environmentId,config:{type:"cloud"}}),Date.now(),Date.now()).run();
   const work = new SqlEnvironmentWorkStore(sql,{seal:async({plaintext})=>({ciphertext:plaintext}),open:async({ciphertext})=>({plaintext:ciphertext})});
   async function insert(id:string,generation:number) {
@@ -64,7 +70,7 @@ async function cold(f:Awaited<ReturnType<typeof fixture>>) {
  const root="test-platform-root-secret-padded-to-thirtytwo";
  const stored=await f.work.find(f.delivery),cipher=new WebCryptoAesGcm(root,"managed.environment-work.secret");
  await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
- const configured={...env,PLATFORM_ROOT_SECRET:root,PUBLIC_BASE_URL:f.delivery.apiBaseUrl,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",E2B_TEMPLATE:"trusted",E2B_MAX_LIFETIME_MS:"3600000",MAIN_MCP:undefined};
+ const configured={...env,R2_ACCESS_KEY_ID:undefined,R2_SECRET_ACCESS_KEY:undefined,R2_FILES_ACCESS_KEY_ID:undefined,R2_FILES_SECRET_ACCESS_KEY:undefined,PLATFORM_ROOT_SECRET:root,PUBLIC_BASE_URL:f.delivery.apiBaseUrl,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",E2B_TEMPLATE:"trusted",E2B_MAX_LIFETIME_MS:"3600000",MAIN_MCP:undefined};
  const stub=env.SESSION_DO!.get(env.SESSION_DO!.idFromName(JSON.stringify(["default",f.delivery.sessionId])));
  provider.creates=0;provider.starts=0;provider.kills=0;provider.ops=[];provider.files.clear();provider.slot=null;provider.hold=undefined;
  return {stub,configured};
@@ -186,4 +192,29 @@ it.each(["failed-install", "claim-expires-during-install"] as const)("%s never l
    expect(response.status).toBe(409);expect(provider.starts).toBe(0);
   });
  } finally {provider.failInstall=false;provider.onInstall=undefined;}
+});
+
+it.each([undefined,"read_only"] as const)("cold Work bootstraps canonical Memory at the published path and physical generation (access=%s)",async access=>{
+ const f=await fixture(),c=await cold(f),storeId="store_"+crypto.randomUUID(),now=new Date().toISOString();
+ Object.assign(c.configured,{R2_ACCESS_KEY_ID:undefined,R2_SECRET_ACCESS_KEY:undefined,R2_FILES_ACCESS_KEY_ID:undefined,R2_FILES_SECRET_ACCESS_KEY:undefined});
+ await f.sql.prepare("INSERT INTO managed_memory_stores VALUES ('default',?,?,1,?,?,NULL)").bind(storeId,JSON.stringify({id:storeId,name:"Project Notes",description:null,metadata:{},createdAt:now,updatedAt:now,archivedAt:null}),Date.now(),Date.now()).run();
+ await f.sql.prepare("UPDATE managed_sessions SET document=json_set(document,'$.resources',json(?),'$.archivedAt',NULL) WHERE id=?").bind(JSON.stringify([{type:"memory_store",memoryStoreId:storeId,name:"Project Notes",mountPath:"/mnt/memory/project-notes",access}]),f.delivery.sessionId).run();
+ await runInDurableObject(c.stub,async(_instance,state)=>{
+  const instance=new SessionDO(state,c.configured as never);
+  const response=await instance.fetch(request(f.delivery));
+  expect(response.status,await response.clone().text()).toBe(200);
+  const record=state.storage.kv.get("e2b_sandbox_state") as {stores:Array<{storeId:string;storeName:string;readOnly:boolean}>};
+  expect(record.stores).toHaveLength(1);
+  expect(record.stores[0]).toMatchObject({storeName:"project-notes",readOnly:access==="read_only"});
+  if(access==="read_only") {
+   expect(record.stores[0].storeId).toMatch(new RegExp(`^\\.openma-managed-memory-snapshots/default/${storeId}/[a-f0-9]{64}$`));
+  } else {
+  expect(record.stores[0].storeId).toMatch(new RegExp(`^\\.openma-managed-memory-workspaces/default/${f.delivery.sessionId}/[^/]+/${storeId}/data$`));
+  expect(await env.MEMORY_BUCKET!.get(record.stores[0].storeId.replace(/data$/,"manifest.json"))).not.toBeNull();
+  }
+  // Reattachment retains the same physical-generation projection.
+  expect((await instance.fetch(request(f.delivery))).status).toBe(200);
+  expect((state.storage.kv.get("e2b_sandbox_state") as typeof record).stores).toEqual(record.stores);
+  expect(provider.creates).toBe(1);
+ });
 });

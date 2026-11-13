@@ -1,3 +1,5 @@
+import { SESSION_OUTPUTS_PATH, sessionOutputsReminder } from "@open-managed-agents/sandbox";
+
 // Platform guidance appended to every agent's system prompt. Single source
 // of truth — both CF SessionDO and the self-host Node main read these.
 // Keep additions surgical: every line is sent on every turn for every
@@ -19,8 +21,7 @@ export const loopStopGuidance =
 // Files written here are listable via GET /v1/sessions/:id/outputs and
 // downloadable by the caller. Without this hint, agents historically wrote
 // final artefacts to the working directory where they vanish on container recycle.
-export const sessionOutputsGuidance =
-  "Files you write under `/mnt/session/outputs/` persist after the session ends and are downloadable by the user from the session's Files panel. Use this path for final artifacts the user should keep (reports, exports, generated docs, packaged code). Files written anywhere else (including the working directory) are scratch — they may be lost on container recycle and are not user-accessible.";
+export const sessionOutputsGuidance = sessionOutputsReminder({ path: SESSION_OUTPUTS_PATH }).text;
 
 export const platformGuidance =
   `${authenticatedCommandGuidance}\n\n${loopStopGuidance}\n\n${sessionOutputsGuidance}`;

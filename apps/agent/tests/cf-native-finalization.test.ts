@@ -12,7 +12,7 @@ import { seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway
 // Only remote native container RPC is simulated. D1, SessionDO, route authentication,
 // canonical terminal CAS, R2 and the native host implementation execute in workerd.
 function nativePort(sessionId:string, environmentId:string, workId:string) {
- const locator={workspaceId:"default",environmentId,sessionId,workId,generation:2,holder:"owner",holderHash:"a".repeat(64),id:"process",epoch:"incarnation",pid:41,startTicks:"123",status:"running"};
+ const locator={workspaceId:"default",environmentId,sessionId,workId,generation:2,holder:"owner",holderHash:"a".repeat(64),id:"process",epoch:"incarnation",pid:41,startTicks:"123",status:"running",mounts:[{mountPath:"/mnt/session/outputs",keyPrefix:`t/default/session-outputs/${sessionId}`,access:"read-write"}]};
  const files=new Map<string,string>([["/mnt/session/outputs/result.txt","persisted output"]]);
  return { locator, files, snapshots:0, deleted:[] as string[], fail:false, onSnapshot:undefined as undefined|(()=>Promise<void>),
  async inspectWorkProcess(){return structuredClone(locator);},
@@ -53,6 +53,8 @@ async function fixture() {
  const stub=env.SESSION_DO!.get(env.SESSION_DO!.idFromName(JSON.stringify(["default",sessionId])));
  const configured={...env,PLATFORM_ROOT_SECRET:root,SANDBOX_ADAPTER:"cloudflare",PUBLIC_BASE_URL:"https://control.test"};
  const native = nativePort(sessionId, environmentId, workId);
+ // Simulate the provider write to its declared R2 mount, not copy-sync.
+ await env.FILES_BUCKET!.put(`t/default/session-outputs/${sessionId}/result.txt`,"persisted output");
  setCloudflareSandboxForTest(native);
  const binding={fetch:async(input:RequestInfo|URL,init?:RequestInit)=>{
   const req=input instanceof Request?input:new Request(input,init),url=new URL(req.url),body=await req.text();
@@ -107,11 +109,11 @@ it("native Memory physical bytes reach canonical reconciler before checkpoint",a
  const f=await fixture(),storeId="store_"+crypto.randomUUID(),now=new Date().toISOString();
  const root=`.openma-managed-memory-workspaces/default/${f.sessionId}/incarnation/${storeId}`,mountId=root+"/data";
  await f.sql.prepare("INSERT INTO managed_memory_stores VALUES ('default',?,?,1,?,?,NULL)").bind(storeId,JSON.stringify({id:storeId,name:"notes",description:null,metadata:{},createdAt:now,updatedAt:now,archivedAt:null}),Date.now(),Date.now()).run();
- await f.sql.prepare("UPDATE managed_sessions SET document=json_set(document,'$.resources',json(?)) WHERE id=?").bind(JSON.stringify([{id:"resource",type:"memory_store",memoryStoreId:storeId,name:"notes",access:"read_write",createdAt:now}]),f.sessionId).run();
+ await f.sql.prepare("UPDATE managed_sessions SET document=json_set(document,'$.resources',json(?)) WHERE id=?").bind(JSON.stringify([{id:"resource",type:"memory_store",memoryStoreId:storeId,name:"notes",mountPath:"/mnt/memory/notes",access:"read_write",createdAt:now}]),f.sessionId).run();
  await env.MEMORY_BUCKET!.put(root+"/manifest.json",JSON.stringify({version:1,memories:[]}));
  await env.MEMORY_BUCKET!.put(root+"/data/.openma-memory-store",`openma-memory-store-v1\n${storeId}`);
- f.native.files.set(`/workspace/.openma/session-inputs/${f.sessionId}/memory/${encodeURIComponent(mountId)}.json`,JSON.stringify({version:1,memoryStoreId:mountId,mountPath:"/mnt/memory/notes",baseline:[]}));
- f.native.files.set("/mnt/memory/notes/.openma-memory-store",`openma-memory-store-v1\n${mountId}`);f.native.files.set("/mnt/memory/notes/note.md","native learning");
+ f.native.locator.mounts.push({mountPath:"/mnt/memory/notes",keyPrefix:mountId,access:"read-write"});
+ await env.MEMORY_BUCKET!.put(mountId+"/note.md","native learning");
  f.native.onSnapshot=async()=>{const rows=(await f.sql.prepare("SELECT document FROM managed_memories WHERE memory_store_id=?").bind(storeId).all<{document:string}>()).results!;expect(rows.map(r=>JSON.parse(r.document))).toMatchObject([{path:"/note.md",content:"native learning"}]);};
  const r=await f.send("work-checkpoint",{turnId:"input",revision:3});expect(r.status,await r.clone().text()).toBe(200);
 });
@@ -132,6 +134,10 @@ it("native launch derives SQL holder and persists a cold-recoverable exact kerne
   const environment={ANTHROPIC_BASE_URL:"https://control.test",ANTHROPIC_ENVIRONMENT_ID:f.environmentId,ANTHROPIC_SESSION_ID:f.sessionId,ANTHROPIC_WORK_ID:f.workId,OPENMA_WORKSPACE_ID:"default",OPENMA_SANDBOX_TOKEN:sandboxToken,ANTHROPIC_WORK_SECRET:JSON.stringify({version:1,sessionsToken:f.token,apiBaseUrl:"https://control.test"})};
   // Use official Work wire, not an invented bearer envelope.
   environment.ANTHROPIC_WORK_SECRET=btoa(JSON.stringify({sessions_token:f.token,api_base_url:"https://control.test",claim_generation:2})).replaceAll("+","-").replaceAll("/","_").replace(/=+$/,"");
+  const beforeCommands=commands.length;
+  await expect(o.startNativeWorkProcess("exec /usr/local/bin/runner",environment,{incarnation:"stale",mounts:[]})).rejects.toThrow("resource generation or mounts changed");
+  await expect(o.startNativeWorkProcess("exec /usr/local/bin/runner",environment,{incarnation:"kernel-epoch",mounts:[{bucket:"files",mountPath:"/mnt/session/outputs",options:{prefix:"/expected/",endpoint:"https://fixture.invalid",readOnly:false}}]})).rejects.toThrow("resource generation or mounts changed");
+  expect(commands).toHaveLength(beforeCommands);
   const handle=await o.startNativeWorkProcess("exec /usr/local/bin/runner",environment);
   expect(handle.pid).toBe(73);expect(commands.some(c=>c[0]==="/usr/bin/env"&&c[1]==="-i")).toBe(true);
   const cold=new OmaSandbox(ctx as never,f.configured as never);
