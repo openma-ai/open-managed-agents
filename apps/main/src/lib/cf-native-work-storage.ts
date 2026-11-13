@@ -1,3 +1,4 @@
+import { cfMemoryContent } from "./cf-memory-content";
 import type { Env } from "@open-managed-agents/shared";
 import { log, sessionOutputsPrefix } from "@open-managed-agents/shared";
 import type { SqlClient } from "@open-managed-agents/sql-client";
@@ -44,8 +45,8 @@ export function assertCfWorkMemoryMounts(input: {
   return stores;
 }
 
-function memoriesApplication(sql: SqlClient, workspaceId: string) {
-  return createCloudflareManagedAgentsApp({ workspaceId, sql }, {
+function memoriesApplication(sql: SqlClient, workspaceId: string, env: Env) {
+  return createCloudflareManagedAgentsApp({ workspaceId, sql, memoryContent: cfMemoryContent(env.MEMORY_BUCKET) }, {
     features: { preset: "none", memories: true, memoryVersions: true }, clock: { now: () => new Date() }, ids,
     modules: () => [providePort(memoryStoreForMemorySourcePort, new SqlMemoryStoreSource(sql)), providePort(memoryContentDescriptorPort, new WebCryptoMemoryContentDescriptor()), providePort(memoryVersionActorPort, { kind: "api" as const, apiKeyId: "self_hosted" })],
   }).port(managedAgentsPortTokens.memories);
@@ -63,7 +64,7 @@ export async function materializeCfWorkMemory(input: {
   if (!session || session.archivedAt !== null) throw new Error("Work Session unavailable");
   const facts = cfWorkMemoryFacts(session);
   if (facts.length && !env.MEMORY_BUCKET) throw new Error("Work Memory bucket unavailable");
-  const snapshots = new ManagedMemorySnapshotMaterializer(memoriesApplication(sql, scope.workspaceId), {
+  const snapshots = new ManagedMemorySnapshotMaterializer(memoriesApplication(sql, scope.workspaceId, env), {
     getText: async key => { await assertCurrent(); const object = await env.MEMORY_BUCKET!.get(key); return object ? object.text() : null; },
     put: async (key, content) => { await assertCurrent(); return env.MEMORY_BUCKET!.put(key, content); },
   });
@@ -186,7 +187,7 @@ for root in json.loads(${JSON.stringify(JSON.stringify(paths))}):
     const flushed = await runtime.run("python3 -c '" + script.replaceAll("'", "'\\''") + "'");
     if (flushed.exitCode !== 0) throw new Error("Native mount fsync failed");
   }
-  const memories = memoriesApplication(sql, claim.workspaceId);
+  const memories = memoriesApplication(sql, claim.workspaceId, env);
   const bucket = config.memory;
   const synchronizer = new ManagedMemoryBlobWorkspaceSynchronizer({
     getText: async key => { const object = await bucket.get(key); return object ? object.text() : null; },

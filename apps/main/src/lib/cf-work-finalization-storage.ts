@@ -1,3 +1,4 @@
+import { cfMemoryContent } from "./cf-memory-content";
 import { assertCfWorkMemoryMounts } from "./cf-native-work-storage";
 import { SESSION_OUTPUTS_PATH } from "@open-managed-agents/runtime-resource-contract";
 import { e2bNativeDrainCommand } from "../../../../packages/sandbox-adapter-e2b/src/native-drain";
@@ -71,7 +72,7 @@ export async function synchronizeCfWorkStorage(input: Input & { runtimeGeneratio
     });
     await sync.sync({ scope: claim, fence, runtime, stores: record.stores, outputs: { bindingId: `outputs:${claim.sessionId}`, mountPath: SESSION_OUTPUTS_PATH }, reason: "turn_end", signal: new AbortController().signal });
   }
-  const memories = createCloudflareManagedAgentsApp({ workspaceId: claim.workspaceId, sql }, {
+  const memories = createCloudflareManagedAgentsApp({ workspaceId: claim.workspaceId, sql, memoryContent: cfMemoryContent(env.MEMORY_BUCKET) }, {
     features: { preset: "none", memories: true, memoryVersions: true }, clock: { now: () => new Date() }, ids,
     modules: () => [providePort(memoryStoreForMemorySourcePort, new SqlMemoryStoreSource(sql)), providePort(memoryContentDescriptorPort, new WebCryptoMemoryContentDescriptor()), providePort(memoryVersionActorPort, { kind: "api" as const, apiKeyId: "self_hosted" })],
   }).port(managedAgentsPortTokens.memories);

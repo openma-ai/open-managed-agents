@@ -5,8 +5,25 @@ import type { E2BSandboxLike } from "./e2b";
  * Never install/start this through Commands.run in a live sandbox. */
 export interface E2BManagedBootstrapOptions {
   directory?: string;
+  /** Allowlisted diagnostics only, never request/response bodies or credentials. */
+  observe?(event: E2BManagementObservation): void;
   /** Opt-in for read-only lease recovery; legacy callers retain auto-resume. */
   disableAutoResume?: boolean;
+}
+
+export interface E2BManagementObservation {
+  sandboxId?: string;
+  requestId: string;
+  operation: string;
+  stage: string;
+  status: "started" | "completed" | "failed";
+  durationMs: number;
+  target?: string;
+  workId?: string;
+  sessionId?: string;
+  attemptId?: string;
+  errorName?: string;
+  errorCode?: string | number;
 }
 
 export async function startE2BManagedProcess(
@@ -72,17 +89,37 @@ function checkedIdentity(identity: E2BManagedIdentity): E2BManagedIdentity {
 async function managementRequest(sandbox: E2BSandboxLike, options: E2BManagedBootstrapOptions) {
   const directory = options.directory ?? "/run/oma-managed";
   if (!directory.startsWith("/") || directory.includes("\0")) throw new TypeError("Absolute bootstrap directory required");
-  if (await sandbox.files.read(directory + "/ready", { user: "root" }) !== "oma-managed-v2") throw new Error("Trusted E2B management template is not ready");
-  async function request(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const id = crypto.randomUUID();
+  async function observe<T>(requestId: string, operation: string, stage: string, body: Record<string, unknown>, action: () => Promise<T>): Promise<T> {
+    const start = Date.now();
+    const identity = body.identity as Partial<E2BManagedIdentity> | undefined;
+    const report = (status: E2BManagementObservation["status"], error?: unknown) => {
+      try {
+      const e = error as {name?: unknown; code?: unknown; status?: unknown} | undefined;
+      const event: E2BManagementObservation = { sandboxId: sandbox.sandboxId, requestId, operation, stage, status, durationMs: Date.now()-start,
+        ...(typeof body.target === "string" ? {target: body.target} : {}),
+        ...(typeof identity?.workId === "string" ? {workId: identity.workId} : {}),
+        ...(typeof identity?.sessionId === "string" ? {sessionId: identity.sessionId} : {}),
+        ...(typeof identity?.attemptId === "string" ? {attemptId: identity.attemptId} : {}),
+        ...(typeof e?.name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(e.name) ? {errorName:e.name} : {}),
+        ...(typeof e?.code === "number" ? {errorCode:e.code} : typeof e?.code === "string" && ["ENOENT","ECONNRESET","ETIMEDOUT","ECONNREFUSED"].includes(e.code) ? {errorCode:e.code} : typeof e?.status === "number" ? {errorCode:e.status} : {}),
+      };
+      options.observe?.(event);
+      } catch { /* Diagnostics cannot change native semantics. */ }
+    };
+    report("started");
+    try { const result = await action(); report("completed"); return result; }
+    catch (error) { report("failed", error); throw error; }
+  }
+  if (await observe(crypto.randomUUID(), "ready", "files.read.ready", {}, () => sandbox.files.read(directory + "/ready", { user: "root" })) !== "oma-managed-v2") throw new Error("Trusted E2B management template is not ready");
+  async function request(body: Record<string, unknown>, id: string): Promise<Record<string, unknown>> {
     const prefix = directory + "/" + id;
     // Publish the trigger only after the complete JSON file is written.
-    await sandbox.files.write(prefix + ".json", JSON.stringify({ ...body, id }), { user: "root" });
-    await sandbox.files.write(prefix + ".go", "", { user: "root" });
+    await observe(id, String(body.op), "files.write.request", body, () => sandbox.files.write(prefix + ".json", JSON.stringify({ ...body, id }), { user: "root" }));
+    await observe(id, String(body.op), "files.write.trigger", body, () => sandbox.files.write(prefix + ".go", "", { user: "root" }));
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       let raw: string;
-      try { raw = await sandbox.files.read(prefix + ".response.json", { user: "root" }); }
+      try { raw = await observe(id, String(body.op), "files.read.response", body, () => sandbox.files.read(prefix + ".response.json", { user: "root" })); }
       catch (error) {
         const code = (error as { code?: string }).code;
         const name = (error as { name?: string }).name;
@@ -90,14 +127,33 @@ async function managementRequest(sandbox: E2BSandboxLike, options: E2BManagedBoo
         await new Promise(resolve => setTimeout(resolve, 25));
         continue;
       }
-      const result = JSON.parse(raw) as Record<string, unknown>;
-      if (result.ok !== true) throw Object.assign(new Error(typeof result.error === "string" ? result.error : "E2B management request failed"), { outcome: "rejected" });
-      return result;
+      return observe(id, String(body.op), "response.validate", body, async () => {
+        const result = JSON.parse(raw) as Record<string, unknown>;
+        if (result.ok !== true) throw Object.assign(new Error(typeof result.error === "string" ? result.error : "E2B management request failed"), { outcome: "rejected" });
+        return result;
+      });
     }
     // Dispatch may have happened: never retry or fall back to a shell.
     throw new Error("E2B management outcome unknown; inspect the exact management slot before recovery");
   }
-  return request;
+  return async (body: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const id = crypto.randomUUID();
+    try { return await request(body, id); }
+    catch (error) {
+      // A Files failure is not evidence of provider death (it can be a paused
+      // sandbox, an envd outage or a network failure). Only the official exact
+      // sandbox control-plane lookup can prove that no process remains there.
+      // This resolves cleanup only; construction/remount stays in openSandbox.
+      if ((body.op !== "kill" && body.op !== "status") || typeof sandbox.getInfo !== "function" || !sandbox.sandboxId) throw error;
+      try {
+        await observe(id, String(body.op), "provider.getInfo", body, () => sandbox.getInfo!());
+      } catch (lookupError) {
+        if ((lookupError as {name?: unknown})?.name !== "SandboxNotFoundError") throw lookupError;
+        return observe(id, String(body.op), "provider.absence", body, async () => ({ok: true, status: "exited"}));
+      }
+      throw error;
+    }
+  };
 }
 export async function inspectE2BManagedSlot(sandbox: E2BSandboxLike, options: E2BManagedBootstrapOptions): Promise<E2BManagedLocator> {
   const request = await managementRequest(sandbox, options);

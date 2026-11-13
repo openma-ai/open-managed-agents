@@ -225,10 +225,17 @@ export class E2BSandboxExecutor
     opts: E2BSandboxOptions,
   ) {
     if (opts.managedBootstrap && opts.user !== undefined && opts.user !== "oma-worker") throw new Error("Managed E2B templates require the unprivileged oma-worker user");
-    this.managedBootstrap = opts.managedBootstrap;
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 120_000;
     this.logger = opts.logger ?? {
-      warn: (msg) => console.warn(`[e2b-sandbox] ${msg}`),
+      warn: (msg, ctx) => console.warn(`[e2b-sandbox] ${msg}`, ctx ?? ""),
+    };
+    this.managedBootstrap = opts.managedBootstrap === undefined ? undefined : {
+      ...opts.managedBootstrap,
+      observe: event => {
+        // A stable message plus allowlisted event; no Files payload or spec.
+        try { this.logger.warn("management.rpc", event); } catch { /* Diagnostics only. */ }
+        try { opts.managedBootstrap?.observe?.(event); } catch { /* Diagnostics only. */ }
+      },
     };
     this.memoryBucketConfig = opts.memoryBucket;
     this.user = opts.managedBootstrap ? { user: "oma-worker" } : opts.user === undefined ? {} : { user: opts.user };

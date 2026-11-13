@@ -1,3 +1,5 @@
+import type { Tracer } from "@open-managed-agents/observability";
+import { traceSandboxOperation } from "@open-managed-agents/session-runtime";
 import { configureNodeNativeStorage, type NodeNativeBucket } from "./work-finalization-host/native-storage.js";
 // The Node Session sandbox (research/sandbox-sdk-v2-design.md §0.0 rule 15,
 // §0.7): composition only. The lifecycle is the shared core
@@ -130,6 +132,7 @@ export interface NodeSessionSandboxAdapter {
 }
 
 export interface NodeSessionSandboxOptions {
+  tracer?: Tracer;
   /** Omitted: the v1 provider bridge when `provider` is given, else the v1 factory (`createV1`) through the v1 bridge. */
   adapter?: NodeSessionSandboxAdapter;
   /** The v1 provider and the factory context / env it is called with. */
@@ -459,6 +462,7 @@ export class NodeSessionSandbox implements SandboxPort {
     };
     const provider = allocationId === undefined ? options.provider : undefined;
     this.core = new PortsSessionSandbox<SandboxPort>({
+      tracer: options.tracer,
       compose: async () => {
         const adapter = options.adapter?.adapter ?? (provider !== undefined
           ? fromV1SandboxProvider<SandboxPort & SandboxRuntimePort>({
@@ -623,7 +627,10 @@ export class NodeSessionSandbox implements SandboxPort {
 
   /** Opens the sandbox: attach, else acquire; egress, then storage (design §0.1 steps 2-3). */
   async open(): Promise<void> {
-    await this.core.mountSessionOutputs();
+    await traceSandboxOperation(this.options.tracer, "node.sandbox.open", {
+      "session.id": this.context.session.id, "work.id": this.workAuthority?.attempt.executionId,
+      "execution.generation": this.workAuthority?.attempt.generation,
+    }, async () => this.core.mountSessionOutputs());
   }
 
   warm(): Promise<void> { return this.core.warm(); }

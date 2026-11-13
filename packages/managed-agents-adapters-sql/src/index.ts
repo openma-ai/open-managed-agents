@@ -56,5 +56,5 @@ export { SqlVaultPersistence } from "./vaults-sql-persistence";
 export { SqlWorkFinalization } from "./work-finalization";
 
 export * from "./work-bootstrap";
-export { SqlCustomToolInvocations, customInvocationSchema } from './custom-tool-invocations';
+export { SqlCustomToolInvocations, customInvocationSchema, customInvocationMysqlSchema, ensureMysqlCustomInvocationSchema } from './custom-tool-invocations';
 export { resolveSqlCoreCustomTools } from './core-custom-tools';

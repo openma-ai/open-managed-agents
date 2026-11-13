@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     pool: "forks",
     include: ["test/resource-convergence/**/*.node.ts"],
+    exclude: ["**/*.live-r2.node.ts"],
     testTimeout: 300_000,
     hookTimeout: 120_000,
     fileParallelism: false,

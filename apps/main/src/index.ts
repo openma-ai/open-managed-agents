@@ -1,3 +1,4 @@
+import { cfMemoryContent } from "./lib/cf-memory-content";
 import { withPublishedSessionFiles } from "@open-managed-agents/files-store";
 import { createR2SessionOutputSource } from "./lib/r2-session-output-source";
 import { sessionOutputsPrefix, guessSessionOutputMime } from "@open-managed-agents/shared";
@@ -334,14 +335,6 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   });
 }));
 
-// Core-owned custom MCP transport, authenticated independently before general workspace auth.
-app.all("/v1/oma/sessions/:sessionId/custom-tools/:turnId/mcp", async c => {
-  const { cfCoreCustomToolsRoutes } = await import("./lib/cf-core-custom-tools");
-  const url = new URL(c.req.url);
-  url.pathname = "/" + encodeURIComponent(c.req.param("sessionId")) + "/custom-tools/" + encodeURIComponent(c.req.param("turnId")) + "/mcp";
-  return cfCoreCustomToolsRoutes(c.env).fetch(new Request(url, c.req.raw));
-});
-
 // Sandbox-side Work discovery precedes workspace auth. It reuses the typed
 // channel authority and never treats a Work/admin bearer as model capability.
 app.post("/v1/oma/sessions/:sessionId/execution-channels", async c => {
@@ -586,6 +579,7 @@ function managedMemoriesApplicationFor(ctx: AppCtx) {
   return managedMemoriesApplication(
     ctx.var.tenant_id,
     ctx.var.tenantDb,
+    ctx.env.MEMORY_BUCKET,
     ctx.var.user_id,
   );
 }
@@ -593,12 +587,14 @@ function managedMemoriesApplicationFor(ctx: AppCtx) {
 function managedMemoriesApplication(
   workspaceId: string,
   tenantDb: D1Database,
+  bucket: Env["MEMORY_BUCKET"],
   userId?: string,
 ) {
   const client = new CfD1SqlClient(tenantDb);
   return createCloudflareManagedAgentsApp({
     workspaceId,
     sql: client,
+    memoryContent: cfMemoryContent(bucket),
   }, {
     features: {
       preset: "none",
@@ -1378,6 +1374,7 @@ function managedDreamsApplicationFor(ctx: AppCtx) {
   return createCloudflareManagedAgentsApp({
     workspaceId,
     sql: client,
+    memoryContent: cfMemoryContent(ctx.env.MEMORY_BUCKET),
   }, {
     features: {
       preset: "none",
@@ -1991,7 +1988,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       if (this.env.MEMORY_BUCKET === undefined) {
         throw new Error("MEMORY_BUCKET binding is required for Managed Memory snapshots");
       }
-      const memories = managedMemoriesApplication(opts.tenantId, tenantDb)
+      const memories = managedMemoriesApplication(opts.tenantId, tenantDb, this.env.MEMORY_BUCKET)
         .port(managedAgentsPortTokens.memories);
       const snapshots = new ManagedMemorySnapshotMaterializer(memories, {
         getText: async (key) => {
@@ -2043,7 +2040,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     }
     const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
     const client = new CfD1SqlClient(tenantDb);
-    const memories = managedMemoriesApplication(opts.tenantId, tenantDb)
+    const memories = managedMemoriesApplication(opts.tenantId, tenantDb, this.env.MEMORY_BUCKET)
       .port(managedAgentsPortTokens.memories);
     const bucket = this.env.MEMORY_BUCKET;
     return synchronizeManagedSessionMemoryWorkspaces(

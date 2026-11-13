@@ -13,6 +13,12 @@ async function handle(m:any){
  const text=m.params.prompt.map((p:any)=>p.text??"").join("");
  const manifest=discoverSkillManifest(text,settings.skillId),rw=discoverMemoryPath(text,[settings.rwName]),ro=discoverMemoryPath(text,[settings.roName]),outputs=discoverOutputsDir(text);
  if(!manifest||!rw||!ro||!outputs)throw Error("Child agent could not discover resource paths");
+ if(settings.checkResourceEnvironment){
+  const valid=process.env.OMA_MEMORY_RETIRED===undefined&&process.env.OMA_MEMORY_AMBIENT===undefined&&process.env.OMA_OUTPUTS_DIR===outputs;
+  await fetch(settings.io+"/resource-env",{method:"POST",body:JSON.stringify({retiredPresent:process.env.OMA_MEMORY_RETIRED!==undefined,ambientPresent:process.env.OMA_MEMORY_AMBIENT!==undefined,outputMatchesGuidance:process.env.OMA_OUTPUTS_DIR===outputs})});
+  if(!valid)throw Error("Child resource environment disagrees with current resource contract");
+ }
+
  const modesText=text.split("\n");if(!modesText.some((s:string)=>s.includes(rw)&&s.includes("read-write"))||!modesText.some((s:string)=>s.includes(ro)&&s.includes("read-only")))throw Error("Child agent missing mount modes");
  const recall=text.includes("recall exact memory");let manifestRead="";let last:any;
  const label=text.includes("recall exact memory restored")?"restored":"next";

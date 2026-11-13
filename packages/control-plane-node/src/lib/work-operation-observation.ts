@@ -8,6 +8,12 @@ export interface WorkOperationObservation {
   sessionId: string;
   workId: string;
   generation?: number;
+  attemptId?: string;
+  runtimeId?: string;
+  processId?: string;
+  requestingWorkId?: string;
+  requestingGeneration?: number;
+  management?: import("./work-management-rpc.js").ManagementRpcObservation;
 }
 export async function observeWorkOperation<T>(
   emit: ((event: WorkOperationObservation) => void) | undefined,

@@ -4,6 +4,7 @@ export interface StorageIntegrationConfig {
   postgres: {
     agentsSql: string;
     workInputs: string;
+    customInvocations: string;
     sessionsSql: string;
     feishuSchema: string;
     betterAuth: string;

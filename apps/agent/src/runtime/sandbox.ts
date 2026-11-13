@@ -791,9 +791,7 @@ export class CloudflareSandbox
       cleanup();
     };
 
-    const command = [spec.command, ...(spec.args ?? [])]
-      .map(shellQuote)
-      .join(" ");
+    const command = duplexCommand(spec);
     let process: {
       kill(signal?: string): Promise<void>;
     };
@@ -873,7 +871,7 @@ export class CloudflareSandbox
     })) {
       if (value !== undefined) env[key] = value;
     }
-    const command = `exec ${[spec.command, ...(spec.args ?? [])].map(shellQuote).join(" ")}`;
+    const command = `exec ${duplexCommand(spec)}`;
     const process = await sandbox.spawnDuplex({
       command,
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
@@ -1366,4 +1364,15 @@ export function createSandbox(
   image?: CloudflareSandboxImage | null,
 ): SandboxExecutor {
   return new CloudflareSandbox(env, sessionId, image);
+}
+
+/** Explicit undefined must also unset container-inherited variables, not only
+ * omit them from the RPC environment overlay. Same duplex Port semantics on
+ * piped and FIFO SDK transports. */
+function duplexCommand(spec: SandboxDuplexProcessSpec): string {
+  const unset = Object.entries(spec.env ?? {}).filter(([, value]) => value === undefined).map(([key]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error("Invalid process environment variable name");
+    return key;
+  });
+  return [...(unset.length ? ["env", ...unset.flatMap(key => ["-u", key]), "--"] : []), spec.command, ...(spec.args ?? [])].map(shellQuote).join(" ");
 }

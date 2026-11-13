@@ -432,3 +432,28 @@ describe("SANDBOX_IDLE_PAUSE_MS", () => {
     expect(() => sandboxIdlePauseMs("5m")).toThrow(/positive integer/);
   });
 });
+
+it("propagates dispatch tracing through Node open into the core and records early failure", async () => {
+  const { AsyncLocalStorage } = await import("node:async_hooks");
+  const { NoopTracer } = await import("@open-managed-agents/observability");
+  const { traceSandboxOperation } = await import("@open-managed-agents/session-runtime");
+  const active = new AsyncLocalStorage<string>();
+  const rows: Array<{name: string; parent?: string; status?: number}> = [];
+  class Recorder extends NoopTracer {
+    override startActiveSpan<T>(name: string, fn: (span: import("@open-managed-agents/observability").Span) => T | Promise<T>): T | Promise<T> {
+      const row: typeof rows[number] = { name, parent: active.getStore() }; rows.push(row);
+      const span = super.startSpan(name); span.setStatus = status => { row.status = status.code; };
+      return active.run(name, async () => { try { return await fn(span); } finally { span.end(); } });
+    }
+  }
+  const tracer = new Recorder();
+  const t = setup({ tracer });
+  const sandbox = t.sandboxes.build({ ...context, runtimeGeneration: "rt_1", executionFence: fence("trace") });
+  await traceSandboxOperation(tracer, "work.dispatch.sandbox-open", {}, async () => sandbox.open());
+  expect(rows.find(row => row.name === "node.sandbox.open")?.parent).toBe("work.dispatch.sandbox-open");
+  expect(rows.find(row => row.name === "session.sandbox.mountSessionOutputs")?.parent).toBe("node.sandbox.open");
+  expect(rows.find(row => row.name === "session.sandbox.open")?.parent).toBe("session.sandbox.mountSessionOutputs");
+  const failure = new Error("before core open"); rows.length = 0;
+  await expect(traceSandboxOperation(tracer, "work.dispatch.sandbox-open", {}, async () => { throw failure; })).rejects.toBe(failure);
+  expect(rows).toEqual([{ name: "work.dispatch.sandbox-open", parent: undefined, status: 2 }]);
+});

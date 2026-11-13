@@ -24,7 +24,7 @@ import {
   sessionResourceReminders,
 } from "../../runtime-resource-contract/src/index";
 
-interface Observation { prompt: string; memory?: string; mode?: string }
+interface Observation { nativeSession?: string; environment?: Record<string, string | undefined>; prompt: string; memory?: string; mode?: string }
 
 let sandboxCount = 0;
 
@@ -35,8 +35,9 @@ function guidanceDrivenSandbox(mnt: string, files: Map<string, string>, observed
   // Native session ids are unique per sandbox: a replacement sandbox never
   // knows (or coincidentally reissues) its predecessor's session.
   const sandboxNumber = ++sandboxCount;
+  let launchEnvironment: Record<string, string | undefined> = {};
   async function act(prompt: string): Promise<Observation> {
-    const observation: Observation = { prompt };
+    const observation: Observation = { prompt, environment: launchEnvironment };
     const memory = /## Memory store: notes\nMounted at (\/mnt\/\S+?)\/ \((read-only|read-write)\)/u.exec(prompt);
     if (memory) {
       observation.mode = memory[2];
@@ -45,14 +46,15 @@ function guidanceDrivenSandbox(mnt: string, files: Map<string, string>, observed
     return observation;
   }
   return {
-    exec: async () => "",
+    exec: async (command: string) => command.includes("OMA_RESOURCE_ENV_KEYS") ? "OMA_MEMORY_LEFTOVER\nOMA_OUTPUTS_DIR\n" : "",
     readFile: async (path: string) => {
       const value = files.get(path);
       if (value === undefined) throw new Error("absent");
       return value;
     },
     writeFile: async (path: string, content: string) => { files.set(path, content); return path; },
-    async spawnDuplexProcess() {
+    async spawnDuplexProcess(spec: { env?: Record<string, string | undefined> }) {
+      launchEnvironment = { OMA_MEMORY_LEFTOVER: "/old/leftover", ...spec.env };
       let output!: ReadableStreamDefaultController<Uint8Array>;
       let exit!: (value: { code: number | null; signal: string | null }) => void;
       const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => { exit = resolve; });
@@ -79,6 +81,7 @@ function guidanceDrivenSandbox(mnt: string, files: Map<string, string>, observed
                 const text = (request.params.prompt as Array<{ type: string; text?: string }>)
                   .map((block) => block.text ?? "").join("");
                 const observation = await act(text);
+                observation.nativeSession = request.params.sessionId;
                 observed.push(observation);
                 send({ jsonrpc: "2.0", method: "session/update", params: {
                   sessionId: request.params.sessionId,
@@ -121,10 +124,11 @@ async function turn(harness: AcpSandboxHarness, runtime: ReturnType<typeof runti
   const userMessage = { type: "user.message", id: `user-${text}`, content: [{ type: "text", text }] };
   runtime.history.getEvents().push(userMessage);
   await harness.run({
-    agent: { model: "deepseek-flash", acp: { agent: { id: "fixture-acp", command: "fixture-acp", cwd: "/workspace" } } },
+    agent: { model: "deepseek-flash", acp: { agent: { id: "fixture-acp", command: "fixture-acp", cwd: "/workspace", env: { OMA_MEMORY_RETIRED: "/old/retired", OMA_OUTPUTS_DIR: "/old/outputs", KEEP: "yes" } } } },
     session_id: "session_guidance",
     userMessage,
     systemPrompt,
+    resourceFacts: sessionResourceFacts({ memoryStores: systemPrompt ? [sessionMemoryResourceFact({ storeId: "memstore_notes", storeName: "notes", access: "read_only" })] : [], outputs: systemPrompt ? { path: "/mnt/session/outputs" } : null }),
     env: { ANTHROPIC_API_KEY: "" },
     runtime,
   } as unknown as HarnessContext);
@@ -154,6 +158,12 @@ describe("AcpSandboxHarness resource guidance ingress (deterministic ACP child, 
     }
     expect(observed).toHaveLength(2);
     expect(observed[0]!.prompt.startsWith(`<openma-platform>\n${systemPrompt}\n</openma-platform>\n\nfirst`)).toBe(true);
+    console.log("session.acp.resource.environment", observed[0]!.environment);
+    expect(observed[0]!.environment?.OMA_MEMORY_RETIRED).toBeUndefined();
+    expect(observed[0]!.environment?.OMA_MEMORY_LEFTOVER).toBeUndefined();
+    expect(observed[0]!.environment?.OMA_OUTPUTS_DIR).toBe("/mnt/session/outputs");
+    expect(observed[0]!.environment?.OMA_MEMORY_NOTES).toBe("/mnt/memory/notes");
+    expect(observed[0]!.environment?.KEEP).toBe("yes");
     expect(observed[0]!.mode).toBe("read-only");
     expect(observed[0]!.memory).toBe("persisted-bytes-✓\n");
     // Native session loaded from the checkpoint: the agent still holds the
@@ -176,6 +186,29 @@ describe("AcpSandboxHarness resource guidance ingress (deterministic ACP child, 
     expect(history.filter((event) => event.type === "session.error")).toEqual([]);
   });
 
+  it("recomposes resource environment after attachments change between executions", async () => {
+    const mnt = await mkdtemp(join(tmpdir(), "openma-acp-guidance-change-"));
+    roots.push(mnt);
+    await mkdir(join(mnt, "memory/notes"), { recursive: true });
+    await writeFile(join(mnt, "memory/notes/facts.md"), "memory bytes");
+    const observed: Observation[] = [];
+    const harness = new AcpSandboxHarness();
+    const runtime = runtimeFor(guidanceDrivenSandbox(mnt, new Map(), observed), []);
+    try {
+      await turn(harness, runtime, hostSystemPrompt("read_only"), "attached");
+      await turn(harness, runtime, "", "detached");
+    } finally { await harness.dispose("destroy"); }
+    console.log("session.acp.changed.environment", observed.map(o => o.environment));
+    expect(observed).toHaveLength(2);
+    expect(observed[0]!.environment?.OMA_MEMORY_NOTES).toBe("/mnt/memory/notes");
+    expect(observed[1]!.environment?.OMA_MEMORY_NOTES).toBeUndefined();
+    expect(observed[1]!.environment?.OMA_OUTPUTS_DIR).toBeUndefined();
+    console.log("session.acp.changed.native-context", observed.map(o => o.nativeSession));
+    expect(observed[1]!.nativeSession, "changed resources must not resume native context with stale resource guidance").not.toBe(observed[0]!.nativeSession);
+    expect(observed[1]!.prompt).toContain("User: attached");
+    expect(observed[1]!.prompt).toContain("Current request:\ndetached");
+  });
+
   it("negative control: an empty host system prompt sends no platform block, so the agent cannot locate Memory", async () => {
     const mnt = await mkdtemp(join(tmpdir(), "openma-acp-guidance-neg-"));
     roots.push(mnt);
@@ -187,6 +220,10 @@ describe("AcpSandboxHarness resource guidance ingress (deterministic ACP child, 
     } finally {
       await harness.dispose("destroy");
     }
+    console.log("session.acp.disabled.environment", observed[0]!.environment);
+    expect(observed[0]!.environment?.OMA_MEMORY_RETIRED).toBeUndefined();
+    expect(observed[0]!.environment?.OMA_MEMORY_LEFTOVER).toBeUndefined();
+    expect(observed[0]!.environment?.OMA_OUTPUTS_DIR).toBeUndefined();
     expect(observed[0]!.prompt).toBe("first");
     expect(observed[0]!.memory).toBeUndefined();
   });

@@ -191,17 +191,24 @@ export function nodeManagedMemoryFacts(session: Session): SessionMemoryResourceF
  * always attached (prepareStorage) and already stated by the platform
  * guidance composeSystemPrompt adds; assembly harnesses expose Skill
  * locations through their own skill mounts. */
-export async function buildNodeManagedResourceReminders(
+export async function resolveNodeManagedResourceFacts(
   session: Session,
   skillVersions: SkillVersionSource,
   options: { skills: boolean; workspaceRoot?: string; materializedSkills?: readonly SessionSkillResourceFact[] },
-): Promise<SessionResourceReminder[]> {
-  const facts = sessionResourceFacts({
+) {
+  return sessionResourceFacts({
     workspaceRoot: options.workspaceRoot,
     skills: options.skills ? (options.materializedSkills ?? await resolveNodeManagedSkillFacts(session, skillVersions)) : [],
     memoryStores: nodeManagedMemoryFacts(session),
     outputs: { path: SESSION_OUTPUTS_PATH },
   });
+}
+
+export async function buildNodeManagedResourceReminders(
+  session: Session, skillVersions: SkillVersionSource,
+  options: { skills: boolean; workspaceRoot?: string; materializedSkills?: readonly SessionSkillResourceFact[] },
+): Promise<SessionResourceReminder[]> {
+  const facts = await resolveNodeManagedResourceFacts(session, skillVersions, options);
   return sessionResourceReminders(facts, { outputsGuidedByPlatform: true, includeWorkspace: options.workspaceRoot !== undefined });
 }
 
@@ -284,9 +291,11 @@ function safeArchivePath(value: string): string {
 
 // Facts are retained with the prepared runtime, never re-resolved from a mutable
 // `latest` catalog entry when the model prompt is built.
-const materializedSkillFacts = new WeakMap<SandboxExecutor, readonly SessionSkillResourceFact[]>();
+// A private runtime property survives recovery/execution-guard proxies, unlike
+// a WeakMap indexed by wrapper identity. It is never serialized or public API.
+const materializedSkillFacts = Symbol("node-managed-materialized-skill-facts");
 export function preparedNodeManagedSkillFacts(sandbox: SandboxExecutor): readonly SessionSkillResourceFact[] {
-  const facts = materializedSkillFacts.get(sandbox);
+  const facts = Reflect.get(sandbox, materializedSkillFacts) as readonly SessionSkillResourceFact[] | undefined;
   if (facts === undefined) throw new Error("Managed Session Skill facts are unavailable before input preparation");
   return facts;
 }
@@ -331,7 +340,7 @@ export class NodeManagedSessionInputPreparer {
   /** Session init after storage (design §0.1 step 3): repositories, files
    * and custom skills. */
   async prepareInputs(input: PrepareNodeManagedSessionInputs): Promise<void> {
-    materializedSkillFacts.delete(input.sandbox);
+    Reflect.deleteProperty(input.sandbox, materializedSkillFacts);
     const skills: SessionSkillResourceFact[] = [];
 
     await mountSessionResources(input.sandbox, input.session.resources, {
@@ -396,7 +405,7 @@ export class NodeManagedSessionInputPreparer {
         );
       }
     }
-    materializedSkillFacts.set(input.sandbox, skills);
+    Reflect.set(input.sandbox, materializedSkillFacts, skills);
   }
 
   private async prepareMemoryStores(input: PrepareNodeManagedSessionInputs): Promise<void> {

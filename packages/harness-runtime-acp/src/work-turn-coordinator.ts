@@ -18,6 +18,7 @@ interface WorkTurnConnection {
   signal: AbortSignal;
 }
 interface WorkTurnCoordinatorOptions {
+  outputJournal?: {read(owner:object):Promise<string|null>;write(owner:object,body:string|null):Promise<void>};
   runtime: WorkControlRuntime;
   fallbackHarnessId: string;
   fetch?: typeof globalThis.fetch;
@@ -25,6 +26,12 @@ interface WorkTurnCoordinatorOptions {
   scheduler?: ManagedHarnessHttpScheduler;
   hasOutcomeEvaluator: boolean;
   onTurnAdmitted?(turnId: string): void;
+  coreMcp?: {
+    names(): ReadonlySet<string>;
+    prepare(call: Record<string,unknown>,result: Record<string,unknown>,nativeName:string): Promise<{receipt:string;name:string;input:Record<string,unknown>}|null>;
+    admit(turnId:string):Promise<void>;
+    clear():Promise<void>;
+  };
   onPromptInput?(event: Readonly<Record<string,unknown>>): Promise<void>;
   onTurnPublished?(turnId: string): void;
   loadSession(session: ManagedHarnessWireSession): readonly Readonly<Record<string, unknown>>[];
@@ -128,23 +135,30 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
       const readyChildLanes = new Set<string>();
       const fetcher = options.fetch ?? globalThis.fetch;
       const outputUrl = `${input.apiBaseUrl.replace(/\/+$/u, "")}/v1/oma/sessions/${encodeURIComponent(input.scope.sessionId)}/runtime-events`;
+      const journalOwner={...connectionClaim};
+      async function deliver(body:string) {
+        input.signal.throwIfAborted();
+        const batch=JSON.parse(body);
+        if(!Array.isArray(batch.events)||!batch.events.length)throw Error("Invalid journal event batch");
+        const response=await fetcher(outputUrl,{method:"POST",redirect:"error",signal:input.signal,
+          headers:{authorization:`Bearer ${input.sessionsToken}`,"content-type":"application/json"},body});
+        if(!response.ok){await response.body?.cancel();throw Error(`Work output publication rejected: ${response.status}`);}
+        const receipt:unknown=await response.json();
+        if(!isRecord(receipt)||!Array.isArray(receipt.data)||receipt.data.length!==batch.events.length||
+          receipt.data.some((entry,index)=>!isRecord(entry)||entry.id!==batch.events[index]?.id))throw Error("Work output durable receipt is invalid");
+        input.signal.throwIfAborted();
+        await options.outputJournal?.write(journalOwner,null);
+      }
       const output = createWorkOutputAdapter({
         toolUseIdFor,
+        ...(options.coreMcp ? {customInvocationToolNames:options.coreMcp.names,customInvocation:options.coreMcp.prepare}:{}),
         customToolNames: () => new Set(nativeHarnessId === "pi-acp" ? agentTools.filter(tool => tool.type === "custom" && typeof tool.name === "string").map(tool => tool.name as string) : []),
         async publish(events, customInvocations) {
           input.signal.throwIfAborted();
-          const response = await fetcher(outputUrl, {
-            method: "POST", redirect: "error", signal: input.signal,
-            headers: { authorization: `Bearer ${input.sessionsToken}`, "content-type": "application/json" },
-            body: JSON.stringify({ events, ...(customInvocations ? {customInvocations} : {}), ...(activeRootProof ? {root:activeRootProof} : {}) }),
-          });
-          if (!response.ok) { await response.body?.cancel(); throw new Error(`Work output publication rejected: ${response.status}`); }
-          const receipt: unknown = await response.json();
-          if (!isRecord(receipt) || !Array.isArray(receipt.data) || receipt.data.length !== events.length ||
-              receipt.data.some((entry, index) => !isRecord(entry) || entry.id !== events[index]?.id)) {
-            throw new Error("Work output durable receipt is invalid");
-          }
-          input.signal.throwIfAborted();
+          const body=JSON.stringify({events,...(customInvocations?{customInvocations}:{}),...(activeRootProof?{root:activeRootProof}:{})});
+          if(await options.outputJournal?.read(journalOwner))throw Error("Unacknowledged Work output must recover first");
+          await options.outputJournal?.write(journalOwner,body);
+          await deliver(body);
           for(const event of events) if(event.type==="agent.custom_tool_use") logInfo({op:"acp.custom.pending",
             session_id:input.scope.sessionId,work_id:input.scope.workId,claim_generation:connectionClaim.generation,
             call_id:event.id},"Native custom call durably published; awaiting client result");
@@ -246,6 +260,7 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
             finalizer!.admitted(command.turnId);
             options.onTurnAdmitted?.(command.turnId);
             activeRootProof = await reader.consumedRoot(context.event, signal);
+            await options.coreMcp?.admit(command.turnId);
             signal.throwIfAborted();
             if (!permissionBridge) {
               callbackOwnerTurnId = command.turnId;
@@ -291,6 +306,9 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
       return {
         ...channel,
         async *commands(signal) {
+          const pending=await options.outputJournal?.read(journalOwner);
+          if(pending){await deliver(pending);logInfo({op:"acp.output.recovered",session_id:input.scope.sessionId,work_id:input.scope.workId,claim_generation:connectionClaim.generation},"Recovered exact pending publication; no model or tool replay");}
+
           for await (const command of channel.commands(signal)) {
             if (command.type === "session.cancel" || command.type === "session.dispose") closePermissions();
             yield command;
@@ -298,14 +316,16 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
         },
         async publish(event) {
           assertMode();
+          if(event.type==='session.event'&&isRecord(event.event))output.nativeTool(event.event);
           if (event.type === "session.complete") completingTurnId = event.turnId;
           try { await channel.publish(event); }
           finally { completingTurnId = undefined; }
           if (event.type === "session.disposed" || event.type === "session.error" ||
               (event.type === "session.complete" && event.turnId === callbackOwnerTurnId)) closePermissions();
-          if (event.type === "session.complete" || event.type === "session.disposed") { priorPermissionBridges.length = 0; activeRootProof = undefined; emittedParentTools.clear(); readyChildLanes.clear(); }
+          if (event.type === "session.complete" || event.type === "session.disposed") { await options.coreMcp?.clear(); priorPermissionBridges.length = 0; activeRootProof = undefined; emittedParentTools.clear(); readyChildLanes.clear(); }
         },
         async close() {
+          await options.coreMcp?.clear();
           closePermissions();
           input.signal.removeEventListener("abort", closePermissions);
           await channel.close();

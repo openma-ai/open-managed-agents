@@ -178,7 +178,7 @@ export const OMA_OVERLAY_AGENTS: KnownAgentEntry[] = [
     label: "Kimi Code",
     spec: { command: "kimi", args: ["acp"] },
     installHint: "install Kimi Code, then run `kimi acp`",
-    homepage: "https://github.com/MoonshotAI/kimi-cli",
+    homepage: "https://github.com/MoonshotAI/kimi-code",
   },
   // MiMo Code is OpenCode-derived and exposes its own ACP stdio command.
   // Keep the entry overlay-only until the upstream ACP registry publishes a

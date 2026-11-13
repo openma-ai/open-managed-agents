@@ -11,6 +11,7 @@ import type {
   ListMemoryRecords,
   ListMemoryVersionRecords,
   MemoryDocumentStore,
+  MemoryContentObjects,
   MemoryLocation,
   MemoryVersionLocation,
   RedactMemoryVersionRecord,
@@ -105,7 +106,69 @@ function validateMutationPair(memory: Memory, version: MemoryVersion): void {
 }
 
 export class SqlMemoryDocumentStore implements MemoryDocumentStore {
-  constructor(private readonly client: SqlClient) {}
+  constructor(private readonly client: SqlClient, private readonly contents?: MemoryContentObjects) {}
+
+  private objects(): MemoryContentObjects {
+    if (!this.contents) throw new Error("Managed Memory file/object storage is required");
+    return this.contents;
+  }
+
+  private prefix(workspaceId: string, storeId: string): string {
+    return `.openma-managed-memory-content/${encodeURIComponent(workspaceId)}/${encodeURIComponent(storeId)}/`;
+  }
+
+  /** Upload first, then atomically publish metadata. A failed SQL CAS can leave
+   * an unreferenced object, but cannot overwrite a winner's bytes. Each write
+   * gets a fresh key, including retries with the same version ID. */
+  private async encode(workspaceId: string, value: Memory | MemoryVersion): Promise<string> {
+    const { content, ...metadata } = value;
+    if (content === null) return JSON.stringify({ ...metadata, contentObjectKey: null });
+    const key = this.prefix(workspaceId, value.memoryStoreId) + crypto.randomUUID()
+      + "/" + encodeURIComponent(value.path?.split("/").at(-1) || "content");
+    const written = await this.objects().put(key, content);
+    if (written === null || written === undefined) throw new Error("Managed Memory content upload was not acknowledged");
+    return JSON.stringify({ ...metadata, contentObjectKey: key });
+  }
+
+  private async encodePair(workspaceId: string, memory: Memory, version: MemoryVersion): Promise<[string, string]> {
+    const current = await this.encode(workspaceId, memory);
+    // Normal revisions share one immutable object. Redacting an old version
+    // removes its bytes once it is no longer the current head.
+    if (memory.content === version.content) {
+      const { content: _, ...metadata } = version;
+      return [current, JSON.stringify({ ...metadata, contentObjectKey: JSON.parse(current).contentObjectKey })];
+    }
+    return [current, await this.encode(workspaceId, version)];
+  }
+
+  private async decode<T extends Memory | MemoryVersion>(workspaceId: string, document: string): Promise<T> {
+    const stored = JSON.parse(document);
+    if (stored === null || typeof stored !== "object" || Array.isArray(stored)
+      || Object.hasOwn(stored, "content") || !Object.hasOwn(stored, "contentObjectKey")) {
+      throw new Error("Invalid managed Memory content document");
+    }
+    const { contentObjectKey, ...metadata } = stored;
+    if (contentObjectKey === null) return { ...metadata, content: null } as T;
+    if (typeof contentObjectKey !== "string" || !contentObjectKey.startsWith(this.prefix(workspaceId, metadata.memoryStoreId))) {
+      throw new Error("Managed Memory content reference is missing or outside its store");
+    }
+    const content = await this.objects().getText(contentObjectKey);
+    if (content === null) throw new Error("Managed Memory content object is missing");
+    if (new TextEncoder().encode(content).byteLength !== metadata.contentSizeBytes) throw new Error("Managed Memory content size mismatch");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+    const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    if (hash !== metadata.contentSha256) throw new Error("Managed Memory content hash mismatch");
+    return { ...metadata, content } as T;
+  }
+
+  private async current(workspaceId: string, row: MemoryRow): Promise<StoredMemory> {
+    return toStoredMemory({ ...row, document: JSON.stringify(await this.decode<Memory>(workspaceId, row.document)) });
+  }
+
+  private async version(workspaceId: string, row: MemoryVersionRow): Promise<StoredMemoryVersion> {
+    return toStoredMemoryVersion({ ...row, document: JSON.stringify(await this.decode<MemoryVersion>(workspaceId, row.document)) });
+  }
+
 
   private async findByPath(input: {
     workspaceId: string;
@@ -121,11 +184,12 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       input.memoryStoreId,
       input.path,
     ).first<MemoryRow>();
-    return row === null ? null : toStoredMemory(row);
+    return row === null ? null : this.current(input.workspaceId, row);
   }
 
   async create(input: CreateMemoryRecord): Promise<CreateMemoryRecordResult> {
     validateMutationPair(input.memory, input.version);
+    const [memoryDocument, versionDocument] = await this.encodePair(input.workspaceId, input.memory, input.version);
     const actor = actorColumns(input.version.createdBy);
     const current = this.client.prepare(
       `INSERT INTO managed_memories
@@ -136,7 +200,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       input.workspaceId,
       input.memory.memoryStoreId,
       input.memory.id,
-      JSON.stringify(input.memory),
+      memoryDocument,
       1,
       input.memory.path,
       timestamp(input.memory.createdAt),
@@ -152,7 +216,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       input.version.memoryStoreId,
       input.version.id,
       input.version.memoryId,
-      JSON.stringify(input.version),
+      versionDocument,
       1,
       input.version.operation,
       actor.kind,
@@ -210,7 +274,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       input.memoryStoreId,
       input.memoryId,
     ).first<MemoryRow>();
-    return row === null ? null : toStoredMemory(row);
+    return row === null ? null : this.current(input.workspaceId, row);
   }
 
   async replace(input: ReplaceMemoryRecord): Promise<ReplaceMemoryRecordResult> {
@@ -221,6 +285,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       throw new Error("Replacement Memory Store does not match the target");
     }
     validateMutationPair(input.next, input.version);
+    const [memoryDocument, versionDocument] = await this.encodePair(input.workspaceId, input.next, input.version);
     const actor = actorColumns(input.version.createdBy);
     const history = this.client.prepare(
       `INSERT INTO managed_memory_versions
@@ -234,7 +299,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       input.version.memoryStoreId,
       input.version.id,
       input.version.memoryId,
-      JSON.stringify(input.version),
+      versionDocument,
       1,
       input.version.operation,
       actor.kind,
@@ -254,7 +319,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
               path = ?, updated_at = ?
         WHERE workspace_id = ? AND memory_store_id = ? AND id = ? AND revision = ?`,
     ).bind(
-      JSON.stringify(input.next),
+      memoryDocument,
       input.next.path,
       timestamp(input.next.updatedAt),
       input.workspaceId,
@@ -326,7 +391,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       input.version.memoryStoreId,
       input.version.id,
       input.version.memoryId,
-      JSON.stringify(input.version),
+      await this.encode(input.workspaceId, input.version),
       1,
       input.version.operation,
       actor.kind,
@@ -385,7 +450,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
     const byPath = new Map<string, StoredMemoryListItem>();
     for (const row of rows.results ?? []) {
       if (!row.path.startsWith(input.pathPrefix)) continue;
-      const record = toStoredMemory(row);
+      const record = await this.current(input.workspaceId, row);
       const relative = row.path.slice(input.pathPrefix.length);
       const segments = relative.split("/");
       if (input.depth > 0 && segments.length > input.depth) {
@@ -425,7 +490,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
       input.memoryStoreId,
       input.memoryVersionId,
     ).first<MemoryVersionRow>();
-    return row === null ? null : toStoredMemoryVersion(row);
+    return row === null ? null : this.version(input.workspaceId, row);
   }
 
   async listVersions(
@@ -480,14 +545,19 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
         ORDER BY created_at DESC, id DESC
         LIMIT ?`,
     ).bind(...parameters).all<MemoryVersionRow>();
-    return (rows.results ?? []).map(toStoredMemoryVersion);
+    return Promise.all((rows.results ?? []).map(row => this.version(input.workspaceId, row)));
   }
 
   async redactVersion(
     input: RedactMemoryVersionRecord,
   ): Promise<RedactMemoryVersionRecordResult> {
+    const reference = await this.client.prepare("SELECT document FROM managed_memory_versions WHERE workspace_id=? AND memory_store_id=? AND id=?")
+      .bind(input.workspaceId, input.memoryStoreId, input.memoryVersionId).first<{document:string}>();
     const current = await this.findVersion(input);
     if (current === null) return { type: "not_found" };
+    const head = await this.client.prepare("SELECT document FROM managed_memories WHERE workspace_id=? AND memory_store_id=? AND id=?")
+      .bind(input.workspaceId, input.memoryStoreId, current.version.memoryId).first<{document:string}>();
+    if (head && JSON.parse(head.document).memoryVersionId === input.memoryVersionId) throw new Error("Cannot redact the current Memory version");
     const next: MemoryVersion = {
       ...current.version,
       content: null,
@@ -502,7 +572,7 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
           SET document = ?, revision = revision + 1, redacted_at = ?
         WHERE workspace_id = ? AND memory_store_id = ? AND id = ? AND revision = ?`,
     ).bind(
-      JSON.stringify(next),
+      await this.encode(input.workspaceId, next),
       timestamp(input.redactedAt),
       input.workspaceId,
       input.memoryStoreId,
@@ -520,6 +590,8 @@ export class SqlMemoryDocumentStore implements MemoryDocumentStore {
         `Memory Version redaction affected ${result.meta.changes} rows`,
       );
     }
+    const key = reference && JSON.parse(reference.document).contentObjectKey;
+    if (typeof key === "string") await this.objects().delete(key);
     const record = await this.findVersion(input);
     if (record === null) throw new Error("Memory Version vanished after redaction");
     return { type: "redacted", record };

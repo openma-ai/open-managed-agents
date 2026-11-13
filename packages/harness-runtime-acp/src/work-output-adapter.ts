@@ -12,7 +12,7 @@ export function createWorkOutputAdapter(options: {
  /** Core reads an opaque MCP receipt without binding it. The publication
   * transaction binds it to call.id under the current Work fence. null means ordinary tool output. Do not infer an
   * identity from the tool's arguments or its MCP JSON-RPC request ID. */
- customInvocation?(call: ManagedRuntimeEventWire, result: ManagedRuntimeEventWire): Promise<{receipt:string;name:string;input:Record<string,unknown>} | null>;
+ customInvocation?(call: ManagedRuntimeEventWire, result: ManagedRuntimeEventWire, nativeName: string): Promise<{receipt:string;name:string;input:Record<string,unknown>} | null>;
 }) {
  if(options.customInvocation&&!options.customInvocationToolNames)throw new Error('Core MCP output requires native tool names');
  const nativeNames = new Map<string,string>();
@@ -41,7 +41,7 @@ export function createWorkOutputAdapter(options: {
      if(event.type==="agent.tool_use"&&!event.session_thread_id){pending.set(event.id,event);continue;}
      if(event.type==="agent.tool_result"&&!event.session_thread_id&&typeof event.tool_use_id==="string"){
       const call=pending.get(event.tool_use_id);
-      const invocation=call && options.customInvocationToolNames?.().has(nativeNames.get(String(call.id)) ?? "") && event.is_error!==true ? await options.customInvocation?.(call,event) : null;
+      const invocation=call && options.customInvocationToolNames?.().has(nativeNames.get(String(call.id)) ?? "") && event.is_error!==true ? await options.customInvocation?.(call,event,nativeNames.get(String(call.id))!) : null;
       if(call&&invocation){
        pending.delete(event.tool_use_id);
        bindings.push({receipt:invocation.receipt,nativeCallId:String(call.id)});

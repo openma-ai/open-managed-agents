@@ -17,6 +17,7 @@ export function runningRecord(runtimeId: string, extra: Partial<SessionSandboxSt
 }
 
 export function fakeSessionSandbox(opts: {
+  tracer?: import("../../observability/src/types").Tracer;
   handle?: "fixed" | "changes";
   keepAliveMs?: number;
   keepAliveGone?: boolean;
@@ -114,6 +115,7 @@ export function fakeSessionSandbox(opts: {
     },
   } as unknown as SandboxPorts<object>;
   const sandbox = new PortsSessionSandbox<object>({
+    tracer: opts.tracer,
     compose: async () => ({ ports }),
     executor: () => executor,
     state: {

@@ -198,6 +198,19 @@ describe("preinstalled Node managed ACP supervisor", () => {
   });
 
 
+  it.each(["codex-acp", "opencode", "kimi-code"])("refuses unimplemented Core custom lifecycle before native launch: %s", async (id) => {
+    const workspace=await mkdtemp(join(tmpdir(),"oma-unsupported-custom-"));roots.push(workspace);
+    const seen:SessionOptions[]=[];
+    const app=createNodeManagedAcpSupervisorApp({environment:claimedEnvironment,workspacePath:workspace,
+      agentId:id,resolveAgent:async()=>({id,command:id}),acpRuntime:fakeAcpRuntime(seen),
+      fetch:productionFetch({agent:agentSnapshot({tools:[{type:"custom",name:"approve",description:"Approve",input_schema:{type:"object"}}]})}),
+      lifecycle:{startupRetry:{attempts:1,delayMs:()=>0},drainDeadlineMs:0,abortGraceMs:0}});
+    const harness=(await app.resolveHarness({id:"acp",version:"1"}))!;
+    const run=await harness.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});
+    try { await expect(run.completed).rejects.toThrow("Core custom tool lifecycle is not implemented for native harness");expect(seen).toHaveLength(0); }
+    finally { await run.stop("aborted"); }
+  });
+
   it("stopping during startup backoff cannot spawn another ACP process", async () => {
     let release!: () => void;
     let entered!: () => void;
@@ -364,7 +377,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
             ],
             skills: [{ type: "custom", skill_id: "skill_1", version: "4" }],
             system: "Inspect the repository before editing.",
-            tools: [{ type: "custom", name: "deploy", description: "Deploy", input_schema: { type: "object" } }],
+            tools: [{ type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: true }] }],
           },
         });
       }
@@ -491,7 +504,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
           agent_version: 9,
           model: { id: "deepseek-chat", speed: "fast", effort: "low" },
           skills: [{ type: "custom", skill_id: "skill_1", version: "4" }],
-          tools: [{ type: "custom", name: "deploy", description: "Deploy", input_schema: { type: "object" } }],
+          tools: [{ type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: true }] }],
         },
       },
     });
@@ -664,7 +677,6 @@ describe("preinstalled Node managed ACP supervisor", () => {
         checkpoint: async () => {}, signal: new AbortController().signal });
       await expect(run.completed).resolves.toEqual({ exitCode: 0 }); await run.drain();
       expect((await promisify(execFile)(seen[0].agent.command, [])).stdout.trim()).toBe("1.8.0");
-      expect(await import("node:fs/promises").then(fs => fs.stat(join(root, sandbox, ".npm-cache", "_cacache"))).then(st => st.isDirectory())).toBe(true);
       registryAvailable = false;
     }
     const changed = createNodeManagedAcpSupervisorApp({

@@ -1,3 +1,4 @@
+import { traceSessionSandbox } from "./session-sandbox-tracing";
 // What the core attaches to an open sandbox (design §0.1 steps 3, 6, 7, 9):
 // egress (attach with the current fence; revoke at execution end, where a
 // failure is only a warning) and storage (Memory Stores and outputs attached
@@ -10,7 +11,7 @@ import { errorText, type LiveSessionSandbox, type OpenSandbox } from "./session-
 export async function attachEgress<R>(state: LiveSessionSandbox<R>, open: OpenSandbox<R>, policy: SandboxPlan["egress"], now: number, signal: AbortSignal): Promise<void> {
   const { ports } = await state.compose();
   const scope = state.scope();
-  await ports.egress.attach({ runtime: open.runtime, scope, fence: state.fence(scope), policy, signal });
+  await traceSessionSandbox(state, "egress.attach", async () => ports.egress.attach({ runtime: open.runtime, scope, fence: state.fence(scope), policy, signal }));
   state.markEgress(now);
 }
 
@@ -32,7 +33,10 @@ export async function attachStorage<R>(state: LiveSessionSandbox<R>, open: OpenS
   if (!state.attachesStorage) return;
   const { ports } = await state.compose();
   const scope = state.scope();
-  await ports.storage.attach({ runtime: open.runtime, scope, fence: state.fence(scope), stores: state.stores, outputs: open.plan.outputs, signal });
+  await traceSessionSandbox(state, "storage.attach", async span => {
+    span.setAttributes({ "storage.outputs": state.outputs, "storage.memory_count": state.stores.length });
+    await ports.storage.attach({ runtime: open.runtime, scope, fence: state.fence(scope), stores: state.stores, outputs: open.plan.outputs, signal });
+  });
 }
 
 /** Turn end / before stop: storage.sync (copy: Memory write-back + pull

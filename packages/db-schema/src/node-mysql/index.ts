@@ -116,7 +116,9 @@ export async function migrateNodeMysqlSchema(
   const journal = JSON.parse(
     await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
   ) as { entries: Array<{ idx: number; tag: string }> };
-  const latest = journal.entries.at(-1);
+  // 0035 is native receipt DDL, installed/verified by migrateNodeDatabase.
+  // It deliberately has no SQLite structural snapshot to translate into TEXT keys.
+  const latest = journal.entries.filter(entry => entry.tag !== '0035_custom_invocations').at(-1);
   if (!latest) throw new Error("The main-node migration journal is empty");
   const snapshot = JSON.parse(
     await readFile(

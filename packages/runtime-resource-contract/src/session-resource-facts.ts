@@ -200,6 +200,22 @@ export function sessionResourceEnvironment(
   return env;
 }
 
+/** Replace the managed resource namespace when composing a complete agent
+ * environment. The patch-only helper above is also used during incremental
+ * mounts, where clearing other mounts would be incorrect. Undefined explicitly
+ * removes inherited values at the process transport boundary. */
+export function reconcileSessionResourceEnvironment(
+  facts: Pick<SessionResourceFacts, "memoryStores" | "outputs">,
+  inherited: Readonly<Record<string, string | undefined>>,
+  ambientKeys: readonly string[] = [],
+): Record<string, string | undefined> {
+  const env = { ...inherited };
+  for (const key of [...Object.keys(env), ...ambientKeys]) {
+    if (key === "OMA_OUTPUTS_DIR" || key.startsWith("OMA_MEMORY_")) env[key] = undefined;
+  }
+  return { ...env, ...sessionResourceEnvironment(facts) };
+}
+
 export function sessionMemoryReminder(store: SessionMemoryResourceFact): SessionResourceReminder {
   const lines = [
     `## Memory store: ${store.storeName}`,

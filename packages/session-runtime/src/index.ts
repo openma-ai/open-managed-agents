@@ -163,3 +163,5 @@ export * from "./execution-state";
 export * from "./coordination-policy";
 export * from "./execution-config";
 export * from "./execution-continuation";
+
+export { traceSandboxOperation } from "./session-sandbox-tracing";

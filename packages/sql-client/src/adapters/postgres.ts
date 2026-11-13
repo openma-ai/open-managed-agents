@@ -248,7 +248,7 @@ export class PostgresSqlClient implements SqlClient {
  * 287396, so coercing here is safe and saves every repo from doing
  * `Number(row.created_at)` itself.
  */
-export async function createPostgresSqlClient(dsn: string): Promise<SqlClient> {
+export async function createPostgresSqlClient(dsn: string): Promise<SqlClient & {close():Promise<void>}> {
   type PgFactory = ((dsn: string, opts?: unknown) => PgSql);
   type PgModule = { default: PgFactory };
   const mod = (await import(/* @vite-ignore */ "postgres" as string).catch(
@@ -266,5 +266,5 @@ export async function createPostgresSqlClient(dsn: string): Promise<SqlClient> {
       bigint: { to: 20, from: [20], serialize: (v: number) => v.toString(), parse: (v: string) => Number(v) },
     },
   });
-  return new PostgresSqlClient(sql);
+  return Object.assign(new PostgresSqlClient(sql), {close: async()=>{await sql.end?.();}});
 }

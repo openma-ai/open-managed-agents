@@ -9,6 +9,7 @@ import {
   PLATFORM_ROOT,
   supportsDuplexProcess,
   workspaceRootOf,
+  reconcileSandboxResourceEnvironment,
 } from "@open-managed-agents/sandbox";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
@@ -125,7 +126,7 @@ export class AcpSandboxHarness implements HarnessInterface {
     }
     const stateBinding = preparation.binding;
     this.#contextState = harnessContextFromEvents([...(ctx.acpRecoveryHistory ?? []), ...runtime.history.getEvents()]);
-    const configKey = JSON.stringify({ config, stateAdapter: stateBinding.adapterId });
+    const configKey = JSON.stringify({ config, stateAdapter: stateBinding.adapterId, resourceFacts: ctx.resourceFacts });
     await materializeAcpSandboxAgentState(runtime.sandbox, preparation);
     if (!this.#session && this.#configKey !== null && this.#configKey !== configKey) {
       // The previous execution's child ran another configuration: its ACP
@@ -224,6 +225,9 @@ export class AcpSandboxHarness implements HarnessInterface {
           });
           await materializeHostedInferenceConfigFiles(runtime.sandbox, hosted.files);
           launchEnv = hosted.env;
+        }
+        if (ctx.resourceFacts) {
+          launchEnv = await reconcileSandboxResourceEnvironment(runtime.sandbox, ctx.resourceFacts, launchEnv);
         }
         const mcpServers = projectAcpSandboxMcpServers({
           sessionId: ctx.session_id,

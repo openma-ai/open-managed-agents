@@ -123,3 +123,6 @@ export type {
   EnvironmentPackagesProgress,
   PackageSandbox,
 } from "./environment-packages";
+
+export { reconcileSandboxResourceEnvironment } from "./resource-environment";
+export type { SessionResourceFacts } from "@open-managed-agents/runtime-resource-contract";

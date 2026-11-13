@@ -8,7 +8,7 @@ const modules=await loadWorkRuntimeModules(),activities=new WorkTurnActivities()
 const app=createNodeManagedAcpSupervisorApp({environment:config.environment,workspacePath:config.workspace,
  acpRuntime:activities.wrapRuntime(modules.createAcpRuntime(new NodeSpawner())),
  stateIo:{readFile:path=>rpc("readFile",path),writeFile:(path,value)=>rpc("writeFile",path,value),writeFileBytes:(path,value)=>rpc("writeFileBytes",path,Buffer.from(value).toString("base64")),exec:command=>rpc("exec",command)},
- workClaim:{generation:1,holder:config.claim.holder},resolveAgent:async()=>({id:"claude-acp",command:process.execPath,args:[config.agent],cwd:config.workspace,env:{RESOURCE_AGENT_FIXTURE:JSON.stringify(config.agentSettings)}}),
+ workClaim:{generation:1,holder:config.claim.holder},resolveAgent:async()=>({id:"claude-acp",command:process.execPath,args:[config.agent],cwd:config.workspace,env:{OMA_MEMORY_RETIRED:"/stale/retired",OMA_OUTPUTS_DIR:"/stale/outputs",RESOURCE_AGENT_FIXTURE:JSON.stringify({...config.agentSettings,checkResourceEnvironment:true})}}),
  control:{runtime:modules.control,pollIntervalMs:10},finalization:{drainTurn:c=>activities.drain(c)},
  onTurnAdmitted:id=>activities.admit(id),onTurnPublished:id=>{activities.published(id);process.send?.({type:"published",id,pid:process.pid});},
 });

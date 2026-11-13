@@ -165,8 +165,9 @@ describe("CloudflareSandbox duplex process", () => {
       cwd: "/workspace",
       env: { MODEL: "test", UNSET: undefined },
     });
+    console.log("cf.duplex.unset.command", (spawned[0] as { command: string }).command);
     expect(spawned).toEqual([{
-      command: "exec 'agent' '--acp' 'it'\\''s'",
+      command: "exec 'env' '-u' 'UNSET' '--' 'agent' '--acp' 'it'\\''s'",
       cwd: "/workspace",
       env: { OMA_OUTPUTS_DIR: "/mnt/session/outputs", MODEL: "test" },
     }]);

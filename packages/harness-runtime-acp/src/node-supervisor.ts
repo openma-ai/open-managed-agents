@@ -1,5 +1,7 @@
+import {nodeWorkOutputJournal} from './node-work-output-journal.js';
+import {preparePiCoreMcp} from './core-custom-mcp-plan.js';
 import { log as logInfo } from "@open-managed-agents/shared/log";
-import { piCustomToolFiles, writePiCustomAnswers } from "./pi-custom-tools.js";
+import { writePiCustomAnswers } from "./pi-custom-tools.js";
 import { createWorkInputsHttpClient } from "./work-inputs-http.js";
 import { createWorkInputReader } from "./work-input-adapter.js";
 import { InferenceProtocolUnsupportedError } from "@open-managed-agents/acp-runtime/inference-config";
@@ -25,7 +27,7 @@ import {
   SESSION_WORKSPACE_ROOT,
   sessionMemoryResourceFact,
   sessionResourceFacts,
-  sessionResourceEnvironment,
+  reconcileSessionResourceEnvironment,
   sessionResourceReminders,
   sessionSkillResourceFact,
   sessionSkillVersionRoot,
@@ -253,7 +255,8 @@ export function createNodeManagedAcpSupervisorApp(
     let platformInstructions = "";
     let currentInputIds = new Set<string>();
     let prepareNativePrompt: (() => Promise<void>) | undefined;
-    let piCustomPlan: ReturnType<typeof piCustomToolFiles> = null;
+    let piCustomPlan: Awaited<ReturnType<typeof preparePiCoreMcp>> = null;
+    let coreMcpBaseUrl = "";
     const startupRetry = options.lifecycle?.startupRetry ?? ACP_STARTUP_RETRY;
     const sleep = options.supervisorScheduler?.sleep ?? abortableSleep;
     // A failed spawn/initialize leaves no ACP session and no agent output, so
@@ -310,6 +313,16 @@ export function createNodeManagedAcpSupervisorApp(
             `No installed ACP agent is configured for ${harness.id}@${harness.version}`,
           );
         }
+        const nativeAgentId = resolved.id ?? options.agentId ?? harness.id;
+        if (session.agent.tools.some(tool => tool.type === "custom") && nativeAgentId !== "pi-acp") {
+          // This is an OMA integration limit, not an ACP/MCP protocol limit.
+          // Never silently drop custom definitions before a sampling/recovery
+          // adapter for the selected native harness has been implemented.
+          throw new NodeManagedAcpStartupConfigurationFailure(
+            "core_custom_lifecycle_unavailable",
+            new Error(`Core custom tool lifecycle is not implemented for native harness ${nativeAgentId}`),
+          );
+        }
         // Model-visible resource guidance comes from what this run actually
         // materialized (Skill manifests), what the Work materializer mounted
         // (Session memory_store records' mount_path) and the outputs
@@ -338,9 +351,8 @@ export function createNodeManagedAcpSupervisorApp(
           id: resolved.id ?? options.agentId ?? harness.id,
           cwd: resolved.cwd ?? resourceFacts.workspaceRoot,
           env: {
-            ...(resolved.env ?? {}),
+            ...reconcileSessionResourceEnvironment(resourceFacts, resolved.env ?? {}, Object.keys(process.env)),
             ...scrubbedEnvironment,
-            ...sessionResourceEnvironment(resourceFacts),
             ...(active.outputPath === null
               ? { OUTPUT_PATH: undefined }
               : { OUTPUT_PATH: active.outputPath }),
@@ -386,7 +398,7 @@ export function createNodeManagedAcpSupervisorApp(
           };
         }
         if (binding.agent.id === "pi-acp") {
-          const custom = piCustomToolFiles(binding.nativePath, session.agent.tools);
+          const custom = await preparePiCoreMcp(stateIo,binding.nativePath, session.agent.tools);
           piCustomPlan = custom;
           if (custom) {
             await stateIo.writeFile(custom.extensionPath, custom.source);
@@ -396,17 +408,17 @@ export function createNodeManagedAcpSupervisorApp(
         logInfo({op:"acp.tools.configured",session_id:session.id,work_id:environment.ANTHROPIC_WORK_ID,
           claim_generation:options.workClaim?.generation,harness_id:binding.agent.id,
           custom_tool_count:session.agent.tools.filter(tool=>tool.type==="custom").length,
-          mcp_server_count:session.agent.mcp_servers.length,native_custom_registration:piCustomPlan!==null},
+          mcp_server_count:session.agent.mcp_servers.length,core_mcp_registration:piCustomPlan!==null},
           "Native ACP tool configuration prepared");
         return {
           agent,
           clientCallbacks: { requestPermission: request => turns.requestPermission(request) },
-          mcpServers: projectAcpSandboxMcpServers({
+          mcpServers: [...projectAcpSandboxMcpServers({
             sessionId: session.id,
             gatewayBaseUrl: active.channels?.mcpProxy.gatewayBaseUrl,
             sessionsToken: active.channels?.mcpProxy.sessionsToken,
             servers: session.agent.mcp_servers,
-          }),
+          }), ...(piCustomPlan ? [piCustomPlan.server] : [])],
           sessionRequestMeta: {
             openma: {
               session_id: session.id,
@@ -455,6 +467,7 @@ export function createNodeManagedAcpSupervisorApp(
     }
     const finalization = options.finalization;
     turns = createWorkTurnCoordinator({
+      outputJournal: nodeWorkOutputJournal(workspacePath),
       runtime,
       fallbackHarnessId: options.agentId ?? harness.id,
       fetch: options.fetch,
@@ -472,6 +485,12 @@ export function createNodeManagedAcpSupervisorApp(
           await writePiCustomAnswers(stateIo, piCustomPlan.answersPath, await active.recoveryHistory.list(activeSession.id));
         }
         await prepareNativePrompt?.();
+      },
+      coreMcp: {
+        names:()=>new Set(piCustomPlan?.names.keys()??[]),
+        prepare:async(call,result,name)=>piCustomPlan?.prepare(call,result,name)??null,
+        admit:async turnId=>{await piCustomPlan?.admit(coreMcpBaseUrl,activeSession.id,turnId,environment.OPENMA_SANDBOX_TOKEN??'');},
+        clear:async()=>{await piCustomPlan?.clear();},
       },
       onTurnAdmitted: options.onTurnAdmitted,
       onTurnPublished: options.onTurnPublished,
@@ -530,6 +549,7 @@ export function createNodeManagedAcpSupervisorApp(
           identity!.digest = release.digest;
           prepared = { id: harness.id, command: artifact.command, args: artifact.args, env: artifact.env };
         }
+        coreMcpBaseUrl = proxy.gatewayBaseUrl;
         const recoveryReader = createWorkInputReader(createWorkInputsHttpClient({
           apiBaseUrl: proxy.gatewayBaseUrl,
           sessionId: input.scope.sessionId,
@@ -748,9 +768,6 @@ export function decodeManagedAcpSessionSnapshot(
   }
   if (!Array.isArray(agent.mcp_servers)) throw invalidSession("agent.mcp_servers");
   const mcpServers = agent.mcp_servers.map((candidate, index) => {
-    if (isRecord(candidate) && candidate.type === "sse") {
-      throw new Error("MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio.");
-    }
     if (
       isRecord(candidate)
       && candidate.type === "stdio"

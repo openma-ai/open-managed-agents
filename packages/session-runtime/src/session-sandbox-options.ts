@@ -1,3 +1,4 @@
+import type { SessionSandboxTracer } from "./session-sandbox-tracing";
 // What a host composes the Session sandbox core from
 // (research/sandbox-sdk-v2-design.md §0.0 rule 15, §0.1): the Sandbox SDK v2
 // Ports, its view of a runtime, the handle record, the scope and plan, and
@@ -54,6 +55,8 @@ export interface SessionEnvironmentCache<R> {
 }
 
 export interface PortsSessionSandboxOptions<R> {
+  /** Host tracer; omitted in CF means no-op, with no telemetry SDK in core. */
+  tracer?: SessionSandboxTracer;
   compose(): Promise<{ ports: SandboxPorts<R> }>;
   /** The host's view of a runtime (exec output in the `exit=N\n...` shape). */
   executor(runtime: R): SessionSandboxExecutor;

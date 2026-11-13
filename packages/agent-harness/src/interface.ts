@@ -339,6 +339,9 @@ export interface HarnessContext {
    */
   platformReminders?: Array<{ source: string; text: string }>;
 
+  /** Actual host-resolved resources, shared by prompt and process environment. */
+  resourceFacts?: import("@open-managed-agents/sandbox").SessionResourceFacts;
+
   /**
    * Resolved skill mounts for assembly-layer exposure (Pi / default harness).
    * When set, SKILL.md bodies are not inlined into `systemPrompt` by default.

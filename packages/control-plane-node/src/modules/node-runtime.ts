@@ -1,3 +1,4 @@
+import { describeWorkDispatchError } from "../lib/work-dispatch-error.js";
 import { createNodeWorkFinalizationHost } from "../lib/work-finalization-host/index.js";
 import { createNodeWorkArtifactPublisher } from "../openai-artifact-publication.js";
 import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
@@ -118,11 +119,16 @@ export async function createNodeRuntime(
   });
 
   const managedEnvironmentWorkWorker = createNodeEnvironmentWorkWorker({
+    tracer,
     sql, config, work: managedEnvironmentWorkStore, sandboxes: sessionSandboxes, capabilities: managedAcpCapabilities,
     application: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.environmentWork),
     recovery: managedSessionsComposition,
     observe: event => logger.info({ op: "main-node.environment_work.operation", ...event }, "Work operation"),
-    onError: () => logger.error({ op: "main-node.environment_work.dispatch_failed" }, "Work dispatch failed; durable poll will retry"),
+    onError: error => logger.error({ op: "main-node.environment_work.dispatch_failed",
+      error: describeWorkDispatchError(error, Object.entries(process.env)
+        .filter(([key]) => /secret|token|password|key|credential/i.test(key))
+        .flatMap(([, value]) => value === undefined ? [] : [value])),
+    }, "Work dispatch failed; durable poll will retry"),
   });
 
   // ─── Services bundle ────────────────────────────────────────────────────

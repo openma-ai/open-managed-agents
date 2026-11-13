@@ -1,3 +1,4 @@
+import { traceSessionSandbox } from "./session-sandbox-tracing";
 // Opening the Session's sandbox (design §0.1 steps 2-3, §0.0b A.4), lazily on
 // first use or prepare(), single-flight:
 //   1. attach the recorded handle (reuse; a paused one wakes); its
@@ -42,12 +43,19 @@ export class SandboxRestoreError extends Error {
 
 /** The open sandbox; opens it (attach, else resume, else acquire) when there is none. */
 export async function openSandbox<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
-  await state.quiesce();
-  // An execution takes the sandbox back from the idle window (design §0.0b A.10).
-  if (state.execution() !== undefined && state.idleSince !== null) await disarmIdle(state);
-  await state.warming?.catch(() => undefined);
-  if (state.current !== null) return state.current;
-  return state.opening ??= start(state).finally(() => { state.opening = null; });
+  return traceSessionSandbox(state, "open", async span => {
+    const opened = await (async () => {
+      await state.quiesce();
+      // An execution takes the sandbox back from the idle window (design §0.0b A.10).
+      if (state.execution() !== undefined && state.idleSince !== null) await disarmIdle(state);
+      await state.warming?.catch(() => undefined);
+      if (state.current !== null) { span.setAttribute("sandbox.decision", "cached"); return state.current; }
+      span.setAttribute("sandbox.decision", state.opening === null ? "start" : "join");
+      return state.opening ??= start(state).finally(() => { state.opening = null; });
+    })();
+    span.setAttributes({ "sandbox.runtime_id": opened.handle.runtimeId, "sandbox.provider": opened.handle.provider, "sandbox.generation": opened.generation });
+    return opened;
+  });
 }
 
 /** Undo an open: revoke egress, the lose transition when the record names this
@@ -103,156 +111,163 @@ function conflict(what: string): SessionSandboxStateConflictError {
 }
 
 async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
-  const { ports } = await state.compose();
-  const scope = state.scope();
-  const signal = new AbortController().signal;
-  // The record every write of this open is a compare-and-set against.
-  const execution = state.execution();
-  const assertCurrent = async () => {
-    if (await state.isCurrent(execution)) return;
-    state.abandon();
-    throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was opened");
-  };
-  let record = await state.load();
-  // The Session ended: nothing opens, before any provider call.
-  if (record.phase === "released") throw new SessionSandboxTransitionError("released", "acquire");
-  state.stores = mergeStores(record.stores, state.stores);
-  state.outputs ||= record.outputs;
-  const initialStores = state.stores;
-  const recorded = recordedHandle(record);
-  // Held by this open; released if a later step fails.
-  let opened: Acquired<R> | "gone" = "gone";
-  let generation = "";
-  if (recorded !== undefined) {
-    opened = await retryRecovery(state, () => ports.sandbox.attach({ scope, handle: recorded, signal }));
-    const marker = opened === "gone" ? null : await readMarker(state.options.executor(opened.runtime));
-    if (marker === null) {
-      opened = "gone";
-      // A "fixed" handle is reused by the next acquire; a provider-assigned one would be orphaned.
-      if (ports.sandbox.handle === "changes") await ports.sandbox.release({ scope, handle: recorded }).catch(() => undefined);
-    } else {
-      generation = marker;
+  return traceSessionSandbox(state, "start", async span => {
+    const { ports } = await state.compose();
+    const scope = state.scope();
+    const signal = new AbortController().signal;
+    // The record every write of this open is a compare-and-set against.
+    const execution = state.execution();
+    const assertCurrent = async () => {
+      if (await state.isCurrent(execution)) return;
+      state.abandon();
+      throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was opened");
+    };
+    let record = await traceSessionSandbox(state, "lookup", async () => state.load());
+    // The Session ended: nothing opens, before any provider call.
+    if (record.phase === "released") throw new SessionSandboxTransitionError("released", "acquire");
+    state.stores = mergeStores(record.stores, state.stores);
+    state.outputs ||= record.outputs;
+    const initialStores = state.stores;
+    const recorded = recordedHandle(record);
+    // Held by this open; released if a later step fails.
+    let opened: Acquired<R> | "gone" = "gone";
+    let generation = "";
+    if (recorded !== undefined) {
+      opened = await retryRecovery(state, () => traceSessionSandbox(state, "attach", async span => {
+        span.setAttributes({"sandbox.provider": recorded.provider, "sandbox.runtime_id": recorded.runtimeId});
+        const result = await ports.sandbox.attach({ scope, handle: recorded, signal });
+        span.setAttribute("sandbox.alive", result !== "gone"); return result;
+      }));
+      const marker = opened === "gone" ? null : await traceSessionSandbox(state, "liveness", async () => readMarker(state.options.executor((opened as Acquired<R>).runtime)));
+      if (marker === null) {
+        opened = "gone";
+        // A "fixed" handle is reused by the next acquire; a provider-assigned one would be orphaned.
+        if (ports.sandbox.handle === "changes") await ports.sandbox.release({ scope, handle: recorded }).catch(() => undefined);
+      } else {
+        generation = marker;
+      }
     }
-  }
-  let reused = opened !== "gone";
-  if (!reused) generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-  // An attached sandbox may have kept running: keep the recorded start; one
-  // the idle pause stopped wakes now. A resumed or new one starts a run now.
-  let runStartedAt = record.phase === "running" ? record.runStartedAt : state.now();
-  // The transition this open still has to publish.
-  let publish: (handle: SandboxHandle, at: number) => SandboxAction = (handle, at) => ({ type: "attach", handle, at });
-  let plan: SandboxPlan;
-  try {
-    plan = await state.options.plan({ scope, generation, stores: state.stores });
-    // The plan resolved these paths for this physical generation. Retired
-    // bindings must not override its prefixes or access modes.
-    state.stores = mergeStores(state.stores, plan.stores);
-    if (opened === "gone") {
-      const started = await startNew(state, record, plan, signal);
-      opened = started.opened;
-      publish = started.publish;
-      state.restored = started.restored;
-      runStartedAt = state.now();
-      // A provider-assigned handle is recorded before the sandbox is used,
-      // and only while this owner holds the fence: otherwise nobody would
-      // know this sandbox, so it is released (design §0.1 step 2).
-      if (ports.sandbox.handle === "changes") {
-        if (!await state.isCurrent(execution)) {
-          await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
-          opened = "gone";
-          state.abandon();
-          throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was opened");
+    let reused = opened !== "gone";
+    span.setAttribute("sandbox.decision", reused ? "reuse" : "new");
+    if (!reused) generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+    // An attached sandbox may have kept running: keep the recorded start; one
+    // the idle pause stopped wakes now. A resumed or new one starts a run now.
+    let runStartedAt = record.phase === "running" ? record.runStartedAt : state.now();
+    // The transition this open still has to publish.
+    let publish: (handle: SandboxHandle, at: number) => SandboxAction = (handle, at) => ({ type: "attach", handle, at });
+    let plan: SandboxPlan;
+    try {
+      plan = await traceSessionSandbox(state, "plan", async () => state.options.plan({ scope, generation, stores: state.stores }));
+      // The plan resolved these paths for this physical generation. Retired
+      // bindings must not override its prefixes or access modes.
+      state.stores = mergeStores(state.stores, plan.stores);
+      if (opened === "gone") {
+        const started = await traceSessionSandbox(state, "startNew", async () => startNew(state, record, plan, signal));
+        opened = started.opened;
+        publish = started.publish;
+        state.restored = started.restored;
+        runStartedAt = state.now();
+        // A provider-assigned handle is recorded before the sandbox is used,
+        // and only while this owner holds the fence: otherwise nobody would
+        // know this sandbox, so it is released (design §0.1 step 2).
+        if (ports.sandbox.handle === "changes") {
+          if (!await state.isCurrent(execution)) {
+            await ports.sandbox.release({ scope, handle: opened.handle }).catch(() => undefined);
+            opened = "gone";
+            state.abandon();
+            throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was opened");
+          }
+          const next = await state.apply(record, publish(opened.handle, runStartedAt));
+          if (next === null) {
+            const lost = opened;
+            opened = "gone";
+            const cleanup = await state.releaseOwn(lost.handle);
+            // Only the initial acquire can converge on a completed creation
+            // warm-up. Attach once, never retry allocation or overwrite the
+            // winner; all later transitions retain their ordinary CAS failure.
+            const winner = await state.load();
+            if (record.phase !== "none" || winner.phase !== "running" || cleanup === undefined
+              || cleanup.before.version !== 1 || winner.version !== cleanup.after.version
+              || winner.latestSnapshot.status !== "none" || !await state.isCurrent(execution)) {
+              throw conflict("its sandbox was opened");
+            }
+            const attached = await traceSessionSandbox(state, "attachWinner", async () => ports.sandbox.attach({ scope, handle: winner.handle, signal }));
+            const marker = attached === "gone" ? null : await traceSessionSandbox(state, "liveness", async () => readMarker(state.options.executor(attached.runtime)));
+            if (attached === "gone" || marker === null) throw conflict("its sandbox was opened");
+            // The winner can change during attach. Do not expose its runtime or
+            // perform storage/egress side effects until its identity is stable.
+            const confirmed = await state.load();
+            if (confirmed.version !== winner.version || confirmed.phase !== "running"
+              || !sameHandle(confirmed.handle, winner.handle) || !await state.isCurrent(execution)) {
+              throw conflict("its sandbox was opened");
+            }
+            opened = attached;
+            generation = marker;
+            runStartedAt = winner.runStartedAt;
+            reused = true;
+            record = winner;
+            // Discard the losing generation's materialized bindings. The
+            // winner's persisted mounts and marker define the attach plan.
+            state.stores = mergeStores(initialStores, winner.stores);
+            state.outputs ||= winner.outputs;
+            plan = await traceSessionSandbox(state, "plan", async () => state.options.plan({ scope, generation, stores: state.stores }));
+            await assertCurrent();
+            state.stores = mergeStores(winner.stores, plan.stores);
+          } else record = next;
+          publish = (handle, at) => ({ type: "attach", handle, at });
         }
-        const next = await state.apply(record, publish(opened.handle, runStartedAt));
-        if (next === null) {
-          const lost = opened;
-          opened = "gone";
-          const cleanup = await state.releaseOwn(lost.handle);
-          // Only the initial acquire can converge on a completed creation
-          // warm-up. Attach once, never retry allocation or overwrite the
-          // winner; all later transitions retain their ordinary CAS failure.
-          const winner = await state.load();
-          if (record.phase !== "none" || winner.phase !== "running" || cleanup === undefined
-            || cleanup.before.version !== 1 || winner.version !== cleanup.after.version
-            || winner.latestSnapshot.status !== "none" || !await state.isCurrent(execution)) {
-            throw conflict("its sandbox was opened");
-          }
-          const attached = await ports.sandbox.attach({ scope, handle: winner.handle, signal });
-          const marker = attached === "gone" ? null : await readMarker(state.options.executor(attached.runtime));
-          if (attached === "gone" || marker === null) throw conflict("its sandbox was opened");
-          // The winner can change during attach. Do not expose its runtime or
-          // perform storage/egress side effects until its identity is stable.
-          const confirmed = await state.load();
-          if (confirmed.version !== winner.version || confirmed.phase !== "running"
-            || !sameHandle(confirmed.handle, winner.handle) || !await state.isCurrent(execution)) {
-            throw conflict("its sandbox was opened");
-          }
-          opened = attached;
-          generation = marker;
-          runStartedAt = winner.runStartedAt;
-          reused = true;
-          record = winner;
-          // Discard the losing generation's materialized bindings. The
-          // winner's persisted mounts and marker define the attach plan.
-          state.stores = mergeStores(initialStores, winner.stores);
-          state.outputs ||= winner.outputs;
-          plan = await state.options.plan({ scope, generation, stores: state.stores });
-          await assertCurrent();
-          state.stores = mergeStores(winner.stores, plan.stores);
-        } else record = next;
-        publish = (handle, at) => ({ type: "attach", handle, at });
       }
-    }
-  } catch (error) {
-    if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
-    if (opened !== "gone") await rollbackOpen(state, opened, record, execution, !reused);
-    throw error;
-  }
-  const open: OpenSandbox<R> = { ...opened, executor: state.options.executor(opened.runtime), generation, plan, runStartedAt };
-  try {
-    await assertCurrent();
-    if (Object.keys(state.env).length > 0) await open.executor.setEnvVars(state.env);
-    await assertCurrent();
-    await attachEgress(state, open, plan.egress, state.now(), signal);
-    await assertCurrent();
-    await attachStorage(state, open, signal);
-    await assertCurrent();
-    state.storageSyncedAt = state.now();
-    state.keptAliveAt = state.now();
-    // The tool-call-gap snapshot interval counts from the first open.
-    if (state.snapshotAt === 0) state.snapshotAt = state.now();
-    if (!reused) await writeMarker(open.executor, generation);
-    await assertCurrent();
-    let published = await state.apply(record, publish(open.handle, runStartedAt));
-    if (published === null) {
-      const fresh = await state.load();
-      // A losing creation warmer may retire its OWN different handle while
-      // our initial open installs storage. Rebase only a proven metadata-only
-      // advance, never a same-handle lifecycle writer or an arbitrary version.
-      const { version: oldVersion, retiredHandles: oldRetired, ...oldLifecycle } = record;
-      const { version: freshVersion, retiredHandles: freshRetired, ...freshLifecycle } = fresh;
-      if (record.lifecycleRevision !== undefined && fresh.lifecycleRevision === record.lifecycleRevision
-        && freshVersion > oldVersion && JSON.stringify(oldRetired) !== JSON.stringify(freshRetired)
-        && JSON.stringify(oldLifecycle) === JSON.stringify(freshLifecycle) && await state.isCurrent(execution)) {
-        published = await state.apply(fresh, publish(open.handle, runStartedAt));
-      }
-    }
-    if (published === null) throw conflict("its sandbox was opened");
-    await assertCurrent();
-  } catch (error) {
-    if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
-    if (!(error instanceof SessionSandboxStateConflictError)) {
-      await rollbackOpen(state, open, record, execution, !reused);
+    } catch (error) {
+      if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
+      if (opened !== "gone") await rollbackOpen(state, opened, record, execution, !reused);
       throw error;
     }
-    // Lost the record: drop this open; a sandbox it started is cleaned up.
-    state.current = null;
-    await ports.egress.revoke({ runtime: open.runtime, scope, fence: state.fence(scope), reason: "failed" }).catch(() => undefined);
-    if (!reused) await state.releaseOwn(open.handle);
-    throw error;
-  }
-  state.current = open;
-  return open;
+    const open: OpenSandbox<R> = { ...opened, executor: state.options.executor(opened.runtime), generation, plan, runStartedAt };
+    try {
+      await assertCurrent();
+      if (Object.keys(state.env).length > 0) await open.executor.setEnvVars(state.env);
+      await assertCurrent();
+      await attachEgress(state, open, plan.egress, state.now(), signal);
+      await assertCurrent();
+      await attachStorage(state, open, signal);
+      await assertCurrent();
+      state.storageSyncedAt = state.now();
+      state.keptAliveAt = state.now();
+      // The tool-call-gap snapshot interval counts from the first open.
+      if (state.snapshotAt === 0) state.snapshotAt = state.now();
+      if (!reused) await writeMarker(open.executor, generation);
+      await assertCurrent();
+      let published = await state.apply(record, publish(open.handle, runStartedAt));
+      if (published === null) {
+        const fresh = await state.load();
+        // A losing creation warmer may retire its OWN different handle while
+        // our initial open installs storage. Rebase only a proven metadata-only
+        // advance, never a same-handle lifecycle writer or an arbitrary version.
+        const { version: oldVersion, retiredHandles: oldRetired, ...oldLifecycle } = record;
+        const { version: freshVersion, retiredHandles: freshRetired, ...freshLifecycle } = fresh;
+        if (record.lifecycleRevision !== undefined && fresh.lifecycleRevision === record.lifecycleRevision
+          && freshVersion > oldVersion && JSON.stringify(oldRetired) !== JSON.stringify(freshRetired)
+          && JSON.stringify(oldLifecycle) === JSON.stringify(freshLifecycle) && await state.isCurrent(execution)) {
+          published = await state.apply(fresh, publish(open.handle, runStartedAt));
+        }
+      }
+      if (published === null) throw conflict("its sandbox was opened");
+      await assertCurrent();
+    } catch (error) {
+      if (!await state.isCurrent(execution)) { state.abandon(); throw error; }
+      if (!(error instanceof SessionSandboxStateConflictError)) {
+        await rollbackOpen(state, open, record, execution, !reused);
+        throw error;
+      }
+      // Lost the record: drop this open; a sandbox it started is cleaned up.
+      state.current = null;
+      await ports.egress.revoke({ runtime: open.runtime, scope, fence: state.fence(scope), reason: "failed" }).catch(() => undefined);
+      if (!reused) await state.releaseOwn(open.handle);
+      throw error;
+    }
+    state.current = open;
+    return open;
+  });
 }
 
 /** The handle is gone (design §0.0b A.4): the pause point, then the latest
@@ -268,7 +283,11 @@ async function startNew<R>(
   const scope = state.scope();
   const tryResume = async (ref: ResumeRef): Promise<Acquired<R> | "gone"> => {
     const started = state.now();
-    const resume = () => ports.sandbox.resume({ scope, ref, plan, signal });
+    const resume = () => traceSessionSandbox(state, ref.kind === "snapshot" ? "restoreFromSnapshot" : "resume", async span => {
+      span.setAttribute("sandbox.provider", ref.provider);
+      const result = await ports.sandbox.resume({ scope, ref, plan, signal });
+      span.setAttribute("sandbox.alive", result !== "gone"); return result;
+    });
     const opened = ref.kind === "self" ? await retryRecovery(state, resume) : await resume();
     if (opened !== "gone") state.options.warn(`workspace_restored ref=${ref.ref} kind=${ref.kind} elapsed_ms=${state.now() - started}`);
     else state.options.warn(`workspace_restore_failed ref=${ref.ref} kind=${ref.kind} elapsed_ms=${state.now() - started} error=gone`);
@@ -352,7 +371,9 @@ async function firstCreate<R>(state: LiveSessionSandbox<R>, record: SessionSandb
   if (record.phase !== "none") await state.options.warn("sandbox_recreated: no Session snapshot was ever published; changes since its creation were lost; recreating from the initial environment and rerunning Session setup and mounts");
   const { ports } = await state.compose();
   const input = { scope: state.scope(), plan, signal };
-  const acquired = await (state.options.environmentCache?.acquire(input) ?? ports.sandbox.acquire(input));
+  const acquired = await traceSessionSandbox(state, "acquire", async () => state.options.environmentCache === undefined
+    ? ports.sandbox.acquire(input)
+    : traceSessionSandbox(state, "environment.prepare", async () => state.options.environmentCache!.acquire(input)));
   if (acquired === "gone") throw new Error(`Sandbox source ${JSON.stringify(plan.from)} was not found`);
   return acquired;
 }

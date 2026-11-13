@@ -26,7 +26,7 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
   private async revision({claim:c}:WorkTurnRequest):Promise<number|null>{
     const row=await this.sql.prepare(`SELECT revision FROM managed_sessions s WHERE workspace_id=? AND id=? AND environment_id=? AND archived_at IS NULL
       AND EXISTS(SELECT 1 FROM managed_environment_work w WHERE w.workspace_id=s.workspace_id AND w.session_id=s.id AND w.environment_id=? AND w.id=?
-        AND w.state IN ('starting','active','stopping') AND w.claim_generation=? AND w.claim_worker_id=? AND w.claim_at IS NOT NULL
+        AND w.state IN ('starting','active','stopping') AND w.claim_generation=? AND ${this.dialect==='mysql'?'BINARY w.claim_worker_id=BINARY ?':'w.claim_worker_id=?'} AND w.claim_at IS NOT NULL
         AND w.claim_at+w.heartbeat_ttl_seconds*1000>${this.clock})`)
       .bind(c.workspaceId,c.sessionId,c.environmentId,c.environmentId,c.workId,c.generation,c.holder).first<{revision:number}>();
     return row===null?null:Number(row.revision);

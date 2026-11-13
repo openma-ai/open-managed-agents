@@ -71,7 +71,7 @@ import type { VaultStore } from "@open-managed-agents/vault-store";
 import { SqlVaultStore } from "@open-managed-agents/vault-store-sql";
 import type { MemoryStoreStore } from "@open-managed-agents/memory-store-store";
 import { SqlMemoryStoreStore } from "@open-managed-agents/memory-store-store-sql";
-import type { MemoryDocumentStore } from "@open-managed-agents/memory-document-store";
+import type { MemoryDocumentStore, MemoryContentObjects } from "@open-managed-agents/memory-document-store";
 import { SqlMemoryDocumentStore } from "@open-managed-agents/memory-document-store-sql";
 import type { SkillStore } from "@open-managed-agents/skill-store";
 import { SqlSkillStore } from "@open-managed-agents/skill-store-sql";
@@ -93,6 +93,7 @@ export interface CreateSqlPlatformOptions {
   credentialVaults?: WorkspaceValue<CredentialVaultSourcePort>;
   credentialValidation?: WorkspaceValue<CredentialValidationProbePort>;
   fileContent?: WorkspaceValue<FileContentStore>;
+  memoryContent?: WorkspaceValue<MemoryContentObjects>;
   sessionSecrets?: SessionResourceSecretSealer;
   stores?: WorkspaceValue<Partial<SqlPlatformStores>>;
   clock?: ClockPort;
@@ -125,6 +126,7 @@ export interface SqlPlatformStores {
 export interface SqlWorkspaceScope extends WorkspaceScope {
   sql?: SqlClient;
   fileContent?: FileContentStore;
+  memoryContent?: MemoryContentObjects;
   credentialCipher?: CredentialDocumentCipher;
   deploymentCipher?: DeploymentResourceSecretCipher;
   environmentWorkCipher?: EnvironmentWorkSecretCipher;
@@ -184,7 +186,8 @@ export function createSqlPlatform(options: CreateSqlPlatformOptions = {}): SqlPl
         environmentWork: overrides.environmentWork ?? new SqlEnvironmentWorkStore(sql, environmentWorkCipher),
         files: overrides.files ?? new SqlFileStore(sql),
         memoryStores: overrides.memoryStores ?? new SqlMemoryStoreStore(sql),
-        memories: overrides.memories ?? new SqlMemoryDocumentStore(sql),
+        memories: overrides.memories ?? new SqlMemoryDocumentStore(sql, scope.memoryContent
+          ?? (options.memoryContent === undefined ? undefined : resolveWorkspaceValue(options.memoryContent, scope))),
         skills: overrides.skills ?? new SqlSkillStore(sql),
         tunnels: overrides.tunnels ?? new SqlTunnelStore(sql),
         userProfiles: overrides.userProfiles ?? new SqlUserProfileStore(sql),

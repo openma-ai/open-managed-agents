@@ -245,6 +245,7 @@ export class SqlManagedSessionsComposition {
     });
     this.sessionSource = new SqlSessionSource(client);
     this.sessionEvents = new SqlSessionEventPersistence(client, {
+      dialect: dependencies.workInputs?.dialect ?? "sqlite",
       executionOutbox,
     });
     this.sessionResources = new SqlSessionResourceStore(client, sealer);

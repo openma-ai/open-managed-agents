@@ -262,7 +262,7 @@ export class SqlSessionRuntimeProjectionPersistence
       return { type: "execution_fence_lost" };
     }
     const guarded = finalization ?? rootGuard ?? startup?.root ?? undefined;
-    if (input.customInvocations?.length && (!input.workRoot || !guarded || !environmentWorkFence || guarded.dialect !== "sqlite")) {
+    if (input.customInvocations?.length && (!input.workRoot || !guarded || !environmentWorkFence)) {
       return {type:"execution_fence_lost"};
     }
     const now = this.#now().getTime();
@@ -310,7 +310,7 @@ export class SqlSessionRuntimeProjectionPersistence
     if (guarded !== undefined && environmentWorkFence !== undefined) {
       const rawCas = guarded.dialect === "mysql" ? "BINARY document = BINARY ?" : "document = ?";
       fenceSql += ` AND EXISTS (SELECT 1 FROM managed_environment_work
-        WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_worker_id = ?)
+        WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND ${this.#dialect === 'mysql' ? 'BINARY claim_worker_id = BINARY ?' : 'claim_worker_id = ?'})
         AND EXISTS (SELECT 1 FROM ${guarded.bootstrapSequence === undefined ? "managed_session_events" : "managed_session_initial_events"}
           WHERE workspace_id = ? AND session_id = ? AND ${guarded.bootstrapSequence === undefined ? "id" : "sequence"} = ? AND ${rawCas})
         AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND environment_id = ? AND archived_at IS NULL)`;
@@ -343,7 +343,26 @@ export class SqlSessionRuntimeProjectionPersistence
     if (existingEvents.some((row) => row !== null)) {
       // Startup replay is confirmed only by settleStartupFailure after checking
       // the stopped Work. Ordinary projection replay cannot prove that stop.
-      if (startup !== undefined || input.workRoot !== undefined) return { type: "execution_fence_lost" };
+      if (startup !== undefined) return { type: "execution_fence_lost" };
+      // Recovery ACKs only exact already-committed bytes under the same root,
+      // holder and generation. No receipt mutation or model/tool redispatch.
+      if (input.workRoot !== undefined) {
+        const current = await this.client.prepare(`SELECT 1 FROM managed_sessions
+          WHERE workspace_id=? AND id=? AND revision=? ${fenceSql}`)
+          .bind(input.workspaceId,input.sessionId,input.expectedRevision,...fenceBindings).first();
+        if (!current) return {type:"execution_fence_lost"};
+        const proposed = input.customInvocations ?? [];
+        if (new Set(proposed.map(b=>b.nativeCallId)).size!==proposed.length ||
+            new Set(proposed.map(b=>b.receipt)).size!==proposed.length) return {type:"execution_fence_lost"};
+        for (let i=0;i<existingEvents.length;i++) {
+          const row=existingEvents[i];if(!row) return {type:"execution_fence_lost"};
+          const position=JSON.parse(row.document).source_position;
+          if(position?.execution_id!==input.workRoot.turnId) return {type:"execution_fence_lost"};
+          const binding=proposed.find(b=>b.nativeCallId===replayEvents[i]!.id);
+          if(binding?.receipt!==position.custom_invocation_receipt) return {type:"execution_fence_lost"};
+        }
+        if(proposed.some(b=>!replayEvents.some(e=>e.id===b.nativeCallId)))return {type:"execution_fence_lost"};
+      }
       const exactReplay = existingEvents.every((row, index) =>
         row !== null && (() => {
           const stored = decodeSessionEventDocument(row.document);
@@ -380,7 +399,7 @@ export class SqlSessionRuntimeProjectionPersistence
         : { type: "projected", record: current };
     }
     const invocationStatements = input.customInvocations?.length
-      ? await customInvocationPublicationStatements({sql:this.client,projection:input,turnId:guarded!.turnId,fenceSql,fenceBindings}) : [];
+      ? await customInvocationPublicationStatements({sql:this.client,projection:input,turnId:guarded!.turnId,dialect:this.#dialect,fenceSql,fenceBindings}) : [];
     if (invocationStatements === null) return {type:"execution_fence_lost"};
     const sourceById = new Map((input.sourceEvents ?? []).map(event => [event.id, event]));
     const eventStatements = input.events.map((event, index) => {
@@ -457,7 +476,7 @@ export class SqlSessionRuntimeProjectionPersistence
                 agent_version = ?, environment_id = ?, deployment_id = ?,
                 status = ?, updated_at = ?, archived_at = ?
           WHERE workspace_id = ? AND id = ? AND revision = ?
-            ${fenceSql}`,
+            ${fenceSql.replace('AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND environment_id = ? AND archived_at IS NULL)', 'AND (workspace_id = ? AND id = ? AND environment_id = ? AND archived_at IS NULL)')}`,
       ).bind(
         JSON.stringify(next),
         next.agent.id,
@@ -475,8 +494,8 @@ export class SqlSessionRuntimeProjectionPersistence
     // Serialize event insertion with accepted inputs and other runtime batches
     // before publishing the successful Session revision as an ordering fact.
     const revisionGuard = this.client.prepare(
-      `UPDATE managed_sessions SET revision = revision
-        WHERE workspace_id = ? AND id = ? AND revision = ? ${fenceSql}`,
+      `${this.#dialect==='mysql'?'SELECT revision FROM managed_sessions':'UPDATE managed_sessions SET revision = revision'}
+        WHERE workspace_id = ? AND id = ? AND revision = ? ${fenceSql.replace('AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND environment_id = ? AND archived_at IS NULL)', 'AND (workspace_id = ? AND id = ? AND environment_id = ? AND archived_at IS NULL)')}${this.#dialect==='mysql'?' FOR UPDATE':''}`,
     ).bind(input.workspaceId, input.sessionId, input.expectedRevision, ...fenceBindings);
     const stop = startup === undefined || environmentWorkFence === undefined ? [] : [this.client.prepare(
       `UPDATE managed_environment_work SET document = ?, state = 'stopped', claim_worker_id = NULL, revision = revision + 1
@@ -490,7 +509,7 @@ export class SqlSessionRuntimeProjectionPersistence
     // Lock Work before event writes on READ COMMITTED hosts. Re-evaluate the
     // database clock after lock acquisition and again in the final Session CAS.
     const workLock = guarded === undefined || environmentWorkFence === undefined ? [] : [this.client.prepare(
-      `UPDATE managed_environment_work SET claim_generation = claim_generation WHERE workspace_id = ? AND id = ? AND claim_worker_id = ? AND claim_generation = ?`,
+      `${this.#dialect==='mysql'?'SELECT id FROM managed_environment_work':'UPDATE managed_environment_work SET claim_generation = claim_generation'} WHERE workspace_id = ? AND id = ? AND ${this.#dialect === 'mysql' ? 'BINARY claim_worker_id = BINARY ?' : 'claim_worker_id = ?'} AND claim_generation = ?${this.#dialect==='mysql'?' FOR UPDATE':''}`,
     ).bind(environmentWorkFence.workspaceId, environmentWorkFence.workId, guarded.holder, environmentWorkFence.generation)];
     const statements = [revisionGuard, ...workLock, ...invocationStatements, ...eventStatements, ...threadStatements, update, ...stop];
     const invocationStart = 1 + workLock.length;
@@ -512,7 +531,8 @@ export class SqlSessionRuntimeProjectionPersistence
       // earlier events/threads when the final CAS or an event write rejects.
       results = this.client.batchChecked
         ? await this.client.batchChecked(statements, rows => {
-          if ((guarded !== undefined && (rows[0]?.meta.changes !== 1 || workLock.length > 0 && rows[1]?.meta.changes !== 1)) || rows[updateIndex]?.meta.changes !== 1 || (stop.length > 0 && rows.at(-1)?.meta.changes !== 1) || rows.slice(invocationStart, eventStart + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
+          const changed=(index:number)=>this.#dialect==='mysql' && (index===0 || workLock.length>0&&index===1 || index>=invocationStart&&index<eventStart&&(index-invocationStart)%2===0) ? rows[index]?.results?.length===1 : rows[index]?.meta.changes===1;
+          if ((guarded !== undefined && (!changed(0) || workLock.length>0&&!changed(1))) || !changed(updateIndex) || (stop.length>0&&!changed(rows.length-1)) || rows.slice(invocationStart,eventStart+eventStatements.length).some((_,i)=>!changed(invocationStart+i))) throw rejected;
         })
         : guarded === undefined ? await this.client.batch(statements)
         // A SQLite statement clock may advance even inside an atomic batch.
@@ -609,10 +629,14 @@ export class SqlSessionRuntimeProjectionPersistence
     const lane = raw.sessionThreadId ?? "sthr_primary";
     const ownedHistory = facts.filter(fact => fact.executionId === proof.turnId && fact.environmentWork?.workId === claim.workId && fact.environmentWork.generation === claim.generation)
       .map(fact => fact.event as RuntimeProducedSessionEvent);
-    if (!validateWorkThreadLineage({rootLane:String(lane),history:ownedHistory,events:input.events})) return null;
+    // Previously committed IDs are checked byte-for-byte by projectState's
+    // replay branch; they must not be interpreted as a second tool execution
+    // by the lineage validator. Partial/mutated replay is still rejected there.
+    const ownedIds=new Set(ownedHistory.map(event=>event.id));
+    if (!validateWorkThreadLineage({rootLane:String(lane),history:ownedHistory,events:input.events.filter(event=>!ownedIds.has(event.id))})) return null;
     // A child id cannot be rebound from an older/different canonical root even
     // if the caller supplies an otherwise valid new parent tool this turn.
-    for (const event of input.events) if (event.type === "session.thread_created") {
+    for (const event of input.events) if (event.type === "session.thread_created" && !ownedIds.has(event.id)) {
       const existing = await this.client.prepare("SELECT 1 FROM managed_session_events WHERE workspace_id=? AND session_id=? AND thread_id=? LIMIT 1")
         .bind(input.workspaceId,input.sessionId,event.sessionThreadId).first();
       if (existing) return null;

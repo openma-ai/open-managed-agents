@@ -1,3 +1,4 @@
+import {customInvocationCancellationStatements} from './custom-invocation-cancellation';
 import { decodeSessionEventDocument, encodeSessionEventDocument } from '@open-managed-agents/session-runtime-contract/history';
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
@@ -75,6 +76,7 @@ function stableJson(value: unknown): string {
 }
 
 export interface SqlSessionEventStoreOptions {
+  dialect?: 'sqlite'|'postgres'|'mysql';
   /** Atomically append accepted events and their Node execution outbox row. */
   executionOutbox?: boolean | ((scope: { workspaceId: string; environmentId: string; session: AppendSessionEvents["nextSession"] }) => Promise<boolean>);
   executionPolicy?: {
@@ -157,7 +159,7 @@ export class SqlSessionEventStore
       `UPDATE managed_sessions SET revision = revision
         WHERE workspace_id = ? AND id = ? AND revision = ?`,
     ).bind(input.workspaceId, input.sessionId, input.expectedRevision);
-    const results = await this.client.batch([revisionGuard, ...eventStatements, ...await this.replacements(input), update]);
+    const results = await this.client.batch([revisionGuard, ...eventStatements, ...await this.replacements(input), ...await customInvocationCancellationStatements(this.client,input,this.options.dialect??'sqlite'), update]);
     const updateResult = results[results.length - 1];
     if (updateResult === undefined) {
       throw new Error("Session event append returned no Session update result");
@@ -365,6 +367,7 @@ export class SqlSessionEventStore
       revisionGuard,
       ...eventStatements,
       ...await this.replacements(input),
+      ...await customInvocationCancellationStatements(this.client,input,this.options.dialect??'sqlite'),
       ...interrupt,
       ...outbox,
       update,

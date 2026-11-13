@@ -1,3 +1,4 @@
+import { traceSessionSandbox } from "./session-sandbox-tracing";
 // The Session sandbox core over the Sandbox SDK v2 Ports
 // (research/sandbox-sdk-v2-design.md §0.1), shared by the Cloudflare
 // SessionDO and the Node Session runner (design §0.0 rule 15). Hosts keep
@@ -79,24 +80,33 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   }
 
   async mountSessionOutputs(): Promise<void> {
-    this.state.outputs = true;
-    await this.mountStorage();
+    return traceSessionSandbox(this.state, "mountSessionOutputs", async () => {
+      this.state.outputs = true;
+      await this.mountStorage();
+
+    });
   }
 
   /** The open runtime (opened if needed), for host operations outside the
    * executor (provider-specific file or git calls). Not counted as a call. */
   async runtime(): Promise<R> {
-    await this.state.quiesce();
-    this.state.throwRefreshError();
-    return (await openSandbox(this.state)).runtime;
+    return traceSessionSandbox(this.state, "runtime", async () => {
+      await this.state.quiesce();
+      this.state.throwRefreshError();
+      return (await openSandbox(this.state)).runtime;
+
+    });
   }
 
   /** Opens the sandbox again (attach, else resume, else acquire) and
    * returns its generation. A recycled sandbox is found here. */
   async prepare(): Promise<string> {
-    await this.state.quiesce();
-    this.state.current = null;
-    return (await openSandbox(this.state)).generation;
+    return traceSessionSandbox(this.state, "prepare", async () => {
+      await this.state.quiesce();
+      this.state.current = null;
+      return (await openSandbox(this.state)).generation;
+
+    });
   }
 
   /** Session creation: acquire the sandbox and record its handle, without
@@ -170,34 +180,37 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
 
   /** `changes`: the call may change the sandbox (everything but reads), so it is due a snapshot. */
   private async call<T>(operation: (executor: SessionSandboxExecutor) => Promise<T>, changes = true): Promise<T> {
-    const state = this.state;
-    await state.quiesce();
-    state.throwRefreshError();
-    let open = await openSandbox(state);
-    // Past the threshold during idle time: refresh now, in this gap (only
-    // for an execution: idle activity renews nothing, design §0.0b A.10).
-    if (state.inFlight === 0 && state.execution() !== undefined && lifetimeDue(state, open)) {
-      await refreshLifetime(state, open);
+    return traceSessionSandbox(this.state, "call", async () => {
+      const state = this.state;
+      await state.quiesce();
       state.throwRefreshError();
-      open = await openSandbox(state);
-    }
-    state.inFlight += 1;
-    if (changes) state.dirty = true;
-    try {
-      await renewAtExecBoundary(state, open);
-      return await operation(open.executor);
-    } catch (error) {
-      const name = (error as { name?: unknown } | null)?.name;
-      if (name === "SandboxGoneError" || name === "SandboxNotFoundError" || name === "SandboxNotRunningError") state.markLost();
-      throw error;
-    } finally {
-      state.inFlight -= 1;
-      // The last call returned: the model is thinking. Refresh in the background.
-      const current = state.current;
-      if (state.inFlight === 0 && current !== null && state.execution() !== undefined && lifetimeDue(state, current)) void refreshLifetime(state, current);
-      // ...and snapshot a changed sandbox once the interval passed (inside an
-      // execution: nothing in the idle window touches the sandbox, design §0.0b A.10).
-      else if (state.inFlight === 0 && current !== null && state.refreshing === null && state.execution() !== undefined && snapshotDue(state)) void snapshotInGap(state, current);
-    }
+      let open = await openSandbox(state);
+      // Past the threshold during idle time: refresh now, in this gap (only
+      // for an execution: idle activity renews nothing, design §0.0b A.10).
+      if (state.inFlight === 0 && state.execution() !== undefined && lifetimeDue(state, open)) {
+        await refreshLifetime(state, open);
+        state.throwRefreshError();
+        open = await openSandbox(state);
+      }
+      state.inFlight += 1;
+      if (changes) state.dirty = true;
+      try {
+        await renewAtExecBoundary(state, open);
+        return await operation(open.executor);
+      } catch (error) {
+        const name = (error as { name?: unknown } | null)?.name;
+        if (name === "SandboxGoneError" || name === "SandboxNotFoundError" || name === "SandboxNotRunningError") state.markLost();
+        throw error;
+      } finally {
+        state.inFlight -= 1;
+        // The last call returned: the model is thinking. Refresh in the background.
+        const current = state.current;
+        if (state.inFlight === 0 && current !== null && state.execution() !== undefined && lifetimeDue(state, current)) void refreshLifetime(state, current);
+        // ...and snapshot a changed sandbox once the interval passed (inside an
+        // execution: nothing in the idle window touches the sandbox, design §0.0b A.10).
+        else if (state.inFlight === 0 && current !== null && state.refreshing === null && state.execution() !== undefined && snapshotDue(state)) void snapshotInGap(state, current);
+      }
+
+    });
   }
 }

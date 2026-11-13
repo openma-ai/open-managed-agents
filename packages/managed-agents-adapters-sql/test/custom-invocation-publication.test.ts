@@ -106,3 +106,22 @@ for(const d1 of [false,true]) it(`${d1?'D1':'SQLite'}: receipt CAS race rolls ba
  expect(await core.read(scope,invocation.receipt)).toMatchObject({state:'cancelled',nativeCallId:null});
  expect(await f.sql.prepare("SELECT id FROM managed_session_events WHERE id='raced'").first()).toBeNull();
 });
+
+for(const d1 of [false,true]) it(`${d1?'D1':'SQLite'}: exact replay acknowledges the original binding without accepting changed authority or bytes`,async()=>{
+ const f=await fixture(d1);await f.sql.exec(customInvocationSchema);
+ const core=new CustomToolInvocations(new SqlCustomToolInvocations(f.sql));
+ const invocation=await core.begin({...claim,turnId:f.root.turnId},{name:'approve'},{value:1});
+ const body={root:f.root,events:[{id:'native-replay',type:'agent.custom_tool_use',name:'approve',input:{value:1},processed_at:now}],customInvocations:[{receipt:invocation.receipt,nativeCallId:'native-replay'}]};
+ const send=(value:any)=>ingestEnvironmentWorkRuntimeEvents({claim,sessionId:'s',body:value,projection:new SessionRuntimeProjectionApplicationService({workspaceId:'ws',persistence:new SqlSessionRuntimeProjectionPersistence(f.sql)}),publish:async()=>{}});
+ expect(await send(body)).toMatchObject({type:'recorded'});const revision=await f.revision();
+ expect(await send(body)).toMatchObject({type:'recorded'});expect(await f.revision()).toBe(revision);
+ expect((await send({...body,events:[{...body.events[0],input:{value:2}}]})).type).not.toBe('recorded');
+ expect((await send({...body,customInvocations:[{...body.customInvocations[0],receipt:crypto.randomUUID()}]})).type).not.toBe('recorded');
+ expect((await send({...body,customInvocations:[]})).type).not.toBe('recorded');
+ await f.sql.prepare("UPDATE managed_environment_work SET claim_worker_id='replacement' WHERE id='w'").run();
+ expect((await send(body)).type).not.toBe('recorded');
+ await f.sql.prepare("UPDATE managed_environment_work SET claim_worker_id='holder',claim_generation=3 WHERE id='w'").run();
+ expect((await send(body)).type).not.toBe('recorded');
+ expect(await f.revision()).toBe(revision);
+ expect((await f.sql.prepare("SELECT count(*) AS n FROM managed_session_events WHERE id='native-replay'").first<{n:number}>())!.n).toBe(1);
+});

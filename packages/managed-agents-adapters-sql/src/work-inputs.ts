@@ -117,7 +117,7 @@ export class SqlWorkInputs implements WorkInputsPort {
 
   private fence(claim: Claim) {
     return {
-      sql: "EXISTS (SELECT 1 FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND state IN ('starting','active') AND claim_generation = ? AND claim_worker_id = ? AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > " + this.clockMs + ")",
+      sql: "EXISTS (SELECT 1 FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND state IN ('starting','active') AND claim_generation = ? AND " + (this.dialect === "mysql" ? "BINARY claim_worker_id = BINARY ?" : "claim_worker_id = ?") + " AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > " + this.clockMs + ")",
       bindings: [claim.workspaceId,claim.environmentId,claim.workId,claim.sessionId,claim.generation,claim.holder],
     };
   }
@@ -340,11 +340,11 @@ export class SqlWorkInputs implements WorkInputsPort {
       : "json_set(?, '$.processedAt', " + this.clockIso + ")";
     const sessionWhere="workspace_id=? AND id=? AND environment_id=? AND archived_at IS NULL AND revision=? AND " + fence.sql + (ownership?" AND "+ownership.sql:"");
     const scope=[claim.workspaceId,claim.sessionId,claim.environmentId,Number(session.revision),...fence.bindings,...(ownership?.bindings??[])];
-    const workWhere="workspace_id=? AND environment_id=? AND id=? AND session_id=? AND state IN ('starting','active') AND claim_generation=? AND claim_worker_id=? AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > " + this.clockMs;
+    const workWhere="workspace_id=? AND environment_id=? AND id=? AND session_id=? AND state IN ('starting','active') AND claim_generation=? AND " + (this.dialect === "mysql" ? "BINARY claim_worker_id=BINARY ?" : "claim_worker_id=?") + " AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > " + this.clockMs;
     const rawCas=this.dialect === "mysql" ? "BINARY document=BINARY ?" : "document=?";
-    const answer = this.dialect === "sqlite" ? await customInvocationAnswerStatement({sql:this.sql,
+    const answer = await customInvocationAnswerStatement({sql:this.sql,dialect:this.dialect,
       workspaceId:claim.workspaceId,sessionId:claim.sessionId,environmentId:claim.environmentId,
-      event:raw,sessionWhere,scope}) : {statement:null};
+      event:raw,sessionWhere,scope});
     if(answer===null)return rejected;
     const statements:SqlStatement[]=[
       this.sql.prepare(this.dialect === "mysql" ? "SELECT revision FROM managed_sessions WHERE " + sessionWhere + " FOR UPDATE" : "UPDATE managed_sessions SET revision=revision WHERE " + sessionWhere).bind(...scope),
@@ -362,7 +362,7 @@ export class SqlWorkInputs implements WorkInputsPort {
           .bind(baseDocument,claim.workspaceId,claim.sessionId,input.inputId,input.expectedDocument,...scope)
         : this.sql.prepare("UPDATE managed_session_initial_events SET document=" + documentSql + " WHERE workspace_id=? AND session_id=? AND sequence=? AND " + rawCas + " AND EXISTS (SELECT 1 FROM managed_sessions WHERE " + sessionWhere + ")")
           .bind(baseDocument,claim.workspaceId,claim.sessionId,sequence,input.expectedDocument,...scope),
-      ...(answer.statement ? [answer.statement] : []),
+      ...(answer.statement ? [...(answer.locks??[]),answer.statement] : []),
       ...siblings.map(sibling=>{
         const body=JSON.stringify({...sibling.raw,source_position:{...sibling.raw.source_position,consumed_by_execution_id:consumer,consumption_claim:{workId:claim.workId,generation:claim.generation,holder:claim.holder}}});
         const stamped=this.dialect==="postgres"?"jsonb_set(?::text::jsonb,'{processedAt}',to_jsonb("+this.clockIso+"))::text":"json_set(?, '$.processedAt', "+this.clockIso+")";
@@ -373,7 +373,7 @@ export class SqlWorkInputs implements WorkInputsPort {
     ];
     const conflict=new Error("Work input CAS rejected");
     try {
-      if (this.sql.batchChecked) await this.sql.batchChecked(statements, rows=>{if(rows.some((row,index)=>(this.dialect === "mysql" && index<2) || (this.dialect !== "sqlite" && index===2) ? row.results?.length!==1 : row.meta.changes!==1)) throw conflict;});
+      if (this.sql.batchChecked) await this.sql.batchChecked(statements, rows=>{if(rows.some((row,index)=>(this.dialect === "mysql" && (index<2 || (answer.locks?.length??0)>0 && index===4)) || (this.dialect !== "sqlite" && index===2) ? row.results?.length!==1 : row.meta.changes!==1)) throw conflict;});
       else await this.sql.batch(statements.flatMap(statement=>[statement,this.sql.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE abs(-9223372036854775808) END")]));
     } catch(error) {
       if(error===conflict || (!this.sql.batchChecked && error instanceof Error && error.message.includes("integer overflow"))) return rejected;
@@ -404,7 +404,7 @@ export async function ensureMysqlWorkInputsSchema(sql: SqlClient): Promise<void>
     ["managed_session_initial_events", [["work_input_invalid", "TINYINT", bootstrapInvalid]]],
   ] as const) {
     for (const [name, type, expression] of columns) {
-      const read = () => sql.prepare("SELECT generation_expression AS expression, data_type, extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?")
+      const read = () => sql.prepare("SELECT generation_expression AS expression, data_type AS data_type, extra AS extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?")
         .bind(table,name).first<{expression:string;data_type:string;extra:string}>();
       let existing = await read();
       if (!existing) {
@@ -412,11 +412,22 @@ export async function ensureMysqlWorkInputsSchema(sql: SqlClient): Promise<void>
         catch (error) { if (!mysqlDuplicateDdl(error,1060,"ER_DUP_FIELDNAME")) throw error; }
         existing = await read();
       }
-      if (!existing || normalizeMysqlExpression(existing.expression) !== normalizeMysqlExpression(expression) ||
+      const canonical = await mysqlCanonicalGeneratedExpression(sql, type, expression);
+      if (!existing || normalizeMysqlExpression(existing.expression) !== normalizeMysqlExpression(canonical) ||
           existing.data_type?.toLowerCase() !== type.toLowerCase() || !/STORED GENERATED/i.test(existing.extra)) {
         throw new Error(`Work input migration: unexpected generated definition for ${table}.${name}`);
       }
     }
+  }
+  // This column was not indexed in snapshot 0034. Bound it explicitly before
+  // adding the bootstrap index; never truncate an existing workspace identity.
+  const workspaceColumn = await sql.prepare("SELECT data_type AS kind, character_maximum_length AS size FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='managed_session_initial_events' AND column_name='workspace_id'").first<{kind:string;size:number}>();
+  if (workspaceColumn?.kind.toLowerCase() === "longtext" || workspaceColumn?.kind.toLowerCase() === "text") {
+    const oversized = await sql.prepare("SELECT 1 AS present FROM managed_session_initial_events WHERE CHAR_LENGTH(workspace_id)>191 OR workspace_id IS NULL LIMIT 1").first();
+    if (oversized) throw new Error("Work input migration refused an unindexable workspace identity");
+    await sql.exec("ALTER TABLE managed_session_initial_events MODIFY workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL");
+  } else if (workspaceColumn?.kind.toLowerCase() !== "varchar" || Number(workspaceColumn.size) !== 191) {
+    throw new Error("Work input migration: unexpected bootstrap workspace identity type");
   }
   for (const [table,name,columns,unique] of [
     ["managed_session_events",indexName,"workspace_id,session_id,work_input_revision,work_input_index",true],
@@ -443,7 +454,27 @@ function mysqlDuplicateDdl(error: unknown, errno: number, code: string): boolean
   const value=error as {errno?:unknown;code?:unknown};
   return value.errno===errno || value.code===code;
 }
+/** Ask this exact MySQL server to canonicalize our intended expression. Its
+ * catalog adds parentheses/charset introducers; do not erase operators or
+ * literals to make a different stored expression appear equivalent. The probe
+ * is connection-local, contains no application rows, and is always removed. */
+async function mysqlCanonicalGeneratedExpression(sql: SqlClient, type: string, expression: string): Promise<string> {
+  if (!sql.rowLockTransactions) throw new Error("MySQL generated-column validation requires a connection-bound transaction");
+  return sql.rowLockTransactions.run(async tx => {
+    await tx.prepare("CREATE TEMPORARY TABLE oma_work_input_definition_probe (document LONGTEXT, session_id VARCHAR(191), sequence BIGINT, candidate " + type + " GENERATED ALWAYS AS (" + expression + ") STORED)").run();
+    try {
+      const row = await tx.prepare("SHOW CREATE TABLE oma_work_input_definition_probe").first<Record<string,string>>();
+      const ddl = row?.["Create Table"];
+      const match = ddl?.match(/`candidate`[^\n]* GENERATED ALWAYS AS \((.*)\) STORED/);
+      if (!match) throw new Error("MySQL did not return the generated-column definition");
+      return match[1]!;
+    } finally {
+      await tx.prepare("DROP TEMPORARY TABLE oma_work_input_definition_probe").run();
+    }
+  });
+}
 function normalizeMysqlExpression(value: string): string {
+  value = value.split(String.fromCharCode(92) + "'").join("'");
   const tokens=value.match(/'(?:''|\\.|[^'])*'|`(?:``|[^`])*`|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|<=>|[^\s]/g) ?? [];
   // Catalog spelling can quote identifiers and change keyword case, but string
   // literals (JSON paths, bootstrap prefix) must remain byte-for-byte equal.

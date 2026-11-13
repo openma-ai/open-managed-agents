@@ -25,7 +25,7 @@ beforeAll(async () => {
     const blocks = [...ctx.systemPrompt.matchAll(/<source name="(memory:[^"]+|skill_files:[^"]+|session_outputs)">\n([\s\S]*?)\n<\/source>/g)]
       .map((match) => ({ source: match[1], text: match[2] }));
     const outputsMentions = ctx.systemPrompt.split("`/mnt/session/outputs/`").length - 1;
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "GUIDANCE:" + JSON.stringify({ blocks, outputsMentions, diag: { memoryStoreIds: ctx.env?.memoryStoreIds, sources: [...ctx.systemPrompt.matchAll(/<source name="([^"]+)">/g)].map((m) => m[1]) } }) }] });
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "GUIDANCE:" + JSON.stringify({ resourceFacts: ctx.resourceFacts, blocks, outputsMentions, diag: { memoryStoreIds: ctx.env?.memoryStoreIds, sources: [...ctx.systemPrompt.matchAll(/<source name="([^"]+)">/g)].map((m) => m[1]) } }) }] });
   } }));
 });
 
@@ -56,6 +56,9 @@ describe("CF SessionDO resource guidance", () => {
       source: `memory:${store.id}`,
       text: "## Memory store: guide-notes\nMounted at /mnt/memory/guide-notes/ (read-only)\nGuidance test notes\nRead before acting.\n(read-only mount — write attempts to this directory will fail)",
     }]);
+    console.log("cf.session.resource.facts", JSON.stringify(captured.resourceFacts));
+    expect(captured.resourceFacts.memoryStores).toMatchObject([{ storeId: store.id, path: "/mnt/memory/guide-notes", access: "read_only" }]);
+    expect(captured.resourceFacts.outputs).toEqual({ path: "/mnt/session/outputs" });
     expect(captured.outputsMentions).toBe(1);
   });
 });

@@ -6,8 +6,17 @@ import { ensureMysqlWorkInputsSchema } from "../src/work-inputs";
 // so a duplicate contender must verify what the winning migration installed.
 function fixture(options: { wrongColumn?: boolean; wrongIndex?: boolean; functionalKey?: boolean; ddlError?: Error } = {}) {
  const columns=new Map<string,object>(),indexes=new Map<string,object>();let duplicates=0;
- const sql:SqlClient={prepare:text=>{let args:unknown[]=[];return {bind(...values:unknown[]){args=values;return this;},
-  first:async()=> (text.includes("information_schema.columns")?columns.get(args.join("."))??null:text.includes("information_schema.statistics")?(() => {const value=indexes.get(args.join("."));return value && options.functionalKey && text.includes("COALESCE(column_name") ? {...value,columns:(value as {columns:string}).columns+",<expression>"} : value??null;})():null) as never,
+ const sql:SqlClient={rowLockTransactions:{
+  capability:async()=>({supported:true,engine:'fixture',version:'fixture',reason:'contract only'}),
+  run:async body=>{
+   let expression='';
+   return body({prepare:text=>({bind(){return this;},all:async()=>({results:[]}),first:async()=>({'Create Table':'CREATE TEMPORARY TABLE probe (\n  `candidate` bigint GENERATED ALWAYS AS ('+expression+') STORED\n)'}) as never,run:async()=>{
+    if(text.startsWith('CREATE TEMPORARY'))expression=/GENERATED ALWAYS AS \(([\s\S]+)\) STORED\)$/.exec(text)![1];
+    return {meta:{changes:0}};
+   }})});
+  },
+ },prepare:text=>{let args:unknown[]=[];return {bind(...values:unknown[]){args=values;return this;},
+  first:async()=> (text.includes("SELECT data_type AS kind")?{kind:"varchar",size:191}:text.includes("information_schema.columns")?columns.get(args.join("."))??null:text.includes("information_schema.statistics")?(() => {const value=indexes.get(args.join("."));return value && options.functionalKey && text.includes("COALESCE(column_name") ? {...value,columns:(value as {columns:string}).columns+",<expression>"} : value??null;})():null) as never,
   all:async()=>({results:[]}),run:async()=>({meta:{changes:0}})};},batch:async()=>[],exec:async text=>{
    if(options.ddlError)throw options.ddlError;
    const column=/ALTER TABLE (\w+) ADD COLUMN (\w+) (\w+) GENERATED ALWAYS AS \(([\s\S]+)\) STORED/.exec(text);

@@ -7,7 +7,7 @@ import type { CustomInvocation, ProjectSessionRuntimeState } from '@open-managed
  * Argument comparison validates a definition; it never selects an invocation. */
 export async function customInvocationPublicationStatements(input: {
  sql: SqlClient; projection: ProjectSessionRuntimeState; turnId: string;
- fenceSql: string; fenceBindings: Array<string | number>;
+ dialect?:'sqlite'|'postgres'|'mysql'; fenceSql: string; fenceBindings: Array<string | number>;
 }) {
  const {sql,projection:p,turnId,fenceSql,fenceBindings}=input;
  const statements=[];
@@ -24,8 +24,9 @@ export async function customInvocationPublicationStatements(input: {
   const before=JSON.parse(row.document) as CustomInvocation;
   if(before.state!=='unbound'||before.nativeCallId!==null||before.name!==event.name||!equalJson(before.arguments,event.input)) return null;
   const after:CustomInvocation={...before,state:'pending',nativeCallId:binding.nativeCallId,revision:before.revision+1};
+  if(input.dialect && input.dialect!=='sqlite') statements.push(sql.prepare(input.dialect==='mysql'?'SELECT receipt FROM managed_custom_invocations WHERE workspace_id=? AND session_id=? AND receipt=? FOR UPDATE':'UPDATE managed_custom_invocations SET revision=revision WHERE workspace_id=? AND session_id=? AND receipt=?').bind(p.workspaceId,p.sessionId,binding.receipt));
   statements.push(sql.prepare(`UPDATE managed_custom_invocations SET native_call_id=?,revision=?,document=?
-   WHERE workspace_id=? AND session_id=? AND environment_id=? AND turn_id=? AND receipt=? AND revision=? AND document=?
+   WHERE workspace_id=? AND session_id=? AND environment_id=? AND turn_id=? AND receipt=? AND revision=? AND ${input.dialect==='mysql'?'BINARY document=BINARY ?':'document=?'}
    AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id=? AND id=? AND revision=?) ${fenceSql}`)
    .bind(after.nativeCallId,after.revision,JSON.stringify(after),p.workspaceId,p.sessionId,p.environmentWorkFence!.environmentId,turnId,binding.receipt,before.revision,row.document,
     p.workspaceId,p.sessionId,p.expectedRevision,...fenceBindings));
@@ -45,7 +46,7 @@ function equalJson(a:unknown,b:unknown):boolean {
  * MCP caller nor a disconnected request can publish an external answer. */
 export async function customInvocationAnswerStatement(input: {
  sql:SqlClient; workspaceId:string; sessionId:string; environmentId:string;
- event:Record<string,unknown>; sessionWhere:string; scope:Array<string|number>;
+ event:Record<string,unknown>; sessionWhere:string; scope:Array<string|number>; dialect?:'sqlite'|'postgres'|'mysql';
 }) {
  const {sql,event}=input;
  if(event.type!=='user.custom_tool_result') return {statement:null};
@@ -63,9 +64,9 @@ export async function customInvocationAnswerStatement(input: {
  const before=JSON.parse(row.document) as CustomInvocation;
  if(before.state!=='pending'||before.nativeCallId!==event.customToolUseId || (event.content!==undefined && !Array.isArray(event.content)))return null;
  const after:CustomInvocation={...before,state:'resolved',result:{content:(event.content ?? []) as unknown[],isError:event.isError===true},revision:before.revision+1};
- return {statement:sql.prepare(`UPDATE managed_custom_invocations SET revision=?,document=?
-  WHERE workspace_id=? AND session_id=? AND environment_id=? AND turn_id=? AND receipt=? AND document=?
-  AND EXISTS (SELECT 1 FROM managed_session_events WHERE workspace_id=? AND session_id=? AND id=? AND document=?)
+ return {locks:input.dialect && input.dialect!=='sqlite'?[sql.prepare(input.dialect==='mysql'?'SELECT receipt FROM managed_custom_invocations WHERE workspace_id=? AND session_id=? AND receipt=? FOR UPDATE':'UPDATE managed_custom_invocations SET revision=revision WHERE workspace_id=? AND session_id=? AND receipt=?').bind(input.workspaceId,input.sessionId,receipt)]:[],statement:sql.prepare(`UPDATE managed_custom_invocations SET revision=?,document=?
+  WHERE workspace_id=? AND session_id=? AND environment_id=? AND turn_id=? AND receipt=? AND ${input.dialect==='mysql'?'BINARY document=BINARY ?':'document=?'}
+  AND EXISTS (SELECT 1 FROM managed_session_events WHERE workspace_id=? AND session_id=? AND id=? AND ${input.dialect==='mysql'?'BINARY document=BINARY ?':'document=?'})
   AND EXISTS (SELECT 1 FROM managed_sessions WHERE ${input.sessionWhere})`)
   .bind(after.revision,JSON.stringify(after),input.workspaceId,input.sessionId,input.environmentId,turnId,receipt,row.document,
    input.workspaceId,input.sessionId,event.customToolUseId,call.document,...input.scope)};

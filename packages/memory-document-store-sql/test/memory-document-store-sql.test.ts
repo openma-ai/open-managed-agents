@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import type {
   Memory,
@@ -48,7 +49,7 @@ function memory(
   return {
     id,
     content: "hello",
-    contentSha256: "a".repeat(64),
+    contentSha256: createHash("sha256").update("hello").digest("hex"),
     contentSizeBytes: 5,
     createdAt,
     memoryStoreId: "memstore_01",
@@ -80,11 +81,59 @@ function version(
 describe("SqlMemoryDocumentStore", () => {
   let client: SqlClient;
   let store: SqlMemoryDocumentStore;
+  let objects: Map<string, string>;
 
   beforeEach(async () => {
     client = await createBetterSqlite3SqlClient(":memory:");
     await client.exec(SCHEMA);
-    store = new SqlMemoryDocumentStore(client);
+    objects = new Map();
+    store = new SqlMemoryDocumentStore(client, {
+      getText: async key => objects.get(key) ?? null,
+      put: async (key, text) => { objects.set(key, text); return {key}; },
+      delete: async key => { objects.delete(key); },
+    });
+  });
+
+  it("stores bytes only in objects and fails closed when they disappear or corrupt", async () => {
+    const value = memory("mem_bytes", "ver_bytes", "/fact.md");
+    await store.create({workspaceId:"workspace_01",memory:value,version:version(value)});
+    for (const table of ["managed_memories", "managed_memory_versions"]) {
+      const row = await client.prepare(`SELECT document FROM ${table}`).first<{document:string}>();
+      const document = JSON.parse(row!.document);
+      expect(document).not.toHaveProperty("content");
+      expect(objects.get(document.contentObjectKey)).toBe("hello");
+    }
+    const row = await client.prepare("SELECT document FROM managed_memories").first<{document:string}>();
+    const key = JSON.parse(row!.document).contentObjectKey;
+    const missingBackend = new SqlMemoryDocumentStore(client);
+    await expect(missingBackend.findCurrent({workspaceId:"workspace_01",memoryStoreId:value.memoryStoreId,memoryId:value.id})).rejects.toThrow("storage is required");
+    await expect(missingBackend.findVersion({workspaceId:"workspace_01",memoryStoreId:value.memoryStoreId,memoryVersionId:value.memoryVersionId})).rejects.toThrow("storage is required");
+    objects.set(key, "HELLO");
+    await expect(store.findCurrent({workspaceId:"workspace_01",memoryStoreId:value.memoryStoreId,memoryId:value.id})).rejects.toThrow("hash mismatch");
+    objects.delete(key);
+    await expect(store.findCurrent({workspaceId:"workspace_01",memoryStoreId:value.memoryStoreId,memoryId:value.id})).rejects.toThrow("object is missing");
+  });
+
+  it("does not publish SQL when storage is missing or upload fails", async () => {
+    const value = memory("mem_fail", "ver_fail", "/fact.md");
+    const input = {workspaceId:"workspace_01",memory:value,version:version(value)};
+    await expect(new SqlMemoryDocumentStore(client).create(input)).rejects.toThrow("storage is required");
+    await expect(new SqlMemoryDocumentStore(client, {getText:async()=>null,put:async()=>{throw Error("upload unavailable");},delete:async()=>{}}).create(input)).rejects.toThrow("upload unavailable");
+    expect((await client.prepare("SELECT count(*) AS n FROM managed_memories").first<{n:number}>())!.n).toBe(0);
+    expect((await client.prepare("SELECT count(*) AS n FROM managed_memory_versions").first<{n:number}>())!.n).toBe(0);
+  });
+
+  it("validates only object-backed stored documents for current and history", async () => {
+    const value = memory("mem_invalid", "ver_invalid", "/fact.md");
+    await store.create({workspaceId:"workspace_01",memory:value,version:version(value)});
+    for (const table of ["managed_memories", "managed_memory_versions"]) {
+      const row = await client.prepare(`SELECT document FROM ${table}`).first<{document:string}>();
+      const invalid = { ...JSON.parse(row!.document), content: null };
+      await client.prepare(`UPDATE ${table} SET document=?`).bind(JSON.stringify(invalid)).run();
+      console.log("memory.document.invalid", {table, hasBodyField:true});
+    }
+    await expect(store.findCurrent({workspaceId:"workspace_01",memoryStoreId:value.memoryStoreId,memoryId:value.id})).rejects.toThrow("Invalid managed Memory content document");
+    await expect(store.findVersion({workspaceId:"workspace_01",memoryStoreId:value.memoryStoreId,memoryVersionId:value.memoryVersionId})).rejects.toThrow("Invalid managed Memory content document");
   });
 
   it("atomically creates current state and history with scoped path uniqueness", async () => {
@@ -156,7 +205,7 @@ describe("SqlMemoryDocumentStore", () => {
     const next = {
       ...first,
       content: "updated",
-      contentSha256: "b".repeat(64),
+      contentSha256: createHash("sha256").update("updated").digest("hex"),
       contentSizeBytes: 7,
       memoryVersionId: "memver_03",
       updatedAt: "2026-08-26T20:00:00.000Z",

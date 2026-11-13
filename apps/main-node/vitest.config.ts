@@ -22,6 +22,7 @@ export default defineConfig({
     // PostgreSQL/MinIO contracts own real containers and run through the
     // repository-level `test:integration:storage` project.
     exclude: [
+      "test/**/*.native.test.ts", // explicit official-distribution gate: vitest.mcp-native.config.ts
       "test/**/*.pg.test.ts",
       "test/pg-*.test.ts",
       "test/s3-memory.test.ts",

@@ -267,7 +267,7 @@ describe("Work supervisor resource guidance (deterministic agent fixture, real l
       acpRuntime: guidanceDrivenAgent(sandbox, seen, prompts, observed),
       fetch: sessionFetch({ skills: [{ type: "custom", skill_id: "skill_report", version: "3" }] }),
       control: { pollIntervalMs: 1, scheduler: { sleep: async () => {} } },
-      resolveAgent: async () => ({ id: "codex-acp", command: "codex-acp" }),
+      resolveAgent: async () => ({ id: "codex-acp", command: "codex-acp", env: { OMA_OUTPUTS_DIR: "/stale/outputs", OMA_MEMORY_DIR: "/stale/memory", OMA_MEMORY_RETIRED: "/stale/retired", KEEP_ME: "retained" } }),
     });
 
     await runOnce(app, null);
@@ -278,6 +278,11 @@ describe("Work supervisor resource guidance (deterministic agent fixture, real l
     expect(observed[0]!.platform).toContain(`<source name="skill_files:skill_report">`);
     expect(observed[0]!.report).toBeUndefined();
     await expect(readFile(sandbox.host("/mnt/session/outputs/report.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    console.log("resource.disabled.environment", { outputs: seen[0]!.agent.env?.OMA_OUTPUTS_DIR, memory: seen[0]!.agent.env?.OMA_MEMORY_DIR, retired: seen[0]!.agent.env?.OMA_MEMORY_RETIRED });
+    expect(seen[0]!.agent.env?.OMA_OUTPUTS_DIR).toBeUndefined();
+    expect(seen[0]!.agent.env?.OMA_MEMORY_DIR).toBeUndefined();
+    expect(seen[0]!.agent.env?.OMA_MEMORY_RETIRED).toBeUndefined();
+    expect(seen[0]!.agent.env?.KEEP_ME).toBe("retained");
     expect(seen[0]!.agent.env?.OUTPUT_PATH).toBeUndefined();
   });
 

@@ -5906,12 +5906,13 @@ export class SessionDO extends DurableObject<Env> {
     // the Work supervisor). Memory blocks keep the historical byte format
     // (`/mnt/memory/<name>/ (access)`) for prompt-cache stability; store
     // metadata only supplies the name (when undeclared) and description.
-    platformReminders.push(...sessionResourceReminders(sessionResourceFacts({
+    const resourceFacts = sessionResourceFacts({
       workspaceRoot: await workspaceRootOf(sandbox),
       skills: skillFileFacts,
       memoryStores: this.mountedMemoryFacts,
       outputs: { path: SESSION_OUTPUTS_PATH },
-    }), { outputsGuidedByPlatform: true, includeWorkspace: true }));
+    });
+    platformReminders.push(...sessionResourceReminders(resourceFacts, { outputsGuidedByPlatform: true, includeWorkspace: true }));
 
     // Build the final system prompt: agent.system + platform guidance +
     // every platformReminder wrapped in a <source name="...">…</source>
@@ -5966,6 +5967,7 @@ export class SessionDO extends DurableObject<Env> {
         systemPrompt,
         rawSystemPrompt,
         platformReminders,
+        resourceFacts,
         ...(skillMounts.length > 0 ? { skillMounts } : {}),
         // file_id → bytes for "file" image/document blocks (null = placeholder text).
         fileFetcher: this.buildFileFetcher(this.state.tenant_id),

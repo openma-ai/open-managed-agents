@@ -99,10 +99,17 @@ const quote=(value:string)=>"'"+value.replaceAll("'","'\\''")+"'";
 it("spawned Work supervisor and ACP child: Skill/script, Memory restart, readonly original-callID and production download",async()=>{
  const f=await fixture();
  const observations:Array<{id:string;output:string;error:boolean}>=[];let promptText="";let phase="write";let activeTurn=f.turnId;let publications=0;
- let published!:()=>void;const done=new Promise<void>(r=>published=r);
+ let published!:()=>void;let failEnvironment!:(error:Error)=>void;const done=new Promise<void>((r,j)=>{published=r;failEnvironment=j;});
  const childPids:number[]=[],agentPids=new Set<number>();
+ const resourceEnvironments:Array<{retiredPresent:boolean;ambientPresent:boolean;outputMatchesGuidance:boolean}>=[];
  const ioServer=serve({hostname:"127.0.0.1",port:0,fetch:async request=>{
   try {const input=await request.json() as any;
+   if(new URL(request.url).pathname==="/resource-env"){
+    resourceEnvironments.push(input);
+    console.log(JSON.stringify({op:"child.resource.environment",...input}));
+    if(input.retiredPresent||input.ambientPresent||!input.outputMatchesGuidance)failEnvironment(new Error("Spawned agent resource environment disagrees with current mounts/guidance"));
+    return Response.json({observed:true});
+   }
    if(new URL(request.url).pathname==="/tool"){
     agentPids.add(input.agentPid);const raw=await f.sandbox.exec(input.command);const result=parseExecResult(raw);
     const observation={id:input.id,output:(input.id==="skill-read"||input.id.startsWith("recall-"))&&result.exitCode===0?Buffer.from(result.stdout,"base64").toString("utf8"):result.stdout+result.stderr,error:result.exitCode!==0};observations.push(observation);
@@ -120,7 +127,7 @@ it("spawned Work supervisor and ACP child: Skill/script, Memory restart, readonl
   execFileSync("../../node_modules/.bin/esbuild",["test/fixtures/"+source,"--bundle","--platform=node","--format=esm","--target=node22","--outfile="+target,'--banner:js=import {createRequire as __fixtureRequire} from "node:module";const require=__fixtureRequire(import.meta.url);'],{stdio:"pipe"});
  }
  const startSupervisor=async()=>{
-  const child=fork(supervisorFile,[],{stdio:["ignore","pipe","pipe","ipc"],env:{...process.env,RESOURCE_CHILD_FIXTURE:JSON.stringify({io,agent:agentFile,agentSettings:{io,skillId:f.skill.id,rwName:f.memoryStore.name,roName:f.readonlyStore.name},workspace:join(f.root,"sandbox",f.session.id),claim:f.claim,environment:{ANTHROPIC_BASE_URL:f.base,ANTHROPIC_ENVIRONMENT_ID:f.claim.environmentId,ANTHROPIC_SESSION_ID:f.session.id,ANTHROPIC_WORK_ID:f.claim.workId,ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:f.token,api_base_url:f.base})).toString("base64url")}})}});
+  const child=fork(supervisorFile,[],{stdio:["ignore","pipe","pipe","ipc"],env:{...process.env,OMA_MEMORY_AMBIENT:"/retired-ambient",RESOURCE_CHILD_FIXTURE:JSON.stringify({io,agent:agentFile,agentSettings:{io,skillId:f.skill.id,rwName:f.memoryStore.name,roName:f.readonlyStore.name},workspace:join(f.root,"sandbox",f.session.id),claim:f.claim,environment:{ANTHROPIC_BASE_URL:f.base,ANTHROPIC_ENVIRONMENT_ID:f.claim.environmentId,ANTHROPIC_SESSION_ID:f.session.id,ANTHROPIC_WORK_ID:f.claim.workId,ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:f.token,api_base_url:f.base})).toString("base64url")}})}});
   childPids.push(child.pid!);console.log(JSON.stringify({op:"work.child.spawn",pid:child.pid,parent:process.pid}));
   child.stdout!.on("data",b=>console.log(String(b)));child.stderr!.on("data",b=>console.log("CHILD STDERR",String(b)));
   const completed=new Promise<void>((resolve,reject)=>{child.once("exit",code=>code===0?resolve():reject(Error("Child exit "+code)));child.once("error",reject);});completed.catch(()=>{});
@@ -164,6 +171,8 @@ it("spawned Work supervisor and ACP child: Skill/script, Memory restart, readonl
   await assertAuthoritativeMemory();
   const restored=await adminFetch(f.base+`/v1/sessions/${f.session.id}/outputs/skill-report.txt`);expect(restored.status).toBe(200);expect(await restored.text()).toBe(EXPECTED_REPORT);
   expect(observations.filter(o=>o.id==="skill-script")).toHaveLength(1);
+  expect(resourceEnvironments.length).toBeGreaterThanOrEqual(3);
+  expect(resourceEnvironments.every(e=>!e.retiredPresent&&!e.ambientPresent&&e.outputMatchesGuidance)).toBe(true);
   expect(childPids).toHaveLength(2);expect(new Set(childPids).size).toBe(2);
   expect(childPids.every(pid=>pid!==process.pid)).toBe(true);
   expect(agentPids.size).toBeGreaterThanOrEqual(2);expect([...agentPids].every(pid=>pid!==process.pid&&!childPids.includes(pid))).toBe(true);

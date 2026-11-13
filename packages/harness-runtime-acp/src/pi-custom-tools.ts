@@ -53,6 +53,10 @@ export async function writePiCustomAnswers(io: Pick<NodeAcpHarnessStateIo, "writ
   const answers: Record<string, {content: unknown; isError: boolean}> = Object.create(null);
   for (const event of history) {
     if (event.type === "agent.custom_tool_use") { calls.add(event.id); continue; }
+    if (event.type === "agent.tool_result" && calls.has(event.tool_use_id) && !answers[event.tool_use_id]) {
+      answers[event.tool_use_id] = {content:event.content,isError:event.is_error === true};
+      continue;
+    }
     if (event.type !== "user.custom_tool_result" || !calls.has(event.custom_tool_use_id) || answers[event.custom_tool_use_id]) continue;
     answers[event.custom_tool_use_id] = {content:event.content,isError:event.is_error === true};
   }

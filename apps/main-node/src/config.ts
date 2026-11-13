@@ -124,6 +124,9 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     };
   };
   const memoryS3 = s3("MEMORY_S3");
+  const memoryS3Selected = Object.entries(env).some(([key, value]) => key.startsWith("MEMORY_S3_") && Boolean(value?.trim()));
+  if (memoryS3 === null && memoryS3Selected) problems.push("Incomplete MEMORY_S3_* configuration; local storage fallback is forbidden");
+  if (memoryS3 === null && !env.MEMORY_BLOB_DIR?.trim()) problems.push("Memory storage requires complete MEMORY_S3_* or an explicit MEMORY_BLOB_DIR");
   const memory: NodeConfig["blobs"]["memory"] = memoryS3 === null
     ? { kind: "localfs", dir: env.MEMORY_BLOB_DIR ?? "./data/memory-blobs" }
     : { ...memoryS3, pollIntervalMs: Math.max(5_000, integer("MEMORY_S3_POLL_INTERVAL_SEC", 30) * 1000) };

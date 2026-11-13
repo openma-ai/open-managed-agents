@@ -1,3 +1,4 @@
+import { sessionResourceReminders } from "@open-managed-agents/runtime-resource-contract";
 import { workspaceRootOf } from "@open-managed-agents/sandbox";
 import { nodePublishedSessionFiles } from "../lib/node-published-session-files";
 
@@ -98,7 +99,7 @@ import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
-  buildNodeManagedResourceReminders,
+  resolveNodeManagedResourceFacts,
   preparedNodeManagedSkillFacts,
   resolveNodeManagedSkillMounts,
   buildNodeManagedAppendablePromptReminders,
@@ -271,6 +272,7 @@ export async function createManagedNodeRuntime(
   // The Session sandbox is the shared core (design §0.0 rule 15); Node
   // injects its adapter, storage, egress relay and fence here.
   const sessionSandboxes = new NodeSessionSandboxes({
+    tracer: foundation.tracer,
     ...(components.sessionSandboxAdapter === undefined ? {} : { adapter: components.sessionSandboxAdapter }),
     ...(foundation.sessionSandboxProvider === undefined ? {} : { provider: foundation.sessionSandboxProvider }),
     sql, snapshotIntervalMs: sandboxSnapshotIntervalMs(config.sandbox.environment.SANDBOX_SNAPSHOT_INTERVAL_MS),
@@ -555,14 +557,15 @@ export async function createManagedNodeRuntime(
         : undefined;
       // Skill locations, Memory mounts and outputs from the shared Session
       // resource facts (same derivation as CF SessionDO and the Work supervisor).
-      const platformReminders = [
-        ...await buildNodeManagedResourceReminders(
+      const resourceFacts = await resolveNodeManagedResourceFacts(
           input.session,
           managedPlatform
             .app({ workspaceId: input.workspaceId })
             .port(managedAgentsPortTokens.skillVersions),
           { skills: !assemblySkills, workspaceRoot: await workspaceRootOf(input.runtime.sandbox), materializedSkills: assemblySkills ? [] : preparedNodeManagedSkillFacts(input.runtime.sandbox) },
-        ),
+        );
+      const platformReminders = [
+        ...sessionResourceReminders(resourceFacts, { outputsGuidedByPlatform: true, includeWorkspace: true }),
         ...buildNodeManagedAppendablePromptReminders(input.session),
       ];
       const feishuTools = await resolveFeishuAgentTools(input.session.id);
@@ -584,6 +587,7 @@ export async function createManagedNodeRuntime(
         systemPrompt: composeSystemPrompt(rawSystemPrompt, platformReminders),
         rawSystemPrompt,
         platformReminders,
+        resourceFacts,
         ...(skillMounts?.length ? { skillMounts } : {}),
         env: sandboxEnv ?? {
           ANTHROPIC_API_KEY: creds.apiKey,
@@ -619,7 +623,7 @@ export async function createManagedNodeRuntime(
         persistence: new SqlSessionRuntimeProjectionPersistence(sql, { dialect: foundation.dialect }),
       }),
     eventProcessing: {
-      storeFor: () => new SqlSessionEventPersistence(sql),
+      storeFor: () => new SqlSessionEventPersistence(sql,{dialect:foundation.dialect}),
     },
   });
   const managedSessionExecutionWorker = new NodeSessionExecutionWorker({
@@ -649,7 +653,7 @@ export async function createManagedNodeRuntime(
     leaseTtlMs: config.execution.leaseTtlMs,
     maxConcurrent: config.execution.concurrency,
     eventProcessing: {
-      storeFor: () => new SqlSessionEventPersistence(sql),
+      storeFor: () => new SqlSessionEventPersistence(sql,{dialect:foundation.dialect}),
     },
     onError: (err) => logger.error(
       { err, op: "main-node.session_execution.background_failed" },
@@ -951,7 +955,11 @@ export async function createManagedNodeRuntime(
   );
 
   const managedMemoryContent = new WebCryptoMemoryContentDescriptor();
-  const managedMemoryDocuments = new SqlMemoryDocumentStore(sql);
+  const managedMemoryDocuments = new SqlMemoryDocumentStore(sql, {
+    getText: async key => (await memoryBlobs.getText(key))?.text ?? null,
+    put: (key, content) => memoryBlobs.put(key, content),
+    delete: key => memoryBlobs.delete(key),
+  });
   function managedMemoryActor(userId: string | undefined) {
     return userId === undefined
       ? { kind: "api" as const, apiKeyId: "self_hosted" }
@@ -1100,7 +1108,7 @@ export async function createManagedNodeRuntime(
       environmentWork: managedEnvironmentWorkStore,
       environments: new SqlEnvironmentPersistence(sql),
       files: new SqlFileStore(sql),
-      memories: new SqlMemoryDocumentStore(sql),
+      memories: managedMemoryDocuments,
       memoryStores: new SqlMemoryStoreStore(sql),
       skills: new SqlSkillStore(sql),
       tunnels: new SqlTunnelStore(sql),

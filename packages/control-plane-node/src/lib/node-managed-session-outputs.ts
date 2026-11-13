@@ -147,12 +147,17 @@ export class NodeManagedSessionOutputCollector {
     // manifest is still unambiguous, and find failure remains fatal.
     const manifestFile = `/tmp/openma-output-list-${randomUUID()}`;
     const encoded = await input.sandbox.exec(
-      `if test -d ${OUTPUTS_DIR} && find ${OUTPUTS_DIR} -type f -print0 > '${manifestFile}'; then ` +
+      `if test -d ${OUTPUTS_DIR} && (cd ${OUTPUTS_DIR} && find . -type f -print0) > '${manifestFile}'; then ` +
       `printf '${MANIFEST_BEGIN}'; base64 < '${manifestFile}' | tr -d '\\n'; ` +
       `printf '${MANIFEST_END}'; rm -f '${manifestFile}'; ` +
       `else rm -f '${manifestFile}'; exit 2; fi`,
     );
-    const absolutePaths = decodeOutputPaths(encoded);
+    // The executor may translate the logical output root into a private
+    // host directory. Enumerate relative names so its physical namespace
+    // never becomes part of the publication path contract.
+    const absolutePaths = decodeOutputPaths(encoded).map(path =>
+      path.startsWith("./") ? `${OUTPUTS_DIR}/${path.slice(2)}` : path,
+    );
     if (absolutePaths.length > MAX_OUTPUT_FILES) {
       throw new Error(`Session output file limit exceeded (${MAX_OUTPUT_FILES})`);
     }

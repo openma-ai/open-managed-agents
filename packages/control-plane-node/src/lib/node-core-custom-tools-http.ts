@@ -10,9 +10,7 @@ export function nodeCoreCustomToolsHttp(sql: SqlClient, dialect: string) {
     const checked=await authenticateSandboxToken(tokens,{sessionId,token,channel:'api'});
     if(checked.type==='unavailable') throw new Error('Execution authority unavailable');
     if(checked.type!=='accepted') return null;
-    // SQLite authority is implemented; do not accidentally execute its clock
-    // fence on another dialect or pretend those unverified engines are ready.
-    if(dialect!=='sqlite') throw new Error('Core custom tools SQL dialect unavailable');
-    return resolveSqlCoreCustomTools(sql,checked.resolution,turnId);
+    if(dialect!=='sqlite'&&dialect!=='postgres'&&dialect!=='mysql') throw new Error('Unknown Core custom tools SQL dialect');
+    return resolveSqlCoreCustomTools(sql,checked.resolution,turnId,dialect);
   }});
 }

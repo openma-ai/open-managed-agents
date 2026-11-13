@@ -1,3 +1,7 @@
+import { retireManagementProcess, type ManagementRetirementState } from "./work-management-retirement.js";
+import { callManagementRpc, type ManagementRpcState } from "./work-management-rpc.js";
+import type { Tracer } from "@open-managed-agents/observability";
+import { traceSandboxOperation } from "@open-managed-agents/session-runtime";
 import { observeWorkOperation, type WorkOperationObservation } from "./work-operation-observation.js";
 import { createDispatchedManagedEnvironmentWorker, type ManagedEnvironmentWorker } from "@open-managed-agents/managed-runtime-host";
 import type { SandboxManagedProcessHandle } from "@open-managed-agents/sandbox";
@@ -40,8 +44,9 @@ export function createNodeEnvironmentWorkWorker(input: {
   recovery?: { recoverSchedulingPage(input: { limit: number; after?: { workspaceId: string; sessionId: string }; onError(error: unknown): void }): Promise<{ next: { workspaceId: string; sessionId: string } | null }> };
   sandboxes: NodeSessionSandboxes;
   capabilities: ReturnType<typeof createNodeManagedAcpCapabilities>;
-  onError(): void;
+  onError(error: unknown): void;
   observe?(event: WorkOperationObservation): void;
+  tracer?: Tracer;
 }) {
   const env = input.config.sandbox.environment;
   const command = env.OPENMA_WORK_RUNNER_COMMAND;
@@ -57,26 +62,20 @@ export function createNodeEnvironmentWorkWorker(input: {
   const controller = new AbortController();
   const workers = new Map<string, { worker: ManagedEnvironmentWorker; completed: Promise<void> }>();
   // Management handles only, never ownership/lease state. SQL remains authority.
-  type ManagedProcess = { slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; renew?(): Promise<void>; renewal?: Promise<void>; takeover?: { authorize(): Promise<boolean> }; pending?: { op: string; result: Promise<unknown> } };
+  type ManagedProcess = ManagementRpcState & ManagementRetirementState & { observation: Omit<WorkOperationObservation, "operation" | "status" | "durationMs">; slot: string; handle: SandboxManagedProcessHandle; current(): Promise<boolean>; renew?(): Promise<void>; renewal?: Promise<void>; takeover?: { authorize(): Promise<boolean> } };
   const processes = new Map<string, ManagedProcess>();
+  const diagnosticRuntimeId = (sandbox: { runtimeHandle?: () => { runtimeId: string } }) => {
+    try { return sandbox.runtimeHandle?.().runtimeId; } catch { return undefined; }
+  };
   // The Port has no cancellation signal. Bound our wait, NOT the native call:
   // retain an unresolved exact-handle RPC and never start a concurrent duplicate.
-  async function processCall<T>(process: ManagedProcess, op: string, action: () => Promise<T>): Promise<T> {
-    if (process.pending && process.pending.op !== op) throw new Error("Previous management RPC outcome is pending");
-    if (!process.pending) {
-      const pending = { op, result: Promise.resolve().then(action) };
-      process.pending = pending;
-      void pending.result.finally(() => {
-        if (process.pending === pending) process.pending = undefined;
-      }).catch(() => {});
-    }
-    const result = process.pending.result as Promise<T>;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([result, new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error("Management RPC wait timed out; native outcome is unknown")), 1_000);
-      })]);
-    } finally { if (timeout !== undefined) clearTimeout(timeout); }
+  async function processCall<T>(process: ManagedProcess, op: string, action: () => Promise<T>, requesting?: { workId: string; generation: number }): Promise<T> {
+    return callManagementRpc(process, op, action, management => {
+      try { input.observe?.({ ...process.observation, processId: process.handle.id,
+        requestingWorkId: requesting?.workId, requestingGeneration: requesting?.generation,
+        operation: `management.${op}`, status: management.phase === "completed" ? "completed" : management.phase === "started" ? "started" : "failed",
+        durationMs: management.elapsedMs, management }); } catch { /* Diagnostics only. */ }
+    });
   }
   // Provider renewal is independent of exact-process cleanup. A stuck renewal
   // must not block a lost claim's SIGTERM, nor be mistaken for cancellation.
@@ -103,21 +102,11 @@ export function createNodeEnvironmentWorkWorker(input: {
     handoffs.set(slot, next);
     try { await next; } finally { if (handoffs.get(slot) === next) handoffs.delete(slot); }
   }
-  async function retire(key: string) {
+  async function retire(key: string, requesting?: { workId: string; generation: number }) {
     const process = processes.get(key);
     if (!process) return;
-    // Unknown authority throws: never interpret lookup failure as lost ownership.
-    if (await processCall(process, "current", () => process.current())) throw new Error("Previous management worker is still current");
-    await processCall(process, "kill", () => process.handle.kill("SIGTERM"));
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const status = await processCall(process, "status", () => process.handle.getStatus());
-      if (["exited", "killed", "completed", "error"].includes(status)) {
-        if (processes.get(key) === process) processes.delete(key);
-        return;
-      }
-      if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    throw new Error("Previous management worker exit is unconfirmed");
+    await retireManagementProcess(process, (op, action) => processCall(process, op, action, requesting));
+    if (processes.get(key) === process) processes.delete(key);
   }
   let timer: ReturnType<typeof setInterval> | undefined;
   let draining: Promise<void> | undefined;
@@ -131,7 +120,7 @@ export function createNodeEnvironmentWorkWorker(input: {
     if (controller.signal.aborted) return;
     if (input.recovery && Date.now() >= recoverAfterMs) {
       recoverAfterMs = Date.now() + 30_000;
-      const page = await input.recovery.recoverSchedulingPage({ limit: 20, after: recoveryAfter, onError: () => input.onError() });
+      const page = await input.recovery.recoverSchedulingPage({ limit: 20, after: recoveryAfter, onError: error => input.onError(error) });
       recoveryAfter = page.next ?? undefined;
     }
     if (command === undefined || origin === undefined) return;
@@ -139,7 +128,7 @@ export function createNodeEnvironmentWorkWorker(input: {
       if (processes.get(key) !== process) return;
       if (!await processCall(process, "current", () => process.current())) await retire(key);
       else await renew(process);
-    }).catch(() => { if (!controller.signal.aborted) input.onError(); })));
+    }).catch(error => { if (!controller.signal.aborted) input.onError(error); })));
     const rows = await input.sql.prepare(
       "SELECT DISTINCT workspace_id, environment_id FROM managed_environment_work WHERE state IN ('queued', 'starting', 'active')"
     ).all<{ workspace_id: string; environment_id: string }>();
@@ -171,124 +160,129 @@ export function createNodeEnvironmentWorkWorker(input: {
               stop: async (workId, query) => app.stopEnvironmentWork({ workId, environmentId: query.environment_id, force: query.force }),
             } } } }),
           },
-          onError: () => input.onError(),
+          onError: error => input.onError(error),
           dispatch: {
             descriptor: () => ({ provider: "node", version: "1", strategy: "poll_unacked_then_dispatch" }),
             async dispatch({ work, signal }) {
               const delivery = { ...scope, workId: work.id, sessionId: work.data.id };
-              const capability = managedMcpProxyFromWorkEnvironment({ ANTHROPIC_BASE_URL: origin, ANTHROPIC_WORK_SECRET: work.secret ?? undefined });
-              const stored = await input.work.find(delivery);
-              if (!capability || !stored?.claim || stored.work.environmentId !== scope.environmentId || stored.secret.sessionsToken !== capability.sessionsToken || capability.gatewayBaseUrl !== origin) throw new Error("Work delivery rejected");
-              const generation = stored.claim.generation;
-              const observed = <T>(operation: string, run: () => Promise<T>) => observeWorkOperation(input.observe, { ...delivery, generation }, operation, run);
-              let holderHash: string | undefined;
-              const current = async (includeStopping = false) => {
-                const row = await input.work.find(delivery);
-                return !signal.aborted && row?.claim?.generation === generation && row.claim.workerId === stored.claim!.workerId && row.secret.sessionsToken === capability.sessionsToken
-                  && row.work.data.type === "session" && row.work.data.id === delivery.sessionId
-                  && (includeStopping ? ["queued", "starting", "active", "stopping"] : ["queued", "starting", "active"]).includes(row.work.state)
-                  && Date.parse(row.claim.claimedAt) + row.heartbeatTtlSeconds * 1000 > Date.now();
-              };
-              // Stop-requested is a finalization window only while this exact
-              // claim's SQL lease remains valid. Never extend the SQL lease here.
-              const owned = async () => {
-                if (!await current(true)) return false;
-                if (holderHash === undefined) return true; // bootstrap has not issued its holder yet
-                // Reuse the existing holder row. Unlike gateway access, provider
-                // maintenance also covers the still-leased stopping window.
-                const holder = await input.sql.prepare(
-                  "SELECT sandbox_token_hashes FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_generation = ? AND claim_at + heartbeat_ttl_seconds * 1000 > ? AND state IN ('queued', 'starting', 'active', 'stopping')"
-                ).bind(scope.workspaceId, scope.environmentId, work.id, delivery.sessionId, generation, Date.now()).first<{ sandbox_token_hashes: string | null }>();
-                const hashes: unknown = JSON.parse(holder?.sandbox_token_hashes ?? "[]");
-                return Array.isArray(hashes) && hashes.some(entry => entry?.h === holderHash && entry?.s === "all");
-              };
-              const session = await sessions.find(delivery);
-              const pinnedEnvironment = await environments.find(scope);
-              if (!await current() || !session || session.archivedAt !== null || session.environmentId !== scope.environmentId || !pinnedEnvironment || pinnedEnvironment.archivedAt !== null) throw new Error("Work Session unavailable");
-              const selection = sessionExecutionPlacement(pinnedEnvironment, session);
-              if (selection.authority !== "environment_work" || selection.harnessPlacement !== "in_sandbox") throw new Error("Work placement rejected");
-              const slot = JSON.stringify([scope.workspaceId, delivery.sessionId]);
-              await handoff(slot, async () => {
-                if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before handoff");
-                for (const [key, process] of processes) if (process.slot === slot) {
-                  // The exact target/pending RPC stays; a new legitimate claim
-                  // supplies fresh cleanup authority instead of inheriting a closure.
-                  if (process.takeover) process.takeover.authorize = current;
-                  await retire(key);
-                }
-                const claim = { ...delivery, generation };
-                const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
-                  workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: owned, holderHash: () => holderHash, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
+              return traceSandboxOperation(input.tracer, "work.dispatch", { "session.id": delivery.sessionId, "work.id": delivery.workId }, async dispatchSpan => {
+                const capability = managedMcpProxyFromWorkEnvironment({ ANTHROPIC_BASE_URL: origin, ANTHROPIC_WORK_SECRET: work.secret ?? undefined });
+                const stored = await input.work.find(delivery);
+                if (!capability || !stored?.claim || stored.work.environmentId !== scope.environmentId || stored.secret.sessionsToken !== capability.sessionsToken || capability.gatewayBaseUrl !== origin) throw new Error("Work delivery rejected");
+                const generation = stored.claim.generation;
+                dispatchSpan.setAttribute("execution.generation", generation);
+                const observed = <T>(operation: string, run: () => Promise<T>) => traceSandboxOperation(input.tracer, `work.dispatch.${operation}`, {
+                  "session.id": delivery.sessionId, "work.id": delivery.workId, "execution.generation": generation,
+                }, async () => observeWorkOperation(input.observe, { ...delivery, generation }, operation, run));
+                let holderHash: string | undefined;
+                const current = async (includeStopping = false) => {
+                  const row = await input.work.find(delivery);
+                  return !signal.aborted && row?.claim?.generation === generation && row.claim.workerId === stored.claim!.workerId && row.secret.sessionsToken === capability.sessionsToken
+                    && row.work.data.type === "session" && row.work.data.id === delivery.sessionId
+                    && (includeStopping ? ["queued", "starting", "active", "stopping"] : ["queued", "starting", "active"]).includes(row.work.state)
+                    && Date.parse(row.claim.claimedAt) + row.heartbeatTtlSeconds * 1000 > Date.now();
+                };
+                // Stop-requested is a finalization window only while this exact
+                // claim's SQL lease remains valid. Never extend the SQL lease here.
+                const owned = async () => {
+                  if (!await current(true)) return false;
+                  if (holderHash === undefined) return true; // bootstrap has not issued its holder yet
+                  // Reuse the existing holder row. Unlike gateway access, provider
+                  // maintenance also covers the still-leased stopping window.
+                  const holder = await input.sql.prepare(
+                    "SELECT sandbox_token_hashes FROM managed_environment_work WHERE workspace_id = ? AND environment_id = ? AND id = ? AND session_id = ? AND claim_generation = ? AND claim_at + heartbeat_ttl_seconds * 1000 > ? AND state IN ('queued', 'starting', 'active', 'stopping')"
+                  ).bind(scope.workspaceId, scope.environmentId, work.id, delivery.sessionId, generation, Date.now()).first<{ sandbox_token_hashes: string | null }>();
+                  const hashes: unknown = JSON.parse(holder?.sandbox_token_hashes ?? "[]");
+                  return Array.isArray(hashes) && hashes.some(entry => entry?.h === holderHash && entry?.s === "all");
+                };
+                const session = await sessions.find(delivery);
+                const pinnedEnvironment = await environments.find(scope);
+                if (!await current() || !session || session.archivedAt !== null || session.environmentId !== scope.environmentId || !pinnedEnvironment || pinnedEnvironment.archivedAt !== null) throw new Error("Work Session unavailable");
+                const selection = sessionExecutionPlacement(pinnedEnvironment, session);
+                if (selection.authority !== "environment_work" || selection.harnessPlacement !== "in_sandbox") throw new Error("Work placement rejected");
+                const slot = JSON.stringify([scope.workspaceId, delivery.sessionId]);
+                await handoff(slot, async () => {
+                  if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before handoff");
+                  for (const [key, process] of processes) if (process.slot === slot) {
+                    // The exact target/pending RPC stays; a new legitimate claim
+                    // supplies fresh cleanup authority instead of inheriting a closure.
+                    if (process.takeover) process.takeover.authorize = current;
+                    await retire(key, { workId: work.id, generation });
+                  }
+                  const claim = { ...delivery, generation };
+                  const sandbox = input.sandboxes.build({ workspaceId: scope.workspaceId, session, environment: pinnedEnvironment,
+                    workAuthority: { attempt: environmentWorkSandboxTokenRef(claim), isCurrent: owned, holderHash: () => holderHash, token: physical => input.capabilities.issueWork(claim, session.agent.openma?.harness, physical) },
+                  });
+                  await observed("sandbox-open", () => sandbox.open());
+                  if (!await current()) throw new Error("Work claim lost before bootstrap");
+                  const token = await observed("sandbox-token", () => sandbox.workToken());
+                  holderHash = (await sandboxTokenSha256(token)) ?? undefined;
+                  if (holderHash === undefined || !await owned()) throw new Error("Work sandbox holder lost before launch");
+                  // Strict canonical workspace/native-state restore before any
+                  // management worker can bootstrap. Exact attaches are never
+                  // overwritten, and a failed restore never launches a model.
+                  try {
+                    await observed("checkpoint-restore", () => input.sandboxes.restoreWorkCheckpoint(sandbox, environmentWorkSandboxTokenRef(claim)));
+                    if (!await owned()) throw new Error("Work claim lost during checkpoint restore");
+                  } catch (error) {
+                    // Never let the next dispatcher attach a partially restored
+                    // runtime as though it were a completed initialization.
+                    // failExecution already refuses release after authority loss.
+                    await sandbox.failExecution();
+                    throw error;
+                  }
+                  const prepared = await observed("environment-prepare", () => sandbox.prepareWorkEnvironment({ installedHarnesses: env.OPENMA_ACP_HARNESSES, pipIndexUrl: env.SANDBOX_PIP_INDEX_URL }));
+                  if (!prepared) throw new Error("Work Environment has no prepared ACP launcher");
+                  const { harness, inventory: launchInventory } = prepared;
+                  if (!await owned()) throw new Error("Work claim lost during Environment setup");
+                  const spec = { command, args: args as string[], env: {
+                    ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
+                    ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
+                    OPENMA_WORKSPACE_ID: scope.workspaceId, OPENMA_SANDBOX_TOKEN: token,
+                    OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
+                    OPENMA_ACP_HARNESSES: launchInventory,
+                  } };
+                  let handle: SandboxManagedProcessHandle;
+                  try { handle = await observed("native-start", () => sandbox.startManagedProcess(spec)); }
+                  catch (error) {
+                    if ((error as {outcome?: string}).outcome !== "rejected" || (error as Error).message !== "management worker busy") throw error;
+                    const recovered = await sandbox.recoverManagedProcessSlot();
+                    const identity = recovered.locator.identity;
+                    const obsolete = async () => {
+                      const old = await input.work.find({...scope, workId: identity.workId});
+                      if (!old || old.work.data.type !== "session" || old.work.data.id !== delivery.sessionId || !old.claim) throw new Error("Management identity cannot be verified");
+                      const expected = environmentWorkSandboxTokenRef({...scope, sessionId: delivery.sessionId, workId: identity.workId, generation: old.claim.generation});
+                      const locatedGeneration = Number(identity.attemptId.split(":").at(-1));
+                      const located = environmentWorkSandboxTokenRef({...scope, sessionId: delivery.sessionId, workId: identity.workId, generation: locatedGeneration});
+                      if (!Number.isSafeInteger(locatedGeneration) || locatedGeneration < 1 || located.attemptId !== identity.attemptId || locatedGeneration > old.claim.generation) throw new Error("Unrecognized management attempt identity");
+                      return locatedGeneration < old.claim.generation || expected.attemptId === identity.attemptId && (!["queued", "starting", "active", "stopping"].includes(old.work.state)
+                        || Date.parse(old.claim.claimedAt) + old.heartbeatTtlSeconds * 1000 <= Date.now());
+                    };
+                    if (!await current() || !await obsolete()) throw new Error("Management worker remains current or takeover claim lost");
+                    const recoveredKey = JSON.stringify([scope.workspaceId, identity.workId, identity.attemptId, recovered.handle.id]);
+                    const takeover = {authorize: current};
+                    processes.set(recoveredKey, {observation: { ...delivery, workId: identity.workId, attemptId: identity.attemptId, runtimeId: recovered.locator.sandboxId }, slot, handle: recovered.handle, takeover, current: async () => {
+                      if (!await takeover.authorize()) throw new Error("Takeover claim lost; old handle cleanup unauthorized");
+                      return !await obsolete();
+                    }});
+                    await retire(recoveredKey, { workId: work.id, generation });
+                    if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before replacement launch");
+                    handle = await observed("native-start", () => sandbox.startManagedProcess(spec));
+                  }
+                  processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { observation: { ...delivery, generation, runtimeId: diagnosticRuntimeId(sandbox) }, slot, handle, current: owned, renew: () => sandbox.renewActivityTimeout() });
                 });
-                await observed("sandbox-open", () => sandbox.open());
-                if (!await current()) throw new Error("Work claim lost before bootstrap");
-                const token = await observed("sandbox-token", () => sandbox.workToken());
-                holderHash = (await sandboxTokenSha256(token)) ?? undefined;
-                if (holderHash === undefined || !await owned()) throw new Error("Work sandbox holder lost before launch");
-                // Strict canonical workspace/native-state restore before any
-                // management worker can bootstrap. Exact attaches are never
-                // overwritten, and a failed restore never launches a model.
-                try {
-                  await observed("checkpoint-restore", () => input.sandboxes.restoreWorkCheckpoint(sandbox, environmentWorkSandboxTokenRef(claim)));
-                  if (!await owned()) throw new Error("Work claim lost during checkpoint restore");
-                } catch (error) {
-                  // Never let the next dispatcher attach a partially restored
-                  // runtime as though it were a completed initialization.
-                  // failExecution already refuses release after authority loss.
-                  await sandbox.failExecution();
-                  throw error;
-                }
-                const prepared = await observed("environment-prepare", () => sandbox.prepareWorkEnvironment({ installedHarnesses: env.OPENMA_ACP_HARNESSES, pipIndexUrl: env.SANDBOX_PIP_INDEX_URL }));
-                if (!prepared) throw new Error("Work Environment has no prepared ACP launcher");
-                const { harness, inventory: launchInventory } = prepared;
-                if (!await owned()) throw new Error("Work claim lost during Environment setup");
-                const spec = { command, args: args as string[], env: {
-                  ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
-                  ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
-                  OPENMA_WORKSPACE_ID: scope.workspaceId, OPENMA_SANDBOX_TOKEN: token,
-                  OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
-                  OPENMA_ACP_HARNESSES: launchInventory,
-                } };
-                let handle: SandboxManagedProcessHandle;
-                try { handle = await observed("native-start", () => sandbox.startManagedProcess(spec)); }
-                catch (error) {
-                  if ((error as {outcome?: string}).outcome !== "rejected" || (error as Error).message !== "management worker busy") throw error;
-                  const recovered = await sandbox.recoverManagedProcessSlot();
-                  const identity = recovered.locator.identity;
-                  const obsolete = async () => {
-                    const old = await input.work.find({...scope, workId: identity.workId});
-                    if (!old || old.work.data.type !== "session" || old.work.data.id !== delivery.sessionId || !old.claim) throw new Error("Management identity cannot be verified");
-                    const expected = environmentWorkSandboxTokenRef({...scope, sessionId: delivery.sessionId, workId: identity.workId, generation: old.claim.generation});
-                    const locatedGeneration = Number(identity.attemptId.split(":").at(-1));
-                    const located = environmentWorkSandboxTokenRef({...scope, sessionId: delivery.sessionId, workId: identity.workId, generation: locatedGeneration});
-                    if (!Number.isSafeInteger(locatedGeneration) || locatedGeneration < 1 || located.attemptId !== identity.attemptId || locatedGeneration > old.claim.generation) throw new Error("Unrecognized management attempt identity");
-                    return locatedGeneration < old.claim.generation || expected.attemptId === identity.attemptId && (!["queued", "starting", "active", "stopping"].includes(old.work.state)
-                      || Date.parse(old.claim.claimedAt) + old.heartbeatTtlSeconds * 1000 <= Date.now());
-                  };
-                  if (!await current() || !await obsolete()) throw new Error("Management worker remains current or takeover claim lost");
-                  const recoveredKey = JSON.stringify([scope.workspaceId, identity.workId, identity.attemptId, recovered.handle.id]);
-                  const takeover = {authorize: current};
-                  processes.set(recoveredKey, {slot, handle: recovered.handle, takeover, current: async () => {
-                    if (!await takeover.authorize()) throw new Error("Takeover claim lost; old handle cleanup unauthorized");
-                    return !await obsolete();
-                  }});
-                  await retire(recoveredKey);
-                  if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before replacement launch");
-                  handle = await observed("native-start", () => sandbox.startManagedProcess(spec));
-                }
-                processes.set(JSON.stringify([scope.workspaceId, work.id, generation]), { slot, handle, current: owned, renew: () => sandbox.renewActivityTimeout() });
               });
             },
           },
         });
-        const completed = worker.run(controller.signal).catch(() => {
-          if (!controller.signal.aborted) input.onError();
+        const completed = worker.run(controller.signal).catch(error => {
+          if (!controller.signal.aborted) input.onError(error);
         }).finally(() => { workers.delete(key); });
         workers.set(key, { worker, completed });
         await worker.drain(controller.signal);
       }
     }
-  })().catch(() => { if (!controller.signal.aborted) input.onError(); }).finally(() => { draining = undefined; });
+  })().catch(error => { if (!controller.signal.aborted) input.onError(error); }).finally(() => { draining = undefined; });
   return {
     async start() {
       if (started) return;
@@ -306,7 +300,7 @@ export function createNodeEnvironmentWorkWorker(input: {
       await draining;
       await Promise.all([...workers.values()].map(worker => worker.completed));
       workers.clear();
-      await Promise.all([...processes].map(([key, process]) => handoff(process.slot, () => retire(key)).catch(() => input.onError())));
+      await Promise.all([...processes].map(([key, process]) => handoff(process.slot, () => retire(key)).catch(error => input.onError(error))));
     },
   };
 }
