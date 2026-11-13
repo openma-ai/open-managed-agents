@@ -84,3 +84,4 @@ export type {
 export { buildWorkFinalizationRoutes } from "./work-finalization";
 
 export * from "./work-bootstrap";
+export { buildCoreCustomToolsRoutes } from './core-custom-tools';

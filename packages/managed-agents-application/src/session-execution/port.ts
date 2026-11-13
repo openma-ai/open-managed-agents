@@ -50,7 +50,11 @@ export interface WorkRuntimeRootProof {
   expectedDocument: string;
 }
 
+/** Opaque Core receipt paired with its observed native call ID. Never an RPC ID. */
+export interface WorkCustomInvocationBinding { receipt: string; nativeCallId: string }
+
 export interface RecordSessionRuntimeEventsCommand {
+  customInvocations?: WorkCustomInvocationBinding[];
   workRoot?: WorkRuntimeRootProof;
   workRootDialect?: "sqlite" | "postgres" | "mysql";
   sessionId: string;

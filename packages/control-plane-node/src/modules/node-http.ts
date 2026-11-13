@@ -1,3 +1,4 @@
+import { nodeCoreCustomToolsHttp } from "../lib/node-core-custom-tools-http.js";
 import { nodeWorkBootstrapRoutes } from "./node-work-bootstrap.js";
 import { SqlWorkFinalization } from "@open-managed-agents/managed-agents-adapters-sql";
 import { WorkFinalizationApplication, type WorkFinalizationHostPort } from "@open-managed-agents/managed-agents-application";
@@ -348,6 +349,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     },
     persistenceFor: async () => new SqlSessionRuntimeProjectionPersistence(sql, { dialect }),
   }));
+  app.route("/v1/oma/sessions", nodeCoreCustomToolsHttp(sql, dialect));
   app.route("/v1/oma/sessions", nodeExecutionChannelsHttp({ tokens: managedAcpCapabilities.tokens, sql, modelCards: modelCardsService, gatewayBaseUrl: config.http.gatewayOrigin }));
 
   const v1 = new Hono<{

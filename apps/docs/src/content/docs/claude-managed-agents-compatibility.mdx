@@ -48,7 +48,7 @@ HTTP call does not need the header.
 | Dreams | **Implemented** — `anthropic-beta: dreaming-2026-04-21` | `routes/dreams.ts` → `/v1/dreams` |
 | MCP tunnels | **Implemented** — tunnel CRUD, certificates, `reveal_token`, `rotate_token` | `routes/tunnels.ts`, `tunnel-certificates.ts` → `/v1/tunnels` (`anthropic-beta: mcp-tunnels-2026-06-22`) |
 | User profiles | **Implemented** — `anthropic-beta: user-profiles-2026-08-18` | `routes/user-profiles.ts` → `/v1/user_profiles` |
-| MCP servers | **Implemented** — as the `mcp_servers` field on Agent config (URL/HTTP/SSE/stdio); there is no standalone MCP-server resource in the SDK surface | `routes/agents.ts`, `contracts/agent-input-components.ts` |
+| MCP servers | **Implemented** — as the `mcp_servers` field on Agent config (URL (Streamable HTTP)/stdio; legacy SSE is explicitly rejected); there is no standalone MCP-server resource in the SDK surface | `routes/agents.ts`, `contracts/agent-input-components.ts` |
 | Callable agents | **Implemented** — `callable_agents` on Agent config derives `call_agent_*` tools | `routes/agents.ts`, `contracts/agents.ts`; OMA integrations (GitHub/Slack/Linear/Feishu) are an extension under `/v1/oma/integrations/*` |
 | `/openai/v1` adapter | **Implemented** — OpenAI Agents API projection over the same native sessions | `packages/openai-agents-api`, `openai-agents-compat`; mounted at `/openai` in `apps/main/src/index.ts` |
 

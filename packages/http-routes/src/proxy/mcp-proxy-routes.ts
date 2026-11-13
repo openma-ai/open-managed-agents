@@ -4,7 +4,7 @@ import { bindAccessLossHooks, mcpRequestBodyText } from "@open-managed-agents/mc
 import { bufferRequestBody, type ReplayableBody } from "./forward";
 import { forwardMcpProxyTarget } from "./mcp-proxy-forward";
 import type { McpProxyPorts } from "./mcp-proxy-ports";
-import { resolveMcpProxyTarget, type McpProxyTargetRequest } from "./mcp-proxy-target";
+import { UnsupportedMcpTransportError, resolveMcpProxyTarget, type McpProxyTargetRequest } from "./mcp-proxy-target";
 
 export interface McpProxyRequest extends McpProxyTargetRequest {
   method: string;
@@ -24,7 +24,12 @@ export async function forwardMcpProxyRequest(
   ports: McpProxyPorts,
   request: McpProxyRequest,
 ): Promise<Response> {
-  const target = await resolveMcpProxyTarget(ports, request);
+  let target;
+  try { target = await resolveMcpProxyTarget(ports, request); }
+  catch (error) {
+    if (error instanceof UnsupportedMcpTransportError) return Response.json({ error: error.message }, { status: 400 });
+    throw error;
+  }
   if (target === null) return Response.json({ error: "forbidden" }, { status: 403 });
   const body = await request.body();
   const toolset = target.toolSelection?.tools.find(tool => tool.type === "mcp_toolset" && tool.mcp_server_name === request.serverName);

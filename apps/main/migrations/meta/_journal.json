@@ -225,6 +225,13 @@
       "when": 1794300000000,
       "tag": "0031_work_inputs",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1794556800000,
+      "tag": "0032_custom_invocations",
+      "breakpoints": true
     }
   ]
 }

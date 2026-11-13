@@ -1,3 +1,4 @@
+import { rejectLegacyMcpSse } from "./mcp-transport-policy.js";
 import {
   MODEL_PROVIDER_SECRET_ENV_KEYS,
   projectHostedInferenceEnv,
@@ -75,7 +76,7 @@ export type AcpSandboxAgentReleaseReason = "replace" | "shutdown" | "destroy";
 
 export interface ManagedUrlMcpServerForSandbox {
   readonly name: string;
-  readonly type: "url" | "sse" | "http";
+  readonly type: "url" | "http";
   readonly url: string;
 }
 
@@ -238,6 +239,7 @@ export function projectAcpSandboxMcpServers(input: {
   sessionsToken?: string;
   servers: readonly ManagedMcpServerForSandbox[];
 }): ProjectedAcpMcpServer[] {
+  rejectLegacyMcpSse(input.servers);
   const urlServers = input.servers.filter((server) => server.type !== "stdio");
   if (urlServers.length > 0 && (
     input.sessionId.length === 0

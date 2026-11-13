@@ -717,6 +717,9 @@ export function decodeManagedAcpSessionSnapshot(
   }
   if (!Array.isArray(agent.mcp_servers)) throw invalidSession("agent.mcp_servers");
   const mcpServers = agent.mcp_servers.map((candidate, index) => {
+    if (isRecord(candidate) && candidate.type === "sse") {
+      throw new Error("MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio.");
+    }
     if (
       isRecord(candidate)
       && candidate.type === "stdio"

@@ -175,6 +175,7 @@ export class SessionRuntimeProjectionApplicationService
       expectedRevision: current.revision,
       ...(command.workRoot ? { workRoot: command.workRoot, workRootDialect: command.workRootDialect } : {}),
       events,
+      ...(command.customInvocations ? {customInvocations: command.customInvocations} : {}),
       ...(command.environmentWorkFence === undefined ? {} : { sourceEvents: command.events }),
       next: applyRuntimeEvents(current.session, events),
       ...(command.executionFence !== undefined && {

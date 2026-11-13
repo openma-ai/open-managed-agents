@@ -86,6 +86,7 @@ export interface ProxySessionSourcesPort {
 }
 
 export interface ProxyMcpServer {
+  type?: string;
   name: string;
   /** Null for a stdio server: nothing to proxy. */
   url: string | null;
@@ -184,6 +185,7 @@ function proxyAgent(
     toolSelection: { tools: tools ?? [] },
     mcpServers: (servers ?? []).map((server) => ({
       name: server.name,
+      type: server.type,
       url: typeof server.url === "string" && server.url.length > 0 ? server.url : null,
       authorizationToken: server.authorization_token || server.authorizationToken || null,
     })),

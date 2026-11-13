@@ -137,3 +137,5 @@ export * from "./work-bootstrap/planner";
 export * from "./work-bootstrap/application";
 
 export * from "./session-events/work-outcome-interrupt";
+export { CustomToolInvocations, CustomInvocationConflict, type CustomInvocation, type CustomInvocationScope, type CustomInvocationPersistence } from './custom-tool-invocations';
+export { CoreCustomToolMcp, type CoreCustomToolDefinition } from './custom-tool-mcp';

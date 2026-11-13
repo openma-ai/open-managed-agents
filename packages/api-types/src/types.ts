@@ -102,7 +102,7 @@ export interface AgentConfig {
   mcp_servers?: Array<
     | {
         name: string;
-        type: "url" | "http" | "sse";
+        type: "url" | "http";
         url: string;
         authorization_token?: string;
       }

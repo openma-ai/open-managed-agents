@@ -359,6 +359,7 @@ function validateMcpConfiguration(
   mcpServers: Array<{ name: string }>,
   tools: Array<{ type: string; mcpServerName?: string }>,
 ): string | null {
+  if (mcpServers.some(server => (server as { type?: string }).type === "sse")) return "MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio.";
   if (mcpServers.length > 20) {
     return "Agent MCP servers may contain at most 20 entries";
   }

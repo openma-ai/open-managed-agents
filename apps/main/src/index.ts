@@ -334,6 +334,14 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   });
 }));
 
+// Core-owned custom MCP transport, authenticated independently before general workspace auth.
+app.all("/v1/oma/sessions/:sessionId/custom-tools/:turnId/mcp", async c => {
+  const { cfCoreCustomToolsRoutes } = await import("./lib/cf-core-custom-tools");
+  const url = new URL(c.req.url);
+  url.pathname = "/" + encodeURIComponent(c.req.param("sessionId")) + "/custom-tools/" + encodeURIComponent(c.req.param("turnId")) + "/mcp";
+  return cfCoreCustomToolsRoutes(c.env).fetch(new Request(url, c.req.raw));
+});
+
 // Sandbox-side Work discovery precedes workspace auth. It reuses the typed
 // channel authority and never treats a Work/admin bearer as model capability.
 app.post("/v1/oma/sessions/:sessionId/execution-channels", async c => {

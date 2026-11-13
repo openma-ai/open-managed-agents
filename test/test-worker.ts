@@ -107,6 +107,9 @@ import sandboxTokenHashesSchema from "../apps/main/migrations/0028_sandbox_token
 // @ts-expect-error vitest resolves SQL via ?raw
 import workClaimPublicationSchema from "../apps/main/migrations/0029_work_claim_publication.sql?raw";
 
+// @ts-expect-error vitest resolves SQL via ?raw
+import customInvocationsSchema from "../apps/main/migrations/0032_custom_invocations.sql?raw";
+
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
   managedAgentsSchema as string,
@@ -142,6 +145,7 @@ const MIGRATIONS_RAW: string[] = [
   runtimeResourceTablesSchema as string,
   sandboxTokenHashesSchema as string,
   workClaimPublicationSchema as string,
+  customInvocationsSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

@@ -1,3 +1,4 @@
+import { rejectLegacyMcpSse } from "@open-managed-agents/acp-runtime";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -129,6 +130,7 @@ export class AcpNativeSessionState implements ManagedHarnessSessionStatePort {
   ): Promise<ManagedHarnessSessionStatePreparation> {
     const { canonicalCompletedTurnId, ...sessionCommand } = command;
     const resolved = await this.options.resolveSession(sessionCommand);
+    rejectLegacyMcpSse(resolved.mcpServers);
     const preparation = prepareAcpSandboxAgent({
       sessionId: sessionCommand.sessionId,
       agent: resolved.agent,

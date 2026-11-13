@@ -1538,7 +1538,7 @@ function McpTab({
                 value={mcp.url}
                 onChange={(e) => updateMcp(i, "url", e.target.value)}
                 className={inputCls}
-                placeholder="https://mcp.github.com/sse"
+                placeholder="https://mcp.github.com/mcp"
               />
             </div>
           ) : (

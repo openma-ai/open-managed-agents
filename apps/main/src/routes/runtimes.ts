@@ -742,6 +742,9 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   // the Skills API. Older daemons retain the legacy text bundle layout.
   const skillCache = c.req.query("skill_cache") === "1";
   if (skillCache) console.log("[runtime.bundle] managed skill references", { sessionId: sid, count: agent.skills?.length ?? 0 });
+  if (agent.mcp_servers?.some(server => (server as { type?: string }).type === "sse")) {
+    return c.json({ error: "MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio." }, 400);
+  }
   const files = await renderSessionBundle(skillCache ? { ...agent, skills: [] } : agent, acpAgentId, services, ok.tenant_id);
   // Per-agent blocklist of LOCAL skills the user has on their machine
   // — daemon enforces by NOT symlinking these into the spawn-cwd's
@@ -749,7 +752,7 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   // daemon doesn't have to handle three states (undefined / empty / set).
   const local_skill_blocklist = agent.runtime_binding?.local_skill_blocklist ?? [];
 
-  // Rewrite agent.mcp_servers (HTTP/SSE only) so they point at OMA's
+  // Rewrite agent.mcp_servers (Streamable HTTP only) so they point at OMA's
   // mcp-proxy. The daemon doesn't get the user's upstream tokens — those
   // live in vaults and only mcp-proxy on the cloud side resolves them.
   // The proxy URL pattern is documented in mcp-proxy.ts:10. stdio MCP

@@ -1,3 +1,4 @@
+import { customInvocationAnswerStatement } from "./custom-invocation-publication";
 import type { SqlClient, SqlStatement } from "@open-managed-agents/sql-client";
 import { decodeSessionEventDocument } from "@open-managed-agents/session-runtime-contract/history";
 import type {
@@ -341,6 +342,10 @@ export class SqlWorkInputs implements WorkInputsPort {
     const scope=[claim.workspaceId,claim.sessionId,claim.environmentId,Number(session.revision),...fence.bindings,...(ownership?.bindings??[])];
     const workWhere="workspace_id=? AND environment_id=? AND id=? AND session_id=? AND state IN ('starting','active') AND claim_generation=? AND claim_worker_id=? AND claim_at IS NOT NULL AND claim_at + heartbeat_ttl_seconds * 1000 > " + this.clockMs;
     const rawCas=this.dialect === "mysql" ? "BINARY document=BINARY ?" : "document=?";
+    const answer = this.dialect === "sqlite" ? await customInvocationAnswerStatement({sql:this.sql,
+      workspaceId:claim.workspaceId,sessionId:claim.sessionId,environmentId:claim.environmentId,
+      event:raw,sessionWhere,scope}) : {statement:null};
+    if(answer===null)return rejected;
     const statements:SqlStatement[]=[
       this.sql.prepare(this.dialect === "mysql" ? "SELECT revision FROM managed_sessions WHERE " + sessionWhere + " FOR UPDATE" : "UPDATE managed_sessions SET revision=revision WHERE " + sessionWhere).bind(...scope),
       // Lock holder/generation/TTL before mutating input on READ COMMITTED adapters.
@@ -357,6 +362,7 @@ export class SqlWorkInputs implements WorkInputsPort {
           .bind(baseDocument,claim.workspaceId,claim.sessionId,input.inputId,input.expectedDocument,...scope)
         : this.sql.prepare("UPDATE managed_session_initial_events SET document=" + documentSql + " WHERE workspace_id=? AND session_id=? AND sequence=? AND " + rawCas + " AND EXISTS (SELECT 1 FROM managed_sessions WHERE " + sessionWhere + ")")
           .bind(baseDocument,claim.workspaceId,claim.sessionId,sequence,input.expectedDocument,...scope),
+      ...(answer.statement ? [answer.statement] : []),
       ...siblings.map(sibling=>{
         const body=JSON.stringify({...sibling.raw,source_position:{...sibling.raw.source_position,consumed_by_execution_id:consumer,consumption_claim:{workId:claim.workId,generation:claim.generation,holder:claim.holder}}});
         const stamped=this.dialect==="postgres"?"jsonb_set(?::text::jsonb,'{processedAt}',to_jsonb("+this.clockIso+"))::text":"json_set(?, '$.processedAt', "+this.clockIso+")";

@@ -41,6 +41,7 @@
     "@open-managed-agents/vaults-store": "workspace:*",
     "hono": "4.12.12",
     "nanoid": "^5.1.0",
-    "@open-managed-agents/evals-runner": "workspace:*"
+    "@open-managed-agents/evals-runner": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0"
   }
 }

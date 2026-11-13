@@ -131,12 +131,12 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
       const output = createWorkOutputAdapter({
         toolUseIdFor,
         customToolNames: () => new Set(nativeHarnessId === "pi-acp" ? agentTools.filter(tool => tool.type === "custom" && typeof tool.name === "string").map(tool => tool.name as string) : []),
-        async publish(events) {
+        async publish(events, customInvocations) {
           input.signal.throwIfAborted();
           const response = await fetcher(outputUrl, {
             method: "POST", redirect: "error", signal: input.signal,
             headers: { authorization: `Bearer ${input.sessionsToken}`, "content-type": "application/json" },
-            body: JSON.stringify({ events, ...(activeRootProof ? {root:activeRootProof} : {}) }),
+            body: JSON.stringify({ events, ...(customInvocations ? {customInvocations} : {}), ...(activeRootProof ? {root:activeRootProof} : {}) }),
           });
           if (!response.ok) { await response.body?.cancel(); throw new Error(`Work output publication rejected: ${response.status}`); }
           const receipt: unknown = await response.json();
