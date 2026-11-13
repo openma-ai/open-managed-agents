@@ -385,11 +385,23 @@ export class NodeSessionSandboxes {
     intervalMs: string | undefined,
     findSession: (labels: { workspaceId: string; sessionId: string }) => Promise<{ archivedAt: string | null } | null>,
     log: { warn(fields: Record<string, unknown>, message: string): void },
+    options: { compareRecordedHandle?: boolean } = {},
   ): () => void {
     const adapter = this.options.adapter;
     if (adapter === undefined) return () => undefined;
+    // checkpoint_restore allocations keep their record in memory, so the
+    // durable Session record cannot prove that a labelled sandbox is replaced.
+    const records = options.compareRecordedHandle !== true ? undefined
+      : this.options.records ?? (this.options.sql ? new SqlSessionSandboxRecords(this.options.sql) : undefined);
     return startSandboxOrphanReclaim({
       lifecycle: adapter.adapter.lifecycle, findSession, intervalMs: sandboxOrphanReclaimMs(intervalMs),
+      // Only a record that names a sandbox (running/paused) identifies a
+      // replaced one; other phases are not compared (an in-flight open is
+      // further protected by the shared minimum age).
+      ...(records === undefined ? {} : { recordedHandle: async (labels: { workspaceId: string; sessionId: string }) => {
+        const state = await records.load(labels.workspaceId, labels.sessionId);
+        return state === undefined ? undefined : recordedHandle(state);
+      } }),
       warn: (fields, message) => log.warn(fields, message),
     });
   }

@@ -602,7 +602,8 @@ export async function createManagedNodeRuntime(
   });
 
   const managedRuntimeReaders = createSqlSessionRuntimeReaders(sql);
-  disposables.add("sandbox_orphan_reclaim", sessionSandboxes.startOrphanReclaim(config.sandbox.environment.SANDBOX_ORPHAN_RECLAIM_MS, async (labels) => (await managedRuntimeReaders.executionContext.find(labels))?.session ?? null, logger));
+  disposables.add("sandbox_orphan_reclaim", sessionSandboxes.startOrphanReclaim(config.sandbox.environment.SANDBOX_ORPHAN_RECLAIM_MS, async (labels) => (await managedRuntimeReaders.executionContext.find(labels))?.session ?? null, logger,
+    { compareRecordedHandle: config.workspace.strategy !== "checkpoint_restore" }));
   const managedRuntimeEngine = new ApplicationBackedNodeManagedSessionRuntimeEngine({
     historyFor: (workspaceId) =>
       new SessionRuntimeHistoryApplicationService({

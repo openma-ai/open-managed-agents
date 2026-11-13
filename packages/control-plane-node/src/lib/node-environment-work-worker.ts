@@ -67,6 +67,8 @@ export function createNodeEnvironmentWorkWorker(input: {
   // A failed/unconfirmed retirement blocks a second native worker, while the
   // sandbox lookup/reconnect itself remains free to proceed through open().
   const cleanupBlocked = new Set<string>();
+  /** Single-flight exact-handle retirements in progress (sweeper, takeover, stop). */
+  const retiring = new Map<string, Promise<void>>();
   const diagnosticRuntimeId = (sandbox: { runtimeHandle?: () => { runtimeId: string } }) => {
     try { return sandbox.runtimeHandle?.().runtimeId; } catch { return undefined; }
   };
@@ -108,13 +110,27 @@ export function createNodeEnvironmentWorkWorker(input: {
   async function retire(key: string, requesting?: { workId: string; generation: number }) {
     const process = processes.get(key);
     if (!process) return;
-    try {
-      await retireManagementProcess(process, (op, action) => processCall(process, op, action, requesting));
-      cleanupBlocked.delete(key);
-      if (processes.get(key) === process) processes.delete(key);
-    } catch (error) {
-      cleanupBlocked.add(key);
-      throw error;
+    const pending = retiring.get(key);
+    if (pending) return pending;
+    const attempt = (async () => {
+      try {
+        await retireManagementProcess(process, (op, action) => processCall(process, op, action, requesting));
+        cleanupBlocked.delete(key);
+        if (processes.get(key) === process) processes.delete(key);
+      } catch (error) {
+        cleanupBlocked.add(key);
+        throw error;
+      }
+    })();
+    retiring.set(key, attempt);
+    try { await attempt; } finally { if (retiring.get(key) === attempt) retiring.delete(key); }
+  }
+  /** Launch fence: wait for this slot's in-progress retirements to settle,
+   * then refuse while any retirement failed or stayed unconfirmed. */
+  async function assertSlotCleanupResolved(slot: string) {
+    await Promise.allSettled([...retiring].filter(([key]) => processes.get(key)?.slot === slot).map(([, attempt]) => attempt));
+    if ([...cleanupBlocked].some(key => processes.get(key)?.slot === slot)) {
+      throw new Error("Previous management worker cleanup is unresolved");
     }
   }
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -133,11 +149,15 @@ export function createNodeEnvironmentWorkWorker(input: {
       recoveryAfter = page.next ?? undefined;
     }
     if (command === undefined || origin === undefined) return;
-    await Promise.all([...processes].map(([key, process]) => handoff(process.slot, async () => {
-      if (processes.get(key) !== process) return;
+    // The sweeper never holds a slot's handoff while it waits on kill/status
+    // RPCs, so a dispatch's lookup/open is never queued behind dead-handle
+    // cleanup; cleanupBlocked still fences the next native launch. A slot a
+    // dispatch currently owns is left to the next tick.
+    await Promise.all([...processes].map(([key, process]) => (async () => {
+      if (handoffs.has(process.slot) || processes.get(key) !== process) return;
       if (!await processCall(process, "current", () => process.current())) await retire(key);
       else await renew(process);
-    }).catch(error => { if (!controller.signal.aborted) input.onError(error); })));
+    })().catch(error => { if (!controller.signal.aborted) input.onError(error); })));
     const rows = await input.sql.prepare(
       "SELECT DISTINCT workspace_id, environment_id FROM managed_environment_work WHERE state IN ('queued', 'starting', 'active')"
     ).all<{ workspace_id: string; environment_id: string }>();
@@ -261,9 +281,7 @@ export function createNodeEnvironmentWorkWorker(input: {
                   }
                   const { harness, inventory: launchInventory } = prepared;
                   if (!await owned()) throw new Error("Work claim lost during Environment setup");
-                  if ([...cleanupBlocked].some(key => processes.get(key)?.slot === slot)) {
-                    throw new Error("Previous management worker cleanup is unresolved");
-                  }
+                  await assertSlotCleanupResolved(slot);
                   const spec = { command, args: args as string[], env: {
                     ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
                     ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,

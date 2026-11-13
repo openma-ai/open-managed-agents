@@ -28,6 +28,11 @@ export interface OpenSandbox<R> {
   runStartedAt: number;
 }
 
+/** Owner wait for its own release outcome: longer than an adapter's bounded
+ * managed-process exit confirmation (local subprocess: 2s), shorter than a
+ * host's sandbox disposal cap (Node runner: 5s). */
+const OWNED_RELEASE_WAIT_MS = 3_000;
+
 export class LiveSessionSandbox<R> {
   /** The open sandbox; null before the first open and after a pause, release or loss. */
   current: OpenSandbox<R> | null = null;
@@ -275,18 +280,24 @@ export class LiveSessionSandbox<R> {
   }
 
   /** The local owner releasing its own retired handle (execution failure /
-   * destroy). Unlike a maintenance tick it waits for the real, single-flight
-   * provider outcome: an unconfirmed managed-process exit rejects with
-   * MANAGED_PROCESS_CLEANUP_FAILED so the caller retains ownership and can
-   * retry. Other release failures stay maintenance work (warned, kept
-   * durably pending). */
+   * destroy). Unlike a maintenance tick it waits for the provider's own
+   * outcome, so an unconfirmed managed-process exit (the adapter's bounded
+   * MANAGED_PROCESS_CLEANUP_FAILED) rejects and the caller retains ownership
+   * to retry. The wait is bounded: a provider that does not answer (transport
+   * hang on a dead handle) is not evidence of release or of absence, and it
+   * must not gate a replacement. The entry then stays durably pending for
+   * retired-handle maintenance and the orphan sweeper. Other release failures
+   * are maintenance work too (warned, kept durably pending). */
   async releaseRetiredOwned(record: SessionSandboxState, handle: SandboxHandle, execution = this.execution()): Promise<SessionSandboxState> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await this.releaseOperation(record, handle, execution);
+      return await Promise.race([this.releaseOperation(record, handle, execution), new Promise<SessionSandboxState>(resolve => {
+        timer = setTimeout(() => resolve(record), OWNED_RELEASE_WAIT_MS);
+      })]);
     } catch (error) {
       if ((error as { code?: unknown } | null)?.code === "MANAGED_PROCESS_CLEANUP_FAILED") throw error;
       return record;
-    }
+    } finally { if (timer !== undefined) clearTimeout(timer); }
   }
 
   private releaseOperation(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {

@@ -2,10 +2,12 @@
 // job (session-runtime reclaimOrphanSandboxes) every SANDBOX_ORPHAN_RECLAIM_MS
 // (default 5 minutes), like apps/matter's every(reconcileMs). Only with a
 // Sandbox SDK v2 adapter: the v1 bridge holds its sandboxes in this process
-// and lists none. The Session's recorded handle lives in process memory, so
-// only ended (archived) Sessions are reclaimed; one tick at a time.
+// and lists none. A sandbox is reclaimed when its Session ended (archived),
+// or when the Session's durable sandbox record names another sandbox (a
+// replaced/orphaned allocation: reconnect never cleans it up inline). Without
+// a durable record the handle is not compared. One tick at a time.
 
-import type { SandboxLifecyclePort, SandboxPort } from "@open-managed-agents/sandbox";
+import type { SandboxHandle, SandboxLifecyclePort, SandboxPort } from "@open-managed-agents/sandbox";
 import { reclaimOrphanSandboxes } from "@open-managed-agents/session-runtime";
 
 export const DEFAULT_SANDBOX_ORPHAN_RECLAIM_MS = 5 * 60_000;
@@ -22,6 +24,8 @@ export function startSandboxOrphanReclaim(input: {
   lifecycle: SandboxLifecyclePort<SandboxPort>;
   /** The Session's archived state; null = not found. */
   findSession(labels: { workspaceId: string; sessionId: string }): Promise<{ archivedAt: string | null } | null>;
+  /** The Session's durably recorded sandbox; undefined = no durable record (not compared). */
+  recordedHandle?(labels: { workspaceId: string; sessionId: string }): Promise<SandboxHandle | null | undefined>;
   intervalMs: number;
   warn(fields: Record<string, unknown>, message: string): void;
 }): () => void {
@@ -34,7 +38,9 @@ export function startSandboxOrphanReclaim(input: {
         lifecycle: input.lifecycle as SandboxLifecyclePort<unknown>,
         session: async (labels) => {
           const session = await input.findSession(labels);
-          return session === null ? null : { ended: session.archivedAt !== null };
+          if (session === null) return null;
+          const handle = await input.recordedHandle?.(labels);
+          return { ended: session.archivedAt !== null, ...(handle === undefined ? {} : { handle }) };
         },
         now: Date.now,
         warn: (message) => input.warn({ op: "main-node.sandbox_orphan_reclaim" }, message),

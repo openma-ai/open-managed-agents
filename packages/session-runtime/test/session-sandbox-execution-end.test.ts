@@ -49,6 +49,19 @@ describe("Session sandbox execution end", () => {
     expect(h.log.some((entry) => entry.startsWith("release"))).toBe(false);
   });
 
+  it("a failed execution whose provider release never answers settles bounded; the retired handle stays durably pending", async () => {
+    // A transport hang on a dead handle is neither release nor absence: it must
+    // not gate a replacement, and maintenance / the orphan sweeper keep it.
+    const h = fakeSessionSandbox({ saved: runningRecord("r0", { outputs: true }), releaseHangs: ["r0"] });
+    await h.sandbox.exec("first");
+    h.log.length = 0;
+    await h.sandbox.failExecution();
+    expect(h.log).toEqual(["egress.revoke:failed", "release:r0"]);
+    expect(h.stored()).toMatchObject({ phase: "lost", retiredHandles: [{ handle: { provider: "fake", runtimeId: "r0" }, released: false }] });
+    await h.sandbox.exec("again");
+    expect(h.log.slice(2, 3)).toEqual(["acquire"]);
+  }, 6_000);
+
   it("a failed execution publishes nothing: revoke, the lose transition, release", async () => {
     const h = fakeSessionSandbox({ saved: runningRecord("r0", { outputs: true }) });
     await h.sandbox.exec("first");
