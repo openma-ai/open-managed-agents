@@ -31,7 +31,8 @@ describe("golden harness inference adapters", () => {
       providerId: "deepseek",
     });
     expect(plan.env).toEqual({});
-    expect(plan.files[0]?.content).toContain("/openai/v1");
+    expect(plan.files[0]?.content).toContain("/anthropic");
+    expect(JSON.parse(plan.files[0]!.content).providers.deepseek.api).toBe("anthropic-messages");
     assertNoSecretInFiles(plan.files, PROXY.proxyToken);
   });
 
@@ -136,7 +137,7 @@ describe("golden harness inference adapters", () => {
       wireModel: "deepseek-chat",
       providerId: "deepseek",
     });
-    expect(plan.env.KIMI_MODEL_API_KEY).toBe(PROXY.proxyToken);
+    expect(plan.files[0]?.content).toContain('api_key_env = "HOSTED_INFERENCE_TOKEN"');
     assertNoSecretInFiles(plan.files, PROXY.proxyToken);
   });
 });

@@ -2,20 +2,20 @@ import { sessionExecutionPlacement } from "@open-managed-agents/domain/environme
 import { environmentWorkSandboxTokenRef } from "@open-managed-agents/sandbox-gateway-sql";
 import { sandboxTokenSha256, type AttemptSandboxTokens } from "@open-managed-agents/sandbox-gateway";
 import type { EnvironmentWorkRuntimeDelivery } from "@open-managed-agents/runtime-resource-contract";
-import { E2B_WORKER_INVENTORY } from "./e2b-work-handoff";
+import { assertPreparedEnvironmentAcp, type PreparedEnvironmentAcp } from "@open-managed-agents/acp-runtime/environment-setup";
 import type { CloudflareSandbox } from "./sandbox";
 import type { SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
 
-export type CfWorkRunnerSandbox = Pick<CloudflareSandbox, "runtimeHandle" | "setOutboundContext" | "startWorkRunner"> | {
+export type CfWorkRunnerSandbox = { preparedAcp?: PreparedEnvironmentAcp | null } & (Pick<CloudflareSandbox, "runtimeHandle" | "setOutboundContext" | "startWorkRunner"> | {
   provider: "e2b";
   runtimeHandle(): { provider: string; runtimeId: string };
   startManagedProcess: (spec: Parameters<SandboxManagedProcessPort["startManagedProcess"]>[0], identity: { workspaceId: string; sessionId: string; workId: string; attemptId: string }) => Promise<Awaited<ReturnType<SandboxManagedProcessPort["startManagedProcess"]>> & { created: boolean }>;
-};
+});
 
 type Authorized = {
   generation: number;
   environment: { config: { type: string } };
-  session: { id: string; environmentId: string; agent: { openma?: { harness?: string | null } | null } };
+  session: { id: string; environmentId: string; agent: { openma?: { harness?: string | null; acp?: { agent?: Parameters<typeof import("@open-managed-agents/acp-runtime/environment-setup").prepareEnvironmentAcp>[0]["agent"] } } | null } };
   harness: { id: string; version: string };
 };
 type Delivery = EnvironmentWorkRuntimeDelivery & { signal: AbortSignal };
@@ -28,7 +28,7 @@ export interface CfWorkRunnerDispatchDependencies {
   /** The existing owner-scoped holder, shared with every egress attach. */
   tokens: AttemptSandboxTokens;
   issueToken(input: EnvironmentWorkRuntimeDelivery & { generation: number }, scope: "all"): Promise<string>;
-  sandbox(input: EnvironmentWorkRuntimeDelivery, authority: { generation: number; environment: Authorized["environment"]; assertCurrent(): Promise<void> }): Promise<CfWorkRunnerSandbox>;
+  sandbox(input: EnvironmentWorkRuntimeDelivery, authority: { generation: number; environment: Authorized["environment"]; harness: Authorized["harness"]; agent?: Parameters<typeof import("@open-managed-agents/acp-runtime/environment-setup").prepareEnvironmentAcp>[0]["agent"]; assertCurrent(): Promise<void> }): Promise<CfWorkRunnerSandbox>;
 }
 
 /** CF management composition only. Work runner owns ACK/heartbeat and ACP HTTP.
@@ -56,10 +56,11 @@ export function createCfWorkRunnerDispatch(deps: CfWorkRunnerDispatchDependencie
         signal.throwIfAborted();
         if (!current || current.generation !== generation || current.session.id !== delivery.sessionId || current.session.environmentId !== delivery.environmentId || current.harness.id !== harness.id || current.harness.version !== harness.version || sessionExecutionPlacement(current.environment, current.session).harnessPlacement !== "in_sandbox") throw new Error("Work bootstrap authority was lost");
       };
-      const runtime = await deps.sandbox(delivery, { generation, environment: authorized.environment, assertCurrent });
+      const runtime = await deps.sandbox(delivery, { generation, environment: authorized.environment, harness, agent: authorized.session.agent.openma?.acp?.agent, assertCurrent });
       await assertCurrent();
       signal.throwIfAborted();
-      if ("provider" in runtime && (deps.installedHarnesses !== E2B_WORKER_INVENTORY || harness.id !== "codex-acp" || harness.version !== "1.8.0")) throw new Error("E2B worker requires the certified installed inventory");
+      const prepared = assertPreparedEnvironmentAcp(runtime.preparedAcp, harness);
+      const installedHarnesses = prepared.inventory;
       const fence = environmentWorkSandboxTokenRef({ ...delivery, generation });
       const token = await deps.tokens.relayDelivery(fence, () => deps.issueToken({ ...delivery, generation }, "all"), runtime.runtimeHandle().runtimeId);
       signal.throwIfAborted();
@@ -75,7 +76,7 @@ export function createCfWorkRunnerDispatch(deps: CfWorkRunnerDispatchDependencie
         ANTHROPIC_WORK_SECRET: delivery.workSecret, OPENMA_WORKSPACE_ID: delivery.workspaceId,
         OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
         OPENMA_SANDBOX_TOKEN: token,
-        ...(deps.installedHarnesses ? { OPENMA_ACP_HARNESSES: deps.installedHarnesses } : {}),
+        ...(installedHarnesses ? { OPENMA_ACP_HARNESSES: installedHarnesses } : {}),
       };
       if ("provider" in runtime) {
         const handle = await runtime.startManagedProcess({ command: "/usr/local/bin/node", args: ["/opt/oma-managed/worker/node-e2b-work-item-cli.js"], cwd: "/workspace", env: environment }, { workspaceId: delivery.workspaceId, sessionId: delivery.sessionId, workId: delivery.workId, attemptId: fence.attemptId });

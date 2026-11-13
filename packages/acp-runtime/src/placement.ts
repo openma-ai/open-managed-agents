@@ -110,10 +110,16 @@ class PlacementAcpRuntime implements AcpRuntime {
       throw new Error("ACP runtime initialized without a child process");
     }
     const supervised = withChildLiveness(session, child, this.cancelGraceMs, perTurnTimeoutMs);
-    if (options.mcpServers?.some(server => "type" in server && server.type === "http")
-      && session.agentCapabilities.mcpCapabilities?.http !== true) {
-      await supervised.dispose();
-      throw new Error("ACP agent does not declare mcpCapabilities.http=true; refusing to run a Session with HTTP MCP servers");
+    // Common filters unsupported remote transports during session/new. A
+    // successfully started child therefore does not prove configured tools
+    // survived negotiation. Refuse before any prompt instead of silently
+    // running with a smaller tool set. Stdio is baseline ACP support.
+    for (const transport of ["http"] as const) {
+      if (options.mcpServers?.some(server => "type" in server && server.type === transport)
+        && session.agentCapabilities.mcpCapabilities?.[transport] !== true) {
+        await supervised.dispose();
+        throw new Error(`ACP agent does not declare mcpCapabilities.${transport}=true; refusing to run a Session with ${transport.toUpperCase()} MCP servers`);
+      }
     }
     return supervised;
   }

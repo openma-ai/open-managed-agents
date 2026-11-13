@@ -1,3 +1,4 @@
+import { environmentAcpInstall, prepareEnvironmentAcp } from "@open-managed-agents/acp-runtime/environment-setup";
 // Cloudflare composition of the shared environment cache (session-runtime
 // EnvironmentCache and environmentCacheKey, design §0.0 rule 13). Lookup,
 // expiry, warnings and the build lifecycle are the core's; this file only
@@ -43,6 +44,7 @@ export const ENVIRONMENT_BUILD_HOSTS: readonly string[] = Object.freeze([...PACK
 export interface CloudflareEnvironmentSetup {
   environmentId: string;
   packages: EnvironmentPackages;
+  acpRegistry?: string;
 }
 
 /** kv_entries of the tenant's D1, scoped to one workspace. */
@@ -135,14 +137,32 @@ export function createCloudflareEnvironmentCache(options: CloudflareEnvironmentC
  * snapshots of an older image after a deploy. */
 export async function environmentKey(setup: CloudflareEnvironmentSetup, from: { image: string } | object): Promise<string | null> {
   if (!("image" in from) || from.image === UNKNOWN_SANDBOX_IMAGE || from.image.length === 0) return null;
-  return environmentCacheKey({ adapter: CLOUDFLARE_ADAPTER, image: from.image, packages: setup.packages, acp: null });
+  return environmentCacheKey({ adapter: CLOUDFLARE_ADAPTER, image: from.image, packages: setup.packages, acp: environmentAcpInstall(setup.acpRegistry) });
 }
 
 /** The Session's own setup steps on the build sandbox; a failure fails the build. */
 async function buildEnvironment(runtime: CloudflareSandboxRuntime, setup: CloudflareEnvironmentSetup): Promise<void> {
-  const result = await ensureEnvironmentPackages(
-    { exec: (command: string, timeout?: number) => runtime.exec(command, timeout) },
-    setup.packages,
-  );
-  if (result.error !== undefined) throw new Error(`Environment setup failed at ${result.path}: ${result.error}`);
+  await prepareCloudflareEnvironmentRuntime({ runtime, setup, sessionId: setup.environmentId });
+}
+
+/** Existing Environment preparation on a live runtime or a snapshot build.
+ * ACP flow is shared; this adapter supplies only the package execution port.
+ */
+export function prepareCloudflareEnvironmentRuntime(input: {
+  runtime: { exec(command: string, timeout?: number): Promise<string> };
+  setup: CloudflareEnvironmentSetup;
+  sessionId: string;
+  assertCurrent?(): Promise<void>;
+  agent?: Parameters<typeof prepareEnvironmentAcp>[0]["agent"];
+  installedHarnesses?: string;
+}) {
+  return prepareEnvironmentAcp({ runtime: input.runtime, sessionId: input.sessionId,
+    agent: input.agent ?? (input.setup.acpRegistry ? { registry: input.setup.acpRegistry } : undefined),
+    installedHarnesses: input.installedHarnesses,
+    assertCurrent: input.assertCurrent,
+    preparePackages: async () => {
+      const result = await ensureEnvironmentPackages(input.runtime, input.setup.packages);
+      if (result.error !== undefined) throw new Error(`Environment setup failed at ${result.path}: ${result.error}`);
+    },
+  });
 }

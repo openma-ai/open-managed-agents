@@ -60,7 +60,8 @@ it.each(["missing", "bound"])("accepted interrupt recovery distinguishes %s targ
   try { expect((await sendInterrupt(f)).status).toBe(500); expect(collisions).toBe(3); }
   finally { spy.mockRestore(); }
   if (mode === "missing") await env.MAIN_DB.prepare("UPDATE managed_session_events SET document=json_remove(document,'$.environmentWorkId') WHERE session_id=? AND type='user.interrupt'").bind(f.session.id).run();
-  const before = await env.MAIN_DB.prepare("SELECT id,document,processed_at FROM managed_session_events WHERE session_id=?").bind(f.session.id).all();
+  // Compare the event rows, not D1's result envelope (meta.duration / timings vary under load).
+  const before = (await env.MAIN_DB.prepare("SELECT id,document,processed_at FROM managed_session_events WHERE session_id=?").bind(f.session.id).all()).results;
   const workBefore = await env.MAIN_DB.prepare("SELECT * FROM managed_environment_work WHERE id=?").bind(f.work.id).first();
   const retry = await sendInterrupt(f);
   if (mode === "missing") {
@@ -74,7 +75,7 @@ it.each(["missing", "bound"])("accepted interrupt recovery distinguishes %s targ
     expect(retry.status).toBe(200);
     expect(await state(f)).toBe("stopping");
   }
-  expect(await env.MAIN_DB.prepare("SELECT id,document,processed_at FROM managed_session_events WHERE session_id=?").bind(f.session.id).all()).toEqual(before);
+  expect((await env.MAIN_DB.prepare("SELECT id,document,processed_at FROM managed_session_events WHERE session_id=?").bind(f.session.id).all()).results).toEqual(before);
 });
 
 it("explicit null accepted target remains a no-op after later Work appears", async () => {

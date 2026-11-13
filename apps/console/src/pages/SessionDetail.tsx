@@ -1,3 +1,5 @@
+import { CustomToolResults } from "../components/session/CustomToolResults";
+import { pendingCustomResults } from "../lib/pending-custom-results";
 import { Input } from "@/components/ui/input";
 import { startTransition, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, Link } from "react-router";
@@ -584,12 +586,14 @@ export function SessionDetail() {
       // Even at 200/page this covers 100k events, well past anything the
       // sandbox SQL store retains in practice.
       for (let i = 0; i < 500; i++) {
+        if (abort.signal.aborted) return;
         try {
           const res = await managedApi.sessions.events.list(id, {
             limit: pageLimit,
             order: "asc",
             page,
           });
+          if (abort.signal.aborted) return;
           for (const managedEvent of res.data) {
             // addEvent runs ingestManagedWireEvent (strips processed_at,
             // projects delivery / turn.queued).
@@ -606,7 +610,6 @@ export function SessionDetail() {
     const connectStream = async () => {
       const backoffMs = [1_000, 2_000, 4_000, 8_000];
       let failures = 0;
-      let connected = false;
       while (!abort.signal.aborted) {
         try {
           const liveEvents = await managedApi.sessions.events.stream(
@@ -619,8 +622,7 @@ export function SessionDetail() {
           // previous connection was down (tool results, status_idle, queue
           // stamps) would be missing until a full reload. Re-list once the
           // new stream is open; upsertSessionEvent dedupes by event id.
-          if (connected) void loadHistory();
-          connected = true;
+          void loadHistory();
           for await (const event of liveEvents) {
             if (abort.signal.aborted) break;
             addEvent(event as unknown as Record<string, unknown>);
@@ -659,12 +661,10 @@ export function SessionDetail() {
       })
       .catch(() => setThreads([]));
 
-    // Start history, the live stream (official Managed Agents async stream;
-    // reconnect only transport/5xx, 4xx is terminal) and threads together as
-    // soon as the session lookup resolves.
+    // Start the stream and threads after lookup. History follows stream open
+    // to close the reconnect gap; reconnect transport/5xx, 4xx is terminal.
     void lookup.then((exists) => {
       if (!exists || abort.signal.aborted) return;
-      void loadHistory();
       void connectStream();
       void loadThreads();
     });
@@ -790,7 +790,8 @@ export function SessionDetail() {
     }),
     [activeThreadId, events, status],
   );
-  /** Official requires_action: session idle, turn parked on tool calls. */
+  const customResults = useMemo(() => pendingCustomResults(events as WireSessionEvent[], activeThreadId), [events, activeThreadId]);
+  /** Confirmation parking and resource status remain separate from early custom replies. */
   const needsAction = status !== "running" && projectedSessionState === "requires_action";
   const activeTurn = activeTurnId ? canonicalTurns.find((turn) => turn.id === activeTurnId) : undefined;
   const blockedToolNames = needsAction && activeTurn ? awaitedToolNames(activeTurn) : [];
@@ -1309,6 +1310,16 @@ export function SessionDetail() {
               prompts={queueDockItems}
             />
           ) : null}
+          {customResults.length > 0 && <CustomToolResults actions={customResults} onSubmit={async (callId, text) => {
+            if (!id) return;
+            const response = await managedApi.sessions.events.send(id, { events: [{
+              type: "user.custom_tool_result", custom_tool_use_id: callId,
+              content: [{ type: "text", text }],
+              ...(activeThreadId !== "sthr_primary" ? { session_thread_id: activeThreadId } : {}),
+            }] });
+            // The accepted echo is durable; apply it immediately and dedupe its SSE replay.
+            for (const event of response.data ?? []) addEvent(event as unknown as Record<string, unknown>);
+          }} />}
           {pendingConfirmations.length > 0 ? (
             // Shared common card — occupies the composer slot like Backchat's
             // pending ask (no empty QueueDock strip above/below).

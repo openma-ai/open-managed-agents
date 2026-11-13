@@ -30,7 +30,7 @@ export function nodeExecutionChannelsHttp(options: {
       const card = await options.modelCards.findByModelId({tenantId:checked.session.workspaceId,modelId:typeof model === "string" ? model : model.id});
       if (!card || card.archived_at || !card.provider?.trim() || !card.model?.trim()) return c.json({type:"failed",phase:"model_lookup",code:"model_unavailable",message:"Active workspace model required"},409);
       const capability = {gatewayBaseUrl:options.gatewayBaseUrl!,sessionsToken:token};
-      return c.json({type:"ready",channels:{mcpProxy:capability,hostedInference:{...capability,model:{providerId:card.provider,baseUrl:card.base_url ?? null,wireModel:card.model,protocolEndpoints:resolveProtocolEndpointsFromModelCard({providerId:card.provider,baseUrl:card.base_url})}}}});
+      return c.json({type:"ready",channels:{mcpProxy:capability,hostedInference:{...capability,model:{providerId:card.provider,baseUrl:card.base_url ?? null,wireModel:card.model,protocolEndpoints:resolveProtocolEndpointsFromModelCard({providerId:card.provider,baseUrl:card.base_url,wireModel:card.model,piConfig:card.pi_config ?? undefined})}}}});
     } catch { return c.json({type:"failed",phase:"session_lookup",code:"unavailable",message:"Execution channels authority unavailable"},503); }
   });
   return route;

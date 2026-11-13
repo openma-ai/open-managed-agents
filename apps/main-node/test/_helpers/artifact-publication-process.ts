@@ -11,6 +11,10 @@ const arm = join(directory, "publication-crash-arm");
 const read = LocalSubprocessSandbox.prototype.readFileBytes;
 let reads = 0;
 LocalSubprocessSandbox.prototype.readFileBytes = async function(path) {
+  if (path.startsWith("/workspace/outputs/") && existsSync(join(directory!, "publication-read-fail-arm"))) {
+    await writeFile(join(directory!, "publication-read-failed"), path);
+    throw new Error("derived read unavailable PRIVATE_PROVIDER_DETAIL");
+  }
   if (path.startsWith("/workspace/outputs/") && existsSync(arm) && ++reads === 2) {
     await unlink(arm);
     await writeFile(join(directory!, "publication-crash-ready"), path);

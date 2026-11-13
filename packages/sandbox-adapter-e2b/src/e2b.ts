@@ -33,7 +33,7 @@ import type {
   SandboxRuntimePort,
   SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
-import { readS3MemoryBucket, type SandboxManagedProcessSpec, type SandboxManagedProcessHandle, type SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
+import { SandboxGoneError, readS3MemoryBucket, type SandboxManagedProcessSpec, type SandboxManagedProcessHandle, type SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
 import { startE2BManagedProcess, inspectE2BManagedSlot, restoreE2BManagedProcess, type E2BManagedIdentity, type E2BManagedLocator, type E2BManagedBootstrapOptions } from "./managed-bootstrap";
 
 // Structural types so this file compiles without `e2b` installed. The
@@ -826,7 +826,14 @@ async function runCommand(sandbox: E2BSandboxLike, command: string, options: E2B
     return await settleCommand(handle.wait());
   } catch (cause) {
     if (!started && isRejectedCommandStart(cause)) throw cause;
-    throw Object.assign(new Error("Dispatched command outcome is unknown", { cause }), { outcome: "dispatched_unknown" });
+    // Physical liveness and effect certainty are independent: a terminated
+    // sandbox must be replaced for the NEXT call, but this call may already
+    // have committed external effects and must never be automatically replayed.
+    const name = (cause as { name?: unknown } | null)?.name;
+    const error = name === "SandboxNotRunningError" || name === "SandboxNotFoundError"
+      ? new SandboxGoneError("Dispatched command outcome is unknown; sandbox terminated", { cause })
+      : new Error("Dispatched command outcome is unknown", { cause });
+    throw Object.assign(error, { outcome: "dispatched_unknown" });
   }
 }
 

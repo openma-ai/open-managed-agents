@@ -20,16 +20,18 @@ afterEach(async () => {
 });
 
 describe("sandbox ACP runtime", () => {
-  it.each([undefined, false])("refuses HTTP MCP without declared http support (%s)", async http => {
+  it.each([
+    ["http", undefined], ["http", false],
+  ] as const)("refuses %s MCP without declared support (%s)", async (transport, supported) => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-http-capability-"));
     temporaryDirectories.push(workdir);
     const runtime = createAcpRuntime({ type: "local", spawner: new NodeSpawner() });
-    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: ' + JSON.stringify(http === undefined ? {} : { mcpCapabilities: { http } }));
+    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: ' + JSON.stringify(supported === undefined ? {} : { mcpCapabilities: { [transport]: supported } }));
     const started: Array<Awaited<ReturnType<typeof runtime.start>>> = [];
     try {
       await expect(runtime.start({ agent: { command: process.execPath, args: ["-e", source], cwd: workdir },
-        mcpServers: [{ type: "http", name: "public", url: "https://proxy.example/mcp", headers: [] }],
-      }).then(value => { started.push(value); return value; })).rejects.toThrow(/mcpCapabilities.http/);
+        mcpServers: [{ type: transport, name: "public", url: "https://proxy.example/mcp", headers: [] }],
+      }).then(value => { started.push(value); return value; })).rejects.toThrow(`mcpCapabilities.${transport}`);
     } finally { await Promise.all(started.map(session => session.dispose())); }
   });
   it("runs the shared ACP session loop over a sandbox duplex process", async () => {
@@ -87,12 +89,12 @@ describe("sandbox ACP runtime", () => {
     expect(sandboxResult).toEqual(localResult);
   });
 
-  it("runs HTTP MCP only when initialize declares support", async () => {
+  it.each(["http"] as const)("runs %s MCP only when initialize declares support", async transport => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-http-supported-"));
     temporaryDirectories.push(workdir);
     const runtime = createAcpRuntime({ type: "sandbox", sandbox: new LocalSubprocessSandbox({ workdir }) });
-    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: { mcpCapabilities: { http: true } }');
-    const mcpServers = [{ type: "http" as const, name: "public", url: "https://proxy.example/mcp", headers: [] }];
+    const source = fakeAcpAgentSource.replace('agentCapabilities: {}', 'agentCapabilities: ' + JSON.stringify({mcpCapabilities:{[transport]:true}}));
+    const mcpServers = [{ type: transport, name: "public", url: "https://proxy.example/mcp", headers: [] }];
     const session = await runtime.start({ agent: { command: process.execPath, args: ["-e", source], cwd: "/workspace" }, mcpServers });
     try {
       const updates = [];

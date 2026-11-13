@@ -330,7 +330,10 @@ function buildMessages(
           ? (e as AgentToolResultEvent).tool_use_id
           : (e as AgentMcpToolResultEvent).mcp_tool_use_id;
         const toolName = toolNameById.get(toolCallId) ?? "unknown";
-        const output = wireContentToToolOutput((e as AgentToolResultEvent).content);
+        const contentOutput = wireContentToToolOutput((e as AgentToolResultEvent).content);
+        const output = e.is_error
+          ? { type: contentOutput.type === "text" ? "error-text" : "error-json", value: contentOutput.value }
+          : contentOutput;
         pendingToolContent.push({
           type: "tool-result",
           toolCallId,
@@ -448,7 +451,10 @@ async function buildMessagesAsync(
           ? (e as AgentToolResultEvent).tool_use_id
           : (e as AgentMcpToolResultEvent).mcp_tool_use_id;
         const toolName = toolNameById.get(toolCallId) ?? "unknown";
-        const output = wireContentToToolOutput((e as AgentToolResultEvent).content);
+        const contentOutput = wireContentToToolOutput((e as AgentToolResultEvent).content);
+        const output = e.is_error
+          ? { type: contentOutput.type === "text" ? "error-text" : "error-json", value: contentOutput.value }
+          : contentOutput;
         pendingToolContent.push({
           type: "tool-result",
           toolCallId,

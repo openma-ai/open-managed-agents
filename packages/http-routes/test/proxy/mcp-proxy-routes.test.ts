@@ -275,7 +275,7 @@ describe("MCP tool selection (#568)", () => {
     expect(await response.json()).toEqual({ jsonrpc: "2.0", id: 1,
       result: { tools: [{ name: "echo" }], nextCursor: "page-2" } });
   });
-  it("filters SSE list responses", async () => {
+  it("filters Streamable HTTP event-stream list responses", async () => {
     const fetch = upstream(() => new Response(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"hidden"},{"name":"echo"}],"nextCursor":"next"}}
 
@@ -354,7 +354,7 @@ describe("MCP filtered stream lifecycle", () => {
     expect(text).toContain('"nextCursor":"page-2"');
     expect(text).toContain(notification);
   });
-  it("filters split SSE events before EOF and propagates cancellation", async () => {
+  it("filters split Streamable HTTP response events before EOF and propagates cancellation", async () => {
     let canceled!: () => void;
     const cancellation = new Promise<void>(resolve => { canceled = resolve; });
     const stream = new ReadableStream({ start(c) {
@@ -384,4 +384,15 @@ it("returns a disabled batch call's error when the forwarded notification has no
     { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "hidden" } },
   ]) }));
   expect(await response.json()).toEqual([{ jsonrpc: "2.0", id: 2, error: { code: -32601, message: "MCP tool is not enabled: hidden" } }]);
+});
+
+it.each([managedSession, legacySession])('rejects persisted legacy SSE before proxy credentials or fetch', async makeSession => {
+ const fetch = upstream();
+ const p = ports(makeSession === managedSession ? {managed:makeSession([server('old',{type:'sse'})]),fetch} : {legacy:makeSession([server('old',{type:'sse'})]),fetch});
+ const binding = createMcpProxyBinding(() => p);
+ const response = await binding.fetch(new Request(SERVER,{method:'POST',body:'{}',headers:routing('session','old')}));
+ expect(response.status).toBe(400);
+ expect(await response.text()).toContain('MCP_SSE_UNSUPPORTED');
+ expect(fetch).not.toHaveBeenCalled();
+ expect(p.legacyCredentials.listByVaults).not.toHaveBeenCalled();
 });

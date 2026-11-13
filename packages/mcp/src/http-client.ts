@@ -44,7 +44,7 @@ function requestOptions(
 
 /**
  * Official Streamable HTTP adapter. The OpenMA surface stays a small Port;
- * protocol negotiation, sessions, SSE, pagination and validation remain the
+ * protocol negotiation, sessions, Streamable HTTP event-stream framing, pagination and validation remain the
  * responsibility of the MCP SDK.
  */
 export async function connectHttpMcpClient(

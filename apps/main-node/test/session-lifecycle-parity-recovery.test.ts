@@ -46,11 +46,48 @@ describe("main lifecycle parity: real budget and rebuilt runtime", () => {
       } else {
         await f.api("/v1/sessions/" + f.session.id, { budget: { type: "limit", max_list_cost: { amount: "3", currency: "USD" } } });
         await active.waitFor(() => prompts,2);
+        // prompts counts the start of turn 2; its gateway status is recorded
+        // only once that call returns. Wait for the evidence, not the start.
+        await active.waitFor(() => statuses,[200, 402, 200]);
         expect(statuses).toEqual([200, 402, 200]);
         expect(upstreamCalls).toBe(2);
         expect((await f.events()).filter(e => e.type === "user.message")).toHaveLength(1);
       }
     } finally { await active?.stop(); vi.unstubAllGlobals(); await f.dispose(); }
+  });
+
+  // CI 43026796904: the budget raise above landed between terminal commit and
+  // work-publish, advancing the Session revision; publication was refused as
+  // terminal_revision and the runner died with "work-publish rejected (409)".
+  // Force that interleaving deterministically for any ordinary Session update.
+  it.each(["metadata", "budget"] as const)("a Session %s update between terminal commit and publication still publishes the committed turn", async variant => {
+    const realFetch = globalThis.fetch; let f: Fixture | undefined; let active: Awaited<ReturnType<typeof supervisor>> | undefined;
+    let raced = 0; let updateStatus = 0;
+    // Installed before the fixture so its native transport (the runner's) is observed.
+    vi.stubGlobal("fetch", async (raw: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(raw, init);
+      if (raced === 0 && f !== undefined && new URL(request.url).pathname.endsWith("/work-publish")) {
+        raced++;
+        const update = variant === "metadata" ? { metadata: { raced: "publication" } } : { budget: { type: "limit", max_list_cost: { amount: "5", currency: "USD" } } };
+        const response = await realFetch(new Request(f.base + "/v1/sessions/" + f.session.id, { method: "POST", headers: { "x-api-key": "parity-admin", "content-type": "application/json" }, body: JSON.stringify(update) }));
+        updateStatus = response.status; await response.text();
+      }
+      return realFetch(request);
+    });
+    try {
+      f = await lifecycleFixture(variant === "budget" ? { type: "limit", max_list_cost: { amount: "1", currency: "USD" } } : undefined);
+      await history(f);
+      let effects = 0;
+      active = await supervisor(f, async function* () { effects++; yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "committed effect" } }; yield { type: "promptComplete", response: {} }; });
+      await active.waitFor(() => active!.responses.filter(r => r.action === "work-publish").map(r => [r.status, (r.body as { type?: string })?.type, (r.body as { reason?: string })?.reason ?? null]),
+        [[409, "rejected", "terminal_revision"], [200, "published", null]], 5000);
+      expect(raced).toBe(1); expect(updateStatus).toBe(200);
+      // The runner survived publication and its terminal is the single canonical one.
+      expect(await Promise.race([active.result.then(() => "exited"), new Promise(resolve => setTimeout(() => resolve("resident"), 300))])).toBe("resident");
+      expect(effects).toBe(1);
+      expect((await f.events()).filter(e => e.type === "session.status_idle").map(e => e.stop_reason)).toEqual([{ type: "end_turn" }]);
+      expect((await f.events()).filter(e => e.type === "agent.message")).toHaveLength(1);
+    } finally { await active?.stop(); vi.unstubAllGlobals(); await f?.dispose(); }
   });
 
   it("rebuilding supervisor and native runtime after canonical terminal never repeats the completed effect", async () => {
@@ -66,9 +103,7 @@ describe("main lifecycle parity: real budget and rebuilt runtime", () => {
       // Fresh app/runtime/native-state instance; only the canonical SQL log remains.
       await f.reclaim();
       second = await supervisor(f, prompt);
-      const recovered=await second.result;
-      expect(second.responses.some(r=>r.action==="work-publish"&&r.status===200)).toBe(true);
-      expect(recovered).toEqual({ok:true});
+      await second.residentAfterPublish();
 
       expect(effects).toBe(1);
       expect((await f.events()).filter(e => e.type === "agent.message")).toHaveLength(1);
@@ -94,12 +129,13 @@ describe("main lifecycle parity: real budget and rebuilt runtime", () => {
       await first.stop(); first = undefined;
       await f.reclaim();
       second = await supervisor(f, prompt);
-      const recovered=await second.result;
-      expect(second.responses.some(r=>r.action==="work-publish"&&r.status===200)).toBe(true);
-      expect(recovered).toMatchObject({error:expect.objectContaining({message:expect.stringContaining("retries_exhausted")})});
+      await second.residentAfterPublish();
 
       expect(effects).toBe(1);
       expect((await f.events()).filter(e => e.type === "user.message")).toHaveLength(1);
+      // The published receipt stays the canonical exhausted terminal; it is not replaced by a rerun.
+      expect((await f.events()).filter(e => e.type === "session.status_idle").map(e => e.stop_reason)).toEqual([{ type: "retries_exhausted" }]);
+      expect((await f.events()).filter(e => e.type === "agent.message")).toHaveLength(1);
     } finally { await first?.stop(); await second?.stop(); await f.dispose(); }
   });
 });

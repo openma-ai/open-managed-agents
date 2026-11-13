@@ -41,8 +41,8 @@ export function withReportedArtifactPublication<I extends { workspaceId: string;
     try { await publish(input); }
     catch (error) {
       try { await onError(error, input); }
-      catch (reportingError) {
-        console.error("Artifact publication error reporter failed", { workspaceId: input.workspaceId, sessionId: input.session.id, executionId: input.executionFence.executionId, error, reportingError });
+      catch {
+        console.error("Artifact publication error reporter failed", { workspaceId: input.workspaceId, sessionId: input.session.id, executionId: input.executionFence.executionId });
       }
     }
   };

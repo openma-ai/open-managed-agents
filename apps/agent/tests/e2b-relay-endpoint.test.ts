@@ -4,7 +4,8 @@ import { createE2BSessionSandbox } from "../src/runtime/e2b-session-sandbox";
 const observed = vi.hoisted(() => ({ creates: 0, commands: [] as string[], envs: [] as unknown[], tokens: 0 }));
 vi.mock("e2b", () => ({ Sandbox: { create: async () => {
   observed.creates++;
-  return { sandboxId: "box-1", commands: { run: async (cmd: string, opts: unknown) => { observed.commands.push(cmd); observed.envs.push(opts); return { exitCode: 0, stdout: "ok", stderr: "" }; } }, files: { read: async () => "", write: async () => {} }, updateNetwork: async () => {}, kill: async () => {} };
+  // A trusted-template create returns only after the launcher wrote its ready marker.
+  return { sandboxId: "box-1", commands: { run: async (cmd: string, opts: unknown) => { observed.commands.push(cmd); observed.envs.push(opts); return { exitCode: 0, stdout: "ok", stderr: "" }; } }, files: { read: async (path: string) => path === "/run/oma-managed/ready" ? "oma-managed-v2" : "", write: async () => {} }, updateNetwork: async () => {}, kill: async () => {} };
 } } }));
 
 const scope = { workspaceId: "ws", sessionId: "sess", environmentId: "env", workId: "exe" };
@@ -38,5 +39,6 @@ describe("CF E2B relay endpoint admission", () => {
     expect(observed.creates).toBe(1);
     expect(observed.tokens).toBe(1);
     expect(observed.commands.some(cmd => cmd.includes("EGRESS_DELIVERED"))).toBe(false);
+    expect(observed.commands.some(cmd => cmd.includes("/opt/oma-managed/launcher.py"))).toBe(false);
   });
 });

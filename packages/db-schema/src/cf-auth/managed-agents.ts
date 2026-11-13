@@ -595,3 +595,18 @@ export const managed_session_resource_secrets = sqliteTable(
     ),
   ],
 );
+
+/** Internal MCP transport receipts, not the public Session event log. */
+export const managed_custom_invocations = sqliteTable("managed_custom_invocations", {
+  workspace_id: text("workspace_id").notNull(),
+  session_id: text("session_id").notNull(),
+  environment_id: text("environment_id").notNull(),
+  turn_id: text("turn_id").notNull(),
+  receipt: text("receipt").notNull(),
+  native_call_id: text("native_call_id"),
+  revision: integer("revision").notNull(),
+  document: text("document").notNull(),
+}, table => [
+  primaryKey({ columns: [table.workspace_id, table.session_id, table.receipt] }),
+  uniqueIndex("idx_managed_custom_invocations_call").on(table.workspace_id, table.session_id, table.turn_id, table.native_call_id),
+]);

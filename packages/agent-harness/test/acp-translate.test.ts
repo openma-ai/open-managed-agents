@@ -354,3 +354,16 @@ it.each(["root","main"])("normalizes %s aliases without losing or duplicating ro
  expect(events.filter(e=>e.type==="agent.thinking")).toMatchObject([{text:"root thought"}]);
  expect(events.filter(e=>e.type==="agent.thinking")).toHaveLength(1);
 });
+
+it("closes only outstanding calls once when the process fails, retaining child call identity", async () => {
+  const {runtime,events}=makeFakeRuntime();const translator=new AcpTranslator(runtime);
+  await translator.consume(ev({sessionUpdate:"tool_call",toolCallId:"done",title:"write"}));
+  await translator.consume(ev({sessionUpdate:"tool_call_update",toolCallId:"done",status:"completed",rawOutput:"written"}));
+  await translator.consume(ev({sessionUpdate:"tool_call",toolCallId:"pending",title:"read"}));
+  await translator.consume({type:"promptError",error:"provider lost"});
+  await translator.consume({type:"promptError",error:"duplicate transport terminal"});
+  await translator.flush();
+  const results=events.filter(e=>e.type==="agent.tool_result");
+  expect(results.filter(e=>e.tool_use_id==="done")).toHaveLength(1);
+  expect(results.filter(e=>e.tool_use_id==="pending")).toEqual([expect.objectContaining({is_error:true,content:"provider lost"})]);
+});

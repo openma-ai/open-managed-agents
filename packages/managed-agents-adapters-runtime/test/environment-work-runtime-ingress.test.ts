@@ -91,13 +91,13 @@ describe("Environment Work runtime event ingress", () => {
     }]);
   });
 
-  it("retries revision races without changing event identity or double publishing", async () => {
+  it.each([undefined, {inputId: "root", turnId: "turn", expectedDocument: "root-document"}])("retries revision races with root %j without changing event identity or double publishing", async (root) => {
     const calls: object[] = [];
     const published: string[] = [];
     const result = await ingestEnvironmentWorkRuntimeEvents({
       claim,
       sessionId: claim.sessionId,
-      body: { events: [event] },
+      body: { events: [event], ...(root ? {root} : {}) },
       projection: projection(async (input) => {
         calls.push(structuredClone(input));
         return calls.length === 1

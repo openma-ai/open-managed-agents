@@ -14,7 +14,7 @@ import type {
 import type { Env } from "@open-managed-agents/shared";
 import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import { r2FilesCredentials } from "./r2-files-credentials";
-import { sessionOutputsPrefix } from "@open-managed-agents/shared";
+import { log, logError, sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { cloudflareWorkspaceMountPrefix } from "@open-managed-agents/managed-runtime-cloudflare";
 import type {
   OmaMountBucketRequest,
@@ -321,14 +321,18 @@ export class CloudflareSandbox
     autoStart?: boolean;
     containerSnapshot?: ContainerSnapshotRestoreParams;
   }): Promise<OmaProvisionResult> {
+    const fields = { session_id: this.sessionId, sandbox_id: this.sessionId, path: "r2_fuse",
+      object_prefixes: input.mounts.map(mount => mount.options.prefix), mount_paths: input.mounts.map(mount => mount.mountPath) };
+    log({ ...fields, op: "sandbox.persistence.mount.start" }, "Provisioning configured mounts");
+    try {
     const sandbox = await this.getSandbox();
     if (typeof sandbox.provision !== "function") {
       if (input.containerSnapshot !== undefined) throw new Error("This sandbox cannot start from a container snapshot");
       for (const mount of input.mounts) {
-        if (typeof sandbox.mountBucket === "function") {
-          await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
-        }
+        if (typeof sandbox.mountBucket !== "function") throw new Error("Managed persistence mount interface unavailable");
+        await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
       }
+      log({ ...fields, op: "sandbox.persistence.mount.complete" }, "Configured mounts attached");
       return { incarnation: input.incarnation, started: true, pendingMounts: [] };
     }
     const result = await sandbox.provision({
@@ -341,8 +345,14 @@ export class CloudflareSandbox
       env: {},
       ...(input.containerSnapshot === undefined ? {} : { containerSnapshot: input.containerSnapshot }),
     }) as OmaProvisionResult;
+    if (result.pendingMounts.length) throw new Error(`Managed persistence mounts not attached: ${result.pendingMounts.join(", ")}`);
+    log({ ...fields, op: "sandbox.persistence.mount.complete", started: result.started }, "Configured mounts attached");
     if (result.started) this.processEnv = {};
     return result;
+    } catch (error) {
+      logError({ ...fields, op: "sandbox.persistence.mount.error", error_name: error instanceof Error ? error.name : "UnknownError" }, "Configured mount attachment failed");
+      throw error;
+    }
   }
 
   /** Snapshot the running container's root filesystem (environment cache). */
@@ -373,20 +383,18 @@ export class CloudflareSandbox
   }
 
   /**
-   * Snapshot /workspace into R2 via squashfs. Returns a handle the caller
-   * persists in D1 (workspace_backups table). Best-effort: failure is
-   * logged but does not raise — losing a backup is recoverable (worst
-   * case: next session starts from empty workspace).
+   * Portable /workspace backup through OmaSandbox's DirectoryBackup binding.
+   * Returns the handle persisted in D1; upload failures propagate to callers.
+   * The independent lifecycle's full-container snapshot is a separate path.
    */
   async createWorkspaceBackup(opts: {
     name?: string;
     ttlSec: number;
   }): Promise<WorkspaceBackupHandle | null> {
     const sandbox = await this.getSandbox();
-    // Detect dev mode: in wrangler dev there are no R2 S3 keys (no
-    // presigned URLs available), so the SDK requires localBucket: true
-    // which uses BACKUP_BUCKET binding directly. In prod we omit it and
-    // the SDK uses presigned URLs.
+    // Compatibility metadata for older callers. OmaSandbox's SDK 1.0
+    // DirectoryBackup uses BACKUP_BUCKET in both cases; this flag never
+    // selects local filesystem persistence or suppresses upload failures.
     const isDev = !this.env.R2_ENDPOINT || !this.env.R2_ACCESS_KEY_ID;
     // Don't catch — let caller surface the SDK error in trajectory.
     // Earlier swallowed errors made silent backup failures look identical
@@ -454,57 +462,25 @@ export class CloudflareSandbox
    * Anthropic Managed Agents Memory contract: the agent reads/writes via
    * standard file tools — no bespoke memory_* tools (those were removed).
    *
-   * Mode selection:
-   *   - Production (FUSE / s3fs): used when R2_ENDPOINT + R2_ACCESS_KEY_ID
-   *     + R2_SECRET_ACCESS_KEY are all bound. Writes flow synchronously
-   *     over the S3 API and trigger R2 Event Notifications → CF Queue →
-   *     consumer → D1 audit. This is the contract the rest of the memory
-   *     subsystem assumes.
-   *   - wrangler dev (`localBucket: true`): R2 binding-sync. Reads work,
-   *     writes do NOT persist to R2 in real CF — only used here as a dev
-   *     fallback so `pnpm wrangler dev` keeps working without R2 keys.
+   * Managed Memory requires a real R2 mount. Missing credentials or a
+   * rejected mount must fail preparation; a container directory is not storage.
    */
   memoryStoreMount(opts: {
     storeName: string;
     storeId: string;
     readOnly: boolean;
   }): OmaMountBucketRequest {
-    if (!this.env.MEMORY_BUCKET) {
-      throw new Error(
-        `MEMORY_BUCKET binding missing — cannot mount memory store ${opts.storeName}`,
-      );
-    }
-    const mountPath = `/mnt/memory/${opts.storeName}`;
-    // Trailing slash on the prefix ensures we don't accidentally match
-    // sibling prefixes (e.g. "abc/" vs "abcd/...").
-    const prefix = `/${opts.storeId}/`;
-    const fuse = this.fuseR2ConfigOrNull();
-    const bucketName = this.env.MEMORY_BUCKET_NAME;
-    if (fuse && bucketName) {
-      return {
-        bucket: bucketName,
-        mountPath,
-        options: {
-          endpoint: fuse.endpoint,
-          provider: "r2",
-          credentials: fuse.credentials,
-          prefix,
-          readOnly: opts.readOnly,
-        },
-      };
-    }
-    // Dev fallback. Sandbox SDK 1.0 cannot mount through an R2 binding, so
-    // this is a plain directory: agent writes to /mnt/memory/ never reach R2.
-    console.warn(
-      "[sandbox] mountMemoryStore: R2 FUSE creds missing (R2_ENDPOINT / " +
-      "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / MEMORY_BUCKET_NAME) — " +
-      "using a local, non-durable directory. Agent writes to /mnt/memory/ " +
-      "will NOT persist; this is dev-only behavior.",
-    );
+    const required = ["MEMORY_BUCKET", "MEMORY_BUCKET_NAME", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"] as const;
+    const configuration = Object.fromEntries(required.map(name => [name, Boolean(this.env[name])]));
+    const missing = required.filter(name => !configuration[name]);
+    log({ op: "sandbox.persistence.select", sandbox_id: this.sessionId, path: "memory_r2_fuse", configuration }, "Managed Memory persistence configuration");
+    if (missing.length) throw new Error(`Managed Memory persistence requires: ${missing.join(", ")}`);
+    const fuse = this.fuseR2ConfigOrNull()!;
     return {
-      bucket: "MEMORY_BUCKET",
-      mountPath,
-      options: { localBucket: true, prefix, readOnly: opts.readOnly },
+      bucket: this.env.MEMORY_BUCKET_NAME!,
+      mountPath: `/mnt/memory/${opts.storeName}`,
+      options: { endpoint: fuse.endpoint, provider: "r2", credentials: fuse.credentials,
+        prefix: `/${opts.storeId}/`, readOnly: opts.readOnly },
     };
   }
 
@@ -550,7 +526,12 @@ export class CloudflareSandbox
     tenantId: string;
     sessionId: string;
   }): OmaMountBucketRequest | null {
-    if (!this.env.FILES_BUCKET) return null;
+    const required = ["FILES_BUCKET", "FILES_BUCKET_NAME", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"] as const;
+    const configuration = Object.fromEntries(required.map(name => [name, Boolean(this.env[name])]));
+    const missing = required.filter(name => !configuration[name]);
+    log({ op: "sandbox.persistence.select", session_id: opts.sessionId, tenant_id: opts.tenantId,
+      sandbox_id: this.sessionId, path: "r2_fuse", configuration, complete: missing.length === 0 }, "Managed outputs persistence configuration");
+    if (missing.length) throw new Error(`Managed outputs persistence requires: ${missing.join(", ")}`);
     const mountPath = `/mnt/session/outputs`;
     // s3fs wants a leading-slash prefix for directory scope; the shared
     // helper returns the R2-key form (no leading slash) so we prepend.
@@ -575,17 +556,7 @@ export class CloudflareSandbox
         },
       };
     }
-    // Dev fallback: a local directory, advertised as best_effort above.
-    console.warn(
-      "[sandbox] mountSessionOutputs: R2 FUSE creds missing — using a " +
-      "local directory. Agent writes to /mnt/session/outputs/ will NOT " +
-      "persist to R2; this is dev-only behavior.",
-    );
-    return {
-      bucket: "FILES_BUCKET",
-      mountPath,
-      options: { localBucket: true, prefix, readOnly: false },
-    };
+    throw new Error("Managed outputs persistence requires R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY");
   }
 
   async mountSessionOutputs(opts: {
@@ -593,32 +564,17 @@ export class CloudflareSandbox
     sessionId: string;
   }): Promise<void> {
     const mount = this.sessionOutputsMount(opts);
-    if (mount === null) {
-      console.warn(
-        "[sandbox] mountSessionOutputs: FILES_BUCKET binding missing — skipping",
-      );
-      return;
-    }
+    if (mount === null) throw new Error("Managed outputs persistence requires FILES_BUCKET");
     const sandbox = await this.getSandbox();
-
-    // A plain-object test sandbox has no bucket mounts. Keep the filesystem
-    // contract testable without claiming durability: create the directory
-    // and advertise `best_effort` via the capability method above.
-    if (mount.options.localBucket && typeof sandbox.mountBucket !== "function") {
-      await sandbox.exec("mkdir -p /mnt/session/outputs", { timeout: 5000 });
-      console.warn(
-        "[sandbox] mountSessionOutputs: local dev stub has no bucket mount; " +
-        "created a non-durable /mnt/session/outputs directory",
-      );
-      return;
-    }
+    const fields = { session_id: opts.sessionId, tenant_id: opts.tenantId, sandbox_id: this.sessionId,
+      path: "r2_fuse", object_prefix: mount.options.prefix };
+    log({ ...fields, op: "sandbox.persistence.mount.start" }, "Attaching managed outputs");
 
     try {
       await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
+      log({ ...fields, op: "sandbox.persistence.mount.complete" }, "Managed outputs attached");
     } catch (err) {
-      console.error(
-        `[sandbox] mountSessionOutputs failed: ${(err as Error).message ?? err}`,
-      );
+      logError({ ...fields, op: "sandbox.persistence.mount.error", error_name: err instanceof Error ? err.name : "UnknownError" }, "Managed outputs attachment failed");
       // The Port caller decides whether this capability is required.
       // Swallowing here made a failed mount indistinguishable from a durable
       // attachment.

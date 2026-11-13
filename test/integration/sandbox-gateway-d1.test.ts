@@ -227,6 +227,13 @@ describe("Cloudflare ACP execution channels", () => {
     expect(result).toMatchObject({ type: "ready", channels: { mcpProxy: { sessionsToken: token }, hostedInference: { sessionsToken: token, model: { wireModel: "claude-sonnet-5-5" } } } });
     expect(JSON.stringify(result)).not.toContain("sk-ant-test-key");
     expect(await hashes()).toBe(before);
+    // Exercise expiry through the actual HTTP composition without stepping
+    // the VM clock: the same token is valid only while its Work lease is live.
+    await sql.prepare("UPDATE managed_environment_work SET claim_at = ? WHERE id = ?").bind(Date.now() - 90_001, workId).run();
+    expect((await call(token)).status).toBe(401);
+    expect(await hashes()).toBe(before);
+    await sql.prepare("UPDATE managed_environment_work SET claim_at = ? WHERE id = ?").bind(Date.now(), workId).run();
+    expect((await call(token)).status).toBe(200);
     expect((await call(token, "wrong-session")).status).toBe(401);
     expect((await call("test-key")).status).toBe(401);
     expect((await call("sk-ant-req-v1.work-bearer")).status).toBe(401);

@@ -1,7 +1,7 @@
 # @open-managed-agents/mcp
 
 Runtime-neutral MCP client Port for OpenMA. The HTTP adapter delegates protocol
-negotiation, Streamable HTTP/SSE, pagination, sessions, and schema validation to
+negotiation, Streamable HTTP (including event-stream response framing), pagination, sessions, and schema validation to
 the official `@modelcontextprotocol/client` v2 package.
 
 The package does not depend on a harness or model SDK. Applications provide the
@@ -28,3 +28,5 @@ await client.close();
 
 `close()` is idempotent and bounds remote session termination before always
 closing local transport resources.
+
+Legacy MCP SSE transport is unsupported. Agent configuration with `type: "sse"` fails with `MCP_SSE_UNSUPPORTED` before harness launch; it is never converted to HTTP. URL configuration means Streamable HTTP. Stdio is available only in compositions and harnesses that support it. Session event SSE and Streamable HTTP event-stream responses are unaffected.

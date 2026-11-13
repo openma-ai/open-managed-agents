@@ -75,7 +75,7 @@ import { UNFENCED_SANDBOX_TOKEN, type SessionExecutionAttemptRef } from "@open-m
 import type { SessionLifecycleCommandPort } from "@open-managed-agents/session-runtime-contract";
 import { toLegacyHarnessEnvironmentConfig } from "./node-managed-agent-codec.js";
 import { sandboxOrphanReclaimMs, startSandboxOrphanReclaim } from "./node-sandbox-orphan-reclaim.js";
-import type { NodeEnvironmentCache, EnvironmentCacheSetup } from "./environment-cache.js";
+import { prepareEnvironmentBuildSandbox, type NodeEnvironmentCache, type EnvironmentCacheSetup } from "./environment-cache.js";
 import { SqlSessionSandboxRecords, type NodeSessionSandboxRecords } from "./node-session-sandbox-records.js";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 
@@ -630,6 +630,17 @@ export class NodeSessionSandbox implements SandboxPort {
 
   /** The Environment's setup succeeded here: the cache may snapshot it. */
   environmentPrepared(): void { this.core.environmentPrepared(); }
+
+  async prepareWorkEnvironment(options: { installedHarnesses?: string; pipIndexUrl?: string } = {}) {
+    const setup = this.environmentSetup();
+    if (!setup) throw new Error("Work Environment setup is unavailable");
+    const prepared = await prepareEnvironmentBuildSandbox(this, setup, this.context.session.id,
+      { ...options, agent: this.context.session.agent.openma?.acp?.agent,
+        assertCurrent: async () => { if (this.workAuthority && !await this.workAuthority.isCurrent()) throw new Error("Work claim lost during Environment setup"); } });
+    if (this.workAuthority && !await this.workAuthority.isCurrent()) throw new Error("Work claim lost during Environment setup");
+    this.environmentPrepared();
+    return prepared;
+  }
 
   /** Execution end (design §0.1 step 7); the sandbox keeps running until the idle pause. */
   async endExecution(): Promise<void> {

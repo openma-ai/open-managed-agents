@@ -32,10 +32,10 @@ const codexStubAdapter: InferenceConfigAdapter = {
 };
 
 describe("selectInferenceProtocol", () => {
-  it("prefers adapter.supportedProtocols order over endpoint list order", () => {
+  it("prefers Messages even when adapter and endpoint order prefer Chat", () => {
     const adapter: InferenceConfigAdapter = {
       id: "test",
-      supportedProtocols: ["anthropic-messages", "openai-chat"],
+      supportedProtocols: ["openai-chat", "anthropic-messages"],
       matches: () => true,
       plan: () => ({
         protocol: "anthropic-messages",

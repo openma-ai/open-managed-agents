@@ -1,3 +1,6 @@
+import { withPublishedSessionFiles } from "@open-managed-agents/files-store";
+import { createR2SessionOutputSource } from "./lib/r2-session-output-source";
+import { sessionOutputsPrefix, guessSessionOutputMime } from "@open-managed-agents/shared";
 import { handleWorkPhysicalObservation, WORK_PHYSICAL_OBSERVATION_ROUTE } from "../../agent/src/runtime/work-physical-observation";
 import { normalizeOpenAIAgentsErrorResponse } from '@open-managed-agents/openai-agents-api';
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
@@ -331,6 +334,14 @@ app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
   });
 }));
 
+// Core-owned custom MCP transport, authenticated independently before general workspace auth.
+app.all("/v1/oma/sessions/:sessionId/custom-tools/:turnId/mcp", async c => {
+  const { cfCoreCustomToolsRoutes } = await import("./lib/cf-core-custom-tools");
+  const url = new URL(c.req.url);
+  url.pathname = "/" + encodeURIComponent(c.req.param("sessionId")) + "/custom-tools/" + encodeURIComponent(c.req.param("turnId")) + "/mcp";
+  return cfCoreCustomToolsRoutes(c.env).fetch(new Request(url, c.req.raw));
+});
+
 // Sandbox-side Work discovery precedes workspace auth. It reuses the typed
 // channel authority and never treats a Work/admin bearer as model capability.
 app.post("/v1/oma/sessions/:sessionId/execution-channels", async c => {
@@ -538,10 +549,16 @@ const managedFilesRoutes = buildManagedFileRoutes((context) => {
   if (blobs === null) {
     throw new Error("FILES_BUCKET binding is required for managed Files");
   }
-  return managedFilesApplicationFor({
-    workspaceId: request.tenant_id,
-    tenantDb: request.tenantDb,
-    blobs,
+  const files = managedFilesApplicationFor({ workspaceId: request.tenant_id, tenantDb: request.tenantDb, blobs });
+  const bucket = (workerEnv as unknown as Env).FILES_BUCKET;
+  if (!bucket) return files;
+  return withPublishedSessionFiles(files, { workspaceId: request.tenant_id, service: request.services.files,
+    outputs: createR2SessionOutputSource(bucket),
+    async read(sessionId, filename) {
+      const object = await bucket.get(sessionOutputsPrefix(request.tenant_id, sessionId) + filename);
+      return object ? { metadata: { filename, mimeType: object.httpMetadata?.contentType ?? guessSessionOutputMime(filename),
+        sizeBytes: object.size, createdAt: object.uploaded.toISOString() }, content: new Uint8Array(await object.arrayBuffer()) } : null;
+    },
   });
 });
 

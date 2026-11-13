@@ -16,10 +16,11 @@ import { proxyUrl } from "../helpers.js";
  */
 export const piInferenceAdapter: InferenceConfigAdapter = {
   id: "pi",
-  supportedProtocols: ["openai-chat"],
+  supportedProtocols: ["anthropic-messages", "openai-responses", "gemini", "openai-chat"],
   matches: (agent) => matchesAgentIdentity(agent, ["pi-acp", "openma-pi-acp"]),
   plan(context) {
-    const { nativePath, target, proxy, endpoint } = context;
+    const { nativePath, target, proxy, endpoint, protocol } = context;
+    const api = { "anthropic-messages": "anthropic-messages", "openai-chat": "openai-completions", "openai-responses": "openai-responses", gemini: "google-generative-ai" }[protocol];
     const agentDir = join(nativePath, "home", ".pi", "agent");
     const baseUrl = proxyUrl(proxy, endpoint.proxyPathSegment);
     // deepseek is a pi built-in provider: its catalog (and per-model compat)
@@ -32,14 +33,11 @@ export const piInferenceAdapter: InferenceConfigAdapter = {
         [providerId]: {
           baseUrl,
           apiKey: `$${proxy.proxyTokenEnvVar}`,
-          api: "openai-completions",
+          api,
           ...(providerId === "deepseek"
             ? {}
             : {
-              compat: {
-                supportsDeveloperRole: false,
-                thinkingFormat: "openai",
-              },
+              ...(protocol === "openai-chat" ? { compat: { supportsDeveloperRole: false, thinkingFormat: "openai" } } : {}),
               models: [{ id: target.wireModel }],
             }),
         },
@@ -51,7 +49,7 @@ export const piInferenceAdapter: InferenceConfigAdapter = {
       quietStartup: true,
     };
     return {
-      protocol: "openai-chat",
+      protocol,
       env: {},
       unsetEnv: [],
       files: [

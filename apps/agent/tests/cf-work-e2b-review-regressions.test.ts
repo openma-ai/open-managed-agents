@@ -1,8 +1,9 @@
+import { preparedAcpFixture } from "./prepared-acp-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, expect, it } from "vitest";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-store-sql";
-import { startE2BWorkProcess, E2B_WORKER_INVENTORY } from "../src/runtime/e2b-work-handoff";
+import { startE2BWorkProcess } from "../src/runtime/e2b-work-handoff";
 import { createCfWorkRunnerDispatch } from "../src/runtime/cf-work-runner-dispatch";
 import { createCfWorkRunnerAuthority } from "../../main/src/lib/cf-work-runner-authority";
 import { attemptSandboxTokens, generateSandboxToken } from "@open-managed-agents/sandbox-gateway";
@@ -47,8 +48,8 @@ it("real D1 active to stopped exposes claim:null but retires the exact old attem
 it.each([false,true])("same-claim reconnect request cancellation never kills a current worker; actual claim loss does (lost=%s)",async lost=>{
   const f=await fixture(),ac=new AbortController();
   const n=native(f.identity,async()=>{if(lost)await f.sql.prepare("UPDATE managed_environment_work SET state='stopped' WHERE workspace_id='default' AND id=?").bind(f.delivery.workId).run();ac.abort(Error("duplicate cancelled"));});
-  const dispatcher=createCfWorkRunnerDispatch({command:"unused",installedHarnesses:E2B_WORKER_INVENTORY,tokens:attemptSandboxTokens(),issueToken:async()=>generateSandboxToken(),authorize:f.authorize,
-    sandbox:async(_d,authority)=>({provider:"e2b",runtimeHandle:n.runtime.runtimeHandle,startManagedProcess:(spec,identity)=>startE2BWorkProcess({runtime:n.runtime,work:f.work,sql:f.sql,delivery:f.delivery,spec,identity,assertCurrent:authority.assertCurrent} as never)})});
+  const dispatcher=createCfWorkRunnerDispatch({command:"unused",tokens:attemptSandboxTokens(),issueToken:async()=>generateSandboxToken(),authorize:f.authorize,
+    sandbox:async(_d,authority)=>({provider:"e2b",preparedAcp:preparedAcpFixture("codex-acp","1.8.0"),runtimeHandle:n.runtime.runtimeHandle,startManagedProcess:(spec,identity)=>startE2BWorkProcess({runtime:n.runtime,work:f.work,sql:f.sql,delivery:f.delivery,spec,identity,assertCurrent:authority.assertCurrent} as never)})});
   await expect(dispatcher.dispatch({...f.delivery,signal:ac.signal})).rejects.toThrow("duplicate cancelled");
   expect((await f.authorize(f.delivery))===null).toBe(lost);
   expect(n.calls).toEqual(lost?["start","inspect","restore","status","kill"]:["start","inspect","restore","status"]);
@@ -67,7 +68,7 @@ it.each(["future-generation","missing-row","foreign-session"] as const)("termina
 it("duplicate cancellation plus unavailable authority is unknown, never permission to kill the existing worker",async()=>{
  const f=await fixture(),ac=new AbortController();let unavailable=false;
  const n=native(f.identity,()=>{unavailable=true;ac.abort(Error("cancel duplicate"));});
- const dispatcher=createCfWorkRunnerDispatch({command:"unused",installedHarnesses:E2B_WORKER_INVENTORY,tokens:attemptSandboxTokens(),issueToken:async()=>generateSandboxToken(),authorize:async delivery=>{if(unavailable)throw Error("authority unavailable");return f.authorize(delivery);},sandbox:async(_d,authority)=>({provider:"e2b",runtimeHandle:n.runtime.runtimeHandle,startManagedProcess:(spec,identity)=>startE2BWorkProcess({runtime:n.runtime,work:f.work,sql:f.sql,delivery:f.delivery,spec,identity,assertCurrent:authority.assertCurrent} as never)})});
+ const dispatcher=createCfWorkRunnerDispatch({command:"unused",tokens:attemptSandboxTokens(),issueToken:async()=>generateSandboxToken(),authorize:async delivery=>{if(unavailable)throw Error("authority unavailable");return f.authorize(delivery);},sandbox:async(_d,authority)=>({provider:"e2b",preparedAcp:preparedAcpFixture("codex-acp","1.8.0"),runtimeHandle:n.runtime.runtimeHandle,startManagedProcess:(spec,identity)=>startE2BWorkProcess({runtime:n.runtime,work:f.work,sql:f.sql,delivery:f.delivery,spec,identity,assertCurrent:authority.assertCurrent} as never)})});
  await expect(dispatcher.dispatch({...f.delivery,signal:ac.signal})).rejects.toThrow("authority unavailable");
  expect(n.calls).toEqual(["start","inspect","restore","status"]);
 });

@@ -38,7 +38,7 @@ export async function attachStorage<R>(state: LiveSessionSandbox<R>, open: OpenS
 /** Turn end / before stop: storage.sync (copy: Memory write-back + pull
  * and the outputs upload; native: credential renewal or a no-op). Any
  * failure, including a sandbox lost during the turn, is an error. */
-export async function syncStorage<R>(state: LiveSessionSandbox<R>, reason: "turn_end" | "before_stop"): Promise<void> {
+export async function syncStorage<R>(state: LiveSessionSandbox<R>, reason: "turn_end" | "before_stop" | "checkpoint"): Promise<void> {
   await state.quiesce();
   state.throwRefreshError();
   if (state.lost) {

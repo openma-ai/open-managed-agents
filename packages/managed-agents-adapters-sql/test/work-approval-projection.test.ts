@@ -76,7 +76,8 @@ it('resolution proof cannot survive a Session revision race at the projection tr
  const f=await fixture();await f.ask();
  const document=await f.admit({id:'answer',type:'user.tool_confirmation',toolUseId:'tool',result:'allow',processedAt:null});
  expect(await f.inputs.consume({claim,inputId:'answer',turnId:'dispatch-answer',expectedDocument:document,boundary:'before_dispatch',consumingTurnId:f.root.turnId,rootInputId:'root',expectedRootDocument:f.root.expectedDocument})).toMatchObject({type:'consumed'});
- const mutate=()=>f.admit({id:'racing-tool',type:'agent.tool_use',name:'read',input:{},evaluatedPermission:'ask',processedAt:now});
+ let racingTool=0;
+ const mutate=()=>f.admit({id:'racing-tool-'+(++racingTool),type:'agent.tool_use',name:'read',input:{},evaluatedPermission:'ask',processedAt:now});
  const sql:SqlClient={prepare:q=>f.sql.prepare(q),exec:q=>f.sql.exec(q),batch:async statements=>{await mutate();return f.sql.batch(statements);},...(f.sql.batchChecked?{batchChecked:async(statements,check)=>{await mutate();return f.sql.batchChecked!(statements,check);}}:{})};
  const projection=new SessionRuntimeProjectionApplicationService({workspaceId:'ws',persistence:new SqlSessionRuntimeProjectionPersistence(sql)});
  const result=await ingestEnvironmentWorkRuntimeEvents({claim,sessionId:'s',body:{root:f.root,events:[{id:'raced-running',type:'session.status_running',processed_at:now}]},projection,publish:async()=>{throw new Error('must not publish');}});
@@ -113,4 +114,47 @@ for (const d1 of [false,true]) it(`${d1?'D1':'SQLite'}: descendant admission req
  expect(await f.send([{id:'nested-tool',type:'agent.tool_use',session_thread_id:'child',name:'Agent',input:{},processed_at:now},{...created,id:'nested-created',session_thread_id:'grandchild',parent_thread_id:'child',parent_tool_use_id:'nested-tool'}])).toMatchObject({type:'recorded'});
  expect(await f.send([{id:'child-done',type:'session.thread_status_idle',session_thread_id:'child',agent_name:'Child',stop_reason:{type:'end_turn'},processed_at:now}])).toMatchObject({type:'recorded'});
  expect((await f.send([{id:'arbitrary-child',type:'agent.message',session_thread_id:'alien',content:[],processed_at:now}])).type).not.toBe('recorded');
+});
+
+for (const d1 of [false, true]) it(`${d1 ? 'D1' : 'SQLite'}: an inference usage revision racing a consumed-root read does not abort native tool admission`, async () => {
+ const f=await fixture(d1);
+ const persistence=new SqlSessionRuntimeProjectionPersistence(f.sql);
+ let raced=false;
+ const projection=new SessionRuntimeProjectionApplicationService({workspaceId:'ws',persistence:{
+  async findCurrent(input){
+   const current=await persistence.findCurrent(input);
+   if(!raced){raced=true;await f.admit({id:'model-egress-usage',type:'session.usage',usage:{inputTokens:1,outputTokens:1},processedAt:now});}
+   return current;
+  },
+  project:input=>persistence.project(input),
+ }});
+ const published:string[]=[];
+ const result=await ingestEnvironmentWorkRuntimeEvents({claim,sessionId:'s',body:{root:f.root,events:[{id:'native-tool',type:'agent.tool_use',name:'bash',input:{command:'true'},processed_at:now}]},projection,publish:async e=>{published.push(e.id);}});
+ expect(result.type).toBe('recorded');
+ expect(published).toEqual(['native-tool']);
+ expect(await f.sql.prepare("SELECT count(*) AS n FROM managed_session_events WHERE id='native-tool'").first()).toEqual({n:1});
+});
+
+for (const d1 of [false, true]) for (const invalidation of ['claim', 'root'] as const) it(`${d1 ? 'D1' : 'SQLite'}: usage retry does not bypass ${invalidation} invalidation`, async () => {
+ const f=await fixture(d1);
+ const persistence=new SqlSessionRuntimeProjectionPersistence(f.sql);
+ let raced=false;
+ const projection=new SessionRuntimeProjectionApplicationService({workspaceId:'ws',persistence:{
+  async findCurrent(input){
+   const current=await persistence.findCurrent(input);
+   if(!raced){
+    raced=true;
+    await f.admit({id:'model-egress-usage',type:'session.usage',usage:{inputTokens:1},processedAt:now});
+    if(invalidation==='claim') await f.sql.prepare("UPDATE managed_environment_work SET claim_generation=3 WHERE id='w'").run();
+    else await f.sql.prepare("UPDATE managed_session_events SET document=? WHERE id='root'").bind(JSON.stringify({...JSON.parse(f.root.expectedDocument),content:[{type:'text',text:'changed'}]})).run();
+   }
+   return current;
+  },
+  project:input=>persistence.project(input),
+ }});
+ const published:string[]=[];
+ const result=await ingestEnvironmentWorkRuntimeEvents({claim,sessionId:'s',body:{root:f.root,events:[{id:'invalid-native-tool',type:'agent.tool_use',name:'bash',input:{command:'true'},processed_at:now}]},projection,publish:async e=>{published.push(e.id);}});
+ expect(result.type).toBe('stale_claim');
+ expect(published).toEqual([]);
+ expect(await f.sql.prepare("SELECT id FROM managed_session_events WHERE id='invalid-native-tool'").first()).toBeNull();
 });

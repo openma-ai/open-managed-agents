@@ -53,7 +53,31 @@ export class SqliteHistory implements HistoryStore {
   }
 
   getEvents(afterSeq?: number): SessionEvent[] {
-    return this.repo.getEvents(afterSeq);
+    const events = this.repo.getEvents(afterSeq);
+    // Canonical backfill orders public receipts, but transcript-only results
+    // have no public canonical ordinal. Keep each consumed answer beside its
+    // receipt, rather than sorting it after a later assistant/model turn.
+    // Only an existing consumed transcript may move: receipts alone do not
+    // prove consumption, and an orphan/early receipt cannot close a later call.
+    const transcripts = new Map<string, SessionEvent>();
+    for (const event of events) {
+      if (event.type === "agent.tool_result" && (event as { transcript_only?: boolean }).transcript_only) {
+        transcripts.set(event.tool_use_id, event);
+      }
+    }
+    const open = new Set<string>();
+    const anchors = new Map<SessionEvent, SessionEvent>();
+    const moved = new Set<SessionEvent>();
+    for (const event of events) {
+      if (event.type === "agent.custom_tool_use") open.add(event.id!);
+      if (event.type !== "user.custom_tool_result" || !open.has(event.custom_tool_use_id)) continue;
+      const transcript = transcripts.get(event.custom_tool_use_id);
+      if (!transcript || moved.has(transcript)) continue;
+      anchors.set(event, transcript);
+      moved.add(transcript);
+      open.delete(event.custom_tool_use_id);
+    }
+    return events.flatMap(event => moved.has(event) ? [] : [event, ...(anchors.has(event) ? [anchors.get(event)!] : [])]);
   }
 
   /** Resolve any `_spilled` references back to full events via R2. */

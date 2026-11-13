@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { managedTemplate } from '../template/template.mjs';
+import { managedTemplate, prepareGuestSudo } from '../template/template.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(here, '../../..');
@@ -144,4 +144,41 @@ test('base template bakes no ACP agent: Environment setup installs pinned regist
   const source = readFileSync(join(template, 'template.mjs'), 'utf8');
   assert.doesNotMatch(source, /oma-harnesses|npm ci|pi-acp|codex-acp/);
   assert.equal(existsSync(join(template, 'harness')), false);
+});
+
+// The SDK serializes the actual image recipe; the explicit provider gate tests
+// the command against the real managed UID (not a root-only mock).
+test('official template prepares the Memory parent after creating the unprivileged tool user', async () => {
+  const require = createRequire(import.meta.url);
+  const sdk = require(require.resolve('e2b', { paths: [join(repository, 'node_modules/.pnpm/node_modules')] }));
+  const root = mkdtempSync(join(tmpdir(), 'oma-memory-template-plan-'));
+  try {
+    const pin = { sourceSha: 'a'.repeat(40), lockSha256: 'b'.repeat(64) };
+    writeFileSync(join(root, 'installation.json'), JSON.stringify({ sourceSha: pin.sourceSha, sourceLockSha256: pin.lockSha256 }));
+    const plan = JSON.parse(await managedTemplate(sdk, root, pin).toJSON());
+    const commands = plan.steps.filter(step => step.type === 'RUN').map(step => step.args[0]);
+    const createUser = commands.findIndex(command => command.includes('useradd --create-home oma-worker'));
+    const prepare = commands.indexOf('install -d -o oma-worker -g oma-worker -m 0755 /mnt/memory');
+    assert.ok(createUser >= 0 && prepare > createUser, 'worker-owned Memory parent must be in the official build plan');
+    assert.ok(prepare < commands.findIndex(command => command.includes('/usr/bin/python3 -I -S /opt/oma-managed/verify-install.py')));
+    assert.equal(spawnSync('sh', ['-n', '-c', commands[prepare]], { encoding: 'utf8' }).status, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Wiring only; actual sudo/UID/NNP behavior is the explicit provider gate.
+test('official build provisions managed guest sudo after identity creation and validates it', async () => {
+  const require = createRequire(import.meta.url);
+  const sdk = require(require.resolve('e2b', { paths: [join(repository, 'node_modules/.pnpm/node_modules')] }));
+  const root = mkdtempSync(join(tmpdir(), 'oma-sudo-plan-'));
+  try {
+    const pin = { sourceSha: 'a'.repeat(40), lockSha256: 'b'.repeat(64) };
+    writeFileSync(join(root, 'installation.json'), JSON.stringify({ sourceSha: pin.sourceSha, sourceLockSha256: pin.lockSha256 }));
+    const plan = JSON.parse(await managedTemplate(sdk, root, pin).toJSON());
+    const commands = plan.steps.filter(step => step.type === 'RUN').map(step => step.args[0]);
+    const policy = commands.indexOf(prepareGuestSudo);
+    assert.ok(policy > commands.findIndex(command => command.includes('useradd --create-home oma-worker')));
+    assert.ok(policy < commands.findIndex(command => command.includes('/opt/oma-managed/verify-install.py')));
+    assert.match(commands[0], /apt-get install[^&]+\bsudo\b/);
+    assert.equal(spawnSync('sh', ['-n', '-c', prepareGuestSudo], { encoding: 'utf8' }).status, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

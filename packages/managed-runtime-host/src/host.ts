@@ -747,6 +747,35 @@ export function createManagedRuntimeHost(
 
         await synchronizeSessionInputs("final");
 
+        // Collection reads the runtime filesystem. Keep it accessible after
+        // the harness has ended; idle does not promise publication visibility.
+        let outputCandidate: SessionOutputManifestCandidate | null = null;
+        if (outputBinding !== null && plan.outputStrategy !== null) {
+          const entries = await dependencies.outputs.collect({
+            scope,
+            fence,
+            strategy: plan.outputStrategy,
+            binding: outputBinding,
+            signal: controller.signal,
+          });
+          controller.signal.throwIfAborted();
+          outputCandidate = await dependencies.outputs.finalize({
+            scope,
+            fence,
+            strategy: plan.outputStrategy,
+            binding: outputBinding,
+            entries,
+            idempotencyKey: idempotencyKey(
+              scope,
+              fence.generation,
+              "outputs-finalize",
+            ),
+            signal: controller.signal,
+          });
+          controller.signal.throwIfAborted();
+          publishedOutputCandidate = outputCandidate;
+        }
+
         if (plan.workspaceStrategy === "retained_runtime") {
           sandboxLease = await dependencies.sandbox.suspend({
             scope,
@@ -799,32 +828,6 @@ export function createManagedRuntimeHost(
             runtimeCheckpoint = null;
           }
           controller.signal.throwIfAborted();
-        }
-        let outputCandidate: SessionOutputManifestCandidate | null = null;
-        if (outputBinding !== null && plan.outputStrategy !== null) {
-          const entries = await dependencies.outputs.collect({
-            scope,
-            fence,
-            strategy: plan.outputStrategy,
-            binding: outputBinding,
-            signal: controller.signal,
-          });
-          controller.signal.throwIfAborted();
-          outputCandidate = await dependencies.outputs.finalize({
-            scope,
-            fence,
-            strategy: plan.outputStrategy,
-            binding: outputBinding,
-            entries,
-            idempotencyKey: idempotencyKey(
-              scope,
-              fence.generation,
-              "outputs-finalize",
-            ),
-            signal: controller.signal,
-          });
-          controller.signal.throwIfAborted();
-          publishedOutputCandidate = outputCandidate;
         }
         const published = await dependencies.claims.publish({
           claim,

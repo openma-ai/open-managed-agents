@@ -48,8 +48,6 @@ export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<vo
     state.abandon();
     return;
   }
-  const { ports } = await state.compose();
-  const scope = state.scope();
   const open = state.current;
   // A persisted handle is discovery, not ownership by this attempt. Failed
   // opens already roll back their own resources; never adopt a winner here.
@@ -68,19 +66,18 @@ export async function failExecution<R>(state: LiveSessionSandbox<R>): Promise<vo
     return;
   }
   // Forget the handle first; release only once the record no longer names it.
-  if (recorded !== undefined && await state.apply(saved, { type: "lose" }) === null) {
+  if (recorded !== undefined && await state.apply(saved, { type: "lose", retire: true }) === null) {
     if (open !== null) await state.releaseOwn(open.handle);
     state.current = null;
     return;
   }
   const handle = open?.handle ?? recorded;
   if (handle !== undefined) {
-    await ports.sandbox.release({ scope, handle }).catch((error) => {
-      // Managed cleanup is unconfirmed, not a completed release. The same
-      // local owner remains available to retry, even after the lose CAS.
-      if ((error as { code?: unknown } | null)?.code === "MANAGED_PROCESS_CLEANUP_FAILED") throw error;
-      state.options.warn(`sandbox_release_failed runtime=${handle.runtimeId} error=${errorText(error)}`);
-    });
+    // Retirement is durable before external deletion, including transport failures.
+    const retired = await state.load();
+    if (retired.retiredHandles?.some(entry => sameHandle(entry.handle, handle))) await state.retryReleases(retired);
+    else await state.releaseOwn(handle);
+
     state.current = null;
     await state.retryDiscards();
   }

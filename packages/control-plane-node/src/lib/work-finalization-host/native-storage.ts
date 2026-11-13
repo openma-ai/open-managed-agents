@@ -1,3 +1,5 @@
+import { e2bNativeMountCommand } from "../../../../sandbox-adapter-e2b/src/native-mount.js";
+import { executionIdentity } from "../../../../sandbox-adapter-e2b/src/execution-identity.js";
 import { e2bNativeDrainCommand, e2bMountControlDirectory } from "../../../../sandbox-adapter-e2b/src/native-drain.js";
 import type { E2BSandboxOptions } from "../../../../sandbox-adapter-e2b/src/e2b.js";
 import type { NodeWorkStorageInput } from "../node-session-sandbox.js";
@@ -7,7 +9,7 @@ export type NodeNativeBucket = NonNullable<E2BSandboxOptions["memoryBucket"]>;
 /** outputs=false: Session outputs are shared (not natively mounted); drain Memory only. */
 export interface NodeNativeDrainOptions { outputs: boolean }
 type NativeRuntime = SandboxPort & {
-  run(command:string, options:{user:string;sessionEnv:boolean;timeoutMs:number;envs?:Record<string,string>}):Promise<{stdout:string;stderr:string;exitCode:number}>;
+  run(command:string, options:{user?:string;sessionEnv:boolean;timeoutMs?:number;envs?:Record<string,string>}):Promise<{stdout:string;stderr:string;exitCode:number}>;
   runtimeHandle():{provider:string;runtimeId:string};
   drainNodeWorkStorage?(input:NodeWorkStorageInput, options?:NodeNativeDrainOptions):Promise<void>;
 };
@@ -39,15 +41,16 @@ export function configureNodeNativeStorage(sandbox: SandboxPort, bucket: NodeNat
       mounts.set(target,remote);
       return;
     }
+    const owner = await executionIdentity(runtime);
     await run(`if mountpoint -q ${quote(target)}; then echo 'existing native mount needs verified recovery' >&2; exit 90; fi; `+
       `test ! -L ${quote(target)} || { echo 'legacy native symlink unsupported' >&2; exit 90; }; `+
-      `command -v rclone >/dev/null && install -d -m 700 /run/oma-rclone ${quote(control)} && mkdir -p ${quote(target)} && `+
-      `rclone mount ${quote(remote)} ${quote(target)} --daemon --rc --rc-no-auth ${quote('--rc-addr=unix://'+control+'/rc.sock')} --s3-no-check-bucket --allow-other --allow-non-empty --uid=1000 --gid=1000 --vfs-cache-mode=writes ${readOnly?'--read-only':''} && `+
-      `mountpoint -q ${quote(target)} && ls -A ${quote(target)} >/dev/null`,{
+      `command -v rclone >/dev/null && install -d -m 700 /run/oma-rclone ${quote(control)} && mkdir -p ${quote(target)} || exit 90; `+
+      e2bNativeMountCommand(`rclone mount ${quote(remote)} ${quote(target)} --rc --rc-no-auth ${quote('--rc-addr=unix://'+control+'/rc.sock')} --s3-no-check-bucket --allow-other --allow-non-empty --uid=${owner.uid} --gid=${owner.gid} --vfs-cache-mode=writes ${readOnly?'--read-only':''}`,target,control),{
         RCLONE_S3_PROVIDER:"Other",RCLONE_S3_ENDPOINT:bucket.endpoint,RCLONE_S3_REGION:"auto",
         RCLONE_S3_ACCESS_KEY_ID:bucket.accessKey,RCLONE_S3_SECRET_ACCESS_KEY:bucket.secretKey,
         RCLONE_S3_FORCE_PATH_STYLE:bucket.usePathRequestStyle===false?"false":"true",
       });
+    await run(`mountpoint -q ${quote(target)} && ls -A ${quote(target)} >/dev/null`);
     mounts.set(target,remote);
   };
   sandbox.mountMemoryStore = i => mount(`/mnt/memory/${i.storeName}`,i.storeId,i.readOnly);

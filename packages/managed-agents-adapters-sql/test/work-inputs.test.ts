@@ -71,6 +71,7 @@ for (const d1 of [false,true]) describe(d1 ? "real workerd D1" : "real SQLite", 
     expect(row!.processed_at).toBeLessThanOrEqual(Date.now());
   });
   for (const payload of [
+    {type:"user.custom_tool_result",customToolUseId:"custom_1",content:[{type:"text",text:"approved"}],isError:false},
     {type:"user.define_outcome",description:"A complete report",rubric:{type:"text",content:"All three checks pass"},maxIterations:5,outcomeId:"outcome_1"},
     {type:"user.define_outcome",description:"File rubric",rubric:{type:"file",fileId:"file_rubric"},maxIterations:null,outcomeId:"outcome_2"},
     {type:"user.tool_result",toolUseId:"tool_1",content:[{type:"text",text:"result"}],isError:false,sessionThreadId:"thread_1"},

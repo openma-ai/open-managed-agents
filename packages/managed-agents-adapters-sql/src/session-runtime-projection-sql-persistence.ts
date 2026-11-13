@@ -1,3 +1,4 @@
+import { customInvocationPublicationStatements } from "./custom-invocation-publication";
 import { sqliteSourcePositionSql, postgresSourcePositionSql } from "./work-inputs";
 import { decodeSessionEventDocument, encodeSessionEventDocument } from '@open-managed-agents/session-runtime-contract/history';
 import type { SqlClient } from "@open-managed-agents/sql-client";
@@ -249,8 +250,21 @@ export class SqlSessionRuntimeProjectionPersistence
       return { type: "execution_fence_lost" };
     }
     const rootGuard = input.workRoot === undefined ? undefined : await this.verifyWorkRoot(input);
-    if (input.workRoot !== undefined && (rootGuard === null || finalization !== undefined)) return { type: "execution_fence_lost" };
+    if (input.workRoot !== undefined && finalization !== undefined) return { type: "execution_fence_lost" };
+    if (input.workRoot !== undefined && rootGuard === null) {
+      // A concurrent usage projection can advance the revision between the
+      // application read and root verification. Retry from a fresh read; every
+      // attempt must prove the root and the live Work fence again.
+      const current = await this.findCurrent(input);
+      if (current !== null && current.revision !== input.expectedRevision) {
+        return { type: "revision_conflict", actualRevision: current.revision };
+      }
+      return { type: "execution_fence_lost" };
+    }
     const guarded = finalization ?? rootGuard ?? startup?.root ?? undefined;
+    if (input.customInvocations?.length && (!input.workRoot || !guarded || !environmentWorkFence || guarded.dialect !== "sqlite")) {
+      return {type:"execution_fence_lost"};
+    }
     const now = this.#now().getTime();
     const workClock = guarded === undefined ? "?" : guarded.dialect === "postgres"
       ? "floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
@@ -365,11 +379,16 @@ export class SqlSessionRuntimeProjectionPersistence
         ? { type: "not_found" }
         : { type: "projected", record: current };
     }
+    const invocationStatements = input.customInvocations?.length
+      ? await customInvocationPublicationStatements({sql:this.client,projection:input,turnId:guarded!.turnId,fenceSql,fenceBindings}) : [];
+    if (invocationStatements === null) return {type:"execution_fence_lost"};
     const sourceById = new Map((input.sourceEvents ?? []).map(event => [event.id, event]));
     const eventStatements = input.events.map((event, index) => {
       const document = JSON.parse(encodeSessionEventDocument(event,
         { revision: input.expectedRevision + 1, index }, guarded?.turnId ?? fence?.executionId, undefined,
         environmentWorkFence === undefined ? undefined : { workId: environmentWorkFence.workId, generation: environmentWorkFence.generation }));
+      const binding = input.customInvocations?.find(binding => binding.nativeCallId === event.id);
+      if (binding) document.source_position.custom_invocation_receipt = binding.receipt;
       const source = sourceById.get(event.id);
       if (environmentWorkFence !== undefined && source !== undefined) {
         document.source_position.runtime_input = source;
@@ -473,8 +492,9 @@ export class SqlSessionRuntimeProjectionPersistence
     const workLock = guarded === undefined || environmentWorkFence === undefined ? [] : [this.client.prepare(
       `UPDATE managed_environment_work SET claim_generation = claim_generation WHERE workspace_id = ? AND id = ? AND claim_worker_id = ? AND claim_generation = ?`,
     ).bind(environmentWorkFence.workspaceId, environmentWorkFence.workId, guarded.holder, environmentWorkFence.generation)];
-    const statements = [revisionGuard, ...workLock, ...eventStatements, ...threadStatements, update, ...stop];
-    const eventStart = 1 + workLock.length;
+    const statements = [revisionGuard, ...workLock, ...invocationStatements, ...eventStatements, ...threadStatements, update, ...stop];
+    const invocationStart = 1 + workLock.length;
+    const eventStart = invocationStart + invocationStatements.length;
     const updateIndex = eventStart + eventStatements.length + threadStatements.length;
     const rejected = new Error("Runtime projection admission changed inside transaction");
     let results;
@@ -492,7 +512,7 @@ export class SqlSessionRuntimeProjectionPersistence
       // earlier events/threads when the final CAS or an event write rejects.
       results = this.client.batchChecked
         ? await this.client.batchChecked(statements, rows => {
-          if ((guarded !== undefined && (rows[0]?.meta.changes !== 1 || workLock.length > 0 && rows[1]?.meta.changes !== 1)) || rows[updateIndex]?.meta.changes !== 1 || (stop.length > 0 && rows.at(-1)?.meta.changes !== 1) || rows.slice(eventStart, eventStart + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
+          if ((guarded !== undefined && (rows[0]?.meta.changes !== 1 || workLock.length > 0 && rows[1]?.meta.changes !== 1)) || rows[updateIndex]?.meta.changes !== 1 || (stop.length > 0 && rows.at(-1)?.meta.changes !== 1) || rows.slice(invocationStart, eventStart + eventStatements.length).some(row => row.meta.changes !== 1)) throw rejected;
         })
         : guarded === undefined ? await this.client.batch(statements)
         // A SQLite statement clock may advance even inside an atomic batch.

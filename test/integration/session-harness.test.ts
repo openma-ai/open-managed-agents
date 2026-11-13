@@ -195,10 +195,13 @@ describe("Harness execution flow", () => {
     expect(body.status).toBe("idle");
 
     // Post another event (session should accept it)
+    const inputId = `sevt_${crypto.randomUUID()}`;
     const res = await post(`/v1/oma/sessions/${sessionId}/events`, {
-      events: [{ type: "user.message", content: [{ type: "text", text: "after crash" }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text: "after crash" }] }],
     });
     expect(res.status).toBe(202);
+    // Acceptance starts another crashing turn; it must settle before teardown.
+    await waitForSessionExecution(sessionId, [inputId]);
   });
 
   it("multiple messages grow history (history-reader harness)", async () => {

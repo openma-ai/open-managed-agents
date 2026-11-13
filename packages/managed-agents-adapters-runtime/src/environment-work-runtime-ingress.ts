@@ -1,6 +1,7 @@
 import type {
   EnvironmentWorkExecutionFence,
   WorkRuntimeRootProof,
+  WorkCustomInvocationBinding,
   ProjectionEventIdCollision,
   RuntimeProducedSessionEvent,
   SessionRuntimeProjectionApplicationPort,
@@ -26,11 +27,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function decodeBatch(body: unknown):
-  | { events: RuntimeProducedSessionEvent[]; root?: WorkRuntimeRootProof }
+  | { events: RuntimeProducedSessionEvent[]; root?: WorkRuntimeRootProof; customInvocations?: WorkCustomInvocationBinding[] }
   | { error: string } {
   if (
     !isRecord(body)
-    || Object.keys(body).some((key) => key !== "events" && key !== "root")
+    || Object.keys(body).some((key) => key !== "events" && key !== "root" && key !== "customInvocations")
     || !Array.isArray(body.events)
     || body.events.length < 1
     || body.events.length > MAX_EVENTS_PER_BATCH
@@ -44,6 +45,13 @@ function decodeBatch(body: unknown):
       [root.inputId, root.turnId, root.expectedDocument].some(value => typeof value !== "string" || !value))) {
     return { error: "Invalid consumed Work root proof" };
   }
+  const bindings = body.customInvocations;
+  if (bindings !== undefined && (!root || !Array.isArray(bindings) || bindings.length > MAX_EVENTS_PER_BATCH ||
+      bindings.some(b => !isRecord(b) || Object.keys(b).some(k => !["receipt","nativeCallId"].includes(k)) ||
+        typeof b.receipt !== "string" || !b.receipt || b.receipt.length > 128 || typeof b.nativeCallId !== "string" || !b.nativeCallId || b.nativeCallId.length > 1024))) {
+    return {error: "Invalid Core custom invocation bindings"};
+  }
+  const customInvocations = bindings as WorkCustomInvocationBinding[] | undefined;
   const events: RuntimeProducedSessionEvent[] = [];
   const ids = new Set<string>();
   for (const raw of body.events) {
@@ -57,7 +65,7 @@ function decodeBatch(body: unknown):
     ids.add(event.id);
     events.push(event);
   }
-  return { events, ...(root === undefined ? {} : { root: {inputId:String(root.inputId),turnId:String(root.turnId),expectedDocument:String(root.expectedDocument)} }) };
+  return { events, ...(customInvocations ? {customInvocations} : {}), ...(root === undefined ? {} : { root: {inputId:String(root.inputId),turnId:String(root.turnId),expectedDocument:String(root.expectedDocument)} }) };
 }
 
 /**
@@ -82,10 +90,11 @@ export async function ingestEnvironmentWorkRuntimeEvents(input: {
     const result = await input.projection.recordSessionRuntimeEvents({
       sessionId: input.sessionId,
       events: decoded.events,
+      ...(decoded.customInvocations ? {customInvocations:decoded.customInvocations} : {}),
       environmentWorkFence: input.claim,
       ...(decoded.root ? {workRoot: decoded.root, workRootDialect: input.dialect ?? "sqlite"} : {}),
     });
-    if (result.type === "version_conflict") { if (decoded.root) return result; continue; }
+    if (result.type === "version_conflict") continue;
     if (result.type === "not_found") return { type: "not_found" };
     if (result.type === "execution_fence_lost") return { type: "stale_claim" };
     // Keep-first: nothing from this batch was applied or should be published.

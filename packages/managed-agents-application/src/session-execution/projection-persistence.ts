@@ -5,6 +5,7 @@ import type {
   RuntimeProducedSessionEvent,
   SessionExecutionFence,
   WorkRuntimeRootProof,
+  WorkCustomInvocationBinding,
 } from "./port";
 
 export interface FindRuntimeProjectionSession {
@@ -13,6 +14,7 @@ export interface FindRuntimeProjectionSession {
 }
 
 export interface ProjectSessionRuntimeState extends FindRuntimeProjectionSession {
+  customInvocations?: WorkCustomInvocationBinding[];
   expectedRevision: number;
   events: RuntimeProducedSessionEvent[];
   /** Original Work publication, before usage/budget/failure normalization.

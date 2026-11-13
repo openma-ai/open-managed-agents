@@ -266,6 +266,16 @@ describe("OmaSandbox on Sandbox SDK 1.0", () => {
     expect(container.execs.at(-1)?.env).toMatchObject({ OMA_OUTPUTS_DIR: "/mnt/session/outputs" });
   });
 
+  it.each([true, false])("propagates portable workspace upload failure without a local backup fallback (compatibility flag: %s)", async localBucket => {
+    const failure = new Error("BACKUP_BUCKET upload refused");
+    let uploads = 0;
+    DirectoryBackup.prototype.backup = async function () { uploads++; throw failure; } as never;
+    const box = sandbox();
+    await expect(box.createBackup({ dir: "/workspace", localBucket })).rejects.toBe(failure);
+    expect(uploads).toBe(1);
+    expect(db.inserts).toEqual([]);
+  });
+
   it("returns the full backup record and refuses handles written before 1.0", async () => {
     const box = sandbox();
     const backup = await box.createBackup({ dir: "/workspace", name: "session-s" });

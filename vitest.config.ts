@@ -65,6 +65,12 @@ const cfWorkerOptions = {
   miniflare: {
     bindings: {
       API_KEY: "test-key",
+      // The local Sandbox stub models a configured managed mount. These are
+      // inert fixture values, never credentials for an external object store.
+      FILES_BUCKET_NAME: "test-files",
+      R2_ENDPOINT: "https://r2.test.invalid",
+      R2_ACCESS_KEY_ID: "test-r2-access",
+      R2_SECRET_ACCESS_KEY: "test-r2-secret",
       DREAM_CURATOR_MODE: "dedup",
       BETTER_AUTH_SECRET: "test-auth-secret-for-vitest",
       // Required by buildServices for at-rest encryption of credentials.auth
@@ -79,8 +85,8 @@ const cfWorkerOptions = {
 };
 
 const oauthMcpTestPort = Number(process.env.OMA_OAUTH_MCP_TEST_PORT ?? 47651);
-if (!Number.isInteger(oauthMcpTestPort) || oauthMcpTestPort < 1 || oauthMcpTestPort > 65535) {
-  throw new Error("OMA_OAUTH_MCP_TEST_PORT must be a TCP port number");
+if (!Number.isInteger(oauthMcpTestPort) || oauthMcpTestPort < 1 || oauthMcpTestPort > 65534) {
+  throw new Error("OMA_OAUTH_MCP_TEST_PORT must be a TCP port number below 65535 (the Pi peer uses the next port)");
 }
 process.env.OMA_OAUTH_MCP_TEST_PORT = String(oauthMcpTestPort);
 
@@ -115,6 +121,7 @@ export default defineConfig({
       { find: "@open-managed-agents/cost-attribution-vercel", replacement: "./packages/cost-attribution-vercel/src/index.ts" },
       { find: "@open-managed-agents/cf-billing", replacement: "./packages/cf-billing/src/index.ts" },
       { find: "@open-managed-agents/eval-core", replacement: "./packages/eval-core/src/index.ts" },
+      { find: "@open-managed-agents/shared/log", replacement: "./packages/shared/src/log.ts" },
       { find: "@open-managed-agents/shared", replacement: "./packages/shared/src/index.ts" },
       { find: "@open-managed-agents/memory-store/test-fakes", replacement: "./packages/memory-store/src/test-fakes.ts" },
       { find: "@open-managed-agents/memory-store/adapters/local-fs-blob", replacement: "./packages/memory-store/src/adapters/local-fs-blob.ts" },
@@ -377,6 +384,7 @@ export default defineConfig({
       { find: "@open-managed-agents/acp-runtime/native-state", replacement: "./packages/acp-runtime/src/native-state.ts" },
       { find: "@open-managed-agents/acp-runtime/placement", replacement: "./packages/acp-runtime/src/placement.ts" },
       { find: "@open-managed-agents/acp-runtime/installed-harnesses", replacement: "./packages/acp-runtime/src/installed-harnesses.ts" },
+      { find: "@open-managed-agents/acp-runtime/environment-setup", replacement: "./packages/acp-runtime/src/environment-setup.ts" },
       { find: "@open-managed-agents/acp-runtime/sandbox-agent", replacement: "./packages/acp-runtime/src/sandbox-agent.ts" },
       { find: "@open-managed-agents/acp-runtime/registry-pins", replacement: "./packages/acp-runtime/src/acp-registry-pins.ts" },
       { find: "@open-managed-agents/acp-runtime/sandbox-spawner", replacement: "./packages/acp-runtime/src/spawners/sandbox.ts" },
@@ -476,6 +484,7 @@ export default defineConfig({
       "scripts/build-cf-work-runner.test.mjs",
       "scripts/prepare-cf-work-runner.test.mjs",
       "apps/agent/tests/cf-webhook-native-fetch.test.mjs",
+      "apps/agent/tests/cf-work-poll-routing.test.mjs",
       "scripts/provider-package-boundaries.test.mjs",
       "scripts/check-dependency-sources.test.mjs",
       "scripts/migration-compatibility.test.mjs",

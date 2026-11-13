@@ -3,6 +3,22 @@ import { sourcePin } from "./source-pin.mjs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+// The management daemon stays root; all managed tools use oma-worker.
+// This is an image precondition, not a runtime permission-repair fallback.
+export const prepareMemoryRoot = "install -d -o oma-worker -g oma-worker -m 0755 /mnt/memory";
+
+// Guest-local authorization for exactly the managed identity, never a host rule.
+export const prepareGuestSudo = [
+  "set -eu",
+  "install -d -o root -g root -m 0755 /etc/sudoers.d",
+  "printf '%s\n' 'oma-worker ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/oma-worker",
+  "chown root:root /etc/sudoers.d/oma-worker",
+  "chmod 0440 /etc/sudoers.d/oma-worker",
+  "visudo -cf /etc/sudoers.d/oma-worker",
+  "test \"$(runuser -u oma-worker -- /usr/bin/id -u)\" != 0",
+  "test \"$(runuser -u oma-worker -- /usr/bin/sudo -n /usr/bin/id -u)\" = 0",
+].join("\n");
+
 export function managedTemplate(sdk, preparedContext, expectedPin) {
   if (!preparedContext) throw new Error("Explicit prepared worker context required");
   const pin = sourcePin(expectedPin?.sourceSha, expectedPin?.lockSha256);
@@ -11,7 +27,9 @@ export function managedTemplate(sdk, preparedContext, expectedPin) {
   const verify = "/usr/bin/python3 -I -S /opt/oma-managed/verify-install.py --source-sha " + pin.sourceSha + " --lock-sha256 " + pin.lockSha256;
   return sdk.Template({ fileContextPath: preparedContext }).fromImage("node:24.18.0-bookworm-slim")
     .setUser("root")
-    .runCmd("apt-get update -qq && apt-get install -y -qq python3 ca-certificates curl unzip fuse3 && rm -rf /var/lib/apt/lists/* && useradd --create-home oma-worker && mkdir -p /opt/oma-managed/worker /workspace /run/oma-managed && chown oma-worker:oma-worker /workspace && chmod 700 /opt/oma-managed /run/oma-managed")
+    .runCmd("apt-get update -qq && apt-get install -y -qq python3 ca-certificates curl unzip fuse3 sudo && rm -rf /var/lib/apt/lists/* && useradd --create-home oma-worker && mkdir -p /opt/oma-managed/worker /workspace /run/oma-managed && chown oma-worker:oma-worker /workspace && chmod 700 /opt/oma-managed /run/oma-managed")
+    .runCmd(prepareGuestSudo)
+    .runCmd(prepareMemoryRoot)
     // Same release and checksum as scripts/install-ci-rclone.sh. Bookworm's
     // packaged rclone predates the Unix RC/VFS queue protocol used by drain.
     .runCmd([

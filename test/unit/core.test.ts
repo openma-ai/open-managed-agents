@@ -405,8 +405,8 @@ describe("Edge cases - concurrent and complex operations", () => {
       system: "",
       tools: [{ type: "agent_toolset_20260401" }],
       mcp_servers: [
-        { name: "github", type: "sse", url: "https://mcp.github.com/sse" },
-        { name: "slack", type: "sse", url: "https://mcp.slack.com/sse" },
+        { name: "github", type: "http", url: "https://mcp.github.com/mcp" },
+        { name: "slack", type: "http", url: "https://mcp.slack.com/mcp" },
       ],
       version: 1,
       created_at: new Date().toISOString(),

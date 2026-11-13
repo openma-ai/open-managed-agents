@@ -162,6 +162,10 @@ export interface NodeManagedSessionRunnerAcceptInput
   takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
   initialEvents: SessionBootstrapEvent[];
   historyEvents: SessionEventView[];
+  /** Answer inputs (custom results, tool results, confirmations) admitted
+   *  after this batch. They are queued behind it on the lane and have not
+   *  been applied yet, so they cannot close a call for this batch. */
+  laterAnswerEventIds?: ReadonlySet<string>;
   /** This execution already committed its terminal idle (a crash landed
    *  between terminal persistence and settle): never re-run the turn. */
   committedTerminal?: CommittedExecutionTerminal;
@@ -182,6 +186,24 @@ export function committedExecutionTerminal(
     if (row.executionId === executionId || row.consumedByExecutionId === executionId) last = row.event;
   }
   return last?.type === "session.status_idle" ? last : null;
+}
+
+const ANSWER_TYPES = new Set(["user.custom_tool_result", "user.tool_result", "user.tool_confirmation"]);
+
+/** Answer inputs whose admission position is after every event of `batch`.
+ *  Lane executions run in admission order; an early answer is written to the
+ *  log when accepted, long before its own execution consumes it. */
+export function answersAdmittedAfter(
+  orderedEvents: readonly SessionRuntimeHistoryEventView[] | undefined,
+  batch: readonly { id?: unknown }[],
+): ReadonlySet<string> {
+  const batchIds = new Set(batch.map(event => event.id).filter((id): id is string => typeof id === "string"));
+  const rows = orderedEvents ?? [];
+  const batchRevisions = rows.filter(row => batchIds.has(row.event.id)).map(row => row.position.revision);
+  if (batchRevisions.length === 0) return new Set();
+  const last = Math.max(...batchRevisions);
+  return new Set(rows.filter(row => ANSWER_TYPES.has(row.event.type) && !batchIds.has(row.event.id) && row.position.revision > last)
+    .map(row => row.event.id));
 }
 
 export interface NodeManagedSessionRunner {
@@ -266,6 +288,7 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
       ...(committedTerminal !== null ? { committedTerminal } : {}),
       initialEvents: history.initialEvents,
       historyEvents: history.events,
+      laterAnswerEventIds: answersAdmittedAfter(history.orderedEvents, input.events),
       output,
     });
   }
@@ -558,14 +581,14 @@ export class DefaultNodeManagedSessionRuntimeDriver
     }
   }
 
-  /** A Session warning from outside its turn (a background environment
-   * snapshot build): written to the event stream now, with no execution fence
-   * since no turn owns it, in order with the Session's other output. */
+  /** Serialize durable warnings with Session output. Turn-owned finalization
+   * must supply its fence; only independent background warnings are unfenced. */
   publishSessionWarning(input: {
     workspaceId: string;
     sessionId: string;
     source: string;
     message: string;
+    executionFence?: SessionExecutionFence;
   }): Promise<void> {
     return this.enqueueOutput(input.workspaceId, input.sessionId, {
       id: this.dependencies.ids?.nextEventId() ?? `event_${randomUUID()}`,
@@ -573,7 +596,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
       source: input.source,
       message: input.message,
       processed_at: this.nextEventStamp(input),
-    });
+    }, input.executionFence);
   }
 
   private async finishCancelledStart(

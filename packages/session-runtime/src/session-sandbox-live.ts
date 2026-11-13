@@ -8,7 +8,7 @@ import type { MemoryStoreBinding, ResumeRef, SandboxHandle, SandboxPlan, Sandbox
 import type { RuntimeResourceFence, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import { executionKey, fenceFor, runtimeFenceOf } from "./session-sandbox-fence";
 import type { PortsSessionSandboxOptions, SessionSandboxExecution, SessionSandboxExecutor } from "./session-sandbox-options";
-import { initialSandboxState, recordedHandle, isSnapshotRef, transition, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
+import { initialSandboxState, referencesSnapshot, recordedHandle, isSnapshotRef, transition, type SandboxAction, type SessionSandboxState } from "./session-sandbox-state";
 
 /** Another writer changed the Session sandbox record since this one read it
  * (design §0.0b A.10): this writer's result was dropped and what it started
@@ -159,11 +159,14 @@ export class LiveSessionSandbox<R> {
       this.options.warn(`sandbox_state_conflict expected_version=${current.version} action=${action.type}: another writer changed the Session sandbox record; this result is dropped`);
       return null;
     }
-    const settled = await this.retryDiscards(next);
-    // Snapshot cleanup may advance OUR metadata version, but must never turn
-    // a competing lifecycle publication into this action's successful result.
-    if (settled.phase !== next.phase || !sameOptionalHandle(recordedHandle(settled), recordedHandle(next))) { this.abandon(); return null; }
-    return settled;
+    // The lifecycle CAS committed. Garbage collection cannot revoke that fact.
+    try {
+      const settled = await this.retryDiscards(next);
+      if (settled.lifecycleRevision === next.lifecycleRevision) return settled;
+    } catch (error) {
+      this.options.warn(`sandbox_discard_ack_failed error=${errorText(error)}`);
+    }
+    return next;
   }
 
   /** Lost publication results are queued too: a failed discard cannot disappear. */
@@ -190,6 +193,7 @@ export class LiveSessionSandbox<R> {
     const deleted = [];
     for (const ref of pending) {
       try {
+        if (referencesSnapshot(await this.load(), ref)) continue;
         await ports.sandbox.discard({ scope: this.scope(), ref });
         deleted.push(ref);
         this.options.info?.(`sandbox_snapshot_discarded ref=${ref.ref}`);
@@ -253,8 +257,7 @@ export class LiveSessionSandbox<R> {
     const key = JSON.stringify(entry.handle);
     let operation = this.releaseInflight.get(key);
     if (operation === undefined) {
-      const deadline = this.now() + 1_000;
-      operation = this.releaseEntry(record, entry.handle, execution, deadline);
+      operation = this.releaseEntry(record, entry.handle, execution);
       this.releaseInflight.set(key, operation);
       void operation.finally(() => { if (this.releaseInflight.get(key) === operation) this.releaseInflight.delete(key); });
     }
@@ -268,21 +271,19 @@ export class LiveSessionSandbox<R> {
     } finally { if (timer !== undefined) clearTimeout(timer); }
   }
 
-  private async releaseEntry(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined, deadline: number): Promise<SessionSandboxState> {
+  private async releaseEntry(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {
     let saved = record;
     try {
       const { ports } = await this.compose();
-      if (this.now() >= deadline || !await this.isCurrent(execution)) return saved;
-      if (this.now() >= deadline) return saved;
+      if (!await this.isCurrent(execution)) return saved;
       await ports.sandbox.release({ scope: this.scope(), handle });
       for (let attempt = 0; attempt < 3; attempt++) {
-        if (this.now() >= deadline || !await this.isCurrent(execution)) return saved;
+        if (!await this.isCurrent(execution)) return saved;
         const current = await this.load();
-        // A timed-out read cannot initiate a late write. An already submitted
-        // CAS may finish late, but cannot overwrite any newer lifecycle version.
-        if (this.now() >= deadline || !await this.isCurrent(execution)) return saved;
-        if (this.now() >= deadline) return saved;
-        const next = transition(current, { type: "handleReleased", handle });
+        // Caller timeout is not authority loss. Late acknowledgement still
+        // requires the current fence and an exact record CAS.
+        if (!await this.isCurrent(execution)) return saved;
+          const next = transition(current, { type: "handleReleased", handle });
         if (await this.options.state.save(next, current.version)) {
           saved = next;
           // The ack changes no running runtime. Keep an already armed idle

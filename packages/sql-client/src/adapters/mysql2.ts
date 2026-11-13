@@ -6,6 +6,8 @@
 // stores therefore stay behind their existing Ports and never branch on a
 // concrete database.
 
+import { transactionScope } from "../transaction-scope";
+import type { SqlRowLockTransactions } from "../ports";
 import { driverRetry } from "../db-errors";
 import { translateMysql2Error } from "./mysql2-errors";
 
@@ -773,6 +775,50 @@ export class Mysql2SqlClient implements SqlClient {
   constructor(private readonly pool: MysqlPool) {
     this.owner = { pool, primaryKeys: new Map() };
   }
+
+  readonly rowLockTransactions: SqlRowLockTransactions = {
+    capability: async (tables) => {
+      const [metadata] = await this.pool.execute("SELECT VERSION() AS version, @@version_comment AS identity");
+      const row = Array.isArray(metadata) ? metadata[0] : undefined;
+      const version = String(row?.version ?? "unknown");
+      const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+      const supportedVersion = parts !== null && (Number(parts[1]) > 8 ||
+        (Number(parts[1]) === 8 && (Number(parts[2]) > 0 || Number(parts[3]) >= 11)));
+      if (!supportedVersion || !/mysql/i.test(String(row?.identity)) || /mariadb/i.test(version)) {
+        return { supported: false, engine: "mysql", version, reason: "Unknown engine or MySQL <8.0.11; use CAS" };
+      }
+      for (const table of tables) {
+        const [engines] = await this.pool.execute(
+          "SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table]);
+        if (!Array.isArray(engines) || engines.length !== 1 || engines[0]?.engine !== "InnoDB") {
+          return { supported: false, engine: "mysql", version, reason: `Table ${table} is not verified InnoDB; use CAS` };
+        }
+      }
+      return { supported: true, engine: "mysql", version, reason: "MySQL >=8.0.11 / InnoDB; READ COMMITTED row locks" };
+    },
+    run: async (body) => {
+      const connection = await this.pool.getConnection();
+      const scope = transactionScope(async (text, params) => {
+        const statement = new Mysql2SqlStatement(connection, this.owner,
+          translatePortableStatement(text), countPlaceholders(text)).bind(...params) as Mysql2SqlStatement;
+        return statement.executeRunIn(connection);
+      });
+      try {
+        await connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+        await connection.beginTransaction();
+        const result = await body(scope.client);
+        await scope.close();
+        await connection.commit();
+        return result;
+      } catch (error) {
+        await scope.close().catch(() => undefined);
+        await connection.rollback().catch(() => undefined);
+        throw error;
+      } finally {
+        connection.release();
+      }
+    },
+  };
 
   prepare(text: string): SqlStatement {
     return new Mysql2SqlStatement(

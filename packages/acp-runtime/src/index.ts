@@ -62,3 +62,5 @@ export type {
   ManagedMcpProxyCapability,
   ProjectedAcpHttpMcpServer,
 } from "./sandbox-agent.js";
+
+export { rejectLegacyMcpSse } from "./mcp-transport-policy.js";

@@ -16,7 +16,7 @@ export interface CanonicalWorkSuccessor {
 }
 export type CanonicalWorkTurnInspection = WorkFinalizationRejection | {
   type: "turn"; source: CanonicalWorkTurnRow; rows: CanonicalWorkTurnRow[];
-  consumed: boolean; terminal: WorkTerminalReceipt | null; successors: CanonicalWorkSuccessor[];
+  pendingRequestIds: string[]; consumed: boolean; terminal: WorkTerminalReceipt | null; successors: CanonicalWorkSuccessor[];
 };
 
 /** Pure interpretation of a canonical snapshot. This grants no authority:
@@ -98,6 +98,7 @@ export function inspectCanonicalWorkTurn(input: {
       (fact.event.type === "session.status_idle" && fact.event.stopReason.type === "requires_action")));
   const stillParked = boundary?.decoded.event.type === "session.status_idle" &&
     boundary.decoded.event.stopReason.type === "requires_action";
+  let pendingRequestIds: string[] = [];
   if (approvalFacts.length > 0 && !stillParked) {
     const raw: unknown = JSON.parse(source.document);
     const position = raw && typeof raw === "object" ? (raw as {source_position?: {consumption_claim?: unknown}}).source_position : undefined;
@@ -114,7 +115,11 @@ export function inspectCanonicalWorkTurn(input: {
       documents: rows.map(row => row.document),
     });
     if (resolution.type === "invalid") return gap("approval_consumption_evidence_required");
-    if (resolution.pendingRequestIds.length > 0) return gap("requires_action_pending");
+    pendingRequestIds = resolution.pendingRequestIds;
+    // Before the first pause, pending custom calls are exactly the state
+    // finalization must commit as requires_action. They do not authorize a
+    // resume or a completed end_turn; preserve the guard for either boundary.
+    if (resolution.pendingRequestIds.length > 0 && idleFacts.length > 0) return gap("requires_action_pending");
   }
   let terminal: WorkTerminalReceipt | null = null;
   if (boundary) {
@@ -127,5 +132,5 @@ export function inspectCanonicalWorkTurn(input: {
       (later.executionId === turnId || later.consumedByExecutionId === turnId) &&
       compare(later, fact) > 0)) return gap("terminal_not_last_turn_fact");
   }
-  return { type: "turn", source, rows, consumed: source.decoded.consumedByExecutionId === turnId, terminal, successors };
+  return { type: "turn", source, rows, pendingRequestIds, consumed: source.decoded.consumedByExecutionId === turnId, terminal, successors };
 }

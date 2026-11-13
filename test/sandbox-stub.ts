@@ -48,6 +48,21 @@ export class Sandbox extends DurableObject {
   mounts = [];
   env = {};
 
+  constructor(ctx, env) {
+    super(ctx, env);
+    // A real container outlives eviction of its controlling DO instance.
+    // Persist only the fixture's simulated physical state, not an SDK claim.
+    ctx.blockConcurrencyWhile(async () => {
+      const physical = await ctx.storage.get("physical");
+      if (physical) Object.assign(this, physical);
+    });
+  }
+  async persistPhysical() {
+    await this.ctx.storage.put("physical", {
+      incarnation: this.incarnation, marker: this.marker,
+      mounts: this.mounts, env: this.env,
+    });
+  }
   async describe() {
     return {
       running: this.incarnation !== null,
@@ -65,11 +80,15 @@ export class Sandbox extends DurableObject {
     this.incarnation = request.incarnation ?? crypto.randomUUID().slice(0, 12);
     this.mounts = [...(request.mounts ?? [])];
     this.env = { ...(request.env ?? {}) };
+    await this.persistPhysical();
     return { incarnation: this.incarnation, started: true, pendingMounts: [] };
   }
   async exec(command, _opts) {
     const written = /^echo (\S+) > \/tmp\/\.oma-warm$/.exec(command);
-    if (this.incarnation !== null && written) this.marker = written[1];
+    if (this.incarnation !== null && written) {
+      this.marker = written[1];
+      await this.persistPhysical();
+    }
     if (this.incarnation !== null && /cat \/tmp\/\.oma-warm/.test(command)) {
       return { stdout: `${this.marker ?? this.incarnation}\n`, stderr: "", exitCode: 0, success: true };
     }
@@ -85,6 +104,9 @@ export class Sandbox extends DurableObject {
   async destroy() {
     this.incarnation = null;
     this.marker = null;
+    this.mounts = [];
+    this.env = {};
+    await this.persistPhysical();
   }
   async startProcess(_command, _opts) {
     return {
@@ -101,6 +123,7 @@ export class Sandbox extends DurableObject {
   async mountBucket(bucket, mountPath, options = {}) {
     if (this.incarnation === null) {
       this.mounts = [...this.mounts.filter((mount) => mount.mountPath !== mountPath), { bucket, mountPath, options }];
+      await this.persistPhysical();
       return;
     }
     if (!this.mounts.some((mount) => mount.mountPath === mountPath)) {
@@ -109,9 +132,11 @@ export class Sandbox extends DurableObject {
   }
   async unmountBucket(mountPath) {
     this.mounts = this.mounts.filter((mount) => mount.mountPath !== mountPath);
+    await this.persistPhysical();
   }
   async setEnvVars(envVars) {
     Object.assign(this.env, envVars);
+    await this.persistPhysical();
   }
   async createBackup(options) {
     return { id: "stub", dir: options?.dir ?? "/workspace", size: 0, sha256: "0".repeat(64), format: "tar+zstd/1", expiresAt: Date.now() + 60_000 };

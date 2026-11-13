@@ -1,3 +1,4 @@
+import { log as logInfo } from "@open-managed-agents/shared/log";
 import { randomUUID } from "node:crypto";
 import type { AcpSession, ClientCallbacks } from "@openma/common/acp-runtime";
 import type { ManagedHarnessHttpScheduler, ManagedHarnessWireSession, RuntimeResourceScope } from "@openma/common/managed-runtime";
@@ -129,12 +130,13 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
       const outputUrl = `${input.apiBaseUrl.replace(/\/+$/u, "")}/v1/oma/sessions/${encodeURIComponent(input.scope.sessionId)}/runtime-events`;
       const output = createWorkOutputAdapter({
         toolUseIdFor,
-        async publish(events) {
+        customToolNames: () => new Set(nativeHarnessId === "pi-acp" ? agentTools.filter(tool => tool.type === "custom" && typeof tool.name === "string").map(tool => tool.name as string) : []),
+        async publish(events, customInvocations) {
           input.signal.throwIfAborted();
           const response = await fetcher(outputUrl, {
             method: "POST", redirect: "error", signal: input.signal,
             headers: { authorization: `Bearer ${input.sessionsToken}`, "content-type": "application/json" },
-            body: JSON.stringify({ events, ...(activeRootProof ? {root:activeRootProof} : {}) }),
+            body: JSON.stringify({ events, ...(customInvocations ? {customInvocations} : {}), ...(activeRootProof ? {root:activeRootProof} : {}) }),
           });
           if (!response.ok) { await response.body?.cancel(); throw new Error(`Work output publication rejected: ${response.status}`); }
           const receipt: unknown = await response.json();
@@ -143,6 +145,9 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
             throw new Error("Work output durable receipt is invalid");
           }
           input.signal.throwIfAborted();
+          for(const event of events) if(event.type==="agent.custom_tool_use") logInfo({op:"acp.custom.pending",
+            session_id:input.scope.sessionId,work_id:input.scope.workId,claim_generation:connectionClaim.generation,
+            call_id:event.id},"Native custom call durably published; awaiting client result");
         },
       });
       const channel = runtime.createControlChannel({

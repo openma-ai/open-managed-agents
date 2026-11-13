@@ -2,6 +2,7 @@
  * Only stdio within the sandbox; no provider/control-plane transport.
  * NodeSpawner merges process.env; the root-private helper drops UID before
  * execve with a replacement env, without any shell or agent loader hooks.
+ * This prevents accidental inheritance, not inspection by guest sudo/root.
  */
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
