@@ -1,143 +1,152 @@
-name: Build OpenMA Server Image
+name: PR545 isolated Depot build diagnostic
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    tags:
-      - 'openma-server-v*'
-    paths:
-      - '.github/workflows/build-server-image.yml'
-      - 'scripts/check-dependency-sources*.mjs'
-      - '.node-version'
-      - '.pnpm-approve-builds.json'
-      - 'apps/agent/**'
-      - 'apps/console/**'
-      - 'apps/integrations/**'
-      - 'apps/main/**'
-      - 'apps/main-fly/**'
-      - 'apps/main-node/**'
-      - 'packages/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'tsconfig.json'
-  pull_request:
-    paths:
-      - '.github/workflows/build-server-image.yml'
-      - 'scripts/check-dependency-sources*.mjs'
-      - '.node-version'
-      - '.pnpm-approve-builds.json'
-      - 'apps/agent/**'
-      - 'apps/console/**'
-      - 'apps/integrations/**'
-      - 'apps/main/**'
-      - 'apps/main-fly/**'
-      - 'apps/main-node/**'
-      - 'packages/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'tsconfig.json'
-
-concurrency:
-  group: server-image-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
-  packages: write
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
+concurrency:
+  group: pr545-fly-depot-ci
+  cancel-in-progress: false
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+  build-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.1.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Check dependency sources before install
+      - name: Require isolated CI credential
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
-          node --test scripts/check-dependency-sources.test.mjs
-          node scripts/check-dependency-sources.mjs
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr545-depot-evidence"
+          {
+            echo 'source_expected=51b95164e5e3b187d6c31a3c2d988dd997dfbac0'
+            echo "workflow_sha=$GITHUB_SHA"
+            echo 'source_role=NOT_CURRENT_CANDIDATE'
+            echo 'app=pr545-e2e4t-v20-sqlite'
+            echo "image_label=ci-depot-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo 'mode=build-only; push image to isolated Fly registry; no app deploy'
+            echo 'cache=default Depot behavior; status unobserved until builder reports it'
+            echo "stage=credential_prerequisite time=$(date -u +%FT%TZ)"
+          } | tee "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+          if [[ -z "${FLY_API_TOKEN:-}" ]]; then
+            echo 'result=MISSING_CI_FLY_API_TOKEN; build not attempted' | tee -a "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+            echo '::error::MISSING_CI_FLY_API_TOKEN: Configure an isolated app-scoped build/push credential through secure GitHub secrets as FLY_API_TOKEN.'
+            exit 1
+          fi
+          echo 'credential=present; authorization not yet verified' >> "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install native storage test dependency
-        run: bash scripts/install-ci-rclone.sh
-
-      - name: Build sandbox credential relay
-        run: pnpm --filter @open-managed-agents/main-node test:prepare
-
-      - name: Verify server release surface
-        run: |
-          pnpm --filter @open-managed-agents/main-node typecheck
-          pnpm --filter @open-managed-agents/main-node test
-          pnpm --filter @open-managed-agents/main-fly typecheck
-          pnpm --filter @open-managed-agents/main-fly test
-          pnpm --filter managed-agents-console build
-
-  build:
-    needs: verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
+      - name: Checkout immutable control source
         uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          ref: 51b95164e5e3b187d6c31a3c2d988dd997dfbac0
+          path: source
+          persist-credentials: false
 
-      - name: Derive immutable image metadata
-        id: metadata
-        uses: docker/metadata-action@v6
+      - name: Assert source binding
+        run: |
+          set -euo pipefail
+          actual=$(git -C source rev-parse HEAD)
+          [[ "$actual" == '51b95164e5e3b187d6c31a3c2d988dd997dfbac0' ]]
+          {
+            echo "stage=source_verified time=$(date -u +%FT%TZ)"
+            echo "source_sha=$actual"
+            echo "dockerfile_sha256=$(sha256sum source/apps/main-node/Dockerfile | cut -d ' ' -f 1)"
+            echo "workflow_sha=$GITHUB_SHA"
+            echo 'NOT_CURRENT_CANDIDATE'
+          } | tee -a "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+
+      - name: Install pinned official flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@98172f70657cb3e15db199af139be99bd3e61200
         with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=sha,format=long
-            type=raw,value=edge,enable={{is_default_branch}}
-            type=match,pattern=openma-server-v(.*),group=1
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+          version: 0.5.8
 
-      - name: Build and publish server image
-        id: build
-        uses: docker/build-push-action@v6
+      - name: Verify flyctl build controls
+        run: |
+          set -euo pipefail
+          flyctl version | tee -a "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+          help=$(flyctl deploy --help)
+          for flag in --depot --build-only --push; do
+            grep -Fq -- "$flag" <<< "$help"
+          done
+          echo "stage=cli_controls_verified time=$(date -u +%FT%TZ)" | tee -a "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+
+      - name: One Depot build and isolated image push
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          config=$(mktemp "$RUNNER_TEMP/pr545-fly-XXXXXX.toml")
+          trap 'rm -f "$config"' EXIT
+          printf 'app = "pr545-e2e4t-v20-sqlite"\nprimary_region = "iad"\n' > "$config"
+          echo "stage=build_process_start time=$(date -u +%FT%TZ)" | tee -a "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+          # Sanitize before tee: GitHub console masking alone does not protect artifacts.
+          # No debug logging, client routing changes, retries, or cache overrides.
+          set +e
+          timeout --signal=KILL 600s flyctl deploy source \
+            --config "$config" \
+            --dockerfile "$GITHUB_WORKSPACE/source/apps/main-node/Dockerfile" \
+            --app pr545-e2e4t-v20-sqlite \
+            --remote-only --depot=true --build-only --push \
+            --image-label "ci-depot-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --yes \
+            2>&1 | python3 -u -c '
+          import os, re, sys
+          token = os.environ.get("FLY_API_TOKEN", "")
+          for line in sys.stdin:
+              if token:
+                  line = line.replace(token, "[REDACTED]")
+              line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line)
+              line = re.sub(r"(?i)((?:authorization|proxy-authorization)\s*[:=]\s*).*", r"\1[REDACTED]", line)
+              line = re.sub(r"(?i)\b(?:bearer|flyv1)\s+\S+", "[REDACTED]", line)
+              line = re.sub(r"(?i)(https?://)[^/\s@]+@", r"\1[REDACTED]@", line)
+              line = re.sub(r"(https?://[^\s?#]+)[?#][^\s]*", r"\1?[REDACTED]", line)
+              line = re.sub(r"(?i)((?:token|password|secret|api[_-]?key)\s*[:=]\s*)\S+", r"\1[REDACTED]", line)
+              sys.stdout.write(line)
+          ' | tee "$RUNNER_TEMP/pr545-depot-evidence/build.sanitized.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          {
+            echo "stage=build_process_end time=$(date -u +%FT%TZ)"
+            echo "build_process_exit_code=${statuses[0]}"
+            echo "sanitizer_exit_code=${statuses[1]}"
+            echo "tee_exit_code=${statuses[2]}"
+            echo 'interpretation=Use builder evidence for auth, handshake, upload and cache stages; no cold-upload claim inferred from failure or absent cache evidence.'
+          } | tee -a "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+          for status in "${statuses[@]}"; do
+            if [[ "$status" != 0 ]]; then exit "$status"; fi
+          done
+
+      - name: Summarize diagnostic result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## Isolated Depot build-only diagnostic'
+            echo 'No app deployment. Immutable control source: NOT_CURRENT_CANDIDATE.'
+            echo "Job result before evidence upload: $JOB_STATUS"
+            echo 'If no build_process_start is recorded, the build was not attempted.'
+            echo 'If no build_process_end is recorded, no final process result was captured.'
+            echo '```text'
+            if [[ -f "$RUNNER_TEMP/pr545-depot-evidence/binding.txt" ]]; then
+              cat "$RUNNER_TEMP/pr545-depot-evidence/binding.txt"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          context: .
-          file: apps/main-node/Dockerfile
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=openma-server
-          cache-to: type=gha,mode=max,scope=openma-server
-          provenance: mode=max
-          sbom: true
-
-      - name: Record immutable image digest
-        if: github.event_name != 'pull_request'
-        run: echo "${IMAGE}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          name: pr545-depot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pr545-depot-evidence/build.sanitized.log
+            ${{ runner.temp }}/pr545-depot-evidence/binding.txt
+          if-no-files-found: ignore
+          retention-days: 7
