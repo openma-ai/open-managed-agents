@@ -97,6 +97,7 @@
     "test:coverage:session-coordination": "vitest run --config vitest.session-coordination.config.ts --coverage",
     "test:chaos:runtime": "pnpm --filter @open-managed-agents/execution-control test:chaos && pnpm --filter @open-managed-agents/managed-runtime-host test:chaos && pnpm --filter @open-managed-agents/managed-runtime-sandbox test:chaos && pnpm --filter @open-managed-agents/managed-runtime-node test:chaos",
     "test:integration:storage": "vitest run --config vitest.storage.config.ts",
+    "test:resource-convergence:node": "vitest run --config test/resource-convergence/vitest.node.config.ts",
     "test:integration:mysql": "pnpm --filter @open-managed-agents/main-node test:integration:mysql && pnpm --filter @open-managed-agents/sql-client test:integration:mysql",
     "test:integration:runtime": "pnpm --filter @open-managed-agents/managed-runtime-node test:docker",
     "db:generate:cf-auth": "drizzle-kit generate --config=drizzle.cf-auth.config.ts",
@@ -121,7 +122,7 @@
     "typecheck:ci:cf": "tsc --noEmit && pnpm --filter @open-managed-agents/matter typecheck && pnpm --filter @open-managed-agents/cost-attribution-cloudflare typecheck && pnpm --filter @open-managed-agents/environment-dispatch-cloudflare typecheck && pnpm --filter @open-managed-agents/managed-runtime-cloudflare typecheck && pnpm --filter @open-managed-agents/managed-runtime-cloudflare-bridge typecheck && pnpm --filter @open-managed-agents/platform-cloudflare typecheck && pnpm --filter @open-managed-agents/session-wakeup-cloudflare typecheck",
     "typecheck:ci:node": "pnpm run typecheck:node && pnpm --filter managed-agents-console typecheck && pnpm --filter @open-managed-agents/main-fly typecheck && pnpm --filter @open-managed-agents/main-vercel typecheck && pnpm run typecheck:packages",
     "test:ci:cf": "pnpm run test:discovery && pnpm run test:architecture && pnpm exec vitest run && pnpm --filter @open-managed-agents/matter test && pnpm --filter @open-managed-agents/managed-agents-api test:official-worker && pnpm --filter @open-managed-agents/environment-dispatch-cloudflare test && pnpm --filter @open-managed-agents/managed-runtime-cloudflare test && pnpm --filter @open-managed-agents/managed-runtime-cloudflare-bridge test && pnpm --filter @open-managed-agents/platform-cloudflare test && pnpm --filter @open-managed-agents/session-wakeup-cloudflare test",
-    "test:ci:node": "pnpm run test:discovery && pnpm run test:architecture && pnpm run test:self-host && pnpm run test:certification:runner && pnpm run test:certification:orchestrators && pnpm run test:certification:offline && pnpm run test:provider-chaos && pnpm run test:packages && pnpm run test:console"
+    "test:ci:node": "pnpm run test:discovery && pnpm run test:architecture && pnpm run test:self-host && pnpm run test:certification:runner && pnpm run test:certification:orchestrators && pnpm run test:certification:offline && pnpm run test:provider-chaos && pnpm run test:packages && pnpm run test:console && pnpm run test:resource-convergence:node"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "1.3.0",

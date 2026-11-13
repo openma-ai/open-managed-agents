@@ -246,7 +246,11 @@ jobs:
       - name: Native sandbox bootstrap safety
         timeout-minutes: 2
         working-directory: packages/sandbox-adapter-e2b
-        run: unshare -Ur env OMA_REQUIRE_NATIVE_BOOTSTRAP=1 node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts test/managed-bootstrap.test.ts
+        # ubuntu-24.04 runners block unprivileged user namespaces (AppArmor)
+        # until this sysctl is set; unshare -Ur then fails writing uid_map.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare -Ur env OMA_REQUIRE_NATIVE_BOOTSTRAP=1 node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts test/managed-bootstrap.test.ts
 
       - name: Node tests
         run: pnpm test:ci:node

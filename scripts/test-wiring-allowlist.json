@@ -44,6 +44,34 @@
     {
       "pattern": "apps/console/e2e/vault-overflow.spec.ts",
       "reason": "BROKEN: 'shared DataTable text plays while custom controls remain stationary' fails deterministically (vault-overflow.spec.ts:76, DataTable name cell not found); the other two cases pass. Fix, then add it to root test:e2e:agent-editor next to harness-catalog.spec.ts"
+    },
+    {
+      "pattern": "apps/main-node/test/core-custom-mcp-kimi.native.test.ts",
+      "reason": "live: official Kimi executable (KIMI_OFFICIAL_EXECUTABLE) and an evidence directory (KIMI_BEHAVIOR_EVIDENCE, KIMI_BEHAVIOR_LABEL); the official-process Core custom-tool gate run by hand (apps/main-node/vitest.kimi-native.config.ts)"
+    },
+    {
+      "pattern": "apps/main-node/test/core-custom-mcp-work.native.test.ts",
+      "reason": "live: OMA_PI_ACP_ENTRY must point to the audited official @openma/pi-acp@0.1.8 distribution, which is not a workspace dependency (apps/main-node/vitest.mcp-native.config.ts, packages/managed-agents-adapters-sql/test/CUSTOM-AUTHORITY.md); optional CORE_MCP_DATABASE_URL for the dedicated-database variant"
+    },
+    {
+      "pattern": "packages/managed-agents-adapters-sql/test/custom-tool-authority.mysql.native.test.ts",
+      "reason": "Docker/database: needs a dedicated loopback MySQL database (CUSTOM_INVOCATIONS_MYSQL_URL=mysql://127.0.0.1/openma_custom_test_*, packages/managed-agents-adapters-sql/vitest.custom-mysql.config.ts); test/storage-global-setup.ts provisions only PostgreSQL and MinIO, so wiring needs a MySQL container there plus a root @testcontainers/mysql dependency"
+    },
+    {
+      "pattern": "packages/managed-agents-adapters-sql/test/pi-mcp-barrier.native.test.ts",
+      "reason": "live: OMA_PI_ACP_ENTRY must point to the audited official @openma/pi-acp@0.1.8 distribution, which is not a workspace dependency (packages/managed-agents-adapters-sql/vitest.native.config.ts)"
+    },
+    {
+      "pattern": "test/resource-convergence/environment-official-package.live-r2.node.ts",
+      "reason": "live: installs claude-acp@0.94.0 from registry.npmjs.org into an explicit task npm cache (RESOURCE_ACP_PACKAGE_CACHE); test/resource-convergence/vitest.live-r2.config.ts"
+    },
+    {
+      "pattern": "test/resource-convergence/memory-content-storage.live-r2.node.ts",
+      "reason": "credentials: real R2 FILES/MEMORY S3 endpoints from RESOURCE_R2_TASK_CREDENTIAL_FILE (test/resource-convergence/vitest.memory-r2.config.ts)"
+    },
+    {
+      "pattern": "test/resource-convergence/node-agent-resource-use.live-r2.node.ts",
+      "reason": "credentials: real R2 content backends from RESOURCE_R2_TASK_CREDENTIAL_FILE (test/resource-convergence/vitest.live-r2.config.ts); the local-blob variant node-agent-resource-use.node.ts runs in CI via test:resource-convergence:node"
     }
   ]
 }
