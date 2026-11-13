@@ -144,7 +144,9 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
   let plan: SandboxPlan;
   try {
     plan = await state.options.plan({ scope, generation, stores: state.stores });
-    state.stores = mergeStores(plan.stores, state.stores);
+    // The plan resolved these paths for this physical generation. Retired
+    // bindings must not override its prefixes or access modes.
+    state.stores = mergeStores(state.stores, plan.stores);
     if (opened === "gone") {
       const started = await startNew(state, record, plan, signal);
       opened = started.opened;
@@ -196,7 +198,7 @@ async function start<R>(state: LiveSessionSandbox<R>): Promise<OpenSandbox<R>> {
           state.outputs ||= winner.outputs;
           plan = await state.options.plan({ scope, generation, stores: state.stores });
           await assertCurrent();
-          state.stores = mergeStores(plan.stores, winner.stores);
+          state.stores = mergeStores(winner.stores, plan.stores);
         } else record = next;
         publish = (handle, at) => ({ type: "attach", handle, at });
       }
@@ -320,7 +322,9 @@ async function warm<R>(state: LiveSessionSandbox<R>): Promise<void> {
       throw new SessionSandboxFenceLostError("The Session execution fence was lost while its sandbox was warmed");
     }
     await writeMarker(state.options.executor(acquired.runtime), generation);
-    state.stores = mergeStores(plan.stores, state.stores);
+    // The plan resolved these paths for this physical generation. Retired
+    // bindings must not override its prefixes or access modes.
+    state.stores = mergeStores(state.stores, plan.stores);
     if (await state.apply(saved, { type: "acquire", handle: acquired.handle, at: state.now() }) === null) {
       throw conflict("its sandbox was warmed");
     }

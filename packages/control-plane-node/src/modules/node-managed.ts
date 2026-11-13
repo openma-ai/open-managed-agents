@@ -1,3 +1,4 @@
+import { workspaceRootOf } from "@open-managed-agents/sandbox";
 import { nodePublishedSessionFiles } from "../lib/node-published-session-files";
 
 /**
@@ -97,7 +98,8 @@ import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
-  buildNodeManagedSkillReminders,
+  buildNodeManagedResourceReminders,
+  preparedNodeManagedSkillFacts,
   resolveNodeManagedSkillMounts,
   buildNodeManagedAppendablePromptReminders,
   NodeManagedSessionInputPreparer,
@@ -551,13 +553,16 @@ export async function createManagedNodeRuntime(
             .port(managedAgentsPortTokens.skillVersions),
         )
         : undefined;
+      // Skill locations, Memory mounts and outputs from the shared Session
+      // resource facts (same derivation as CF SessionDO and the Work supervisor).
       const platformReminders = [
-        ...(assemblySkills ? [] : await buildNodeManagedSkillReminders(
+        ...await buildNodeManagedResourceReminders(
           input.session,
           managedPlatform
             .app({ workspaceId: input.workspaceId })
             .port(managedAgentsPortTokens.skillVersions),
-        )),
+          { skills: !assemblySkills, workspaceRoot: await workspaceRootOf(input.runtime.sandbox), materializedSkills: assemblySkills ? [] : preparedNodeManagedSkillFacts(input.runtime.sandbox) },
+        ),
         ...buildNodeManagedAppendablePromptReminders(input.session),
       ];
       const feishuTools = await resolveFeishuAgentTools(input.session.id);

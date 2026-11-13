@@ -1,4 +1,5 @@
 import { log, logError } from "@open-managed-agents/shared";
+import { prepareNativeWorkStorage, materializeCfWorkMemory } from "../../../main/src/lib/cf-native-work-storage";
 import { checkCfWorkLeaseRecovery } from "./cf-work-lease-recovery";
 import { type CfE2BWorkLease, createCfE2BWorkLeaseAuthority } from "./cf-work-provider-lease";
 import { sandboxIdlePauseMs } from "@open-managed-agents/session-runtime";
@@ -74,8 +75,11 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env, ow
         if (provider === "cloudflare") {
           const sandbox = new CloudflareSandbox(env, delivery.sessionId);
           sandbox.sessionOutputsMount({ tenantId: delivery.workspaceId, sessionId: delivery.sessionId });
+          log({ ...diagnostic, op: "work.native.resources.bootstrap", claim_generation: authority.generation, sandbox: await sandbox.describeSandbox() }, "Native Work resource bootstrap observation");
+          const resources = await prepareNativeWorkStorage({ env, sql, scope: delivery, runtime: sandbox, assertCurrent: authority.assertCurrent });
           const preparedAcp = await prepareCloudflareEnvironmentRuntime({ runtime: sandbox, setup, agent: authority.agent, installedHarnesses: inventoryRaw, sessionId: delivery.sessionId, assertCurrent: authority.assertCurrent });
-          return Object.assign(sandbox, { preparedAcp });
+          const start = sandbox.startWorkRunner.bind(sandbox);
+          return Object.assign(sandbox, { preparedAcp, startWorkRunner: (input: Parameters<CloudflareSandbox["startWorkRunner"]>[0]) => start({ ...input, resources }) });
         }
         if (!owner) throw new Error("E2B requires its existing Session resource owner");
         // Persist the maintenance wake before a native launch can outlive this request.
@@ -89,9 +93,18 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env, ow
         const token = (sandbox: object | string) => tokens!.relayDelivery(attempt, () => issueSandboxToken(createSqlEnvironmentWorkSandboxTokenStore(sql), attempt, { scope: "all" }), sandbox);
         const sandbox = createE2BSessionSandbox({ env, storage: owner.storage, scope: () => delivery,
           networking: async () => (authority.environment.config as { networking?: SessionNetworking }).networking, fence: () => undefined, relayToken: async () => { throw new Error("Work cannot use a SessionExecution token"); },
+          resourceStores: async (scope, generation) => {
+            const resources = await materializeCfWorkMemory({ env, sql, scope, generation, assertCurrent: authority.assertCurrent });
+            return resources.map(({ fact, mountStoreId }) => {
+              const name = fact.path.slice("/mnt/memory/".length);
+              if (!fact.path.startsWith("/mnt/memory/") || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(name)) throw new Error("E2B Work Memory mount path unsupported");
+              return { storeName: name, storeId: mountStoreId, readOnly: fact.access === "read_only" };
+            });
+          },
           workAuthority: { attempt, async isCurrent() { await authority.assertCurrent(); return true; }, token },
         });
         const runtime = await sandbox.runtime();
+        log({ ...diagnostic, op: "work.e2b.resources.bootstrap", stores: (owner.storage.kv.get("e2b_sandbox_state") as { stores?: unknown } | undefined)?.stores }, "E2B Work mounted resource observation");
         await authority.assertCurrent();
         const preparedAcp = await prepareCloudflareEnvironmentRuntime({ runtime: sandbox, setup, agent: authority.agent, installedHarnesses: inventoryRaw, sessionId: delivery.sessionId, assertCurrent: authority.assertCurrent });
         await authority.assertCurrent();
@@ -124,7 +137,7 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env, ow
     // Do not serialize arbitrary SDK errors: they can carry credentials or bodies.
     const known = ["Work lease recovery requires an already running sandbox with auto-resume disabled", "Work resource owner mismatch"];
     const reason = error instanceof Error && known.includes(error.message) ? error.message : "dispatch_failed";
-    logError({ ...diagnostic, op: "work.dispatch.error", stage, reason, error_name: error instanceof Error ? error.name : "UnknownError" }, "Work dispatch unconfirmed");
+    logError({ ...diagnostic, op: "work.dispatch.error", stage, reason, error_name: error instanceof Error ? error.name : "UnknownError", origin: error instanceof Error ? error.stack?.split("\n").slice(1, 3).join("\n") : undefined }, "Work dispatch unconfirmed");
     // Dispatch may already have happened. No retry/stop or safe-to-retry claim.
     return Response.json({ error: "Work dispatch unconfirmed" }, { status: 409 });
   }

@@ -8,9 +8,13 @@ export function workCheckpointExecutor(sandbox: SandboxExecutor): SandboxExecuto
   // has no /oma and its SDK user cannot create one: transfer through the
   // provider's own /var/tmp, outside the archived workspace, unchanged.
   if ((sandbox as {runtimeHandle?: () => {provider: string}}).runtimeHandle?.().provider === "e2b") return sandbox;
+  // LocalSubprocess maps these independently persisted resources below its
+  // physical workspace. They are not workspace checkpoint content. Exclude
+  // them on restore too, so older archives cannot overwrite fresh mounts.
+  const resourceExcludes = "--exclude=./.mnt/memory --exclude=./.mnt/session/outputs";
   const transfer = (path: string) => path.replaceAll("/var/tmp/openma-workspace-", "/oma/checkpoint-transfer/openma-workspace-");
   return {
-    exec: (command, timeout) => sandbox.exec(`mkdir -p /oma/checkpoint-transfer && ${transfer(command).replace("tar -C ", "tar --exclude=./.mnt/oma/checkpoint-transfer -C ")}`, timeout),
+    exec: (command, timeout) => sandbox.exec(`mkdir -p /oma/checkpoint-transfer && ${transfer(command).replace("tar -C ", `tar ${resourceExcludes} --exclude=./.mnt/oma/checkpoint-transfer -C `).replace("tar -xf ", `tar ${resourceExcludes} -xf `)}`, timeout),
     readFile: path => sandbox.readFile(transfer(path)),
     writeFile: (path, text) => sandbox.writeFile(transfer(path), text),
     readFileBytes: sandbox.readFileBytes ? path => sandbox.readFileBytes!(transfer(path)) : undefined,

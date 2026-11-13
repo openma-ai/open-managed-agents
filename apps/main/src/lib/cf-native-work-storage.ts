@@ -1,11 +1,11 @@
 import type { Env } from "@open-managed-agents/shared";
-import { sessionOutputsPrefix } from "@open-managed-agents/shared";
+import { log, sessionOutputsPrefix } from "@open-managed-agents/shared";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { NativeWorkProcess } from "../../../agent/src/runtime/cf-native-work-process";
 import type { Session, WorkFinalizationClaim } from "@open-managed-agents/managed-agents-application";
 import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
-import { SqlMemoryStoreSource, SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
-import { ManagedMemoryBlobWorkspaceSynchronizer, ManagedMemoryWorkspaceReconciler, WebCryptoMemoryContentDescriptor } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { SqlMemoryStoreSource, SqlSessionSource, SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
+import { ManagedMemorySnapshotMaterializer, ManagedMemoryBlobWorkspaceSynchronizer, ManagedMemoryWorkspaceReconciler, WebCryptoMemoryContentDescriptor } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { createCloudflareManagedAgentsApp } from "@open-managed-agents/platform-cloudflare";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { providePort } from "@open-managed-agents/app";
@@ -14,10 +14,124 @@ import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapte
 import { getCfServicesForTenant } from "@open-managed-agents/services";
 import { publishSessionArtifact, artifactContentHash, createProjectionState, applyManagedEventsInPlace, executionTurnId, type ManagedProjectionEvent, outputPathsFromManifest, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
 import { CfManagedSessionSecretSealer } from "./cf-managed-session-secret-sealer";
-import { createSyncStorage, type SandboxVendorPort } from "../../../../packages/sandbox-port-kit/src/index";
+import { sessionMemoryResourceFact, sessionResourceFacts, SESSION_OUTPUTS_PATH } from "@open-managed-agents/runtime-resource-contract";
+import type { CloudflareSandbox } from "../../../agent/src/runtime/sandbox";
+import type { OmaMountBucketRequest } from "../../../agent/src/oma-sandbox";
 
-import { createR2MemoryPrefixAccess } from "../../../agent/src/runtime/r2-memory-access";
-import { createR2BindingOutputSink } from "../../../agent/src/runtime/e2b-session-sandbox";
+export function cfWorkMemoryFacts(session: Session) {
+  return sessionResourceFacts({ memoryStores: session.resources.filter(r => r.type === "memory_store").map(r => {
+    if (r.type !== "memory_store" || !r.mountPath) throw new Error("Native Work Memory published mount path missing");
+    return sessionMemoryResourceFact({ storeId: r.memoryStoreId, storeName: r.name ?? r.memoryStoreId, path: r.mountPath, access: r.access });
+  }) }).memoryStores;
+}
+
+/** Validate actual mounted prefixes/modes against the same core facts used
+ * during bootstrap. Both CF-hosted Work providers use canonical R2 snapshots. */
+export function assertCfWorkMemoryMounts(input: {
+  session: Session; scope: { workspaceId: string; sessionId: string }; generation: string;
+  mounts: readonly { mountPath: string; keyPrefix: string; access: string }[];
+}) {
+  const stores = cfWorkMemoryFacts(input.session);
+  if (input.mounts.length !== stores.length) throw new Error("Native Memory mount mismatch");
+  for (const store of stores) {
+    const mount = input.mounts.find(m => m.mountPath === store.path);
+    const writablePrefix = `.openma-managed-memory-workspaces/${encodeURIComponent(input.scope.workspaceId)}/${encodeURIComponent(input.scope.sessionId)}/${encodeURIComponent(input.generation)}/${encodeURIComponent(store.storeId)}/data`;
+    const readonlyPrefix = `.openma-managed-memory-snapshots/${encodeURIComponent(input.scope.workspaceId)}/${encodeURIComponent(store.storeId)}/`;
+    const validPrefix = store.access === "read_write" ? mount?.keyPrefix === writablePrefix
+      : mount?.keyPrefix.startsWith(readonlyPrefix) && /^[a-f0-9]{64}$/.test(mount.keyPrefix.slice(readonlyPrefix.length));
+    if (!validPrefix || mount?.access !== (store.access === "read_only" ? "read-only" : "read-write")) throw new Error("Native Memory mount mismatch");
+  }
+  return stores;
+}
+
+function memoriesApplication(sql: SqlClient, workspaceId: string) {
+  return createCloudflareManagedAgentsApp({ workspaceId, sql }, {
+    features: { preset: "none", memories: true, memoryVersions: true }, clock: { now: () => new Date() }, ids,
+    modules: () => [providePort(memoryStoreForMemorySourcePort, new SqlMemoryStoreSource(sql)), providePort(memoryContentDescriptorPort, new WebCryptoMemoryContentDescriptor()), providePort(memoryVersionActorPort, { kind: "api" as const, apiKeyId: "self_hosted" })],
+  }).port(managedAgentsPortTokens.memories);
+}
+
+/** Canonical R2 projection shared by CF-hosted Work adapters. Domain paths
+ * and modes come from core facts; this helper only reads SQL and writes blobs. */
+export async function materializeCfWorkMemory(input: {
+  env: Env; sql: SqlClient; scope: { workspaceId: string; sessionId: string };
+  generation: string; assertCurrent(): Promise<void>;
+}) {
+  const { env, sql, scope, generation, assertCurrent } = input;
+  await assertCurrent();
+  const session = await new SqlSessionSource(sql).find(scope);
+  if (!session || session.archivedAt !== null) throw new Error("Work Session unavailable");
+  const facts = cfWorkMemoryFacts(session);
+  if (facts.length && !env.MEMORY_BUCKET) throw new Error("Work Memory bucket unavailable");
+  const snapshots = new ManagedMemorySnapshotMaterializer(memoriesApplication(sql, scope.workspaceId), {
+    getText: async key => { await assertCurrent(); const object = await env.MEMORY_BUCKET!.get(key); return object ? object.text() : null; },
+    put: async (key, content) => { await assertCurrent(); return env.MEMORY_BUCKET!.put(key, content); },
+  });
+  const result = [];
+  for (const fact of facts) {
+    await assertCurrent();
+    const snapshot = await snapshots.materialize({ ...scope, memoryStoreId: fact.storeId, access: fact.access, runtimeGeneration: generation });
+    result.push({ fact, mountStoreId: snapshot.mountStoreId });
+  }
+  await assertCurrent();
+  return result;
+}
+
+/** Mount the canonical snapshots before any Environment preparation can start
+ * the container. The receipt stays on the trusted host and is checked again
+ * at the native launch boundary; it is never a public path/env setting. */
+export async function prepareNativeWorkStorage(input: {
+  env: Env; sql: SqlClient; scope: { workspaceId: string; sessionId: string };
+  runtime: Pick<CloudflareSandbox, "describeSandbox" | "inspectWorkProcess" | "sessionOutputsMount" | "memoryStoreMount" | "provisionSandbox" | "restoreWorkspaceBackup">;
+  assertCurrent(): Promise<void>;
+}): Promise<{ incarnation: string; mounts: OmaMountBucketRequest[] }> {
+  const { env, sql, scope, runtime, assertCurrent } = input;
+  await assertCurrent();
+  if (!env.MEMORY_BUCKET || !env.FILES_BUCKET) throw new Error("Native Work storage buckets missing");
+  const outputs = runtime.sessionOutputsMount({ tenantId: scope.workspaceId, sessionId: scope.sessionId });
+  if (!outputs) throw new Error("Native Work output mount missing");
+  if (await runtime.inspectWorkProcess()) throw new Error("Native Work process is already live");
+  const description = await runtime.describeSandbox();
+  const incarnation = description.running && description.incarnation ? description.incarnation : crypto.randomUUID();
+  const session = await new SqlSessionSource(sql).find(scope);
+  if (!session || session.archivedAt !== null) throw new Error("Native Work Session unavailable");
+  const facts = cfWorkMemoryFacts(session);
+  // Validate all persistence credentials before writing any snapshot blobs.
+  for (const fact of facts) runtime.memoryStoreMount({ storeName: fact.storeName, storeId: fact.storeId, readOnly: fact.access === "read_only" });
+  const resources = await materializeCfWorkMemory({ env, sql, scope, generation: incarnation, assertCurrent });
+  const mounts = [outputs];
+  for (const { fact, mountStoreId } of resources) {
+    mounts.push({ ...runtime.memoryStoreMount({ storeName: fact.storeName, storeId: mountStoreId, readOnly: fact.access === "read_only" }), mountPath: fact.path });
+  }
+  await assertCurrent();
+  log({ op: "work.native.resources.provision", session_id: scope.sessionId, runtime_generation: incarnation, mounts: mounts.map(m => ({ path: m.mountPath, prefix: m.options.prefix, read_only: m.options.readOnly })) }, "Provisioning native Work resource snapshots");
+  const result = await runtime.provisionSandbox({ incarnation, mounts, autoStart: false });
+  await assertCurrent();
+  if (result.incarnation !== incarnation || result.pendingMounts.length) throw new Error("Native Work resource generation or mounts changed during provisioning");
+  // No process is live at this point. Restore the latest authoritative
+  // session checkpoint before starting a new Work owner. Do not use the
+  // legacy best-effort lookup: missing/expired bytes must refuse startup.
+  const checkpoint = await sql.prepare(`SELECT backup_handle,expires_at FROM workspace_backups
+    WHERE tenant_id=? AND environment_id=? AND source_session_id=? ORDER BY id DESC LIMIT 1`)
+    .bind(scope.workspaceId, session.environmentId, scope.sessionId)
+    .first<{ backup_handle: string; expires_at: number }>();
+  await assertCurrent();
+  if (checkpoint) {
+    const handle = JSON.parse(checkpoint.backup_handle) as import("../../../agent/src/runtime/workspace-backups").WorkspaceBackupHandle;
+    if (checkpoint.expires_at <= Date.now() || !handle.id || handle.dir !== "/workspace"
+      || !Number.isSafeInteger(handle.size) || handle.size! < 0
+      || !/^[a-f0-9]{64}$/.test(handle.sha256 ?? "") || handle.format !== "tar+zstd/1") {
+      throw new Error("Native Work workspace checkpoint unavailable or invalid");
+    }
+    log({ op: "work.native.workspace.restore", session_id: scope.sessionId, runtime_generation: incarnation, checkpoint_id: handle.id }, "Restoring native Work workspace checkpoint");
+    const restored = await runtime.restoreWorkspaceBackup(handle);
+    await assertCurrent();
+    if (!restored.ok) throw new Error(`Native Work workspace restore failed: ${restored.error ?? "unknown"}`);
+    const current = await runtime.describeSandbox();
+    if (!current.running || current.incarnation !== incarnation) throw new Error("Native Work generation changed during workspace restore");
+  }
+  return { incarnation, mounts };
+}
 
 type NativeIO = {
   run(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }>;
@@ -38,31 +152,24 @@ export async function synchronizeNativeWorkStorage(input: Input & { process: Nat
   if (!env.MEMORY_BUCKET || !env.FILES_BUCKET) throw new Error("Native Work storage buckets missing");
   const config = { memory: env.MEMORY_BUCKET, files: env.FILES_BUCKET };
   const mounts = input.process.mounts ?? [];
-  const stores = session.resources.filter(r => r.type === "memory_store").map(r => {
-    if (r.type !== "memory_store") throw new Error("Invalid resource");
-    if (!r.name || !/^[A-Za-z0-9._-]+$/.test(r.name)) throw new Error("Native Memory mount name missing or unsafe");
-    return { storeId: `.openma-managed-memory-workspaces/${encodeURIComponent(claim.workspaceId)}/${encodeURIComponent(claim.sessionId)}/${encodeURIComponent(runtimeGeneration)}/${encodeURIComponent(r.memoryStoreId)}/data`, storeName: r.name, readOnly: r.access !== "read_write" };
-  });
-  const writable = session.resources.filter((r): r is Extract<Session["resources"][number], { type: "memory_store" }> => r.type === "memory_store" && r.access === "read_write");
+  log({ op: "work.native.resources.reconcile", session_id: claim.sessionId, claim_generation: claim.generation, runtime_generation: runtimeGeneration, mounts, memory: session.resources.filter(r => r.type === "memory_store").map(r => ({ path: r.mountPath, access: r.access })) }, "Native Work resource reconciliation observation");
+  const stores = cfWorkMemoryFacts(session);
+  const writable = stores.filter(r => r.access === "read_write");
   // A cold reconnect cannot invent mount baselines. Missing bootstrap storage
   // is a real unavailable capability, never an empty successful sync.
   for (const resource of writable) {
-    const expected = `.openma-managed-memory-workspaces/${encodeURIComponent(claim.workspaceId)}/${encodeURIComponent(claim.sessionId)}/${encodeURIComponent(runtimeGeneration)}/${encodeURIComponent(resource.memoryStoreId)}/data`;
+    const expected = `.openma-managed-memory-workspaces/${encodeURIComponent(claim.workspaceId)}/${encodeURIComponent(claim.sessionId)}/${encodeURIComponent(runtimeGeneration)}/${encodeURIComponent(resource.storeId)}/data`;
     if (!await config.memory.get(expected.replace(/\/data$/, "/manifest.json"))) throw new Error("Work Memory mount baseline is missing");
   }
-  // Native S3Mount and copy-sync share canonical projection prefixes. A
-  // configured mount is never accepted just because its directory exists.
-  const mounted = mounts.length > 0;
-  if (mounted) {
-    for (const store of stores.filter(s => !s.readOnly)) {
-      if (!mounts.some(m => m.mountPath === `/mnt/memory/${store.storeName}` && m.keyPrefix === store.storeId && m.access === "read-write")) throw new Error("Native Memory mount mismatch");
-    }
-    const outputsPrefix = sessionOutputsPrefix(claim.workspaceId, claim.sessionId).replace(/\/$/, "");
-    if (!mounts.some(m => m.mountPath === "/mnt/session/outputs" && m.keyPrefix === outputsPrefix && m.access === "read-write")) throw new Error("Native output mount mismatch");
+  // Native Work requires actual mounts. A local directory is never persistence.
+  assertCfWorkMemoryMounts({ session, scope: claim, generation: runtimeGeneration, mounts: mounts.filter(m => m.mountPath !== SESSION_OUTPUTS_PATH) });
+  const outputsPrefix = sessionOutputsPrefix(claim.workspaceId, claim.sessionId).replace(/\/$/, "");
+  if (!mounts.some(m => m.mountPath === SESSION_OUTPUTS_PATH && m.keyPrefix === outputsPrefix && m.access === "read-write")) throw new Error("Native output mount mismatch");
+  {
     // Every syscall is awaited by the exact-process IO port. SDK inspection
     // alone is not a write barrier. fsync failure (including unsupported FUSE)
     // refuses finalization rather than falling back to a successful no-op.
-    const paths = [...stores.filter(s => !s.readOnly).map(s => `/mnt/memory/${s.storeName}`), "/mnt/session/outputs"];
+    const paths = [...writable.map(s => s.path), SESSION_OUTPUTS_PATH];
     const script = `import os,json
 def fail(error): raise error
 for root in json.loads(${JSON.stringify(JSON.stringify(paths))}):
@@ -79,31 +186,7 @@ for root in json.loads(${JSON.stringify(JSON.stringify(paths))}):
     const flushed = await runtime.run("python3 -c '" + script.replaceAll("'", "'\\''") + "'");
     if (flushed.exitCode !== 0) throw new Error("Native mount fsync failed");
   }
-  const vendor: SandboxVendorPort<NativeIO> = {
-    exec: (r, cmd) => r.run(cmd), readFile: (r, path) => r.readBytes(path),
-    writeFile: (r, path, bytes) => r.writeFileBytes(path, bytes).then(() => undefined),
-    setEnv: async () => { throw new Error("Finalization cannot change process environment"); },
-  };
-  const outputs = createR2BindingOutputSink({
-    list: options => config.files.list(options), get: (key, options) => config.files.get(key, options),
-    put: async (key, value, options) => { await assertCurrent(); return config.files.put(key, value, options); },
-    delete: async keys => { await assertCurrent(); await config.files.delete(keys); },
-  }, scope => sessionOutputsPrefix(scope.workspaceId, scope.sessionId));
-  // Work fence is the actual authenticated SQL claim, not SessionExecution.
-  const { fence } = input;
-  const sync = createSyncStorage(vendor, {
-    memories: () => createR2MemoryPrefixAccess(config.memory),
-    authorize: () => authorize(),
-    outputs: { read: i => outputs.read(i), publish: async i => {
-      const guarded = async function* () { for await (const file of i.files) { await assertCurrent(); yield file; } };
-      await assertCurrent(); await outputs.publish({ ...i, files: guarded() }); await assertCurrent();
-    } },
-  });
-  if (!mounted) await sync.sync({ scope: claim, fence, runtime, stores, outputs: { bindingId: `outputs:${claim.sessionId}`, mountPath: "/mnt/session/outputs" }, reason: "turn_end", signal: new AbortController().signal });
-  const memories = createCloudflareManagedAgentsApp({ workspaceId: claim.workspaceId, sql }, {
-    features: { preset: "none", memories: true, memoryVersions: true }, clock: { now: () => new Date() }, ids,
-    modules: () => [providePort(memoryStoreForMemorySourcePort, new SqlMemoryStoreSource(sql)), providePort(memoryContentDescriptorPort, new WebCryptoMemoryContentDescriptor()), providePort(memoryVersionActorPort, { kind: "api" as const, apiKeyId: "self_hosted" })],
-  }).port(managedAgentsPortTokens.memories);
+  const memories = memoriesApplication(sql, claim.workspaceId);
   const bucket = config.memory;
   const synchronizer = new ManagedMemoryBlobWorkspaceSynchronizer({
     getText: async key => { const object = await bucket.get(key); return object ? object.text() : null; },
@@ -113,7 +196,7 @@ for root in json.loads(${JSON.stringify(JSON.stringify(paths))}):
   }, new ManagedMemoryWorkspaceReconciler(memories), memories);
   for (const resource of writable) {
     await assertCurrent();
-    const result = await synchronizer.synchronize({ ...claim, runtimeGeneration, memoryStoreId: resource.memoryStoreId, authorize });
+    const result = await synchronizer.synchronize({ ...claim, runtimeGeneration, memoryStoreId: resource.storeId, authorize });
     if (result.type !== "reconciled") throw new Error(`Work Memory synchronization failed: ${result.type}`);
   }
   await assertCurrent();
@@ -121,7 +204,7 @@ for root in json.loads(${JSON.stringify(JSON.stringify(paths))}):
 
 /** The existing afterExecution publisher; Files provenance/dedupe and canonical
  * projection stay unchanged. Work provides its own live authority callback. */
-export async function publishNativeWorkArtifacts(input: Input & { turnId: string }): Promise<void> {
+export async function publishNativeWorkArtifacts(input: Omit<Input, "runtime"> & { runtime: Pick<NativeIO, "run"> & { readBytes(path: string): Promise<Uint8Array | null> }; turnId: string }): Promise<void> {
   const { env, sql, claim, session, runtime, authorize, turnId } = input;
   const services = await getCfServicesForTenant(env, claim.workspaceId);
   if (!services.filesBlob) throw new Error("FILES_BUCKET required for Work artifacts");

@@ -21,6 +21,18 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { safeSkillArchivePath } from "@open-managed-agents/acp-runtime/skill-package";
 import { unzipSync } from "fflate";
+import {
+  SESSION_WORKSPACE_ROOT,
+  sessionMemoryResourceFact,
+  sessionResourceFacts,
+  sessionResourceEnvironment,
+  sessionResourceReminders,
+  sessionSkillResourceFact,
+  sessionSkillVersionRoot,
+  type SessionMemoryResourceFact,
+  type SessionResourceReminder,
+  type SessionSkillResourceFact,
+} from "@open-managed-agents/runtime-resource-contract";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
@@ -168,6 +180,7 @@ export interface NodeManagedAcpSupervisorApp {
 }
 
 interface ActiveRunContext {
+  workspacePath: string;
   outputPath: string | null;
   channels: ManagedAcpExecutionChannels | null;
   history: ManagedHarnessRecoveryHistoryPort;
@@ -206,7 +219,7 @@ export function createNodeManagedAcpSupervisorApp(
   if (explicitSources && (
     installedHarnesses !== null || options.agentId !== undefined || options.resolveAgent !== undefined
   )) throw new TypeError(`${sourceVariable} cannot be combined with installed harness or agent overrides`);
-  const workspacePath = options.workspacePath ?? "/workspace";
+  const workspacePath = options.workspacePath ?? SESSION_WORKSPACE_ROOT;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 5_000;
   const stateIo = options.stateIo ?? createNodeAcpHarnessStateIo({ workspacePath });
   const acpRuntime = options.acpRuntime ?? createAcpRuntime({
@@ -297,14 +310,23 @@ export function createNodeManagedAcpSupervisorApp(
             `No installed ACP agent is configured for ${harness.id}@${harness.version}`,
           );
         }
-        const skillInstructions = await materializeSkills({
-          io: stateIo,
-          source: active.skills,
-          skills: session.agent.skills,
+        // Model-visible resource guidance comes from what this run actually
+        // materialized (Skill manifests), what the Work materializer mounted
+        // (Session memory_store records' mount_path) and the outputs
+        // directory this run collects; env values alone are not visibility.
+        const resourceFacts = sessionResourceFacts({
+          workspaceRoot: active.workspacePath,
+          skills: await materializeSkills({
+            io: stateIo,
+            source: active.skills,
+            skills: session.agent.skills,
+          }),
+          memoryStores: workMemoryResourceFacts(session.resources),
+          outputs: active.outputPath === null ? null : { path: active.outputPath },
         });
         const instructions = [
           session.agent.system?.trimEnd() ?? "",
-          skillInstructions,
+          renderResourceReminders(sessionResourceReminders(resourceFacts, { includeWorkspace: true })),
         ].filter((part) => part.length > 0).join("\n\n");
         platformInstructions = instructions;
         const scrubbedEnvironment = Object.fromEntries(
@@ -314,10 +336,11 @@ export function createNodeManagedAcpSupervisorApp(
         const baseAgent: AcpStatefulAgentSpec = {
           ...resolved,
           id: resolved.id ?? options.agentId ?? harness.id,
-          cwd: resolved.cwd ?? "/workspace",
+          cwd: resolved.cwd ?? resourceFacts.workspaceRoot,
           env: {
             ...(resolved.env ?? {}),
             ...scrubbedEnvironment,
+            ...sessionResourceEnvironment(resourceFacts),
             ...(active.outputPath === null
               ? { OUTPUT_PATH: undefined }
               : { OUTPUT_PATH: active.outputPath }),
@@ -493,8 +516,15 @@ export function createNodeManagedAcpSupervisorApp(
             });
             await stateIo.writeFile(releasePath, `${JSON.stringify(release)}\n`);
           }
+          const artifactRoot = options.artifacts?.root ?? environment.OPENMA_ACP_ARTIFACT_ROOT ?? join(homedir(), ".oma", "acp", "registry");
+          // The installer intentionally excludes the ambient environment. Its
+          // package cache belongs with the configured artifact store, not HOME.
+          // Pass only this infrastructure value; never forward Work/model env.
+          const installerCache = join(artifactRoot, ".npm-cache");
+          logInfo({ op: "work.artifact.prepare", artifact_root: artifactRoot, installer_cache: installerCache }, "Preparing pinned harness artifact");
           const artifact = await prepareAcpRelease(release, {
-            root: options.artifacts?.root ?? environment.OPENMA_ACP_ARTIFACT_ROOT ?? join(homedir(), ".oma", "acp", "registry"),
+            root: artifactRoot,
+            env: { npm_config_cache: installerCache },
             fetch: options.artifacts?.fetch, signal: input.signal,
           });
           identity!.digest = release.digest;
@@ -547,6 +577,7 @@ export function createNodeManagedAcpSupervisorApp(
         }
         if (resolvedChannels !== undefined) validateExecutionChannels(resolvedChannels, proxy.sessionsToken);
         active = {
+          workspacePath: input.workspacePath,
           outputPath: input.outputPath,
           channels: resolvedChannels?.type === "ready" ? resolvedChannels.channels : null,
           history: createManagedHarnessHttpRecoveryHistory({
@@ -812,14 +843,14 @@ async function materializeSkills(input: {
   io: NodeAcpHarnessStateIo;
   source: ManagedHarnessHttpSkillSource;
   skills: readonly ManagedAcpSkillSnapshot[];
-}): Promise<string> {
-  const manifests: string[] = [];
+}): Promise<SessionSkillResourceFact[]> {
+  const facts: SessionSkillResourceFact[] = [];
   for (const skill of input.skills) {
     const archive = unzipSync(await input.source.download({
       skillId: skill.skill_id,
       version: skill.version,
     }));
-    const root = `/workspace/.openma/skills/${encodeURIComponent(skill.skill_id)}/${encodeURIComponent(skill.version)}`;
+    const root = sessionSkillVersionRoot(skill.skill_id, skill.version, WORK_SKILLS_ROOT);
     let foundManifest = false;
     for (const [rawPath, content] of Object.entries(archive)) {
       if (rawPath.endsWith("/")) continue;
@@ -827,9 +858,13 @@ async function materializeSkills(input: {
       await input.io.writeFileBytes(`${root}/${path}`, content);
       if (posix.basename(path) === "SKILL.md") {
         foundManifest = true;
-        manifests.push(
-          `- ${skill.skill_id}@${skill.version}: ${root}/${path}`,
-        );
+        // The fact is the path just written, so its directory is exactly
+        // where relative paths (bundled scripts) in this SKILL.md resolve.
+        facts.push(sessionSkillResourceFact({
+          skillId: skill.skill_id,
+          name: typeof skill.name === "string" ? skill.name : null,
+          manifestPath: `${root}/${path}`,
+        }));
       }
     }
     if (!foundManifest) {
@@ -838,9 +873,48 @@ async function materializeSkills(input: {
       );
     }
   }
-  return manifests.length === 0
-    ? ""
-    : ["## OpenMA skills", "", ...manifests].join("\n");
+  return facts;
+}
+
+/** In-sandbox Skill root: jail-local under the protocol workspace (the host
+ * cache root SESSION_SKILLS_ROOT cannot cross the sandbox boundary). */
+const WORK_SKILLS_ROOT = `${SESSION_WORKSPACE_ROOT}/.openma/skills`;
+
+/** Memory facts for the stores the Environment Work materializer attached.
+ * It materializes each Session memory_store resource at its published
+ * `mount_path` with the record's access, so guidance uses the same record. */
+function workMemoryResourceFacts(resources: unknown): SessionMemoryResourceFact[] {
+  if (resources === undefined) return [];
+  if (!Array.isArray(resources)) throw invalidSession("resources");
+  const facts: SessionMemoryResourceFact[] = [];
+  resources.forEach((resource, index) => {
+    if (!isRecord(resource) || resource.type !== "memory_store") return;
+    const storeId = resource.memory_store_id;
+    if (!isNonEmptyString(storeId)) throw invalidSession(`resources[${index}].memory_store_id`);
+    const mountPath = resource.mount_path;
+    if (!isNonEmptyString(mountPath)) {
+      throw invalidSession(`resources[${index}].mount_path`);
+    }
+    const storeName = isNonEmptyString(resource.name) ? resource.name
+      : isNonEmptyString(mountPath) ? posix.basename(mountPath.replace(/\/+$/u, ""))
+      : storeId;
+    facts.push(sessionMemoryResourceFact({
+      storeId,
+      storeName,
+      path: mountPath,
+      access: resource.access === "read_only" ? "read_only" : "read_write",
+      description: typeof resource.description === "string" ? resource.description : null,
+      instructions: typeof resource.instructions === "string" ? resource.instructions : null,
+    }));
+  });
+  return facts;
+}
+
+/** Same `<source>` block rendering the host prompt composer uses. */
+function renderResourceReminders(reminders: readonly SessionResourceReminder[]): string {
+  return reminders
+    .map((reminder) => `<source name="${reminder.source}">\n${reminder.text}\n</source>`)
+    .join("\n\n");
 }
 
 function skillArray(value: unknown): ManagedAcpSkillSnapshot[] {

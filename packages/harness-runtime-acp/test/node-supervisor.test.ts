@@ -664,6 +664,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
         checkpoint: async () => {}, signal: new AbortController().signal });
       await expect(run.completed).resolves.toEqual({ exitCode: 0 }); await run.drain();
       expect((await promisify(execFile)(seen[0].agent.command, [])).stdout.trim()).toBe("1.8.0");
+      expect(await import("node:fs/promises").then(fs => fs.stat(join(root, sandbox, ".npm-cache", "_cacache"))).then(st => st.isDirectory())).toBe(true);
       registryAvailable = false;
     }
     const changed = createNodeManagedAcpSupervisorApp({

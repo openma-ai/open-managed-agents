@@ -1,3 +1,4 @@
+import { SESSION_WORKSPACE_ROOT } from "@open-managed-agents/runtime-resource-contract";
 // Runtime-agnostic sandbox port. Originally lived in
 // packages/agent-harness/src/interface.ts as the legacy `SandboxExecutor` and
 // `ProcessHandle` interfaces; lifted here so non-CF runtimes (Node host,
@@ -196,7 +197,7 @@ export function supportsSessionOutputMount(
 }
 
 /** Fallback workspace root for images that declare no WORKDIR (ADR 0016). */
-export const DEFAULT_WORKSPACE_ROOT = "/workspace";
+export const DEFAULT_WORKSPACE_ROOT = SESSION_WORKSPACE_ROOT;
 /** Fixed root for platform-owned files (skills, harness state, agent homes).
  * Never under the workspace root, so the task tree is what the image ships. */
 export const PLATFORM_ROOT = "/oma";

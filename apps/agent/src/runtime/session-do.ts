@@ -1,3 +1,4 @@
+import { workspaceRootOf } from "@open-managed-agents/sandbox";
 import { hasOpenExecutionCall } from "./turn-preflight";
 import { handleWorkPhysicalObservation, isWorkPhysicalObservation } from "./work-physical-observation";
 import { handleCfWorkFinalization, CF_WORK_FINALIZATION_PREFIX } from "./cf-work-finalization-host";
@@ -9,6 +10,8 @@ import { publishAgentsApiArtifacts } from "./artifact-publication";
 import { readSandboxFileBytes } from "./sandbox-output";
 import { appendStaleTurnEvent, backfillStaleTurnEvents } from "./stale-turn-settlement";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
+import { SESSION_OUTPUTS_PATH, sessionResourceEnvironment, sessionResourceFacts, sessionResourceReminders, type SessionMemoryResourceFact } from "@open-managed-agents/runtime-resource-contract";
+import { cfSkillResourceFacts } from "./session-resource-guidance";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot,
@@ -159,7 +162,6 @@ import {
   type ActiveOutcomeState,
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
-import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { ensureEnvironmentPackages, environmentCommandPath } from "@open-managed-agents/sandbox";
@@ -861,6 +863,8 @@ export class SessionDO extends DurableObject<Env> {
    *  runs and /workspace gets repopulated from the latest backup. */
   private currentWarmupGen: string | null = null;
   private hasWritableManagedMemoryMount = false;
+  private mountedSessionResources: Array<Record<string, unknown> & { type: string }> = [];
+  private mountedMemoryFacts: SessionMemoryResourceFact[] = [];
   /**
    * Per-turn dedup of `agent.message` broadcasts and aborted-stream rescue.
    * A partial message persisted during stream finalization must not be
@@ -3946,6 +3950,8 @@ export class SessionDO extends DurableObject<Env> {
       this.sessionSandboxRuntime().invalidatePreparation();
       this.currentWarmupGen = null;
       this.hasWritableManagedMemoryMount = false;
+      this.mountedMemoryFacts = [];
+      this.mountedSessionResources = [];
       await this.warmUpSandbox();
     };
     return new Proxy(raw, {
@@ -4136,7 +4142,7 @@ export class SessionDO extends DurableObject<Env> {
             "Session outputs are mounted but the sandbox cannot publish their environment contract",
           );
         }
-        await sandbox.setEnvVars({ OMA_OUTPUTS_DIR: "/mnt/session/outputs" });
+        await sandbox.setEnvVars(sessionResourceEnvironment({ memoryStores: [], outputs: { path: SESSION_OUTPUTS_PATH } }));
       }
 
       // Materialize the current canonical Managed Session resources. The
@@ -4157,12 +4163,13 @@ export class SessionDO extends DurableObject<Env> {
           runtimeGeneration: this.currentWarmupGen,
         });
         const resources = loaded.resources;
+        this.mountedSessionResources = resources;
         this.hasWritableManagedMemoryMount = resources.some((resource) =>
           resource.type === "memory_store" && resource.access !== "read_only"
         );
 
         if (resources.length) {
-          await mountSessionResources(sandbox, resources, {
+          this.mountedMemoryFacts = await mountSessionResources(sandbox, resources, {
             downloadFile: async (fileId) => (await loaded.fileSource.downloadFile(fileId)).content,
             repositories: proxiedRepositoryAccess(sandbox),
             memoryStores: { mode: "native" },
@@ -4221,6 +4228,8 @@ export class SessionDO extends DurableObject<Env> {
     } catch (err) {
       this.currentWarmupGen = null;
       this.hasWritableManagedMemoryMount = false;
+      this.mountedMemoryFacts = [];
+      this.mountedSessionResources = [];
       console.error(
         `[warmup] failed session=${this.state.session_id ?? "unknown"}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -5647,38 +5656,6 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // Fetch memory store attachments from session resources
-    const sessionId = this.state.session_id;
-    const memoryAttachments: Array<{
-      store_id: string;
-      access: "read_write" | "read_only";
-      instructions?: string;
-    }> = [];
-    let sessionResourceRows: Awaited<
-      ReturnType<Awaited<ReturnType<typeof getCfServicesForTenant>>["sessions"]["listResourcesBySession"]>
-    > = [];
-    if (sessionId) {
-      // listResourcesBySession queries the session_id column directly — no
-      // tenant-prefix mismatch, no JSON.parse loop. Replaces the prior
-      // CONFIG_KV.list scan that tripped over staging KV namespaces.
-      const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
-      sessionResourceRows = await services.sessions.listResourcesBySession({ sessionId });
-      for (const row of sessionResourceRows) {
-        if (row.type === "memory_store" && row.resource.type === "memory_store" && row.resource.memory_store_id) {
-          memoryAttachments.push({
-            store_id: row.resource.memory_store_id,
-            access: row.resource.access === "read_only" ? "read_only" : "read_write",
-            // Accept Anthropic-aligned `instructions` going forward.
-            instructions:
-              typeof (row.resource as { instructions?: unknown }).instructions === "string"
-                ? ((row.resource as { instructions: string }).instructions)
-                : undefined,
-          });
-        }
-      }
-    }
-    const memoryStoreIds = memoryAttachments.map((a) => a.store_id);
-
     // Warmup may overlap the preceding control-plane reads, but it must
     // finish before harness/tool construction. This closes the first-turn
     // race where files, repositories or skills were absent from the model's
@@ -5776,16 +5753,7 @@ export class SessionDO extends DurableObject<Env> {
       },
     });
 
-    // Memory store mounts: per the Anthropic Managed Agents Memory contract,
-    // each attached store appears as /mnt/memory/<store_name>/ inside the
-    // sandbox. The agent reads/writes via the standard file tools (no
-    // bespoke memory_* tools). The mount itself is set up further down in
-    // the mountSessionResources call. We only need MemoryStoreService here to
-    // resolve store metadata for the system-prompt reminder block.
-    let memoryStoreService: MemoryStoreService | null = null;
-    if (memoryAttachments.length && this.env.MAIN_DB) {
-      memoryStoreService = (await getCfServicesForTenant(this.env, this.state.tenant_id)).memory;
-    }
+    const memoryStoreIds = this.mountedMemoryFacts.map((fact) => fact.storeId);
 
     const piRuntime = createPiModelRuntime({
       model: creds.model,
@@ -5825,6 +5793,9 @@ export class SessionDO extends DurableObject<Env> {
     // want to handle them differently — e.g. RAG harness might want to
     // resolve a query before injecting.)
     const platformReminders: Array<{ source: string; text: string }> = [];
+    // Skill files actually written by mountSkillFiles; their locations join
+    // the shared Session resource guidance below.
+    let skillFileFacts: ReturnType<typeof cfSkillResourceFacts> = [];
     const skillMounts: SkillMountDescriptor[] = [];
     const assemblySkillMount = agentUsesAssemblySkillMount(agent);
     const skillAssemblyConfig = assemblySkillMount ? resolveSkillAssemblyConfig(agent) : undefined;
@@ -5919,6 +5890,7 @@ export class SessionDO extends DurableObject<Env> {
           // Requested skills are required inputs, so a failed write aborts
           // warmup instead of silently starting a weaker agent.
           await mountSkillFiles(sandbox, skillFilesResults);
+          skillFileFacts = cfSkillResourceFacts(skillFilesResults);
         } catch (err) {
           logWarn(
             { op: "session_do.skill_files.mount", session_id: this.state.session_id, agent_id: agent.id, err },
@@ -5929,49 +5901,17 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // Memory store prompts → platformReminders (was: appended to systemPrompt
-    // every turn, KV-list-order dependent → permanent cache miss). Build the
-    // prompt strings on the fly from memory store metadata + per-attachment
-    // instructions overrides. Format mirrors Anthropic's auto-injected mount
-    // descriptors: `/mnt/memory/<name>/ (access)` so the agent knows where to
-    // find the store and uses standard file tools to interact.
-    const memoryPrompts: string[] = [];
-    if (memoryAttachments.length && memoryStoreService) {
-      try {
-        for (const att of memoryAttachments) {
-          const store = await memoryStoreService.getStore({
-            tenantId: this.state.tenant_id,
-            storeId: att.store_id,
-          });
-          if (!store) {
-            memoryPrompts.push("");
-            continue;
-          }
-          const accessLabel = att.access === "read_only" ? "read-only" : "read-write";
-          const lines = [
-            `## Memory store: ${store.name}`,
-            `Mounted at /mnt/memory/${store.name}/ (${accessLabel})`,
-          ];
-          if (store.description) lines.push(store.description);
-          if (att.instructions) lines.push(att.instructions);
-          if (att.access === "read_only") {
-            lines.push("(read-only mount — write attempts to this directory will fail)");
-          }
-          memoryPrompts.push(lines.join("\n"));
-        }
-      } catch (err) {
-        console.warn("memory store metadata fetch failed", {
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-    for (let i = 0; i < memoryPrompts.length; i++) {
-      if (!memoryPrompts[i]) continue;
-      platformReminders.push({
-        source: `memory:${memoryStoreIds[i] ?? `idx${i}`}`,
-        text: memoryPrompts[i],
-      });
-    }
+    // Skill locations + Memory Store mounts → platformReminders, from the
+    // shared Session resource facts (same derivation as the Node host and
+    // the Work supervisor). Memory blocks keep the historical byte format
+    // (`/mnt/memory/<name>/ (access)`) for prompt-cache stability; store
+    // metadata only supplies the name (when undeclared) and description.
+    platformReminders.push(...sessionResourceReminders(sessionResourceFacts({
+      workspaceRoot: await workspaceRootOf(sandbox),
+      skills: skillFileFacts,
+      memoryStores: this.mountedMemoryFacts,
+      outputs: { path: SESSION_OUTPUTS_PATH },
+    }), { outputsGuidedByPlatform: true, includeWorkspace: true }));
 
     // Build the final system prompt: agent.system + platform guidance +
     // every platformReminder wrapped in a <source name="...">…</source>
@@ -5983,10 +5923,7 @@ export class SessionDO extends DurableObject<Env> {
 
     const acpSessionStartCwd = agent.runtime_binding
       ? resolveRepositoryLocalPath(
-          sessionResourceRows.map((row) => ({
-            type: row.type,
-            resource: row.resource as unknown as Record<string, unknown>,
-          })),
+          this.mountedSessionResources.map((resource) => ({ type: resource.type, resource })),
         )
       : undefined;
 

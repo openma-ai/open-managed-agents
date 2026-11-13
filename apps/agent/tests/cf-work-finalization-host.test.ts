@@ -52,7 +52,9 @@ async function fixture() {
  await sql.prepare("INSERT INTO managed_session_events(workspace_id,session_id,thread_id,id,type,document,processed_at) VALUES ('default',?,NULL,'input','user.message',?,?)").bind(sessionId,JSON.stringify({id:"input",type:"user.message",content:[],processedAt:now.toISOString(),source_position:{revision:2,index:0,consumed_by_execution_id:"input"}}),+now).run();
  const stub=env.SESSION_DO!.get(env.SESSION_DO!.idFromName(JSON.stringify(["default",sessionId])));
  remote.snapshots=0;remote.commands=[];remote.deleted=[];remote.drain=undefined;remote.winnerRef="winner";remote.deleteFails=false;remote.failSnapshot=false;remote.onSnapshot=undefined;remote.mutateRecord=false;remote.files.clear();remote.locator={sandboxId:"physical-finalization",id:"process",epoch:"epoch",pid:41,status:"running",holderHash:"a".repeat(64),identity:{workspaceId:"default",sessionId,workId,attemptId:"environment-work-claim:2"}};
- const configured={...env,PLATFORM_ROOT_SECRET:root,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",PUBLIC_BASE_URL:"https://control.test"};
+ // This fixture exercises the explicitly supported R2-binding sync path.
+ // Global CF-native test credentials must not silently select native E2B.
+ const configured={...env,R2_ACCESS_KEY_ID:undefined,R2_SECRET_ACCESS_KEY:undefined,R2_FILES_ACCESS_KEY_ID:undefined,R2_FILES_SECRET_ACCESS_KEY:undefined,PLATFORM_ROOT_SECRET:root,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",PUBLIC_BASE_URL:"https://control.test"};
  await runInDurableObject(stub,async(_instance,state)=>{state.storage.kv.put("e2b_sandbox_state",{...initialSandboxState(),phase:"running",handle:{provider:"e2b",runtimeId:"physical-finalization"},version:1,runStartedAt:Date.now()});});
  const binding={fetch:async(input:RequestInfo|URL,init?:RequestInit)=>{
   const req=input instanceof Request?input:new Request(input,init),url=new URL(req.url),body=await req.text();
@@ -132,7 +134,7 @@ it.each([false,true])("persists changed Memory through canonical D1 before check
  if(native) nativeConfig(f);
  const now=new Date().toISOString();
  await f.sql.prepare("INSERT INTO managed_memory_stores VALUES ('default',?,?,1,?,?,NULL)").bind(storeId,JSON.stringify({id:storeId,name:"notes",description:null,metadata:{},createdAt:now,updatedAt:now,archivedAt:null}),Date.now(),Date.now()).run();
- await f.sql.prepare("UPDATE managed_sessions SET document=json_set(document,'$.resources',json(?)) WHERE id=?").bind(JSON.stringify([{id:"resource",type:"memory_store",memoryStoreId:storeId,name:"notes",access:"read_write",createdAt:now}]),f.sessionId).run();
+ await f.sql.prepare("UPDATE managed_sessions SET document=json_set(document,'$.resources',json(?)) WHERE id=?").bind(JSON.stringify([{id:"resource",type:"memory_store",memoryStoreId:storeId,name:"notes",mountPath:"/mnt/memory/notes",access:"read_write",createdAt:now}]),f.sessionId).run();
  await env.MEMORY_BUCKET!.put(root+"/manifest.json",JSON.stringify({version:1,memories:[]}));
  await env.MEMORY_BUCKET!.put(root+"/data/.openma-memory-store",`openma-memory-store-v1\n${storeId}`);
  await runInDurableObject(f.stub,async(_instance,state)=>{const prior=state.storage.kv.get("e2b_sandbox_state") as Record<string,unknown>;state.storage.kv.put("e2b_sandbox_state",{...prior,stores:[{storeId:mountId,storeName:"notes",readOnly:false}]});});
@@ -224,4 +226,13 @@ it("native E2B completes publication while Work remains leased stopping",async()
  expect((await f.send("work-publish",{turnId:"input",revision:receipt.revision,terminalEventId:receipt.terminal.eventId})).status).toBe(200);
  expect(await f.sql.prepare("SELECT claim_at,claim_generation,claim_worker_id FROM managed_environment_work WHERE id=?").bind(f.workId).first()).toEqual(before);
  expect(remote.deleted).toEqual([]);
+});
+
+it.each(["omitted-access", "readonly-mode"])("refuses canonical resource disagreement before snapshot: %s",async kind=>{
+ const f=await fixture();
+ await f.sql.prepare("UPDATE managed_sessions SET document=json_set(document,'$.resources',json(?)) WHERE id=?").bind(JSON.stringify([{type:"memory_store",memoryStoreId:"store",name:"Project Notes",mountPath:"/mnt/memory/project-notes",...(kind==="readonly-mode"?{access:"read_only"}:{})}]),f.sessionId).run();
+ if(kind==="readonly-mode")nativeConfig(f);
+ if(kind==="readonly-mode")await runInDurableObject(f.stub,async(_instance,state)=>{const prior=state.storage.kv.get("e2b_sandbox_state") as Record<string,unknown>;state.storage.kv.put("e2b_sandbox_state",{...prior,stores:[{storeId:"wrong-prefix",storeName:"project-notes",readOnly:false}]});});
+ const result=await f.send("work-checkpoint",{turnId:"input",revision:3});
+ expect(result.status).toBe(502);expect(remote.snapshots).toBe(0);
 });

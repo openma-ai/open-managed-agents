@@ -9,6 +9,7 @@
 // clone; env values are applied in one batched call at the end.
 
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import { sessionMemoryResourceFact, sessionResourceEnvironment, type SessionMemoryResourceFact } from "@open-managed-agents/runtime-resource-contract";
 import {
   checkoutRepository,
   type RepositoryAccessPort,
@@ -66,7 +67,7 @@ async function mountMemoryStore(
   sandbox: SessionResourceSandbox,
   mount: MemoryStoreMount,
   lookupName: ((storeId: string) => Promise<string | null>) | undefined,
-): Promise<void> {
+): Promise<SessionMemoryResourceFact> {
   // The public contract mounts by store name, not id: a store mounted under
   // its id would sit at a path the prompt never declared.
   let storeName = mount.name;
@@ -79,18 +80,21 @@ async function mountMemoryStore(
     }
     if (!storeName) throw new Error(`Memory Store ${mount.storeId} was not found`);
   }
+  // The fact is derived before the mount so an unmountable name fails first.
+  const fact = sessionMemoryResourceFact({ storeId: mount.storeId, storeName, access: mount.readOnly ? "read_only" : "read_write", description: mount.description, instructions: mount.instructions });
   await sandbox.mountMemoryStore!({ storeName, storeId: mount.mountStoreId, readOnly: mount.readOnly });
-  await sandbox.setEnvVars?.({
-    OMA_MEMORY_DIR: "/mnt/memory",
-    [`OMA_MEMORY_${storeName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`]: mount.mountPath ?? `/mnt/memory/${storeName}`,
-  });
+  // SandboxPort.mountMemoryStore mounts by name; env names that mount, never
+  // a record mount_path the port does not honour.
+  await sandbox.setEnvVars?.(sessionResourceEnvironment({ memoryStores: [fact], outputs: null }));
+  return fact;
 }
 
 export async function mountSessionResources(
   sandbox: SessionResourceSandbox,
   records: readonly SessionResourceRecord[],
   ports: SessionResourceMountPorts,
-): Promise<void> {
+): Promise<SessionMemoryResourceFact[]> {
+  const memoryFacts: SessionMemoryResourceFact[] = [];
   const mounts = planSessionResourceMounts(records);
   preflight(sandbox, mounts, ports);
   const repositories = mounts.filter((mount): mount is RepositoryMount => mount.type === "github_repository");
@@ -105,7 +109,7 @@ export async function mountSessionResources(
         await checkoutRepository(sandbox, mount, ports.repositories.anonymous?.(mount) === true);
         break;
       case "memory_store":
-        if (ports.memoryStores.mode === "native") await mountMemoryStore(sandbox, mount, ports.memoryStores.lookupName);
+        if (ports.memoryStores.mode === "native") memoryFacts.push(await mountMemoryStore(sandbox, mount, ports.memoryStores.lookupName));
         break;
       case "env":
         env[mount.name] = ports.envSecrets!.get(mount.id)!;
@@ -114,4 +118,5 @@ export async function mountSessionResources(
   }
   if (Object.keys(env).length > 0) await sandbox.setEnvVars!(env);
   if (repositories.length > 0) await ports.afterRepositories?.();
+  return memoryFacts;
 }

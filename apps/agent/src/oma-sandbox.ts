@@ -1605,9 +1605,19 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     }
   }
 
-  async startNativeWorkProcess(command: string, environment: Record<string, string>) {
+  async startNativeWorkProcess(command: string, environment: Record<string, string>, resources?: { incarnation: string; mounts: OmaMountBucketRequest[] }) {
     const authority = await nativeWorkLaunchAuthority(this.env, environment);
+    const assertResources = () => {
+      if (!resources) return;
+      const plan = this.plan();
+      if (!this.container.running || plan.incarnation !== resources.incarnation
+        || resources.mounts.some(m => !plan.mounts.some(actual => sameMount(actual, this.plannedMount(m.bucket, m.mountPath, m.options))))) {
+        throw new Error("Native Work resource generation or mounts changed before launch");
+      }
+    };
+    assertResources();
     await this.ensureRunning();
+    assertResources();
     const epoch = this.plan().incarnation;
     if (!epoch) throw new Error("Native Work requires container incarnation");
     // Serial reservation in DO storage before any await/native launch. No
@@ -1620,6 +1630,7 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
     this.ctx.storage.kv.put("oma_work_process", pending);
     await this.scheduleNativeWorkCheck();
     await authority.assertCurrent();
+    assertResources();
     // ExecProcess gives the kernel PID, unlike the legacy shell background
     // shim. env -i drops image/inherited credentials; no shell-owned pidfile.
     const env = { ...CONTAINER_ENV, ...environment };

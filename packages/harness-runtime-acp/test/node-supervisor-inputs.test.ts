@@ -194,15 +194,23 @@ async function fixture(scenario:"prompt"|"approval"|"resume"|"steer"|"interrupt"
  await Promise.race([done.promise,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("supervisor did not settle")),5000);timer.unref();})]);
  return {notifications,prompts,wire,order,consumeCount,publicPolls,cursors,rootReads,outputs,completion,sql,session,run};
 }
+// First native prompt carries the resolved workspace even when no other resources exist.
+const workspacePrompt = (text: string) => `<openma-platform>
+<source name="session_workspace">
+The session workspace is /workspace/. Resolve task-relative paths from this workspace unless a Skill specifies its own directory.
+</source>
+</openma-platform>
+
+${text}`;
 it.each(["prompt","resume","approval","steer","interrupt"] as const)("private Node HTTP/SQLite -> supervisor: %s",async scenario=>{
  const f=await fixture(scenario);
  if (scenario === "steer") {
   // This fixture supplies no native artifacts: queued next-root prompt must
   // rebuild from canonical history instead of pretending native state exists.
-  expect(f.prompts).toHaveLength(2);expect(f.prompts[0]).toBe("first");
+  expect(f.prompts).toHaveLength(2);expect(f.prompts[0]).toBe(workspacePrompt("first"));
   expect(f.prompts[1]).toContain('reason="native-state-missing"');
   expect(f.prompts[1]!.split("Current request:\n")[1]).toBe("second\n</openma-recovery>");
- } else expect(f.prompts).toEqual(scenario==="resume"?[""]:scenario==="interrupt"?["first","second"]:["first"]);
+ } else expect(f.prompts).toEqual(scenario==="resume"?[workspacePrompt("")]:scenario==="interrupt"?[workspacePrompt("first"),"second"]:[workspacePrompt("first")]);
  expect(f.order.indexOf("drain")).toBeLessThan(f.order.indexOf("canonical"));expect(f.order.indexOf("canonical")).toBeLessThan(f.order.indexOf("terminal"));expect(f.order.indexOf("terminal")).toBeLessThan(f.order.lastIndexOf("post"));
  expect(f.publicPolls).toBe(0);expect(f.cursors.length).toBeGreaterThan(0);if(scenario==="steer") {
   // One genuine semantic-recovery history read after losing native artifacts;
