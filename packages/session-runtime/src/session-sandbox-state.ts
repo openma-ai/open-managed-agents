@@ -78,7 +78,7 @@ export type SandboxAction =
   /** A newer snapshot; the previous one is dropped. */
   | { type: "publishSnapshot"; ref: SnapshotRef }
   /** The sandbox failed or cannot be found; the latest snapshot stays. */
-  | { type: "lose" }
+  | { type: "lose"; retire?: boolean }
   /** The Session ended. */
   | { type: "release" }
   /** Acknowledges successful vendor deletions, under the same version CAS. */
@@ -164,11 +164,16 @@ export function transition(state: SessionSandboxState, action: SandboxAction): S
   if (retired.length > 0) result.retiredHandles = retired;
   if (action.type === "retireHandle" && !retired.some(entry => refers(entry.handle, action.handle))) result.retiredHandles = [...retired, { handle: action.handle, released: false }];
   if (action.type === "handleReleased") result.retiredHandles = retired.map(entry => refers(entry.handle, action.handle) ? { ...entry, released: true } : entry);
+  const retiring = action.type === "release" || (action.type === "lose" && action.retire);
+  const oldHandle = retiring ? recordedHandle(state) : undefined;
+  if (oldHandle && !retired.some(entry => refers(entry.handle, oldHandle))) {
+    result.retiredHandles = [...retired, { handle: oldHandle, released: false }];
+  }
   const pending = [...(state.pendingDiscards ?? [])];
   for (const ref of droppedSnapshots(state, result)) {
     if (!pending.some((other) => sameRef(other, ref))) pending.push(ref);
   }
-  if (action.type === "queueDiscard" && !pending.some((ref) => sameRef(ref, action.ref))) pending.push(action.ref);
+  if (action.type === "queueDiscard" && !referencesSnapshot(state, action.ref) && !pending.some((ref) => sameRef(ref, action.ref))) pending.push(action.ref);
   const remaining = action.type === "discarded" ? pending.filter((ref) => !action.refs.some((other) => sameRef(other, ref))) : pending;
   if (remaining.length > 0) result.pendingDiscards = remaining;
   else delete result.pendingDiscards;
@@ -210,4 +215,10 @@ function heldSnapshots(state: SessionSandboxState): SnapshotRef[] {
     ...(state.phase === "paused" && isSnapshotRef(state.pauseRef) ? [state.pauseRef] : []),
     ...(state.latestSnapshot.status === "taken" ? [state.latestSnapshot.ref] : []),
   ];
+}
+
+/** Immutable snapshots named by the durable record are never garbage. */
+export function referencesSnapshot(state: SessionSandboxState, ref: ResumeRef): boolean {
+  return (state.latestSnapshot.status === "taken" && sameRef(state.latestSnapshot.ref, ref))
+    || ("pauseRef" in state && state.pauseRef !== undefined && sameRef(state.pauseRef, ref));
 }

@@ -11,7 +11,8 @@ const E2B_AGENT_HOME = "/home/oma-worker";
  * setup step (normally restored from the prepared environment snapshot) at
  * its deterministic launcher under the agent HOME. The base template bakes no
  * ACP agent. The launcher runs as the agent identity like any agent process
- * and never receives management credentials. Sources, packages, other paths
+ * with no automatic management credential inheritance. Guest sudo can inspect
+ * guest-resident management state; this is not a security boundary. Sources, packages, other paths
  * or unpinned versions are refused before ACK. */
 export function assertE2BInstalledHarness(environment: Readonly<Record<string,string|undefined>>): void {
   const fail = () => { throw new Error("E2B worker requires a pinned ACP harness installed by Environment setup"); };

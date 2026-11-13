@@ -1,3 +1,5 @@
+// Legacy ai-sdk golden coverage; not default-Pi mixed-batch acceptance.
+// Default Pi gates: mixed-process-restart.test.ts and pi-mixed-restart.cf.test.ts.
 import { runNodeContextBuildFailure } from "./node-context-build-failure.fixture";
 // Multi-platform parity gate — Node runner (design §0.7 gate 3).
 // Drives the in-process Node control plane (createNodeControlPlane +
@@ -128,9 +130,17 @@ registerHarness(ACP_REVISION_TIMEOUT_HARNESS, () => {
 });
 
 const originalFetch = globalThis.fetch;
+const unreachableModelHost = new URL(UNREACHABLE_MODEL_BASE_URL).host;
 beforeAll(() => {
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(init?.body).includes("parity-revision-timeout")) return revisionJudgeResponse();
+    // The parity model endpoint is unreachable by contract. Fail it the way
+    // undici does for an unresolvable host instead of trusting the host
+    // network: an egress proxy answers HTTP 500 for it, which changed the
+    // golden's "Connection error." into a machine-specific explanation.
+    if (new URL(input instanceof Request ? input.url : String(input)).host === unreachableModelHost) {
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error(`getaddrinfo ENOTFOUND ${unreachableModelHost}`), { code: "ENOTFOUND" }) });
+    }
     return originalFetch(input, init);
   });
 });

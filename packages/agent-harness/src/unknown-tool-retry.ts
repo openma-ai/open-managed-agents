@@ -67,3 +67,35 @@ export function parkUnknownToolRetry(runtime: HarnessRuntime, laneId = runtime.s
   runtime.pendingConfirmations = [...new Set([...(runtime.pendingConfirmations ?? []), ...pending])];
   return true;
 }
+
+/** Persist uncertainty without inventing a model call or preventing observation.
+ * The effect may have committed even when its physical sandbox is known gone. */
+export function recordUnknownToolOutcome(runtime: HarnessRuntime, toolUseId: string): void {
+  runtime.broadcast({ type: "session.warning", source: "tool_outcome_unknown",
+    message: "The tool outcome is unknown. Observe its error; another attempt at the same effect requires explicit authorization.",
+    ...(runtime.sessionThreadId ? { session_thread_id: runtime.sessionThreadId } : {}),
+    details: { outcome: "dispatched_unknown", tool_use_id: toolUseId } });
+}
+
+/** Only an actual model-requested replay parks, never the failed original call.
+ * Compare canonical tool inputs rather than call IDs (a new ID is not consent).
+ * Existing confirmation consumption owns execution after explicit approval. */
+export function requireUnknownReplayAuthorization(runtime: HarnessRuntime, name: string, input: unknown, callId: string): boolean {
+  const lane = runtime.sessionThreadId ?? "sthr_primary";
+  const events = asWireEvents(runtime.history.getEvents()).filter(e => (e.session_thread_id ?? "sthr_primary") === lane);
+  const uncertain = new Set(events.filter(e => e.type === "session.warning" && e.source === "tool_outcome_unknown" && (e.details as Record<string, unknown> | undefined)?.outcome === "dispatched_unknown")
+    .map(e => (e.details as Record<string, unknown>).tool_use_id));
+  const original = events.find(e => uncertain.has(e.id) && (e.type === "agent.tool_use" || e.type === "agent.mcp_tool_use") && e.name === name && canonicalInput(e.input) === canonicalInput(input));
+  if (!original) return false;
+  runtime.broadcast({ type: "session.warning", source: "tool_outcome_unknown",
+    message: "The requested repeat may duplicate an uncertain prior effect; explicit authorization is required.",
+    ...(runtime.sessionThreadId ? { session_thread_id: runtime.sessionThreadId } : {}),
+    details: { outcome: "dispatched_unknown", tool_use_id: original.id, retry_request_id: callId } });
+  runtime.pendingConfirmations = [...new Set([...(runtime.pendingConfirmations ?? []), callId])];
+  return true;
+}
+function canonicalInput(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalInput).join(",") + "]";
+  if (value !== null && typeof value === "object") return "{" + Object.entries(value).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => JSON.stringify(k) + ":" + canonicalInput(v)).join(",") + "}";
+  return JSON.stringify(value) ?? "undefined";
+}

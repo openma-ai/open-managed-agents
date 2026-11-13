@@ -310,16 +310,14 @@ describe("acp-sandbox child lifetime", () => {
     expect(wired.map((input) => input.model.wireModel)).toEqual(["claude-sonnet-5-5"]);
   });
 
-  it("passes confirmed gone to the execution host without native capture or deletion", async () => {
-    const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");
+  it("reports pre-call ACP failure without transferring sandbox ownership to Session", async () => {
     const s=sandbox(false), ctx=context(s.port), harness=new AcpSandboxHarness();
     gonePrompt=true;
-    await expect(harness.run(ctx)).rejects.toBeInstanceOf(SessionExecutionLostError);
+    await expect(harness.run(ctx)).resolves.toBeUndefined();
     expect(s.files.size).toBe(0);
-    expect(vi.mocked(captureAcpSandboxAgentState)).not.toHaveBeenCalled();
-    await expect(harness.dispose("shutdown")).resolves.toBeUndefined();
-    expect(vi.mocked(captureAcpSandboxAgentState)).not.toHaveBeenCalled();
-    expect(ctx.runtime.history.getEvents().filter(e=>e.type==="session.error")).toEqual([]);
+    expect(ctx.runtime.history.getEvents().filter(e=>e.type==="session.error")).toHaveLength(1);
+    expect(ctx.runtime.history.getEvents().filter(e=>e.type==="agent.tool_result")).toEqual([]);
+    await harness.dispose("shutdown");
   });
 
   it("leaves keep-alive to the core: no lease renewal from the harness", async () => {

@@ -18,6 +18,9 @@ export function createCfDispatchedEnvironmentWorker(env: Env, config: CfEnvironm
   let failures = 0;
   const failure = () => Object.assign(new Error("CF EnvironmentWorker failed"), { code: "work_control_or_dispatch_failed" });
   const worker = createDispatchedManagedEnvironmentWorker({ client: control, environmentId: config.environmentId, workspaceId: config.workspaceId, environmentKey: config.environmentKey, webhookKey: config.webhookKey, sandboxApiBaseUrl: origin, maxWorkItemsPerDrain: 8,
+    // Poll persists this holder on the Work claim. Private bootstrap/input and
+    // finalization capabilities require it even when ACK/heartbeat succeed.
+    workerId: `cf-${crypto.randomUUID()}`,
     onError() {
       // Raw SDK errors can contain URLs/headers/body. Keep only a bounded
       // operational signal, and reject so waitUntil cannot report success.

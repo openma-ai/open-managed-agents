@@ -1,8 +1,11 @@
+import { resolvePiModelCardRouting } from "@open-managed-agents/managed-agents-application/agents/pi-model-catalog";
 import type { InferenceProtocolEndpoint, InferenceWireProtocol } from "./protocol-types.js";
 import { INFERENCE_PROTOCOL_PROXY_PATH } from "./protocol-types.js";
 
 export interface ModelCardInferenceFields {
   providerId: string;
+  wireModel?: string;
+  piConfig?: { api?: string };
   baseUrl: string | null;
   protocolEndpoints?: readonly InferenceProtocolEndpoint[];
 }
@@ -101,6 +104,19 @@ export function resolveProtocolEndpointsFromModelCard(
   if (fields.protocolEndpoints && fields.protocolEndpoints.length > 0) {
     return fields.protocolEndpoints;
   }
+  if (fields.wireModel !== undefined) {
+    const resolved = resolvePiModelCardRouting({ provider: fields.providerId, model: fields.wireModel,
+      baseURL: fields.baseUrl ?? undefined, piConfig: fields.piConfig });
+    const protocols: Record<string, InferenceWireProtocol> = {
+      "anthropic-messages": "anthropic-messages", "openai-completions": "openai-chat",
+      "openai-responses": "openai-responses", "google-generative-ai": "gemini",
+    };
+    const protocol = protocols[resolved.api];
+    if (!protocol) throw new Error(`Hosted inference does not support Pi API "${resolved.api}"`);
+    return [endpoint(protocol, protocol === "gemini" ? resolved.baseUrl.replace(/\/v1beta\/?$/, "") : resolved.baseUrl)];
+  }
+  // Compatibility for older callers without a model identity. Model-card paths
+  // always provide wireModel and use Pi's single-api routing above.
   const contributor = contributorIndex.get(fields.providerId.trim().toLowerCase());
   if (!contributor) {
     return [];

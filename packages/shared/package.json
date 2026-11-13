@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./acp-execution-channels-rpc": "./src/acp-execution-channels-rpc.ts"
+    "./acp-execution-channels-rpc": "./src/acp-execution-channels-rpc.ts",
+    "./log": "./src/log.ts"
   },
   "dependencies": {
     "@open-managed-agents/api-types": "workspace:*",

@@ -42,14 +42,19 @@ describe("Node E2B Session sandbox adapter", () => {
     ["no Work runner", {}, true],
   ] as const)("creates sandboxes whose implicit auto-resume matches cold Work finalization (%s)", async (_label, extra, autoResume) => {
     const created: Array<{ lifecycle?: { autoResume?: boolean } }> = [];
+    const commands: string[] = [];
+    // A trusted-template create returns only after the template start command
+    // wrote the launcher ready marker (template.mjs waitForFile).
     const sandbox = { sandboxId: "sb", kill: async () => {},
-      commands: { run: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
-      files: { read: async () => "", write: async () => {} } };
+      commands: { run: async (cmd: string) => { commands.push(cmd); return { stdout: "", stderr: "", exitCode: 0 }; } },
+      files: { read: async (path: string) => path === "/run/oma-managed/ready" ? "oma-managed-v2" : "", write: async () => {} } };
     const sdk = { Sandbox: { create: async (_template: string, options: { lifecycle?: { autoResume?: boolean } }) => { created.push(options); return sandbox; } } };
     const composition = await createNodeE2BSessionAdapter({ E2B_MAX_LIFETIME_MS: "3600000", ...extra }, IDLE_MS, async () => sdk);
     const acquired = await composition.adapter.lifecycle.acquire({ plan: { from: { image: "tpl" }, idleMs: IDLE_MS, labels: {} }, signal: new AbortController().signal } as never);
     expect(acquired).not.toBe("gone");
     expect(created[0]?.lifecycle?.autoResume).toBe(autoResume);
+    // The template launcher is already running: no snapshot-style restart.
+    expect(commands.some(cmd => cmd.includes("/opt/oma-managed/launcher.py"))).toBe(false);
   });
   it("loads the e2b SDK and builds the v2 adapter with the account's lifetime cap", async () => {
     let loaded: { Sandbox?: { create?: unknown } } | undefined;

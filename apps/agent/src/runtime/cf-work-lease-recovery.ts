@@ -4,7 +4,7 @@ import { sandboxIdlePauseMs } from "@open-managed-agents/session-runtime";
 import { SANDBOX_LEASE_MARGIN_MS } from "@open-managed-agents/sandbox";
 import { createCfE2BWorkLeaseAuthority } from "./cf-work-provider-lease";
 import { readCfWorkLeaseRuntime } from "./cf-work-lease-connection";
-import { restoreE2BWorkLeaseProcess } from "./e2b-work-handoff";
+import { restoreE2BWorkLeaseProcess, readE2BWorkLeaseProcess, assertE2BWorkClaimObsolete } from "./e2b-work-handoff";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { SessionSandboxState } from "@open-managed-agents/session-runtime";
 import type { SessionSandboxStateStorage } from "./session-sandbox-do-state";
@@ -16,22 +16,24 @@ export interface CfWorkLeaseScope {
   sessionId: string;
 }
 
-/** Dispatch cannot reconstruct the original raw token for egress rebinding.
- * A recovered hash authorizes maintenance only. Do not rotate the holder by
- * replaying bootstrap: the existing alarm restores the exact native process.
- */
+/** A cold duplicate cannot rotate the running process's holder. A successor
+ * may bootstrap only after native discovery and SQL prove the old claim lost.
+ * This read path never resumes the sandbox or issues a token. */
 export async function checkCfWorkLeaseRecovery(input: {
   sql: SqlClient;
+  work: Pick<SqlEnvironmentWorkStore, "find">;
   storage: SessionSandboxStateStorage;
-  scope: CfWorkLeaseScope;
+  scope: import("@open-managed-agents/runtime-resource-contract").EnvironmentWorkRuntimeDelivery;
+  env: import("./e2b-session-sandbox").E2BSandboxEnv;
+  assertCurrent(): Promise<void>;
 }): Promise<void> {
   const record = input.storage.kv.get("e2b_sandbox_state") as SessionSandboxState | undefined;
   if (record?.phase !== "running" || record.handle.provider !== "e2b") return;
-  const { workspaceId, environmentId, sessionId } = input.scope;
-  const row = await input.sql.prepare(
-    "SELECT id FROM managed_environment_work WHERE workspace_id=? AND environment_id=? AND session_id=? AND claim_generation > 0 LIMIT 1",
-  ).bind(workspaceId, environmentId, sessionId).first<{ id: string }>();
-  if (row) throw new Error("Work already has a sandbox record; recover maintenance through its durable alarm, not bootstrap");
+  await input.assertCurrent();
+  const runtime = await readCfWorkLeaseRuntime(input.env, record.handle.runtimeId);
+  const { locator } = await readE2BWorkLeaseProcess({ runtime, scope: input.scope });
+  await assertE2BWorkClaimObsolete({ sql: input.sql, work: input.work, delivery: input.scope, identity: locator.identity });
+  await input.assertCurrent();
 }
 
 /** Rebuild only native maintenance handles from the existing provider record,

@@ -11,15 +11,18 @@ function receipt(v:unknown,turnId:string):v is Receipt {
 }
 export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:string;sessionsToken:string;signal:AbortSignal;fetch?:typeof globalThis.fetch}) {
  const admitted=new Set<string>();const prepared=new Map<string,number>();const terminals=new Map<string,{revision:number;terminal:Receipt}>();
- async function post(action:string,body:object,allowGap=false):Promise<Record<string,unknown>> {
+ async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false):Promise<Record<string,unknown>> {
   options.signal.throwIfAborted();
   let response:Response;
   try {response=await (options.fetch??globalThis.fetch)(new URL(`/v1/oma/sessions/${encodeURIComponent(options.sessionId)}/${action}`,options.apiBaseUrl),{method:"POST",redirect:"error",signal:options.signal,headers:{authorization:`Bearer ${options.sessionsToken}`,"content-type":"application/json"},body:JSON.stringify(body)});}
   catch {throw new Error(`Work ${action} response unknown; do not replay`);}
   const value:unknown=await response.json();options.signal.throwIfAborted();
-  if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")))throw new Error(`Work ${action} rejected (${response.status})`);
+  if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")
+    &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed"))))throw new Error(`Work ${action} rejected (${response.status})`);
   return value;
  }
+ const sameTerminal=(a:Receipt,b:Receipt)=>a.eventId===b.eventId&&a.turnId===b.turnId&&a.workId===b.workId&&a.generation===b.generation&&a.revision===b.revision&&
+  a.stopReason.type===b.stopReason.type&&JSON.stringify(a.stopReason.eventIds)===JSON.stringify(b.stopReason.eventIds);
  return {
   admitted(turnId:string){admitted.add(turnId);},
   async checkpoint(turnId:string){
@@ -41,10 +44,27 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
   },
   async publish(turnId:string){
    const terminal=terminals.get(turnId);if(!terminal)throw new Error("Durable Work terminal ACK required");
-   const result=await post("work-publish",{turnId,revision:terminal.revision,terminalEventId:terminal.terminal.eventId});
-   if(result.type!=="published"||result.revision!==terminal.revision||!receipt(result.terminal,turnId)||result.terminal.eventId!==terminal.terminal.eventId||
-    result.terminal.stopReason.type!==terminal.terminal.stopReason.type||
-    JSON.stringify(result.terminal.stopReason.eventIds)!==JSON.stringify(terminal.terminal.stopReason.eventIds))throw new Error("Invalid Work publication receipt");
+   // Publication is fenced on the Session revision captured at terminal ACK.
+   // An ordinary Session update (budget raise, metadata, a queued input) can
+   // advance that revision after the terminal committed; the committed
+   // terminal itself is immutable. Re-read it under this claim and publish the
+   // identical receipt at the current revision. The host repeats every claim,
+   // successor and terminal check. terminal_revision is the update landing
+   // before publish; authority_changed is it landing during the physical
+   // publish (or a lost claim/terminal, which the recovery read below refuses).
+   // Any other rejection still fails the turn.
+   let current=terminal.revision;
+   let result=await post("work-publish",{turnId,revision:current,terminalEventId:terminal.terminal.eventId},false,true);
+   for(let refreshes=0;result.type==="rejected";refreshes++){
+    const recovered=await post("work-recovery",{turnId});
+    if(refreshes>=3||!["committed","parked"].includes(String(recovered.type))||!revision(recovered.revision)||recovered.revision<=current||
+     !receipt(recovered.terminal,turnId)||!sameTerminal(recovered.terminal,terminal.terminal))throw new Error("Work work-publish rejected (409)");
+    current=recovered.revision;
+    result=await post("work-publish",{turnId,revision:current,terminalEventId:terminal.terminal.eventId},false,true);
+   }
+   // The receipt must name exactly the terminal this process ACKed (event,
+   // turn, Work, generation, original revision and stop reason).
+   if(result.type!=="published"||result.revision!==current||!receipt(result.terminal,turnId)||!sameTerminal(result.terminal,terminal.terminal))throw new Error("Invalid Work publication receipt");
    terminals.delete(turnId);admitted.delete(turnId);
   },
  };

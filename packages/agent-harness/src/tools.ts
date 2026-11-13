@@ -1239,7 +1239,7 @@ export async function buildTools(
               },
               execute: async (args, options) => {
                 options?.abortSignal?.throwIfAborted();
-                return mcpClient!.callTool({
+                const result = await mcpClient!.callTool({
                   name: toolName,
                   arguments:
                     args && typeof args === "object"
@@ -1249,6 +1249,14 @@ export async function buildTools(
                   signal: options?.abortSignal,
                   timeoutMs: MCP_TOOL_TIMEOUT_MS,
                 });
+                // MCP execution errors are successful JSON-RPC responses, not
+                // transport exceptions. Preserve that failure at the existing
+                // tool boundary so every harness reports it by this call ID.
+                if (result.isError === true) {
+                  const text = result.content.map(part => typeof part.text === "string" ? part.text : JSON.stringify(part)).join("\n");
+                  throw new ToolFailureError(text || JSON.stringify(result.structuredContent) || "MCP tool execution failed");
+                }
+                return result;
               },
               toModelOutput: mcpToModelOutput,
             });

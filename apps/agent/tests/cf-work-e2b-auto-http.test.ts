@@ -10,18 +10,18 @@ import { dispatchCfWorkRunnerRequest } from "../src/runtime/cf-work-runner-entry
 // canonical ingress run in workerd; this does not certify a real E2B template.
 const provider=vi.hoisted(()=>({launches:[] as any[],files:new Map<string,string>(),commands:[] as any[], worker:undefined as undefined|((launch:any)=>Promise<void>)}));
 vi.mock("e2b",()=>({Sandbox:{create:async()=>({sandboxId:"native-physical",kill:async()=>{},updateNetwork:async()=>{},
- commands:{run:async(command:string,options:unknown)=>{provider.commands.push({command,options});return {exitCode:0,stdout:command.startsWith("cat ")?"generation":"",stderr:""};}},
+ commands:{run:async(command:string,options:unknown)=>{provider.commands.push({command,options});return {exitCode:0,stdout:command.includes("OMA_ACP_INSTALL_OK")?"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh\nOMA_ACP_INSTALL_OK":command.startsWith("cat ")?"generation":"",stderr:""};}},
  files:{read:async(path:string)=>path.endsWith("/ready")?"oma-managed-v2":provider.files.get(path),write:async(path:string,content:string)=>{
  provider.files.set(path,content);if(path.endsWith(".go")){const launch=JSON.parse(provider.files.get(path.replace(/\.go$/,".json"))!);provider.launches.push(launch);await provider.worker?.(launch);provider.files.set(path.replace(/\.go$/,".response.json"),JSON.stringify({ok:true,id:launch.id,epoch:"epoch",pid:41}));}
  }},
 })}}));
 beforeAll(async()=>{await exports.default.fetch(new Request("http://localhost/health"));});
 it("automatic SDK poll/claim reaches E2B native Files launcher and worker-only HTTP canonical data plane",async()=>{
- const configured={...env,API_KEY:"test-key",PLATFORM_ROOT_SECRET:"test-platform-root-secret-padded-to-thirtytwo",PUBLIC_BASE_URL:"https://control.test",SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"provider-private",E2B_TEMPLATE:"trusted-final-template",E2B_MAX_LIFETIME_MS:"3600000",OPENMA_ACP_HARNESSES:'[{"id":"codex-acp","version":"1.8.0","command":"/opt/oma-harnesses/codex-acp/bin/codex-acp"}]',MAIN_MCP:undefined};
+ const configured={...env,API_KEY:"test-key",PLATFORM_ROOT_SECRET:"test-platform-root-secret-padded-to-thirtytwo",PUBLIC_BASE_URL:"https://control.test",SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"provider-private",E2B_TEMPLATE:"trusted-final-template",E2B_MAX_LIFETIME_MS:"3600000",MAIN_MCP:undefined};
  const requests:{path:string;status:number}[]=[];
  const transport:typeof fetch=async(input,init)=>{const request=new Request(input,init);const response=await main.fetch(request,configured as never,{waitUntil(){},passThroughOnException(){}} as never);requests.push({path:new URL(request.url).pathname,status:response.status});return response;};
  const post=async(path:string,body:unknown)=>{const r=await transport("https://control.test"+path,{method:"POST",headers:{"x-api-key":"test-key","content-type":"application/json"},body:JSON.stringify(body)});expect(r.status,await r.clone().text()).toBeLessThan(400);return r.json() as Promise<any>;};
- const agent=await post("/v1/agents",{name:"native-auto-"+crypto.randomUUID(),model:"unused",tools:[],_oma:{harness:"acp-sandbox",acp:{agent:{command:"/opt/oma-harnesses/codex-acp/bin/codex-acp"}}}});
+ const agent=await post("/v1/agents",{name:"native-auto-"+crypto.randomUUID(),model:"unused",tools:[],_oma:{harness:"acp-sandbox",acp:{agent:{registry:"pi-acp@0.1.8"}}}});
  const environment=await post("/v1/environments",{name:"native-auto-"+crypto.randomUUID(),config:{type:"cloud",networking:{type:"unrestricted"}}});
  const session=await post("/v1/sessions",{agent:agent.id,environment_id:environment.id});
  const standing=await post("/v1/oma/api_keys",{name:"native-worker",environment_id:environment.id});
@@ -34,6 +34,8 @@ it("automatic SDK poll/claim reaches E2B native Files launcher and worker-only H
    const workerClient=client.withOptions({apiKey:null,authToken:scoped});
    await workerClient.beta.environments.work.ack(workId,{environment_id:environment.id});
    await workerClient.beta.environments.work.heartbeat(workId,{environment_id:environment.id});
+   const bootstrap=await transport("https://control.test/v1/oma/sessions/"+session.id+"/work-bootstrap",{method:"POST",headers:{authorization:"Bearer "+scoped,"content-type":"application/json"},body:"{}"});
+   expect(bootstrap.status,await bootstrap.clone().text()).toBe(200);
    expect((await runtimeRequest(canonicalId)).status).toBe(200);
  };
  // Use the existing DO's actual SQLite KV record. Transport adapter lets this
@@ -41,7 +43,10 @@ it("automatic SDK poll/claim reaches E2B native Files launcher and worker-only H
  const namespace={idFromName:(name:string)=>env.SESSION_DO.idFromName(name),get:(id:DurableObjectId)=>({async fetch(request:Request){const body=await request.text();const result=await runInDurableObject(env.SESSION_DO.get(id),async(_instance,state)=>{const response=await dispatchCfWorkRunnerRequest(new Request("https://internal/__internal/work/dispatch",{method:"POST",body}),configured as never,{storage:state.storage,id:state.id.toString(),hasSessionExecution:false});return {status:response.status,body:await response.text()};});return new Response(result.body,{status:result.status});}})};
  try{
  const worker=createCfDispatchedEnvironmentWorker({...configured,SESSION_DO:namespace} as never,{environmentId:environment.id,workspaceId:"default",environmentKey:standing.key},client as never);
- await worker.drain();
+ try { await worker.drain(); } catch (error) {
+  const bootstrap=requests.find(r=>r.path.endsWith("/work-bootstrap"));
+  throw new Error(`CF Work drain failed; bootstrap HTTP ${bootstrap?.status ?? "not reached"}`,{cause:error});
+ }
  expect(provider.launches).toHaveLength(1);const launch=provider.launches[0];
  expect(launch.spec.command).toBe("/usr/local/bin/node");expect(launch.spec.args).toEqual(["/opt/oma-managed/worker/node-e2b-work-item-cli.js"]);
  expect(launch.identity).toMatchObject({workspaceId:"default",sessionId:session.id,workId,attemptId:"environment-work-claim:1"});

@@ -28,6 +28,30 @@ import { sessionExecutionStoreConformance } from
 const at = (seconds: number) =>
   new Date(Date.UTC(2026, 8, 4, 0, 0, seconds)).toISOString();
 
+it("uses real SQLite CAS when the optional server capability explicitly reports unsupported", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pr545-cas-fallback-"));
+  const client = await createBetterSqlite3SqlClient(join(directory, "fallback.db"));
+  try {
+    await ensureSessionExecutionCoordinatorSchema(client);
+    let checks = 0;
+    const fallback: SqlClient = {
+      prepare: client.prepare.bind(client), batch: client.batch.bind(client), exec: client.exec.bind(client),
+      rowLockTransactions: {
+        capability: async () => { checks++; return { supported: false, engine: "unknown", version: "unknown", reason: "explicit CAS fallback" }; },
+        run: async () => { throw new Error("unsupported transaction attempted"); },
+      },
+    };
+    const coordinator = new SqlSessionExecutionCoordinator(fallback);
+    await coordinator.admit(admitted("fallback", "session", at(1)));
+    const result = await coordinator.claim({ ownerId: "owner", attemptId: "attempt", claimedAt: at(2), leaseTtlMs: 1000 });
+    expect(result.type).toBe("claimed"); expect(checks).toBe(1);
+    expect(client.rowLockTransactions).toBeUndefined();
+  } finally {
+    client.close?.();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 function executionRow(overrides: Record<string, unknown> = {}) {
   return {
     workspace_id: "workspace_01",

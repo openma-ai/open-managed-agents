@@ -76,7 +76,9 @@ export function createCloudflareSandboxAdapter(input: {
     async acquire(input) {
       input.signal.throwIfAborted();
       const from = input.plan.from;
-      if (!("environmentSnapshot" in from)) return provision(input.scope, input.plan);
+      // Keep a failed synchronous mount preflight on this acquire's awaited
+      // rejection chain; detached adoption surfaces unhandled in Workerd.
+      if (!("environmentSnapshot" in from)) return await provision(input.scope, input.plan);
       const snapshot = from.environmentSnapshot;
       if (snapshot.adapter !== CLOUDFLARE_ADAPTER) {
         throw new Error(`The Cloudflare container adapter cannot start from a ${snapshot.adapter} environment snapshot`);
@@ -94,6 +96,8 @@ export function createCloudflareSandboxAdapter(input: {
     async attach(input) {
       input.signal.throwIfAborted();
       const runtime = sandboxFor(input.scope.sessionId);
+      // Reusing a handle must not bypass managed persistence configuration.
+      runtime.sessionOutputsMount({ tenantId: input.scope.workspaceId, sessionId: input.scope.sessionId });
       return (await runtime.describeSandbox()).running ? { runtime, handle: handleFor(input.scope) } : "gone";
     },
 

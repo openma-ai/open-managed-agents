@@ -85,7 +85,7 @@ export async function ingestEnvironmentWorkRuntimeEvents(input: {
       environmentWorkFence: input.claim,
       ...(decoded.root ? {workRoot: decoded.root, workRootDialect: input.dialect ?? "sqlite"} : {}),
     });
-    if (result.type === "version_conflict") { if (decoded.root) return result; continue; }
+    if (result.type === "version_conflict") continue;
     if (result.type === "not_found") return { type: "not_found" };
     if (result.type === "execution_fence_lost") return { type: "stale_claim" };
     // Keep-first: nothing from this batch was applied or should be published.

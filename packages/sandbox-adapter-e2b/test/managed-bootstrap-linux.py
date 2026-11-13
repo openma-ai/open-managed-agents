@@ -93,7 +93,7 @@ print(json.dumps(result))
         self.assertTrue(live(worker['pid']))
         self.assertTrue(self.request({'op':'kill','target':worker['id'],'signal':'SIGKILL'})['ok'])
         output = self.base / 'agent.json'
-        # Uses the actual installed common 0.13.1 NodeSpawner through our wrapper.
+        # Uses the actual installed common 0.14.0 NodeSpawner through our wrapper.
         script = self.base / 'worker.mjs'
         script.write_text("import { NodeSpawner } from 'file:///common/dist/acp-runtime/spawners/node.js';\n"
                           "import { isolateE2BAgentSpawner } from 'file:///source/template/agent-spawner.mjs';\n"

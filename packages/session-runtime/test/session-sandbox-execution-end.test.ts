@@ -56,7 +56,7 @@ describe("Session sandbox execution end", () => {
     await h.sandbox.failExecution();
     expect(h.log).toEqual(["egress.revoke:failed", "release:r0"]);
     // The record no longer names the released sandbox.
-    expect(h.stored()).toEqual({ phase: "lost", latestSnapshot: { status: "none" }, stores: [], outputs: true, version: 2, lifecycleRevision: 2 });
+    expect(h.stored()).toEqual({ phase: "lost", latestSnapshot: { status: "none" }, stores: [], outputs: true, version: 3, lifecycleRevision: 2, retiredHandles: [{ handle: { provider: "fake", runtimeId: "r0" }, released: true }] });
     // Nothing to restore from and nothing that needs it: a new sandbox.
     await h.sandbox.exec("again");
     expect(h.log.slice(2, 3)).toEqual(["acquire"]);

@@ -1,4 +1,6 @@
 import { afterEach, expect } from "vitest";
+import { appendFileSync } from "node:fs";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
@@ -14,18 +16,28 @@ import { sandboxTokenSha256 } from "../../../packages/sandbox-gateway/src/index.
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 export async function coldFixture(withMemory = false, launch = true) {
+ const stagePath = process.env.OMA_TEST_STAGE_LOG;
+ const probeId = `${process.pid}:${performance.now()}`;
+ const delay = stagePath ? monitorEventLoopDelay({ resolution: 20 }) : undefined;
+ delay?.enable();
+ const mark = (stage: string) => { if (stagePath) appendFileSync(stagePath, JSON.stringify({ probeId, stage, wall: Date.now(), monotonic: performance.now(), eventLoopMaxMs: (delay?.max ?? 0) / 1e6 }) + "\n"); };
+ const stage = async <T>(name: string, run: () => Promise<T>): Promise<T> => { mark(name + ":start"); try { const value = await run(); mark(name + ":end"); return value; } catch (error) { mark(name + ":error"); throw error; } };
+ const timer = stagePath ? setInterval(() => mark("pending"), 1000) : undefined;
+ timer?.unref();
+ cleanup.push(async () => { if (timer) clearInterval(timer); mark("cleanup"); delay?.disable(); });
+ mark("fixture:start");
  await mkdir(join(process.cwd(),".test-artifacts"),{recursive:true});
  const root=await mkdtemp(join(process.cwd(),".test-artifacts/finalization-host-"));cleanup.push(()=>rm(root,{recursive:true,force:true}));
  const config=loadNodeConfig({NODE_ENV:"test",LOG_LEVEL:"silent",AUTH_DISABLED:"1",PLATFORM_ROOT_SECRET:"test-finalization-root-secret-32-characters",OPENMA_TEST_SANDBOX_PROVIDER:"local-subprocess",DATABASE_PATH:join(root,"db.sqlite"),AUTH_DATABASE_PATH:join(root,"auth.sqlite"),MEMORY_BLOB_DIR:join(root,"memory"),FILES_BLOB_DIR:join(root,"files"),SESSION_OUTPUTS_DIR:join(root,"outputs"),SANDBOX_WORKDIR:join(root,"sandbox"),MEMORY_QUEUE:"disabled"});
- const components=await nodeDefaults(config);const disposables=new Disposables();cleanup.push(()=>disposables.dispose());
- const runtime=await createNodeRuntime(components,disposables,{current:null});
+ const components=await stage("nodeDefaults", () => nodeDefaults(config));const disposables=new Disposables();cleanup.push(()=>disposables.dispose());
+ const runtime=await stage("createNodeRuntime", () => createNodeRuntime(components,disposables,{current:null}));
  expect(runtime.workFinalizationHost, "production runtime must inject a physical Work host").toBeDefined();
- const app=await mountNodeHttp(runtime,disposables,runtime.workFinalizationHost);
+ const app=await stage("mountNodeHttp", () => mountNodeHttp(runtime,disposables,runtime.workFinalizationHost));
  const server=serve({fetch:app.fetch,hostname:"127.0.0.1",port:0});cleanup.push(()=>new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve())));
  if(!server.listening)await new Promise<void>(resolve=>server.once("listening",resolve));
  const base="http://127.0.0.1:"+(server.address() as {port:number}).port;
  const post=(path:string,body:unknown,token?:string)=>fetch(base+path,{method:"POST",headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},body:JSON.stringify(body)});
- const create=async(path:string,body:unknown)=>{const r=await post(path,body);expect(r.status,await r.clone().text()).toBeLessThan(300);return r.json() as Promise<any>;};
+ const create=async(path:string,body:unknown)=>{const r=await stage("create:" + path, () => post(path,body));expect(r.status,await r.clone().text()).toBeLessThan(300);return r.json() as Promise<any>;};
  const env=await create("/v1/environments",{name:"finalization",config:{type:"cloud",networking:{type:"unrestricted"}}});
  const agent=await create("/v1/agents",{name:"finalization",model:"test",_oma:{harness:"acp-sandbox",acp:{agent:{registry:"claude-acp@0.94.0"}}}});
  const memoryStore=withMemory ? await create("/v1/memory_stores",{name:"notes"}) : null;
@@ -39,12 +51,13 @@ export async function coldFixture(withMemory = false, launch = true) {
  let live=true;let holderHash:string|undefined;
  const session=(await new SqlSessionSource(sql).find(claim))!;const environment=(await new SqlSessionEnvironmentSource(sql).find(claim))!;
  const sandbox=runtime.sessionSandboxes.build({workspaceId:claim.workspaceId,session,environment,workAuthority:{attempt:environmentWorkSandboxTokenRef(claim),holderHash:()=>holderHash,isCurrent:async()=>live,token:physical=>runtime.managedAcpCapabilities.issueWork(claim,session.agent.openma?.harness,physical)}});
- cleanup.push(async()=>{live=false;await sandbox.destroy();});await sandbox.open();holderHash=(await sandboxTokenSha256(await sandbox.workToken()))!;
- if(launch){const management=await sandbox.startManagedProcess({command:"/bin/sleep",args:["120"],env:{}});cleanup.push(()=>management.kill("SIGKILL"));}
- const path="/v1/oma/sessions/"+s.id;const rows=await (await post(path+"/inputs-read",{cursor:null,limit:10},token)).json() as any;const row=rows.rows[0];const turnId=row.event.id;
- expect((await post(path+"/inputs-consume",{inputId:turnId,turnId,expectedDocument:row.document,boundary:"before_dispatch"},token)).status).toBe(200);
+ cleanup.push(async()=>{live=false;await sandbox.destroy();});await stage("sandbox.open", () => sandbox.open());holderHash=(await sandboxTokenSha256(await stage("sandbox.workToken", () => sandbox.workToken())))!;
+ if(launch){const management=await stage("startManagedProcess", () => sandbox.startManagedProcess({command:"/bin/sleep",args:["120"],env:{}}));cleanup.push(()=>management.kill("SIGKILL"));}
+ const path="/v1/oma/sessions/"+s.id;const rows=await (await stage("inputs-read", () => post(path+"/inputs-read",{cursor:null,limit:10},token))).json() as any;const row=rows.rows[0];const turnId=row.event.id;
+ expect((await stage("inputs-consume", () => post(path+"/inputs-consume",{inputId:turnId,turnId,expectedDocument:row.document,boundary:"before_dispatch"},token))).status).toBe(200);
  const revision=Number((await sql.prepare("SELECT revision FROM managed_sessions WHERE id=?").bind(s.id).first<{revision:number}>())!.revision);
- const request=(action:string,body:object={})=>post(path+"/work-"+action,{turnId,revision,...body},token);
+ const request=(action:string,body:object={})=>stage("work-" + action, () => post(path+"/work-"+action,{turnId,revision,...body},token));
  const checkpoint=()=>sql.prepare("SELECT candidate_json FROM managed_session_workspace_checkpoints WHERE workspace_id='default' AND session_id=?").bind(s.id).first<{candidate_json:string}>();
+ mark("fixture:ready");
  return {config,components,disposables,base,memoryStore,runtime,sql,sandbox,claim,session,environment,request,checkpoint,turnId,revision,post,path,token,root,lose:()=>{live=false;}};
 }

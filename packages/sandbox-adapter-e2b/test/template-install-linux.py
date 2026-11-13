@@ -31,7 +31,8 @@ def verify(ok=True):
     assert (result.returncode == 0) == ok, result.stderr
 
 verify()
-# The agent cannot read or alter trusted worker code.
+# Without explicit sudo, default UID cannot read or alter management code.
+# This is a default-identity control, not a boundary against guest root.
 probe = "import os; assert not os.access('/opt/oma-managed/worker/node-e2b-work-item-cli.js',os.R_OK); assert not os.access('/opt/oma-managed',os.W_OK)"
 subprocess.run(['/usr/bin/python3', '-c', probe], user=agent.pw_uid, group=agent.pw_gid, extra_groups=[], check=True)
 # Environment-setup launcher ACP stdio through the same root-private native helper.

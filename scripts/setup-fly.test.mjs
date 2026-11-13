@@ -13,14 +13,17 @@ async function runSetup(
   dataMode,
   sandboxProvider = "e2b",
   providerEnvironment = sandboxProvider === "e2b" ? { E2B_API_KEY: "e2b-test-key" } : {},
+  outsideRoot = false,
 ) {
   const scratch = await mkdtemp(join(tmpdir(), "openma-fly-setup-"));
   const bin = join(scratch, "bin");
   const log = join(scratch, "fly.log");
   const secretInput = join(scratch, "secrets.env");
+  const cwdLog = join(scratch, "cwd.log");
   await mkdir(bin);
   await writeFile(join(bin, "fly"), `#!/bin/sh
 set -eu
+pwd > "$OPENMA_FLY_TEST_CWD"
 printf '%s\\n' "$*" >> "$OPENMA_FLY_TEST_LOG"
 if [ "$1" = "status" ]; then exit 1; fi
 if [ "$1" = "secrets" ] && [ "$2" = "import" ]; then cat > "$OPENMA_FLY_SECRET_INPUT"; fi
@@ -30,10 +33,10 @@ printf 'generated-test-secret\\n'
 `, { mode: 0o755 });
 
   try {
-    const result = await execFileAsync("bash", ["scripts/setup-fly.sh"], {
-      cwd: repositoryRoot,
+    const result = await execFileAsync("bash", [join(repositoryRoot, "scripts/setup-fly.sh")], {
+      cwd: outsideRoot ? scratch : repositoryRoot,
       env: {
-        ...process.env,
+        ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(FILES_S3|MEMORY_S3)_/.test(name))),
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         OPENMA_FLY_DATA_MODE: dataMode,
         ...(sandboxProvider === null
@@ -41,11 +44,13 @@ printf 'generated-test-secret\\n'
           : { OPENMA_FLY_SANDBOX_PROVIDER: sandboxProvider }),
         ...providerEnvironment,
         OPENMA_FLY_TEST_LOG: log,
+        OPENMA_FLY_TEST_CWD: cwdLog,
         OPENMA_FLY_SECRET_INPUT: secretInput,
       },
     });
     return {
       stdout: result.stdout,
+      cwd: (await readFile(cwdLog, "utf8")).trim(),
       calls: (await readFile(log, "utf8")).trim().split("\n"),
       secrets: await readFile(secretInput, "utf8"),
     };
@@ -160,4 +165,25 @@ test("Fly setup stages Sprites credentials without printing them", async () => {
   assert.match(result.secrets, /^SPRITES_TOKEN=sprites-test-token$/m);
   assert.doesNotMatch(result.stdout, /sprites-test-token/);
   await assert.rejects(runSetup("sqlite", "sprites", {}), /SPRITES_TOKEN is required/);
+});
+
+const storage = Object.fromEntries(["FILES_S3", "MEMORY_S3"].flatMap(prefix => [
+  [`${prefix}_ENDPOINT`, "https://storage.invalid"], [`${prefix}_BUCKET`, "test"],
+  [`${prefix}_ACCESS_KEY`, "synthetic-access"], [`${prefix}_SECRET_KEY`, "synthetic-secret"],
+  [`${prefix}_FORCE_PATH_STYLE`, "1"],
+]));
+test("Fly source build preserves root config and context when invoked elsewhere", async () => {
+  const result = await runSetup("sqlite", "e2b", { E2B_API_KEY: "test", OPENMA_FLY_BUILD_FROM_SOURCE: "1" }, true);
+  assert.equal(result.cwd, repositoryRoot);
+  assert.ok(result.calls.includes("deploy --strategy rolling"));
+  assert.match(await readFile(join(repositoryRoot,"fly.toml"),"utf8"), /dockerfile = "apps\/main-node\/Dockerfile"/);
+});
+test("Fly stages complete S3 configuration with 0/1 flags without exposing values", async () => {
+  const result = await runSetup("sqlite", "e2b", { E2B_API_KEY: "test", ...storage });
+  for (const [name, value] of Object.entries(storage)) assert.ok(result.secrets.includes(`${name}=${value}\n`));
+  assert.doesNotMatch(result.stdout, /synthetic-access|synthetic-secret/);
+});
+test("Fly rejects partial S3 and true path-style values before deployment", async () => {
+  await assert.rejects(runSetup("sqlite", "e2b", { E2B_API_KEY: "test", FILES_S3_BUCKET: "test" }), /FILES_S3_ENDPOINT is required/);
+  await assert.rejects(runSetup("sqlite", "e2b", { E2B_API_KEY: "test", ...storage, FILES_S3_FORCE_PATH_STYLE: "true" }), /FILES_S3_FORCE_PATH_STYLE must be 0 or 1/);
 });

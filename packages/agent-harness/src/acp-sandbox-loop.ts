@@ -2,7 +2,6 @@ import { parkUnknownToolRetry, isDispatchedUnknown } from "./unknown-tool-retry"
 import { installAcpAgentWithHistory } from "./acp-install";
 import { gateExhausted } from "./budget";
 import { harnessContextFromEvents, transitionHarnessContext, type HarnessContextState } from "@open-managed-agents/session-runtime-contract";
-import { SessionExecutionLostError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { AcpSession } from "@open-managed-agents/acp-runtime";
 import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import {
@@ -82,6 +81,10 @@ export class AcpSandboxHarness implements HarnessInterface {
   }
 
   async run(ctx: HarnessContext): Promise<void> {
+    await this.#runAttempt(ctx, true);
+  }
+
+  async #runAttempt(ctx: HarnessContext, allowRecovery: boolean, recoverContext = false): Promise<void> {
     const runtime = ctx.runtime;
     if (parkUnknownToolRetry(runtime)) return;
     // Same pre-request meter as Pi: a capped Session must not install or
@@ -138,6 +141,10 @@ export class AcpSandboxHarness implements HarnessInterface {
         stateBinding.checkpointPath,
       );
     }
+    if (recoverContext) {
+      this.#resumeAcpSessionId = null;
+      this.#semanticRecoveryReason = "execution-lost";
+    }
     if (this.#session && (this.#configKey !== configKey || !this.#session.isAlive())) {
       this.#resumeAcpSessionId = this.#configKey === configKey
         ? this.#session.acpSessionId || null
@@ -160,6 +167,8 @@ export class AcpSandboxHarness implements HarnessInterface {
       model: typeof ctx.agent.model === "string" ? ctx.agent.model : ctx.agent.model.id,
     });
     let freshAcpSession = false;
+    let continueFromError = false;
+    const priorResults = new Set(runtime.history.getEvents().filter(e => e.type === "agent.tool_result").map(e => e.tool_use_id));
     try {
       if (!this.#session) {
         freshAcpSession = !this.#resumeAcpSessionId;
@@ -316,33 +325,43 @@ export class AcpSandboxHarness implements HarnessInterface {
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
       this.#semanticRecoveryReason = null;
     } catch (error) {
-      if (error instanceof SandboxGoneError) {
-        this.#session = null; this.#runtime = null; this.#preparation = null;
-        throw new SessionExecutionLostError("sandbox_gone");
-      }
+      // The placement owns process liveness; a lost sandbox is not a lost
+      // Session claim. First close the protocol call with its correlated error.
       if (ctx.budget?.refused) {
         await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed");
         return;
       }
       if (!runtime.abortSignal?.aborted) await translator.consume({type:"promptError",error:error instanceof Error ? error.message : String(error)});
       await translator.flush(runtime.abortSignal?.aborted ? "aborted" : "completed", error instanceof Error ? error.message : String(error));
-      if (!runtime.abortSignal?.aborted) {
+      if (error instanceof SandboxGoneError) {
+        // Confirmed loss means there is no native filesystem to capture.
+        this.#session = null; this.#runtime = null; this.#preparation = null;
+      }
+      await this.#endExecution(runtime, preparation);
+      const processStopped = this.#session === null;
+      const failedCall = runtime.history.getEvents().some(e => e.type === "agent.tool_result" && e.is_error && !priorResults.has(e.tool_use_id));
+      if (!runtime.abortSignal?.aborted && processStopped && failedCall && allowRecovery
+        && !(error instanceof Error && (error.name === "AcpTurnTimeoutError" || error.name === "AcpPromptCancellationTimeoutError"))) {
+        // Restart only the ACP conversation consumer, through the existing
+        // sandbox port. Allocation, leases and replacement remain in that plane.
+        continueFromError = true;
+      } else if (!runtime.abortSignal?.aborted) {
         if (error instanceof Error && (error.name === "AcpTurnTimeoutError" || error.name === "AcpPromptCancellationTimeoutError")) throw error;
-        this.#emitError(
-          runtime,
-          error instanceof Error ? error.message : String(error),
-        );
+        this.#emitError(runtime, error instanceof Error ? error.message : String(error));
       }
     } finally {
       await this.#endExecution(runtime, preparation);
+    }
+    if (continueFromError) {
+      await this.#runAttempt({ ...ctx, acpRecoveryHistory: runtime.history.getEvents() }, false, true);
     }
   }
 
   /** Execution end: close the child, then save its native state (never
    * under a live process). The ACP session id is kept for the next resume. */
-  async #endExecution(runtime: HarnessRuntime, preparation: AcpSandboxAgentPreparation): Promise<void> {
+  async #endExecution(runtime: HarnessRuntime, preparation: AcpSandboxAgentPreparation): Promise<boolean> {
     const session = this.#session;
-    if (!session) return;
+    if (!session) return false;
     this.#resumeAcpSessionId = session.acpSessionId || this.#resumeAcpSessionId;
     try {
       await session.dispose();
@@ -350,18 +369,22 @@ export class AcpSandboxHarness implements HarnessInterface {
     } catch (error) {
       if (error instanceof SandboxGoneError) {
         this.#session = null; this.#runtime = null; this.#preparation = null;
-        throw new SessionExecutionLostError("sandbox_gone");
+        runtime.broadcast({ type: "session.warning", source: "sandbox.persistence",
+          message: "ACP sandbox was lost; native state was not captured." });
+        return true;
       }
       // Exit not confirmed: keep the child as the barrier so the host's
       // dispose also rejects instead of touching state under it.
       this.#emitError(runtime, error instanceof Error ? error.message : String(error));
-      return;
+      return false;
     }
     try {
       await captureAcpSandboxAgentState(runtime.sandbox, preparation);
     } catch (error) {
-      this.#emitError(runtime, error instanceof Error ? error.message : String(error));
+      runtime.broadcast({ type: "session.warning", source: "sandbox.persistence",
+        message: error instanceof Error ? error.message : String(error) });
     }
+    return false;
   }
 
   async dispose(reason: HarnessDisposeReason = "destroy"): Promise<void> {

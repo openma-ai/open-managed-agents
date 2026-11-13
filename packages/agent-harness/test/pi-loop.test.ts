@@ -81,7 +81,42 @@ function makeContext(responses: ReturnType<typeof fauxAssistantMessage>[]) {
 }
 
 describe("PiHarness", () => {
-  it.each(["AuthenticationError", "InvalidArgumentError"] as const)("parks actual SDK post-PID %s instead of resampling a new effect", async name => {
+  it.each(["SandboxNotRunningError", "TransportError"] as const)("observes actual SDK post-PID %s and performs a distinct effect without forced retry", async failure => {
+    const sdk = await import("../../../apps/main-node/node_modules/e2b/dist/index.mjs");
+    const { E2BSandboxExecutor } = await import("../../sandbox-adapter-e2b/src/e2b");
+    const { mkdtempSync, appendFileSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "pi-sdk-loss-"));
+    let seen: any[] = []; let dispatches = 0;
+    const next = (context: any) => { seen = structuredClone(context.messages); return fauxAssistantMessage([fauxToolCall("echo", {value:"distinct recovery"}, {id:"recovery"})]); };
+    const {ctx,events,faux}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"original"},{id:"lost-call"})]),next as any,fauxAssistantMessage("done")]);
+    const native = new sdk.Sandbox({sandboxId:"offline-sdk",envdVersion:"0.3.0",apiKey:"offline-placeholder"});
+    Object.assign(native.commands,{rpc:{start:()=> (async function*(){
+      dispatches++; appendFileSync(join(dir,"original"),"x");
+      yield {event:{event:{case:"start",value:{pid:123}}}};
+      if (failure === "SandboxNotRunningError") throw new sdk.SandboxNotRunningError("sandbox terminated after process start");
+      throw new Error("transport disconnected after process start");
+    })()}});
+    const executor=new E2BSandboxExecutor(native as never,{});
+    ctx.tools.echo.metadata={openmaBuiltin:true};
+    ctx.tools.echo.execute=async ({value}:{value:string}) => {
+      if(value === "original") return executor.exec("effect");
+      appendFileSync(join(dir,"recovery"),"x"); return "recovery completed";
+    };
+    try {
+      await new PiHarness().run(ctx);
+      console.log(JSON.stringify({op:"pi.sdk.loss.observed",failure,dispatches,modelCalls:faux.state.callCount,events}));
+      expect(seen.filter(m=>m.role === "toolResult" && m.toolCallId === "lost-call")).toEqual([expect.objectContaining({isError:true})]);
+      expect(readFileSync(join(dir,"original"),"utf8")).toBe("x");
+      expect(readFileSync(join(dir,"recovery"),"utf8")).toBe("x");
+      expect(dispatches).toBe(1); expect(faux.state.callCount).toBe(3);
+      expect(ctx.runtime.pendingConfirmations).toEqual([]);
+      expect(events.filter(e=>e.type === "agent.tool_result" && e.tool_use_id === "lost-call")).toEqual([expect.objectContaining({is_error:true})]);
+      expect(events.some(e=>e.id?.startsWith("retry:"))).toBe(false);
+    } finally { rmSync(dir,{recursive:true,force:true}); }
+  });
+  it.each(["AuthenticationError", "InvalidArgumentError"] as const)("requires authorization for a model-requested repeat after SDK post-PID %s", async name => {
     const sdk = await import("../../../apps/main-node/node_modules/e2b/dist/index.mjs");
     const { E2BSandboxExecutor } = await import("../../sandbox-adapter-e2b/src/e2b");
     const {ctx,events}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"first"})]),fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"second"})]),fauxAssistantMessage("done")]);
@@ -93,8 +128,8 @@ describe("PiHarness", () => {
     ctx.tools.echo.execute=async()=>executor.exec("effect");
     await new PiHarness().run(ctx);
     expect(effects).toBe(1);
-    expect(ctx.runtime.pendingConfirmations).toEqual(["retry:first"]);
-    expect(events.some(event=>event.type==="agent.tool_use"&&event.id==="second")).toBe(false);
+    expect(ctx.runtime.pendingConfirmations).toEqual(["second"]);
+    expect(events.some(event=>event.type==="agent.tool_use"&&event.id==="second")).toBe(true);
   });
   it("permits fresh model work after an effective explicit allow and terminal retry", async () => {
     const {ctx,events}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"fresh"},{id:"fresh"})]),fauxAssistantMessage("done")]);
@@ -109,6 +144,7 @@ describe("PiHarness", () => {
   });
   it("does not let ordinary queued steering bypass an unknown tool park",async()=>{
     const {ctx}=makeContext([fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"first"})]),fauxAssistantMessage([fauxToolCall("echo",{value:"effect"},{id:"second"})]),fauxAssistantMessage("done")]);
+    ctx.tools.echo.metadata={openmaBuiltin:true};
     let effects=0,taken=false;ctx.tools.echo.execute=async()=>{effects++;if(effects===1)throw Object.assign(new Error("lost"),{outcome:"dispatched_unknown"});return "ok";};
     ctx.runtime.takeSteeringInputs=async()=>{if(taken)return [];taken=true;return [{type:"user.message",content:[{type:"text",text:"ordinary input"}]}];};
     await new PiHarness().run(ctx);expect(effects).toBe(1);
@@ -144,7 +180,7 @@ describe("PiHarness", () => {
     expect(ctx.runtime.pendingConfirmations).toEqual(["retry-original"]);
     expect(events.some(e=>e.type==="agent.tool_use"&&e.id==="new-call")).toBe(false);
   });
-  it("parks a dispatched-unknown transport result before the model can retry with a new ID", async () => {
+  it("lets the model observe unknown transport but parks its requested replay before dispatch", async () => {
     const {ctx,events}=makeContext([
       fauxAssistantMessage([fauxToolCall("bash",{command:"external-effect"},{id:"first"})]),
       fauxAssistantMessage([fauxToolCall("bash",{command:"external-effect"},{id:"second"})]),
@@ -161,7 +197,7 @@ describe("PiHarness", () => {
     const warning=events.find(e=>e.type==="session.warning"&&e.source==="tool_outcome_unknown");
     expect(warning).toMatchObject({details:{tool_use_id:"first",outcome:"dispatched_unknown"}});
     expect(ctx.runtime.pendingConfirmations).toHaveLength(1);
-    expect(events.some(e=>e.type==="agent.tool_use"&&e.id==="second")).toBe(false);
+    expect(events.some(e=>e.type==="agent.tool_use"&&e.id==="second")).toBe(true);
   });
 
   it("persists the unknown authorization boundary before closing its original tool result", async () => {
@@ -175,7 +211,7 @@ describe("PiHarness", () => {
       broadcast(event);
     };
     await new PiHarness().run(ctx).catch(()=>undefined);
-    expect(events).toContainEqual(expect.objectContaining({type:"session.warning",source:"tool_outcome_unknown",details:expect.objectContaining({retry_request_id:"retry:first"})}));
+    expect(events).toContainEqual(expect.objectContaining({type:"session.warning",source:"tool_outcome_unknown",details:expect.objectContaining({tool_use_id:"first",outcome:"dispatched_unknown"})}));
   });
 
   it("does not permit model egress after an unknown retry settles under an exhausted budget", async () => {

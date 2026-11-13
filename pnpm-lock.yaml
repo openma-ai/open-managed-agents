@@ -2102,6 +2102,9 @@ importers:
 
   packages/environment-work-store-sql:
     dependencies:
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
@@ -2250,6 +2253,9 @@ importers:
 
   packages/files-store:
     dependencies:
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
       '@open-managed-agents/db-schema':
         specifier: workspace:*
         version: link:../db-schema
@@ -2470,6 +2476,9 @@ importers:
 
   packages/inference-proxy:
     dependencies:
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
@@ -2908,6 +2917,9 @@ importers:
 
   packages/managed-agents-application:
     dependencies:
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@earendil-works/pi-ai':
         specifier: 1.1.0
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(@smithy/signature-v4@5.7.3)(undici@8.12.4)(ws@8.21.0)(zod@4.3.6)
@@ -3173,6 +3185,9 @@ importers:
 
   packages/managed-runtime-host:
     dependencies:
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@anthropic-ai/sdk':
         specifier: 1.3.0
         version: 1.3.0(zod@4.6.7)

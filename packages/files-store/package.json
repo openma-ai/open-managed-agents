@@ -10,6 +10,7 @@
   "dependencies": {
     "@open-managed-agents/db-schema": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "@open-managed-agents/managed-agents-application": "workspace:*"
   }
 }

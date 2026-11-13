@@ -6,6 +6,7 @@ import type { ManagedRuntimeEventWire } from "@openma/common/managed-runtime";
 export function createWorkOutputAdapter(options: {
  publish(events: ManagedRuntimeEventWire[]): Promise<void>;
  toolUseIdFor(id:string): string | undefined;
+ customToolNames?(): ReadonlySet<string>;
 }) {
  const pending = new Map<string,ManagedRuntimeEventWire>();
  let tail:Promise<void>=Promise.resolve();
@@ -22,6 +23,12 @@ export function createWorkOutputAdapter(options: {
     for(const event of events){
      if(event.type==="agent.tool_use"&&!event.session_thread_id){pending.set(event.id,event);continue;}
      if(event.type==="agent.tool_result"&&!event.session_thread_id&&typeof event.tool_use_id==="string"){
+      const call=pending.get(event.tool_use_id);
+      if(call&&typeof call.name==="string"&&options.customToolNames?.().has(call.name)&&isPendingCustomResult(event,call)) {
+       pending.delete(event.tool_use_id);
+       output.push({...call,type:"agent.custom_tool_use"});
+       continue; // native checkpoint placeholder, not an external answer
+      }
       flush(event.tool_use_id);output.push({...event,tool_use_id:options.toolUseIdFor(event.tool_use_id)??event.tool_use_id});
      }else output.push(event);
     }
@@ -30,4 +37,14 @@ export function createWorkOutputAdapter(options: {
    });
   },
  };
+}
+
+function isPendingCustomResult(result:ManagedRuntimeEventWire, call:ManagedRuntimeEventWire):boolean {
+ if(result.is_error===true||!Array.isArray(result.content)||result.content.length!==1)return false;
+ const block=result.content[0];
+ if(!block||typeof block!=="object"||block.type!=="text"||typeof block.text!=="string")return false;
+ try {
+  const value=JSON.parse(block.text);
+  return value?.details?.omaPendingCustom?.toolCallId===call.id && value.details.omaPendingCustom.name===call.name;
+ } catch {return false;}
 }

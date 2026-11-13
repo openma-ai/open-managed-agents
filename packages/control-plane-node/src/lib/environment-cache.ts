@@ -17,11 +17,7 @@ import {
   type EnvironmentCacheWarning,
   type SessionEnvironmentCache,
 } from "@open-managed-agents/session-runtime";
-import {
-  installAcpSandboxAgent,
-  prepareAcpSandboxAgent,
-} from "@open-managed-agents/acp-runtime/sandbox-agent";
-import { resolvePinnedAcpRegistryAgent } from "@open-managed-agents/acp-runtime/registry-pins";
+import { environmentAcpInstall, prepareEnvironmentAcp, type PreparedEnvironmentAcp } from "@open-managed-agents/acp-runtime/environment-setup";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import {
   type SandboxLifecyclePort,
@@ -46,9 +42,7 @@ export interface EnvironmentCacheSetup {
 /** The pinned install for an ACP registry reference; throws for one that is
  * not pinned (the Session itself fails on the same reference). */
 export function environmentCacheAcpInstall(registry: string | undefined): EnvironmentCacheAcpInstall | null {
-  if (registry === undefined || registry.length === 0) return null;
-  const pinned = resolvePinnedAcpRegistryAgent(registry);
-  return { package: pinned.package, version: pinned.version, nodeMajor: pinned.nodeMajor };
+  return environmentAcpInstall(registry);
 }
 
 export interface NodeEnvironmentCacheOptions extends EnvironmentCacheExpiry {
@@ -92,7 +86,7 @@ export class NodeEnvironmentCache {
       restrictEgress: (runtime, setup) => options.applyFirewall(runtime, environmentBuildFirewall(setup, pipIndexUrl)),
       setup: (runtime, setup, { buildId }) => options.setup !== undefined
         ? options.setup(runtime, setup, buildId)
-        : prepareEnvironmentBuildSandbox(runtime, setup, buildId, pipIndexUrl === undefined ? {} : { pipIndexUrl }),
+        : prepareEnvironmentBuildSandbox(runtime, setup, buildId, pipIndexUrl === undefined ? {} : { pipIndexUrl }).then(() => undefined),
       redact: (text) => redact(text, pipIndexUrl),
       logger: options.logger,
       op: OP,
@@ -222,14 +216,13 @@ export async function prepareEnvironmentBuildSandbox(
   sandbox: SandboxPort,
   setup: EnvironmentCacheSetup,
   buildId: string,
-  options: { pipIndexUrl?: string } = {},
-): Promise<void> {
-  await installEnvironmentPackages(sandbox, setup.environment, options);
-  if (setup.acpRegistry !== undefined && setup.acpRegistry.length > 0) {
-    // Same install script as the acp-sandbox harness; provider secrets are
-    // stripped by it and the build sandbox holds none to begin with.
-    await installAcpSandboxAgent(sandbox, prepareAcpSandboxAgent({ sessionId: buildId, agent: { registry: setup.acpRegistry } }));
-  }
+  options: { pipIndexUrl?: string; agent?: Parameters<typeof prepareEnvironmentAcp>[0]["agent"]; installedHarnesses?: string; assertCurrent?(): Promise<void> } = {},
+): Promise<PreparedEnvironmentAcp | null> {
+  return await prepareEnvironmentAcp({ sessionId: buildId, runtime: sandbox,
+    agent: options.agent ?? (setup.acpRegistry ? { registry: setup.acpRegistry } : undefined),
+    installedHarnesses: options.installedHarnesses, assertCurrent: options.assertCurrent,
+    preparePackages: () => installEnvironmentPackages(sandbox, setup.environment, options),
+  });
 }
 
 /** Drop credentials an error message could echo back: the configured pip

@@ -1147,7 +1147,9 @@ async function startMainNode(
     }
     await new Promise((resolveReady) => setTimeout(resolveReady, 200));
   }
-  child.kill("SIGKILL");
+  // Stop the complete tsx process tree before afterEach removes its database.
+  // Killing only the launcher can leave a child that recreates the fixture.
+  await killProcessTree(child);
   throw new Error(`main-node did not become ready:\n${logBuffer.join("")}`);
 }
 

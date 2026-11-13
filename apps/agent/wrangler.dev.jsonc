@@ -3,7 +3,8 @@
   "name": "sandbox-default",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-15",
-  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports"],
+  // Work webhook polling must reach same-zone public Worker routes, just as cron does.
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports", "global_fetch_strictly_public"],
 
   "containers": [
     {

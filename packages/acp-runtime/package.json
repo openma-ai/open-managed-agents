@@ -16,7 +16,8 @@
     "./installed-harnesses": "./src/installed-harnesses.ts",
     "./inference-config": "./src/inference/index.ts",
     "./skill-cache": "./src/skill-cache.ts",
-    "./skill-package": "./src/skill-package.ts"
+    "./skill-package": "./src/skill-package.ts",
+    "./environment-setup": "./src/environment-setup.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",

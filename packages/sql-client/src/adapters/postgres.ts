@@ -29,6 +29,8 @@
 // loaded by createPostgresSqlClient so importing this package doesn't
 // require `postgres` to be installed.
 
+import { transactionScope } from "../transaction-scope";
+import type { SqlRowLockTransactions } from "../ports";
 import { driverRetry } from "../db-errors";
 import { translatePostgresError } from "./postgres-errors";
 
@@ -163,6 +165,33 @@ class PostgresSqlStatement implements SqlStatement {
 
 export class PostgresSqlClient implements SqlClient {
   constructor(private readonly sql: PgSql) {}
+
+  readonly rowLockTransactions: SqlRowLockTransactions = {
+    capability: async () => {
+      const rows = await this.sql.unsafe("SELECT version() AS identity, current_setting('server_version_num') AS version_num, current_setting('server_version') AS version");
+      const row = rows[0];
+      const supported = typeof row?.identity === "string" && row.identity.startsWith("PostgreSQL ")
+        && Number(row.version_num) >= 90500;
+      return { supported, engine: "postgres", version: String(row?.version ?? "unknown"),
+        reason: supported ? "PostgreSQL >=9.5; READ COMMITTED row locks" : "Unknown or unsupported PostgreSQL version; use CAS" };
+    },
+    run: async (body) => this.sql.begin(async (tx) => {
+      await tx.unsafe("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+      const scope = transactionScope(async (text, params) => {
+        const translated = translatePlaceholders(text);
+        const statement = new PostgresSqlStatement(tx, translated.text, translated.count).bind(...params) as PostgresSqlStatement;
+        return statement.executeRunIn(tx);
+      });
+      try {
+        const result = await body(scope.client);
+        await scope.close();
+        return result;
+      } catch (error) {
+        await scope.close().catch(() => undefined);
+        throw error;
+      }
+    }),
+  };
 
   prepare(text: string): SqlStatement {
     const { text: translated, count } = translatePlaceholders(text);

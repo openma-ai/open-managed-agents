@@ -6,10 +6,16 @@ const custom = (id: string, call: string) => ({ id, type: "user.custom_tool_resu
 const confirm = (id: string, call: string) => ({ id, type: "user.tool_confirmation", tool_use_id: call });
 
 describe("planRequiresActionAnswers", () => {
-  it("leaves a batch that is not purely answers alone, without reading history", () => {
-    const history = () => { throw new Error("history read"); };
-    expect(planRequiresActionAnswers([{ type: "user.message" }], history)).toEqual({ type: "proceed", remaining: null });
-    expect(planRequiresActionAnswers([custom("e", "a"), { type: "user.message" }], history)).toEqual({ type: "proceed", remaining: null });
+  it("does not read history for system-only batches", () => {
+    expect(planRequiresActionAnswers([{ type: "system.message" }], () => { throw new Error("history read"); })).toEqual({ type: "proceed", remaining: null });
+  });
+
+  it("holds messages admitted before parking behind all outstanding answers", () => {
+    const history = () => [parked(["a", "b"])];
+    expect(planRequiresActionAnswers([{ type: "user.message" }], history)).toEqual({ type: "proceed", remaining: ["a", "b"] });
+    expect(planRequiresActionAnswers([custom("e", "a"), { type: "user.message" }], history)).toEqual({ type: "proceed", remaining: ["b"] });
+    expect(planRequiresActionAnswers([custom("e", "a"), custom("f", "b"), { type: "user.message" }], history)).toEqual({ type: "proceed", remaining: [] });
+    expect(planRequiresActionAnswers([{ type: "user.message" }], () => [])).toEqual({ type: "proceed", remaining: null });
   });
 
   it("reports what a partial batch leaves outstanding", () => {

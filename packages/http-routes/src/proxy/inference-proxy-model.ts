@@ -36,6 +36,8 @@ export async function resolveSessionModelUpstream(
       providerId: card.provider,
       protocolEndpoints: resolveProtocolEndpointsFromModelCard({
         providerId: card.provider,
+        wireModel: card.wireModel,
+        piConfig: card.piConfig,
         baseUrl: card.baseURL ?? null,
       }),
       ...(card.baseURL !== undefined && { baseURL: card.baseURL }),

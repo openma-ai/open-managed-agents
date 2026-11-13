@@ -240,6 +240,14 @@ jobs:
       - name: Node typecheck
         run: pnpm typecheck:ci:node
 
+      # The native management daemon requires uid 0. A user namespace gives
+      # these tests that identity without root authority over the CI host.
+      # OMA_REQUIRE_NATIVE_BOOTSTRAP makes unavailable isolation fail, not skip.
+      - name: Native sandbox bootstrap safety
+        timeout-minutes: 2
+        working-directory: packages/sandbox-adapter-e2b
+        run: unshare -Ur env OMA_REQUIRE_NATIVE_BOOTSTRAP=1 node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts test/managed-bootstrap.test.ts
+
       - name: Node tests
         run: pnpm test:ci:node
 

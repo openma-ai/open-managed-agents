@@ -137,6 +137,34 @@ describe("createSyncStorage", () => {
     await expect(storage.sync({ runtime: { files: new Map(), commands: [] }, scope, fence, stores: [], outputs, reason: "turn_end", signal }))
       .rejects.toThrow(/fence/);
   });
+
+  it("retries interrupted seeding, preserves deletions after reconnection, and seeds replacements", async () => {
+    const current = new Map([["a.txt", new Uint8Array([1])], ["b.txt", new Uint8Array([2])]]);
+    const port = vendor();
+    const write = port.writeFile;
+    let interrupt = true;
+    port.writeFile = async (box, path, bytes) => {
+      if (interrupt && path.endsWith("/b.txt")) throw new Error("interrupted copy");
+      await write(box, path, bytes);
+    };
+    const storage = () => createSyncStorage(port, deps([], true, current).storage);
+    const box: Box = { files: new Map(), commands: [] };
+    const attach = (runtime: Box) => storage().attach({ runtime, scope, fence, stores: [], outputs, signal });
+    await expect(attach(box)).rejects.toThrow("interrupted copy");
+    expect(box.files.has(OUTPUTS_SEEDED_MARKER)).toBe(false);
+    box.files.set("/mnt/session/outputs/a.txt", new Uint8Array([3]));
+    interrupt = false;
+    await attach(box);
+    expect(box.files.get("/mnt/session/outputs/a.txt")).toEqual(new Uint8Array([3]));
+    expect(box.files.get("/mnt/session/outputs/b.txt")).toEqual(new Uint8Array([2]));
+    box.files.delete("/mnt/session/outputs/a.txt");
+    // A different control-plane instance must use filesystem completion, not a local cache.
+    await attach({ files: box.files, commands: [] });
+    expect(box.files.has("/mnt/session/outputs/a.txt")).toBe(false);
+    const replacement: Box = { files: new Map(), commands: [] };
+    await attach(replacement);
+    expect(replacement.files.get("/mnt/session/outputs/a.txt")).toEqual(new Uint8Array([1]));
+  });
 });
 
 type FakeRuntime = SandboxPort & SandboxRuntimePort & { state: SandboxRuntimeStatus; destroyed: boolean; resumed: SandboxCheckpointHandle[]; written: Map<string, string> };

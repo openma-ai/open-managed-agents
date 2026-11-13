@@ -61,7 +61,7 @@ async function resolveCfAcpExecutionChannels(env: Env, input: ManagedAcpExecutio
     const capability = { gatewayBaseUrl, sessionsToken: input.sessionsToken };
     return { type: "ready", channels: {
       mcpProxy: capability,
-      hostedInference: { ...capability, model: { providerId: card.provider, baseUrl: card.base_url ?? null, wireModel: card.model, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url }) } },
+      hostedInference: { ...capability, model: { providerId: card.provider, baseUrl: card.base_url ?? null, wireModel: card.model, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url, wireModel: card.model, piConfig: card.pi_config ?? undefined }) } },
     } };
   } catch (error) {
     console.error("acp_channels_authority_unavailable", { sessionId: input.sessionId, phase, code: "unavailable" });

@@ -156,6 +156,18 @@ export function lifecycleWorker(f:Awaited<ReturnType<typeof lifecycleFixture>>,h
    expect(checkpoint).not.toBeNull();
    expect(await readFile(join(f.root,"outputs","default",f.session.id,"parity-proof.txt"),"utf8")).toBe("physical Work output");
   },
+  /** Relaunch over an already-terminal turn (harness-runtime-acp 7624a68d):
+   * the worker publishes that canonical receipt exactly once under its own
+   * claim, then stays resident polling for new input instead of exiting into
+   * another reclaim. Bootstrap keeps re-offering the same receipt; it must
+   * never be republished and must never end the runner. */
+  async residentAfterPublish(){
+   await this.waitFor(()=>responses.filter(r=>r.action==="work-publish").map(r=>r.status),[200],5000);
+   const afterPublish=requests.length;
+   await expect.poll(()=>{if(settled)throw Error("Runner exited after publishing the settled receipt");return requests.slice(afterPublish).filter(a=>a==="work-bootstrap").length;},{timeout:5000}).toBeGreaterThanOrEqual(2);
+   expect(responses.filter(r=>r.action==="work-publish").map(r=>r.status)).toEqual([200]);
+   expect(settled).toBe(false);
+  },
   async reached(gate:Promise<unknown>){await Promise.race([gate,result.then(outcome=>{if("error" in outcome)throw outcome.error;throw Error("Runner exited before expected milestone");})]);},
  };
 }

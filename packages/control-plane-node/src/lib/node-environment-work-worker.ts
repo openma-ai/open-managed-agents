@@ -6,9 +6,6 @@ import type { EnvironmentWorkApplicationPort } from "@open-managed-agents/manage
 import { SqlSessionSource, SqlSessionEnvironmentSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import { parseInstalledHarnesses } from "@open-managed-agents/acp-runtime/installed-harnesses";
-import { acpInstalledLauncherPath, resolvePinnedAcpRegistryAgent } from "@open-managed-agents/acp-runtime/registry-pins";
-import { installAcpSandboxAgent, prepareAcpSandboxAgent } from "@open-managed-agents/acp-runtime/sandbox-agent";
-import { installEnvironmentPackages } from "./environment-packages";
 import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import { environmentWorkSandboxTokenRef } from "@open-managed-agents/sandbox-gateway-sql";
 import { sandboxTokenSha256 } from "@open-managed-agents/sandbox-gateway";
@@ -17,10 +14,6 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { NodeConfig } from "../config.js";
 import type { NodeSessionSandboxes } from "./node-session-sandbox.js";
 import type { createNodeManagedAcpCapabilities } from "./node-managed-acp-capability.js";
-
-/** HOME of the unprivileged E2B agent identity: Environment-setup ACP
- * installs (and the prepared environment snapshot) put launchers here. */
-const E2B_AGENT_HOME = "/home/oma-worker";
 
 /** Bounds one dispatch from reservation to the sandbox worker's ACK. It is
  * also the retry delay after a failed dispatch (the dispatcher never ACKs or
@@ -52,7 +45,7 @@ export function createNodeEnvironmentWorkWorker(input: {
 }) {
   const env = input.config.sandbox.environment;
   const command = env.OPENMA_WORK_RUNNER_COMMAND;
-  const inventory = parseInstalledHarnesses(env.OPENMA_ACP_HARNESSES);
+  parseInstalledHarnesses(env.OPENMA_ACP_HARNESSES);
   const args: unknown = JSON.parse(env.OPENMA_WORK_RUNNER_ARGS ?? "[]");
   if (!Array.isArray(args) || args.some(a => typeof a !== "string" || a.includes("\0"))) throw new TypeError("OPENMA_WORK_RUNNER_ARGS must be string argv");
   if (command !== undefined && (!command.startsWith("/") || command.includes("\0"))) throw new TypeError("OPENMA_WORK_RUNNER_COMMAND must be absolute and non-NUL");
@@ -214,18 +207,6 @@ export function createNodeEnvironmentWorkWorker(input: {
               if (!await current() || !session || session.archivedAt !== null || session.environmentId !== scope.environmentId || !pinnedEnvironment || pinnedEnvironment.archivedAt !== null) throw new Error("Work Session unavailable");
               const selection = sessionExecutionPlacement(pinnedEnvironment, session);
               if (selection.authority !== "environment_work" || selection.harnessPlacement !== "in_sandbox") throw new Error("Work placement rejected");
-              const pin = session.agent.openma?.acp?.agent;
-              const installed = inventory?.find(entry => entry.id === pin?.id && entry.command === pin?.command && JSON.stringify(entry.args ?? []) === JSON.stringify(pin?.args ?? []));
-              // A registry pin is installed by the Environment setup step (and
-              // normally already present in the prepared environment snapshot),
-              // never baked into the trusted base template.
-              const registry = pin?.registry ? resolvePinnedAcpRegistryAgent(pin.registry) : undefined;
-              const harness = registry ? { id: registry.id, version: registry.version } : installed;
-              if (!harness) throw new Error("Pinned harness is not installed");
-              const setupHarness = registry && env.SANDBOX_PROVIDER === "e2b"
-                ? { id: registry.id, version: registry.version, command: acpInstalledLauncherPath(E2B_AGENT_HOME, registry.id, registry.version) }
-                : undefined;
-              const launchInventory = setupHarness ? [setupHarness] : inventory;
               const slot = JSON.stringify([scope.workspaceId, delivery.sessionId]);
               await handoff(slot, async () => {
                 if (controller.signal.aborted || !await current()) throw new Error("Work claim lost before handoff");
@@ -257,30 +238,16 @@ export function createNodeEnvironmentWorkWorker(input: {
                   await sandbox.failExecution();
                   throw error;
                 }
-                // Environment setup, exactly as a Session's: packages, then the
-                // pinned ACP agent. A prepared snapshot hit already holds both
-                // (idempotent no-ops); a miss installs here, as the agent user,
-                // before any worker can launch, then queues the snapshot build.
-                await observed("environment-packages", () => installEnvironmentPackages(sandbox, pinnedEnvironment, {
-                  ...(env.SANDBOX_PIP_INDEX_URL ? { pipIndexUrl: env.SANDBOX_PIP_INDEX_URL } : {}),
-                }));
+                const prepared = await observed("environment-prepare", () => sandbox.prepareWorkEnvironment({ installedHarnesses: env.OPENMA_ACP_HARNESSES, pipIndexUrl: env.SANDBOX_PIP_INDEX_URL }));
+                if (!prepared) throw new Error("Work Environment has no prepared ACP launcher");
+                const { harness, inventory: launchInventory } = prepared;
                 if (!await owned()) throw new Error("Work claim lost during Environment setup");
-                if (setupHarness) {
-                  await observed("acp-install", async () => {
-                    const present = await sandbox.exec(`test -x '${setupHarness.command}' && printf oma-acp-present`, 30_000);
-                    if (present.includes("oma-acp-present")) return;
-                    const installed = await installAcpSandboxAgent(sandbox, prepareAcpSandboxAgent({ sessionId: session.id, agent: { registry: pin!.registry! } }));
-                    if (installed.launch.command !== setupHarness.command) throw new Error("Environment-setup ACP launcher location mismatch");
-                  });
-                  if (!await owned()) throw new Error("Work claim lost during ACP install");
-                }
-                sandbox.environmentPrepared();
                 const spec = { command, args: args as string[], env: {
                   ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
                   ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,
                   OPENMA_WORKSPACE_ID: scope.workspaceId, OPENMA_SANDBOX_TOKEN: token,
                   OPENMA_HARNESS_ID: harness.id, OPENMA_HARNESS_VERSION: harness.version,
-                  ...(launchInventory === null ? {} : { OPENMA_ACP_HARNESSES: JSON.stringify(launchInventory) }),
+                  OPENMA_ACP_HARNESSES: launchInventory,
                 } };
                 let handle: SandboxManagedProcessHandle;
                 try { handle = await observed("native-start", () => sandbox.startManagedProcess(spec)); }

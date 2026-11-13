@@ -8,14 +8,19 @@ import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-s
 import { createCfWorkRunnerAuthority } from "../../main/src/lib/cf-work-runner-authority";
 import { seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
-import { E2B_WORKER_INVENTORY } from "../src/runtime/e2b-work-handoff";
 
 // Actual SessionDO.fetch + SQL + PortsSessionSandbox + E2B Files adapter.
 // Only E2B SDK remote operations/launcher are simulated, not cloud certified.
-const provider=vi.hoisted(()=>({creates:0,starts:0,kills:0,renewals:0,ops:[] as string[],files:new Map<string,string>(),slot:null as any,hold:undefined as undefined|{entered:()=>void;wait:Promise<void>;op?:string;skip?:number}}));
+const provider=vi.hoisted(()=>({creates:0,starts:0,kills:0,renewals:0,failInstall:false,onInstall:undefined as undefined|(()=>Promise<void>),ops:[] as string[],files:new Map<string,string>(),slot:null as any,hold:undefined as undefined|{entered:()=>void;wait:Promise<void>;op?:string;skip?:number}}));
 vi.mock("e2b",()=>{
  const sandbox={sandboxId:"physical",setTimeout:async()=>{provider.renewals++;},kill:async()=>{},updateNetwork:async()=>{},
- commands:{run:async(command:string)=>({exitCode:0,stdout:command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""})},
+ commands:{run:async(command:string)=>{
+  if(command.includes("OMA_ACP_INSTALL_OK")){
+   await provider.onInstall?.();
+   return {exitCode:provider.failInstall?1:0,stdout:provider.failInstall?"":"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh\nOMA_ACP_INSTALL_OK",stderr:""};
+  }
+  return {exitCode:0,stdout:command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""};
+ }},
  files:{read:async(path:string)=>{
   if(path.endsWith("/ready"))return "oma-managed-v2";
   const req=JSON.parse(provider.files.get(path.replace(/\.response.json$/,".json"))!);
@@ -59,7 +64,7 @@ async function cold(f:Awaited<ReturnType<typeof fixture>>) {
  const root="test-platform-root-secret-padded-to-thirtytwo";
  const stored=await f.work.find(f.delivery),cipher=new WebCryptoAesGcm(root,"managed.environment-work.secret");
  await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
- const configured={...env,PLATFORM_ROOT_SECRET:root,PUBLIC_BASE_URL:f.delivery.apiBaseUrl,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",E2B_TEMPLATE:"trusted",E2B_MAX_LIFETIME_MS:"3600000",OPENMA_ACP_HARNESSES:E2B_WORKER_INVENTORY,MAIN_MCP:undefined};
+ const configured={...env,PLATFORM_ROOT_SECRET:root,PUBLIC_BASE_URL:f.delivery.apiBaseUrl,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",E2B_TEMPLATE:"trusted",E2B_MAX_LIFETIME_MS:"3600000",MAIN_MCP:undefined};
  const stub=env.SESSION_DO!.get(env.SESSION_DO!.idFromName(JSON.stringify(["default",f.delivery.sessionId])));
  provider.creates=0;provider.starts=0;provider.kills=0;provider.ops=[];provider.files.clear();provider.slot=null;provider.hold=undefined;
  return {stub,configured};
@@ -169,4 +174,16 @@ it("dispatch registers the real native E2B lease with the owner, including lease
   await f.sql.prepare("UPDATE managed_environment_work SET sandbox_token_hashes='[]' WHERE id=?").bind(f.delivery.workId).run();
   await lease.maintain();expect(provider.renewals).toBe(2);expect(provider.kills).toBe(1);expect(lease.active).toBe(false);
  });
+});
+
+it.each(["failed-install", "claim-expires-during-install"] as const)("%s never launches an E2B Work process", async mode => {
+ const f=await fixture(),c=await cold(f);
+ provider.failInstall=mode==="failed-install";
+ provider.onInstall=mode==="claim-expires-during-install"?async()=>{await f.sql.prepare("UPDATE managed_environment_work SET claim_at=? WHERE id=?").bind(Date.now()-90001,f.delivery.workId).run();}:undefined;
+ try {
+  await runInDurableObject(c.stub,async(_instance,state)=>{
+   const response=await dispatchCfWorkRunnerRequest(request(f.delivery),c.configured as never,{storage:state.storage,id:state.id.toString(),hasSessionExecution:false});
+   expect(response.status).toBe(409);expect(provider.starts).toBe(0);
+  });
+ } finally {provider.failInstall=false;provider.onInstall=undefined;}
 });

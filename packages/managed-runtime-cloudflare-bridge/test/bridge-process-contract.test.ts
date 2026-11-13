@@ -217,8 +217,13 @@ it.each(["before-write", "after-write"])("late cleanup identity PUT cannot repla
  let release!:()=>void;
  const gate=new Promise<void>(resolve=>{release=resolve;});
  let pendingPut: ReturnType<typeof put> | undefined;
+ // Fake timers fire the 5 s cleanup bound on every storage step while the
+ // in-memory store still hashes on real async crypto, so the terminal
+ // tombstone PUT can outlive its bound. It is not cancelled and still
+ // commits: read the final state only once every issued write has settled.
+ const writes: Promise<unknown>[]=[];
  store.put=(key,body,options)=>{
-   if(JSON.parse(String(body)).state!=="cleanup_unconfirmed")return put(key,body,options);
+   if(JSON.parse(String(body)).state!=="cleanup_unconfirmed"){const write=put(key,body,options);writes.push(write);return write;}
    pendingPut=(async()=>{
      if(timing==="before-write")await gate;
      const result=await put(key,body,options);
@@ -238,7 +243,8 @@ it.each(["before-write", "after-write"])("late cleanup identity PUT cannot repla
  try {
    await vi.advanceTimersByTimeAsync(30_000);
    expect(result).toMatchObject({cleanupConfirmed:true,recorded:false});
-   release(); await pendingPut; await spawning;
+   release(); await pendingPut; await spawning; await Promise.allSettled(writes);
+   expect(writes.length).toBeGreaterThan(0);
    const record=await store.get(path);
    expect(record===null?null:JSON.parse(await record.text()).state).not.toBe("cleanup_unconfirmed");
  } finally { release(); vi.useRealTimers(); }

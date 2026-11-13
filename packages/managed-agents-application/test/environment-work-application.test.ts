@@ -427,6 +427,30 @@ describe("Environment Work application", () => {
     ]);
   });
 
+  it("timestamps each reservation after its availability wait", async () => {
+    let now = Date.parse("2026-08-26T09:20:00.000Z");
+    const claimCalls: { claimedAt: string; reclaimBefore: string }[] = [];
+    const dependencies = makeDependencies({
+      environments: { find: async () => environment },
+      store: {
+        claimAvailable: async (input) => {
+          claimCalls.push(input);
+          return { type: "empty" };
+        },
+      },
+      availability: { wait: async () => { now += 20_000; } },
+    });
+    dependencies.clock = { now: () => new Date(now) };
+    await new EnvironmentWorkApplicationService(dependencies).pollEnvironmentWork({
+      environmentId: "env_self_01", blockMilliseconds: 20_000,
+      reclaimOlderThanMilliseconds: 5_000, workerId: "worker_01",
+    });
+    expect(claimCalls.map(({ claimedAt, reclaimBefore }) => ({ claimedAt, reclaimBefore }))).toEqual([
+      { claimedAt: "2026-08-26T09:20:00.000Z", reclaimBefore: "2026-08-26T09:19:55.000Z" },
+      { claimedAt: "2026-08-26T09:20:20.000Z", reclaimBefore: "2026-08-26T09:20:15.000Z" },
+    ]);
+  });
+
   it("binds a fresh sessions token to the claimed Work before exposing it", async () => {
     const claimed = {
       ...stored,
@@ -571,6 +595,95 @@ describe("Environment Work application", () => {
         ttlSeconds: 30,
       },
     });
+  });
+
+  // Terminal publication locks the Work row by bumping its revision without
+  // touching the claim. A heartbeat that loses that optimistic race is not a
+  // lost lease (main-node lifecycle parity: 412 "Work changed concurrently").
+  const claimedActive = (revision: number, claim = { claimedAt: "2026-08-26T09:19:50.000Z", workerId: "worker_a", generation: 2 }) => ({
+    ...stored,
+    work: { ...work, acknowledgedAt: "2026-08-26T09:19:00.000Z", startedAt: "2026-08-26T09:19:00.000Z", latestHeartbeatAt: "2026-08-26T09:19:50.000Z", state: "active" as const },
+    claim,
+    revision,
+  }) satisfies StoredEnvironmentWork;
+
+  it("re-reads and extends the same claim after a claim-preserving revision bump", async () => {
+    const reads = [claimedActive(7), claimedActive(8)];
+    const expected: number[] = [];
+    const service = new EnvironmentWorkApplicationService(makeDependencies({ store: {
+      find: async () => reads.shift() ?? claimedActive(8),
+      replace: async (input) => { expected.push(input.expectedRevision);
+        return input.expectedRevision === 7 ? { type: "revision_conflict", actualRevision: 8 } : { type: "replaced", record: { ...input.next, revision: 9 } }; },
+    } }));
+    await expect(service.heartbeatEnvironmentWork({ environmentId: "env_self_01", workId: "work_01" })).resolves.toMatchObject({
+      type: "recorded", heartbeat: { lastHeartbeat: "2026-08-26T09:20:00.000Z", leaseExtended: true, state: "active" },
+    });
+    expect(expected).toEqual([7, 8]);
+  });
+
+  it("never extends a different claim after a revision conflict", async () => {
+    const reads = [claimedActive(7), claimedActive(8, { claimedAt: "2026-08-26T09:19:59.000Z", workerId: "worker_b", generation: 3 })];
+    let replaces = 0;
+    const service = new EnvironmentWorkApplicationService(makeDependencies({ store: {
+      find: async () => reads.shift()!,
+      replace: async () => { replaces++; return { type: "revision_conflict", actualRevision: 8 }; },
+    } }));
+    await expect(service.heartbeatEnvironmentWork({ environmentId: "env_self_01", workId: "work_01" })).resolves.toEqual({
+      type: "precondition_failed", message: "Work changed concurrently at revision 8",
+    });
+    expect(replaces).toBe(1);
+  });
+
+  it("never extends the same worker's newer generation after a revision conflict", async () => {
+    const reads = [claimedActive(7), claimedActive(8, { claimedAt: "2026-08-26T09:19:59.000Z", workerId: "worker_a", generation: 3 })];
+    let replaces = 0;
+    const service = new EnvironmentWorkApplicationService(makeDependencies({ store: {
+      find: async () => reads.shift()!,
+      replace: async () => { replaces++; return { type: "revision_conflict", actualRevision: 8 }; },
+    } }));
+    await expect(service.heartbeatEnvironmentWork({ environmentId: "env_self_01", workId: "work_01" })).resolves.toEqual({
+      type: "precondition_failed", message: "Work changed concurrently at revision 8",
+    });
+    expect(replaces).toBe(1);
+  });
+
+  it("never revives a lease that expired before the fresh read", async () => {
+    // Same claim, but its claimedAt + TTL is already past on the re-read.
+    const reads = [claimedActive(7), claimedActive(8, { claimedAt: "2026-08-26T09:18:30.000Z", workerId: "worker_a", generation: 2 })];
+    let replaces = 0;
+    const service = new EnvironmentWorkApplicationService(makeDependencies({ store: {
+      find: async () => reads.shift()!,
+      replace: async () => { replaces++; return { type: "revision_conflict", actualRevision: 8 }; },
+    } }));
+    await expect(service.heartbeatEnvironmentWork({ environmentId: "env_self_01", workId: "work_01" })).resolves.toEqual({
+      type: "precondition_failed", message: "Work work_01 heartbeat lease has expired",
+    });
+    expect(replaces).toBe(1);
+  });
+
+  it("re-validates the heartbeat expectation on the fresh read", async () => {
+    const reads = [claimedActive(7), { ...claimedActive(8), work: { ...claimedActive(8).work, latestHeartbeatAt: "2026-08-26T09:19:55.000Z" } }];
+    let replaces = 0;
+    const service = new EnvironmentWorkApplicationService(makeDependencies({ store: {
+      find: async () => reads.shift()!,
+      replace: async () => { replaces++; return { type: "revision_conflict", actualRevision: 8 }; },
+    } }));
+    await expect(service.heartbeatEnvironmentWork({ environmentId: "env_self_01", workId: "work_01", expectedLastHeartbeat: "2026-08-26T09:19:50.000Z" })).resolves.toEqual({
+      type: "precondition_failed", message: "Work work_01 heartbeat precondition did not match",
+    });
+    expect(replaces).toBe(1);
+  });
+
+  it("bounds retries when the Work row keeps changing", async () => {
+    let revision = 7; let replaces = 0;
+    const service = new EnvironmentWorkApplicationService(makeDependencies({ store: {
+      find: async () => claimedActive(revision),
+      replace: async () => { replaces++; revision++; return { type: "revision_conflict", actualRevision: revision }; },
+    } }));
+    await expect(service.heartbeatEnvironmentWork({ environmentId: "env_self_01", workId: "work_01" })).resolves.toEqual({
+      type: "precondition_failed", message: "Work changed concurrently at revision 10",
+    });
+    expect(replaces).toBe(3);
   });
 
   it("records a stopping heartbeat without inventing a work start", async () => {

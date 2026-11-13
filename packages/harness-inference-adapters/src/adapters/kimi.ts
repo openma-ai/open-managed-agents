@@ -6,23 +6,44 @@ import { proxyUrl } from "../helpers.js";
 
 export const kimiCodeInferenceAdapter: InferenceConfigAdapter = {
   id: "kimi-code",
-  supportedProtocols: ["openai-chat"],
+  supportedProtocols: ["anthropic-messages", "openai-responses", "gemini", "openai-chat"],
   matches: (agent) => matchesAgentIdentity(agent, ["kimi-code", "kimi-code-acp"]),
   plan(context) {
-    const { nativePath, target, proxy, endpoint } = context;
+    const { nativePath, target, proxy, endpoint, protocol } = context;
     const baseUrl = proxyUrl(proxy, endpoint.proxyPathSegment);
+    const providerType = {
+      "anthropic-messages": "anthropic",
+      "openai-responses": "openai_responses",
+      gemini: "google-genai",
+      "openai-chat": "openai",
+    }[protocol];
+    const home = join(nativePath, "kimi-code");
     return {
-      protocol: "openai-chat",
+      protocol,
       env: {
-        KIMI_MODEL_NAME: target.wireModel,
-        KIMI_MODEL_PROVIDER_TYPE: "openai",
-        KIMI_MODEL_BASE_URL: baseUrl,
-        KIMI_MODEL_API_KEY: proxy.proxyToken,
-        KIMI_CODE_HOME: join(nativePath, "kimi-code"),
+        KIMI_CODE_HOME: home,
         KIMI_DISABLE_TELEMETRY: "true",
       },
-      unsetEnv: [],
-      files: [],
+      // Kimi's env-model path overrides config and only supports three provider
+      // types. Use config for all protocols so Responses/Google stay native.
+      unsetEnv: ["KIMI_MODEL_NAME", "KIMI_MODEL_PROVIDER_TYPE", "KIMI_MODEL_BASE_URL", "KIMI_MODEL_API_KEY"],
+      files: [{
+        path: join(home, "config.toml"),
+        content: [
+          'default_model = "oma"',
+          "[providers.oma]",
+          `type = ${JSON.stringify(providerType)}`,
+          `base_url = ${JSON.stringify(baseUrl)}`,
+          `api_key_env = ${JSON.stringify(proxy.proxyTokenEnvVar)}`,
+          "[models.oma]",
+          'provider = "oma"',
+          `model = ${JSON.stringify(target.wireModel)}`,
+          // Preserve Kimi's env-model default when moving to its required
+          // config field; this is not a claim about the model card's limit.
+          "max_context_size = 262144",
+          "",
+        ].join("\n"),
+      }],
     };
   },
 };

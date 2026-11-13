@@ -145,6 +145,26 @@ runs the configured health check. Postgres mode passes `--db mpg` to Fly
 Launch. A Fly Volume is single-Machine storage: keep SQLite at one Machine;
 use Postgres plus shared object storage before scaling the control plane.
 
+`pnpm setup:fly` uses the repository root; the setup script also normalizes
+its working directory when invoked by absolute path elsewhere. The checked-in `fly.toml`
+builds `apps/main-node/Dockerfile` with the repository as its context; an
+external overlay config must preserve that Dockerfile/context relationship.
+Both Docker stages use Node 24, matching the repository engine requirement.
+The adapter listens on `0.0.0.0:8080`; Fly checks `GET /health` on that port.
+Its public callback origin is `https://<FLY_APP_NAME>.fly.dev` unless an
+explicit bare HTTPS `PUBLIC_BASE_URL` is configured. A loopback origin is
+not reachable by an E2B sandbox.
+
+The default single-Machine deployment persists Files and Memory on its
+`/app/data` volume. If configuring S3 storage, supply the complete existing
+`FILES_S3_*` and `MEMORY_S3_*` settings. Setup stages supplied complete S3
+settings with `fly secrets import --stage` and rejects partial settings before
+contacting Fly. With no S3 settings supplied, existing remote secrets remain
+unchanged and a new single-Machine app uses its durable volume. Their `*_FORCE_PATH_STYLE` values are
+**`0` or `1`**, not `false` or `true`. Invalid values stop startup before the
+HTTP listener, so connection-refused health checks require checking startup
+logs first. Do not substitute temporary outputs storage for managed persistence.
+
 ---
 
 ## CF Local (`wrangler dev`)

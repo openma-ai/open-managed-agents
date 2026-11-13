@@ -20,7 +20,7 @@
 import type { ResumeRef, SandboxHandle } from "@open-managed-agents/sandbox";
 import { errorText, sameHandle, type LiveSessionSandbox } from "./session-sandbox-live";
 import type { SessionSandboxExecution } from "./session-sandbox-options";
-import { isSnapshotRef, type SessionSandboxState, type SnapshotRef } from "./session-sandbox-state";
+import { isSnapshotRef, referencesSnapshot, type SessionSandboxState, type SnapshotRef } from "./session-sandbox-state";
 
 /** Tool-call-gap snapshot interval when the host sets none. */
 export const SNAPSHOT_INTERVAL_MS = 5 * 60_000;
@@ -76,7 +76,6 @@ async function checkpoint<R>(
     state.options.warn(`sandbox_snapshot_failed runtime=${open.handle.runtimeId} error=${errorText(error)}`);
     return expected;
   }
-  state.snapshotAt = state.now();
   if (!isSnapshotRef(ref)) {
     // Not a failed snapshot: this adapter has none (a bare v1 factory). Losing
     // the sandbox starts a new one with a warning, as without this core.
@@ -86,7 +85,10 @@ async function checkpoint<R>(
   }
   const outcome = await publishSnapshot(state, ref, execution, expected);
   if (outcome !== "conflict" && outcome !== undefined && outcome !== expected) {
+    state.snapshotAt = state.now();
     state.options.info?.(`sandbox_snapshot_published ref=${ref.ref} runtime=${open.handle.runtimeId} elapsed_ms=${state.now() - started}`);
+  } else {
+    state.dirty = true;
   }
   return outcome;
 }
@@ -116,7 +118,15 @@ export async function publishSnapshot<R>(
     return next;
   } catch (error) {
     state.options.warn(`sandbox_snapshot_failed ref=${ref.ref} error=${errorText(error)}`);
-    await discard();
+    // A save may have committed before its response was lost. Read back;
+    // an unavailable read is not permission to delete the candidate.
+    try {
+      const saved = await state.load();
+      if (referencesSnapshot(saved, ref)) return saved;
+      await discard();
+    } catch (readError) {
+      state.options.warn(`sandbox_snapshot_outcome_unknown ref=${ref.ref} error=${errorText(readError)}`);
+    }
     return expected;
   }
 }

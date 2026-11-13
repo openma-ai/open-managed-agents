@@ -11,6 +11,40 @@ const path = "/workspace/outputs/artifact-repro.bin";
 const bytes = new Uint8Array([0, 255, 254, 13, 10, 65]);
 
 describe("Artifact publication through the Node service and official SDK", () => {
+  it("durably reports a derived publication read failure after completion and process recreation", async () => {
+    const f = await bootOpenAINode(input => {
+      const hasResult = input.messages.some((m: any) => Array.isArray(m.content) && m.content.some((b: any) => b.type === "tool_result"));
+      return hasResult ? { text: "PUBLICATION_FAILURE_DONE" } : { name: "bash", input: { command: "mkdir -p /workspace/outputs && printf retained > /workspace/outputs/failure.txt" } };
+    }, { localSandbox: true, publicationCrashBarrier: true });
+    fixtures.push(f);
+    await writeFile(join(f.directory, "publication-read-fail-arm"), "armed");
+    const session = await f.client.beta.agents.sessions.create({ agent: { model: "claude-sonnet-4-20250514" }, environment: { type: "openai_hosted" }, input: "write" });
+    await expect.poll(() => stat(join(f.directory, "publication-read-failed")).then(() => true, () => false), { timeout: 30_000 }).toBe(true);
+    await expect.poll(() => {
+      const db = new Database(join(f.directory, "oma.db"), { readonly: true });
+      try { return (db.prepare("SELECT state FROM managed_session_executions WHERE session_id=? ORDER BY admitted_at_ms DESC LIMIT 1").get(session.id) as any)?.state; }
+      finally { db.close(); }
+    }, { timeout: 15_000 }).toBe("completed");
+    const history = async () => {
+      const response = await fetch(`${f.baseURL}/v1/sessions/${session.id}/events?limit=1000`, { headers: { "x-api-key": "test" } });
+      expect(response.status).toBe(200); return (await response.json() as any).data as any[];
+    };
+    const verify = async () => {
+      const events = await history();
+      const warnings = events.filter(e => e.type === "session.warning" && e.source === "agents_api.artifact_publication");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].message).toContain("derived");
+      expect(events.indexOf(warnings[0])).toBeGreaterThan(events.findIndex(e => e.type === "session.status_idle"));
+      expect(JSON.stringify(warnings)).not.toContain("PRIVATE_PROVIDER_DETAIL");
+      expect(events.filter(e => e.type === "session.status_idle")).toEqual([expect.objectContaining({ stop_reason: { type: "end_turn" } })]);
+      expect((await f.client.beta.agents.sessions.artifacts.list(session.id)).data).toEqual([]);
+      expect(f.requests).toHaveLength(2);
+    };
+    await verify();
+    await f.restart();
+    await verify();
+    console.info("A5_NODE_DURABLE_WARNING", JSON.stringify({ session: session.id, modelRequests: f.requests.length, recreated: true }));
+  }, 150_000);
   it("executes a real file write, publishes nonempty artifacts, downloads binary bytes and survives process restart", async () => {
     const f = await bootOpenAINode(input => {
       const blocks = input.messages.flatMap((message: any) => Array.isArray(message.content) ? message.content : []);

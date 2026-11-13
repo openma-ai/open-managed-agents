@@ -43,12 +43,12 @@ it("production Node native barrier drains actual queued rclone writes before can
 
 it("Node native bootstrap installs RC rclone mounts and drain binds exact endpoint and Memory generation",async()=>{
  const commands:Array<{command:string;opts:any}>=[];
- const runtime=new E2BSandboxExecutor({sandboxId:"physical",commands:{run:async(command,opts)=>{commands.push({command,opts});return {stdout:command.includes("OMA_RCLONE_DRAIN_V1")?JSON.stringify({type:"drained",version:1}):"",stderr:"",exitCode:0};}},files:{read:async()=>"",write:async()=>{}},kill:async()=>{}} as any,{memoryBucket:{endpoint:"http://backend",accessKey:"secret-key",secretKey:"secret-value",bucketName:"bucket"}});
+ const runtime=new E2BSandboxExecutor({sandboxId:"physical",commands:{run:async(command,opts)=>{commands.push({command,opts});return {stdout:command === "id -u; id -g" ? "1002\n1003\n" : command.includes("OMA_RCLONE_DRAIN_V1")?JSON.stringify({type:"drained",version:1}):"",stderr:"",exitCode:0};}},files:{read:async()=>"",write:async()=>{}},kill:async()=>{}} as any,{memoryBucket:{endpoint:"http://backend",accessKey:"secret-key",secretKey:"secret-value",bucketName:"bucket"}});
  configureNodeNativeStorage(runtime,{endpoint:"http://backend",accessKey:"secret-key",secretKey:"secret-value",bucketName:"bucket"});
  await runtime.mountSessionOutputs({tenantId:"ws",sessionId:"session"});
  await runtime.mountMemoryStore({storeName:"notes",storeId:".openma-managed-memory-workspaces/ws/session/physical/store/data",readOnly:false});
  expect(commands.filter(c=>c.command.includes("rclone mount"))).toHaveLength(2);
- for(const {command,opts} of commands.filter(c=>c.command.includes("rclone mount"))){expect(command).toContain("rclone mount");expect(command).toContain("--rc-addr=unix://");expect(command).not.toContain("secret-value");expect(opts.user).toBe("root");expect(opts.envs.RCLONE_S3_SECRET_ACCESS_KEY).toBe("secret-value");}
+ for(const {command,opts} of commands.filter(c=>c.command.includes("rclone mount"))){expect(command).toContain("rclone mount");expect(command).toContain("--uid=1002 --gid=1003");expect(command).not.toContain("--daemon");expect(command).toContain("--rc-addr=unix://");expect(command).not.toContain("secret-value");expect(opts.user).toBe("root");expect(opts.envs.RCLONE_S3_SECRET_ACCESS_KEY).toBe("secret-value");}
  const {drainNodeNativeWorkStorage}=await import("../../../packages/control-plane-node/src/lib/work-finalization-host/native-storage.js");
  await drainNodeNativeWorkStorage({workspaceId:"ws",session:{id:"session",resources:[{type:"memory_store",memoryStoreId:"store",name:"notes",access:"read_write"}]} as any,environment:{id:"env"} as any,sandbox:runtime,runtimeGeneration:"physical",workAuthority:{attempt:{} as any,isCurrent:async()=>true}});
  expect(commands.at(-1)!.command).toContain('"remote":":s3:bucket/.openma-managed-memory-workspaces/ws/session/physical/store/data"');
@@ -83,5 +83,5 @@ it("retained rclone mount validates and drains instead of remounting live queued
  configureNodeNativeStorage(runtime,{endpoint:"http://backend",accessKey:"unused",secretKey:"unused",bucketName:"bucket"});
  await runtime.mountSessionOutputs({tenantId:"ws",sessionId:"session"});
  expect(calls.some(c=>c.includes("OMA_RCLONE_DRAIN_V1"))).toBe(true);
- expect(calls.some(c=>c.includes("--daemon --rc"))).toBe(false);
+ expect(calls.some(c=>c.includes("nohup rclone mount "))).toBe(false);
 });

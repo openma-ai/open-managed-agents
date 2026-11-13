@@ -1,4 +1,4 @@
-import { parkUnknownToolRetry, requestUnknownToolRetry } from "./unknown-tool-retry";
+import { parkUnknownToolRetry } from "./unknown-tool-retry";
 import { gateExhausted, meterPiRuntime } from "./budget";
 import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
 import {
@@ -166,6 +166,12 @@ export class PiHarness implements HarnessInterface {
         );
       },
       toolExecution: "parallel",
+      // Pi ends a tool batch only when EVERY result terminates. A parked call
+      // (client custom tool, always_ask confirmation, unknown-outcome retry)
+      // mixed with ordinary tools would otherwise be followed by another model
+      // request before its result exists. The batch's ordinary results are
+      // already emitted (listeners are awaited) when this runs; stop here.
+      finishTurn: (turn) => turn.toolResults.some(isParkedToolResult) || isParked(ctx) ? { action: "end" } : undefined,
     });
     toolAssembly.attach(agent);
 
@@ -193,10 +199,10 @@ export class PiHarness implements HarnessInterface {
     const pollSteeringOnce = async () => {
       const take = ctx.runtime.takeSteeringInputs;
       const pi = ctx.pi;
-      if (!take || !pi || parkUnknownToolRetry(ctx.runtime)) return;
+      if (!take || !pi || isParked(ctx)) return;
       try {
         const steered = await take();
-        if (parkUnknownToolRetry(ctx.runtime)) return;
+        if (isParked(ctx)) return;
         if (steered.length > 0) {
           const converted = modelMessagesToPi(
             await eventsToMessagesAsync(steered, ctx.fileFetcher),
@@ -224,7 +230,7 @@ export class PiHarness implements HarnessInterface {
           steerTimer = undefined;
           await steerPolling;
           await pollSteering();
-          while (agent.hasQueuedMessages() && !ctx.runtime.abortSignal?.aborted && !parkUnknownToolRetry(ctx.runtime)) {
+          while (agent.hasQueuedMessages() && !ctx.runtime.abortSignal?.aborted && !isParked(ctx)) {
             await agent.continue();
           }
         }
@@ -520,7 +526,6 @@ async function translatePiEvent(
 
   if (event.type === "tool_execution_end") {
     const details = event.result?.details as { openmaPendingConfirmation?: boolean; openmaDispatchedUnknown?: boolean } | undefined;
-    if (details?.openmaDispatchedUnknown) requestUnknownToolRetry(runtime,event.toolCallId);
     if (!details?.openmaPendingConfirmation) {
       const content = piContentToWire(event.result?.content ?? []);
       if (isMcpTool(event.toolName)) {
@@ -711,7 +716,7 @@ function modelMessagesToPi(
               toolCallId: part.toolCallId,
               toolName: part.toolName,
               content: toolOutputToPi(part.output),
-              isError: false,
+              isError: part.output.type === "error-text" || part.output.type === "error-json",
               timestamp,
             }]
           : [],
@@ -724,8 +729,8 @@ function modelMessagesToPi(
 function toolOutputToPi(output: unknown): Array<TextContent | ImageContent> {
   if (!output || typeof output !== "object") return valueToPiContent(output);
   const value = output as { type?: string; value?: unknown };
-  if (value.type === "text") return [{ type: "text", text: String(value.value ?? "") }];
-  if (value.type === "json") return valueToPiContent(value.value);
+  if (value.type === "text" || value.type === "error-text") return [{ type: "text", text: String(value.value ?? "") }];
+  if (value.type === "json" || value.type === "error-json") return valueToPiContent(value.value);
   if (value.type === "content" && Array.isArray(value.value)) {
     return value.value.flatMap((part): Array<TextContent | ImageContent> => {
       if (!part || typeof part !== "object") return valueToPiContent(part);
@@ -805,4 +810,15 @@ function shouldRetryPiTurnAfterCompaction(
       || isPiLengthStopWithNoDeliverableOutput(failure);
   }
   return false;
+}
+
+/** A tool result that parks the turn until an external answer arrives. */
+function isParkedToolResult(result: { details?: unknown }): boolean {
+  const details = result.details as { openmaPendingConfirmation?: unknown; openmaDispatchedUnknown?: unknown } | undefined;
+  return details?.openmaPendingConfirmation === true;
+}
+
+/** No further model request while any call of this run awaits an answer. */
+function isParked(ctx: HarnessContext): boolean {
+  return (ctx.runtime.pendingConfirmations?.length ?? 0) > 0 || parkUnknownToolRetry(ctx.runtime);
 }
