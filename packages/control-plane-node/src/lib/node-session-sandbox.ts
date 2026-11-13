@@ -123,7 +123,8 @@ export interface NodeSessionSandboxProvider {
 export interface NodeSessionSandboxAdapter {
   nativeWorkBucket?: NodeNativeBucket;
   /** GET-only provider attachment for finalization; no resume or renewal. */
-  connectWorkReadonly?(runtimeId: string): Promise<SandboxPort & SandboxRuntimePort>;
+  /** Exact read-only attach; "gone" only for the provider's definitive absence. */
+  connectWorkReadonly?(runtimeId: string): Promise<(SandboxPort & SandboxRuntimePort) | "gone">;
   adapter: SandboxAdapterPort<SandboxPort>;
   /** plan.from.image: the Environment's catalog image, else the deployment default. */
   image(catalogImage: { alias: string; reference: string } | undefined): string;
@@ -271,7 +272,7 @@ export class NodeSessionSandboxes {
     workAuthority: NodeSandboxWorkAuthority;
     sourceAttempt: SessionExecutionAttemptRef;
     terminal: boolean;
-  }): Promise<NodeWorkStorageInput & { handle: NonNullable<ReturnType<typeof recordedHandle>> }> {
+  }): Promise<(NodeWorkStorageInput & { handle: NonNullable<ReturnType<typeof recordedHandle>> }) | "unavailable"> {
     const records = this.options.records ?? (this.options.sql ? new SqlSessionSandboxRecords(this.options.sql) : undefined);
     const state = await records?.load(input.workspaceId, input.session.id);
     const authority = input.workAuthority;
@@ -284,6 +285,9 @@ export class NodeSessionSandboxes {
     const read = this.options.adapter?.connectWorkReadonly;
     if (!read) throw new Error("Trusted Work read-only reconnect unsupported by provider");
     const attachedRuntime = await read(state.handle.runtimeId);
+    // Find and attach, or report unavailable so the scheduler re-requests a
+    // sandbox through openSandbox. A provider read failure propagates.
+    if (attachedRuntime === "gone") return "unavailable";
     if (this.options.adapter?.nativeWorkBucket) configureNodeNativeStorage(attachedRuntime,this.options.adapter.nativeWorkBucket);
     const attachedHandle = attachedRuntime.runtimeHandle();
     if (attachedHandle.provider !== state.handle.provider || attachedHandle.runtimeId !== state.handle.runtimeId) throw new Error("Work reconnect returned a different runtime");

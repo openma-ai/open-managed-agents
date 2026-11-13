@@ -181,6 +181,8 @@ async function fixture(scenario:"prompt"|"approval"|"resume"|"steer"|"interrupt"
   return r;
  };
  const app=createNodeManagedAcpSupervisorApp({
+  // Host directory backing protocol /workspace for the supervisor's own files.
+  workspacePath:root,
   ...{onTurnAdmitted:(turnId:string)=>{notifications.push({phase:"admitted",turnId});order.push("admitted");},
     onTurnPublished:(turnId:string)=>{notifications.push({phase:"published",turnId});order.push("published");}},
   environment:{ANTHROPIC_ENVIRONMENT_ID:scope.environmentId,ANTHROPIC_SESSION_ID:scope.sessionId,ANTHROPIC_WORK_ID:scope.workId,ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:token,api_base_url:base})).toString("base64url")},agentId:"claude-acp",workClaim:{generation:2,holder:"supervisor-holder"},control:{runtime,pollIntervalMs:2,retry:{maxAttempts:1}},fetch:fetcher,acpRuntime:failStartup ? {start:async()=>{throw new Error("fixture spawn failure");}} : acpRuntime,

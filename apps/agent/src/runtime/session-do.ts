@@ -1,4 +1,3 @@
-import { workspaceRootOf } from "@open-managed-agents/sandbox";
 import { hasOpenExecutionCall } from "./turn-preflight";
 import { handleWorkPhysicalObservation, isWorkPhysicalObservation } from "./work-physical-observation";
 import { handleCfWorkFinalization, CF_WORK_FINALIZATION_PREFIX } from "./cf-work-finalization-host";
@@ -10,7 +9,7 @@ import { publishAgentsApiArtifacts } from "./artifact-publication";
 import { readSandboxFileBytes } from "./sandbox-output";
 import { appendStaleTurnEvent, backfillStaleTurnEvents } from "./stale-turn-settlement";
 import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
-import { SESSION_OUTPUTS_PATH, sessionResourceEnvironment, sessionResourceFacts, sessionResourceReminders, type SessionMemoryResourceFact } from "@open-managed-agents/runtime-resource-contract";
+import { SESSION_OUTPUTS_PATH, sessionResourceEnvironment, type SessionMemoryResourceFact } from "@open-managed-agents/runtime-resource-contract";
 import { cfSkillResourceFacts } from "./session-resource-guidance";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -83,6 +82,7 @@ import {
   type TurnFailureEventsPort,
   type RuntimeAdapter,
   type TurnRuntimeAgent,
+  sessionTurnResourceGuidance,
 } from "@open-managed-agents/session-runtime";
 import {
   asWireEvents,
@@ -5906,13 +5906,10 @@ export class SessionDO extends DurableObject<Env> {
     // the Work supervisor). Memory blocks keep the historical byte format
     // (`/mnt/memory/<name>/ (access)`) for prompt-cache stability; store
     // metadata only supplies the name (when undeclared) and description.
-    const resourceFacts = sessionResourceFacts({
-      workspaceRoot: await workspaceRootOf(sandbox),
-      skills: skillFileFacts,
-      memoryStores: this.mountedMemoryFacts,
-      outputs: { path: SESSION_OUTPUTS_PATH },
+    const { facts: resourceFacts, reminders: resourceReminders } = await sessionTurnResourceGuidance({
+      sandbox, skills: skillFileFacts, memoryStores: this.mountedMemoryFacts,
     });
-    platformReminders.push(...sessionResourceReminders(resourceFacts, { outputsGuidedByPlatform: true, includeWorkspace: true }));
+    platformReminders.push(...resourceReminders);
 
     // Build the final system prompt: agent.system + platform guidance +
     // every platformReminder wrapped in a <source name="...">…</source>

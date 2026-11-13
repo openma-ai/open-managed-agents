@@ -58,7 +58,13 @@ export interface NodeManagedAcpWorkItemRunnerOptions {
   resolveExecutionChannels?: import("./node-supervisor.js").NodeManagedAcpSupervisorAppOptions["resolveExecutionChannels"];
   fetch?: typeof globalThis.fetch;
   harness?: { id: string; version: string };
+  /** Protocol workspace path the harness and model see (start command,
+   * resource guidance, harness cwd). Defaults to /workspace. */
   workspacePath?: string;
+  /** Host directory that backs the protocol workspace for this process's own
+   * files (delivery journal, default state IO, verifier cwd). Defaults to
+   * workspacePath; differs only where a sandbox maps /workspace elsewhere. */
+  hostWorkspacePath?: string;
   outputPath?: string | null;
   heartbeatIntervalMs?: number;
   heartbeatTtlSeconds?: number;
@@ -128,6 +134,7 @@ export function createNodeManagedAcpWorkItemRunner(
     version: environment.OPENMA_HARNESS_VERSION?.trim() || "1",
   };
   const workspacePath = absoluteWorkspacePath(options.workspacePath ?? SESSION_WORKSPACE_ROOT);
+  const hostWorkspacePath = absoluteWorkspacePath(options.hostWorkspacePath ?? workspacePath);
   const outputPath = options.outputPath === undefined
     ? environment.OPENMA_OUTPUT_PATH?.trim() || "/mnt/session/outputs"
     : options.outputPath;
@@ -145,7 +152,7 @@ export function createNodeManagedAcpWorkItemRunner(
   let composed: NodeManagedAcpSupervisorAppOptions | undefined;
   let trustedClaim: WorkBootstrapClaim | undefined;
   const supervisor = () => options.supervisorApp ?? options.supervisorFactory?.(hooks) ?? createNodeManagedAcpSupervisorApp({
-    ...composed, environment, workspacePath, fetch: options.fetch,
+    ...composed, environment, workspacePath: hostWorkspacePath, fetch: options.fetch,
     ...(trustedClaim === undefined ? {} : { workClaim: trustedClaim }),
     onTurnAdmitted: composed?.onTurnAdmitted ?? hooks.admitted,
     onTurnPublished: composed?.onTurnPublished ?? hooks.published,
@@ -315,7 +322,7 @@ export function createNodeManagedAcpWorkItemRunner(
             workSignal.throwIfAborted();
             if (bootstrapMode) {
               if (!runPlan) throw new Error("Bootstrap cleanup receipt no longer matches recovery; replan required");
-              const compose = options.composition ?? createDefaultWorkComposition({ ...options.runtime, workspacePath, environment, fetch: options.fetch, resolveExecutionChannels: options.resolveExecutionChannels });
+              const compose = options.composition ?? createDefaultWorkComposition({ ...options.runtime, workspacePath: hostWorkspacePath, environment, fetch: options.fetch, resolveExecutionChannels: options.resolveExecutionChannels });
               composed = await compose({ claim: runPlan.claim, root: runPlan.root, revision: state.revision,
                 signal: workSignal, onTurnAdmitted: hooks.admitted, onTurnPublished: hooks.published });
               if (!composed?.control?.runtime || typeof composed.finalization?.drainTurn !== "function") {
@@ -341,10 +348,8 @@ export function createNodeManagedAcpWorkItemRunner(
                 workId,
               },
               harness,
-              // The sandbox adapter may map the protocol workspace to a
-              // per-test/per-runtime host directory.  Keep the journal,
-              // state IO, and child cwd on that resolved path instead of
-              // forcing the host to create /workspace.
+              // The protocol workspace; this process's own files use
+              // hostWorkspacePath (the supervisor app option above).
               workspacePath,
               outputPath: outputPath === null ? null : "/mnt/session/outputs",
               checkpoint: async input => {

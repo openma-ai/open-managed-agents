@@ -2,7 +2,7 @@ import { createNodeAcpHarnessStateIo } from "../../../packages/harness-runtime-a
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, rm, readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "vitest";
 import { loadNodeConfig } from "../src/config";
@@ -21,9 +21,8 @@ import { parityModules, parityPeer, type ParityPeerHooks } from "./session-lifec
 // OPENMA_COMMON_CANDIDATE supplies source modules explicitly; absent means installed.
 // Physical host/storage is production code over a local subprocess sandbox.
 export async function lifecycleFixture(budget?: { type: "limit"; max_list_cost: { amount: string; currency: "USD" } }) {
-  const parent = fileURLToPath(new URL("../../../.validation/lifecycle-parity-test-worker/", import.meta.url).href);
-  await mkdir(parent, { recursive: true });
-  const root = await mkdtemp(join(parent, "inputs-"));
+  // OS temp dir: tests never write into the repository or the host /workspace.
+  const root = await mkdtemp(join(tmpdir(), "oma-lifecycle-parity-"));
   const components = await nodeDefaults(loadNodeConfig({
     NODE_ENV: "test", AUTH_DISABLED: "0", API_KEY: "parity-admin",
     PLATFORM_ROOT_SECRET: "local-lifecycle-parity-test-secret", PUBLIC_BASE_URL: "https://parity.test",
@@ -139,6 +138,8 @@ export function lifecycleWorker(f:Awaited<ReturnType<typeof lifecycleFixture>>,h
   const map=(p:string)=>p.replaceAll("/workspace",ioRoot).replaceAll("/oma",join(ioRoot,"platform"));
   const stateIo={readFile:(p:string)=>io.readFile(map(p)),writeFile:(p:string,v:string)=>io.writeFile(map(p),v),writeFileBytes:(p:string,v:Uint8Array)=>io.writeFileBytes(map(p),v),exec:async(command:string)=>{const r=await promisify(execFile)("/bin/sh",["-c",map(command)],{cwd:ioRoot,env:{...process.env,HOME:ioRoot},maxBuffer:16*1024*1024});return r.stdout;}};
   await runNodeWorkItemCli({environment:{ANTHROPIC_ENVIRONMENT_ID:f.scope.environmentId,ANTHROPIC_SESSION_ID:f.scope.sessionId,ANTHROPIC_WORK_ID:f.scope.workId,OPENMA_HARNESS_ID:"acp",OPENMA_ACP_AGENT_ID:executionToken?"claude-acp":"codex-acp",ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:f.token(),api_base_url:f.base})).toString("base64url")},signal:controller.signal,heartbeatIntervalMs:50,
+   // The simulated sandbox backs protocol /workspace with ioRoot (see map).
+   hostWorkspacePath:ioRoot,
    runtime:{modules,spawner:parityPeer(hooks,executionToken?"claude":"codex"),stateIo},
    ...(executionToken?{resolveExecutionChannels:async()=>({type:"ready" as const,channels:{mcpProxy:{gatewayBaseUrl:f.base,sessionsToken:executionToken},hostedInference:{gatewayBaseUrl:f.base,sessionsToken:executionToken,model:{providerId:"anthropic",baseUrl:"https://provider.test",wireModel:"upstream"}}}})}:{}),
    fetch:async(raw,init)=>{const request=new Request(raw,init);const action=new URL(request.url).pathname.split("/").at(-1)!;requests.push(action);const response=await f.nativeFetch(request);if(action!=="heartbeat"&&action!=="inputs-read")responses.push({action,status:response.status,body:await response.clone().json().catch(()=>null)});if(action==="heartbeat")await onHeartbeat?.(response.clone());return response;},onError:error=>{errors.push(error);},

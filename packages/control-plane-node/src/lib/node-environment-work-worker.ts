@@ -125,11 +125,16 @@ export function createNodeEnvironmentWorkWorker(input: {
     retiring.set(key, attempt);
     try { await attempt; } finally { if (retiring.get(key) === attempt) retiring.delete(key); }
   }
-  /** Launch fence: wait for this slot's in-progress retirements to settle,
-   * then refuse while any retirement failed or stayed unconfirmed. */
-  async function assertSlotCleanupResolved(slot: string) {
-    await Promise.allSettled([...retiring].filter(([key]) => processes.get(key)?.slot === slot).map(([, attempt]) => attempt));
-    if ([...cleanupBlocked].some(key => processes.get(key)?.slot === slot)) {
+  /** Launch fence, after the sandbox is already open (never gating lookup or
+   * attach): wait for this slot's in-progress retirements, then the new
+   * legitimate claim continues each failed/unconfirmed exact-handle
+   * retirement itself (its handoff refreshed the takeover authority). Launch
+   * is refused while any exit stays unconfirmed. */
+  async function assertSlotCleanupResolved(slot: string, requesting: { workId: string; generation: number }) {
+    const inSlot = (key: string) => processes.get(key)?.slot === slot;
+    await Promise.allSettled([...retiring].filter(([key]) => inSlot(key)).map(([, attempt]) => attempt));
+    for (const key of [...cleanupBlocked].filter(inSlot)) await retire(key, requesting).catch(() => {});
+    if ([...cleanupBlocked].some(inSlot)) {
       throw new Error("Previous management worker cleanup is unresolved");
     }
   }
@@ -281,7 +286,7 @@ export function createNodeEnvironmentWorkWorker(input: {
                   }
                   const { harness, inventory: launchInventory } = prepared;
                   if (!await owned()) throw new Error("Work claim lost during Environment setup");
-                  await assertSlotCleanupResolved(slot);
+                  await assertSlotCleanupResolved(slot, { workId: work.id, generation });
                   const spec = { command, args: args as string[], env: {
                     ANTHROPIC_BASE_URL: origin, ANTHROPIC_ENVIRONMENT_ID: scope.environmentId,
                     ANTHROPIC_SESSION_ID: session.id, ANTHROPIC_WORK_ID: work.id, ANTHROPIC_WORK_SECRET: work.secret!,

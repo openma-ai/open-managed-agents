@@ -92,6 +92,9 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
         workAuthority:{attempt:environmentWorkSandboxTokenRef(c),isCurrent:sqlCurrent,holderHash:()=>held[0].h,
           token:async()=>{throw new Error("Cold Work reconnect cannot issue tokens");}}});
     })();
+    // The provider definitively reports the recorded sandbox absent: nothing to
+    // finalize here; the scheduler re-requests a sandbox through openSandbox.
+    if (physical === "unavailable") return "unavailable" as const;
     if (physical.environment.id !== c.environmentId || physical.workAuthority.holderHash !== held[0].h) throw new Error("Physical Work holder lost");
     const physicalCurrent = async () => {
       const saved = await deps.sql.prepare('SELECT value FROM kv_entries WHERE tenant_id=? AND "key"=?')
@@ -120,7 +123,9 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
   };
   return {
     prepare: scope => serial(scope, async () => {
-      const {facade, physical, holderDocument, expiresAt, assertCurrent} = await stage(scope, "finalize-capture", () => capture(scope));
+      const captured = await stage(scope, "finalize-capture", () => capture(scope));
+      if (captured === "unavailable") return {type:"unavailable"};
+      const {facade, physical, holderDocument, expiresAt, assertCurrent} = captured;
       const c = scope.claim;
       const active = await checkpoints.active(c);
       // Capture the actual persisted handle, not an arbitrary caller runtime ID.
@@ -175,7 +180,9 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
       return {type:"prepared"};
     }),
     publish: scope => serial(scope, async () => {
-      const {physical,current,assertCurrent} = await stage(scope, "publish-capture", () => capture(scope));
+      const captured = await stage(scope, "publish-capture", () => capture(scope));
+      if (captured === "unavailable") return {type:"unavailable"};
+      const {physical,current,assertCurrent} = captured;
       await stage(scope, "publish-artifacts", () => deps.afterExecution({...physical, terminal:scope.terminal, isCurrent:current}));
       await assertCurrent();
       return {type:"published"};

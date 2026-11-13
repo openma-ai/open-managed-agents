@@ -458,3 +458,30 @@ it("propagates dispatch tracing through Node open into the core and records earl
   await expect(traceSandboxOperation(tracer, "work.dispatch.sandbox-open", {}, async () => { throw failure; })).rejects.toBe(failure);
   expect(rows).toEqual([{ name: "work.dispatch.sandbox-open", parent: undefined, status: 2 }]);
 });
+
+describe("Work finalization reconnect (find and attach, else unavailable)", () => {
+  const running = { phase: "running", handle: { provider: "e2b", runtimeId: "physical" }, runStartedAt: 1, latestSnapshot: { status: "none" }, stores: [], outputs: false, version: 1 } as const;
+  const reconnect = (connectWorkReadonly: (runtimeId: string) => Promise<never>) => {
+    const sandboxes = new NodeSessionSandboxes({
+      adapter: { adapter: { name: "e2b" }, connectWorkReadonly },
+      records: { load: async () => running, save: async () => true },
+      idlePauseMs: IDLE_MS,
+    } as unknown as NodeSessionSandboxOptions);
+    const attempt = { workspaceId: "ws_1", sessionId: "sess_1", executionId: "work", attemptId: "environment-work-claim:1", ownerId: "env_1", generation: 1 };
+    return sandboxes.reconnectWork({
+      ...context, terminal: false, sourceAttempt: attempt,
+      workAuthority: { attempt, holderHash: () => "a".repeat(64), isCurrent: async () => true, token: async () => { throw new Error("no token"); } },
+    });
+  };
+
+  it("returns unavailable when the provider definitively reports the recorded sandbox absent", async () => {
+    let reads = 0;
+    await expect(reconnect(async (runtimeId) => { reads++; expect(runtimeId).toBe("physical"); return "gone" as never; })).resolves.toBe("unavailable");
+    expect(reads).toBe(1);
+  });
+
+  it("propagates a provider read failure; it is never treated as absence", async () => {
+    const failure = new Error("Work finalization provider read unavailable");
+    await expect(reconnect(async () => { throw failure; })).rejects.toBe(failure);
+  });
+});

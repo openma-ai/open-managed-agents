@@ -54,7 +54,7 @@ it.each(["promptRequired","permission","startedNewTurn","failed"] as const)("nat
    }}))};
   }};
   const workspace=f.root+"/fallback-native";await mkdir(workspace,{recursive:true});
-  running=runNodeWorkItemCli({environment:{ANTHROPIC_ENVIRONMENT_ID:f.scope.environmentId,ANTHROPIC_SESSION_ID:f.scope.sessionId,ANTHROPIC_WORK_ID:f.scope.workId,OPENMA_HARNESS_ID:"acp",OPENMA_ACP_AGENT_ID:"codex-acp",ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:f.token(),api_base_url:f.base})).toString("base64url")},signal:controller.signal,heartbeatIntervalMs:50,
+  running=runNodeWorkItemCli({hostWorkspacePath:workspace,environment:{ANTHROPIC_ENVIRONMENT_ID:f.scope.environmentId,ANTHROPIC_SESSION_ID:f.scope.sessionId,ANTHROPIC_WORK_ID:f.scope.workId,OPENMA_HARNESS_ID:"acp",OPENMA_ACP_AGENT_ID:"codex-acp",ANTHROPIC_WORK_SECRET:Buffer.from(JSON.stringify({sessions_token:f.token(),api_base_url:f.base})).toString("base64url")},signal:controller.signal,heartbeatIntervalMs:50,
    runtime:{modules:await parityModules(),spawner,stateIo:createNodeAcpHarnessStateIo({workspacePath:workspace})},
    fetch:async(raw,init)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;const response=await f.nativeFetch(new Request(raw,init));if(action==="inputs-consume"||action==="work-publish")receipts.push({action,status:response.status,body:await response.clone().json()});
     if(outcome==="permission"&&action==="runtime-events"&&response.ok){const events=JSON.parse(String(init?.body)).events;for(const event of events)if(event.type==="agent.tool_use"&&event.evaluated_permission==="ask")await f.api("/v1/sessions/"+f.session.id+"/events",{events:[{type:"user.tool_confirmation",tool_use_id:event.id,result:"allow"}]});}

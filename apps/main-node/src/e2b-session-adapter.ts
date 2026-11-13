@@ -84,14 +84,17 @@ function positiveMs(env: Readonly<Record<string, string | undefined>>, name: str
  * Node composition boundary; never call connect, even for a paused VM. */
 export async function readNodeWorkRuntime(
   sdk: {
-    ApiClient: new (config: unknown) => {api:{GET(path:"/sandboxes/{sandboxID}",input:{params:{path:{sandboxID:string}}}):Promise<{data?:{sandboxID:string;state?:string;lifecycle?:{autoResume?:boolean};envdVersion?:string;envdAccessToken?:string;domain?:string}|null;error?:unknown}>}};
+    ApiClient: new (config: unknown) => {api:{GET(path:"/sandboxes/{sandboxID}",input:{params:{path:{sandboxID:string}}}):Promise<{data?:{sandboxID:string;state?:string;lifecycle?:{autoResume?:boolean};envdVersion?:string;envdAccessToken?:string;domain?:string}|null;error?:{code?:number}|null}>}};
     ConnectionConfig: new (options: E2BSandboxOptions) => unknown;
     Sandbox: new (options: E2BSandboxOptions & {sandboxId:string;envdVersion:string;envdAccessToken:string;sandboxDomain?:string}) => E2BSandboxLike;
   },
   options: E2BSandboxOptions,
   runtimeId: string,
-): Promise<E2BSandboxExecutor> {
+): Promise<E2BSandboxExecutor | "gone"> {
   const {data,error} = await new sdk.ApiClient(new sdk.ConnectionConfig(options)).api.GET("/sandboxes/{sandboxID}",{params:{path:{sandboxID:runtimeId}}});
+  // Definitive absence uses the SDK's own rule for this endpoint (error code
+  // 404 = SandboxNotFoundError). Any other read failure is not absence.
+  if (error?.code === 404) return "gone";
   if (error || !data) throw new Error("Work finalization provider read unavailable");
   if (data.sandboxID !== runtimeId || data.state !== "running" || data.lifecycle?.autoResume !== false
     || !data.envdVersion || !data.envdAccessToken) throw new Error("Work finalization requires exact running sandbox with auto-resume disabled");

@@ -21,7 +21,7 @@ import type { MemoryStoreBinding, SandboxDuplexProcess, SandboxDuplexProcessSpec
 import { endExecution, failExecution } from "./session-sandbox-execution-end";
 import { disarmIdle, idlePause } from "./session-sandbox-idle-pause";
 import { lifetimeDue, refreshLifetime } from "./session-sandbox-lifetime";
-import { LiveSessionSandbox, mergeStores, SessionSandboxStateConflictError } from "./session-sandbox-live";
+import { isSandboxLossError, LiveSessionSandbox, mergeStores, SessionSandboxStateConflictError } from "./session-sandbox-live";
 import { openSandbox, rollbackOpen, warmSandbox } from "./session-sandbox-open";
 import { recordedHandle } from "./session-sandbox-state";
 import type { PortsSessionSandboxOptions, SessionSandboxExecutor } from "./session-sandbox-options";
@@ -198,8 +198,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
         await renewAtExecBoundary(state, open);
         return await operation(open.executor);
       } catch (error) {
-        const name = (error as { name?: unknown } | null)?.name;
-        if (name === "SandboxGoneError" || name === "SandboxNotFoundError" || name === "SandboxNotRunningError") state.markLost();
+        if (isSandboxLossError(error)) state.markLost();
         throw error;
       } finally {
         state.inFlight -= 1;

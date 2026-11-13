@@ -28,6 +28,18 @@ export interface OpenSandbox<R> {
   runStartedAt: number;
 }
 
+/** The provider reported that the sandbox is gone (anywhere in the cause
+ * chain). This is the provider's own verdict, not a transport failure or an
+ * unknown error, which are never evidence of absence. */
+export function isSandboxLossError(error: unknown): boolean {
+  for (let current = error, depth = 0; current !== null && typeof current === "object" && depth < 8; depth++) {
+    const name = (current as { name?: unknown }).name;
+    if (name === "SandboxGoneError" || name === "SandboxNotFoundError" || name === "SandboxNotRunningError") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /** Owner wait for its own release outcome: longer than an adapter's bounded
  * managed-process exit confirmation (local subprocess: 2s), shorter than a
  * host's sandbox disposal cap (Node runner: 5s). */

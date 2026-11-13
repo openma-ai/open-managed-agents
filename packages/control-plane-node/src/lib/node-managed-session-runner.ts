@@ -1,4 +1,4 @@
-import { sessionErrorMessage } from "@open-managed-agents/session-runtime";
+import { isSandboxLossError, sessionErrorMessage } from "@open-managed-agents/session-runtime";
 import {
   classifyTurnFailure,
   classifyTurnInput,
@@ -1111,10 +1111,15 @@ export class DefaultNodeManagedSessionRunner
       let lostAtPersistence: SandboxExecutor | undefined;
       if (persistenceError !== undefined && !leaseLost) {
         const persisted = currentSandbox();
-        persistenceProviderLost = sandboxLost
-          || await this.probe(persisted).catch((): SandboxLiveness => "unknown") === "lost";
+        // Loss is the provider's verdict: reported by an operation (the cause
+        // chain) or confirmed by a probe now. Only a confirmed-lost runtime
+        // is uninstalled; one that answers again stays for the next turn.
+        // A probe that fails is not a confirmed loss.
+        const confirmedLost = sandboxLost
+          || await this.probe(persisted).then(liveness => liveness === "lost", () => false);
+        persistenceProviderLost = confirmedLost || isSandboxLossError(persistenceError);
+        if (confirmedLost) lostAtPersistence = persisted;
         if (persistenceProviderLost) {
-          lostAtPersistence = persisted;
           runtime.broadcastProducedEvent({ type: "session.warning", source: "sandbox.persistence",
             message: sessionErrorMessage(persistenceError, "turn.persistence") });
         } else {

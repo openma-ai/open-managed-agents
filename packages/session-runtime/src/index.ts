@@ -45,6 +45,7 @@ export type {
   FileIdResolver,
 } from "./router";
 
+export { sessionTurnResourceGuidance, type SessionTurnResourceGuidance } from "./session-resource-guidance";
 export {
   mountSessionResources,
   type SessionResourceMountPorts,
@@ -91,7 +92,7 @@ export {
   type SnapshotRef,
 } from "./session-sandbox-state";
 export { SessionSandboxFenceLostError, executionOfFence, runtimeFenceOf } from "./session-sandbox-fence";
-export { SessionSandboxStateConflictError } from "./session-sandbox-live";
+export { isSandboxLossError, SessionSandboxStateConflictError } from "./session-sandbox-live";
 export { SandboxRestoreError } from "./session-sandbox-open";
 export { STORAGE_SYNC_INTERVAL_MS } from "./session-sandbox-renewal";
 export { LIFETIME_REFRESH_MARGIN_MS, MAX_TOOL_CALL_MS } from "./session-sandbox-lifetime";

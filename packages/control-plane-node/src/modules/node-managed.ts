@@ -1,5 +1,3 @@
-import { sessionResourceReminders } from "@open-managed-agents/runtime-resource-contract";
-import { workspaceRootOf } from "@open-managed-agents/sandbox";
 import { nodePublishedSessionFiles } from "../lib/node-published-session-files";
 
 /**
@@ -91,6 +89,7 @@ import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluat
 import { ManagedCredentialResolver, createCredentialEgressRelay } from "@open-managed-agents/managed-credential-resolver";
 import { authenticateSandboxEgress, createVaultPlaceholders } from "@open-managed-agents/sandbox-gateway";
 import { isSessionExecutionFenceActive, sessionExecutionLeasesFrom, type SessionExecutionAttemptRef } from "@open-managed-agents/session-runtime/execution-lease";
+import { sessionTurnResourceGuidance } from "@open-managed-agents/session-runtime";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { createNodeRepositoryEgress } from "../lib/node-repository-egress.js";
@@ -99,7 +98,7 @@ import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
-  resolveNodeManagedResourceFacts,
+  nodeManagedMemoryFacts,
   preparedNodeManagedSkillFacts,
   resolveNodeManagedSkillMounts,
   buildNodeManagedAppendablePromptReminders,
@@ -152,6 +151,14 @@ export async function createManagedNodeRuntime(
     resolveDreamModelCredentials,
     buildNodeLanguageModel,
   } = foundation;
+  // Memory content as text objects: one view for Memory snapshots, the
+  // Session sandbox storage and the Memory document store.
+  const memoryContent = {
+    getText: async (key: string) => (await memoryBlobs.getText(key))?.text ?? null,
+    list: (...args: Parameters<typeof memoryBlobs.list>) => memoryBlobs.list(...args),
+    put: (...args: Parameters<typeof memoryBlobs.put>) => memoryBlobs.put(...args),
+    delete: (key: string) => memoryBlobs.delete(key),
+  };
   // ─── Official Managed Sessions composition ─────────────────────────────
 
   async function resolveHostedModel(tenantId: string, model: string | { id: string }) {
@@ -262,10 +269,7 @@ export async function createManagedNodeRuntime(
     memoryStores: memoryStoreMode === "native"
       ? {
           mode: "native",
-          snapshots: new NodeManagedMemorySnapshotMaterializer(managedMemoriesFor(workspaceId), {
-            getText: async (key) => (await memoryBlobs.getText(key))?.text ?? null,
-            put: (key, content) => memoryBlobs.put(key, content),
-          }),
+          snapshots: new NodeManagedMemorySnapshotMaterializer(managedMemoriesFor(workspaceId), memoryContent),
         }
       : { mode: "file_sync", memories: managedMemoriesFor(workspaceId) },
   });
@@ -290,12 +294,7 @@ export async function createManagedNodeRuntime(
     storage: createNodeSessionStorage({
       memoryStoreMode,
       memories: managedMemoriesFor,
-      memoryBlobs: {
-        getText: async (key) => (await memoryBlobs.getText(key))?.text ?? null,
-        list: (prefix, cursor) => memoryBlobs.list(prefix, cursor),
-        put: (key, content) => memoryBlobs.put(key, content),
-        delete: (key) => memoryBlobs.delete(key),
-      },
+      memoryBlobs: memoryContent,
       ...(sharedSessionOutputs === undefined ? {} : { sharedOutputs: sharedSessionOutputs }),
       outputs: managedSessionOutputCollector,
       workOutputs: { synchronize: input => managedSessionOutputCollector.synchronizeWork(input) },
@@ -555,19 +554,9 @@ export async function createManagedNodeRuntime(
             .port(managedAgentsPortTokens.skillVersions),
         )
         : undefined;
-      // Skill locations, Memory mounts and outputs from the shared Session
-      // resource facts (same derivation as CF SessionDO and the Work supervisor).
-      const resourceFacts = await resolveNodeManagedResourceFacts(
-          input.session,
-          managedPlatform
-            .app({ workspaceId: input.workspaceId })
-            .port(managedAgentsPortTokens.skillVersions),
-          { skills: !assemblySkills, workspaceRoot: await workspaceRootOf(input.runtime.sandbox), materializedSkills: assemblySkills ? [] : preparedNodeManagedSkillFacts(input.runtime.sandbox) },
-        );
-      const platformReminders = [
-        ...sessionResourceReminders(resourceFacts, { outputsGuidedByPlatform: true, includeWorkspace: true }),
-        ...buildNodeManagedAppendablePromptReminders(input.session),
-      ];
+      const { facts: resourceFacts, reminders } = await sessionTurnResourceGuidance({ sandbox: input.runtime.sandbox,
+        skills: assemblySkills ? [] : preparedNodeManagedSkillFacts(input.runtime.sandbox), memoryStores: nodeManagedMemoryFacts(input.session) });
+      const platformReminders = [...reminders, ...buildNodeManagedAppendablePromptReminders(input.session)];
       const feishuTools = await resolveFeishuAgentTools(input.session.id);
       return {
         agent,
@@ -956,11 +945,7 @@ export async function createManagedNodeRuntime(
   );
 
   const managedMemoryContent = new WebCryptoMemoryContentDescriptor();
-  const managedMemoryDocuments = new SqlMemoryDocumentStore(sql, {
-    getText: async key => (await memoryBlobs.getText(key))?.text ?? null,
-    put: (key, content) => memoryBlobs.put(key, content),
-    delete: key => memoryBlobs.delete(key),
-  });
+  const managedMemoryDocuments = new SqlMemoryDocumentStore(sql, memoryContent);
   function managedMemoryActor(userId: string | undefined) {
     return userId === undefined
       ? { kind: "api" as const, apiKeyId: "self_hosted" }
