@@ -1,3 +1,5 @@
+// Legacy ai-sdk golden coverage; not default-Pi mixed-batch acceptance.
+// Default Pi gates: mixed-process-restart.test.ts and pi-mixed-restart.cf.test.ts.
 // @ts-nocheck
 // Multi-platform parity gate — Cloudflare runner (design §0.7 gate 3).
 // Drives the real combined worker (apps/main routes + apps/agent SessionDO,
@@ -134,6 +136,7 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
   stub("interrupt", [FIRST_RESULT_TEXT]),
   stub("memory-read-write", [FIRST_RESULT_TEXT, "/events/agent.tool_result/1/content/0/text"]),
   stub("session-outputs", [FIRST_RESULT_TEXT]),
+  stub("mixed-custom-tools", [FIRST_RESULT_TEXT]),
   {
     scenario: "memory-read-write",
     title: "agent memory write not in the store",

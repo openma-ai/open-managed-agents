@@ -1,3 +1,5 @@
+import { e2bNativeMountCommand } from "./native-mount";
+import { executionIdentity } from "./execution-identity";
 import { e2bMountControlDirectory } from "./native-drain";
 // Native Sandbox SDK v2 adapter for E2B (design §0.1 / §0.2). Reuses the
 // v1 executor (E2BSandboxExecutor) as the runtime; the SDK module is
@@ -120,6 +122,9 @@ const DEFAULT_RETRY_AFTER_MS = 1_000;
  * user cannot create directories under /mnt, so the setup runs as root
  * (with `user: "root"` for every later call). */
 export const E2B_SANDBOX_DIRECTORIES = "mkdir -p /workspace /mnt/session/outputs /mnt/memory";
+/** Copy-sync needs only directories. Managed data-root ownership is established
+ * centrally during allocation/restore, shared by Node and CF compositions. */
+export const E2B_MANAGED_SYNC_SETUP = E2B_SANDBOX_DIRECTORIES;
 /** `setup` for native storage: the mount points plus rclone + FUSE. */
 export const E2B_SANDBOX_SETUP = [
   E2B_SANDBOX_DIRECTORIES,
@@ -156,10 +161,20 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
   };
 
   async function prepare(runtime: E2BSandboxExecutor): Promise<void> {
-    if (options.setup === undefined) return;
-    const result = await runtime.run(options.setup, { user: "root", timeoutMs: 300_000 });
+    // Only new allocations and filesystem restores enter here. Attaching or
+    // resuming a live handle must not chmod active mounts/readonly resources.
+    const roots = "/workspace /mnt/session /mnt/session/outputs /mnt/memory";
+    const identity = options.managedBootstrap ? await executionIdentity(runtime) : undefined;
+    const guard = identity ? `for p in /mnt ${roots}; do test ! -L "$p" || exit 90; done\n` : "";
+    const ownership = identity ? `\ninstall -d -m 755 -o ${identity.uid} -g ${identity.gid} ${roots}` : "";
+    if (options.setup === undefined && identity === undefined) return;
+    const result = await runtime.run(`set -eu\n${guard}${options.setup ?? ""}${ownership}`, { user: "root", timeoutMs: 300_000, sessionEnv: false });
     if (result.exitCode !== 0) {
       throw new Error(`E2B sandbox setup failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+    }
+    if (identity) {
+      const writable = await runtime.run(`for p in ${roots}; do test -d "$p" && test -w "$p" && test -x "$p" || exit 90; done`, { sessionEnv: false });
+      if (writable.exitCode !== 0) throw new Error("E2B managed data roots are not writable by the execution user");
     }
   }
 
@@ -368,7 +383,7 @@ export function e2bObjectStorage(
 ): SandboxStoragePort<E2BSandboxExecutor> {
   const ttlSeconds = options.ttlSeconds ?? 3_600;
   interface Mount { identity: string; expiresAt: number; issue(): ReturnType<ObjectStoreCredentialPort["issue"]>; readOnly: boolean }
-  const mounted = new WeakMap<E2BSandboxExecutor, { owner: string; mounts: Map<string, Mount> }>();
+  const mounted = new WeakMap<E2BSandboxExecutor, { owner: { uid: string; gid: string }; mounts: Map<string, Mount> }>();
   const fresh = (mount: Mount) => mount.expiresAt - Date.now() > (ttlSeconds * 1_000) / 2;
   const asRoot = async (runtime: E2BSandboxExecutor, command: string, envs?: Record<string, string>) => {
     // Storage traffic goes straight to the bucket, not through the agent's
@@ -376,27 +391,27 @@ export function e2bObjectStorage(
     const result = await runtimeCall(() => runtime.run(command, { user: "root", timeoutMs: 60_000, sessionEnv: false, ...(envs === undefined ? {} : { envs }) }));
     if (result.exitCode !== 0) throw new Error(`E2B storage command failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
   };
-  const mount = async (runtime: E2BSandboxExecutor, owner: string, target: string, entry: Mount) => {
+  const mount = async (runtime: E2BSandboxExecutor, owner: { uid: string; gid: string }, target: string, entry: Mount) => {
     const credentials = await entry.issue();
     const remote = `:s3:${credentials.bucket}/${credentials.prefix.replace(/\/$/u, "")}`;
     const control = e2bMountControlDirectory(target);
     const flags = [
-      "--daemon",
       "--rc",
       "--rc-no-auth", // Unix socket is reachable only inside root-owned 0700 directories.
       `--rc-addr=unix://${control}/rc.sock`,
       "--s3-no-check-bucket",
       "--allow-other",
       "--allow-non-empty",
-      `--uid=${owner}`,
-      `--gid=${owner}`,
+      `--uid=${owner.uid}`,
+      `--gid=${owner.gid}`,
       "--vfs-cache-mode=writes",
       ...(entry.readOnly ? ["--read-only"] : []),
     ].map(quote).join(" ");
     await asRoot(
       runtime,
       `(mountpoint -q ${quote(target)} && (umount ${quote(target)} || umount -l ${quote(target)})) || true; `
-        + `install -d -m 700 /run/oma-rclone ${quote(control)} && rm -f ${quote(control + "/rc.sock")} && mkdir -p ${quote(target)} && rclone mount ${quote(remote)} ${quote(target)} ${flags}`,
+        + `install -d -m 700 /run/oma-rclone ${quote(control)} && rm -f ${quote(control + "/rc.sock")} && mkdir -p ${quote(target)} || exit 90; `
+        + e2bNativeMountCommand(`rclone mount ${quote(remote)} ${quote(target)} ${flags}`, target, control),
       {
         RCLONE_S3_PROVIDER: "Cloudflare",
         RCLONE_S3_ENDPOINT: credentials.endpoint,
@@ -421,8 +436,8 @@ export function e2bObjectStorage(
   };
   return {
     async attach(input) {
-      const owner = (await vendor.exec(input.runtime, "id -u")).stdout.trim();
-      await asRoot(input.runtime, `mkdir -p ${SESSION_OUTPUTS_DIR} /mnt/memory && chown ${quote(owner)} ${SESSION_OUTPUTS_DIR}`);
+      const owner = await executionIdentity(input.runtime);
+      await asRoot(input.runtime, `mkdir -p ${SESSION_OUTPUTS_DIR} /mnt/memory && chown ${quote(owner.uid + ":" + owner.gid)} ${SESSION_OUTPUTS_DIR}`);
       const state = mounted.get(input.runtime) ?? { owner, mounts: new Map<string, Mount>() };
       mounted.set(input.runtime, state);
       const outputsPrefix = options.outputsPrefix(input.scope);

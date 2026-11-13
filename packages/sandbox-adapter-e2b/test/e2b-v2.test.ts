@@ -30,7 +30,7 @@ function shellOver(files: Map<string, Uint8Array>) {
   const quoted = (cmd: string) => [...cmd.matchAll(/'([^']*)'/gu)].map((m) => m[1]!);
   return (cmd: string) => {
     const ok = (stdout = "") => ({ stdout, stderr: "", exitCode: 0 });
-    if (cmd === "id -u") return ok("1000\n");
+    if (cmd === "id -u; id -g") return ok("1002\n1003\n");
     if (cmd.includes("EGRESS_READY:")) return ok(`EGRESS_READY:${JSON.stringify({ pid: 42, port: 18080, caFile: "/workspace/.oma-egress/ca.crt", caBundleFile: "/workspace/.oma-egress/ca-bundle.crt" })}\n`);
     if (cmd.includes("EGRESS_DIR:")) return ok("EGRESS_DIR:/workspace/.oma-egress\n");
     if (cmd.includes("echo EGRESS_DELIVERED")) return ok("EGRESS_DELIVERED\n");
@@ -282,6 +282,9 @@ describe("E2B v2 storage", () => {
     expect(ro!.cmd).toContain("'--read-only'");
     expect(rw!.cmd).not.toContain("--read-only");
     for (const call of mounts) {
+      expect(call.cmd).toContain("--uid=1002");
+      expect(call.cmd).toContain("--gid=1003");
+      expect(call.cmd).not.toContain("--daemon");
       expect(call.opts.user).toBe("root");
       expect(call.cmd).toContain("'--s3-no-check-bucket'");
       expect(call.cmd).not.toMatch(/AWS_|RCLONE_|session_token|passwd/u);

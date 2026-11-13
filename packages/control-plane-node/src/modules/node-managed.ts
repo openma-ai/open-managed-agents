@@ -1,3 +1,4 @@
+import { nodePublishedSessionFiles } from "../lib/node-published-session-files";
 
 /**
  * apps/main-node — Node control-plane assembly for the Open Managed Agents API.
@@ -160,7 +161,7 @@ export async function createManagedNodeRuntime(
       wireModel: card.model, apiKey, provider: card.provider,
       baseURL: card.base_url ?? undefined,
       customHeaders: card.custom_headers ?? undefined,
-      protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url }),
+      protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: card.provider, baseUrl: card.base_url, wireModel: card.model, piConfig: card.pi_config ?? undefined }),
     };
   }
 
@@ -436,14 +437,14 @@ export async function createManagedNodeRuntime(
       isFenceActive: isManagedSessionExecutionFenceActive,
       environmentId: session => `oai_env_${session.id}`,
       logger,
-    }), (error, input) => {
-      logger.error({
-        err: error,
-        op: "main-node.openai_agents.artifact_publication_failed",
-        workspaceId: input.workspaceId,
-        sessionId: input.session.id,
-        executionId: input.executionFence.executionId,
-      }, "Completed Session output could not be published as an Agents API artifact");
+    }), async (_error, input) => {
+      await managedRuntimeDriver.publishSessionWarning({
+        workspaceId: input.workspaceId, sessionId: input.session.id,
+        executionFence: input.executionFence, source: "agents_api.artifact_publication",
+        message: "The derived Agents API Files publication failed. This does not establish loss of the underlying managed output bytes.",
+      });
+      logger.warn({ op: "main-node.openai_agents.artifact_publication_failed",
+        sessionId: input.session.id, executionId: input.executionFence.executionId }, "Derived artifact publication failed; durable warning recorded");
     }),
     resolveModelPricing: async ({ workspaceId, session }) => {
       const model = session.agent.model as string | { id: string };
@@ -929,13 +930,12 @@ export async function createManagedNodeRuntime(
     }).port(managedAgentsPortTokens.tunnelCertificates),
   );
 
-  const managedFilesRoutes = buildManagedFileRoutes((context) =>
-    managedPlatform
-      .app({
-        workspaceId: (context.var as { tenant_id: string }).tenant_id,
-      })
-      .port(managedAgentsPortTokens.files)
-  );
+  const managedFilesRoutes = buildManagedFileRoutes((context) => {
+    const workspaceId = (context.var as { tenant_id: string }).tenant_id;
+    const files = managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files);
+    const outputs = sharedSessionOutputs ?? sessionOutputs;
+    return nodePublishedSessionFiles(files, workspaceId, filesService, outputs);
+  });
 
   const managedMemoryStoresRoutes = buildManagedMemoryStoreRoutes((context) =>
     managedPlatform

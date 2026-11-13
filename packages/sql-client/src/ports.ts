@@ -67,6 +67,25 @@ export interface SqlStatement {
   all<T = unknown>(): Promise<SqlSelectResult<T>>;
 }
 
+/** A short connection-bound scope. Statements become unusable when it closes. */
+export interface SqlTransaction {
+  prepare(sql: string): SqlStatement;
+}
+
+export interface SqlRowLockCapability {
+  supported: boolean;
+  engine: string;
+  version: string;
+  reason: string;
+}
+
+export interface SqlRowLockTransactions {
+  /** Verify server version and transactional storage for all requested tables. */
+  capability(tables: readonly string[]): Promise<SqlRowLockCapability>;
+  /** READ COMMITTED; await every statement. Validation precedes COMMIT. No replay. */
+  run<T>(body: (transaction: SqlTransaction) => Promise<T>): Promise<T>;
+}
+
 /**
  * The port. self-host implementations live in adapters/.
  *
@@ -74,6 +93,8 @@ export interface SqlStatement {
  * back). Returned array is per-statement meta in the same order.
  */
 export interface SqlClient {
+  /** Absent on SQLite/D1: callers retain their atomic CAS implementation. */
+  readonly rowLockTransactions?: SqlRowLockTransactions;
   prepare(sql: string): SqlStatement;
   batch<T = unknown>(stmts: SqlStatement[]): Promise<Array<SqlRunResult<T>>>;
   /** Node adapters validate before COMMIT; throwing rolls back every statement. */

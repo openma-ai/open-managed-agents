@@ -39,7 +39,7 @@ describe("hosted inference proxy integration", () => {
       env: {},
       agent: { id: "dsh-acp", command: "dsh-acp" },
       nativePath: "/native/dsh",
-      model: { wireModel: "deepseek-chat", providerId: "deepseek", baseUrl: null },
+      model: { wireModel: "deepseek-chat", providerId: "deepseek", baseUrl: "https://api.deepseek.com/anthropic", piConfig: { api: "anthropic-messages" } },
     });
     const piBase = JSON.parse(pi.files[0]!.content).providers.deepseek.baseUrl;
     expect(piBase).toContain("/openai/v1");

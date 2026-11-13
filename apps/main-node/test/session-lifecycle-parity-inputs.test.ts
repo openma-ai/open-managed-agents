@@ -62,8 +62,7 @@ describe("main lifecycle parity through production Node HTTP + ACP supervisor", 
       await original.worker.published();
       await original.run.stop("crash");await f.reclaim();
       running=await startSupervisor(f,{prompt:async text=>{prompts.push(text);}});
-      expect(await running.completion).toEqual({ok:true});
-      expect(running.worker.responses.some(r=>r.action==="work-publish"&&r.status===200)).toBe(true);
+      await running.worker.residentAfterPublish();
       expect(prompts).toEqual([]);
       expect((await f.events()).filter(e => e.type === "session.status_idle")).toHaveLength(1);
     } finally { await original?.run.stop("test complete"); await running?.run.stop("test complete"); await running?.completion; await f.dispose(); }

@@ -23,7 +23,7 @@ import {
   isCasConflict,
   withDbBoundary,
 } from "@open-managed-agents/sql-client/db-errors";
-import type { SqlClient } from "@open-managed-agents/sql-client";
+import type { SqlClient, SqlTransaction } from "@open-managed-agents/sql-client";
 import { Cause, Effect, Exit, Option } from "effect";
 
 /** Row is a turn continuation (client answer to a paused tool call). */
@@ -559,6 +559,12 @@ export class SqlSessionExecutionStore
     // the same lane so they never run alone and advance in enqueue order.
     await this.absorbHeldIntoUnheldAdmissions(input, claimedAt);
     const serial = this.options.serializeSessionClaims === true;
+    const transactions = this.sql.rowLockTransactions;
+    if (transactions && (await transactions.capability([
+      "managed_session_executions", ...(serial ? ["managed_session_claim_locks"] : []),
+    ])).supported) {
+      return this.claimSkipLocked(input, claimedAt, serial);
+    }
     const candidate = await this.selectCandidate(input, claimedAt, serial);
     if (candidate === null) return { type: "empty" };
     // Shared policy is the final gate: a candidate that is still leased,
@@ -577,6 +583,64 @@ export class SqlSessionExecutionStore
       sessionId: candidate.session_id,
       cause: "conditional update matched no row",
     });
+  }
+
+  /** Discovery is nonlocking; only the PK read inside run grants authority. */
+  private async claimSkipLocked(
+    input: ClaimSessionExecution, claimedAt: number, serial: boolean,
+  ): Promise<ClaimSessionExecutionResult> {
+    const transactions = this.sql.rowLockTransactions!;
+    const already = await this.findOwnedAttempt(input.ownerId, input.attemptId);
+    if (already?.type === "claimed" && already.execution.attempt !== null
+      && Date.parse(already.execution.attempt.leaseExpiresAt) > claimedAt
+      && Date.parse(already.execution.deadlineAt) > claimedAt
+      && !(input.excludeAttemptIds ?? []).includes(input.attemptId)) return already;
+    const excluded: Array<{ workspace_id: string; session_id: string }> = [];
+    for (let scan = 0; scan < 64; scan++) {
+      const candidate = await this.selectCandidate(input, claimedAt, serial, this.sql, { excluded, sessionOrder: serial });
+      if (!candidate) return { type: "empty" };
+      if (serial) {
+        // Avoid duplicate-key INSERT locking an existing session mutex before
+        // we can SKIP it. Admission of a new session may race initialization.
+        const exists = await this.sql.prepare(`SELECT version FROM managed_session_claim_locks
+          WHERE workspace_id = ? AND session_id = ?`)
+          .bind(candidate.workspace_id, candidate.session_id).first();
+        if (!exists) await this.sql.prepare(`INSERT INTO managed_session_claim_locks
+          (workspace_id, session_id, claim_token, version) VALUES (?, ?, ?, 0)
+          ON CONFLICT (workspace_id, session_id) DO NOTHING`)
+          .bind(candidate.workspace_id, candidate.session_id, crypto.randomUUID()).run();
+      }
+      const result = await transactions.run(async (tx) => {
+        let lock: { workspaceId: string; sessionId: string; version: number; holderId: string } | undefined;
+        if (serial) {
+          // Contract: session mutex FIRST, execution primary key SECOND.
+          const row = await tx.prepare(`SELECT version FROM managed_session_claim_locks
+            WHERE workspace_id = ? AND session_id = ? FOR UPDATE SKIP LOCKED`)
+            .bind(candidate.workspace_id, candidate.session_id).first<{ version: number | string }>();
+          if (!row) return null;
+          lock = { workspaceId: candidate.workspace_id, sessionId: candidate.session_id,
+            version: safeInteger(row.version, "claim lock version") + 1, holderId: candidate.id };
+        }
+        const authoritative = await this.selectCandidate(input, claimedAt, serial, tx,
+          { exact: candidate, sessionOrder: serial, lock: true });
+        if (!authoritative || !decideClaim(authoritative.lease, claimedAt).claim) return null;
+        if (lock) {
+          const updated = await tx.prepare(`UPDATE managed_session_claim_locks
+            SET version = version + 1, holder_execution_id = ?, claim_token = ?
+            WHERE workspace_id = ? AND session_id = ? AND version = ?`)
+            .bind(candidate.id, crypto.randomUUID(), lock.workspaceId, lock.sessionId, lock.version - 1).run();
+          if (updated.meta.changes !== 1) throw new CasConflict({ op: "session_execution.claim", cause: "session lock changed" });
+        }
+        const row = await this.executionClaimStatement(input, claimedAt, authoritative,
+          safeInteger(authoritative.revision, "execution revision"), lock, tx).first<ExecutionRow>();
+        if (!row) throw new CasConflict({ op: "session_execution.claim", cause: "locked conditional claim rejected" });
+        // Decode/validate BEFORE COMMIT so corrupt state rolls back the mutex too.
+        return this.claimedResult(row);
+      });
+      if (result) { annotateDbBoundary({ sessionId: candidate.session_id }); return result; }
+      excluded.push(candidate);
+    }
+    return { type: "empty" };
   }
 
   /**
@@ -734,6 +798,13 @@ export class SqlSessionExecutionStore
     input: ClaimSessionExecution,
     claimedAt: number,
     serial: boolean,
+    sql: SqlTransaction = this.sql,
+    selection: {
+      exact?: { workspace_id: string; id: string };
+      excluded?: Array<{ workspace_id: string; session_id: string }>;
+      sessionOrder?: boolean;
+      lock?: boolean;
+    } = {},
   ): Promise<{
     workspace_id: string;
     session_id: string;
@@ -742,14 +813,16 @@ export class SqlSessionExecutionStore
     lease: ExecutionLeaseRecord;
   } | null> {
     const continuations = input.continuationsOnly === true;
-    const row = await this.sql.prepare(`
+    const row = await sql.prepare(`
       SELECT candidate.workspace_id, candidate.session_id, candidate.lane_id,
              candidate.id, candidate.revision, candidate.state,
              candidate.attempt_count, candidate.max_attempts,
              candidate.deadline_at_ms, candidate.lease_expires_at_ms,
              candidate.owner_id, candidate.held_after_exhausted_ms
         FROM managed_session_executions AS candidate
-       WHERE (? = 1 OR candidate.workspace_id = ?)
+       WHERE ${selection.exact ? "candidate.workspace_id = ? AND candidate.id = ? AND" : ""}
+         ${(selection.excluded ?? []).map(() => "NOT (candidate.workspace_id = ? AND candidate.session_id = ?) AND").join(" ")}
+         (? = 1 OR candidate.workspace_id = ?)
          AND (? = 1 OR candidate.session_id = ?)
          AND (? = 1 OR candidate.lane_id = ?)
          AND (candidate.state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND candidate.state = 'running'
@@ -763,7 +836,7 @@ export class SqlSessionExecutionStore
            SELECT 1 FROM managed_session_executions AS earlier
             WHERE earlier.workspace_id = candidate.workspace_id
               AND earlier.session_id = candidate.session_id
-              AND earlier.lane_id = candidate.lane_id
+              ${selection.sessionOrder ? "" : "AND earlier.lane_id = candidate.lane_id"}
               AND earlier.state IN ('queued', 'running')
               AND earlier.held_after_exhausted_ms IS NULL
               ${continuations ? `AND NOT (earlier.state = 'queued' AND NOT (${CONTINUATION_SQL("earlier")}))` : ""}
@@ -779,7 +852,10 @@ export class SqlSessionExecutionStore
          )` : ""}
        ORDER BY candidate.admitted_at_ms ASC, candidate.id ASC
        LIMIT 1
+       ${selection.lock ? "FOR UPDATE SKIP LOCKED" : ""}
     `).bind(
+      ...(selection.exact ? [selection.exact.workspace_id, selection.exact.id] : []),
+      ...(selection.excluded ?? []).flatMap((session) => [session.workspace_id, session.session_id]),
       input.workspaceId === undefined ? 1 : 0, input.workspaceId ?? null,
       input.sessionId === undefined ? 1 : 0, input.sessionId ?? null,
       input.laneId === undefined ? 1 : 0, input.laneId ?? null,
@@ -894,9 +970,10 @@ export class SqlSessionExecutionStore
       version: number;
       holderId: string;
     },
+    sql: SqlTransaction = this.sql,
   ) {
     const leaseEnd = claimedAt + input.leaseTtlMs;
-    return this.sql.prepare(`
+    return sql.prepare(`
       UPDATE managed_session_executions
          SET state = 'running', attempt_id = ?, owner_id = ?,
              generation = generation + 1, attempt_count = attempt_count + 1,
@@ -909,6 +986,7 @@ export class SqlSessionExecutionStore
          AND (state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND state = 'running'
            AND lease_expires_at_ms <= ?))
          AND (attempt_id IS NULL OR attempt_id NOT IN (${(input.excludeAttemptIds ?? []).map(() => "?").join(",") || "''"}))
+         AND held_after_exhausted_ms IS NULL
          AND attempt_count < max_attempts
          AND deadline_at_ms > ?
          ${lock ? `AND EXISTS (

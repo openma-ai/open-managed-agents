@@ -1,3 +1,4 @@
+import { log, logError } from "@open-managed-agents/shared";
 // Sandbox SDK v2 on E2B for the Cloudflare control plane (SANDBOX_ADAPTER=e2b).
 //
 // Composition only: createSandboxPorts + createE2BV2Adapter, handed to the
@@ -36,7 +37,7 @@ import type {
 import type { RuntimeResourceScope, SessionOutputBinding } from "@open-managed-agents/runtime-resource-contract";
 import { createSandboxPorts, placeholderSubstitutions, sessionEgressPolicy, type SandboxOutputSinkPort, type SandboxVendorPort, type SessionNetworking } from "@open-managed-agents/sandbox-port-kit";
 import { createR2TemporaryCredentials } from "@open-managed-agents/sandbox-port-kit/object-storage";
-import { createE2BV2Adapter, E2B_SANDBOX_DIRECTORIES, E2B_SANDBOX_SETUP, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
+import { createE2BV2Adapter, E2B_MANAGED_SYNC_SETUP, E2B_SANDBOX_SETUP, type E2BObjectStorageOptions, type E2BV2Module } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 import type { E2BSandboxExecutor } from "@open-managed-agents/sandbox-adapter-e2b";
 import { EGRESS_RELAY_PATH } from "@open-managed-agents/managed-credential-resolver";
 import { UNFENCED_SANDBOX_TOKEN, type SessionExecutionAttemptRef } from "@open-managed-agents/sandbox-gateway";
@@ -159,6 +160,8 @@ function e2bExecutor(runtime: E2BSandboxExecutor): SessionSandboxExecutor {
  * different paths: rejected. */
 export function storageConfig(env: E2BSandboxEnv): { kind: "native"; objectStorage: E2BObjectStorageOptions } | { kind: "sync"; memory: MemoryPrefixBucket; files: R2Bucket } {
   const memoryKey = Boolean(env.R2_ACCESS_KEY_ID || env.R2_SECRET_ACCESS_KEY);
+  log({ op: "sandbox.persistence.select", path: memoryKey ? "e2b_native" : "worker_r2_binding",
+    configuration: Object.fromEntries(["R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MEMORY_BUCKET", "FILES_BUCKET"].map(name => [name, Boolean(env[name as keyof E2BSandboxEnv])])) }, "E2B persistence path selected");
   const filesKey = Boolean(env.R2_FILES_ACCESS_KEY_ID || env.R2_FILES_SECRET_ACCESS_KEY);
   if (filesKey && !memoryKey) {
     throw new Error(
@@ -236,7 +239,7 @@ export function createE2BSessionSandbox(input: {
         managedBootstrap: { ...(input.workAuthority ? { disableAutoResume: true } : {}) },
         ...(storage.kind === "native"
           ? { setup: E2B_SANDBOX_SETUP, channels: [new URL(env.R2_ENDPOINT!).hostname], objectStorage: storage.objectStorage }
-          : { setup: E2B_SANDBOX_DIRECTORIES }),
+          : { setup: E2B_MANAGED_SYNC_SETUP }),
       });
       const { ports } = createSandboxPorts(adapter, {
         // Used only by the generic sync (no native storage).
@@ -364,6 +367,9 @@ export function createR2BindingOutputSink(bucket: Pick<R2Bucket, "list" | "get" 
     },
     async publish(input) {
       const prefix = keyPrefix(input.scope);
+      const fields = { session_id: input.scope.sessionId, tenant_id: input.scope.workspaceId, path: "worker_r2_binding", object_prefix: prefix };
+      log({ ...fields, op: "sandbox.persistence.publish.start" }, "Publishing outputs through Worker binding");
+      try {
       const previous = new Set<string>();
       let cursor: string | undefined;
       do {
@@ -380,6 +386,11 @@ export function createR2BindingOutputSink(bucket: Pick<R2Bucket, "list" | "get" 
         previous.delete(`${prefix}${logicalPath}`);
       }
       if (previous.size > 0) await bucket.delete([...previous]);
+      log({ ...fields, op: "sandbox.persistence.publish.complete" }, "Outputs published");
+      } catch (error) {
+        logError({ ...fields, op: "sandbox.persistence.publish.error", error_name: error instanceof Error ? error.name : "UnknownError" }, "Outputs publication failed");
+        throw error;
+      }
     },
   };
 }

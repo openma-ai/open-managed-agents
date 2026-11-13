@@ -29,7 +29,6 @@ beforeAll(async () => {
       });
     },
   }));
-  registerHarness("confirmed-gone", () => ({async run(){const {SessionExecutionLostError}=await import("@open-managed-agents/session-runtime-contract/coordination");throw new SessionExecutionLostError("sandbox_gone");}}));
   registerHarness("record-order", () => ({
     async run(ctx) { texts.push(ctx.userMessage.content[0]?.text); },
   }));
@@ -60,14 +59,9 @@ const lifecycle = (seen: any[]) => seen
   .map((e) => e.type === "session.status_idle" ? `idle:${e.stop_reason?.type}` : e.type);
 
 describe("characterization: SessionDO interrupt and lane drain", () => {
-  it("leaves a typed sandbox loss to the execution lease instead of reporting failed idle", async () => {
-    const id=await createSession("confirmed-gone");
-    await send(id,message("lost"));
-    await until(id,e=>e.some(x=>x.type==="session.status_running"));
-    await new Promise(r=>setTimeout(r,1000));
-    const seen=await events(id);
-    expect(seen.filter(e=>e.type==="session.error"||e.type==="session.status_idle")).toEqual([]);
-  },30000);
+  // Sandbox-loss continuation is covered by provider-failure-continuation.test.ts:
+  // real tool call, correlated error, model continuation and one normal idle.
+  // Session execution fencing is separately covered by recovery-do.test.ts.
 
   it("interrupting a running turn ends it once with idle end_turn", async () => {
     const id = await createSession("hang-until-abort");
@@ -157,7 +151,7 @@ async function settledExecution(id, polls = 150) {
 }
 
 
-  it("renews the same attempt through successful cleanup and releases only after publication", async () => {
+  it("renews the same attempt through storage finalization before derived artifact publication", async () => {
     const id = await createSession("record-order");
     const observation = { before: null, after: null, order: [] };
     await runInDurableObject(stubOf(id), instance => {
@@ -169,18 +163,39 @@ async function settledExecution(id, polls = 150) {
       };
       instance.publishAgentsApiArtifacts = async () => { observation.order.push("publish"); };
       const prepare = instance.doWarmUpSandbox.bind(instance);
-      instance.doWarmUpSandbox = async () => { await prepare(); instance.portsSandbox = { endExecution: async () => { observation.order.push("release"); } }; };
+      instance.doWarmUpSandbox = async () => {
+        await prepare();
+        const endExecution = instance.portsSandbox.endExecution.bind(instance.portsSandbox);
+        instance.portsSandbox.endExecution = async () => {
+          const current = instance.portsSandbox.state.current;
+          observation.physical = await current?.runtime.describeSandbox();
+          observation.handle = current?.handle;
+          console.log(JSON.stringify({op:"cleanup.storage.before", session_id:id,
+            handle:observation.handle, physical:observation.physical,
+            lost:instance.portsSandbox.state.lost}));
+          await endExecution();
+          observation.order.push("storage-finalized");
+          console.log(JSON.stringify({op:"cleanup.storage.after",session_id:id,order:observation.order}));
+        };
+      };
     });
     await send(id, message("start"));
     const settled = await settledExecutionLong(id);
     expect(settled[0].state, JSON.stringify({ settled, observation, events: await events(id) })).toBe("completed");
-    expect(observation.order).toEqual(["sync", "publish", "release"]);
+    // endExecution syncs storage/checkpoints and arms idle; it does not
+    // physically release the runtime. Derived artifact reads come afterwards.
+    expect(observation.physical?.running, JSON.stringify(observation)).toBe(true);
+    expect(observation.order).toEqual(["sync", "storage-finalized", "publish"]);
     expect(observation.after.attempt_id).toBe(observation.before.attempt_id);
     expect(observation.after.generation).toBe(observation.before.generation);
     expect(observation.after.lease_expires_at_ms).toBeGreaterThan(observation.before.lease_expires_at_ms);
     expect((await events(id)).filter(e => e.type === "session.error")).toEqual([]);
+    await runInDurableObject(stubOf(id), async (instance, state) => {
+      await instance._recoveryPromise; await instance._recoveryRun; await instance._finalizePromise;
+      await Promise.all(instance._maintenanceRuns.values()); await state.storage.deleteAlarm();
+    });
   }, 50_000);
-  it.each(["cancel", "lost", "failure"])("does not publish or release a successful terminal after cleanup %s", async kind => {
+  it.each(["cancel", "lost", "failure"])("preserves execution ownership and reports persistence separately after cleanup %s", async kind => {
     const id = await createSession("record-order");
     const order: string[] = [];
     let entered = false;
@@ -209,7 +224,7 @@ async function settledExecution(id, polls = 150) {
     }
     const settled = kind === "lost" ? (await env.MAIN_DB.prepare("SELECT state,generation,owner_id FROM managed_session_executions WHERE session_id=?").bind(id).all()).results : await settledExecution(id);
     const seen = await events(id);
-    expect(order).toEqual([]);
+    expect(order).toEqual(kind === "failure" ? ["publish"] : []);
     if (kind === "cancel") {
       expect(settled[0].state).toBe("cancelled");
       expect(seen.filter(e => e.type === "session.error")).toEqual([]);
@@ -218,8 +233,9 @@ async function settledExecution(id, polls = 150) {
       expect(settled[0]).toMatchObject({ state: "running", generation: 2, owner_id: "replacement" });
       expect(seen.filter(e => e.type === "session.error" || e.type === "session.status_idle")).toEqual([]);
     } else {
-      expect(settled[0].state).toBe("failed");
-      expect(seen.filter(e => e.type === "session.error")).toHaveLength(1);
-      expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["retries_exhausted"]);
+      expect(settled[0].state).toBe("completed");
+      expect(seen.filter(e => e.type === "session.error")).toEqual([]);
+      expect(seen.filter(e => e.type === "session.warning" && e.source === "sandbox.persistence")).toHaveLength(1);
+      expect(seen.filter(e => e.type === "session.status_idle").map(e => e.stop_reason.type)).toEqual(["end_turn"]);
     }
   }, 30_000);

@@ -105,7 +105,7 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
   /** The Environment setup succeeded on this sandbox (environment cache). */
   environmentPrepared(): void { this.state.options.environmentCache?.prepared(this.state.scope()); }
   /** Turn end / before stop write-back (session-sandbox-storage-egress). */
-  syncStorage(reason: "turn_end" | "before_stop"): Promise<void> { return syncStorage(this.state, reason); }
+  syncStorage(reason: "turn_end" | "before_stop" | "checkpoint"): Promise<void> { return syncStorage(this.state, reason); }
   /** Execution end: the sandbox keeps running until the idle pause. */
   endExecution(): Promise<void> { return endExecution(this.state); }
   /** The idle timer fired. */
@@ -132,11 +132,20 @@ export class PortsSessionSandbox<R> implements SandboxExecutor {
       await ports.storage.detach({ runtime: open.runtime, scope }).catch(() => undefined);
       await ports.egress.revoke({ runtime: open.runtime, scope, fence: state.fence(scope), reason: "completed" }).catch(() => undefined);
     }
-    const saved = await state.load();
-    if (saved.phase === "released") { await state.retryDiscards(saved); return; }
-    const handle = open?.handle ?? recordedHandle(saved);
-    if (handle !== undefined) await ports.sandbox.release({ scope, handle });
-    await state.apply(saved, { type: "release" });
+    // Terminal publication owns cleanup before any physical deletion.
+    let released = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (!await state.isCurrent(state.execution())) throw new SessionSandboxStateConflictError("Terminal sandbox authority was lost");
+      const saved = await state.load();
+      if (saved.phase === "released" || await state.apply(saved, { type: "release" }) !== null) {
+        released = true;
+        break;
+      }
+    }
+    if (!released) throw new SessionSandboxStateConflictError("Could not commit terminal sandbox state");
+    if (open !== null) await state.releaseOwn(open.handle);
+    await state.retryReleases(await state.load());
+    await state.retryDiscards();
   }
 
   /** A store or the outputs added to an open sandbox; a fresh open attaches them itself. */

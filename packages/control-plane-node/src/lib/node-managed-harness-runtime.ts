@@ -45,11 +45,19 @@ class ManagedNodeHistoryStore implements HistoryStore {
     initialEvents: SessionBootstrapEvent[],
     events: SessionEventView[],
   ) {
+    // Node admission records custom results without checking the call exists
+    // (Cloudflare refuses them). Such a receipt stays in the canonical log but
+    // is not a tool result for any call: projecting it would hand the model an
+    // orphan tool_result that providers reject.
+    const toolUseIds = new Set(events.flatMap((event) =>
+      event.type === "agent.tool_use" || event.type === "agent.custom_tool_use" || event.type === "agent.mcp_tool_use" ? [event.id] : []));
     this.events = [
       ...initialEvents.map(
         (event) => encodeRuntimeSessionEvent(event) as SessionEvent,
       ),
-      ...events.map(toHarnessHistoryEvent),
+      ...events
+        .filter((event) => event.type !== "user.custom_tool_result" || toolUseIds.has(event.customToolUseId))
+        .map(toHarnessHistoryEvent),
     ];
   }
 

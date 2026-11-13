@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import {
+  resolvePiModelCardRouting,
   findPiCatalogModel,
   PI_UNKNOWN_MODEL_CONTEXT_WINDOW,
   PI_UNKNOWN_MODEL_MAX_TOKENS,
@@ -107,15 +108,7 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
   const catalogModels = plan.catalog?.getModels() ?? [];
   const catalogModel = catalogModels.find((model) => model.id === resolvePiCatalogModelId(input.model))
     ?? findPiCatalogModel(input.model);
-  const baseUrl = input.baseURL ?? catalogModel?.baseUrl ?? plan.catalog?.baseUrl;
-  const api = input.piConfig?.api
-    ?? plan.api
-    ?? catalogModel?.api
-    ?? inferProviderApi(plan.id, catalogModels);
-
-  if (!baseUrl) {
-    throw new Error(`Pi provider ${plan.id} does not define a base URL`);
-  }
+  const { api, baseUrl } = resolvePiModelCardRouting(input);
 
   const baseModel: Model<Api> = catalogModel
     ? {
@@ -371,7 +364,7 @@ function resolveProviderStreams(
   model: Model<Api>,
   catalogModel: Model<Api> | undefined,
 ): ProviderStreams {
-  if (plan.streams) return plan.streams;
+  if (plan.streams && (plan.api === undefined || plan.api === model.api)) return plan.streams;
 
   // A custom model may live under an official provider id while selecting a
   // different Pi API implementation. Let Pi's registry own that dispatch.
@@ -381,15 +374,6 @@ function resolveProviderStreams(
   }
   if (plan.catalog) return delegateProviderStreams(plan.catalog);
   throw new Error(`Pi has no API implementation registered for "${model.api}"`);
-}
-
-function inferProviderApi(providerId: string, models: readonly Model<Api>[]): Api {
-  const apis = new Set(models.map((model) => model.api));
-  if (apis.size === 1) return apis.values().next().value as Api;
-  throw new Error(
-    `Model is not in Pi's ${providerId} catalog and its API cannot be inferred; `
-      + "use a catalog model or a legacy compatible provider tag for a custom endpoint",
-  );
 }
 
 function delegateProviderStreams(provider: Provider): ProviderStreams {

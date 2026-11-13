@@ -249,7 +249,17 @@ export class SqlSessionRuntimeProjectionPersistence
       return { type: "execution_fence_lost" };
     }
     const rootGuard = input.workRoot === undefined ? undefined : await this.verifyWorkRoot(input);
-    if (input.workRoot !== undefined && (rootGuard === null || finalization !== undefined)) return { type: "execution_fence_lost" };
+    if (input.workRoot !== undefined && finalization !== undefined) return { type: "execution_fence_lost" };
+    if (input.workRoot !== undefined && rootGuard === null) {
+      // A concurrent usage projection can advance the revision between the
+      // application read and root verification. Retry from a fresh read; every
+      // attempt must prove the root and the live Work fence again.
+      const current = await this.findCurrent(input);
+      if (current !== null && current.revision !== input.expectedRevision) {
+        return { type: "revision_conflict", actualRevision: current.revision };
+      }
+      return { type: "execution_fence_lost" };
+    }
     const guarded = finalization ?? rootGuard ?? startup?.root ?? undefined;
     const now = this.#now().getTime();
     const workClock = guarded === undefined ? "?" : guarded.dialect === "postgres"

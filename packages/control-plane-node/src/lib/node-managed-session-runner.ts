@@ -16,6 +16,7 @@ import { abortedError, linkAbort, untilAborted } from "@open-managed-agents/sess
 import {
   answeredToolCallIds,
   asWireEvents,
+  knownToolCallIds,
   stillPending,
 } from "@open-managed-agents/session-runtime-contract/requires-action";
 import {
@@ -680,10 +681,15 @@ export class DefaultNodeManagedSessionRunner
       await this.finishCommittedExecution(input, input.executionFence, input.committedTerminal);
       return;
     }
-    const answers = planRequiresActionAnswers(
-      asWireEvents(input.events.map((candidate) => encodeRuntimeSessionEvent(candidate) as { type?: string })),
-      () => asWireEvents(input.historyEvents.map((candidate) => encodeRuntimeHistoryEvent(candidate))),
-    );
+    const batchWire = asWireEvents(input.events.map((candidate) => encodeRuntimeSessionEvent(candidate) as { type?: string }));
+    const priorWire = () => asWireEvents(input.historyEvents
+      .filter((candidate) => !input.laterAnswerEventIds?.has(candidate.id))
+      .map((candidate) => encodeRuntimeHistoryEvent(candidate)));
+    // Admission accepts custom results without checking the call exists. A
+    // batch that answers only calls this Session never made has nothing to
+    // resume: running it would sample the model for a turn nobody asked for.
+    if (answersOnlyUnknownCalls(batchWire, priorWire)) return;
+    const answers = planRequiresActionAnswers(batchWire, priorWire);
     if (answers.type === "no_effect") return;
     const remainingAfterAnswers = answers.remaining;
     const deferred = this.canOverlapSandboxStartup(input);
@@ -743,8 +749,9 @@ export class DefaultNodeManagedSessionRunner
       maxReplacements: this.dependencies.maxSandboxReplacements,
       onGiveUp: (error) => {
         console.warn(`[managed-runner] session ${input.sessionId}: ${error.message}`, error.cause);
+        // Provider recovery owns this failure. Each affected tool receives its
+        // error; it cannot revoke the independent Session execution lease.
         sandboxLost = true;
-        abortController.abort(error);
       },
     });
     let sandboxReady = !deferred;
@@ -983,7 +990,8 @@ export class DefaultNodeManagedSessionRunner
       // agent was never told: the turn must not end as if they existed.
       const unreported = await recovery.close();
       if (unreported !== null) {
-        throw new Error(`The environment restarted after the agent's last step. ${unreported.split(" Background processes")[0].replace(/^This tool call was interrupted because the environment restarted\. /, "")} The changes made in this turn were lost.`);
+        runtime.broadcastProducedEvent({ type: "session.warning", source: "sandbox.persistence",
+          message: `The environment restarted after the agent's last step. ${unreported} Unpublished changes may have been lost.` });
       }
     } catch (error) {
       if (error instanceof SessionExecutionLostError) {
@@ -1017,6 +1025,7 @@ export class DefaultNodeManagedSessionRunner
       }
     } finally {
       let finalizationError: Error | undefined;
+      let persistenceError: Error | undefined;
       // An interrupted or fenced-out turn is not a failed one.
       const executionFailed = runFailed && !abortController.signal.aborted;
       const subagents = this.subagentExecutions.get(input);
@@ -1057,14 +1066,14 @@ export class DefaultNodeManagedSessionRunner
           });
         }
       } catch (error) {
-        finalizationError ??= new Error(sessionErrorMessage(error, "sandbox.turn_end"), { cause: error });
+        persistenceError = new Error(sessionErrorMessage(error, "sandbox.turn_end"), { cause: error });
       }
       // Turn completion is a safe point: all harness/subagent activity has
       // drained. The interval is a target between such points, not a timer
       // that snapshots files while tools are still writing.
       // A lost sandbox replaced mid-turn brings its own workspace binding.
       const turnWorkspace = this.workspaces.get(input) ?? workspace;
-      if (!runFailed && finalizationError === undefined && checkpointService !== undefined && turnWorkspace !== undefined && input.executionFence !== undefined) {
+      if (!runFailed && finalizationError === undefined && persistenceError === undefined && checkpointService !== undefined && turnWorkspace !== undefined && input.executionFence !== undefined) {
         const workspace = turnWorkspace;
         try {
           const active = await checkpointService.active(workspace.scope);
@@ -1087,10 +1096,17 @@ export class DefaultNodeManagedSessionRunner
             workspace.activeId = candidate.id;
           }
         } catch (error) {
-          finalizationError = new Error(sessionErrorMessage(error, "workspace.checkpoint"), { cause: error });
+          persistenceError = new Error(sessionErrorMessage(error, "workspace.checkpoint"), { cause: error });
         }
       }
       const leaseLost = abortController.signal.reason === "lease_lost";
+      if (persistenceError !== undefined && !leaseLost) {
+        // Execution completion and artifact durability are separate. Keep the
+        // runtime/dirty publication state for retry and expose the failure;
+        // never replay a consumed model turn because an upload failed.
+        runtime.broadcastProducedEvent({ type: "session.warning", source: "sandbox.persistence",
+          message: sessionErrorMessage(persistenceError, "turn.persistence") });
+      }
       if (finalizationError !== undefined && !runFailed && !leaseLost) {
         runtime.broadcastProducedEvent({
           type: "session.error",
@@ -1134,7 +1150,7 @@ export class DefaultNodeManagedSessionRunner
       }
       try {
         await runtime.drain();
-        if (sandboxReady && !sandboxLost && input.executionFence !== undefined) {
+        if (sandboxReady && !sandboxLost && persistenceError === undefined && input.executionFence !== undefined) {
           await this.dependencies.afterExecution?.({
             workspaceId: input.workspaceId,
             session: input.session,
@@ -1157,7 +1173,7 @@ export class DefaultNodeManagedSessionRunner
         throw finalizationError;
       }
       const finalWorkspace = this.workspaces.get(input);
-      if (finalWorkspace !== undefined && !runFailed && !abortController.signal.aborted) {
+      if (finalWorkspace !== undefined && !runFailed && persistenceError === undefined && !abortController.signal.aborted) {
         finalWorkspace.trusted = true;
       }
     }
@@ -1330,4 +1346,16 @@ function nodeTurnFailureClass(error: Error, producedAgentEvents: boolean): TurnF
   if (error.name === "ConfigError") return "turn_dead";
   const failureClass = classifyTurnFailure(error, producedAgentEvents);
   return failureClass === "session_terminal" ? "turn_dead" : failureClass;
+}
+
+/** True when every event of a non-empty batch is a custom result for a tool
+ *  use the Session history has never contained. */
+function answersOnlyUnknownCalls(
+  batch: ReturnType<typeof asWireEvents>,
+  history: () => ReturnType<typeof asWireEvents>,
+): boolean {
+  const actionable = batch.filter((event) => event.type !== "system.message");
+  if (actionable.length === 0 || actionable.some((event) => event.type !== "user.custom_tool_result")) return false;
+  const known = knownToolCallIds(history());
+  return actionable.every((event) => typeof event.custom_tool_use_id === "string" && !known.has(event.custom_tool_use_id));
 }

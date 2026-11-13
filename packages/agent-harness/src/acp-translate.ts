@@ -127,6 +127,7 @@ export class AcpTranslator {
    *  status update, either as `_meta.terminal_output(_delta)` or as
    *  `content`, and leaves `rawOutput` unset. */
   #toolOutputs: Map<string, string> = new Map();
+  #openCalls = new Map<string, { session_thread_id?: string }>();
   #producedOutput = false;
   #promptError: string | null = null;
   get promptError(): string | null { return this.#promptError; }
@@ -175,6 +176,13 @@ export class AcpTranslator {
     if (msg.type === "promptError") {
       this.#promptError = msg.error ?? "ACP prompt failed";
       await this.#flushAllPendingToolUses("promptError");
+      // The common projector flushes call identity, but a failed process
+      // cannot send its terminal tool frame. Close each outstanding call once.
+      for (const [tool_use_id, scope] of this.#openCalls) {
+        this.#runtime.broadcast({ type: "agent.tool_result", tool_use_id,
+          ...scope, content: this.#promptError, is_error: true });
+      }
+      this.#openCalls.clear();
       await this.#closeMessage();
       await this.#closeThinking();
       await this.#closeModelRequest(undefined, msg.error ?? "ACP prompt failed");
@@ -372,8 +380,12 @@ export class AcpTranslator {
   #publishProjected(events: ReturnType<ManagedAcpEventProjector["project"]>): void {
     for (const event of events) {
       if (event.type.startsWith("session.thread_") || (event.session_thread_id && ["session.error", "agent.message", "agent.thinking"].includes(event.type))) this.#runtime.broadcast(event as never);
-      if (event.type === "agent.tool_use") this.#runtime.broadcast(event as never);
+      if (event.type === "agent.tool_use") {
+        if (typeof event.id === "string") this.#openCalls.set(event.id, typeof event.session_thread_id === "string" ? { session_thread_id: event.session_thread_id } : {});
+        this.#runtime.broadcast(event as never);
+      }
       if (event.type === "agent.tool_result") {
+        if (typeof event.tool_use_id === "string") this.#openCalls.delete(event.tool_use_id);
         const content = event.content as Array<{text?: string}>;
         this.#runtime.broadcast({ ...event, content: content.map(block => block.text ?? "").join("\n") } as never);
       }

@@ -31,7 +31,7 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
       .bind(c.workspaceId,c.sessionId,c.environmentId,c.environmentId,c.workId,c.generation,c.holder).first<{revision:number}>();
     return row===null?null:Number(row.revision);
   }
-  private async load(input:WorkTurnRequest):Promise<{state:WorkTurnState;source?:Row & {decoded:Source}}>{
+  private async load(input:WorkTurnRequest):Promise<{state:WorkTurnState;pendingRequestIds?:string[];source?:Row & {decoded:Source}}>{
     const c=input.claim;
     if(![c.workspaceId,c.sessionId,c.environmentId,c.workId,c.holder,input.turnId].every(v=>typeof v==="string"&&v.length>0)||!Number.isSafeInteger(c.generation)||c.generation<1)return {state:reject("claim")};
     const revision=await this.revision(input);
@@ -71,11 +71,11 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
       if(work?.state==="stopping")return {state:reject("work_stopping")};
     }
     if(await this.revision(input)!==revision)return {state:reject("authority_changed")};
-    return {state:{type:"current",revision,consumed:source.decoded.consumedByExecutionId===input.turnId,terminal},source};
+    return {state:{type:"current",revision,consumed:source.decoded.consumedByExecutionId===input.turnId,terminal},source,pendingRequestIds:plan.pendingRequestIds};
   }
   async inspect(input:WorkTurnRequest):Promise<WorkTurnState>{return (await this.load(input)).state;}
   async commit(input:WorkTurnRevision & {stopReason:WorkTerminalStopReason;processedAt:string;failure?:"run"|"finalization"}):Promise<WorkTurnState>{
-    const {state,source}=await this.load(input);
+    const {state,source,pendingRequestIds}=await this.load(input);
     if(state.type!=="current")return state;
     if(state.terminal)return state;
     if(state.revision!==input.revision || !state.consumed || !source)return reject("turn_revision");
@@ -83,10 +83,15 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
     const current=await persistence.findCurrent(input.claim);
     if(!current || current.revision!==input.revision)return reject("turn_revision");
     const id=`work-terminal:${encodeURIComponent(input.claim.workId)}:${input.claim.generation}:${encodeURIComponent(input.turnId)}:${input.revision}`;
+    // Canonical pending calls, not a native cancellation/end_turn label,
+    // determine the first custom-tool pause. The same revision/claim CAS below
+    // fences this decision and preserves completed ordinary tool results.
+    const stopReason = input.stopReason.type === "end_turn" && pendingRequestIds?.length
+      ? {type:"requires_action" as const,eventIds:pendingRequestIds} : input.stopReason;
     const events:RuntimeProducedSessionEvent[]=input.failure ? [
       {id:id+":error",type:"session.error",processedAt:input.processedAt,error:{type:"unknown_error",message:input.failure==="run"?"Work run failed":"Work finalization failed",retryStatus:"exhausted"}},
       {id,type:"session.status_idle",processedAt:input.processedAt,stopReason:{type:"retries_exhausted"}},
-    ] : [{id,type:"session.status_idle",processedAt:input.processedAt,stopReason:input.stopReason}];
+    ] : [{id,type:"session.status_idle",processedAt:input.processedAt,stopReason}];
     // Reuse the existing budget/usage/exhausted policy, while constraining its
     // persistence to the caller's *captured* revision rather than refreshing it.
     const application=new SessionRuntimeProjectionApplicationService({workspaceId:input.claim.workspaceId,persistence:{

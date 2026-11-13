@@ -1,3 +1,4 @@
+import { hasOpenExecutionCall } from "./turn-preflight";
 import { handleWorkPhysicalObservation, isWorkPhysicalObservation } from "./work-physical-observation";
 import { handleCfWorkFinalization, CF_WORK_FINALIZATION_PREFIX } from "./cf-work-finalization-host";
 import { CfE2BWorkLease } from "./cf-work-provider-lease";
@@ -2318,10 +2319,19 @@ export class SessionDO extends DurableObject<Env> {
       await this._managedProjectionChain;
       if (threadId === "sthr_primary" && !signal.aborted) {
         try { await this.publishAgentsApiArtifacts(fence); }
-        catch (error) { logWarn({ op: "session_do.openai_agents.artifact_publication_failed", session_id: this.state.session_id, execution_id: fence.executionId, err: this.describeError(error) }, "Completed Session output could not be published as an Agents API artifact"); }
+        catch {
+          // Commit under canonical authority before any local/client append.
+          // The same fenced helper serves recovery and active finalization.
+          const recorded = await appendStaleTurnEvent({ binding: this.env.MAIN_MCP,
+            workspaceId: this.state.tenant_id, sessionId: this.state.session_id,
+            append: event => executionHistory.append(event), sockets: () => this.ctx.getWebSockets("chunks") },
+            { type: "session.warning", source: "agents_api.artifact_publication",
+              message: "The derived Agents API Files publication failed. This does not establish loss of the underlying managed output bytes." }, fence);
+          logWarn({ op: "session_do.openai_agents.artifact_publication_failed", session_id: this.state.session_id,
+            execution_id: fence.executionId, warning_recorded: recorded }, "Derived artifact publication failed");
+        }
       }
       signal.throwIfAborted();
-      if (this.portsSandbox !== null) await this.portsSandbox.endExecution();
       return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
     } catch (err) {
       turnFailed = true;
@@ -4243,6 +4253,11 @@ export class SessionDO extends DurableObject<Env> {
       || sessionId.length === 0
       || runtimeGeneration === null
     ) return;
+    // Copy-sync must write this turn's Memory bytes to the working projection
+    // before canonical reconciliation reads it. Checkpoint sync writes Memory
+    // only; output publication remains independent of idle.
+    if (this.portsSandbox === null) throw new Error("Managed Memory has no sandbox to synchronize");
+    await this.portsSandbox.syncStorage("checkpoint");
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -4991,7 +5006,9 @@ export class SessionDO extends DurableObject<Env> {
     signal?: AbortSignal,
     fence?: SessionExecutionFence,
   ): Promise<{ holdQueuedOnLane?: boolean } | void> {
-    const answers = planRequiresActionAnswers(asWireEvents(batch), () => asWireEvents(history.getEvents()));
+    // Receipt echoes can precede consumption (including a duplicate early reply).
+    // Only transcript results prove a custom answer has actually been applied.
+    const answers = planRequiresActionAnswers(asWireEvents(batch), () => asWireEvents(history.getEvents()).filter((event) => event.type !== "user.custom_tool_result"));
     if (answers.type === "no_effect") return;
     const parkedStill = (answers.remaining?.length ?? 0) > 0;
     const answeredNow = new Set<string>();
@@ -5593,6 +5610,7 @@ export class SessionDO extends DurableObject<Env> {
     let terminalReported = false;
     let idleEmitted = false;
     let managedMemorySynchronized = false;
+    let managedMemoryFailed = false;
     // A successful turn knows its precise stop reason before tool disposal,
     // but `status_idle` is the externally visible lifecycle boundary. Hold
     // the event until every turn-scoped tool (including remote MCP sessions)
@@ -5665,7 +5683,22 @@ export class SessionDO extends DurableObject<Env> {
     // finish before harness/tool construction. This closes the first-turn
     // race where files, repositories or skills were absent from the model's
     // initial capability snapshot and only appeared on a later sandbox call.
-    await this.warmUpSandbox();
+    try {
+      await this.warmUpSandbox();
+    } catch (err) {
+      // This is turn preparation, before this invocation constructs tools or
+      // starts the harness. Tool/job failures must instead return by call ID;
+      // never terminal them from runLaneExecution's general catch.
+      if (!parentSignal?.aborted && !(err instanceof SessionExecutionLostError) && !isTurnCancellationError(err) &&
+          !hasOpenExecutionCall(history.getEvents(), turnThreadId)) {
+        const errorEvent: SessionEvent = { type: "session.error", error: this.describeError(err) };
+        const idleEvent: SessionEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+        history.append(errorEvent); this.broadcastEvent(errorEvent, activeFence);
+        history.append(idleEvent); this.broadcastEvent(idleEvent, activeFence);
+        if (err instanceof Error) this._reportedTurnErrors.add(err);
+      }
+      throw err;
+    }
 
     // Resolve harness via registry — SessionDO never imports a concrete harness
     let harness: HarnessInterface;
@@ -6269,10 +6302,19 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       abortController.signal.throwIfAborted();
-      // Memory mutations are part of turn completion, not an asynchronous
-      // afterthought. This barrier precedes status_idle and execution settle.
-      await this.synchronizeManagedMemoryStores(activeFence);
-      managedMemorySynchronized = true;
+      // Persist Memory while this attempt still owns the fence. Persistence
+      // failure is explicit, but cannot rewrite a consumed model/tool turn.
+      try {
+        await this.synchronizeManagedMemoryStores(activeFence);
+        managedMemorySynchronized = true;
+      } catch (error) {
+        if (error instanceof Error && error.name === "ExecutionFenceLostError") throw error;
+        managedMemoryFailed = true;
+        const warning: SessionEvent = { type: "session.warning", source: "sandbox.persistence",
+          message: `Managed Memory publication failed; source runtime retained: ${this.describeError(error)}` };
+        history.append(warning);
+        this.broadcastEvent(warning, activeFence);
+      }
       abortController.signal.throwIfAborted();
 
       // Determine stop reason based on pending tool confirmations or custom tool results
@@ -6348,7 +6390,7 @@ export class SessionDO extends DurableObject<Env> {
         reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
         completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
       }
-      if (!managedMemorySynchronized && !abortController.signal.aborted && !isTurnCancellationError(terminalError)) {
+      if (!managedMemorySynchronized && !managedMemoryFailed && !abortController.signal.aborted && !isTurnCancellationError(terminalError)) {
         try {
           // Error/cancel rescue pass. Reconciliation is idempotent, so a
           // partially committed prior attempt is safe to retry here.
@@ -6356,22 +6398,14 @@ export class SessionDO extends DurableObject<Env> {
           managedMemorySynchronized = true;
         } catch (error) {
           if (!(error instanceof Error && error.name === "ExecutionFenceLostError")) {
-            terminalError ??= error instanceof Error ? error : new Error(String(error));
-            reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
-            completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
+            managedMemoryFailed = true;
+            const warning: SessionEvent = { type: "session.warning", source: "sandbox.persistence",
+              message: `Managed Memory publication failed; source runtime retained: ${this.describeError(error)}` };
+            history.append(warning);
+            this.broadcastEvent(warning, activeFence);
             logWarn({ op: "session_do.memory_sync.rescue", session_id: this.state.session_id,
               error: error instanceof Error ? error.message : String(error) }, "writable Managed Memory rescue sync failed");
           }
-        }
-      }
-      try {
-        abortController.signal.throwIfAborted();
-        if (!activeFence && !terminalError && this.portsSandbox !== null) await this.portsSandbox.endExecution();
-      } catch (error) {
-        if (!abortController.signal.aborted && !isTurnCancellationError(error)) {
-          terminalError ??= error instanceof Error ? error : new Error(String(error));
-          reportTurnFailure({ type: "exhausted" }, this.describeError(error), failureEvents);
-          completedIdleEvent = { type: "session.status_idle", stop_reason: { type: "retries_exhausted" } };
         }
       }
       if (terminalError && terminalReported) this._reportedTurnErrors.add(terminalError);
@@ -6386,6 +6420,21 @@ export class SessionDO extends DurableObject<Env> {
           this.broadcastEvent(idleEvent, activeFence);
         } catch (err) {
           console.warn(`[processUserMessage] catch-all idle emit failed:`, err);
+        }
+      }
+      // CMA idle means the agent stopped, not that artifact uploads are complete.
+      // Keep the runtime and execution fence until existing finalization finishes;
+      // a later upload failure must not rewrite the consumed turn's outcome.
+      if (!terminalError && !managedMemoryFailed && !abortController.signal.aborted && this.portsSandbox !== null) {
+        await this._managedProjectionChain;
+        try { await this.portsSandbox.endExecution(); }
+        catch (error) {
+          const warning: SessionEvent = { type: "session.warning", source: "sandbox.persistence",
+            message: `Sandbox persistence failed; source runtime retained: ${this.describeError(error)}` };
+          history.append(warning);
+          this.broadcastEvent(warning, activeFence);
+          logWarn({ op: "session_do.sandbox_finalization_failed", session_id: this.state.session_id,
+            error: this.describeError(error) }, "Post-idle sandbox finalization failed; source runtime retained");
         }
       }
       if (this._threadAbortControllers.get(turnThreadId) === abortController) {

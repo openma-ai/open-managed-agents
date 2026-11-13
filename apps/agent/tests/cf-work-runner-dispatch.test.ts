@@ -1,3 +1,4 @@
+import { preparedAcpFixture } from "./prepared-acp-fixture";
 import { expect, it } from "vitest";
 import { createCfWorkRunnerDispatch } from "../src/runtime/cf-work-runner-dispatch";
 import { attemptSandboxTokens, generateSandboxToken, sandboxTokenSha256 } from "@open-managed-agents/sandbox-gateway";
@@ -5,7 +6,7 @@ const delivery = { workspaceId: "ws", environmentId: "env", sessionId: "sess", w
 function fixture(options: { current?: boolean; outside?: boolean } = {}) {
   const calls: unknown[] = []; let issued = 0;
   const tokens = attemptSandboxTokens(); const token = generateSandboxToken();
-  const sandbox = { runtimeHandle: () => ({ provider: "cloudflare", runtimeId: "physical" }), async setOutboundContext(input: unknown) { calls.push(["egress", input]); }, async startWorkRunner(input: unknown) { calls.push(["start", input]); return { id: "p", pid: 1, kill: async () => {}, getStatus: async () => "running" }; } };
+  const sandbox = { preparedAcp: preparedAcpFixture("pinned-acp", "1.2.3"), runtimeHandle: () => ({ provider: "cloudflare", runtimeId: "physical" }), async setOutboundContext(input: unknown) { calls.push(["egress", input]); }, async startWorkRunner(input: unknown) { calls.push(["start", input]); return { id: "p", pid: 1, kill: async () => {}, getStatus: async () => "running" }; } };
   const dispatch = createCfWorkRunnerDispatch({
     command: "/opt/openma/bin/openma-acp-work-item",
     async authorize(input) { calls.push(["authorize", input]); if (options.current === false) return null; return { generation: 1, environment: { config: { type: "cloud" } }, session: { id: "sess", environmentId: "env", agent: { openma: { harness: options.outside ? "default" : "acp-sandbox" } } }, harness: { id: "pinned-acp", version: "1.2.3" } }; },
@@ -41,4 +42,19 @@ it("already aborted delivery has no authority or provider effects", async () => 
 
 it.each(["workspaceId", "environmentId", "sessionId", "workId", "workSecret"] as const)("missing %s is rejected before authority or provider", async key => {
   const f = fixture(); await expect(f.dispatch.dispatch({ ...delivery, [key]: "", signal: new AbortController().signal })).rejects.toThrow(); expect(f.calls).toEqual([]);
+});
+
+it("E2B launches the pinned registry harness using its installed-agent launcher", async () => {
+  let launched: Record<string, string> | undefined;
+  const dispatcher = createCfWorkRunnerDispatch({
+    command: "unused", tokens: attemptSandboxTokens(),
+    authorize: async () => ({ generation: 1, environment: { config: { type: "cloud" } }, session: { id: "sess", environmentId: "env", agent: { openma: { harness: "acp-sandbox" } } }, harness: { id: "pi-acp", version: "0.1.8" } }),
+    issueToken: async () => generateSandboxToken(),
+    sandbox: async () => ({ provider: "e2b", preparedAcp: preparedAcpFixture("pi-acp", "0.1.8"), runtimeHandle: () => ({ provider: "e2b", runtimeId: "physical" }), startManagedProcess: async spec => {
+      launched = spec.env;
+      return { id: "p", pid: 1, created: true, kill: async () => {}, getStatus: async () => "running" };
+    } }),
+  });
+  await dispatcher.dispatch({ ...delivery, signal: new AbortController().signal });
+  expect(JSON.parse(launched!.OPENMA_ACP_HARNESSES)).toEqual([{ id: "pi-acp", version: "0.1.8", command: "/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh" }]);
 });

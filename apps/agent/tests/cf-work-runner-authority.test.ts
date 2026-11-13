@@ -1,3 +1,4 @@
+import { preparedAcpFixture } from "./prepared-acp-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, expect, it } from "vitest";
 import { createCfWorkRunnerAuthority } from "../../main/src/lib/cf-work-runner-authority";
@@ -44,10 +45,10 @@ it("composes real D1 authority and token store through the real CF bootstrap wra
   const { attemptSandboxTokens, issueSandboxToken, sandboxTokenSha256 } = await import("@open-managed-agents/sandbox-gateway");
   const { createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef } = await import("@open-managed-agents/sandbox-gateway-sql");
   const calls: unknown[][] = []; let signs = 0;
-  setCloudflareSandboxForTest({ async setOutboundHandler(_name: string, context: unknown) { calls.push(["egress", context]); }, async setOutboundByHost() {}, async restrictOutboundToHosts(hosts: string[]) { calls.push(["network", hosts]); }, async startProcess(command: string, options: unknown) { calls.push(["start", command, options]); return { id: "runner", pid: 10, async kill() {}, async getStatus() { return "running"; } }; } });
+  setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; }, async setOutboundHandler(_name: string, context: unknown) { calls.push(["egress", context]); }, async setOutboundByHost() {}, async restrictOutboundToHosts(hosts: string[]) { calls.push(["network", hosts]); }, async startProcess(command: string, options: unknown) { calls.push(["start", command, options]); return { id: "runner", pid: 10, async kill() {}, async getStatus() { return "running"; } }; } });
   try {
     const runtime = new CloudflareSandbox({ SANDBOX: {}, MAIN_MCP: {} } as never, f.delivery.sessionId);
-    const dispatcher = await createCfSqlWorkRunnerDispatch({ sql: f.sql, work: f.work, controlPlaneOrigin: "https://control.test", command: "/opt/openma/bin/openma-acp-work-item", tokens: attemptSandboxTokens(), sandbox: async () => runtime });
+    const dispatcher = await createCfSqlWorkRunnerDispatch({ sql: f.sql, work: f.work, controlPlaneOrigin: "https://control.test", command: "/opt/openma/bin/openma-acp-work-item", tokens: attemptSandboxTokens(), sandbox: async () => Object.assign(runtime,{preparedAcp:preparedAcpFixture("claude-acp","0.94.0")}) });
     await dispatcher.dispatch({ ...f.delivery, signal: new AbortController().signal });
     const launched = calls.find(c => c[0] === "start")![2] as { env: Record<string, string>; environmentMode: string };
     const egress = calls.find(c => c[0] === "egress")![1] as { tokenSha256: string };
@@ -75,7 +76,7 @@ it("actual agent HTTP dispatch reaches trusted SQL authority then management boo
   const crypto = new WebCryptoAesGcm(secret, "managed.environment-work.secret");
   const stored = await f.work.find(f.delivery); await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await crypto.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
   let starts=0;
-  setCloudflareSandboxForTest({ async setOutboundHandler(){}, async setOutboundByHost(){}, async restrictOutboundToHosts(){}, async startProcess(){ starts++; return {id:"p",pid:1,async kill(){},async getStatus(){return "running";}}; } });
+  setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; }, async setOutboundHandler(){}, async setOutboundByHost(){}, async restrictOutboundToHosts(){}, async startProcess(){ starts++; return {id:"p",pid:1,async kill(){},async getStatus(){return "running";}}; } });
   try {
     const app = (await import("../src/index")).default;
     const response = await app.fetch(new Request("https://agent.test/__internal/work/dispatch", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(f.delivery)}), {...env,PLATFORM_ROOT_SECRET:secret,PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/openma-acp-work-item"} as never);
@@ -111,7 +112,7 @@ it("expired active Work cannot bootstrap via Work control-route grace", async ()
 });
 it("actual entry rejects missing scope and mismatched secret without provider launch", async () => {
   const f=await fixture(); const app=(await import("../src/index")).default; const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox"); let starts=0;
-  setCloudflareSandboxForTest({async startProcess(){starts++;}});
+  setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async startProcess(){starts++;}});
   try {
     const configured={...env,PLATFORM_ROOT_SECRET:"entry-test-root-012345678901234567890",PUBLIC_BASE_URL:"https://control.test",OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner"};
     const post=(body:unknown)=>app.fetch(new Request("https://agent.test/__internal/work/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),configured as never);
@@ -125,10 +126,10 @@ it.each(["sandbox", "egress", "network"])("cached holder cannot authorize launch
   const {CloudflareSandbox,setCloudflareSandboxForTest}=await import("../src/runtime/sandbox"); const {attemptSandboxTokens}=await import("@open-managed-agents/sandbox-gateway");
   let starts=0, deliveries=0, stop=false;
   const lose=async()=>{await f.sql.prepare("UPDATE managed_environment_work SET state='stopped' WHERE workspace_id='default' AND id=?").bind(f.delivery.workId).run();};
-  setCloudflareSandboxForTest({async setOutboundHandler(){if(stop&&boundary==="egress")await lose();},async setOutboundByHost(){},async restrictOutboundToHosts(){if(stop&&boundary==="network")await lose();},async startProcess(){starts++;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+  setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async setOutboundHandler(){if(stop&&boundary==="egress")await lose();},async setOutboundByHost(){},async restrictOutboundToHosts(){if(stop&&boundary==="network")await lose();},async startProcess(){starts++;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
   try {
     const runtime=new CloudflareSandbox({SANDBOX:{},MAIN_MCP:{}} as never,f.delivery.sessionId);
-    const dispatcher=await createCfSqlWorkRunnerDispatch({sql:f.sql,work:f.work,controlPlaneOrigin:"https://control.test",command:"/opt/openma/bin/runner",tokens:attemptSandboxTokens(),sandbox:async()=>{deliveries++;if(stop&&boundary==="sandbox")await lose();return runtime;}});
+    const dispatcher=await createCfSqlWorkRunnerDispatch({sql:f.sql,work:f.work,controlPlaneOrigin:"https://control.test",command:"/opt/openma/bin/runner",tokens:attemptSandboxTokens(),sandbox:async()=>{deliveries++;if(stop&&boundary==="sandbox")await lose();return Object.assign(runtime,{preparedAcp:preparedAcpFixture("claude-acp","0.94.0")});}});
     await dispatcher.dispatch({...f.delivery,signal:new AbortController().signal}); expect(starts).toBe(1);
     stop=true; await expect(dispatcher.dispatch({...f.delivery,signal:new AbortController().signal})).rejects.toThrow(); expect(starts).toBe(1); expect(deliveries).toBe(2);
   } finally {setCloudflareSandboxForTest(undefined);}
@@ -139,7 +140,7 @@ it("existing dispatched EnvironmentWorker poll automatically reaches real CF ent
   const cipher=new WebCryptoAesGcm("auto-root-012345678901234567890123", "managed.environment-work.secret"); const stored=await f.work.find(f.delivery);
   await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
   const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox"); let starts=0,polls=0; let launched:any;
-  setCloudflareSandboxForTest({async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(_c:any,o:any){starts++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+  setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async setOutboundHandler(){},async setOutboundByHost(){},async restrictOutboundToHosts(){},async startProcess(_c:any,o:any){starts++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
   try {
     const {createCfDispatchedEnvironmentWorker}=await import("../src/runtime/cf-environment-worker");
     const worker=createCfDispatchedEnvironmentWorker({...env,PLATFORM_ROOT_SECRET:"auto-root-012345678901234567890123",PUBLIC_BASE_URL:"https://control.test",MAIN_MCP:{},OPENMA_WORK_RUNNER_COMMAND:"/opt/openma/bin/runner"} as never,{environmentId:f.delivery.environmentId,workspaceId:"default",environmentKey:"standing-must-stay-host"},{baseURL:"https://control.test",beta:{webhooks:{unwrap:()=>({id:"event",type:"event",data:{type:"session.status_run_started",workspace_id:"default"}})}},withOptions:()=>({beta:{environments:{work:{poll:async()=>++polls===1?{id:f.delivery.workId,environment_id:f.delivery.environmentId,data:{type:"session",id:f.delivery.sessionId},secret:f.delivery.workSecret,metadata:{}}:null,stop:async()=>{throw Error("Host must not stop claimed Work");}}}}})} as never);
@@ -158,7 +159,7 @@ it.each(["valid", "latest", "duplicate", "relative-command", "invalid-argv", "un
  const f=await fixture(); const {WebCryptoAesGcm}=await import("@open-managed-agents/integrations-adapters-cf"); const {setCloudflareSandboxForTest}=await import("../src/runtime/sandbox");
  await f.sql.prepare("UPDATE managed_sessions SET document=? WHERE workspace_id='default' AND id=?").bind(JSON.stringify({id:f.delivery.sessionId,environmentId:f.delivery.environmentId,agent:{id:"business-agent",version:9,openma:{harness:"acp-sandbox",acp:{agent:{command:"/opt/agents/fixed",args:["--acp"]}}}}}),f.delivery.sessionId).run();
  const secret="inventory-root-012345678901234567890"; const cipher=new WebCryptoAesGcm(secret,"managed.environment-work.secret"); const stored=await f.work.find(f.delivery); await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
- let launched:any; let mutations=0; setCloudflareSandboxForTest({async setOutboundHandler(){mutations++;},async setOutboundByHost(){mutations++;},async restrictOutboundToHosts(){mutations++;},async startProcess(_c:any,o:any){mutations++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
+ let launched:any; let mutations=0; setCloudflareSandboxForTest({ async exec(command: string) { return { exitCode: 0, stdout: command.includes("OMA_ACP_INSTALL_OK") ? "OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/claude-acp/0.94.0/acp-launch.sh\nOMA_ACP_INSTALL_OK" : "", stderr: "" }; },async setOutboundHandler(){mutations++;},async setOutboundByHost(){mutations++;},async restrictOutboundToHosts(){mutations++;},async startProcess(_c:any,o:any){mutations++;launched=o.env;return{id:"p",pid:1,async kill(){},async getStatus(){return"running";}};}});
  try {
   const app=(await import("../src/index")).default;
   const item={id:"installed-release",version:"2.4.6",command:"/opt/agents/fixed",args:["--acp"]};

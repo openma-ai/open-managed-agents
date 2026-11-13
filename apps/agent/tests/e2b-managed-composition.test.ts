@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { createE2BSessionSandbox } from "../src/runtime/e2b-session-sandbox";
+import { E2B_MANAGED_SYNC_SETUP } from "@open-managed-agents/sandbox-adapter-e2b/v2";
 const observed = vi.hoisted(() => ({ commands: [] as { command: string; user?: string }[], writes: [] as { path: string; user?: string; content: string }[], files: new Map<string, string>(), networks: [] as {allowOut?:string[]}[] }));
 vi.mock("e2b", () => ({ Sandbox: {
   create: async () => ({ sandboxId: "physical", kill: async () => {}, updateNetwork: async (network: {allowOut?:string[]}) => { observed.networks.push(network); },
@@ -22,6 +23,7 @@ it("ordinary E2B commands run as oma-worker while setup alone is root", async ()
   await build().exec("agent-command");
   expect(observed.commands.find(call=>call.command==="agent-command")?.user).toBe("oma-worker");
   expect(observed.commands.find(call=>call.command.startsWith("mkdir -p"))?.user).toBe("root");
+  expect(observed.commands).toContainEqual({ command: E2B_MANAGED_SYNC_SETUP, user: "root" });
 });
 it("Work authority is checked before any E2B acquire when the claim has been lost", async () => {
   const sandbox=build({attempt:{workspaceId:"ws",sessionId:"sess",executionId:"work",attemptId:"environment-work-claim:3",ownerId:"env",generation:3},isCurrent:async()=>false,token:async()=>"token"});

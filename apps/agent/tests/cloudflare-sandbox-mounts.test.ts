@@ -3,8 +3,8 @@
 // with R2_ACCESS_KEY_ID (one key for every bucket). A key that cannot reach the
 // bucket is AccessDenied, which the shim reports as "cannot verify the new FUSE
 // connection".
-import { describe, expect, it } from "vitest";
-import { CloudflareSandbox } from "../src/runtime/sandbox";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CloudflareSandbox, setCloudflareSandboxForTest } from "../src/runtime/sandbox";
 
 const base = {
   SANDBOX: {},
@@ -63,9 +63,35 @@ describe("CloudflareSandbox R2 mounts", () => {
     }
   });
 
-  it("keeps the local outputs directory when no R2 key is configured (wrangler dev)", () => {
-    const env = { SANDBOX: {}, FILES_BUCKET: {} };
-    expect(new CloudflareSandbox(env as never, "sess").sessionOutputsMount({ tenantId: "t1", sessionId: "s1" }))
-      .toMatchObject({ bucket: "FILES_BUCKET", options: { localBucket: true } });
+  afterEach(() => setCloudflareSandboxForTest(undefined));
+  it.each(["FILES_BUCKET", "FILES_BUCKET_NAME", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"])("fails before provider access when %s is missing", (name) => {
+    const mountBucket = vi.fn();
+    setCloudflareSandboxForTest({ mountBucket });
+    const env = { ...base, [name]: undefined };
+    expect(() => new CloudflareSandbox(env as never, "sess").sessionOutputsMount({ tenantId: "t1", sessionId: "s1" })).toThrow(name);
+    expect(mountBucket).not.toHaveBeenCalled();
   });
+  it("rejects missing credentials instead of returning a local directory", () => {
+    expect(() => new CloudflareSandbox({ SANDBOX: {}, FILES_BUCKET: {} } as never, "sess").sessionOutputsMount({ tenantId: "t1", sessionId: "s1" })).toThrow("Managed outputs persistence requires");
+  });
+  it("propagates mount failure", async () => {
+    setCloudflareSandboxForTest({ mountBucket: vi.fn().mockRejectedValue(new Error("mount denied")) });
+    await expect(new CloudflareSandbox(base as never, "sess").mountSessionOutputs({ tenantId: "t1", sessionId: "s1" })).rejects.toThrow("mount denied");
+  });
+  it("rejects a running container with unattached required mounts", async () => {
+    setCloudflareSandboxForTest({ provision: vi.fn().mockResolvedValue({ incarnation: "old", started: false, pendingMounts: ["/mnt/session/outputs"] }) });
+    const sandbox = new CloudflareSandbox(base as never, "sess");
+    await expect(sandbox.provisionSandbox({ incarnation: "new", mounts: [sandbox.sessionOutputsMount({ tenantId: "t1", sessionId: "s1" })!] })).rejects.toThrow("mounts not attached");
+  });
+  it.each(["MEMORY_BUCKET", "MEMORY_BUCKET_NAME", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"])("Memory refuses missing %s before provider access", async name => {
+    const mountBucket = vi.fn(); setCloudflareSandboxForTest({ mountBucket });
+    const runtime = new CloudflareSandbox({ ...base, [name]: undefined } as never, "memory-failure");
+    await expect(runtime.mountMemoryStore({storeName:"notes",storeId:"store",readOnly:false})).rejects.toThrow(name);
+    expect(mountBucket).not.toHaveBeenCalled();
+  });
+  it("Memory propagates a configured provider mount rejection", async () => {
+    setCloudflareSandboxForTest({mountBucket:vi.fn().mockRejectedValue(new Error("Memory mount rejected"))});
+    await expect(new CloudflareSandbox(base as never,"memory-failure").mountMemoryStore({storeName:"notes",storeId:"store",readOnly:false})).rejects.toThrow("Memory mount rejected");
+  });
+
 });

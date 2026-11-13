@@ -26,6 +26,29 @@ import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 registerTestHarnesses();
 
 describe("canonical continuation reconciliation", () => {
+  it("keeps consumed custom answers before the next model turn after canonical backfill", async () => {
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName("custom_order_" + crypto.randomUUID()));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      const use = { id: "custom", type: "agent.custom_tool_use", name: "approve", input: {} };
+      const receipt = { id: "receipt", type: "user.custom_tool_result", custom_tool_use_id: "custom", content: [{ type: "text", text: "APPROVED" }] };
+      const answer = { id: "transcript", type: "agent.tool_result", tool_use_id: "custom", content: "APPROVED", transcript_only: true };
+      const next = { id: "next-model", type: "agent.message", content: [{ type: "text", text: "CONTINUED" }] };
+      history.append(use); history.append(receipt); history.append(answer); history.append(next);
+      await history.reconcileCanonicalEvents([use, receipt, next]);
+      const restored = new SqliteHistory(state.storage.sql);
+      expect(restored.getEvents().map(event => event.id)).toEqual(["custom", "receipt", "transcript", "next-model"]);
+      const messages = restored.getMessages();
+      expect(messages.map(message => message.role)).toEqual(["assistant", "tool", "assistant"]);
+      expect(JSON.stringify(messages)).toContain("APPROVED");
+      expect(JSON.stringify(messages)).not.toContain("interrupted");
+      // A receipt without a consumed transcript must not become a tool result.
+      history.append({ id: "pending", type: "agent.custom_tool_use", name: "approve", input: {} });
+      history.append({ id: "unconsumed", type: "user.custom_tool_result", custom_tool_use_id: "pending", content: [] });
+      expect(history.getEvents().filter(event => event.type === "agent.tool_result")).toHaveLength(1);
+    });
+  });
+
   it.each([false, true])("keeps spill identity, canonical middle order and one broadcast (legacy: %s)", async legacy => {
     const { backfillStaleTurnEvents } = await import("../../apps/agent/src/runtime/stale-turn-settlement");
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName("spill_" + crypto.randomUUID()));
@@ -2044,7 +2067,8 @@ describe("SessionDO recovery — DO-level", () => {
       const origDel = ctx.storage.deleteAlarm.bind(ctx.storage);
 
       await state.storage.deleteAlarm();
-      await state.storage.setAlarm(Date.now() - 1000);
+      // Keep a future slot so the platform cannot pre-clear it before the spy.
+      await state.storage.setAlarm(Date.now() + 60_000);
 
       spyArmed = true;
       ctx.storage.setAlarm = async (t: number) => {
@@ -2056,7 +2080,7 @@ describe("SessionDO recovery — DO-level", () => {
         return origDel();
       };
     });
-    await runDurableObjectAlarm(stub);
+    await runInDurableObject(stub, async (instance) => instance.alarm());
     await new Promise((r) => setTimeout(r, 50));
     spyArmed = false;
     // Backstop precedes external maintenance, then quiescence clears it.

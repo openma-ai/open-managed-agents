@@ -1,3 +1,4 @@
+import { log } from "@open-managed-agents/shared";
 export { backfillWorkPublications } from "./work-publication-backfill";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
@@ -187,7 +188,9 @@ export class SqlEnvironmentWorkStore
             this.client.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE abs(-9223372036854775808) END"),
           ])).slice(recoveryStatements.length);
         validate(results);
-        return this.toStored(results[2]!.results![0]!);
+        const stored = await this.toStored(results[2]!.results![0]!);
+        log({ op: "work.enqueue", tenant_id: input.workspaceId, environment_id: stored.work.environmentId, work_id: stored.work.id, session_id: stored.work.data.type === "session" ? stored.work.data.id : undefined, enqueued_at: stored.work.createdAt, state: stored.work.state, claim_generation: stored.claim?.generation ?? 0 }, "Session Work ensured");
+        return stored;
       } catch (error) {
         if (input.expectedSessionRevision !== undefined) throw error;
         if (error === conflict) continue;
@@ -372,6 +375,8 @@ export class SqlEnvironmentWorkStore
     input: ClaimAvailableEnvironmentWork,
   ): Promise<ClaimAvailableEnvironmentWorkResult> {
     const claimedAt = timestamp(input.claimedAt);
+    const context = { tenant_id: input.workspaceId, environment_id: input.environmentId, worker_id: input.workerId, call_id: crypto.randomUUID(), claimed_at: input.claimedAt, reclaim_before: input.reclaimBefore, heartbeat_ttl_seconds: input.heartbeatTtlSeconds };
+    log({ ...context, op: "work.claim.attempt", filter: "queued and unclaimed/reclaim_before; starting/active and lease expired", order: "COALESCE(claim_at, created_at) ASC, created_at ASC, id ASC" }, "Atomic Work claim attempt");
     if (input.workerId !== null) {
       await this.client
         .prepare(
@@ -412,7 +417,10 @@ export class SqlEnvironmentWorkStore
                      AND claim_at + heartbeat_ttl_seconds * 1000 <= ?
                    )
                  )
-               ORDER BY created_at ASC, id ASC
+               -- A failed delivery retains its reservation. Order retries by
+               -- their last claim, so an old failing item cannot monopolize
+               -- every wake ahead of Work that has never been offered.
+               ORDER BY COALESCE(claim_at, created_at) ASC, created_at ASC, id ASC
                LIMIT 1
             )
             AND (
@@ -440,9 +448,13 @@ export class SqlEnvironmentWorkStore
       )
       .all<EnvironmentWorkRow>();
     const row = rows.results?.[0];
-    return row === undefined
-      ? { type: "empty" }
-      : { type: "claimed", record: await this.toStored(row) };
+    if (row === undefined) {
+      log({ ...context, op: "work.claim.skipped", reason: "no_row_matching_atomic_eligibility_filter" }, "No eligible Work claim");
+      return { type: "empty" };
+    }
+    const record = await this.toStored(row);
+    log({ ...context, op: record.claim!.generation > 1 ? "work.claim.reclaimed" : "work.claim.acquired", work_id: record.work.id, session_id: record.work.data.type === "session" ? record.work.data.id : undefined, claim_generation: record.claim!.generation, enqueued_at: record.work.createdAt }, "Work reservation acquired; ACK still required");
+    return { type: "claimed", record };
   }
 
   async queueStats(

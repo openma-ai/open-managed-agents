@@ -1,6 +1,7 @@
 """Template-prestarted management launcher. No shell, stdio bridge or Work logic.
-The directory and this file must be owned by root and inaccessible to agents.
-Only the provider Files API (user=root) may submit management requests.
+The directory and this file must be owned by root and inaccessible without explicit guest sudo.
+The provider Files API uses root for requests. Guest sudo can also access this
+plane; guest UID separation is not a security boundary against the agent.
 """
 import hashlib
 import zlib

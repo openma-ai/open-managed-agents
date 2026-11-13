@@ -215,3 +215,28 @@ it("pairs canonical released continuation with its real result before sampling t
   expect(messages.map(message => message.role)).toEqual(["assistant", "tool", "user"]);
   expect(JSON.stringify(messages)).toContain("REAL_RANDOM_RESULT");
 });
+
+
+it("retains a late custom answer when pre-admitted steering is consumed between parked replies", () => {
+  const events: any[] = [
+    { type: "agent.custom_tool_use", id: "first", name: "approve", input: {} },
+    { type: "agent.tool_use", id: "ordinary", name: "bash", input: {} },
+    { type: "agent.custom_tool_use", id: "last", name: "approve", input: {} },
+    { type: "agent.tool_result", tool_use_id: "ordinary", content: "one ordinary effect" },
+    { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["first", "last"] } },
+    { type: "agent.tool_result", tool_use_id: "first", content: "first answer" },
+    { type: "user.message", content: [{ type: "text", text: "queued steering" }] },
+    { type: "agent.tool_result", tool_use_id: "last", content: "last answer" },
+    { type: "session.status_running" },
+  ];
+  const before = structuredClone(events);
+  const messages = eventsToMessages(events as never);
+  expect(messages.map(message => message.role)).toEqual(["assistant", "tool", "user"]);
+  expect(JSON.stringify(messages)).toContain("last answer");
+  expect(JSON.stringify(messages)).not.toContain("interrupted:");
+  expect(events).toEqual(before);
+  // A reply arriving after another model turn really started must not be
+  // moved backwards into an obsolete call batch.
+  events.splice(7, 0, { type: "session.status_running" }, { type: "span.model_request_start" });
+  expect(JSON.stringify(eventsToMessages(events as never))).toContain("interrupted:");
+});

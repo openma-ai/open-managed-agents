@@ -544,6 +544,26 @@ describe("preinstalled Node managed ACP supervisor", () => {
     expect(seen).toHaveLength(0);expect(failed).toBe(true);
   });
 
+  it("refuses a nonempty incompatible model protocol before starting an ACP process", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "openma-protocol-start-")); roots.push(workspace);
+    const seen: SessionOptions[] = [];
+    const app = createNodeManagedAcpSupervisorApp({
+      environment: claimedEnvironment, workspacePath: workspace, agentId: "codex-acp",
+      acpRuntime: fakeAcpRuntime(seen),
+      resolveExecutionChannels: async () => ({type:"ready", channels: {
+        mcpProxy:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken},
+        hostedInference:{gatewayBaseUrl:"https://gateway.test",sessionsToken:executionToken,
+          model:{providerId:"anthropic",baseUrl:null,wireModel:"claude-test"}},
+      }}),
+      fetch: productionFetch({agent:agentSnapshot({inference:{provider_id:"anthropic",base_url:null}})}),
+      control:{pollIntervalMs:1,scheduler:{sleep:async()=>{}}},
+    });
+    const harness = await app.resolveHarness({id:"acp",version:"1"});
+    const run = await harness!.start({scope,harness:{id:"acp",version:"1"},workspacePath:"/workspace",outputPath:null,checkpoint:async()=>{},signal:new AbortController().signal});
+    await expect(run.completed).rejects.toThrow('requires [openai-responses] but the model target exposes [anthropic-messages]');
+    expect(seen).toHaveLength(0);
+  });
+
   it("uses the default HTTP authority with bootstrap sandbox token, keeping Work HTTP separate", async()=>{
     const workspace=await mkdtemp(join(tmpdir(),"openma-http-authority-"));roots.push(workspace);
     const seen:SessionOptions[]=[];let channelCalls=0;

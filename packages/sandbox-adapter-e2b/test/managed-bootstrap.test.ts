@@ -1,9 +1,17 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, writeFile, rm, access } from "node:fs/promises";
 import { join } from "node:path";
 import { E2BSandboxExecutor } from "../src/e2b";
 import type { SandboxManagedProcessSpec } from "@open-managed-agents/sandbox";
+
+// CI must execute native process/identity tests, not silently count skips.
+beforeAll(() => {
+  if (process.env.OMA_REQUIRE_NATIVE_BOOTSTRAP === "1" &&
+      (process.platform !== "linux" || process.getuid?.() !== 0)) {
+    throw new Error("Native bootstrap gate requires Linux uid 0 in an isolated user namespace");
+  }
+});
 
 const roots: string[] = [];
 const daemons: ChildProcess[] = [];

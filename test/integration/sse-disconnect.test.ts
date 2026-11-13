@@ -1,5 +1,5 @@
 import "../../packages/agent-harness/src/builtins";
-import { createExecutionContext } from "cloudflare:test";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import mainApp from "../../apps/main/src/index";
@@ -20,7 +20,8 @@ describe("Cloudflare SSE disconnect", () => {
     const body = await created.text();
     expect(created.ok, body).toBe(true);
     const { id } = JSON.parse(body) as { id: string };
-    const response = await mainApp.fetch(new Request(`http://localhost/openai/v1/agents/sessions/${id}/events`, { headers }), env, createExecutionContext());
+    const ctx = createExecutionContext();
+    const response = await mainApp.fetch(new Request(`http://localhost/openai/v1/agents/sessions/${id}/events`, { headers }), env, ctx);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     const reader = response.body!.getReader();
     const pending = reader.read();
@@ -28,6 +29,9 @@ describe("Cloudflare SSE disconnect", () => {
     expect(await pending).toEqual({ done: true, value: undefined });
     // Let the polling subscription unwind; Vitest fails on unhandled rejections.
     await new Promise(resolve => setTimeout(resolve, 25));
+    // ...and wait for every background task the handler registered, so none
+    // logs after this file is torn down (onUserConsoleLog pending at teardown).
+    await waitOnExecutionContext(ctx);
     const retrieved = await exports.default.fetch(new Request(`http://localhost/openai/v1/agents/sessions/${id}`, { headers }));
     expect(await retrieved.json()).toMatchObject({ id, status: "idle" });
   });

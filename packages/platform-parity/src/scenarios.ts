@@ -226,6 +226,58 @@ export const requiresAction: ParityScenario = {
   },
 };
 
+/** One model step with several tool calls (one stream). */
+function calls(entries: Array<{ id: string; toolName: string; input: unknown }>, tokens: [number, number] = [17, 9]): ParityModelStep {
+  const chunks = entries.flatMap((entry, index) => toolCallChunks({ id: entry.id, toolName: entry.toolName, inputDeltas: [JSON.stringify(entry.input)] })
+    .filter((chunk) => index === 0 || chunk.type !== "stream-start"));
+  return streamStep([...chunks, finishChunk("tool-calls", usage(...tokens))]);
+}
+
+export const mixedCustomTools: ParityScenario = {
+  name: "mixed-custom-tools",
+  covers: "Legacy ai-sdk regression only (default Pi has dedicated restart gates): one model response mixes two custom tools with bash; bash runs once, no sampling until every custom answer (partial and duplicate answers do not resume), then one reply",
+  async run(context) {
+    context.models("parity-agent", [
+      calls([
+        { id: "parity_custom_1", toolName: "lookup_ticket", input: { ticket: "PAR-1" } },
+        { id: "parity_bash_1", toolName: "bash", input: { command: "echo mixed" } },
+        { id: "parity_custom_2", toolName: "lookup_ticket", input: { ticket: "PAR-2" } },
+      ]),
+      say("parity_text_1", "Both tickets handled."),
+    ]);
+    await simpleSession(context, {}, {
+      tools: [
+        { type: "agent_toolset_20260401" },
+        {
+          type: "custom",
+          name: "lookup_ticket",
+          description: "Look up a ticket",
+          input_schema: { type: "object", properties: { ticket: { type: "string" } }, required: ["ticket"] },
+        },
+      ],
+    });
+    await context.message("Handle PAR-1 and PAR-2.");
+    await context.waitIdle(1, "requires_action");
+    await context.send([{
+      type: "user.custom_tool_result",
+      custom_tool_use_id: "parity_custom_1",
+      content: [{ type: "text", text: "PAR-1 is open" }],
+    }], "partial_custom_tool_result");
+    await context.waitIdle(2, "requires_action");
+    await context.send([{
+      type: "user.custom_tool_result",
+      custom_tool_use_id: "parity_custom_1",
+      content: [{ type: "text", text: "PAR-1 duplicate" }],
+    }], "duplicate_custom_tool_result");
+    await context.send([{
+      type: "user.custom_tool_result",
+      custom_tool_use_id: "parity_custom_2",
+      content: [{ type: "text", text: "PAR-2 is closed" }],
+    }], "final_custom_tool_result");
+    await context.waitIdle(1, "end_turn");
+  },
+};
+
 export const interrupt: ParityScenario = {
   name: "interrupt",
   covers: "中断: user.interrupt while a model call is in flight, then a follow-up turn",
@@ -343,6 +395,7 @@ export const PARITY_SCENARIOS: ParityScenario[] = [
   outcomeEvaluation,
   budgetUsage,
   requiresAction,
+  mixedCustomTools,
   interrupt,
   contextBuildFailure,
   acpChildExit,

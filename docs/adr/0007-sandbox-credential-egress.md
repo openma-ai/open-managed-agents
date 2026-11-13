@@ -51,6 +51,15 @@ boolean `supportsProxy` would overstate security:
 | Node/Docker | isolated Docker network with a dual-homed egress sidecar or host netns policy | ordinary proxy environment variables are advisory and bypassable |
 | Local subprocess | no isolation boundary | local trusted-debug only; never claim enforced Vault egress |
 
+## Managed guest sudo policy clarification (2026-11-13)
+
+The [managed guest privilege policy](../managed-guest-privileges.md) permits
+explicit guest sudo. Guest UID separation cannot satisfy the secret-hiding
+requirement above for credentials resident in that guest. Root-only files,
+management process environments and in-guest proxies remain inspectable by
+guest root. Required enforcement must be outside the guest; no host credentials,
+network authorization or privileged-container settings are broadened here.
+
 ## Decision
 
 ### Preserve the official protocol exactly

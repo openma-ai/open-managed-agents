@@ -1,3 +1,4 @@
+import { log, logWarn } from "@open-managed-agents/shared";
 import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
 import type { SandboxManagedProcessHandle, SandboxRuntimePort } from "@open-managed-agents/sandbox";
 import type { E2BManagedIdentity } from "@open-managed-agents/sandbox-adapter-e2b";
@@ -54,7 +55,9 @@ export class CfE2BWorkLease {
   private async tick(): Promise<void> {
     const results = await Promise.all([...this.held].map(([key, held]) => (async () => {
       const target = held.target;
+      const context = { session_id: target.identity.sessionId, work_id: target.identity.workId, sandbox_id: target.runtime.runtimeHandle().runtimeId, claim_generation: target.identity.attemptId, process_id: target.handle.id };
       if (!await this.call(held, "authority", () => target.isCurrent())) {
+        logWarn({ ...context, op: "work.provider_lease.lost", reason: "authority_not_current" }, "Provider renewal refused");
         // A pending renewal must not hold cleanup hostage. Only the exact
         // native process is stopped, never the physical sandbox/new owner.
         await this.call(held, "kill", () => target.handle.kill("SIGTERM"));
@@ -68,6 +71,7 @@ export class CfE2BWorkLease {
         // bounded wait. Late completion cannot grant a new claim any rights.
         if (!await target.isCurrent()) throw new Error("Work claim lost before provider renewal");
         await target.runtime.renewLease({ ttlMs: target.ttlMs });
+        log({ ...context, op: "work.provider_lease.renew", ttl_ms: target.ttlMs }, "Provider lease renewed");
         if (!await target.isCurrent()) throw new Error("Work claim lost during provider renewal");
       });
     })().then(() => ({ status: "fulfilled" as const }), reason => ({ status: "rejected" as const, reason }))));

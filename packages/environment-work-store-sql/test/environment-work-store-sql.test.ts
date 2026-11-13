@@ -1,3 +1,4 @@
+import { createDispatchedManagedEnvironmentWorker } from "../../managed-runtime-host/src/dispatched-environment-worker";
 import { beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -319,4 +320,41 @@ describe("SqlEnvironmentWorkStore", () => {
       revision: 2,
     });
   });
+});
+
+// Minimal scheduler reproduction: real SQL selection + production drain, no
+// provider substitute is claimed as live-provider acceptance.
+it("does not starve newer Work behind a repeatedly rejected reservation across 22 minutes", async () => {
+  const sql = await createBetterSqlite3SqlClient(":memory:");
+  await sql.exec(SCHEMA_SQL);
+  const store = new SqlEnvironmentWorkStore(sql, cipher);
+  const workspaceId = "diagnostic-workspace";
+  const environmentId = record.work.environmentId;
+  await store.insert({ workspaceId, record });
+  await store.insert({ workspaceId, record: { ...record, work: { ...record.work, id: "newer-work", data: { type: "session", id: "newer-session" }, createdAt: "2026-08-26T09:10:01.000Z" } } });
+  let now = Date.parse("2026-08-26T09:11:00.000Z");
+  const dispatched: string[] = [];
+  const worker = createDispatchedManagedEnvironmentWorker({
+    environmentId, workspaceId, environmentKey: "fixture-only", workerId: "diagnostic-worker", maxWorkItemsPerDrain: 8,
+    client: { baseURL: "https://fixture.invalid", beta: { webhooks: { unwrap: () => ({ type: "event", id: "diagnostic-wake", data: { type: "session.status_run_started", workspace_id: workspaceId } }) } },
+      withOptions: () => ({ beta: { environments: { work: {
+        async poll() {
+          const result = await store.claimAvailable({ workspaceId, environmentId, claimedAt: new Date(now).toISOString(), reclaimBefore: new Date(now - 5000).toISOString(), workerId: "diagnostic-worker", heartbeatTtlSeconds: 90 });
+          if (result.type === "empty") return null;
+          return { id: result.record.work.id, environment_id: environmentId, data: result.record.work.data, secret: "fixture-only" } as never;
+        }, async stop() {} } } } }) },
+    dispatch: { descriptor: () => ({ provider: "diagnostic", version: "1", strategy: "poll_unacked_then_dispatch" }), async dispatch({ work }) { dispatched.push(work.id); if (work.id === record.work.id) throw new Error("provider dispatch rejected"); } },
+  });
+  for (let minute = 0; minute <= 22; minute++) {
+    const pending: Promise<void>[] = [];
+    expect(worker.handleWebhook({ body: "fixture", headers: {}, waitUntil: p => pending.push(p) }).type).toBe("triggered");
+    await Promise.all(pending);
+    now += 60000;
+  }
+  expect(dispatched[0]).toBe(record.work.id);
+  expect(dispatched[1]).toBe("newer-work");
+  expect(dispatched.filter(id => id === record.work.id).length).toBeGreaterThan(1);
+  const newer = await store.find({ workspaceId, environmentId, workId: "newer-work" });
+  expect(newer?.claim?.generation).toBeGreaterThan(0);
+  expect(newer?.work.state).toBe("queued");
 });

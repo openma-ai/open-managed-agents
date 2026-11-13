@@ -63,7 +63,7 @@ const dispatchableTypes = ["user.message","system.message","user.tool_confirmati
 // These canonical writers stamp acceptance, not dispatch. As in the fixed
 // Node consume boundary, the source consumption marker remains authoritative.
 const acceptanceStampedInput = (event: {type:string}, raw: Record<string, unknown>) =>
-  event.type === "user.define_outcome" || event.type === "user.tool_result" ||
+  event.type === "user.define_outcome" || event.type === "user.tool_result" || event.type === "user.custom_tool_result" ||
   (event.type === "session.updated" && raw.resume === true);
 
 /** Bootstrap rows live in managed_session_initial_events. Their canonical

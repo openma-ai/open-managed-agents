@@ -283,3 +283,22 @@ it("does not finalize an older turn over a successor that has already begun exec
  expect(await events(f.sql)).toEqual([]);
  expect(f.trace).toEqual([]);
 });
+
+it("commits the first custom pause from canonical calls without granting resume or end_turn",async()=>{
+ const f=await fixture();
+ const root=await f.sql.prepare("SELECT document FROM managed_session_events WHERE id='input'").first<{document:string}>();
+ const doc=JSON.parse(root!.document);doc.source_position.consumption_claim={workId:"w",generation:2,holder:"worker"};
+ await f.sql.prepare("UPDATE managed_session_events SET document=? WHERE id='input'").bind(JSON.stringify(doc)).run();
+ await f.insert({id:"custom",type:"agent.custom_tool_use",name:"approve",input:{},processedAt:now},3,{execution_id:"input",environment_work:{workId:"w",generation:2}});
+ expect(await f.app.recover({claim,turnId:"input"})).toMatchObject({type:"gap",reason:"consumed_turn_without_terminal",revision:3});
+ expect(await f.app.checkpoint(request)).toMatchObject({type:"prepared"});
+ expect(await f.app.finalize(request)).toMatchObject({type:"parked",terminal:{stopReason:{type:"requires_action",eventIds:["custom"]}}});
+ expect((await events(f.sql)).map(e=>e.stopReason)).toEqual([{type:"requires_action",eventIds:["custom"]}]);
+ // A runtime running label is not a consumed answer and must not reopen the
+ // paused turn. Claim and revision remain otherwise valid.
+ await f.insert({id:"unsafe-resume",type:"session.status_running",processedAt:now},5,{execution_id:"input",environment_work:{workId:"w",generation:2}});
+ await f.sql.exec("UPDATE managed_sessions SET revision=5");
+ expect(await f.app.recover({claim,turnId:"input"})).toMatchObject({type:"gap",reason:"requires_action_pending"});
+ expect(await f.app.finalize({...request,revision:5})).toMatchObject({type:"gap",reason:"requires_action_pending"});
+ expect((await events(f.sql)).length).toBe(1);
+});

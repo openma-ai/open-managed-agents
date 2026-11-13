@@ -1,3 +1,4 @@
+import { log, logWarn } from "@open-managed-agents/shared";
 import type {
   AcknowledgeEnvironmentWorkCommand,
   AcknowledgeEnvironmentWorkResult,
@@ -269,12 +270,38 @@ export class EnvironmentWorkApplicationService
   async heartbeatEnvironmentWork(
     command: HeartbeatEnvironmentWorkCommand,
   ): Promise<HeartbeatEnvironmentWorkResult> {
+    // Other writers bump the Work revision without touching the claim (e.g.
+    // terminal publication locks the row by revision). Losing that optimistic
+    // race is not a lost lease: re-read and re-validate everything, but only
+    // while the claim this heartbeat first observed is still the claim.
+    let observedClaim: string | undefined;
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.heartbeatEnvironmentWorkOnce(command, observedClaim);
+      if (result.type !== "conflict") return result.result;
+      observedClaim ??= result.claim;
+      if (attempt >= 2 || result.claim !== observedClaim) {
+        return {
+          type: "precondition_failed",
+          message: `Work changed concurrently at revision ${result.actualRevision}`,
+        };
+      }
+    }
+  }
+
+  private async heartbeatEnvironmentWorkOnce(
+    command: HeartbeatEnvironmentWorkCommand,
+    observedClaim: string | undefined,
+  ): Promise<{ type: "done"; result: HeartbeatEnvironmentWorkResult } | { type: "conflict"; claim: string; actualRevision: number }> {
+    const done = (result: HeartbeatEnvironmentWorkResult) => ({ type: "done" as const, result });
     const current = await this.dependencies.store.find({
       workspaceId: this.dependencies.workspaceId,
       environmentId: command.environmentId,
       workId: command.workId,
     });
-    if (current === null) return { type: "not_found" };
+    if (current === null) return done({ type: "not_found" });
+    const claim = JSON.stringify([current.claim?.workerId ?? null, current.claim?.generation ?? null]);
+    // A different claim since the first read is a real competitor: never extend it.
+    if (observedClaim !== undefined && claim !== observedClaim) return { type: "conflict", claim, actualRevision: current.revision };
     const now = this.dependencies.clock.now();
     const leaseHasExpired =
       (current.work.state === "starting" || current.work.state === "active") &&
@@ -282,10 +309,11 @@ export class EnvironmentWorkApplicationService
       Date.parse(current.claim.claimedAt) + current.heartbeatTtlSeconds * 1_000 <=
         now.getTime();
     if (leaseHasExpired) {
-      return {
+      logWarn({ op: "work.lease.lost", tenant_id: this.dependencies.workspaceId, environment_id: command.environmentId, work_id: command.workId, claim_generation: current.claim?.generation, reason: "heartbeat_lease_expired", claimed_at: current.claim?.claimedAt, observed_at: now.toISOString() }, "Expired Work lease rejected");
+      return done({
         type: "precondition_failed",
         message: `Work ${command.workId} heartbeat lease has expired`,
-      };
+      });
     }
     const expected = command.expectedLastHeartbeat;
     const expectationMatches =
@@ -294,16 +322,16 @@ export class EnvironmentWorkApplicationService
         ? current.work.latestHeartbeatAt === null
         : current.work.latestHeartbeatAt === expected);
     if (!expectationMatches) {
-      return {
+      return done({
         type: "precondition_failed",
         message: `Work ${command.workId} heartbeat precondition did not match`,
-      };
+      });
     }
     if (current.work.state === "queued") {
-      return {
+      return done({
         type: "precondition_failed",
         message: `Work ${command.workId} must be acknowledged before heartbeating`,
-      };
+      });
     }
     const timestamp = now.toISOString();
     const ttlSeconds = command.desiredTtlSeconds ?? current.heartbeatTtlSeconds;
@@ -335,14 +363,12 @@ export class EnvironmentWorkApplicationService
         },
       },
     });
-    if (replaced.type === "not_found") return { type: "not_found" };
+    if (replaced.type === "not_found") return done({ type: "not_found" });
     if (replaced.type === "revision_conflict") {
-      return {
-        type: "precondition_failed",
-        message: `Work changed concurrently at revision ${replaced.actualRevision}`,
-      };
+      return { type: "conflict", claim, actualRevision: replaced.actualRevision };
     }
-    return {
+    log({ op: "work.lease.renew", tenant_id: this.dependencies.workspaceId, work_id: command.workId, claim_generation: replaced.record.claim?.generation, lease_extended: leaseExtended, state: replaced.record.work.state }, "Work heartbeat recorded");
+    return done({
       type: "recorded",
       heartbeat: {
         lastHeartbeat: replaced.record.work.latestHeartbeatAt!,
@@ -350,7 +376,7 @@ export class EnvironmentWorkApplicationService
         state: replaced.record.work.state,
         ttlSeconds: replaced.record.heartbeatTtlSeconds,
       },
-    };
+    });
   }
 
   async pollEnvironmentWork(
@@ -361,23 +387,25 @@ export class EnvironmentWorkApplicationService
       environmentId: query.environmentId,
     });
     if (environment === null || environment.archivedAt !== null) {
+      logWarn({ op: "work.claim.skipped", tenant_id: this.dependencies.workspaceId, environment_id: query.environmentId, reason: environment === null ? "environment_not_found" : "environment_archived" }, "Work poll rejected before claim");
       return { type: "not_found" };
     }
-    const now = this.dependencies.clock.now();
-    const claimedAt = now.toISOString();
     const reclaimMilliseconds = Math.max(
       query.reclaimOlderThanMilliseconds ?? DEFAULT_RECLAIM_MILLISECONDS,
       0,
     );
-    const claim = () =>
-      this.dependencies.store.claimAvailable({
+    const claim = () => {
+      // A long-poll wait must not consume the next reservation's reclaim window.
+      const now = this.dependencies.clock.now();
+      return this.dependencies.store.claimAvailable({
         workspaceId: this.dependencies.workspaceId,
         environmentId: query.environmentId,
-        claimedAt,
+        claimedAt: now.toISOString(),
         reclaimBefore: new Date(now.getTime() - reclaimMilliseconds).toISOString(),
         workerId: query.workerId ?? null,
         heartbeatTtlSeconds: DEFAULT_HEARTBEAT_TTL_SECONDS,
       });
+    };
     let result = await claim();
     const blockMilliseconds = query.blockMilliseconds ?? 0;
     if (result.type === "empty" && blockMilliseconds > 0) {

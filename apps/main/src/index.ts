@@ -1,3 +1,6 @@
+import { withPublishedSessionFiles } from "@open-managed-agents/files-store";
+import { createR2SessionOutputSource } from "./lib/r2-session-output-source";
+import { sessionOutputsPrefix, guessSessionOutputMime } from "@open-managed-agents/shared";
 import { handleWorkPhysicalObservation, WORK_PHYSICAL_OBSERVATION_ROUTE } from "../../agent/src/runtime/work-physical-observation";
 import { normalizeOpenAIAgentsErrorResponse } from '@open-managed-agents/openai-agents-api';
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
@@ -538,10 +541,16 @@ const managedFilesRoutes = buildManagedFileRoutes((context) => {
   if (blobs === null) {
     throw new Error("FILES_BUCKET binding is required for managed Files");
   }
-  return managedFilesApplicationFor({
-    workspaceId: request.tenant_id,
-    tenantDb: request.tenantDb,
-    blobs,
+  const files = managedFilesApplicationFor({ workspaceId: request.tenant_id, tenantDb: request.tenantDb, blobs });
+  const bucket = (workerEnv as unknown as Env).FILES_BUCKET;
+  if (!bucket) return files;
+  return withPublishedSessionFiles(files, { workspaceId: request.tenant_id, service: request.services.files,
+    outputs: createR2SessionOutputSource(bucket),
+    async read(sessionId, filename) {
+      const object = await bucket.get(sessionOutputsPrefix(request.tenant_id, sessionId) + filename);
+      return object ? { metadata: { filename, mimeType: object.httpMetadata?.contentType ?? guessSessionOutputMime(filename),
+        sizeBytes: object.size, createdAt: object.uploaded.toISOString() }, content: new Uint8Array(await object.arrayBuffer()) } : null;
+    },
   });
 });
 

@@ -1,3 +1,5 @@
+import { log as logInfo } from "@open-managed-agents/shared/log";
+import { piCustomToolFiles, writePiCustomAnswers } from "./pi-custom-tools.js";
 import { createWorkInputsHttpClient } from "./work-inputs-http.js";
 import { createWorkInputReader } from "./work-input-adapter.js";
 import { InferenceProtocolUnsupportedError } from "@open-managed-agents/acp-runtime/inference-config";
@@ -238,6 +240,7 @@ export function createNodeManagedAcpSupervisorApp(
     let platformInstructions = "";
     let currentInputIds = new Set<string>();
     let prepareNativePrompt: (() => Promise<void>) | undefined;
+    let piCustomPlan: ReturnType<typeof piCustomToolFiles> = null;
     const startupRetry = options.lifecycle?.startupRetry ?? ACP_STARTUP_RETRY;
     const sleep = options.supervisorScheduler?.sleep ?? abortableSleep;
     // A failed spawn/initialize leaves no ACP session and no agent output, so
@@ -359,6 +362,19 @@ export function createNodeManagedAcpSupervisorApp(
             env: hosted.env,
           };
         }
+        if (binding.agent.id === "pi-acp") {
+          const custom = piCustomToolFiles(binding.nativePath, session.agent.tools);
+          piCustomPlan = custom;
+          if (custom) {
+            await stateIo.writeFile(custom.extensionPath, custom.source);
+            await writePiCustomAnswers(stateIo, custom.answersPath, await active.recoveryHistory.list(session.id));
+          }
+        }
+        logInfo({op:"acp.tools.configured",session_id:session.id,work_id:environment.ANTHROPIC_WORK_ID,
+          claim_generation:options.workClaim?.generation,harness_id:binding.agent.id,
+          custom_tool_count:session.agent.tools.filter(tool=>tool.type==="custom").length,
+          mcp_server_count:session.agent.mcp_servers.length,native_custom_registration:piCustomPlan!==null},
+          "Native ACP tool configuration prepared");
         return {
           agent,
           clientCallbacks: { requestPermission: request => turns.requestPermission(request) },
@@ -426,6 +442,12 @@ export function createNodeManagedAcpSupervisorApp(
         const source = isRecord(event.source_position) ? event.source_position : undefined;
         const batch = source && isRecord(source.input_batch) ? source.input_batch : undefined;
         currentInputIds = new Set(batch && Array.isArray(batch.ids) ? batch.ids.map(String) : [String(event.id)]);
+        if (piCustomPlan) {
+          // Config is reconstructed before a missing-native-state restart;
+          // only native conversation artifacts are checkpointed.
+          await stateIo.writeFile(piCustomPlan.extensionPath, piCustomPlan.source);
+          await writePiCustomAnswers(stateIo, piCustomPlan.answersPath, await active.recoveryHistory.list(activeSession.id));
+        }
         await prepareNativePrompt?.();
       },
       onTurnAdmitted: options.onTurnAdmitted,

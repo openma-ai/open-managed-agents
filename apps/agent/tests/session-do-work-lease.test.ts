@@ -8,14 +8,13 @@ import { SqlEnvironmentWorkStore } from "@open-managed-agents/environment-work-s
 import { createCfWorkRunnerAuthority } from "../../main/src/lib/cf-work-runner-authority";
 import { seedSandboxGatewaySessionRows } from "../../../packages/sandbox-gateway/test/gateway-store-conformance";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
-import { E2B_WORKER_INVENTORY } from "../src/runtime/e2b-work-handoff";
 
 // Actual SessionDO.fetch + SQL + PortsSessionSandbox + E2B Files adapter.
 // Only E2B SDK remote operations/launcher are simulated, not cloud certified.
 const provider=vi.hoisted(()=>({creates:0,starts:0,kills:0,renewals:0,failRenew:false,reads:0,connects:0,state:"running",autoResume:false,readFailure:false,renewGate:undefined as Promise<void>|undefined,ops:[] as string[],files:new Map<string,string>(),slot:null as any,processes:new Map<string,any>(),hold:undefined as undefined|{entered:()=>void;wait:Promise<void>;op?:string;skip?:number}}));
 vi.mock("e2b",()=>{
  const sandbox={sandboxId:"physical",setTimeout:async()=>{provider.renewals++;if(provider.failRenew)throw Error("provider unavailable");if(provider.renewGate)await provider.renewGate;},kill:async()=>{},updateNetwork:async()=>{},
- commands:{run:async(command:string)=>({exitCode:0,stdout:command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""})},
+ commands:{run:async(command:string)=>({exitCode:0,stdout:command.includes("OMA_ACP_INSTALL_OK")?"OMA_ACP_LAUNCHER=/home/oma-worker/.oma/installed-agent/codex-acp/1.8.0/acp-launch.sh\nOMA_ACP_INSTALL_OK":command.includes("cat /tmp/.oma-warm")?"generation":"",stderr:""})},
  files:{read:async(path:string)=>{
   if(path.endsWith("/ready"))return "oma-managed-v2";
   const req=JSON.parse(provider.files.get(path.replace(/\.response.json$/,".json"))!);
@@ -72,7 +71,7 @@ async function cold(f:Awaited<ReturnType<typeof fixture>>) {
  const root="test-platform-root-secret-padded-to-thirtytwo";
  const stored=await f.work.find(f.delivery),cipher=new WebCryptoAesGcm(root,"managed.environment-work.secret");
  await f.sql.prepare("UPDATE managed_environment_work SET sealed_secret=? WHERE workspace_id='default' AND id=?").bind(await cipher.encrypt(JSON.stringify(stored!.secret)),f.delivery.workId).run();
- const configured={...env,PLATFORM_ROOT_SECRET:root,PUBLIC_BASE_URL:f.delivery.apiBaseUrl,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",E2B_TEMPLATE:"trusted",E2B_MAX_LIFETIME_MS:"3600000",OPENMA_ACP_HARNESSES:E2B_WORKER_INVENTORY,MAIN_MCP:undefined};
+ const configured={...env,PLATFORM_ROOT_SECRET:root,PUBLIC_BASE_URL:f.delivery.apiBaseUrl,SANDBOX_ADAPTER:"e2b",E2B_API_KEY:"private",E2B_TEMPLATE:"trusted",E2B_MAX_LIFETIME_MS:"3600000",MAIN_MCP:undefined};
  const stub=env.SESSION_DO!.get(env.SESSION_DO!.idFromName(JSON.stringify(["default",f.delivery.sessionId])));
  provider.reads=0;provider.connects=0;provider.state="running";provider.autoResume=false;provider.readFailure=false;provider.renewals=0;provider.failRenew=false;provider.renewGate=undefined;provider.creates=0;provider.starts=0;provider.kills=0;provider.ops=[];provider.files.clear();provider.slot=null;provider.processes.clear();provider.hold=undefined;
  return {stub,configured};
@@ -143,6 +142,39 @@ it("cold duplicate dispatch cannot substitute a freshly issued holder for the ru
   expect((await fresh.fetch(request(f.delivery))).status).toBe(409);
   expect(await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_environment_work WHERE id=?").bind(f.delivery.workId).first()).toEqual(hashes);
   expect(provider.renewals).toBe(0);expect(provider.starts).toBe(1);expect(provider.kills).toBe(0);
+ });
+});
+it("cold dispatch recovers a newer claim after the previous management process exited",async()=>{
+ const f=await fixture(),c=await cold(f);
+ await runInDurableObject(c.stub,async(_instance,state)=>{
+  expect((await new SessionDO(state,c.configured as never).fetch(request(f.delivery))).status).toBe(200);
+  provider.slot.status="exited";
+  await f.sql.prepare("UPDATE managed_environment_work SET claim_generation=3, claim_at=?, sandbox_token_hashes='[]' WHERE id=?").bind(Date.now(),f.delivery.workId).run();
+  const capability=JSON.parse(atob(f.delivery.workSecret));
+  const next={...f.delivery,workSecret:btoa(JSON.stringify({...capability,claim_generation:3}))};
+  const fresh=new SessionDO(state,{...c.configured} as never);
+  expect((await fresh.fetch(request(next))).status).toBe(200);
+  expect(provider.starts).toBe(2);
+  expect(provider.slot.identity.attemptId).toBe("environment-work-claim:3");
+  expect(provider.slot.status).toBe("running");
+ });
+});
+it.each(["same-claim", "scope", "unknown-work", "holder"])("cold successor rejects unproven handoff: %s",async mode=>{
+ const f=await fixture(),c=await cold(f);
+ await runInDurableObject(c.stub,async(_instance,state)=>{
+  expect((await new SessionDO(state,c.configured as never).fetch(request(f.delivery))).status).toBe(200);
+  provider.slot.status="exited";
+  const generation=mode==="same-claim"?2:3;
+  await f.sql.prepare("UPDATE managed_environment_work SET claim_generation=?, claim_at=? WHERE id=?").bind(generation,Date.now(),f.delivery.workId).run();
+  if(mode==="scope")provider.slot.identity.sessionId="other-session";
+  if(mode==="unknown-work")provider.slot.identity.workId="unknown-work";
+  if(mode==="holder")provider.slot.holderHash="bad";
+  const hashes=await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_environment_work WHERE id=?").bind(f.delivery.workId).first();
+  const capability=JSON.parse(atob(f.delivery.workSecret));
+  const next={...f.delivery,workSecret:btoa(JSON.stringify({...capability,claim_generation:generation}))};
+  expect((await new SessionDO(state,{...c.configured} as never).fetch(request(next))).status).toBe(409);
+  expect(provider.starts).toBe(1);expect(provider.kills).toBe(0);
+  expect(await f.sql.prepare("SELECT sandbox_token_hashes FROM managed_environment_work WHERE id=?").bind(f.delivery.workId).first()).toEqual(hashes);
  });
 });
 it("revoked old holder cleans only its exact process and removes only the Work wake",async()=>{

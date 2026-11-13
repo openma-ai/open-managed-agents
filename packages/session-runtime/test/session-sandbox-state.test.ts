@@ -96,7 +96,7 @@ describe("Session sandbox transitions: every legal one", () => {
       const advanced = transition(restarted, actions[action]);
       expect(advanced.lifecycleRevision).toBe(["retireHandle", "handleReleased", "queueDiscard", "discarded"].includes(action) ? 17 : 18);
       expect(advanced.version).toBe(8);
-      expect(next).toEqual({ ...to, ...shared, version: 8, ...(["retireHandle", "handleReleased", "queueDiscard", "discarded"].includes(action) ? {} : { lifecycleRevision: 1 }), ...(dropped.length > 0 ? { pendingDiscards: dropped } : {}) });
+      expect(next).toEqual({ ...to, ...shared, version: 8, ...(["retireHandle", "handleReleased", "queueDiscard", "discarded"].includes(action) ? {} : { lifecycleRevision: 1 }), ...(dropped.length > 0 ? { pendingDiscards: dropped } : {}), ...(action === "release" && (from === "running" || from === "paused") ? { retiredHandles: [{ handle, released: false }] } : {}) });
     });
   }
 });

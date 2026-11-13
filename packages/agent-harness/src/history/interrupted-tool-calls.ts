@@ -65,13 +65,26 @@ export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEv
   // after their real answers; ordinary intervening messages still interrupt.
   const delayed = new Map<number, SessionEvent[]>();
   const sample: SessionEvent[] = [];
+  let parkedBinding: string[] | undefined;
   for (let index = 0; index < events.length; index++) {
     const event = events[index];
-    const binding = (event as unknown as { continuation_tool_use_ids?: string[] }).continuation_tool_use_ids;
+    if (event.type.startsWith("session.status_")) {
+      const stop = (event as unknown as { stop_reason?: { type: string; event_ids?: string[] } }).stop_reason;
+      parkedBinding = event.type === "session.status_idle" && stop?.type === "requires_action" ? stop.event_ids : undefined;
+    }
+    // A message admitted during ordinary execution can be consumed between
+    // custom replies after parking. The durable idle proves these calls are
+    // continuations, rather than an interrupted old turn. Keep their real
+    // answers together before the message in model history only.
+    const explicitBinding = (event as unknown as { continuation_tool_use_ids?: string[] }).continuation_tool_use_ids;
+    const binding = explicitBinding ?? parkedBinding;
     const answers = event.type === "user.message" && binding?.length ? binding.map(id => events.findIndex(row =>
       (row.type === "agent.tool_result" && (row as { tool_use_id?: string }).tool_use_id === id) ||
       (row.type === "agent.mcp_tool_result" && (row as { mcp_tool_use_id?: string }).mcp_tool_use_id === id))) : [];
-    if (answers.length && answers.every(position => position >= 0) && Math.max(...answers) > index) {
+    const lastAnswer = Math.max(...answers);
+    const crossesNewTurn = !explicitBinding && events.slice(index + 1, lastAnswer).some(row =>
+      row.type === "session.status_running" || row.type === "span.model_request_start" || row.type === "agent.message");
+    if (answers.length && answers.every(position => position >= 0) && lastAnswer > index && !crossesNewTurn) {
       const target = Math.max(...answers);
       delayed.set(target, [...(delayed.get(target) ?? []), event]);
     } else sample.push(event);
