@@ -13,3 +13,4 @@ export type * from "./scope";
 export type * from "./work-claim";
 export type * from "./work-runner-bootstrap";
 export type * from "./workspace";
+export * from "./session-resource-facts";
