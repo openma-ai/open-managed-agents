@@ -68,7 +68,7 @@ export async function deadExecutionFailure(
 
 export async function finalizeStaleTurns(port: StaleTurnFinalizerPort): Promise<void> {
   // 1. Unpaired tool_use detection. Three flavors per the wire spec
-  //    in default-loop.ts:emitToolCallEvent:
+  //    in the host harness tool-event projection:
   //      • agent.tool_use         → result keyed by tool_use_id
   //      • agent.custom_tool_use  → result keyed by tool_use_id
   //      • agent.mcp_tool_use     → result keyed by mcp_tool_use_id

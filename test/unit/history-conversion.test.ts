@@ -423,7 +423,7 @@ describe("InMemoryHistory", () => {
     // closes before the tool message lands. Pattern [tc1, tr1, tc2, tr2, msg]
     // → [user, assistant(tc1), tool(tr1), assistant(tc2), tool(tr2), assistant(msg)] = 6.
     //
-    // Note: in real captures from default-loop's onStepFinish, all tool_use
+    // Note: in real captures from the host loop's step boundary, all tool_use
     // events for one step are emitted before any tool_result events for that
     // step (AI SDK groups them), producing the more compact 4-message form.
     // This test constructs an interleaved sequence (use, result, use, result)

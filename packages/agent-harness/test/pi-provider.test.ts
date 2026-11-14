@@ -344,7 +344,7 @@ describe("createPiModelRuntime", () => {
     })).toThrow(/custom Pi provider.*pi_config\.api/i);
   });
 
-  it("adapts a Pi-registered model to the AI SDK shape used by DefaultHarness", async () => {
+  it("adapts a Pi-registered model to the AI SDK shape used by host-side helpers", async () => {
     const faux = fauxProvider({ tokensPerSecond: 100_000 });
     faux.setResponses([fauxAssistantMessage("default harness via pi")]);
     const models = createModels();
@@ -400,7 +400,7 @@ describe("createPiModelRuntime", () => {
       .resolves.toBe("generated through pi");
   });
 
-  it("keeps the AI SDK DefaultHarness tool loop above the Pi provider", async () => {
+  it("keeps the AI SDK tool loop available above the Pi provider adapter", async () => {
     const faux = fauxProvider({ tokensPerSecond: 100_000 });
     faux.setResponses([
       fauxAssistantMessage(

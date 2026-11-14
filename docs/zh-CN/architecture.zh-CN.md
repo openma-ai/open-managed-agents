@@ -174,7 +174,7 @@ class ResearchHarness implements HarnessInterface {
 
 ## 当前实现备注
 
-当前的 `DefaultHarness` 把一些本应属于平台的事（工具构建、skill 挂载）混进了 harness 里。这一点已记为技术债：harness 本身工作正确，但**自定义 harness 的作者目前需要重复这套 setup 代码**。后续重构会把 tool / skill 准备移到 `HarnessContext` 构造里，让 harness 收到的是一个完全准备好的上下文。
+当前的 `PiHarness` 把一些本应属于平台的事（工具构建、skill 挂载）混进了 harness 里。这一点已记为技术债：harness 本身工作正确，但**自定义 harness 的作者目前需要重复这套 setup 代码**。后续重构会把 tool / skill 准备移到 `HarnessContext` 构造里，让 harness 收到的是一个完全准备好的上下文。
 
 ## 参考
 

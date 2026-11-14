@@ -235,7 +235,7 @@ function calls(entries: Array<{ id: string; toolName: string; input: unknown }>,
 
 export const mixedCustomTools: ParityScenario = {
   name: "mixed-custom-tools",
-  covers: "Legacy ai-sdk regression only (default Pi has dedicated restart gates): one model response mixes two custom tools with bash; bash runs once, no sampling until every custom answer (partial and duplicate answers do not resume), then one reply",
+  covers: "Pi host-loop regression: one model response mixes two custom tools with bash; bash runs once, no sampling until every custom answer (partial and duplicate answers do not resume), then one reply",
   async run(context) {
     context.models("parity-agent", [
       calls([

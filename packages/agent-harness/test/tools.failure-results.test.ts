@@ -2,16 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { HarnessContext, HarnessRuntime } from "../src/interface";
-import { DefaultHarness } from "../src/default-loop";
 import { PiHarness } from "../src/pi-loop";
 import { buildTools } from "../src/tools";
-import {
-  createScriptedLanguageModel,
-  finishChunk,
-  streamStep,
-  textChunks,
-  toolCallChunks,
-} from "../../../test/fakes/scripted-language-model";
 
 // Regression tests for #359: a built-in tool failure (web_fetch/web_search
 // network failure, an aborted bash command) used to reach the canonical
@@ -151,67 +143,5 @@ describe("tool failure results (Pi harness)", () => {
       content: [{ type: "text", text: "hello\n" }],
     });
     expect(result).not.toHaveProperty("is_error", true);
-  });
-});
-
-describe("tool failure results (default harness)", () => {
-  it.each(["child","deny"])("does not dispatch after an unknown %s barrier",async mode=>{
-    const model=createScriptedLanguageModel([streamStep([...toolCallChunks({id:"new",toolName:"bash",inputDeltas:['{"command":"effect"}']}),finishChunk("tool-calls")])]);
-    let effects=1;const tools=await buildTools({id:"agent",model:"test",tools:[{type:"agent_toolset_20260401"}]} as never,{exec:async()=>{effects++;return "ok";},readFile:async()=>"",writeFile:async()=>""} as never,{});
-    const lane=mode==="child"?{session_thread_id:"sthr_child"}:{};
-    const events=[{type:"user.message",content:[{type:"text",text:"go"}]},
-      {id:"original",type:"agent.tool_use",name:"bash",input:{command:"effect"},...lane},
-      {type:"session.warning",source:"tool_outcome_unknown",message:"unknown",details:{outcome:"dispatched_unknown",tool_use_id:"original",retry_request_id:"retry:original"},...lane},
-      {id:"retry:original",type:"agent.tool_use",name:"bash",input:{command:"effect"},...lane}] as SessionEvent[];
-    if(mode==="deny")events.push({type:"user.tool_confirmation",tool_use_id:"retry:original",result:"deny"},{type:"agent.tool_result",tool_use_id:"retry:original",content:"Denied",is_error:true});
-    const runtime=makeRuntime(events);if(mode==="child")runtime.sessionThreadId="sthr_child";
-    await new DefaultHarness().run({agent:{id:"a",model:"m"},userMessage:events[0],tools,model:model.model,systemPrompt:"",env:{},runtime} as HarnessContext);
-    expect(effects).toBe(1);
-  });
-  it("stops after typed unknown instead of executing a new model call ID", async () => {
-    const model=createScriptedLanguageModel([
-      streamStep([...toolCallChunks({id:"first",toolName:"bash",inputDeltas:['{"command":"effect"}']}),finishChunk("tool-calls")]),
-      streamStep([...toolCallChunks({id:"second",toolName:"bash",inputDeltas:['{"command":"effect"}']}),finishChunk("tool-calls")]),
-      streamStep([...textChunks("done",["done"]),finishChunk("stop")]),
-    ]);
-    let effects=0;
-    const tools=await buildTools({id:"agent",model:"test",tools:[{type:"agent_toolset_20260401"}]} as never,
-      {exec:async()=>{effects++;if(effects===1)throw Object.assign(new Error("transport lost"),{outcome:"dispatched_unknown"});return "exit=0";},readFile:async()=>"",writeFile:async()=>""} as never,{});
-    const events:SessionEvent[]=[{type:"user.message",content:[{type:"text",text:"go"}]}];const runtime=makeRuntime(events);
-    await new DefaultHarness().run({agent:{id:"agent",model:{id:model.model.modelId}},userMessage:events[0],session_id:"s",tools,model:model.model,systemPrompt:"",env:{},runtime} as HarnessContext);
-    expect(effects).toBe(1);
-    expect(runtime.pendingConfirmations).toEqual(["retry:first"]);
-    expect(events.some(e=>e.type==="agent.tool_use"&&e.id==="second")).toBe(false);
-  });
-  it("marks an aborted bash execution is_error with the original error text", async () => {
-    const model = createScriptedLanguageModel([
-      streamStep([
-        ...toolCallChunks({ id: "call-1", toolName: "bash", inputDeltas: ['{"command":"sleep 100"}'] }),
-        finishChunk("tool-calls"),
-      ]),
-      streamStep([...textChunks("message-done", ["aborted, sorry"]), finishChunk("stop")]),
-    ]);
-    const events: SessionEvent[] = [{ type: "user.message", content: [{ type: "text", text: "go" }] }];
-    const context = {
-      agent: { id: "agent-test", model: { id: model.model.modelId } },
-      userMessage: events[0],
-      session_id: "session-test",
-      tools: await bashToolsWithAbortedExec(),
-      model: model.model,
-      systemPrompt: "Reply concisely.",
-      env: {},
-      runtime: makeRuntime(events),
-    } as unknown as HarnessContext;
-
-    await new DefaultHarness().run(context);
-
-    // The wire content is the exact string the model saw before the fix;
-    // only the flag is new (previously the event had no is_error at all).
-    expect(events.find((event) => event.type === "agent.tool_result")).toMatchObject({
-      type: "agent.tool_result",
-      tool_use_id: "call-1",
-      content: "Error: sandbox execution was aborted",
-      is_error: true,
-    });
   });
 });

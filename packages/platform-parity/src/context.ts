@@ -12,7 +12,7 @@ export const PUBLIC_HEADERS = {
   "content-type": "application/json",
 } as const;
 
-/** Harness id every runner registers: AI SDK DefaultHarness over parityModels. */
+/** Harness id every runner registers: the Pi host loop over parityModels. */
 export const PARITY_HARNESS = "platform-parity";
 /** Model id every runner backs with a model card pointing at an unreachable host. */
 export const PARITY_MODEL = "parity-model";

@@ -92,10 +92,10 @@
         "is_error": false,
         "model_request_start_id": "<id>",
         "model_usage": {
-          "cache_creation_input_tokens": 0,
-          "cache_read_input_tokens": 0,
-          "input_tokens": 0,
-          "output_tokens": 0
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
         },
         "processed_at": "<time>",
         "type": "span.model_request_end"
@@ -119,10 +119,10 @@
         "result": "needs_revision",
         "type": "span.outcome_evaluation_end",
         "usage": {
-          "cache_creation_input_tokens": 0,
-          "cache_read_input_tokens": 0,
-          "input_tokens": 0,
-          "output_tokens": 0
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
         }
       },
       {
@@ -135,10 +135,10 @@
         "result": "failed",
         "type": "span.outcome_evaluation_end",
         "usage": {
-          "cache_creation_input_tokens": 0,
-          "cache_read_input_tokens": 0,
-          "input_tokens": 0,
-          "output_tokens": 0
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
         }
       }
     ],

@@ -25,10 +25,6 @@ OpenMatter identity plus `SecretRef`s for a work platform. Secret values stay wi
 
 A Cloudflare Container instance, one per session, used to execute tools that need a real OS. Defined by the Environment. See [Self-host → Overview](/self-host/overview/).
 
-## DefaultHarness
-
-The shipped harness implementation, built on the `ai` SDK. Lives in `packages/agent-harness/src/default.ts`. See [Concepts → Harness](/concepts/#harness).
-
 ## Durable Object (DO)
 
 Cloudflare primitive providing strong consistency and per-key state. openma uses `SESSION_DO` (per-session SQLite event log) and `SANDBOX` (per-session Container).
@@ -43,7 +39,7 @@ Append-only sequence of events for a session. Stored in `SESSION_DO`'s SQLite. T
 
 ## Harness
 
-The agent loop. Ships as `DefaultHarness`; pluggable via `HarnessInterface`. See [Concepts → Harness](/concepts/#harness).
+The agent loop. Ships as `PiHarness`; pluggable via `HarnessInterface`. See [Concepts → Harness](/concepts/#harness).
 
 ## Hosted
 

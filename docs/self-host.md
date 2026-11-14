@@ -718,7 +718,7 @@ provider live certification remains necessary before claiming support.
               │  • SqlEventLog           │
               │  • InProcessEventStreamHub (sqlite mode)│
               │  • PgEventStreamHub      (pg mode, LISTEN/NOTIFY)│
-              │  • DefaultHarness ──┐    │
+              │  • PiHarness ──────┐    │
               │                     │    │
               │  Sandbox: ▼         │    │
               │ litebox|e2b|remote  │    │

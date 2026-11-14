@@ -1,16 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { DefaultHarness } from "../src/default-loop";
 import { PiHarness } from "../src/pi-loop";
 import { registerCoreHarnesses } from "../src/builtins";
 import { HarnessLease, registerHarness, resolveHarness } from "../src/registry";
 
 describe("production harness composition", () => {
-  it("uses Pi as the default harness and keeps AI SDK as an explicit opt-in", () => {
+  it("uses Pi as the only built-in host harness", () => {
     registerCoreHarnesses();
     expect(resolveHarness()).toBeInstanceOf(PiHarness);
     expect(resolveHarness("default")).toBeInstanceOf(PiHarness);
     expect(resolveHarness("pi")).toBeInstanceOf(PiHarness);
-    expect(resolveHarness("ai-sdk")).toBeInstanceOf(DefaultHarness);
+    expect(() => resolveHarness("ai-sdk")).toThrow(/Unknown harness/);
   });
 
   it("reuses a session harness and disposes it when the binding changes", async () => {

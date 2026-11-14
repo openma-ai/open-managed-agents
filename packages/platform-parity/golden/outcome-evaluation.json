@@ -3,11 +3,9 @@
     "user.define_outcome",
     "user.message",
     "session.status_running",
-    "session.warning",
     "span.model_request_start",
     "agent.message",
     "span.model_request_end",
-    "session.usage",
     "span.outcome_evaluation_start",
     "span.outcome_evaluation_ongoing",
     "span.outcome_evaluation_end",
@@ -50,22 +48,24 @@
         "processed_at": "<time>",
         "type": "session.usage",
         "usage": {
-          "input_tokens": 11,
-          "output_tokens": 7
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
         }
-      }
-    ],
-    "session.warning": [
+      },
       {
-        "details": {
-          "harness": "ai-sdk",
-          "replacement": "default"
-        },
         "id": "<id>",
-        "message": "The ai-sdk harness (AI SDK default-loop) is deprecated. Omit harness or use the default Pi agent-core loop instead.",
         "processed_at": "<time>",
-        "source": "harness_deprecated",
-        "type": "session.warning"
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
       }
     ],
     "span.model_request_end": [
@@ -74,10 +74,10 @@
         "is_error": false,
         "model_request_start_id": "<id>",
         "model_usage": {
-          "cache_creation_input_tokens": 0,
-          "cache_read_input_tokens": 0,
-          "input_tokens": 11,
-          "output_tokens": 7
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
         },
         "processed_at": "<time>",
         "type": "span.model_request_end"
@@ -101,10 +101,10 @@
         "result": "max_iterations_reached",
         "type": "span.outcome_evaluation_end",
         "usage": {
-          "cache_creation_input_tokens": 0,
-          "cache_read_input_tokens": 0,
-          "input_tokens": 0,
-          "output_tokens": 0
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
         }
       }
     ],
@@ -171,8 +171,11 @@
     "stats": {},
     "status": "idle",
     "usage": {
-      "input_tokens": 11,
-      "output_tokens": 7
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": "<token_count>"
+      },
+      "input_tokens": "<token_count>",
+      "output_tokens": "<token_count>"
     }
   },
   "reads": {

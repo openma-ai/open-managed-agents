@@ -96,7 +96,7 @@ export interface HarnessInterface {
 
   /**
    * Called once per session, after sandbox warmup, before the first user
-   * message is processed. Default behavior (DefaultHarness): inject
+   * message is processed. Default behavior (PiHarness): inject
    * <system-reminder> user.message events for each skill / memory_prompt /
    * appendable_prompt the agent opted into. Override to substitute a custom
    * RAG layer, or to opt out of platform reminders entirely (no-op).
@@ -148,7 +148,7 @@ export interface HarnessInterface {
    * cache invalidates on any prefix byte drift.
    *
    * Sync-or-async: the union return type lets existing sync overrides
-   * (e.g. AcpProxyHarness returning []) keep their shape. The default-loop
+   * (e.g. AcpProxyHarness returning []) keep their shape. The host harness
    * caller always `await`s the result so either form works.
    */
   deriveModelContext?(
@@ -305,7 +305,7 @@ export interface HarnessContext {
 
   /**
    * Tenant-scoped Pi provider/model runtime for harnesses that consume Pi
-   * directly. DefaultHarness uses the same runtime through `model` above.
+   * directly. PiHarness uses the same runtime through `model` above.
    * Optional because not every platform enables the standalone PiHarness.
    */
   pi?: PiModelRuntime;

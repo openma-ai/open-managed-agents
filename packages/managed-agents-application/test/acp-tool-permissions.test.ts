@@ -133,7 +133,7 @@ describe("validateAcpToolPermissionInput (submitted tools)", () => {
       type: "agent_toolset_20260401",
       configs: [{ name: "bash", permissionPolicy: { type: "always_ask" } }],
     }];
-    for (const harness of [undefined, null, "pi", "ai-sdk", "acp-proxy"]) {
+    for (const harness of [undefined, null, "pi", "acp-proxy"]) {
       expect(validateAcpToolPermissionInput(harness, perTool)).toBeNull();
     }
   });

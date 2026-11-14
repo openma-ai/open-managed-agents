@@ -1,6 +1,8 @@
 import { isRuntimeHistoryEventVisible } from "@open-managed-agents/session-runtime-contract/history";
-import { SummarizeCompactionStrategy } from "./compaction";
+import type { Message } from "@earendil-works/pi-ai";
 import type { HarnessContext } from "./interface";
+import { PiSummaryCompactionPolicy } from "./pi-compaction";
+import { withPiRuntimeRequestOptions } from "./pi-provider";
 import type {
   ContentBlock,
   SessionEvent,
@@ -67,12 +69,33 @@ export async function rebuildAcpContext(ctx: HarnessContext, reason: AcpSemantic
     throw new Error("ACP context could not be rebuilt: canonical history contains no usable conversation");
   }
   if (prompt.length <= DEFAULT_MAX_CHARACTERS) return { prompt, compacted: false, historyCharacters: prompt.length, exceedsLimit: false };
-  // Use the existing summarize strategy rather than a last-N-characters window.
-  const result = await new SummarizeCompactionStrategy().compact(events, {
-    model: ctx.model, contextWindowTokens: 128_000, systemPrompt: ctx.systemPrompt,
-    tools: ctx.tools, runtime: ctx.runtime,
-    applyCacheStrategy: (system, tools, messages) => ({ system, tools, messages }),
-  }).catch(() => null);
+  // Use the Pi-native summarize policy rather than a last-N-characters
+  // window. ACP recovery has the same tenant-scoped Pi runtime as PiHarness;
+  // the child agent owns its own loop, but OpenMA still owns this recovery
+  // summary request and its durable boundary event.
+  const pi = ctx.pi;
+  const recoveryMessages: Message[] = prompt
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line, index) => ({ role: "user" as const, content: line, timestamp: index }));
+  const result = pi
+    ? await new PiSummaryCompactionPolicy("cc-style").compact(events, {
+        messages: recoveryMessages,
+        model: pi.model,
+        systemPrompt: ctx.systemPrompt,
+        tools: [],
+        compactionTriggerInputTokens: 0,
+        models: pi.models,
+        runtime: ctx.runtime,
+        sessionId: ctx.session_id,
+        abortSignal: ctx.runtime.abortSignal,
+        requestOptions: withPiRuntimeRequestOptions(pi, {}, {
+          systemPrompt: ctx.systemPrompt,
+          messages: recoveryMessages,
+          tools: [],
+        }),
+      }).catch(() => null)
+    : null;
   if (result?.summary.some(block => block.type === "text" && block.text.trim())) {
     const boundary = { type: "agent.thread_context_compacted" as const, ...result };
     ctx.runtime.broadcast(boundary);

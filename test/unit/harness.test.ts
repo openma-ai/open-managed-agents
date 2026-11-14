@@ -4,7 +4,6 @@ import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, vi } from "vitest";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { resolveSkills, registerSkill } from "../../packages/agent-harness/src/skills";
-import { SummarizeCompaction } from "../../packages/agent-harness/src/compaction";
 import { TestSandbox, createSandbox, CloudflareSandbox } from "../../apps/agent/src/runtime/sandbox";
 import {
   createCloudflareManagedEnvironmentWorker,
@@ -123,67 +122,7 @@ describe("Skills system", () => {
 });
 
 // ============================================================
-// 2. Compaction
-// ============================================================
-describe("Compaction", () => {
-  const compaction = new SummarizeCompaction();
-
-  it("shouldCompact returns false for short conversations", () => {
-    const messages = [
-      { role: "user" as const, content: "hello" },
-      { role: "assistant" as const, content: "hi there" },
-    ];
-    expect(compaction.shouldCompact(messages)).toBe(false);
-  });
-
-  it("shouldCompact returns true for very long conversations", () => {
-    // Create messages totaling ~400K chars => ~100K tokens at 4 chars/token
-    // 85% threshold = 85K tokens => 340K chars
-    const messages = Array.from({ length: 100 }, (_, i) => ({
-      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-      content: "x".repeat(4000), // ~1000 tokens each => 100K tokens total
-    }));
-    expect(compaction.shouldCompact(messages)).toBe(true);
-  });
-
-  it("shouldCompact respects custom maxTokens threshold", () => {
-    // 10 messages * 400 chars = 4000 chars => ~1000 tokens
-    const messages = Array.from({ length: 10 }, (_, i) => ({
-      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-      content: "y".repeat(400),
-    }));
-    // With default 100K, should NOT compact
-    expect(compaction.shouldCompact(messages, 100000)).toBe(false);
-    // With low threshold (500 tokens * 0.85 = 425 tokens), should compact
-    expect(compaction.shouldCompact(messages, 500)).toBe(true);
-  });
-
-  it("compact returns original messages when 4 or fewer", async () => {
-    const messages = [
-      { role: "user" as const, content: "msg1" },
-      { role: "assistant" as const, content: "msg2" },
-      { role: "user" as const, content: "msg3" },
-      { role: "assistant" as const, content: "msg4" },
-    ];
-    // compact should short-circuit for <= 4 messages
-    const fakeModel = {} as any; // Won't be called
-    const result = await compaction.compact(messages, fakeModel);
-    expect(result).toEqual(messages);
-    expect(result.length).toBe(4);
-  });
-
-  it("shouldCompact returns false at exactly below the threshold", () => {
-    // maxTokens=100, threshold = 85 tokens = 340 chars
-    // Create a message with exactly 336 chars => 84 tokens (below 85)
-    const messages = [
-      { role: "user" as const, content: "a".repeat(336) },
-    ];
-    expect(compaction.shouldCompact(messages, 100)).toBe(false);
-  });
-});
-
-// ============================================================
-// 3. Multi-agent predefined subagents
+// 2. Multi-agent predefined subagents
 // ============================================================
 describe("Multi-agent predefined subagents", () => {
   it("stores predefined subagents in AgentConfig and builds tools", async () => {
@@ -351,7 +290,7 @@ describe("Multi-agent predefined subagents", () => {
 });
 
 // ============================================================
-// 4. Sandbox lifecycle
+// 3. Sandbox lifecycle
 // ============================================================
 describe("Sandbox lifecycle", () => {
   it("TestSandbox exec returns test response with command", async () => {
@@ -875,7 +814,7 @@ describe("Sandbox lifecycle", () => {
     })).rejects.toThrow("r2 mount unavailable");
   });
 
-  it("CloudflareSandbox creates an explicit non-durable output directory in local dev", async () => {
+  it("CloudflareSandbox rejects a managed output mount without R2 credentials", async () => {
     const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
     const sandbox = new CloudflareSandbox({
       SANDBOX: {},
@@ -886,11 +825,8 @@ describe("Sandbox lifecycle", () => {
     await expect(sandbox.mountSessionOutputs({
       tenantId: "tenant-1",
       sessionId: "session-1",
-    })).resolves.toBeUndefined();
-    expect(exec).toHaveBeenCalledWith(
-      "mkdir -p /mnt/session/outputs",
-      { timeout: 5000 },
-    );
+    })).rejects.toThrow(/Managed outputs persistence requires:.*R2_ENDPOINT/);
+    expect(exec).not.toHaveBeenCalled();
     expect(sandbox.sessionOutputMountCapabilities()).toEqual({
       durability: "best_effort",
     });

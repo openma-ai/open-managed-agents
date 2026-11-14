@@ -168,7 +168,7 @@ open-managed-agents/
 
 文件入口：[`apps/agent/src/index.ts`](apps/agent/src/index.ts:1)，仅做四件事：
 
-1. `registerCoreHarnesses()` — default / unset → `PiHarness`; `ai-sdk` → deprecated `DefaultHarness`
+1. `registerCoreHarnesses()` — default / unset → `PiHarness`; custom harnesses are explicit registrations
 2. 导出 DO 类：`SessionDO`、`Sandbox`（即 `OmaSandbox`）、`ContainerProxy`
 3. 导出 outbound 处理器（`@cloudflare/sandbox 0.8.x` 的 `setOutboundHandler` API 用）
 4. 把 `/sessions/:id/*` 转给对应 DO
@@ -187,8 +187,8 @@ open-managed-agents/
 | `harness/interface.ts` | `HarnessInterface`、`HarnessContext` 契约 |
 | `harness/registry.ts` | 名字 → 工厂 |
 | `harness/pi-loop.ts` | **默认 harness**（Pi agent-core 1.1+） |
-| `harness/default-loop.ts` (39 KB) | 已弃用：`harness: "ai-sdk"` 时使用的 AI SDK loop |
-| `harness/compaction.ts` (25 KB) | 上下文压缩策略（事件级粒度、摘要、滑窗） |
+| `harness/pi-loop.ts` | Pi agent loop，负责模型调用、工具边界和事件广播 |
+| `harness/pi-compaction.ts` | Pi 上下文压缩策略（摘要、缓存隔离、事件级边界） |
 | `harness/tools.ts` (51 KB) | bash / read / write / edit / glob / grep / web_fetch / web_search + 派生 mcp_*、call_agent_* |
 | `harness/skills.ts` | 把 skill 文件挂到 `/home/user/.skills/`，并把 prompt 拼进 system |
 | `harness/pi-provider.ts` | 通过 Pi 解析官方/自定义 provider、Model Card 元数据、effort 与 speed 请求控制 |

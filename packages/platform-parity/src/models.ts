@@ -1,21 +1,22 @@
+import type { ScriptedLanguageModelStep } from "../../../test/fakes/scripted-language-model";
 import {
-  createScriptedLanguageModel,
-  type ScriptedLanguageModelStep,
-} from "../../../test/fakes/scripted-language-model";
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type Api,
+  type Model,
+  type Models,
+} from "@earendil-works/pi-ai";
 
 /** A scripted stream step, or a step that blocks until the call is aborted. */
 export type ParityModelStep =
   | ScriptedLanguageModelStep
   | { type: "await-abort"; timeoutMs?: number };
 
-type ScriptedModel = ReturnType<typeof createScriptedLanguageModel>["model"];
-/** The language-model surface the harness uses (structural subset of the scripted model). */
-export type ParityLanguageModel = Pick<ScriptedModel, "specificationVersion" | "provider" | "modelId" | "supportedUrls" | "doGenerate" | "doStream">;
-
 interface AgentScript {
-  scripted: ReturnType<typeof createScriptedLanguageModel>;
-  order: Array<"scripted" | "await-abort">;
-  awaits: Array<{ timeoutMs: number }>;
+  pi: { models: Models; model: Model<Api> };
+  totalSteps: number;
   calls: number;
   aborted: number;
   timedOut: number;
@@ -42,65 +43,43 @@ class ParityModelRegistry {
   }
 
   install(agentName: string, steps: ParityModelStep[]): void {
-    const streamSteps = steps.filter((step): step is ScriptedLanguageModelStep => step.type !== "await-abort");
-    this.scripts.set(agentName, {
-      scripted: createScriptedLanguageModel(streamSteps, {
-        provider: "openma-parity",
-        modelId: "parity-model",
-      }),
-      order: steps.map((step) => (step.type === "await-abort" ? "await-abort" : "scripted")),
-      awaits: steps.flatMap((step) => (step.type === "await-abort" ? [{ timeoutMs: step.timeoutMs ?? 8_000 }] : [])),
+    const script = {
+      pi: undefined as unknown as { models: Models; model: Model<Api> },
+      totalSteps: steps.length,
       calls: 0,
       aborted: 0,
       timedOut: 0,
+    } satisfies AgentScript;
+    const faux = fauxProvider({
+      provider: "openma-parity",
+      models: [{ id: "parity-model", contextWindow: 128_000, maxTokens: 4_096 }],
+      tokensPerSecond: 100_000,
     });
+    faux.setResponses(steps.map((step) => parityStepToPiResponse(step, script)));
+    const models = createModels();
+    models.setProvider(faux.provider);
+    script.pi = { models, model: models.getModel("openma-parity", "parity-model")! };
+    this.scripts.set(agentName, script);
   }
 
-  /** Model for the agent whose (possibly run-suffixed) name is given. */
-  modelFor(agentName: string | undefined): ParityLanguageModel {
+  /** Pi-native model runtime for the Pi host harness parity runner. */
+  piRuntimeFor(agentName: string | undefined): {
+    models: Models;
+    model: Model<Api>;
+    thinkingLevel: "off";
+    speed: "standard";
+  } {
     const full = agentName ?? "";
     const name = canonicalAgentName(full);
     if (this.run && !full.endsWith(this.run)) {
-      // A turn left over from an earlier scenario (e.g. a retry loop) must not
-      // consume this run's script.
       this.stray += 1;
       throw new Error(`platform-parity: model requested by agent ${JSON.stringify(full)} outside the active run`);
     }
     const script = this.scripts.get(name);
     if (script === undefined) {
-      throw new Error(`platform-parity: no scripted model installed for agent ${JSON.stringify(name)}`);
+      throw new Error(`platform-parity: no scripted Pi model installed for agent ${JSON.stringify(name)}`);
     }
-    const inner = script.scripted.model;
-    const model: ParityLanguageModel = {
-      specificationVersion: inner.specificationVersion,
-      provider: inner.provider,
-      modelId: inner.modelId,
-      supportedUrls: inner.supportedUrls,
-      doGenerate: (options) => inner.doGenerate(options),
-      doStream: async (options) => {
-        const kind = script.order[script.calls];
-        script.calls += 1;
-        if (kind !== "await-abort") return inner.doStream(options);
-        const gate = script.awaits.shift() ?? { timeoutMs: 8_000 };
-        await new Promise<void>((resolve, reject) => {
-          const signal = options.abortSignal;
-          const timer = setTimeout(() => {
-            script.timedOut += 1;
-            reject(new Error("platform-parity: await-abort step timed out without an abort"));
-          }, gate.timeoutMs);
-          const onAbort = () => {
-            clearTimeout(timer);
-            script.aborted += 1;
-            reject(signal?.reason instanceof Error ? signal.reason : new Error("aborted"));
-          };
-          if (signal?.aborted) onAbort();
-          else signal?.addEventListener("abort", onAbort, { once: true });
-          void resolve;
-        });
-        throw new Error("unreachable");
-      },
-    };
-    return model;
+    return { ...script.pi, thinkingLevel: "off", speed: "standard" };
   }
 
   /** Public-observable summary: how many model calls each agent made. */
@@ -109,7 +88,7 @@ class ParityModelRegistry {
     for (const [name, script] of [...this.scripts].sort(([a], [b]) => a.localeCompare(b))) {
       out[name] = {
         calls: script.calls,
-        unconsumed_steps: Math.max(0, script.order.length - script.calls),
+        unconsumed_steps: Math.max(0, script.totalSteps - script.calls),
         aborted: script.aborted,
         timed_out: script.timedOut,
       };
@@ -121,6 +100,52 @@ class ParityModelRegistry {
   strayRequests(): number {
     return this.stray;
   }
+}
+
+function parityStepToPiResponse(step: ParityModelStep, script: AgentScript) {
+  if (step.type === "await-abort") {
+    return (_context: unknown, options?: { signal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+      script.calls += 1;
+      const timeoutMs = step.timeoutMs ?? 8_000;
+      const timer = setTimeout(() => {
+        script.timedOut += 1;
+        reject(new Error("platform-parity: await-abort step timed out without an abort"));
+      }, timeoutMs);
+      const signal = options?.signal;
+      const onAbort = () => {
+        clearTimeout(timer);
+        script.aborted += 1;
+        reject(signal?.reason instanceof Error ? signal.reason : new Error("aborted"));
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+  if (step.type === "request-error") {
+    return () => {
+      script.calls += 1;
+      return fauxAssistantMessage("", { stopReason: "error", errorMessage: step.error.message });
+    };
+  }
+  const content: any[] = [];
+  for (const chunk of step.chunks) {
+    if (chunk.type === "text-delta" && typeof chunk.delta === "string") {
+      content.push({ type: "text", text: chunk.delta });
+    } else if (chunk.type === "tool-call") {
+      const input = typeof chunk.input === "string" ? chunk.input : "{}";
+      let arguments_: Record<string, unknown> = {};
+      try { arguments_ = JSON.parse(input) as Record<string, unknown>; } catch { /* provider will surface malformed input */ }
+      content.push(fauxToolCall(String(chunk.toolName), arguments_ as never, { id: String(chunk.toolCallId) }));
+    }
+  }
+  const finish = step.chunks.find((chunk) => chunk.type === "finish") as { finishReason?: { unified?: string } } | undefined;
+  const stopReason = finish?.finishReason?.unified === "tool-calls" || content.some((part) => part.type === "toolCall")
+    ? "toolUse" as const
+    : "stop" as const;
+  return () => {
+    script.calls += 1;
+    return fauxAssistantMessage(content, { stopReason });
+  };
 }
 
 export const parityModels = new ParityModelRegistry();

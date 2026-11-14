@@ -55,7 +55,7 @@ describe("Tool building", () => {
 
     registerHarness(harnessName, () => ({
       async run(ctx) {
-        // The buildTools function is called inside DefaultHarness,
+        // The buildTools function is called inside the Pi host loop,
         // but we can inspect the agent config to verify tool config is passed through.
         // For a more direct test, we report the tool config.
         ctx.runtime.broadcast({

@@ -318,7 +318,7 @@ const wrappedModel = ctx.env.llmLog
 still gets every chunk live; we accumulate a copy of stream parts
 (typed JSON objects, not raw bytes) and PUT to R2 on flush.
 `wrapGenerate` does the analogous thing for non-streaming calls
-(unused today by default-loop but available).
+(unused today by the Pi host loop but available).
 
 ### Storage
 
@@ -350,7 +350,7 @@ still gets every chunk live; we accumulate a copy of stream parts
 `HarnessContext.env.llmLog` carries `{ tenant_id, session_id, r2 }`.
 SessionDO populates this for both primary and sub-agent harness
 invocations from `FILES_BUCKET`. The `spanIdResolver` closure in
-default-loop reads the per-step `stepStartId` (minted in
+the Pi host loop reads the per-step `stepStartId` (minted in
 `experimental_onStepStart` BEFORE the provider doStream call), so
 the middleware always sees the right id at `wrapStream` time.
 
@@ -455,6 +455,6 @@ fact that the call failed.
 
 - **Aux model calls (web_fetch summarization).** The aux model is
   resolved + invoked through the same `resolveModel` path as the
-  primary, but those calls don't go through default-loop so they
+  primary, but those calls don't go through the Pi host loop so they
   do not get the middleware. If aux calls need full-body logging,
   wire `llmLoggingMiddleware` at the aux call site too.

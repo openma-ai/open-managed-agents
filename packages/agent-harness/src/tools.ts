@@ -31,7 +31,7 @@ import {
 
 // Source of truth for which tool names are part of the agent_toolset_20260401
 // built-in suite. Used by buildTools() below to decide which tool entries to
-// include AND by harness/default-loop.ts to classify tool-use events as
+// include AND by the host harness to classify tool-use events as
 // `agent.tool_use` (built-in) vs `agent.custom_tool_use`. Keep this in sync
 // with the actual `tools.<name> = tool({...})` registrations below — the
 // classification list and the registration list MUST be the same set, or

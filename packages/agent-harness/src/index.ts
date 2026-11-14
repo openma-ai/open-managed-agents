@@ -31,7 +31,6 @@ export {
   type HarnessFactory,
 } from "./registry";
 export { registerCoreHarnesses } from "./builtins";
-export { DefaultHarness } from "./default-loop";
 export { PiHarness } from "./pi-loop";
 export { rebuildAcpContext, type AcpSemanticRecoveryReason } from "./acp-recovery";
 export { answerAcpPermission, type AcpPermissionRequest, type AcpPermissionResponse } from "./acp-permission";

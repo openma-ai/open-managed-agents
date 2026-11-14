@@ -2,16 +2,16 @@
  * Turn lifetime for the OMA agent harness.
  *
  * Replaces the tangled mix of withRetry + per-attempt keepAliveWhile +
- * stale-chunk + heartbeat + ctx.waitUntil-backup that grew up inside
- * default-loop.ts and session-do.ts. The contract is:
+ * stale-chunk + heartbeat + ctx.waitUntil-backup that grew up inside the
+ * host harness and session-do.ts. The contract is:
  *
  *   1. **runAgentTurn**  — mark the turn in flight on the unified
  *      `sessions` table (status='running', turn_id=...) so cold starts
  *      can detect orphans, and synchronously persist workspace state
  *      before returning success or surfacing a typed `TurnError`. NO
  *      internal retry — the caller (eval-runner / app) decides what to
- *      do. Stall detection lives in the harness next to streamText
- *      (default-loop.ts), not here.
+ *      do. Stall detection lives in the host harness next to the provider
+ *      stream, not here.
  *
  * Background on the design:
  *   - Lifecycle is now expressed as RuntimeAdapter.beginTurn /
@@ -94,7 +94,7 @@ export interface RunAgentTurnOptions {
  *
  * Wraps the body in cf-agents `keepAliveWhile { runFiber }` so the DO
  * stays alive for the full turn duration. Stall detection lives inside
- * the harness (default-loop.ts) next to the streamText call — the
+ * the host harness next to the provider stream — the
  * runtime no longer composes a stall AbortController. Workspace
  * persistence runs synchronously at end of turn. Errors are typed and
  * thrown as `TurnAborted`. NO internal retry — caller catches
@@ -182,8 +182,8 @@ function classifyError(
   if (err instanceof TurnAborted) return err;
   const msg = err instanceof Error ? err.message : String(err);
   // Stall: the harness's in-closure setTimeout fires AbortController.abort()
-  // when no chunk arrives for STALE_CHUNK_THRESHOLD_MS. ai-sdk surfaces
-  // that as either a generic abort error or one with "stalled" in the
+  // when no chunk arrives for STALE_CHUNK_THRESHOLD_MS. Provider adapters may
+  // surface that as either a generic abort error or one with "stalled" in the
   // message — match both.
   if (/stall/i.test(msg)) {
     return new TurnAborted({

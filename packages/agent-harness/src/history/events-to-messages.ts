@@ -18,8 +18,8 @@ import { pickPreservedTail, TAIL_MAX_TOKENS, TAIL_MIN_MESSAGES, TAIL_MIN_TOKENS 
 import { userContentToParts, userContentToPartsAsync, type FileResolver, type ResolvedFile } from "./user-content-parts";
 
 /**
- * Convert SessionEvent[] → ModelMessage[]. The strict inverse of
- * default-loop.ts onStepFinish writes — together they form the bijection
+ * Convert SessionEvent[] → ModelMessage[]. The strict inverse of host
+ * harness event writes — together they form the bijection
  * that prompt-cache determinism rests on.
  *
  * Invariant: write(read(events)) === events at the byte level for every
@@ -44,7 +44,7 @@ import { userContentToParts, userContentToPartsAsync, type FileResolver, type Re
  *
  * Sync API: file_id-source image/document blocks fall back to a placeholder
  * text part because resolution requires I/O. Callers that own the resolver
- * (default-loop) should use `eventsToMessagesAsync(events, resolver)` so
+ * should use `eventsToMessagesAsync(events, resolver)` so
  * the model sees the actual file bytes; this sync entry point is kept for
  * tests, in-memory sub-agents, and anywhere a synchronous projection is
  * required.
@@ -76,7 +76,7 @@ export function eventsToMessages(inputEvents: SessionEvent[]): ModelMessage[] {
   // a strategy that returns `[{type:"text", text:""}]` would still pass
   // it and silently drop the entire pre-boundary history downstream.
   // This is the downstream half of the empty-summary defense; the
-  // upstream half lives in DefaultHarness.compact() where the boundary
+  // upstream half lives in the host harness compaction path where the boundary
   // event is written.
   let boundaryIdx = -1;
   let boundarySummary: ContentBlock[] | undefined;
@@ -473,7 +473,7 @@ async function buildMessagesAsync(
 
 /**
  * Wire `string | ContentBlock[]` → AI SDK ToolResultOutput.
- * Strict inverse of normalizeToolOutputForWire in default-loop.ts.
+ * Strict inverse of the host harness tool-result wire normalization.
  */
 function wireContentToToolOutput(
   content: string | ContentBlock[],

@@ -395,7 +395,7 @@ describe("threads HTTP endpoints", () => {
 
     const partialMessageId = "msg_abort_test";
     await runInDurableObject(stub, async (instance, state) => {
-      // Manually drive the stream lifecycle the way default-loop does:
+      // Manually drive the stream lifecycle the way the host loop does:
       // start → append chunks → end(aborted).
       const helpers = (instance as {
         buildStreamRuntimeMethods: (threadId?: string) => {

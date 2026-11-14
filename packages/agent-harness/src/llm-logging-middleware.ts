@@ -38,7 +38,7 @@ export interface LlmLoggingContext {
    *  binding is missing. */
   r2: LlmLogObjectStorePort | null | undefined;
   /** Lazy resolver for the span event id this call is paired with.
-   *  default-loop mints the id in `experimental_onStepStart` BEFORE the
+   *  host harness mints the id in `experimental_onStepStart` BEFORE the
    *  provider call fires; the middleware reads via this closure so the
    *  per-step id is captured even though the middleware has been
    *  bound to the model once at the streamText() callsite. */

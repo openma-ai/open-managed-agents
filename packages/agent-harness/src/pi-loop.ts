@@ -38,7 +38,7 @@ import {
   resolveCompactionSummaryInstructions,
   resolveCompactionTriggerInputTokens,
 } from "./compaction-config";
-import { emitHarnessToolUseFromCall, isMcpTool } from "./default-loop";
+import { emitHarnessToolUseFromCall, isMcpTool } from "./tool-events";
 import { withPiRuntimeRequestOptions } from "./pi-provider";
 import { createPiToolAssembly } from "./assembly/adapters/pi";
 import { toolsToPi, valueToPiContent } from "./pi-loop-tools";
@@ -222,6 +222,11 @@ export class PiHarness implements HarnessInterface {
 
     try {
       const run = async () => {
+        // The cold path has already assembled the initial context. Take one
+        // hot-input snapshot at the loop boundary before the first provider
+        // call; the interval below only covers events arriving during the
+        // running loop.
+        await pollSteering();
         await agent.continue();
         // A poll that promoted a steered message just as the run ended must
         // not lose it: finish that poll and keep the run going.
@@ -533,6 +538,7 @@ async function translatePiEvent(
           type: "agent.mcp_tool_result",
           mcp_tool_use_id: event.toolCallId,
           content,
+          parent_event_id: event.toolCallId,
           ...((event.isError || details?.openmaDispatchedUnknown) && { is_error: true }),
         } as SessionEvent);
       } else {
@@ -540,6 +546,7 @@ async function translatePiEvent(
           type: "agent.tool_result",
           tool_use_id: event.toolCallId,
           content,
+          parent_event_id: event.toolCallId,
           is_error: event.isError || details?.openmaDispatchedUnknown,
         } as SessionEvent);
       }

@@ -35,7 +35,7 @@ the optional sandbox egress proxy (its own port) for CLI credential injection.
               │  • SqlClient (sqlite / postgres / mysql)     │
               │  • SqlEventLog + InProcessEventStreamHub     │
               │  • LocalFsBlobStore + chokidar watcher       │
-              │  • DefaultHarness (apps/agent shared code)   │
+              │  • PiHarness (apps/agent shared code)         │
               │  • SandboxExecutor: explicit isolated port   │
               └──────────────────────┬───────────────────────┘
                                      │ provider API / VM boundary

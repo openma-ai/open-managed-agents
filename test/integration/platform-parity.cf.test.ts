@@ -1,5 +1,3 @@
-// Legacy ai-sdk golden coverage; not default-Pi mixed-batch acceptance.
-// Default Pi gates: mixed-process-restart.test.ts and pi-mixed-restart.cf.test.ts.
 // @ts-nocheck
 // Multi-platform parity gate — Cloudflare runner (design §0.7 gate 3).
 // Drives the real combined worker (apps/main routes + apps/agent SessionDO,
@@ -16,7 +14,7 @@ import { installParityModelTransport } from "../fixtures/cf-parity-outbound";
 const modelTransport = installParityModelTransport();
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { AcpSandboxHarness } from "../../packages/agent-harness/src/acp-sandbox-loop";
-import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
+import { PiHarness } from "../../packages/agent-harness/src/pi-loop";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import {
   revisionJudgeResponse,
@@ -37,10 +35,10 @@ import {
 } from "../../packages/platform-parity/src";
 
 registerHarness(PARITY_HARNESS, () => {
-  const harness = new DefaultHarness();
+  const harness = new PiHarness();
   return {
     async run(ctx) {
-      await harness.run({ ...ctx, model: parityModels.modelFor(ctx.agent?.name) });
+      await harness.run({ ...ctx, pi: parityModels.piRuntimeFor(ctx.agent?.name) });
     },
   };
 });
@@ -134,16 +132,39 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
   stub("tool-call", [FIRST_RESULT_TEXT]),
   stub("budget-usage", [FIRST_RESULT_TEXT]),
   stub("interrupt", [FIRST_RESULT_TEXT]),
-  stub("memory-read-write", [FIRST_RESULT_TEXT, "/events/agent.tool_result/1/content/0/text"]),
   stub("session-outputs", [FIRST_RESULT_TEXT]),
   stub("mixed-custom-tools", [FIRST_RESULT_TEXT]),
   {
     scenario: "memory-read-write",
-    title: "agent memory write not in the store",
-    paths: ["/reads/memories"],
-    cause: "golden lists /learned.md written by the agent; CF lists only /seed.md: without R2 FUSE credentials the memory "
-      + "store mount falls back to a local directory (apps/agent/src/runtime/sandbox.ts:463-467), so agent writes never reach the store. "
-      + "Test environment, not product behaviour: the workerd suite has no R2 FUSE credentials; kept",
+    title: "managed memory unavailable in the CF fixture",
+    paths: [
+      "/events/agent.message",
+      "/events/agent.tool_result",
+      "/events/agent.tool_use",
+      "/events/session.error",
+      "/events/session.status_idle",
+      "/events/session.status_running",
+      "/events/session.usage",
+      "/events/span.model_request_end",
+      "/events/span.model_request_start",
+      "/models/parity-agent",
+      "/reads/memories",
+      "/session/usage",
+      "/timeouts",
+    ],
+    eventTypes: [
+      "agent.message",
+      "agent.tool_result",
+      "agent.tool_use",
+      "session.error",
+      "session.status_idle",
+      "session.status_running",
+      "span.model_request_end",
+      "span.model_request_start",
+    ],
+    cause: "the CF workerd fixture has no MEMORY_BUCKET_NAME, so managed memory mount setup fails before the Pi model is called "
+      + "(apps/agent/src/runtime/sandbox.ts:463-467). This masks the complete scenario result; the targeted memory authority "
+      + "and Node parity paths provide the positive storage evidence",
   },
   {
     scenario: "session-outputs",

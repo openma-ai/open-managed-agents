@@ -457,7 +457,7 @@ output strategy; it does not pretend local output files are persisted.
 
 | Path | Evidence |
 |---|---|
-| Harness outside sandbox | Real DefaultHarness (the `default`/`ai-sdk` registrations) and Pi loop with a real local subprocess Sandbox and real filesystem tools; only the LLM/provider is scripted |
+| Harness outside sandbox | Real Pi loop with a real local subprocess Sandbox and real filesystem tools; only the LLM/provider is scripted |
 | ACP process inside sandbox | Real stateful ACP child across turns, logical-session recovery after child crash, lease renewal and shutdown ordering |
 | E2B ACP mapping | Stateful E2B SDK adapter exercised against a scripted E2B service; no E2B credential is required in normal CI |
 | Generic supervised protocol | Ready/heartbeat/completion/drain/timeout/stop state machine with deterministic transport faults and a real Docker supervisor process |

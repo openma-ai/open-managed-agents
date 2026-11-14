@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
 import {
-  registerCoreHarnesses, getHarnessCatalog, resolveHarness, DefaultHarness, PiHarness,
+  registerCoreHarnesses, getHarnessCatalog, resolveHarness, PiHarness,
   composeSystemPrompt, platformGuidance, readHarnessAgentModelSettings,
   agentUsesAssemblySkillMount, eventsToMessages, eventsToMessagesAsync,
   INTERRUPTED_TOOL_RESULT_TEXT, interruptRequiresActionClosure, resolveAppendablePrompts,
@@ -13,18 +13,18 @@ import {
 } from "@open-managed-agents/agent-harness";
 
 describe("harness registry as the Node host sees it", () => {
-  it("registers pi, ai-sdk and acp-sandbox with pi as the default", () => {
+  it("registers pi and acp-sandbox with pi as the default", () => {
     registerCoreHarnesses();
     registerCoreHarnesses();
     const catalog = getHarnessCatalog();
     expect(catalog.default_harness_id).toBe("pi");
     expect(catalog.data.map(({ id, execution }) => [id, execution.placement])).toEqual(
-      expect.arrayContaining([["pi", "host"], ["ai-sdk", "host"], ["acp-sandbox", "sandbox"]]),
+      expect.arrayContaining([["pi", "host"], ["acp-sandbox", "sandbox"]]),
     );
     expect(catalog.data.find(({ id }) => id === "acp-sandbox")?.requirements)
       .toEqual(["acp.agent.command|acp.agent.registry"]);
     expect(resolveHarness()).toBeInstanceOf(PiHarness);
-    expect(resolveHarness("ai-sdk")).toBeInstanceOf(DefaultHarness);
+    expect(() => resolveHarness("ai-sdk")).toThrow(/Unknown harness/);
     expect(() => resolveHarness("missing")).toThrow(/Unknown harness/);
   });
 });

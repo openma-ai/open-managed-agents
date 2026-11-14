@@ -7,17 +7,17 @@ import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
-import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
+import { PiHarness } from "../../packages/agent-harness/src/pi-loop";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import type { HarnessContext } from "../../packages/agent-harness/src/interface";
 import {
-  createScriptedLanguageModel,
   finishChunk,
   streamStep,
   textChunks,
   toolCallChunks,
 } from "../fakes/scripted-language-model";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
+import { createScriptedPiRuntime } from "@open-managed-agents/platform-parity/scripted-pi-model";
 
 beforeAll(() => ensureModelCards(["resume-mcp-mock", "claude-sonnet-4-6"]));
 
@@ -28,14 +28,14 @@ const HARNESS = "resume-mcp-refresh";
 
 const testSessions: string[] = [];
 
-let turnModel: ReturnType<typeof createScriptedLanguageModel> | null = null;
+let turnModel: ReturnType<typeof createScriptedPiRuntime> | null = null;
 
 registerHarness(HARNESS, () => {
-  const harness = new DefaultHarness();
+  const harness = new PiHarness();
   return {
     async run(ctx: HarnessContext) {
       if (!turnModel) throw new Error("resume MCP fake LLM was not installed");
-      await harness.run({ ...ctx, model: turnModel.model });
+      await harness.run({ ...ctx, pi: turnModel.runtime });
     },
   };
 });
@@ -135,7 +135,7 @@ describe("Cloudflare session resume picks up published MCP tools", () => {
       inputDeltas: ['{"value":', '"published"}'],
     });
     const finalChunks = textChunks("text-resume", ["published ping ", "done"]);
-    turnModel = createScriptedLanguageModel([
+    turnModel = createScriptedPiRuntime([
       streamStep([
         toolChunks[0],
         { type: "response-metadata", id: "mock-resume-tool" },

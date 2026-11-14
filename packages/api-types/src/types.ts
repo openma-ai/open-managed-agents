@@ -664,7 +664,7 @@ export interface AgentThreadContextCompactedEvent extends EventBase {
    * Optional for backward compat: an event without `summary` is a pure
    * notification (UI signal), and derive falls back to "no compaction
    * happened" — i.e. it shows the full pre-boundary history. New events
-   * emitted by DefaultHarness always include `summary`.
+   * emitted by the host harness always include `summary`.
    */
   summary?: ContentBlock[];
   /**

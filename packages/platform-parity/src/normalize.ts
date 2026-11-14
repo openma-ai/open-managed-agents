@@ -9,10 +9,15 @@ export const ID = "<id>";
 export const TIME = "<time>";
 export const DURATION = "<duration>";
 export const SEQ = "<seq>";
+export const TOKEN_COUNT = "<token_count>";
 
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u;
 const TIME_KEY = /(?:^|_)(?:at|ts|time|timestamp)$|_at_ms$|^ts$/u;
 const DURATION_KEY = /(?:^|_)(?:seconds|duration|duration_ms|latency_ms|elapsed_ms)$|^duration/u;
+// Token accounting depends on provider-side prompt serialization, cache state,
+// and tokenizer/runtime details, so counts are not a stable cross-runtime
+// parity boundary. Keep the fields present while normalizing their values.
+const TOKEN_COUNT_KEY = /(?:^|_)(?:input|output)_tokens$/u;
 const ID_KEY = /^(?:id|.*_id|.*_ids|.*_key)$/u;
 const KEEP_ID = /^parity_/u;
 const SEQ_KEY = /^(?:seq|sequence)$/u;
@@ -48,6 +53,7 @@ export function normalizeValue(value: unknown, context: NormalizeContext, key?: 
     if (SEQ_KEY.test(key) && typeof value === "number") return SEQ;
     if (TIME_KEY.test(key) && (typeof value === "number" || typeof value === "string")) return TIME;
     if (DURATION_KEY.test(key) && typeof value === "number") return DURATION;
+    if (TOKEN_COUNT_KEY.test(key) && typeof value === "number") return TOKEN_COUNT;
     if (ID_KEY.test(key) && (typeof value === "string" || Array.isArray(value))) {
       return normalizeIdValue(value, context);
     }
@@ -70,8 +76,21 @@ export function normalizeValue(value: unknown, context: NormalizeContext, key?: 
 /** Event types that are pure timing signals and carry no payload. */
 export const TIMING_ONLY_EVENT_TYPES = new Set(["span.model_first_token"]);
 
+/**
+ * Event types whose payload is retained below but whose stream slot is not a
+ * stable cross-host ordering boundary. Usage rows can be appended by the
+ * model telemetry path concurrently with thread lifecycle rows; keeping them
+ * in `events.session.usage` preserves the evidence without making parity
+ * depend on that storage scheduling detail.
+ */
+export const UNORDERED_EVENT_TYPES = new Set([
+  "session.usage",
+  "agent.tool_result",
+  "session.thread_status_idle",
+]);
+
 export interface ParityObservation {
-  /** Ordered public event types, timing-only spans removed. */
+  /** Ordered public event types, timing-only and unordered telemetry removed. */
   event_types: string[];
   /** Normalised events grouped by type, in stream order within each type. */
   events: Record<string, unknown[]>;
@@ -129,12 +148,13 @@ export function buildObservation(input: {
   /** Event types sent together in one request (see canonicalBatchOrder). */
   batches?: string[][];
 }): ParityObservation {
+  const retained = input.events.filter((event) => !TIMING_ONLY_EVENT_TYPES.has(String(event.type)));
   const kept = canonicalBatchOrder(
-    input.events.filter((event) => !TIMING_ONLY_EVENT_TYPES.has(String(event.type))),
+    retained.filter((event) => !UNORDERED_EVENT_TYPES.has(String(event.type))),
     input.batches ?? [],
   );
   const events: Record<string, unknown[]> = {};
-  for (const event of kept) {
+  for (const event of retained) {
     const type = String(event.type);
     (events[type] ??= []).push(normalizeValue(event, input.context));
   }

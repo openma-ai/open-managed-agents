@@ -72,7 +72,7 @@ Detailed schemas in [Skills & Tools](/build/skills-and-tools/).
 
 The agent loop itself — the code that decides what the model does next given the session events. openma owns the loop and ships three placements behind the same harness interface:
 
-- **DefaultHarness / PiHarness** — run the loop in the OpenMA host.
+- **PiHarness** — runs the loop in the OpenMA host.
 - **ACP sandbox harness** — spawn an ACP-compatible agent such as Claude Code or Codex inside the session sandbox while OpenMA keeps ownership of session lifecycle and canonical events.
 - **ACP proxy harness** — use a user-registered local runtime when the agent must run on a particular device.
 

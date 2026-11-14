@@ -1444,7 +1444,7 @@ export class SessionDO extends DurableObject<Env> {
    * here; the per-derive cache wrapping this caches the null result so a
    * single failure doesn't trigger a retry storm within one projection.
    *
-   * No per-file logging — the existing default-loop log lines cover the
+   * No per-file logging — the existing host-harness log lines cover the
    * shape of each call (messages count) without paying per-attachment
    * verbosity.
    */
@@ -5482,7 +5482,7 @@ export class SessionDO extends DurableObject<Env> {
       systemPrompt: composeSystemPrompt(subAgent.system || "", subSkillReminders),
       platformReminders: subSkillReminders,
       // The child runs inside this Session: per-session harness bookkeeping
-      // (e.g. the one-time ai-sdk deprecation session.warning) keys on it.
+      // (e.g. session-scoped harness bookkeeping) keys on it.
       session_id: this.state.session_id,
       // Sub-agent inherits the parent's tenant — same daemon, same per-tenant
       // ACP child key resolution. AcpProxyHarness reads this to forward
@@ -5785,7 +5785,7 @@ export class SessionDO extends DurableObject<Env> {
     // belongs in the system prompt where Claude already knows to treat
     // it as such, and so it doesn't clutter the visible conversation
     // feed. composeSystemPrompt now takes the reminders directly; the
-    // default-loop's onSessionInit is a no-op for the same reason.
+    // The host harness onSessionInit is a no-op for the same reason.
     const rawSystemPrompt = agent.system || "";
 
     // Collect platformReminders first so composeSystemPrompt can inline
@@ -6717,7 +6717,7 @@ export class SessionDO extends DurableObject<Env> {
     // active_seconds: SUM(end_ts - start_ts) over paired
     // span.model_request_start / span.model_request_end events for this
     // thread. Pairs join on the start event's `id` ↔ end event's
-    // `model_request_start_id` (set by default-loop's onStepFinish/onError/
+    // `model_request_start_id` (set by the host harness onStepFinish/onError/
     // onAbort). The SQL `ts` column is in seconds, so we get whole-second
     // resolution which is fine for a "time spent in the model" stat.
     //

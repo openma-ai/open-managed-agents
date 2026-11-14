@@ -1,5 +1,4 @@
-// Legacy ai-sdk golden coverage; not default-Pi mixed-batch acceptance.
-// Default Pi gates: mixed-process-restart.test.ts and pi-mixed-restart.cf.test.ts.
+// Pi host-loop golden coverage.
 import { runNodeContextBuildFailure } from "./node-context-build-failure.fixture";
 // Multi-platform parity gate — Node runner (design §0.7 gate 3).
 // Drives the in-process Node control plane (createNodeControlPlane +
@@ -13,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
-  type HarnessContext, AcpSandboxHarness, DefaultHarness, registerHarness,
+  type HarnessContext, AcpSandboxHarness, PiHarness, registerHarness,
 } from "@open-managed-agents/agent-harness";
 import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
@@ -36,10 +35,10 @@ import {
 } from "../../../packages/platform-parity/src";
 
 registerHarness(PARITY_HARNESS, () => {
-  const harness = new DefaultHarness();
+  const harness = new PiHarness();
   return {
     async run(ctx: HarnessContext) {
-      await harness.run({ ...ctx, model: parityModels.modelFor(ctx.agent?.name) as HarnessContext["model"] });
+      await harness.run({ ...ctx, pi: parityModels.piRuntimeFor(ctx.agent?.name) });
     },
   };
 });

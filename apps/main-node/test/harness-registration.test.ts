@@ -55,7 +55,6 @@ describe("harness composition initialization", () => {
     expect(getHarnessCatalog().default_harness_id).toBe("pi");
     expect(getHarnessCatalog().data.map(({ id, execution, capabilities, requirements }) => ({ id, execution, capabilities, requirements }))).toEqual([
       { id: "pi", execution: { placement: "host" }, capabilities: { runtime_binding: false }, requirements: [] },
-      { id: "ai-sdk", execution: { placement: "host" }, capabilities: { runtime_binding: false }, requirements: [] },
       { id: "acp-sandbox", execution: { placement: "sandbox" }, capabilities: { runtime_binding: false }, requirements: ["acp.agent.command|acp.agent.registry"] },
     ]);
     expect(resolveHarness().constructor.name).toBe("PiHarness");

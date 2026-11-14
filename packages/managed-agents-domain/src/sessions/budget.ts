@@ -154,7 +154,7 @@ export function gateExhausted(gate: SessionBudgetGate | null | undefined): boole
   return BigInt(gate.list_cost_pico) >= centsToPico(gate.maxListCost.amount);
 }
 
-/** @deprecated Prefer gateExhausted; kept for the deprecated default-loop. */
+/** @deprecated Prefer gateExhausted; kept for older budget callers. */
 export function budgetExhausted(
   gate: SessionBudgetGate | null | undefined,
   _events?: readonly unknown[],

@@ -2,17 +2,17 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
-import { DefaultHarness } from "../../packages/agent-harness/src/default-loop";
+import { PiHarness } from "../../packages/agent-harness/src/pi-loop";
 import { registerHarness } from "../../packages/agent-harness/src/registry";
 import { getCfServicesForTenant } from "@open-managed-agents/services";
 import {
-  createScriptedLanguageModel,
   finishChunk,
   streamStep,
   textChunks,
   toolCallChunks,
 } from "../fakes/scripted-language-model";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
+import { createScriptedPiRuntime } from "@open-managed-agents/platform-parity/scripted-pi-model";
 
 beforeAll(() => ensureModelCards(["managed-turn-model"]));
 
@@ -26,14 +26,14 @@ const BROKEN_MCP_ORIGIN = "https://broken-managed-turn-mcp.example.test";
 const OAUTH_ORIGIN = "https://managed-turn-oauth.example.test";
 const HARNESS_NAME = "managed-turn-mcp-e2e";
 
-let turnModel: ReturnType<typeof createScriptedLanguageModel> | null = null;
+let turnModel: ReturnType<typeof createScriptedPiRuntime> | null = null;
 
 registerHarness(HARNESS_NAME, () => {
-  const harness = new DefaultHarness();
+  const harness = new PiHarness();
   return {
     async run(ctx) {
       if (!turnModel) throw new Error("managed-turn fake LLM was not installed");
-      await harness.run({ ...ctx, model: turnModel.model });
+      await harness.run({ ...ctx, pi: turnModel.runtime });
     },
   };
 });
@@ -64,7 +64,7 @@ function createTurnModel() {
     inputDeltas: ['{"value":', '"managed"}'],
   });
   const finalChunks = textChunks("text-1", ["MCP echo ", "completed."]);
-  return createScriptedLanguageModel([
+  return createScriptedPiRuntime([
     streamStep([
       toolChunks[0],
       { type: "response-metadata", id: "mock-response-tool" },
@@ -429,7 +429,7 @@ describe("managed turn MCP E2E", () => {
         "tools/call": 1,
         DELETE: 1,
       });
-      expect(turnModel.model.doStreamCalls).toHaveLength(2);
+      expect(turnModel.callCount).toBe(2);
       expect(turnModel.assertExhausted).not.toThrow();
     } finally {
       external.restore();
