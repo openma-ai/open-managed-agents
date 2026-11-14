@@ -6,9 +6,11 @@ const sdk = vi.hoisted(() => ({
 }));
 
 function makeSdkSandbox(sandboxId: string) {
+  const run = vi.fn();
+  run.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
   return {
     sandboxId,
-    commands: { run: vi.fn() },
+    commands: { run },
     files: { read: vi.fn(), write: vi.fn() },
     kill: vi.fn(),
     getInfo: vi.fn(async () => ({ state: "running" })),

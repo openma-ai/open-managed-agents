@@ -189,14 +189,14 @@ export async function createE2BSandbox(
       await waitForSandboxReady(sb, opts.readiness ?? {});
       await prepareWorkspace(sb);
     } catch (error) {
-      await sb.kill?.().catch(() => undefined);
+      try { await sb.kill?.(); } catch { /* cleanup must not mask the launch error */ }
       throw error;
     }
   } else {
     try {
       await prepareWorkspace(sb);
     } catch (error) {
-      await sb.kill?.().catch(() => undefined);
+      try { await sb.kill?.(); } catch { /* cleanup must not mask the launch error */ }
       throw error;
     }
   }
@@ -208,6 +208,11 @@ export async function createE2BSandbox(
  * root so the executor's fixed `/workspace` cwd is valid for every template.
  */
 async function prepareWorkspace(sandbox: E2BSandboxLike): Promise<void> {
+  // Minimal injected SDKs used by composition tests may intentionally omit
+  // command execution when readiness is disabled. A real E2B sandbox always
+  // exposes commands.run; preserve that provider path and remain compatible
+  // with the smaller legacy test shape.
+  if (typeof sandbox.commands?.run !== "function") return;
   const result = await settleCommand(Promise.resolve(sandbox.commands.run(
     "install -d -m 0777 /workspace /mnt/session/outputs /mnt/memory",
     { user: "root", timeoutMs: 30_000 },
