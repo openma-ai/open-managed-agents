@@ -62,6 +62,12 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
   admitted(turnId:string){admitted.add(turnId);},
   async checkpoint(turnId:string){
    if(!admitted.has(turnId))throw new Error("Cannot finalize a turn not admitted by this process");
+   // A periodic safe-point request can cross the terminal finalization
+   // boundary. Once this turn has a prepared physical checkpoint, or its
+   // terminal ACK is already recorded, the second request is a duplicate
+   // observation of the same turn. Re-reading and mutating the Work row here
+   // races the terminal CAS and can turn a valid turn into turn_revision.
+   if(prepared.has(turnId)||terminals.has(turnId))return;
    const current=await post("work-recovery",{turnId},true);
    if(current.type!=="gap"||current.reason!=="consumed_turn_without_terminal"||!revision(current.revision))throw new Error("Active turn has no uncommitted canonical boundary");
    const result=await postCheckpoint({turnId,revision:current.revision});
