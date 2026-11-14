@@ -10,9 +10,12 @@ describe("Managed Agents SQL adapter boundary", () => {
   it("depends only on inner Ports and the runtime-neutral SQL client", () => {
     expect(Object.keys(adapterSources).sort()).toEqual([
       "../src/agents-sql-persistence.ts",
+      "../src/core-custom-tools.ts",
       "../src/credential-document-cipher.ts",
       "../src/credential-vault-sql-source.ts",
       "../src/credentials-sql-persistence.ts",
+      "../src/custom-invocation-publication.ts",
+      "../src/custom-tool-invocations.ts",
       "../src/deployment-agent-sql-source.ts",
       "../src/deployment-resource-secret-cipher.ts",
       "../src/deployment-runs-sql-persistence.ts",

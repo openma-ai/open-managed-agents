@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   Memory,
   MemoryVersion,
 } from "@open-managed-agents/managed-agents-application";
+import type { MemoryContentObjects } from "@open-managed-agents/memory-document-store";
 import { SqlMemoryPersistence } from "../src";
 
 const SCHEMA_SQL = `
@@ -51,7 +53,7 @@ const memory = (
 ): Memory => ({
   id,
   content: "hello",
-  contentSha256: "a".repeat(64),
+  contentSha256: createHash("sha256").update("hello").digest("hex"),
   contentSizeBytes: 5,
   createdAt,
   memoryStoreId: "memstore_01",
@@ -81,11 +83,23 @@ const version = (
 describe("SqlMemoryPersistence", () => {
   let client: SqlClient;
   let persistence: SqlMemoryPersistence;
+  let objects: Map<string, string>;
 
   beforeEach(async () => {
     client = await createBetterSqlite3SqlClient(":memory:");
     await client.exec(SCHEMA_SQL);
-    persistence = new SqlMemoryPersistence(client);
+    objects = new Map();
+    const contents: MemoryContentObjects = {
+      getText: async key => objects.get(key) ?? null,
+      put: async (key, content) => {
+        objects.set(key, content);
+        return { key };
+      },
+      delete: async key => {
+        objects.delete(key);
+      },
+    };
+    persistence = new SqlMemoryPersistence(client, contents);
   });
 
   it("atomically creates current state and history with scoped path uniqueness", async () => {
@@ -142,7 +156,7 @@ describe("SqlMemoryPersistence", () => {
     const next: Memory = {
       ...initial,
       content: "updated",
-      contentSha256: "b".repeat(64),
+      contentSha256: createHash("sha256").update("updated").digest("hex"),
       contentSizeBytes: 7,
       memoryVersionId: "memver_02",
       path: "/notes/two.md",
@@ -255,6 +269,23 @@ describe("SqlMemoryPersistence", () => {
         { kind: "memory", record: { memory: first, revision: 1 } },
       ],
       hasMore: false,
+    });
+
+    const next: Memory = {
+      ...first,
+      content: "updated",
+      contentSha256: createHash("sha256").update("updated").digest("hex"),
+      contentSizeBytes: 7,
+      memoryVersionId: "memver_03",
+      updatedAt: "2026-08-26T19:00:00.000Z",
+    };
+    await persistence.replace({
+      workspaceId: "workspace_01",
+      memoryStoreId: "memstore_01",
+      memoryId: first.id,
+      expectedRevision: 1,
+      next,
+      version: version(next, "memver_03", "modified"),
     });
 
     await expect(
