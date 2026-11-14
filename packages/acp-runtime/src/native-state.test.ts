@@ -77,6 +77,26 @@ describe("Harbor-compatible ACP native session profiles", () => {
     ]);
   });
 
+  it("recognizes the pinned OpenMA Pi launcher instead of requiring the legacy id map", () => {
+    const pi = bindAcpAgentState({
+      sessionId: "session_installed_pi",
+      agent: {
+        id: "pi-acp",
+        command: "/home/oma-worker/.oma/installed-agent/pi-acp/0.1.8/acp-launch.sh",
+      },
+    });
+    expect(pi.adapterId).toBe("pi");
+    expect(pi.sessionArtifacts).toEqual([
+      expect.objectContaining({
+        kind: "directory",
+        path: expect.stringMatching(/\/home\/\.pi\/agent\/sessions$/),
+      }),
+    ]);
+    expect(pi.sessionArtifacts).not.toEqual([
+      expect.objectContaining({ path: expect.stringContaining("session-map.json") }),
+    ]);
+  });
+
   it("uses SQLite-family semantics for session DBs whose WAL and SHM files must travel together", () => {
     for (const agent of [
       { id: "github-copilot-cli", command: "copilot" },

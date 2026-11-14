@@ -161,6 +161,7 @@ export const ACP_NATIVE_STATE_PROFILES: readonly AcpNativeStateProfile[] = [
     durability: "native",
     resume: "native-and-acp",
     matches: (agent) => matchesIdentity(agent, ["pi-acp"])
+      && !isOpenmaPiInstalledLauncher(agent.command)
       && !matchesIdentity({ command: agent.command }, ["openma-pi-acp"]),
     // Frozen legacy launch commands still need the adapter's ACP/native id map.
     bindEnvironment: (nativePath) => ({
@@ -180,7 +181,11 @@ export const ACP_NATIVE_STATE_PROFILES: readonly AcpNativeStateProfile[] = [
     provenance: "oma",
     durability: "native",
     resume: "native-and-acp",
-    matches: (agent) => matchesIdentity(agent, ["openma-pi-acp"]),
+    // Environment setup exposes a generic launcher path, while the selected
+    // pinned package is still @openma/pi-acp. Identify that immutable
+    // installation namespace so it does not inherit the old pi-acp id map.
+    matches: (agent) => matchesIdentity(agent, ["openma-pi-acp"])
+      || isOpenmaPiInstalledLauncher(agent.command),
     // @openma/pi-acp uses pi's native session ids and store directly for
     // session/resume and session/load. There is no adapter-owned id map.
     bindEnvironment: (nativePath) => ({
@@ -328,6 +333,14 @@ export const ACP_NATIVE_STATE_PROFILES: readonly AcpNativeStateProfile[] = [
     sessionArtifacts: (nativePath) => [sqlite(`${nativePath}/state.db`)],
   },
 ];
+
+/** The environment installer writes pinned ACP launchers under this private
+ * namespace. The command itself is intentionally generic (`acp-launch.sh`),
+ * so the package path is the only stable adapter identity available after the
+ * worker receives its prepared inventory. */
+function isOpenmaPiInstalledLauncher(command: string): boolean {
+  return /(?:^|\/)\.oma\/installed-agent\/pi-acp\/[^/]+\/acp-launch\.sh$/u.test(command);
+}
 
 export type HarborNativeStateCoverage =
   | {
