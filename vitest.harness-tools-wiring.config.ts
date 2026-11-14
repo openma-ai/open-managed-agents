@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: "@cloudflare/sandbox", replacement: "./test/sandbox-stub.ts" },
+      { find: "@open-managed-agents/shared/log", replacement: "./packages/shared/src/log.ts" },
       { find: "@open-managed-agents/shared", replacement: "./packages/shared/src/index.ts" },
       { find: "@open-managed-agents/mcp", replacement: "./packages/mcp/src/index.ts" },
       { find: "@open-managed-agents/markdown", replacement: "./packages/markdown/src/index.ts" },
