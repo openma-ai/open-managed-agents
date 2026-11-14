@@ -383,6 +383,16 @@ for (const action of ["inputs-read", "inputs-consume"]) {
   });
 }
 
+// Core-owned custom MCP transport, authenticated independently before general
+// workspace auth. The Work sandbox token is checked by the Core authority;
+// the general API-key/cookie middleware must not reject it first.
+app.all("/v1/oma/sessions/:sessionId/custom-tools/:turnId/mcp", async c => {
+  const { cfCoreCustomToolsRoutes } = await import("./lib/cf-core-custom-tools");
+  const url = new URL(c.req.url);
+  url.pathname = `/${encodeURIComponent(c.req.param("sessionId") ?? "")}/custom-tools/${encodeURIComponent(c.req.param("turnId") ?? "")}/mcp`;
+  return cfCoreCustomToolsRoutes(c.env).fetch(new Request(url, c.req.raw));
+});
+
 // API routes (require authentication)
 // Observation authenticates independently, before cookie auth can self-heal.
 app.all(WORK_PHYSICAL_OBSERVATION_ROUTE, c => handleWorkPhysicalObservation(c.req.raw, c.env));
