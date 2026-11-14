@@ -22,6 +22,22 @@ const save=(p,x)=>writeFileSync(R+'/'+p+'.json',redact(JSON.stringify(x,null,2))
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const base=process.env.OMA_BASE_URL;
 async function api(m,p,b){const r=await fetch(base+p,{method:m,headers:{'x-api-key':key,'content-type':'application/json',accept:'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json();if(r.status>=400)throw Error(p+': '+r.status+' '+JSON.stringify(j).slice(0,300));return j;}
+async function ensureModelCard(modelId, input){
+ const page=await api('GET','/v1/oma/model_cards?limit=100');
+ const cards=Array.isArray(page)?page:(Array.isArray(page?.data)?page.data:Array.isArray(page?.model_cards)?page.model_cards:[]);
+ const existing=cards.find(card=>card?.model_id===modelId);
+ if(existing)return existing;
+ try{return await api('POST','/v1/oma/model_cards',input);}
+ catch(error){
+  // A concurrent bootstrap or an older server may surface the unique-key
+  // race as 500 instead of 409. Re-read before treating it as a failure.
+  const retryPage=await api('GET','/v1/oma/model_cards?limit=100');
+  const retryCards=Array.isArray(retryPage)?retryPage:(Array.isArray(retryPage?.data)?retryPage.data:Array.isArray(retryPage?.model_cards)?retryPage.model_cards:[]);
+  const raced=retryCards.find(card=>card?.model_id===modelId);
+  if(raced)return raced;
+  throw error;
+ }
+}
 async function events(sid){let page=null,out=[];do{const j=await api('GET','/v1/sessions/'+sid+'/events?limit=100'+(page?'&page='+encodeURIComponent(page):''));out.push(...j.data);page=j.next_page;}while(page);return out;}
 async function turn(sid,text,label,allowError=false){const before=(await events(sid)).length;await api('POST','/v1/sessions/'+sid+'/events',{events:[{type:'user.message',content:[{type:'text',text}]}]});for(let i=0;i<180;i++){await sleep(3000);const all=await events(sid),fresh=all.slice(before);if(fresh.some(x=>x.type==='session.status_idle')){save(label,{sid,events:all});const errors=fresh.filter(x=>x.type==='session.error');if(errors.length&&!allowError)throw Error('session.error '+redact(JSON.stringify(errors)).slice(0,400));return fresh;}}throw Error('turn timeout');}
 const text=ev=>ev.filter(x=>x.type==='agent.message').flatMap(x=>x.content??[]).map(x=>x.text??'').join('\n');
@@ -32,7 +48,7 @@ const claudeLaunch="export PATH=/workspace/.npm-global/bin:/usr/local/bin:/usr/b
 const shellQuote=s=>"'"+s.replaceAll("'", "'\"'\"'")+"'";
 const kind=process.argv[2]??'pi';const modelHandle=kind==='pi'?'minimax-m31-flash-oai':'minimax-m31-flash-ant';const result={kind,checks:[]};let sid;
 try{
- await api('POST','/v1/oma/model_cards',{model_id:modelHandle,model:'MiniMax-M3.1-Flash',provider:kind==='pi'?'oai-compatible':'ant-compatible',base_url:kind==='pi'?'https://api.minimaxi.com/v1':'https://api.minimaxi.com/anthropic',api_key:mm,is_default:true,pricing:{version:1,currency:'USD',input_per_mtok:'0.27',output_per_mtok:'1.10'}}).catch(e=>{if(!e.message.includes('409'))throw e;});
+ await ensureModelCard(modelHandle,{model_id:modelHandle,model:'MiniMax-M3.1-Flash',provider:kind==='pi'?'oai-compatible':'ant-compatible',base_url:kind==='pi'?'https://api.minimaxi.com/v1':'https://api.minimaxi.com/anthropic',api_key:mm,is_default:true,pricing:{version:1,currency:'USD',input_per_mtok:'0.27',output_per_mtok:'1.10'}});
  const agent=await api('POST','/v1/agents',{name:'context-chaos-'+kind,model:modelHandle,system:'Remember user conversation exactly. Answer recall questions from memory. Do not read or write files unless explicitly asked.',tools:[{type:'agent_toolset_20260401'}],_oma:{harness:'acp-sandbox',acp:{agent:kind==='pi'?{id:'pi-acp',command:'/bin/bash',args:['-c','export PATH=/workspace/.npm-global/bin:/usr/local/bin:/usr/bin:/bin; export PI_ACP_PI_COMMAND=/workspace/.npm-global/bin/pi; exec /workspace/.npm-global/bin/node /workspace/.npm-global/lib/node_modules/pi-acp/dist/index.js'],cwd:'/workspace',env:{PI_ACP_PI_COMMAND:'/workspace/.npm-global/bin/pi',PATH:'/workspace/.npm-global/bin:/usr/local/bin:/usr/bin:/bin'}}:{id:'claude-acp',command:'/bin/bash',args:['-c',claudeLaunch],cwd:'/workspace'},per_turn_timeout_ms:180000}}});
  const environment=await api('POST','/v1/environments',{name:'context-'+kind,config:{type:'cloud',networking:{type:'unrestricted'},packages:kind==='pi'?{npm:['node@24.22.2','@earendil-works/pi-coding-agent@0.84.4','pi-acp@0.0.33']}:{npm:['node@24.22.2']}}});
  sid=(await api('POST','/v1/sessions',{agent:agent.id,environment_id:environment.id,title:'ACP context chaos '+kind})).id;result.sid=sid;save(kind+'-state',{sid,agent:agent.id,environment:environment.id});
