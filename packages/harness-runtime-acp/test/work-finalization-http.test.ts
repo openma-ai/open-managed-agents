@@ -50,6 +50,25 @@ it("does not retry an ambiguous terminal mutation", async () => {
   expect(mutations).toBe(1);
 });
 
+it("re-reads a consumed turn and retries one checkpoint revision race", async () => {
+  const actions: string[] = [];
+  let checkpointAttempts = 0;
+  const client = createWorkFinalizationHttpClient({
+    apiBaseUrl: "https://host", sessionId: "s", sessionsToken: "scoped",
+    fetch: async (raw, init) => {
+      const action = new URL(new Request(raw, init).url).pathname.split("/").at(-1)!;
+      actions.push(action);
+      if (action === "work-checkpoint" && checkpointAttempts++ === 0) return Response.json({ type: "rejected", reason: "turn_revision" }, { status: 409 });
+      if (action === "work-recovery") return Response.json({ type: "gap", reason: "consumed_turn_without_terminal", revision: 4 }, { status: 409 });
+      if (action === "work-checkpoint") return Response.json({ type: "prepared", turnId: "turn", revision: 4 });
+      throw new Error(`unexpected ${action} ${String(init?.body)}`);
+    },
+  });
+  await expect(client.checkpoint({ turnId: "turn", revision: 3 }, new AbortController().signal))
+    .resolves.toEqual({ type: "prepared", turnId: "turn", revision: 4 });
+  expect(actions).toEqual(["work-checkpoint", "work-recovery", "work-checkpoint"]);
+});
+
 it("keeps non-JSON gateway responses diagnosable without replaying the mutation", async () => {
   let mutations = 0;
   const client = createWorkFinalizationHttpClient({

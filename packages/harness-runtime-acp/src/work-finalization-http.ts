@@ -96,9 +96,23 @@ export function createWorkFinalizationHttpClient(options:{apiBaseUrl:string;sess
     // before further I/O. Never erase a committed receipt with an abort error.
     return decode(value,body.turnId,response.status,action);
   }
+  async function checkpoint(input:{turnId:string;revision:number},signal:AbortSignal):Promise<WorkFinalizationResult> {
+    let current=input;
+    for(let attempt=0;attempt<2;attempt++){
+      const result=await post("work-checkpoint",current,signal);
+      if(result.type!=="rejected"||!(["turn_revision","authority_changed"] as const).includes(result.reason as "turn_revision"|"authority_changed")||attempt===1)return result;
+      const recovered=await post("work-recovery",{turnId:input.turnId},signal);
+      if(recovered.type!=="gap"||recovered.reason!=="consumed_turn_without_terminal"||recovered.revision===undefined)return result;
+      logWarn({op:"work.finalization.checkpoint",session_id:options.sessionId,turn_id:input.turnId,
+        attempt:attempt+1,reason:result.reason,from_revision:current.revision,to_revision:recovered.revision},
+        "Retrying Work checkpoint after a canonical revision race");
+      current={turnId:input.turnId,revision:recovered.revision};
+    }
+    throw new Error("Unreachable checkpoint retry state");
+  }
   return {
     recover:(turnId:string,signal:AbortSignal) => post("work-recovery",{turnId},signal),
-    checkpoint:(input:{turnId:string;revision:number},signal:AbortSignal) => post("work-checkpoint",input,signal),
+    checkpoint,
     finalize:(input:{turnId:string;revision:number;stopReason:WorkStopReason},signal:AbortSignal) => post("work-finalize",input,signal),
     publish:(input:{turnId:string;revision:number;terminalEventId:string},signal:AbortSignal) => post("work-publish",input,signal),
     fail:(input:{turnId:string;revision:number;phase:"run"|"finalization"},signal:AbortSignal) => post("work-failed",input,signal),
