@@ -1,7 +1,10 @@
 import { expect, it } from "vitest";
 import * as module from "../src/node-work-outcomes.js";
 const outcome={id:"out",description:"write hello",rubric:{type:"text",content:"must say hello"},maxIterations:2};
-const channels={mcpProxy:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture"},hostedInference:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture",model:{providerId:"openai",baseUrl:null,wireModel:"judge"}}};
+// The control plane advertises the card's wire protocol. This fixture's model
+// speaks OpenAI chat completions (an `openai` card without it routes through
+// Pi's Responses API); other protocols are covered by the advertised-protocol test.
+const channels={mcpProxy:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture"},hostedInference:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture",model:{providerId:"openai",baseUrl:null,wireModel:"judge",protocolEndpoints:[{protocol:"openai-chat" as const,proxyPathSegment:"openai/v1",upstreamBaseUrl:"https://must-not-contact"}]}}};
 it.each(["satisfied","max","abort","failed"])("shared default outcome grader %s preserves spans, usage and awaited revision",async mode=>{
  const events:any[]=[]; const requests:string[]=[]; const controller=new AbortController(); let grades=0,revisions=0;
  const complete=module.createWorkOutcomeCompletion({sessionId:"s",apiBaseUrl:"https://control",sessionsToken:"work-token",channels:()=>channels,
