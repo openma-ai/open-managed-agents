@@ -113,14 +113,14 @@ describe("injectMcpServersIntoSnapshot", () => {
     expect(out).toBe(agent);
   });
 
-  it("respects the caller's `type` override (e.g. sse) when provided", () => {
+  it("respects the caller's `type` override (e.g. http) when provided", () => {
     const out = injectMcpServersIntoSnapshot(baseAgent(), [
-      { name: "slack", url: "https://mcp.slack.com/sse", type: "sse" },
+      { name: "slack", url: "https://mcp.slack.com/mcp", type: "http" },
     ]);
     expect(out.mcp_servers?.[0]).toEqual({
       name: "slack",
-      type: "sse",
-      url: "https://mcp.slack.com/sse",
+      type: "http",
+      url: "https://mcp.slack.com/mcp",
     });
   });
 

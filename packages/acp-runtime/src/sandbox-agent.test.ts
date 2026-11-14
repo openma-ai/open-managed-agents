@@ -12,6 +12,7 @@ import {
   hasRequiredAcpSandboxAgentState,
   managedMcpProxyFromWorkEnvironment,
   materializeAcpSandboxAgentState,
+  materializeHostedInferenceConfigFiles,
   projectAcpSandboxHostedInferenceEnv,
   projectAcpSandboxMcpServers,
   prepareAcpSandboxAgent,
@@ -23,6 +24,19 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe("Harbor-style ACP sandbox agent preparation", () => {
+  it("materializes native inference config through exec without widening the workspace file API", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "openma-acp-config-"));
+    const path = join(workdir, "native's config", "settings.json");
+    const content = "{\"model\":\"test\"}\n'$(touch injected)'\n";
+    try {
+      await materializeHostedInferenceConfigFiles({ writeFile: async () => { throw new Error("file API only supports workspace paths"); }, exec: async command => (await execFileAsync("/bin/sh", ["-c", command], {cwd:workdir})).stdout }, [{path, content}]);
+      expect(await readFile(path, "utf8")).toBe(content);
+      await expect(access(join(workdir, "injected"))).rejects.toMatchObject({code:"ENOENT"});
+    } finally { await rm(workdir, {recursive:true,force:true}); }
+  });
+  it("does not report config materialization success when the exec Port reports failure", async () => {
+    await expect(materializeHostedInferenceConfigFiles({ writeFile: async () => {}, exec: async () => "exit=1\npermission denied" }, [{path:"/tmp/openma-harness-state/config.json",content:"{}"}])).rejects.toThrow("Failed to materialize ACP inference configuration");
+  });
   it("derives the MCP gateway capability from the official Work secret", () => {
     const secret = Buffer.from(JSON.stringify({
       sessions_token: "sk-ant-req-current-claim",
@@ -269,6 +283,36 @@ describe("Harbor-style ACP sandbox agent preparation", () => {
     }
   });
 
+  it("restores the session map from a frozen legacy pi-acp checkpoint", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-legacy-pi-"));
+    const plan = prepareAcpSandboxAgent({
+      sessionId: "legacy_pi_" + Date.now(),
+      agent: { id: "pi-acp", command: "/usr/local/bin/pi-acp" },
+      stateRoot: workdir,
+    });
+    const map = '{"sessions":{"old-acp-id":"native-session"}}';
+    const checkpointMap = join(plan.binding.checkpointNativePath, "home/.pi/pi-acp/session-map.json");
+    const runtimeMap = join(plan.binding.nativePath, "home/.pi/pi-acp/session-map.json");
+    const sandbox = {
+      writeFile,
+      async exec(command: string) { return (await execFileAsync("/bin/sh", ["-c", command])).stdout; },
+    };
+    try {
+      await mkdir(dirname(checkpointMap), { recursive: true });
+      await writeFile(checkpointMap, map);
+      await mkdir(join(plan.binding.checkpointNativePath, "home/.pi/agent/sessions"), { recursive: true });
+      await writeFile(join(plan.binding.rootPath, "acp-session.json"), '{"version":1,"acpSessionId":"old-acp-id"}');
+      await restoreAcpSandboxAgentState(sandbox, plan);
+      await expect(readFile(runtimeMap, "utf8")).resolves.toBe(map);
+      expect(plan.binding.sessionArtifacts).toContainEqual(expect.objectContaining({
+        runtimePath: runtimeMap, kind: "file", requiredForResume: true,
+      }));
+    } finally {
+      await rm(plan.binding.nativePath, { recursive: true, force: true });
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps an ACP-only adapter explicit instead of claiming native resume", () => {
     const plan = prepareAcpSandboxAgent({
       sessionId: "session/aider",
@@ -339,6 +383,25 @@ describe("Harbor-style ACP sandbox agent preparation", () => {
     expect(commands).toEqual([
       expect.stringContaining("native/sessions"),
     ]);
+  });
+
+  it("reads the state probe through each exec port's exit-status shape", async () => {
+    const plan = prepareAcpSandboxAgent({
+      sessionId: "session_pi",
+      agent: { id: "pi-acp", command: "pi-acp" },
+    });
+    const probe = (output: string) => hasRequiredAcpSandboxAgentState({
+      async exec() { return output; },
+    }, plan);
+
+    // Cloudflare and the CF E2B executor prefix "exit=N\n" (and may append stderr).
+    await expect(probe("exit=0\npresent")).resolves.toBe(true);
+    await expect(probe("exit=0\npresent\nstderr: note")).resolves.toBe(true);
+    await expect(probe("exit=0\nmissing")).resolves.toBe(false);
+    await expect(probe("exit=1\npresent")).resolves.toBe(false);
+    // Local / e2b append "[exit ...]" only on failure.
+    await expect(probe("present")).resolves.toBe(true);
+    await expect(probe("present\n[exit exit=1]")).resolves.toBe(false);
   });
 
   it("fails native resume closed and applies retain/delete lifecycle policy", async () => {

@@ -180,9 +180,7 @@ export interface OpenMaAgentExtensionParams {
   context_management?: OpenMaContextManagementParams | null;
   /** OpenAI Agents SDK-style compaction and output limits. */
   model_settings?: OpenMaOpenAiModelSettingsParams | null;
-  /**
-   * @deprecated Prefer omitting `harness` (Pi agent-core default). Use `"ai-sdk"` only for the legacy AI SDK loop.
-   */
+  /** Omit to use the Pi host loop; set this only for an explicitly registered harness. */
   harness?: string | null;
   acp?: OpenMaAgentAcpParams | null;
   runtime_binding?: OpenMaAgentRuntimeBindingParams | null;
@@ -215,7 +213,7 @@ export interface OpenMaAgentExtension {
   appendable_prompts?: string[];
   context_management?: OpenMaContextManagementParams;
   model_settings?: OpenMaOpenAiModelSettingsParams;
-  /** @deprecated Legacy harness id; unset uses Pi. `"ai-sdk"` selects the deprecated AI SDK loop. */
+  /** Explicitly selected harness id; unset uses Pi. */
   harness?: string;
   acp?: OpenMaAgentAcp;
   runtime_binding?: OpenMaAgentRuntimeBindingParams;

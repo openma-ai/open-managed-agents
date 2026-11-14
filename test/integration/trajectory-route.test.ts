@@ -2,6 +2,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
+import { waitForSessionExecution } from "./_session-execution";
 import { registerTestHarnesses } from "../harnesses";
 import { toAnthropicMessages } from "@open-managed-agents/shared";
 
@@ -50,17 +51,15 @@ async function setup() {
 }
 
 async function postMessageAndWait(sessionId: string, text: string): Promise<void> {
+  const inputId = `sevt_${crypto.randomUUID()}`;
   await api(`/v1/oma/sessions/${sessionId}/events`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
-      events: [{ type: "user.message", content: [{ type: "text", text }] }],
+      events: [{ id: inputId, type: "user.message", content: [{ type: "text", text }] }],
     }),
   });
-  // The TestHarness completes synchronously inside the DO via broadcast — after
-  // POST returns, events should be in the SQLite log already. Wait briefly to
-  // let any async draining settle.
-  await new Promise((r) => setTimeout(r, 200));
+  await waitForSessionExecution(sessionId, [inputId]);
 }
 
 async function getTrajectory(sessionId: string): Promise<Response> {

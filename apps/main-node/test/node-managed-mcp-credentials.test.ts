@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
-import { createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
+import { createHash } from "node:crypto";
+import { generateSandboxToken, sandboxBasicCredential, sandboxTokenRandomPart } from "../../../packages/sandbox-gateway/src/index";
+import Database from "better-sqlite3";
 
 const servers: ReturnType<typeof createServer>[] = [];
 const planes: NodeControlPlane[] = [];
@@ -133,16 +135,31 @@ describe("Node MCP proxy with managed Vault credentials", () => {
     });
     expect(session.status, JSON.stringify(session.data)).toBeLessThan(300);
 
-    // The production relay route uses its own Session pass, not ambient API auth.
-    const passes = createEgressRelayPasses("test-root-secret-not-production", Date.now);
-    const pass = await passes.issue({ workspaceId: "default", sessionId: session.data.id, ttlMs: 60000 });
+    // The production relay route takes the sandbox token (Basic
+    // <sessionId>:<token>), never ambient API auth. A token lives in its
+    // execution attempt's row (design §0.0 rule 10, #561).
+    const attempt = { workspaceId: "default", sessionId: session.data.id, executionId: `exe-${crypto.randomUUID()}`, attemptId: "att", ownerId: "owner", generation: 1 };
     const resolve = (authorization: string) => cp.fetch(new Request("https://cp/v1/oma/egress/resolve", {
       method: "POST", headers: { authorization, "x-oma-egress-target": "https://public.example/" },
     }));
-    const resolved = await resolve(`Bearer ${pass}`);
+    const unissued = generateSandboxToken();
+    expect((await resolve(sandboxBasicCredential(session.data.id, unissued))).status).toBe(401);
+    const db = new Database(join(root, "db.sqlite"));
+    const now = Date.now();
+    db.prepare(`INSERT INTO managed_session_executions
+      (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json, events_fingerprint, state, attempt_id, owner_id, generation,
+       attempt_count, max_attempts, deadline_at_ms, claimed_at_ms, lease_expires_at_ms, revision)
+      VALUES (?, ?, 'sthr_primary', ?, ?, '[]', ?, 'running', 'att', 'owner', 1, 1, 3, ?, ?, ?, 1)`)
+      .run("default", attempt.sessionId, attempt.executionId, now, attempt.executionId, now + 600000, now, now + 600000);
+    const token = generateSandboxToken();
+    db.prepare("UPDATE managed_session_executions SET sandbox_token_hashes = ? WHERE workspace_id = ? AND id = ?")
+      .run(JSON.stringify([{ h: createHash("sha256").update(sandboxTokenRandomPart(token)!).digest("hex"), s: "egress" }]), "default", attempt.executionId);
+    db.close();
+    const resolved = await resolve(sandboxBasicCredential(session.data.id, token));
     expect(resolved.status, await resolved.clone().text()).toBe(200);
     expect(await resolved.json()).toEqual({ inject: false });
     expect((await resolve("Bearer test-admin")).status).toBe(401);
+    expect((await resolve("Bearer unfenced")).status).toBe(401);
 
     const proxied = await cp.fetch(new Request(`http://cp/v1/oma/mcp-proxy/${session.data.id}/docs`, {
       method: "POST",
@@ -172,7 +189,7 @@ describe("Node MCP proxy with managed Vault credentials", () => {
     expect(tokenRequests).toHaveLength(1);
 
     const relay = (action: "resolve" | "forward") => cp.fetch(new Request(`https://cp/v1/oma/egress/${action}`, {
-      method: "POST", headers: { authorization: `Bearer ${pass}`, "x-oma-egress-target": "https://127.0.0.1/", "x-oma-egress-method": "GET" },
+      method: "POST", headers: { authorization: sandboxBasicCredential(session.data.id, token), "x-oma-egress-target": "https://127.0.0.1/", "x-oma-egress-method": "GET" },
     }));
     expect(await (await relay("resolve")).json()).toEqual({ inject: true });
     const archived = await call(`/v1/vaults/${vaultId}/archive`, {});

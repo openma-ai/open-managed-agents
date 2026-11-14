@@ -231,7 +231,7 @@ describe("BoxLite managed runtime provider", () => {
     )).rejects.toThrow("ownership name");
   });
 
-  it("advertises the same managed lifecycle for embedded and REST BoxLite clients", () => {
+  it("advertises retained runtime locally and managed checkpoints over REST", () => {
     const embedded = createBoxLiteManagedRuntimeDriver({
       providerId: "litebox",
       client: client(new FakeBox("unused")),
@@ -243,21 +243,29 @@ describe("BoxLite managed runtime provider", () => {
       providerId: "boxrun",
       client: client(new FakeBox("unused")),
       image: "node:22-slim",
+      connection: { type: "rest", url: "https://boxrun" },
       leaseTtlMs: 90_000,
       outputStore: null,
     });
 
-    for (const driver of [embedded, remote]) {
-      expect(driver.descriptor()).toMatchObject({
-        placements: ["in_process"],
-        capabilities: {
-          sandbox: { suspendResume: "supported", hardTerminate: "supported" },
-          workspace: { strategies: ["retained_runtime"] },
-          outputs: { strategies: [] },
-          harness: { drivers: ["ama_worker", "openma_supervised"] },
-        },
-      });
-    }
+    expect(embedded.descriptor()).toMatchObject({
+      placements: ["in_process"],
+      capabilities: {
+        sandbox: { suspendResume: "supported", hardTerminate: "supported", runtimeCheckpoints: [] },
+        workspace: { strategies: ["retained_runtime"] },
+        outputs: { strategies: [] },
+        harness: { drivers: ["ama_worker", "openma_supervised"] },
+      },
+    });
+    expect(remote.descriptor()).toMatchObject({
+      placements: ["in_process"],
+      capabilities: {
+        sandbox: { suspendResume: "supported", hardTerminate: "supported", runtimeCheckpoints: [] },
+        workspace: { strategies: ["retained_runtime", "checkpoint_restore"] },
+        outputs: { strategies: [] },
+        harness: { drivers: ["ama_worker", "openma_supervised"] },
+      },
+    });
     expect(embedded.descriptor().provider).toBe("litebox");
     expect(remote.descriptor().provider).toBe("boxrun");
   });

@@ -99,8 +99,10 @@ export interface SessionBudgetGate {
   pricing: ListPricing;
   /** Exact consumed list cost in picodollars (integer string). */
   list_cost_pico: string;
-  /** Set when egress refused a model call at the cap. */
+  /** Set when completed usage reaches the cap or egress refuses a call. */
   reached: boolean;
+  /** Ephemeral stop signal: this gate actually refused a model request. */
+  refused?: boolean;
 }
 
 export function createSessionBudgetGate(
@@ -124,6 +126,25 @@ export function createSessionBudgetGate(
 
 const GATE_STORES = new WeakMap<SessionBudgetGate, ListCostPicoStore>();
 
+/** A turn observes its own stop while charging the same session counter/store. */
+export function turnSessionBudgetGate(gate: SessionBudgetGate): SessionBudgetGate {
+  let reached = false;
+  let refused = false;
+  const turn: SessionBudgetGate = {
+    maxListCost: gate.maxListCost,
+    pricing: gate.pricing,
+    get list_cost_pico() { return gate.list_cost_pico; },
+    set list_cost_pico(value) { gate.list_cost_pico = value; },
+    get refused() { return refused; },
+    set refused(value) { refused = value === true; if (value) gate.refused = true; },
+    get reached() { return reached; },
+    set reached(value) { reached = value; if (value) gate.reached = true; },
+  };
+  const store = GATE_STORES.get(gate);
+  if (store !== undefined) GATE_STORES.set(turn, store);
+  return turn;
+}
+
 function storeOf(gate: SessionBudgetGate): ListCostPicoStore | undefined {
   return GATE_STORES.get(gate);
 }
@@ -133,7 +154,7 @@ export function gateExhausted(gate: SessionBudgetGate | null | undefined): boole
   return BigInt(gate.list_cost_pico) >= centsToPico(gate.maxListCost.amount);
 }
 
-/** @deprecated Prefer gateExhausted; kept for the deprecated default-loop. */
+/** @deprecated Prefer gateExhausted; kept for older budget callers. */
 export function budgetExhausted(
   gate: SessionBudgetGate | null | undefined,
   _events?: readonly unknown[],
@@ -169,6 +190,7 @@ export function beginModelEgress(gate: SessionBudgetGate | null | undefined): bo
   if (!gate) return true;
   if (!gateExhausted(gate)) return true;
   gate.reached = true;
+  gate.refused = true;
   return false;
 }
 
@@ -196,30 +218,4 @@ export class SessionBudgetReachedError extends Error {
     super("session budget reached");
     this.name = "SessionBudgetReachedError";
   }
-}
-
-export interface BudgetReachedFrame {
-  type: string;
-  [key: string]: unknown;
-}
-
-export function budgetReachedEvents(input: {
-  sessionThreadId?: string | null;
-  usage: Record<string, unknown>;
-  budget: BudgetAmount;
-}): BudgetReachedFrame[] {
-  const stop = { type: "budget_reached" as const };
-  return [
-    {
-      type: "session.thread_status_idle",
-      ...(input.sessionThreadId ? { session_thread_id: input.sessionThreadId } : {}),
-      stop_reason: stop,
-    },
-    {
-      type: "session.usage",
-      usage: input.usage,
-      budget: { amount_minor: input.budget.amount, currency: input.budget.currency },
-    },
-    { type: "session.status_idle", stop_reason: stop },
-  ];
 }

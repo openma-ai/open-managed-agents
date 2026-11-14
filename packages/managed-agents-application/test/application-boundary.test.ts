@@ -51,6 +51,7 @@ describe("Managed Agents application boundary", () => {
         || specifier === "@open-managed-agents/session-thread-store"
         || specifier === "@open-managed-agents/skill-store"
         || specifier === "@open-managed-agents/tunnel-store"
+        || specifier === "@open-managed-agents/shared/log"
         || specifier === "@open-managed-agents/user-profile-store"
         || specifier === "@open-managed-agents/vault-store",
       )).toBe(true);

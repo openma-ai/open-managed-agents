@@ -268,11 +268,27 @@ test("Cloudflare sandbox SDK, container runtime, and deployment image stay lock-
     sdkVersion,
     "main and agent must use the same Sandbox SDK version",
   );
+
+  // Sandbox SDK 1.0: the custom image is a Debian/Node base that copies
+  // sandbox-shim from cloudflare/sandbox:<sdkVersion> instead of extending it.
   assert.match(
     imageDockerfile,
-    new RegExp(`^FROM docker\\.io/cloudflare/sandbox:${sdkVersion}$`, "m"),
-    "custom container must extend the matching Cloudflare runtime",
+    new RegExp(
+      `^COPY --from=docker\\.io/cloudflare/sandbox:${sdkVersion}\\s+/usr/local/bin/sandbox-shim\\s+/usr/local/bin/sandbox-shim$`,
+      "m",
+    ),
+    "custom container must copy sandbox-shim from the matching Cloudflare runtime",
   );
+
+  // sandbox-shim always passes `-o compat_dir` to s3fs (Sandbox SDK 1.0.3); the
+  // option exists from s3fs 1.92. Debian bookworm ships s3fs 1.90, so S3Mount
+  // fails there with "unknown option 'compat_dir'". trixie ships 1.95.
+  assert.match(
+    imageDockerfile,
+    /^FROM docker\.io\/node:\d+-trixie-slim$/m,
+    "custom container base must ship s3fs >= 1.92 (Debian trixie) for sandbox-shim's compat_dir",
+  );
+  assert.match(imageDockerfile, /\bs3fs\b/, "custom container must install s3fs for S3Mount");
 
   const contentHash = createHash("sha256").update(imageDockerfile).digest("hex");
   assert.match(
@@ -280,6 +296,7 @@ test("Cloudflare sandbox SDK, container runtime, and deployment image stay lock-
     new RegExp(`^FROM docker\\.io/openma/sandbox-base:${contentHash}$`, "m"),
     "deployment must pin the custom image by Dockerfile content hash",
   );
+
   assert.match(
     imageWorkflow,
     /CONTENT_HASH=\$\(sha256sum apps\/agent\/Dockerfile/,

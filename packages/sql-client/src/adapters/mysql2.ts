@@ -6,6 +6,8 @@
 // stores therefore stay behind their existing Ports and never branch on a
 // concrete database.
 
+import { transactionScope } from "../transaction-scope";
+import type { SqlRowLockTransactions } from "../ports";
 import { driverRetry } from "../db-errors";
 import { translateMysql2Error } from "./mysql2-errors";
 
@@ -251,6 +253,24 @@ function findTopLevel(input: string, needle: string, wordBoundary: boolean): num
   let quote: string | null = null;
   for (let index = 0; index <= input.length - needle.length; index += 1) {
     const char = input[index];
+    // Comments are not SQL expressions. Skip them before looking for quotes,
+    // parentheses, or keywords so apostrophes and keyword-shaped text inside
+    // comments cannot corrupt the top-level scanner.
+    if (char === "-" && input[index + 1] === "-") {
+      const end = input.indexOf("\n", index + 2);
+      index = end === -1 ? input.length : end;
+      continue;
+    }
+    if (char === "#") {
+      const end = input.indexOf("\n", index + 1);
+      index = end === -1 ? input.length : end;
+      continue;
+    }
+    if (char === "/" && input[index + 1] === "*") {
+      const end = input.indexOf("*/", index + 2);
+      index = end === -1 ? input.length : end + 1;
+      continue;
+    }
     if (quote !== null) {
       if (char === "\\") {
         index += 1;
@@ -730,9 +750,14 @@ class Mysql2SqlStatement implements SqlStatement {
         `WHERE ${keyPredicate}`,
       keyParameters,
     );
+    // mysql2's affectedRows can include matched rows from the conditional
+    // mutation even when the portable RETURNING contract yields one logical
+    // row. The read-back is keyed by the selected primary key(s), so its
+    // cardinality is the authoritative portable change count.
+    const returnedRows = Array.isArray(returned) ? returned : [];
     return {
-      rows: (Array.isArray(returned) ? returned : []) as T[],
-      changes,
+      rows: returnedRows as T[],
+      changes: returnedRows.length,
     };
   }
 
@@ -774,6 +799,50 @@ export class Mysql2SqlClient implements SqlClient {
     this.owner = { pool, primaryKeys: new Map() };
   }
 
+  readonly rowLockTransactions: SqlRowLockTransactions = {
+    capability: async (tables) => {
+      const [metadata] = await this.pool.execute("SELECT VERSION() AS version, @@version_comment AS identity");
+      const row = Array.isArray(metadata) ? metadata[0] : undefined;
+      const version = String(row?.version ?? "unknown");
+      const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+      const supportedVersion = parts !== null && (Number(parts[1]) > 8 ||
+        (Number(parts[1]) === 8 && (Number(parts[2]) > 0 || Number(parts[3]) >= 11)));
+      if (!supportedVersion || !/mysql/i.test(String(row?.identity)) || /mariadb/i.test(version)) {
+        return { supported: false, engine: "mysql", version, reason: "Unknown engine or MySQL <8.0.11; use CAS" };
+      }
+      for (const table of tables) {
+        const [engines] = await this.pool.execute(
+          "SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table]);
+        if (!Array.isArray(engines) || engines.length !== 1 || engines[0]?.engine !== "InnoDB") {
+          return { supported: false, engine: "mysql", version, reason: `Table ${table} is not verified InnoDB; use CAS` };
+        }
+      }
+      return { supported: true, engine: "mysql", version, reason: "MySQL >=8.0.11 / InnoDB; READ COMMITTED row locks" };
+    },
+    run: async (body) => {
+      const connection = await this.pool.getConnection();
+      const scope = transactionScope(async (text, params) => {
+        const statement = new Mysql2SqlStatement(connection, this.owner,
+          translatePortableStatement(text), countPlaceholders(text)).bind(...params) as Mysql2SqlStatement;
+        return statement.executeRunIn(connection);
+      });
+      try {
+        await connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+        await connection.beginTransaction();
+        const result = await body(scope.client);
+        await scope.close();
+        await connection.commit();
+        return result;
+      } catch (error) {
+        await scope.close().catch(() => undefined);
+        await connection.rollback().catch(() => undefined);
+        throw error;
+      } finally {
+        connection.release();
+      }
+    },
+  };
+
   prepare(text: string): SqlStatement {
     return new Mysql2SqlStatement(
       this.pool,
@@ -795,8 +864,13 @@ export class Mysql2SqlClient implements SqlClient {
     return retryMysql(() => this.batchOnce<T>(statements), { sql });
   }
 
+  batchChecked<T = unknown>(statements: SqlStatement[], validate: (results: Array<SqlRunResult<T>>) => void): Promise<Array<SqlRunResult<T>>> {
+    return retryMysql(() => this.batchOnce(statements, validate));
+  }
+
   private async batchOnce<T = unknown>(
     statements: SqlStatement[],
+    validate?: (results: Array<SqlRunResult<T>>) => void,
   ): Promise<Array<SqlRunResult<T>>> {
     const connection = await this.pool.getConnection();
     try {
@@ -813,6 +887,7 @@ export class Mysql2SqlClient implements SqlClient {
         }
         results.push(await statement.executeRunIn<T>(connection));
       }
+      validate?.(results);
       await connection.commit();
       return results;
     } catch (error) {

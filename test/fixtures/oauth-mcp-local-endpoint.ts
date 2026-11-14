@@ -1,6 +1,11 @@
 /** Host and control contract for the local OAuth/MCP test server. No Node APIs. */
 
-export const OAUTH_MCP_TEST_PORT = 47651;
+declare const __OMA_OAUTH_MCP_TEST_PORT__: number | undefined;
+
+/** The root vitest config defines this from OMA_OAUTH_MCP_TEST_PORT, so
+ * worktrees running the suite at the same time can use different ports. */
+export const OAUTH_MCP_TEST_PORT =
+  typeof __OMA_OAUTH_MCP_TEST_PORT__ === "number" ? __OMA_OAUTH_MCP_TEST_PORT__ : 47651;
 export const OAUTH_MCP_TEST_ORIGIN = `http://127.0.0.1:${OAUTH_MCP_TEST_PORT}`;
 
 export interface OauthMcpTestControl {

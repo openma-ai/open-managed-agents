@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store";
 import type { BlobStore } from "@open-managed-agents/blob-store";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
+import type { SqlClient } from "@open-managed-agents/sql-client";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { NodeManagedSessionOutputCollector } from "../../../packages/control-plane-node/src/lib/node-managed-session-outputs.js";
@@ -175,6 +176,30 @@ describe("shared official Session outputs", () => {
     expect(await text(current!.body as ReadableStream<Uint8Array>)).toBe("turn-2");
   });
 
+  it("lets another replica publish for a sandbox hydrated elsewhere, against the durable hydration base", async () => {
+    const f = await fixture();
+    const files = (text: string) => new Map([["report.txt", new TextEncoder().encode(text)]]);
+    const sandboxFor = () => ({ exec: async () => "", writeFileBytes: async () => "" }) as unknown as SandboxExecutor;
+    await f.writer.restoreToSandbox("tenant_1", "session_1", sandboxFor(), "gen_a");
+    // Cold finalization on replica B: no in-memory hydration for gen_a there.
+    await f.reader.publish({ workspaceId: "tenant_1", sessionId: "session_1", fence: f.fence, files: files("turn-1"), runtimeGeneration: "gen_a" });
+    expect(await f.reader.isSandboxCurrent("tenant_1", "session_1", "gen_a")).toBe(true);
+    expect(await text((await f.writer.read("tenant_1", "session_1", "report.txt"))!.body as ReadableStream<Uint8Array>)).toBe("turn-1");
+    // A never-hydrated generation is still refused.
+    await expect(f.reader.publish({ workspaceId: "tenant_1", sessionId: "session_1", fence: f.fence, files: files("x"), runtimeGeneration: "gen_unknown" }))
+      .rejects.toThrow(/not hydrated/);
+    // The live failure: checkpoint ran on B, then finalize re-prepared on A
+    // (which hydrated gen_a). A must CAS against the durable base B advanced,
+    // not its own stale view, for the same physical sandbox.
+    await f.writer.publish({ workspaceId: "tenant_1", sessionId: "session_1", fence: f.fence, files: files("turn-1b"), runtimeGeneration: "gen_a" });
+    expect(await text((await f.reader.read("tenant_1", "session_1", "report.txt"))!.body as ReadableStream<Uint8Array>)).toBe("turn-1b");
+    // A different sandbox hydrated before those publications is still stale.
+    await f.reader.restoreToSandbox("tenant_1", "session_1", sandboxFor(), "gen_b");
+    await f.writer.publish({ workspaceId: "tenant_1", sessionId: "session_1", fence: f.fence, files: files("turn-2"), runtimeGeneration: "gen_a" });
+    await expect(f.reader.publish({ workspaceId: "tenant_1", sessionId: "session_1", fence: f.fence, files: files("stale"), runtimeGeneration: "gen_b" }))
+      .rejects.toThrow(/canonical pointer/i);
+  });
+
   it("does not delete a newer canonical pointer if it changes while an older output is being cleaned up", async () => {
     const stored = new InMemoryBlobStore();
     let release!: () => void;
@@ -215,4 +240,19 @@ describe("shared official Session outputs", () => {
     await blobs.delete(`managed-session-outputs/tenant_1/session_1/${row!.candidate_id}/report.txt`);
     await expect(f.reader.read("tenant_1", "session_1", "report.txt")).rejects.toThrow(/missing/i);
   });
+});
+
+it("tolerates the Postgres pg_type race when replicas create the output schema concurrently", async () => {
+  let collisions = 0; const executed: string[] = [];
+  const sql = { exec: async (statement: string) => {
+    if (statement.includes("managed_session_output_hydrations") && collisions++ === 0) {
+      throw new Error('duplicate key value violates unique constraint "pg_type_typname_nsp_index"');
+    }
+    executed.push(statement);
+  } } as unknown as SqlClient;
+  await new NodeSharedSessionOutputs({ sql, blobs: {} as never }).ensureSchema("postgres");
+  expect(collisions).toBe(2);
+  expect(executed.some(statement => statement.includes("managed_session_output_hydrations"))).toBe(true);
+  await expect(new NodeSharedSessionOutputs({ sql: { exec: async () => { throw new Error("pg_type collision"); } } as unknown as SqlClient, blobs: {} as never })
+    .ensureSchema("sqlite")).rejects.toThrow(/pg_type/);
 });

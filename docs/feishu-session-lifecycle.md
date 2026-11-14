@@ -386,7 +386,7 @@ C 方案应持平。这条曲线持平 = 本设计成立。
 | 血缘类型 | 字段 / 机制 | 覆盖范围 | OMA 有没有 |
 |---|---|---|---|
 | **结构血缘** | `threads.parent_thread_id`（session-do.ts:3963）| 同 Session 内的线程树（谁委派了谁）| ✅ 有 |
-| **事件因果** | `parent_event_id`（配对 `thread_message_sent/received`，default-loop.ts:61/169）| 事件级因果链 | ✅ 有 |
+| **事件因果** | `parent_event_id`（配对 `thread_message_sent/received`，Pi host loop）| 事件级因果链 | ✅ 有 |
 | **DB Session 血缘** | sessions 表的 `parent_session_id` | 跨 Session 父子 | ❌ 没有 |
 
 > **SDS 应明确写：OMA 原生委派具备 Session 内线程树和事件因果链，但不具备跨 Session 的父子关系。**
@@ -478,7 +478,7 @@ OMA 不存、但 Gateway 必须持久化的：
   `parent_thread_id` + `new InMemoryHistory()` + `session.thread_created` 事件
 - `apps/agent/src/runtime/session-do.ts:4020-4029` —— 子线程不拿 schedule 工具
 - `apps/agent/src/runtime/session-do.ts:4046` —— 子线程级 `_threadAbortControllers`
-- `apps/agent/src/harness/default-loop.ts:61,169` —— `call_agent_*` → `thread_message_sent/received` 事件对
+- `packages/agent-harness/src/pi-loop.ts` —— `call_agent_*` → `thread_message_sent/received` 事件对
 - `apps/agent/src/harness/interface.ts:235` —— `delegateToAgent?: (agentId, message) => Promise<string>`
 - `packages/api-types/src/types.ts:70,106-115` —— `callable_agents` / `enable_general_subagent`
 - `packages/memory-store/src/types.ts:4-8,40-65` —— Actor/agent_session、redacted 版本、CAS、

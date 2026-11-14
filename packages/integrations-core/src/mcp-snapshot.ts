@@ -64,8 +64,8 @@ export function injectMcpServersIntoSnapshot(
       ...existingServers,
       ...servers.map((s) => ({
         name: s.name,
-        type: (s.type === "sse" || s.type === "http" ? s.type : "url") as
-          "url" | "http" | "sse",
+        type: (s.type === "http" ? s.type : "url") as
+          "url" | "http",
         url: s.url,
       })),
     ],
@@ -96,8 +96,8 @@ export function refreshIntegrationMcpServers(
   const mcpServers = [...(snapshot.mcp_servers ?? [])];
 
   for (const server of servers) {
-    const type = (server.type === "sse" || server.type === "http" ? server.type : "url") as
-      "url" | "http" | "sse";
+    const type = (server.type === "http" ? server.type : "url") as
+      "url" | "http";
     const matches = mcpServers
       .map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => {

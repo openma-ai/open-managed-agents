@@ -1,3 +1,4 @@
+import { SandboxGoneError } from "@open-managed-agents/sandbox";
 import type { SandboxDuplexProcessPort } from "@open-managed-agents/sandbox";
 import type {
   AcpRuntime,
@@ -8,7 +9,7 @@ import type {
 } from "@openma/common/acp-runtime";
 
 import { AcpRuntimeImpl } from "./runtime.js";
-import { SandboxSpawner } from "./spawners/sandbox.js";
+import { SandboxSpawner, sandboxAcpTransportError, awaitSandboxAcpTransportError } from "./spawners/sandbox.js";
 
 /** Runtime placement is a composition decision, not a second ACP runtime.
  * Both branches construct the same AcpRuntimeImpl and therefore share ACP
@@ -77,6 +78,23 @@ class PlacementAcpRuntime implements AcpRuntime {
           throw new Error("ACP runtime attempted to spawn more than one child for a session");
         }
         child = await this.spawner.spawn(spec);
+        // The protocol engine consumes stdout only. Always drain diagnostics:
+        // bridge transports multiplex stderr and stdout on one SSE reader, so
+        // an unread stderr write otherwise blocks the next protocol response.
+        // Do not log raw diagnostics (they can contain provider configuration).
+        // Reader acquisition is a startup boundary: a reused/locked transport
+        // must reject start, not escape through a detached async rejection.
+        let reader: ReadableStreamDefaultReader<Uint8Array>;
+        try { reader = child.stderr.getReader(); }
+        catch (error) {
+          await child.kill("SIGTERM").catch(() => undefined);
+          throw error;
+        }
+        void (async () => {
+          try { while (!(await reader.read()).done) { /* diagnostic bytes are not protocol */ } }
+          catch { /* stdout/exit observers retain the authoritative failure */ }
+          finally { reader.releaseLock(); }
+        })();
         // The common engine's diagnostic observer assumes exit never rejects.
         // A transport failure is no exit result: leave that observer pending,
         // while placement retains the ORIGINAL rejection for liveness and the
@@ -84,12 +102,26 @@ class PlacementAcpRuntime implements AcpRuntime {
         return { ...child, exited: child.exited.catch(() => new Promise<never>(() => {})) };
       },
     });
-    const session = await runtime.start(engineOptions);
+    let session: AcpSession;
+    try { session = await runtime.start(engineOptions); }
+    catch (error) { throw (child && await awaitSandboxAcpTransportError(child)) ?? error; }
     if (!child) {
       await session.dispose().catch(() => undefined);
       throw new Error("ACP runtime initialized without a child process");
     }
-    return withChildLiveness(session, child, this.cancelGraceMs, perTurnTimeoutMs);
+    const supervised = withChildLiveness(session, child, this.cancelGraceMs, perTurnTimeoutMs);
+    // Common filters unsupported remote transports during session/new. A
+    // successfully started child therefore does not prove configured tools
+    // survived negotiation. Refuse before any prompt instead of silently
+    // running with a smaller tool set. Stdio is baseline ACP support.
+    for (const transport of ["http"] as const) {
+      if (options.mcpServers?.some(server => "type" in server && server.type === transport)
+        && session.agentCapabilities.mcpCapabilities?.[transport] !== true) {
+        await supervised.dispose();
+        throw new Error(`ACP agent does not declare mcpCapabilities.${transport}=true; refusing to run a Session with ${transport.toUpperCase()} MCP servers`);
+      }
+    }
+    return supervised;
   }
 }
 
@@ -153,6 +185,8 @@ async function supervisedDispose(
   cancelGraceMs: number,
   markDead: () => void,
 ): Promise<void> {
+  const transportError = sandboxAcpTransportError(child);
+  if (transportError instanceof SandboxGoneError) throw transportError;
   // Protocol close/kill acknowledgement does not prove process exit. Native
   // state may only be captured or deleted after the child exit signal settles.
   void session.dispose().catch(() => undefined);
@@ -163,6 +197,8 @@ async function supervisedDispose(
   markDead();
   const stopped = Promise.all([child.kill("SIGKILL"), child.exited]);
   if (!await finishesWithin(stopped, 2_000)) {
+    const confirmed = await awaitSandboxAcpTransportError(child);
+    if (confirmed instanceof SandboxGoneError) throw confirmed;
     throw new Error("ACP child exit was not confirmed within 2000ms after SIGKILL; native state must not be captured or deleted");
   }
 }
@@ -196,12 +232,14 @@ async function* supervisedPrompt(
   if (options?.abortSignal?.aborted) forwardAbort();
   else options?.abortSignal?.addEventListener("abort", forwardAbort, { once: true });
 
+  let deadlineError: Error | undefined;
   const timeout = turnTimeoutMs === undefined
     ? undefined
     : setTimeout(
-        () => turnController.abort(
-          new Error(`ACP prompt exceeded its ${turnTimeoutMs}ms turn deadline`),
-        ),
+        () => {
+          deadlineError = Object.assign(new Error(`ACP prompt exceeded its ${turnTimeoutMs}ms turn deadline`), { name: "AcpTurnTimeoutError" });
+          turnController.abort(deadlineError);
+        },
         turnTimeoutMs,
       );
 
@@ -233,13 +271,16 @@ async function* supervisedPrompt(
       let item: IteratorResult<unknown>;
       try {
         item = await Promise.race([next, escalation]);
+        const transportError = sandboxAcpTransportError(child);
+        if (transportError) throw transportError;
       } catch (error) {
         escalated = error instanceof AcpPromptCancellationTimeoutError;
         void next.catch(() => undefined);
-        throw error;
+        throw await awaitSandboxAcpTransportError(child) ?? error;
       }
       if (item.done) {
         completed = true;
+        if (deadlineError) throw deadlineError;
         break;
       }
       yield item.value;

@@ -1,0 +1,1 @@
+ALTER TABLE `managed_session_executions` ADD `sandbox_token_hashes` text;

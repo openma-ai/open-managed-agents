@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCredentialEgressRoutes } from "../../packages/managed-agents-adapters-http/src/credential-egress";
-import { createCredentialEgressRelay, createEgressRelayPasses } from "../../packages/managed-credential-resolver/src/relay";
+import { createCredentialEgressRelay } from "../../packages/managed-credential-resolver/src/relay";
 
 // Exercise the same HTTP boundary in workerd, independent of Node's Response.
 describe("Cloudflare relay response framing", () => {
@@ -10,9 +10,9 @@ describe("Cloudflare relay response framing", () => {
     { method: "GET", status: 205, length: "0", metadata: null },
     { method: "GET", status: 304, length: "123", metadata: null },
   ])("preserves $method $status bodylessness without false POST length", async ({ method, status, length, metadata }) => {
-    const passes = createEgressRelayPasses("response-fixture", Date.now);
     const relay = createCredentialEgressRelay({
-      passes, findSession: async () => ({ vaultIds: ["vault"], archivedAt: null }),
+      authenticate: async (authorization) => authorization === "Basic accepted"
+        ? { type: "accepted", scope: { workspaceId: "workspace", sessionId: "session", vaultIds: ["vault"] } } : { type: "rejected" },
       credentials: {
         outboundTarget: async () => ({ type: "raw_bearer", token: "fixture-token" }),
         forward: async (_workspace, _target, send) => ({ response: await send("fixture-token") }),
@@ -20,7 +20,7 @@ describe("Cloudflare relay response framing", () => {
       send: async () => new Response(null, { status, headers: length === null ? {} : { "content-length": length } }),
     });
     const response = await buildCredentialEgressRoutes(() => relay).request("https://control.example/forward", { method: "POST", headers: {
-      authorization: `Bearer ${await passes.issue({ workspaceId: "workspace", sessionId: "session", ttlMs: 60000 })}`,
+      authorization: "Basic accepted",
       "x-oma-egress-target": "https://upstream.example/", "x-oma-egress-method": method,
     } });
     expect(response.status).toBe(status); expect(response.body).toBeNull();

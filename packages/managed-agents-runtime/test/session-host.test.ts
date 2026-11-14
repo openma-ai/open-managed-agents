@@ -26,11 +26,14 @@ describe("ManagedAgentsSessionHost", () => {
     await Promise.resolve();
     await host.steer({ sessionId: "session-without-steer", eventId: "steer-1", text: "change" });
     expect(steerCalls).toBe(0);
-    expect(events).toContainEqual(expect.objectContaining({ type: "session.error", turnId: "steer-1", message: "ACP agent does not support session steering" }));
+    // common 0.13 queues unsupported steering as an ordinary prompt rather
+    // than dropping the accepted input with a session.error.
+    expect(events.some(event => event.type === "session.error")).toBe(false);
     finish();
     await turn;
     await host.prompt({ sessionId: "session-without-steer", turnId: "turn-2", text: "continue" });
-    expect(prompts).toBe(2);
+    expect(prompts).toBe(3);
+    expect(events).toContainEqual(expect.objectContaining({ type: "session.complete", turnId: "steer-1" }));
     expect(events).toContainEqual(expect.objectContaining({ type: "session.complete", turnId: "turn-2" }));
     expect(disposeCount).toBe(0);
     await host.dispose("session-without-steer");

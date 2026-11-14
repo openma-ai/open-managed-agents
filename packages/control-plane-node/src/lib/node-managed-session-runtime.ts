@@ -1,3 +1,4 @@
+import { sessionErrorMessage } from "@open-managed-agents/session-runtime";
 import type {
   ArchivedSessionThread,
   SessionThreadEventStreamPort,
@@ -40,14 +41,20 @@ import type {
   SessionRealtimeHub,
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
+import { executionContinuationEvents, settleDeadExecutionFailure, failedExecutionSettlementFence } from "@open-managed-agents/session-runtime";
+import type { SessionExecution } from "@open-managed-agents/session-runtime-contract/coordination";
 import { randomUUID } from "node:crypto";
-import { idleStopReasonForCancelledTurn } from "@open-managed-agents/session-runtime-contract";
+import {
+  abortableDelay,
+  abortedError,
+  cancellationError,
+  idleStopReasonForCancelledTurn,
+  isAbortError,
+} from "@open-managed-agents/session-runtime-contract";
 import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
-import { outstandingRequiresAction,
-  rejectMessageForRequiresActionBatch,
-} from "./requires-action.js";
+import { outstandingRequiresAction, rejectMessageForRequiresActionBatch } from "@open-managed-agents/session-runtime-contract/requires-action";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {
@@ -155,6 +162,10 @@ export interface NodeManagedSessionRunnerAcceptInput
   takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
   initialEvents: SessionBootstrapEvent[];
   historyEvents: SessionEventView[];
+  /** Answer inputs (custom results, tool results, confirmations) admitted
+   *  after this batch. They are queued behind it on the lane and have not
+   *  been applied yet, so they cannot close a call for this batch. */
+  laterAnswerEventIds?: ReadonlySet<string>;
   /** This execution already committed its terminal idle (a crash landed
    *  between terminal persistence and settle): never re-run the turn. */
   committedTerminal?: CommittedExecutionTerminal;
@@ -175,6 +186,24 @@ export function committedExecutionTerminal(
     if (row.executionId === executionId || row.consumedByExecutionId === executionId) last = row.event;
   }
   return last?.type === "session.status_idle" ? last : null;
+}
+
+const ANSWER_TYPES = new Set(["user.custom_tool_result", "user.tool_result", "user.tool_confirmation"]);
+
+/** Answer inputs whose admission position is after every event of `batch`.
+ *  Lane executions run in admission order; an early answer is written to the
+ *  log when accepted, long before its own execution consumes it. */
+export function answersAdmittedAfter(
+  orderedEvents: readonly SessionRuntimeHistoryEventView[] | undefined,
+  batch: readonly { id?: unknown }[],
+): ReadonlySet<string> {
+  const batchIds = new Set(batch.map(event => event.id).filter((id): id is string => typeof id === "string"));
+  const rows = orderedEvents ?? [];
+  const batchRevisions = rows.filter(row => batchIds.has(row.event.id)).map(row => row.position.revision);
+  if (batchRevisions.length === 0) return new Set();
+  const last = Math.max(...batchRevisions);
+  return new Set(rows.filter(row => ANSWER_TYPES.has(row.event.type) && !batchIds.has(row.event.id) && row.position.revision > last)
+    .map(row => row.event.id));
 }
 
 export interface NodeManagedSessionRunner {
@@ -244,12 +273,23 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
     const committedTerminal = executionFence === undefined
       ? null
       : committedExecutionTerminal(history.orderedEvents, executionFence.executionId);
+    if (executionFence !== undefined && executionFence.generation > 1 && committedTerminal === null) {
+      const resumed = executionContinuationEvents(history.events.map(event => encodeRuntimeHistoryEvent(event as never)) as never,
+        { executionId: executionFence.executionId, attempt: executionFence.generation, laneId: managedEventThread(input.events[0] as never) });
+      for (const event of resumed) await output({ ...event, processed_at: new Date().toISOString() });
+      // Reload the canonical log after the fenced writes; never rebuild from
+      // a stale local snapshot or replay an unfinished tool operation.
+      const refreshed = await this.dependencies.historyFor(input.workspaceId).loadSessionRuntimeHistory({ sessionId: input.sessionId });
+      if (refreshed.type !== "not_found") history.events = refreshed.events;
+    }
+    const laterAnswerEventIds = answersAdmittedAfter(history.orderedEvents, input.events);
     await this.dependencies.runner.accept({
       ...input,
       ...(executionFence !== undefined ? { executionFence } : {}),
       ...(committedTerminal !== null ? { committedTerminal } : {}),
       initialEvents: history.initialEvents,
       historyEvents: history.events,
+      ...(laterAnswerEventIds.size === 0 ? {} : { laterAnswerEventIds }),
       output,
     });
   }
@@ -542,6 +582,24 @@ export class DefaultNodeManagedSessionRuntimeDriver
     }
   }
 
+  /** Serialize durable warnings with Session output. Turn-owned finalization
+   * must supply its fence; only independent background warnings are unfenced. */
+  publishSessionWarning(input: {
+    workspaceId: string;
+    sessionId: string;
+    source: string;
+    message: string;
+    executionFence?: SessionExecutionFence;
+  }): Promise<void> {
+    return this.enqueueOutput(input.workspaceId, input.sessionId, {
+      id: this.dependencies.ids?.nextEventId() ?? `event_${randomUUID()}`,
+      type: "session.warning",
+      source: input.source,
+      message: input.message,
+      processed_at: this.nextEventStamp(input),
+    }, input.executionFence);
+  }
+
   private async finishCancelledStart(
     input: ExecuteNodeManagedSessionEvents,
     signal: AbortSignal,
@@ -582,7 +640,8 @@ export class DefaultNodeManagedSessionRuntimeDriver
         type: "session.error",
         error: {
           type: "unknown_error",
-          message: error instanceof Error ? error.message : String(error),
+          message: error instanceof Error && error.message.trim() !== "" && error.cause === undefined
+            ? error.message : sessionErrorMessage(error, "sandbox.start"),
           retry_status: retryStatus,
         },
         processed_at: this.nextEventStamp(input),
@@ -671,6 +730,25 @@ export class DefaultNodeManagedSessionRuntimeDriver
     return subscription;
   }
 
+  /** Dead-owner recovery uses the same business settlement as CF. The SQL
+   * projection owns CAS + event-id uniqueness; publish only after durability. */
+  async finalizeDeadExecution(execution: SessionExecution): Promise<void> {
+    await settleDeadExecutionFailure({
+      executionId: execution.id, attempt: execution.attemptCount,
+      message: execution.failure ?? "execution failed", fence: failedExecutionSettlementFence(execution),
+    }, {
+      // The projection's event-id collision path is the indexed keep-first CAS.
+      hasEvent: () => false,
+      append: async (event, fence) => {
+        try { await this.enqueueOutput(execution.workspaceId, execution.sessionId, {
+          ...event, session_thread_id: execution.laneId, processed_at: this.nextEventStamp(execution),
+        }, fence); }
+        catch (error) { if (error instanceof Error && error.name === "ExecutionFenceLostError") return false; throw error; }
+      },
+      broadcast: () => {}, // enqueueOutput publishes only a successful projection.
+    });
+  }
+
   private async handleOutput(
     workspaceId: string,
     sessionId: string,
@@ -691,6 +769,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
         // Keep-first: the original event is already recorded and published.
         if (projected.type === "event_id_collision") return;
         if (projected.type === "execution_fence_lost") {
+          if (executionFence?.settlement !== undefined) throw Object.assign(new Error("Dead execution settlement superseded"), { name: "ExecutionFenceLostError" });
           throw new Error(
             `Session ${workspaceId}/${sessionId} execution fence was lost`,
           );
@@ -842,101 +921,11 @@ export class NodeManagedSessionRuntimeAdapter
   }
 }
 
-export function cancellationError(reason?: string): Error {
-  const error = new Error(reason && reason.length > 0 ? reason : "The operation was aborted");
-  error.name = "AbortError";
-  return error;
-}
-
-export function abortedError(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  if (reason instanceof Error) return reason;
-  return cancellationError(typeof reason === "string" ? reason : undefined);
-}
-
-export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
 function cancellationReason(signal: AbortSignal): string | undefined {
   const reason = signal.reason;
   if (reason instanceof Error && reason.message.length > 0) return reason.message;
   if (typeof reason === "string" && reason.length > 0) return reason;
   return undefined;
-}
-
-export function linkAbort(parent: AbortSignal | undefined, child: AbortController): () => void {
-  if (parent === undefined) return () => {};
-  if (parent.aborted) {
-    child.abort(parent.reason);
-    return () => {};
-  }
-  const onAbort = () => child.abort(parent.reason);
-  parent.addEventListener("abort", onAbort, { once: true });
-  return () => parent.removeEventListener("abort", onAbort);
-}
-
-export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  if (ms <= 0 || signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(done, ms);
-    function done() {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    }
-    signal.addEventListener("abort", done, { once: true });
-  });
-}
-
-/** Rejects when `signal` aborts without waiting out `operation`. A value that
- * arrives afterwards is passed to `abandon` so a sandbox is not leaked. */
-export function untilAborted<T>(
-  operation: Promise<T>,
-  signal: AbortSignal,
-  abandon?: (value: T) => Promise<void>,
-): Promise<T> {
-  const leave = (value: T) => {
-    if (abandon === undefined) return;
-    void abandon(value).catch(() => undefined);
-  };
-  if (signal.aborted) {
-    void operation.then(leave, () => undefined);
-    return Promise.reject(abortedError(signal));
-  }
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finish = (settle: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      settle();
-    };
-    const onAbort = () => {
-      finish(() => {
-        void operation.then(leave, () => undefined);
-        reject(abortedError(signal));
-      });
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    operation.then(
-      (value) => {
-        finish(() => {
-          if (signal.aborted) {
-            leave(value);
-            reject(abortedError(signal));
-            return;
-          }
-          resolve(value);
-        });
-      },
-      (error) => {
-        finish(() => {
-          reject(signal.aborted ? abortedError(signal) : error);
-        });
-      },
-    );
-  });
 }
 
 /** Startup failures a retry cannot fix, detected by error.name like the
@@ -992,7 +981,7 @@ export function planRequiresActionQueue(
     return { defer: [], release: [] };
   }
   const release = primary.filter((event) =>
-    event.type === "user.message" && !batchIds.has(event.id) &&
+    event.type === "user.message" && !("deferredUntilToolResults" in event) && !("cancelled_at_ms" in event) && !batchIds.has(event.id) &&
     (event.processedAt === null || event.processedAt === undefined));
   return { defer: [], release: release as unknown as AcceptNodeManagedSessionEvents["events"] };
 }

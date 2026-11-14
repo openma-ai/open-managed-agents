@@ -1,0 +1,23 @@
+{
+  "reviewedCommit": "da3e0808241f4bb0cb1988fbdf98f65c21559f53",
+  "scope": "two P2 only; no launcher/reclaim/locking modification",
+  "fixes": [
+    "Walk lexical path and every symlink target component with lstat; root ownership and no group/world write checked before following; bounded symlink depth; /opt boundary enforced.",
+    "Caller explicitly supplies complete source SHA and lock SHA256. Shared source-pin validation rejects floating refs, dirty/nonmatching repo and wrong lock. Archive blob receipt checked by prepare; expected pin independently supplied to template creation and embedded verify startup args, compared against manifest."
+  ],
+  "validation": {
+    "lexicalLinux": "RED mutable lexical ancestor accepted before fix; GREEN lexical + multi-hop intermediate ancestors rejected",
+    "explicitPinTests": "different fixture commit accepted; floating HEAD, mismatched lock, dirty and nonmatching source rejected",
+    "fullBuild": "PASS archive clean clone explicit 5e1b0e0edbbba72dae4bce4531da4c46bbf978fa + lock a43e266bb0d60175f148286eea3df6a1ffc1fff8846ca0904b5cb20b06c3ab5b -> frozen install/build/prepare",
+    "bundleSha256": "aff68c5d22f21b6f91d7f8cc245abbbf50d4ad8cffcdc8c975829b7d42b8f691",
+    "dirtyArchive": "actual tracked CLI source mutation rejected by prepare; restored",
+    "sdkOffline": "2.63.0 startCmd expected pin propagation + mismatched context rejection PASS",
+    "package": "73 PASS / 5 SKIP; typecheck/diff-check PASS",
+    "fullLinuxInstallation": "PASS: real codex-acp downgraded initialize, actual CLI wrapper failclosed, lexical ancestor bypass rejected, independently expected manifest pin rejected, v2 readiness"
+  },
+  "limits": [
+    "No cloud build/deploy.",
+    "Source receipt/context are trusted local build artifacts, not cryptographic signatures.",
+    "Reclaim/setsid lifecycle remains separate and not certified."
+  ]
+}

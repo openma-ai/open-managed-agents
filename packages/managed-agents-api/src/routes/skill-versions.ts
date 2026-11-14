@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { requireBeta, SKILLS_API_BETA } from "../beta";
 import {
   deletedSkillVersionResponseSchema,
   skillVersionListQuerySchema,
@@ -34,7 +33,6 @@ export function buildSkillVersionRoutes(
   source: ApplicationPortSource<SkillVersionsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(SKILLS_API_BETA));
 
   app.post("/:skillId/versions", async (c) => {
     let form: FormData;

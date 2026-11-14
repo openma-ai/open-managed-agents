@@ -975,6 +975,10 @@ describe("main-node official Managed Agents route", () => {
     await expect(
       sessionClient.beta.memoryStores.memories.list(unrelatedMemoryStore.id),
     ).rejects.toMatchObject({ status: 401 });
+    for (const path of [`/v1/oma/mcp-proxy/${session.id}/server`, `/v1/oma/inference-proxy/${session.id}/v1/messages`]) {
+      const denied = await fetch(`${baseURL}${path}`, { method: "POST", headers: { Authorization: `Bearer ${sessionsToken}`, "content-type": "application/json" }, body: "{}" });
+      expect(denied.status, path).toBe(401);
+    }
     const unrelated = await fetch(`${baseURL}/v1/agents`, {
       headers: { Authorization: `Bearer ${sessionsToken}` },
     });
@@ -1143,7 +1147,9 @@ async function startMainNode(
     }
     await new Promise((resolveReady) => setTimeout(resolveReady, 200));
   }
-  child.kill("SIGKILL");
+  // Stop the complete tsx process tree before afterEach removes its database.
+  // Killing only the launcher can leave a child that recreates the fixture.
+  await killProcessTree(child);
   throw new Error(`main-node did not become ready:\n${logBuffer.join("")}`);
 }
 

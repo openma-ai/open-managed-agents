@@ -1,8 +1,14 @@
+import { describeWorkDispatchError } from "../lib/work-dispatch-error.js";
+import { createNodeWorkFinalizationHost } from "../lib/work-finalization-host/index.js";
+import { createNodeWorkArtifactPublisher } from "../openai-artifact-publication.js";
+import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 /**
  * Combine the foundation and official Managed Sessions stages, then assemble
  * the legacy route-service bundle and API-key storage. HTTP mounting and
  * lifecycle ownership belong to node-http.ts and node-assembly.ts.
  */
+import { createNodeEnvironmentWorkWorker } from "../lib/node-environment-work-worker.js";
+import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { createManagedNodeRuntime } from "./node-managed.js";
 import { createNodeFoundation } from "./node-foundation.js";
 
@@ -63,8 +69,8 @@ export async function createNodeRuntime(
 
   const managed = await createManagedNodeRuntime(foundation, components, disposables);
   const {
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
@@ -76,6 +82,7 @@ export async function createNodeRuntime(
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
     managedEnvironmentWorkStore,
+    sessionSandboxes,
     managedDeploymentsRoutes,
     managedDeploymentRunsRoutes,
     managedEnvironmentsRoutes,
@@ -100,6 +107,29 @@ export async function createNodeRuntime(
     managedCredentialEgressRoutes,
     managedUserProfilesRoutes,
   } = managed;
+
+  const workFinalizationHost = await createNodeWorkFinalizationHost({
+    sql, dialect, blobs: filesBlob, sandboxes: sessionSandboxes,
+    afterExecution: createNodeWorkArtifactPublisher({
+      historyForWorkspace: workspaceId => new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),
+      filesForWorkspace: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
+      secrets: openAIAgentsSecrets, environmentId: session => `oai_env_${session.id}`, logger,
+    }),
+    observe: event => logger.info({ op: "main-node.environment_work.operation", ...event }, "Work operation"),
+  });
+
+  const managedEnvironmentWorkWorker = createNodeEnvironmentWorkWorker({
+    tracer,
+    sql, config, work: managedEnvironmentWorkStore, sandboxes: sessionSandboxes, capabilities: managedAcpCapabilities,
+    application: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.environmentWork),
+    recovery: managedSessionsComposition,
+    observe: event => logger.info({ op: "main-node.environment_work.operation", ...event }, "Work operation"),
+    onError: error => logger.error({ op: "main-node.environment_work.dispatch_failed",
+      error: describeWorkDispatchError(error, Object.entries(process.env)
+        .filter(([key]) => /secret|token|password|key|credential/i.test(key))
+        .flatMap(([, value]) => value === undefined ? [] : [value])),
+    }, "Work dispatch failed; durable poll will retry"),
+  });
 
   // ─── Services bundle ────────────────────────────────────────────────────
 
@@ -253,6 +283,8 @@ export async function createNodeRuntime(
   };
 
   return {
+    workFinalizationHost,
+    sessionSandboxes,
     config,
     processMode,
     ownsLongLivedProcesses,
@@ -288,8 +320,8 @@ export async function createNodeRuntime(
     realtimeDescription,
     sessionRegistry,
     resolveDreamModelCredentials: foundation.resolveDreamModelCredentials,
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
@@ -301,6 +333,7 @@ export async function createNodeRuntime(
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
     managedEnvironmentWorkStore,
+    managedEnvironmentWorkWorker,
     managedDeploymentsRoutes,
     managedDeploymentRunsRoutes,
     managedEnvironmentsRoutes,

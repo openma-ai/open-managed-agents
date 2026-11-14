@@ -168,7 +168,7 @@ open-managed-agents/
 
 文件入口：[`apps/agent/src/index.ts`](apps/agent/src/index.ts:1)，仅做四件事：
 
-1. `registerCoreHarnesses()` — default / unset → `PiHarness`; `ai-sdk` → deprecated `DefaultHarness`
+1. `registerCoreHarnesses()` — default / unset → `PiHarness`; custom harnesses are explicit registrations
 2. 导出 DO 类：`SessionDO`、`Sandbox`（即 `OmaSandbox`）、`ContainerProxy`
 3. 导出 outbound 处理器（`@cloudflare/sandbox 0.8.x` 的 `setOutboundHandler` API 用）
 4. 把 `/sessions/:id/*` 转给对应 DO
@@ -183,14 +183,13 @@ open-managed-agents/
 | `runtime/recovery.ts` | DO crash 后扫描 in-flight 流，发 `session.warning` |
 | `runtime/resource-mounter.ts` | 把 file/github_repo/memory_store 资源挂载到容器 |
 | `runtime/workspace-backups.ts` | 用 `@cloudflare/sandbox createBackup` 把 workspace 打包到 R2 |
-| `runtime/appendable-prompts.ts` | 系统提示词的可追加片段（skills 用） |
+| `packages/agent-harness/src/appendable-prompts.ts` | 系统提示词的可追加片段（skills 用） |
 | `harness/interface.ts` | `HarnessInterface`、`HarnessContext` 契约 |
 | `harness/registry.ts` | 名字 → 工厂 |
 | `harness/pi-loop.ts` | **默认 harness**（Pi agent-core 1.1+） |
-| `harness/default-loop.ts` (39 KB) | 已弃用：`harness: "ai-sdk"` 时使用的 AI SDK loop |
-| `harness/compaction.ts` (25 KB) | 上下文压缩策略（事件级粒度、摘要、滑窗） |
+| `harness/pi-loop.ts` | Pi agent loop，负责模型调用、工具边界和事件广播 |
+| `harness/pi-compaction.ts` | Pi 上下文压缩策略（摘要、缓存隔离、事件级边界） |
 | `harness/tools.ts` (51 KB) | bash / read / write / edit / glob / grep / web_fetch / web_search + 派生 mcp_*、call_agent_* |
-| `harness/browser-tools.ts` | 由 Browser Rendering 暴露的 navigate / click / extract |
 | `harness/skills.ts` | 把 skill 文件挂到 `/home/user/.skills/`，并把 prompt 拼进 system |
 | `harness/pi-provider.ts` | 通过 Pi 解析官方/自定义 provider、Model Card 元数据、effort 与 speed 请求控制 |
 | `harness/outcome-evaluator.ts` | LLM-as-judge：根据 rubric 判定 satisfied / needs_revision |
@@ -257,7 +256,7 @@ Astro Starlight，部署到 `docs.openma.ai`。脚本通过 `pnpm --filter` 触�
   - **Outcome Eval**（生产侧 LLM-judge，supervisor loop）
   - **Eval Framework**（test/eval：质量回归）
   - **RL Reward**（rl/verifier.ts：训练信号）
-- `event-log` 提供 SessionEvent 的追加 / 投影工具，被 `apps/agent/src/runtime/history.ts` 使用。
+- `event-log` 提供 SessionEvent 的追加 / 投影工具，被 `packages/agent-harness/src/history/events-to-messages.ts` 使用。
 
 ### 5.3 12 个领域 Store
 
@@ -541,13 +540,13 @@ Linear webhook  ──▶  apps/integrations /linear/webhook
 
 | 想做的事 | 改动哪些模块 | 参考文档 |
 |---|---|---|
-| 新增工具 | `apps/agent/src/harness/tools.ts` 注册；如有需要更新 `agent_toolset_*` | `AGENTS.md` |
+| 新增工具 | `packages/agent-harness/src/tools.ts` 注册；如有需要更新 `agent_toolset_*` | `AGENTS.md` |
 | 写自定义 harness | 实现 `HarnessInterface`，`registerHarness("...")`；本地 `oma deploy --harness` | `docs/archive/serverless-harness-sdk.md` |
 | 新增 store | 复制任一 `*-store` 模板 → 加进 `Services` → 路由消费 | `packages/services/README.md` |
 | 接入新第三方平台 | 新建 `packages/<provider>/` 实现 `integrations-core` ports；在 `apps/integrations/wire.ts` 注册；加 `routes/<provider>/` | `docs/linear-integration-design.md` |
 | 改用自托管 Postgres | 新增 `buildNodeServices`；改 `apps/main/src/index.ts` 工厂调用 | `packages/services/README.md` |
 | 让 agent 跑在用户机器 | 已支持：用户 `oma bridge setup && bridge daemon`；agent 配置 `harness: "acp-proxy"` | `docs/archive/external-agent-runtime.md` |
-| 训练自有模型 | 用 `rl/cli.ts rollout` + `rl/verl/verl_trainer.py`；Model Card 以自定义 provider + `pi_config.api=openai-completions` 指向 vLLM | `rl/README.md`、`docs/trajectory-v1-spec.md` |
+| 训练自有模型 | 用 `rl/cli.ts rollout` + `rl/verl/verl_trainer.py`；Model Card 以自定义 provider + `pi_config.api=openai-responses` 指向 vLLM | `rl/README.md`、`docs/trajectory-v1-spec.md` |
 
 ## 9. 小结
 

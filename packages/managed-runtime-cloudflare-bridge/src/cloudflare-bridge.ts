@@ -1,3 +1,4 @@
+import { parseWorkProcessObservation, validWorkProcessScope, workProcessScopeKeys, type WorkProcessScope, type WorkProcessObservation } from "./work-process-observation";
 import type { BlobStore } from "@open-managed-agents/blob-store/ports";
 import type {
   ManagedRuntimeProviderDriverPort,
@@ -75,6 +76,12 @@ function safePrefix(value: string | undefined): string {
   return normalized;
 }
 
+const maxPlatformStateBytes = 1024 * 1024;
+function platformStateRoute(path: string): string | null {
+  if (!/^\/oma\/harness-state\/acp\/[A-Za-z0-9_-]+\/[a-z0-9-]+\/v1\/(?:session-binding|acp-session)\.json$/.test(path)) return null;
+  return "/platform-state/file?path=" + encodeURIComponent(path);
+}
+
 function safeWorkspacePath(path: string): string {
   const normalized = path.replace(/\/{2,}/g, "/");
   if (!normalized.startsWith("/workspace/")) {
@@ -150,8 +157,11 @@ async function responseError(response: Response): Promise<Error> {
 
 async function* parseSse(
   stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
 ): AsyncIterable<{ event: string; data: string }> {
   const reader = stream.getReader();
+  const cancel = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
   const decoder = new TextDecoder();
   let buffer = "";
   let event = "message";
@@ -163,6 +173,7 @@ async function* parseSse(
   try {
     for (;;) {
       const next = await reader.read();
+      if (signal?.aborted) throw signal.reason;
       buffer += next.done ? decoder.decode() : decoder.decode(next.value, { stream: true });
       while (true) {
         const newline = buffer.indexOf("\n");
@@ -182,6 +193,7 @@ async function* parseSse(
     if (buffer !== "") parseLine(buffer.replace(/\r$/, ""));
     if (data.length > 0) yield { event, data: data.join("\n") };
   } finally {
+    signal?.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
 }
@@ -256,12 +268,9 @@ export class CloudflareBridgeRuntime
     return response;
   }
 
-  // The Bridge has no side-effect-free status route: every
-  // `/v1/sandbox/:id/*` request (including `GET /running`, which runs
-  // `exec("true")`) assigns and starts a container for that id. Probing a
-  // destroyed sandbox would therefore start a fresh, empty one. A destroy
-  // tombstone in the checkpoint store lets every attachment (not only the
-  // instance that destroyed it) answer "stopped" without touching the Bridge.
+  // Native /running is read-only and never starts a stopped container. Keep
+  // the shared explicit-destroy tombstone so other attachments also fail
+  // closed after an operator-requested deletion.
   get #tombstoneKey(): string {
     return `${this.#prefix}/${encodeURIComponent(this.#runtimeId)}.destroyed`;
   }
@@ -281,6 +290,59 @@ export class CloudflareBridgeRuntime
   async renewLease(): Promise<void> {
     if (await this.status() !== "running") {
       throw new Error("Cloudflare Bridge sandbox is not running");
+    }
+  }
+
+  /** One bounded GET, no provider attach/renew/start and no fallback. A legacy
+   * bridge without this route is explicitly unavailable, not a stopped runner. */
+  async observeWorkProcess(scope: WorkProcessScope): Promise<WorkProcessObservation> {
+    if (!validWorkProcessScope(scope)) throw new Error("Invalid Work process observation scope");
+    // Snapshot only scope fields before any await; callers cannot rebind a
+    // pending request by mutating their object (or smuggle extra fields out).
+    const expected: WorkProcessScope = { workspaceId: scope.workspaceId, environmentId: scope.environmentId,
+      sessionId: scope.sessionId, workId: scope.workId, generation: scope.generation, holder: scope.holder };
+    const query = new URLSearchParams(workProcessScopeKeys.map(k => [k, String(expected[k])]));
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      return await Promise.race([
+        (async () => {
+          const response = await this.#request(`/work-process?${query}`, { method: "GET", redirect: "error", signal: controller.signal, cache: "no-store" });
+          if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+            void response.body?.cancel().catch(() => undefined);
+            throw new Error("Work process observation unavailable");
+          }
+          const body = response.body?.getReader();
+          if (!body) throw new Error("Work process observation body missing");
+          if (controller.signal.aborted) { void body.cancel().catch(() => undefined); throw new Error("Observation timed out"); }
+          reader = body;
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          for (;;) {
+            const chunk = await body.read();
+            if (chunk.done) break;
+            size += chunk.value.byteLength;
+            if (size > 16384) throw new Error("Work process observation too large");
+            chunks.push(chunk.value);
+          }
+          const bytes = new Uint8Array(size);
+          let offset = 0;
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+          return parseWorkProcessObservation(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)), this.#runtimeId, expected);
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => { controller.abort(); reject(new Error("Observation timed out")); }, 5000);
+        }),
+      ]);
+    } catch {
+      // Never echo remote errors, headers, URLs or capability data.
+      throw new Error("Work process observation unavailable or mismatched");
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      // A remote cancel can hang too; disposal must not defeat the deadline.
+      if (reader) void reader.cancel().catch(() => undefined);
     }
   }
 
@@ -360,7 +422,6 @@ export class CloudflareBridgeRuntime
   }
 
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec): Promise<SandboxDuplexProcess> {
-    const abort = new AbortController();
     const stdout = new TransformStream<Uint8Array, Uint8Array>();
     const stderr = new TransformStream<Uint8Array, Uint8Array>();
     const stdoutWriter = stdout.writable.getWriter();
@@ -395,30 +456,104 @@ export class CloudflareBridgeRuntime
     }
     let response: Response;
     try {
-      response = await this.#request("/exec", {
+      response = await this.#request("/process", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           ...(sessionId === null ? {} : { "session-id": sessionId }),
         },
         body: JSON.stringify({ argv: [spec.command, ...(spec.args ?? [])], cwd }),
-        signal: abort.signal,
       });
     } catch (error) {
       await deleteSession();
       throw error;
     }
-    if (!response.ok || response.body === null) {
-      await deleteSession();
-      throw await responseError(response);
+    if (!response.ok) { await deleteSession(); throw await responseError(response); }
+    const createdProcess = await response.json() as { id?: unknown };
+    if (typeof createdProcess.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(createdProcess.id)) {
+      await deleteSession(); throw new Error("Cloudflare Bridge returned an invalid process id");
     }
-    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-      throw new Error("Cloudflare Bridge exec did not return an SSE stream");
+    const processPath = "/process/" + encodeURIComponent(createdProcess.id);
+    const requestProcess = async (path: string, init?: RequestInit) => {
+      const result = await this.#request(processPath + path, init);
+      if (!result.ok) throw await responseError(result);
+      return result;
+    };
+    // Bound cleanup independently of response disposal and of transports that
+    // ignore AbortSignal. The identity is durable before a remote kill can hang.
+    const cleanupStep = async <T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          Promise.resolve().then(() => run(controller.signal)),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              controller.abort();
+              reject(new Error("Cloudflare Bridge process cleanup timed out"));
+            }, 5_000);
+          }),
+        ]);
+      } finally { clearTimeout(timer); }
+    };
+    const cleanupFailedStart = async (failure: unknown): Promise<never> => {
+      const identity = { provider: providerName, runtimeId: this.#runtimeId, processId: createdProcess.id, state: "cleanup_unconfirmed" };
+      const key = this.#prefix + "/processes/" + encodeURIComponent(this.#runtimeId) + "/" + encodeURIComponent(String(createdProcess.id)) + ".json";
+      let recorded = false;
+      let storageFailure: unknown;
+      try {
+        recorded = await cleanupStep(async () => await this.#store.put(key, JSON.stringify(identity), { precondition: { type: "ifNoneMatch", value: "*" } }) !== null);
+        if (!recorded) storageFailure = new Error("Process cleanup identity was not stored");
+      } catch (error) { storageFailure = error; }
+      let cleanupFailure: unknown;
+      try {
+        await cleanupStep(async signal => {
+          const killed = await requestProcess("/signal", { method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ signal: "SIGKILL" }) });
+          const result = await killed.json() as { exit_code?: unknown };
+          if (!Number.isSafeInteger(result.exit_code)) throw new Error("Process exit was not confirmed");
+        });
+      } catch (error) { cleanupFailure = error; }
+      if (cleanupFailure === undefined && !recorded) {
+        // A timed-out PUT is not cancelled: it may still create its identity.
+        // Keep a terminal tombstone at the same key. The initial create-only
+        // PUT cannot overwrite it, whether it writes before or after this PUT.
+        // BlobStore's conditional-write contract is required here; failure is
+        // exposed with identity, never treated as durable cancellation.
+        try {
+          const terminal = await cleanupStep(async () => this.#store.put(key, JSON.stringify({ ...identity, state: "cleanup_confirmed" })));
+          if (terminal === null) throw new Error("Process cleanup confirmation was not stored");
+        } catch (error) { storageFailure = error; }
+      }
+      if (cleanupFailure === undefined && recorded) {
+        // A failed delete leaves a conservative, recoverable identity, not a
+        // lost process. Never remove the identity before real exit confirmation.
+        try { await cleanupStep(async () => this.#store.delete(key)); }
+        catch (error) { storageFailure = error; }
+      }
+      await cleanupStep(async () => deleteSession()).catch(() => undefined);
+      if (cleanupFailure !== undefined || storageFailure !== undefined) {
+        throw Object.assign(new Error("Cloudflare Bridge process cleanup unconfirmed"), { ...identity, recorded, cleanupConfirmed: cleanupFailure === undefined, cause: failure, cleanupFailure, storageFailure });
+      }
+      throw failure;
+    };
+    try { response = await this.#request(processPath + "/events"); }
+    catch (error) { return cleanupFailedStart(error); }
+    if (!response.ok) {
+      // Error text is untrusted streaming I/O, not a prerequisite for killing
+      // the already allocated process. Dispose independently of cleanup.
+      void response.body?.cancel().catch(() => undefined);
+      return cleanupFailedStart(new Error(`Cloudflare Bridge process events failed (HTTP ${response.status})`));
     }
-    let killedSignal: "SIGTERM" | "SIGKILL" | null = null;
+    if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+      void response.body?.cancel().catch(() => undefined);
+      return cleanupFailedStart(new Error("Cloudflare Bridge process did not return an SSE stream"));
+    }
+    const terminalRead = new AbortController();
+    let outputFailure: Error | undefined;
+    let terminalTimer: ReturnType<typeof setTimeout> | undefined;
     const exited = (async () => {
       try {
-        for await (const message of parseSse(response.body!)) {
+        for await (const message of parseSse(response.body!, terminalRead.signal)) {
           if (message.event === "stdout") {
             await stdoutWriter.write(decodeBase64(message.data));
           } else if (message.event === "stderr") {
@@ -431,23 +566,23 @@ export class CloudflareBridgeRuntime
             return { code: Number(payload.exit_code), signal: null };
           } else if (message.event === "error") {
             const payload = JSON.parse(message.data) as { error?: unknown; code?: unknown };
-            throw new Error(
+            const error = Object.assign(new Error(
               `Cloudflare Bridge exec error${
                 typeof payload.code === "string" ? ` (${payload.code})` : ""
               }: ${String(payload.error ?? "unknown")}`,
-            );
+            ), { code: payload.code });
+            if (payload.code !== "OUTPUT_INCOMPLETE" || outputFailure) throw error;
+            // Output loss is not process loss. Preserve the stream failure while
+            // reading the immediately following real exit, never a signal ACK.
+            outputFailure = error;
+            void stdoutWriter.abort(error).catch(() => undefined);
+            void stderrWriter.abort(error).catch(() => undefined);
+            terminalTimer = setTimeout(() => terminalRead.abort(error), 1_000);
           }
         }
-        if (killedSignal !== null) {
-          return { code: null, signal: killedSignal };
-        }
-        throw new Error("Cloudflare Bridge exec stream ended without a terminal event");
-      } catch (error) {
-        if (killedSignal !== null) {
-          return { code: null, signal: killedSignal };
-        }
-        throw error;
+        throw outputFailure ?? new Error("Cloudflare Bridge process stream ended without a terminal event");
       } finally {
+        clearTimeout(terminalTimer);
         await Promise.allSettled([
           stdoutWriter.close(),
           stderrWriter.close(),
@@ -457,15 +592,18 @@ export class CloudflareBridgeRuntime
     })();
     return {
       stdin: new WritableStream<Uint8Array>({
-        write() {
-          throw new Error("Cloudflare Bridge exec has no stdin; use the PTY API for interactive processes");
+        async write(bytes) {
+          await requestProcess("/stdin", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: bytes });
         },
+        async close() { await requestProcess("/stdin", { method: "DELETE" }); },
+        async abort() { await requestProcess("/stdin", { method: "DELETE" }); },
       }),
       stdout: stdout.readable,
       stderr: stderr.readable,
       async kill(signal = "SIGTERM") {
-        killedSignal = signal;
-        abort.abort(new DOMException(`Process killed with ${signal}`, "AbortError"));
+        const response = await requestProcess("/signal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal }) });
+        const result = await response.json() as { exit_code?: unknown };
+        if (!Number.isSafeInteger(result.exit_code)) throw new Error("Cloudflare Bridge signal did not confirm a real process exit");
       },
       exited,
     };
@@ -475,43 +613,48 @@ export class CloudflareBridgeRuntime
     argv: readonly string[],
     input: { cwd: string; timeoutMs?: number },
   ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; exitCode: number }> {
-    const response = await this.#request("/exec", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        argv,
-        ...(input.timeoutMs === undefined ? {} : { timeout_ms: input.timeoutMs }),
-        cwd: safeWorkspaceDirectory(input.cwd),
-      }),
-    });
-    if (!response.ok || response.body === null) throw await responseError(response);
-    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-      throw new Error("Cloudflare Bridge exec did not return an SSE stream");
-    }
-    const output: Uint8Array[] = [];
-    const errors: Uint8Array[] = [];
-    let exitCode: number | null = null;
-    for await (const message of parseSse(response.body)) {
-      if (message.event === "stdout") output.push(decodeBase64(message.data));
-      if (message.event === "stderr") errors.push(decodeBase64(message.data));
-      if (message.event === "exit") {
-        const payload = JSON.parse(message.data) as { exit_code?: unknown };
-        if (!Number.isSafeInteger(payload.exit_code)) {
-          throw new Error("Cloudflare Bridge exec returned an invalid exit event");
+    const cwd = safeWorkspaceDirectory(input.cwd);
+    try {
+      const response = await this.#request("/exec", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          argv,
+          ...(input.timeoutMs === undefined ? {} : { timeout_ms: input.timeoutMs }),
+          cwd,
+        }),
+      });
+      if (!response.ok || response.body === null) throw await responseError(response);
+      if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+        throw new Error("Cloudflare Bridge exec did not return an SSE stream");
+      }
+      const output: Uint8Array[] = [];
+      const errors: Uint8Array[] = [];
+      let exitCode: number | null = null;
+      for await (const message of parseSse(response.body)) {
+        if (message.event === "stdout") output.push(decodeBase64(message.data));
+        if (message.event === "stderr") errors.push(decodeBase64(message.data));
+        if (message.event === "exit") {
+          const payload = JSON.parse(message.data) as { exit_code?: unknown };
+          if (!Number.isSafeInteger(payload.exit_code)) {
+            throw new Error("Cloudflare Bridge exec returned an invalid exit event");
+          }
+          exitCode = Number(payload.exit_code);
         }
-        exitCode = Number(payload.exit_code);
+        if (message.event === "error") {
+          const payload = JSON.parse(message.data) as { error?: unknown; code?: unknown };
+          throw new Error(
+            `Cloudflare Bridge exec failed${
+              typeof payload.code === "string" ? ` (${payload.code})` : ""
+            }: ${String(payload.error ?? "unknown")}`,
+          );
+        }
       }
-      if (message.event === "error") {
-        const payload = JSON.parse(message.data) as { error?: unknown; code?: unknown };
-        throw new Error(
-          `Cloudflare Bridge exec failed${
-            typeof payload.code === "string" ? ` (${payload.code})` : ""
-          }: ${String(payload.error ?? "unknown")}`,
-        );
-      }
+      if (exitCode === null) throw new Error("Cloudflare Bridge exec stream ended without an exit event");
+      return { stdout: joinBytes(output), stderr: joinBytes(errors), exitCode };
+    } catch (cause) {
+      throw Object.assign(new Error(cause instanceof Error ? cause.message : String(cause), { cause }), { outcome: "dispatched_unknown" });
     }
-    if (exitCode === null) throw new Error("Cloudflare Bridge exec stream ended without an exit event");
-    return { stdout: joinBytes(output), stderr: joinBytes(errors), exitCode };
   }
 
   async exec(command: string, timeout = 10_000): Promise<string> {
@@ -528,6 +671,14 @@ export class CloudflareBridgeRuntime
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
+    const platformRoute = platformStateRoute(path);
+    if (platformRoute !== null) {
+      const response = await this.#request(platformRoute);
+      if (!response.ok) throw await responseError(response);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > maxPlatformStateBytes) throw new Error("Cloudflare Bridge platform state exceeds 1 MiB");
+      return bytes;
+    }
     if (path.startsWith("/mnt/")) {
       const result = await this.#execute(
         ["base64", "-w", "0", safeOutputPath(path)],
@@ -550,6 +701,32 @@ export class CloudflareBridgeRuntime
   }
 
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
+    const platformRoute = platformStateRoute(path);
+    if (platformRoute !== null) {
+      if (bytes.byteLength > maxPlatformStateBytes) throw new Error("Cloudflare Bridge platform state exceeds 1 MiB");
+      const response = await this.#request(platformRoute, {
+        method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes,
+      });
+      if (!response.ok) throw await responseError(response);
+      return path;
+    }
+    if (path.startsWith("/mnt/")) {
+      safeOutputPath(path);
+      // The official file route is workspace-only. Keep the same narrow
+      // Session-output exception as reads, with data/path as argv operands.
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const result = await this.#execute([
+        "sh", "-c", 'mkdir -p -- "$(dirname -- "$2")" && printf %s "$1" | base64 -d > "$2"',
+        "oma-output-write", btoa(binary), path,
+      ], { cwd: "/workspace" });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Cloudflare Bridge output write exited with ${result.exitCode}: ${new TextDecoder().decode(result.stderr)}`,
+        );
+      }
+      return path;
+    }
     const response = await this.#request(`/file/${encodeWorkspacePath(path)}`, {
       method: "PUT",
       headers: { "content-type": "application/octet-stream" },
@@ -617,7 +794,22 @@ export function createCloudflareBridgeProvider(
     if (typeof body.id !== "string" || body.id === "") {
       throw new Error("Cloudflare Sandbox Bridge returned an invalid sandbox id");
     }
-    return attach(body.id);
+    const runtime = attach(body.id);
+    try {
+      const recorded = await options.checkpointStore.put(
+        safePrefix(options.checkpointKeyPrefix) + "/allocations/" + encodeURIComponent(body.id) + ".json",
+        JSON.stringify(runtime.runtimeHandle()),
+      );
+      if (!recorded) throw new Error("Cloudflare Bridge allocation handle was not persisted");
+      const claimed = await fetch(baseUrl + "/v1/sandbox/" + encodeURIComponent(body.id) + "/claim", {
+        method: "POST", headers: { authorization: "Bearer " + options.apiKey },
+      });
+      if (!claimed.ok) throw await responseError(claimed);
+      return runtime;
+    } catch (error) {
+      await runtime.destroy().catch(() => undefined);
+      throw error;
+    }
   };
   return {
     create,

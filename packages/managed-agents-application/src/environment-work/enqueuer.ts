@@ -6,6 +6,8 @@ export interface EnqueueEnvironmentSessionWork {
   workspaceId: string;
   environment: Environment;
   session: Session;
+  expectedSessionRevision?: number;
+  recoveryEventIds?: string[];
 }
 
 export type EnqueueEnvironmentSessionWorkResult =
@@ -17,12 +19,15 @@ export interface EnvironmentSessionWorkEnqueuerPort {
     input: EnqueueEnvironmentSessionWork,
   ): Promise<EnqueueEnvironmentSessionWorkResult>;
   stop(input: StopEnvironmentSessionWork): Promise<StopEnvironmentSessionWorkResult>;
+  interruptTarget?(input: { workspaceId: string; session: Session }): Promise<string | null>;
 }
 
 export interface StopEnvironmentSessionWork {
   workspaceId: string;
   session: Session;
-  reason: "archived" | "deleted";
+  reason: "archived" | "deleted" | "interrupted";
+  /** Exact accepted cancellation target; null means no Work at acceptance. */
+  workId?: string | null;
 }
 
 export type StopEnvironmentSessionWorkResult =

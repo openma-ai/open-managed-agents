@@ -6,6 +6,7 @@ export const SANDBOX_PROVIDER_PATHS = {
   daytona: "@open-managed-agents/sandbox-adapter-daytona",
   opensandbox: "@open-managed-agents/sandbox-adapter-opensandbox",
   e2b: "@open-managed-agents/sandbox-adapter-e2b",
+  "cloudflare-bridge": "@open-managed-agents/managed-runtime-cloudflare-bridge",
 } as const;
 
 export type NodeSandboxProvider = keyof typeof SANDBOX_PROVIDER_PATHS;

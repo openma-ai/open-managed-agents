@@ -1,3 +1,5 @@
+export * from "./session-events/scheduling-recovery";
+export * from "./session-execution/work-inputs";
 export * from "./credentials/mcp-oauth-cli";
 export * from "./agents/application";
 export * from "./agents/pi-model-catalog";
@@ -86,6 +88,7 @@ export * from "./session-execution/context-source";
 export * from "./session-execution/history-source";
 export * from "./session-execution/history-application";
 export * from "./session-execution/projection-persistence";
+export * from "./session-execution/work-startup-failure";
 export * from "./session-execution/threads";
 export * from "./session-resources/application";
 export * from "./session-resources/file-source";
@@ -123,3 +126,16 @@ export * from "./credentials/validation";
 export * from "./credentials/vault-source";
 export type * from "./ports";
 export * from "./sessions/budget";
+export * from "./work-finalization/ports";
+export * from "./work-finalization/application";
+
+export { inspectCanonicalWorkTurn, type CanonicalWorkTurnRow, type CanonicalWorkTurnInspection } from "./work-finalization/turn-plan";
+
+export * from "./work-bootstrap/ports";
+export * from "./work-bootstrap/planner";
+
+export * from "./work-bootstrap/application";
+
+export * from "./session-events/work-outcome-interrupt";
+export { CustomToolInvocations, CustomInvocationConflict, type CustomInvocation, type CustomInvocationScope, type CustomInvocationPersistence } from './custom-tool-invocations';
+export { CoreCustomToolMcp, type CoreCustomToolDefinition } from './custom-tool-mcp';

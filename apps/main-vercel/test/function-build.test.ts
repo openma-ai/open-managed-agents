@@ -50,7 +50,8 @@ describe("Vercel Function build", () => {
     expect(firstBuild.bytes).toBe(firstBytes.byteLength);
     expect(secondBuild.bytes).toBe(secondBytes.byteLength);
     // Soft budget: SDK 1.3.0 grew the vercel function artifact ~130KB over 16MiB.
-    expect(firstBuild.bytes).toBeLessThan(17_000_000);
+    // Shared MCP tool authorization (#568) adds ~2.5KB; retain a narrow soft margin.
+    expect(firstBuild.bytes).toBeLessThan(17_010_000);
   });
 
   it("loads as a Node ESM handler and fails closed without deployment config", async () => {

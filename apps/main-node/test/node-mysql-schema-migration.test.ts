@@ -12,7 +12,11 @@ import type {
 
 const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
 const invitationsSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
-const currentSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
+const heldAfterExhaustedSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
+const runtimeResourceTablesSnapshot = "a569ec0b-0d55-4c2a-bd30-401b50191e4b";
+const sandboxTokenHashesSnapshot = "b328314c-2463-496b-9428-8396e54e5a8c";
+const previousWorkSnapshot = "6f23cfa4-a1c3-4c7a-8efa-040a495a1191";
+const currentSnapshot = "7a941c58-b1de-4d32-83e6-545034000001";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
@@ -38,7 +42,37 @@ describe("main-node MySQL snapshot migrations", () => {
     expect(sql.snapshotId).toBe(currentSnapshot);
   });
 
-  it.each([invitationsSnapshot, currentSnapshot])(
+  it("upgrades an installed schema to the runtime resource tables", async () => {
+    const sql = new MigrationSqlClient(heldAfterExhaustedSnapshot, ["tenant_id", "created_at", "id"]);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.createdTables).toEqual(expect.arrayContaining(["runtime_resource_orphans"]));
+    expect(sql.createdTables).not.toContain("runtime_resource_fences");
+  });
+
+  it("adds the sandbox token hashes column to the runtime resource tables snapshot (#561)", async () => {
+    const sql = new MigrationSqlClient(runtimeResourceTablesSnapshot, ["tenant_id", "created_at", "id"]);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.statements.some((statement) => /sandbox_token_hashes/u.test(statement))).toBe(true);
+  });
+
+  it("copies the Work-claim restore pointer before dropping the retired fence table", async () => {
+    const sql = new MigrationSqlClient(sandboxTokenHashesSnapshot, ["tenant_id", "created_at", "id"]);
+    sql.legacyTables.set("runtime_resource_fences", 1);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+    expect(sql.statements.some((statement) =>
+      /ALTER TABLE `managed_environment_work` ADD COLUMN `runtime_publication_json` TEXT/u.test(statement))).toBe(true);
+    expect(sql.statements.some((statement) =>
+      /ALTER TABLE `managed_environment_work` ADD COLUMN `sandbox_token_hashes` TEXT/u.test(statement))).toBe(true);
+    const copy = sql.statements.findIndex((statement) => /UPDATE managed_environment_work/u.test(statement));
+    const drop = sql.statements.findIndex((statement) => /DROP TABLE IF EXISTS .*runtime_resource_fences/u.test(statement));
+    expect(copy).toBeGreaterThan(-1);
+    expect(drop).toBeGreaterThan(copy);
+  });
+
+  it.each([invitationsSnapshot, previousWorkSnapshot, currentSnapshot])(
     "starts from snapshot %s without DROP permission and retains empty legacy tables",
     async (snapshot) => {
       const sql = new MigrationSqlClient(snapshot, ["tenant_id", "created_at", "id"]);
@@ -78,7 +112,9 @@ describe("main-node MySQL snapshot migrations", () => {
 
 class MigrationSqlClient implements SqlClient {
   createdAttributionIndex = false;
+  readonly createdTables: string[] = [];
   readonly legacyTables = new Map<string, number>();
+  readonly statements: string[] = [];
 
   constructor(
     public snapshotId: string,
@@ -86,6 +122,7 @@ class MigrationSqlClient implements SqlClient {
   ) {}
 
   prepare(sql: string): SqlStatement {
+    this.statements.push(sql);
     return new MigrationStatement(this, sql);
   }
 
@@ -94,9 +131,12 @@ class MigrationSqlClient implements SqlClient {
   }
 
   async exec(sql: string): Promise<void> {
-    if (/\bDROP\s+TABLE\b/i.test(sql)) {
+    this.statements.push(sql);
+    if (/\bDROP\s+TABLE\b/i.test(sql) && !sql.includes("runtime_resource_fences")) {
       throw new Error("DROP command denied to migration user");
     }
+    const created = /CREATE TABLE IF NOT EXISTS `([a-z_]+)`/.exec(sql);
+    if (created) this.createdTables.push(created[1]!);
     if (sql.includes("CREATE INDEX `idx_usage_events_attribution`")) {
       this.createdAttributionIndex = true;
       this.indexColumns = ["tenant_id", "created_at", "id"];

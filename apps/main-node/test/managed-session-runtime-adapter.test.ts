@@ -311,14 +311,15 @@ describe("NodeManagedSessionRuntimeAdapter", () => {
     expect(received).toEqual([]);
   });
 
-  it("depends inward without importing legacy session routing or stores", () => {
+  it("depends on the shared session core without importing legacy routing or stores", () => {
     expect(Object.keys(runtimeAdapterSources)).toEqual([
       "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.ts",
     ]);
     const source = Object.values(runtimeAdapterSources)[0] ?? "";
     expect(source).toContain("@open-managed-agents/managed-agents-application");
+    expect(source).toContain('from "@open-managed-agents/session-runtime"');
     expect(source).not.toMatch(
-      /@open-managed-agents\/(?:managed-agents-api|session-runtime(?:["/])|services|sessions-store|environments-store|shared)/,
+      /@open-managed-agents\/(?:managed-agents-api|services|sessions-store|environments-store|shared)/,
     );
     expect(source).not.toMatch(/@anthropic-ai\/sdk/);
     expect(source).not.toMatch(

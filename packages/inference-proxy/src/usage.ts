@@ -10,6 +10,39 @@ function finite(n: unknown): number | undefined {
   return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : undefined;
 }
 
+function logMissingUsage(response: Response, body: string): void {
+  const contentType = response.headers.get("content-type") ?? "";
+  const trimmed = body.trimStart();
+  const bodyKind = trimmed.length === 0
+    ? "empty"
+    : contentType.toLowerCase().includes("text/event-stream") || trimmed.startsWith("data:")
+      ? "sse"
+      : /^[{[]/.test(trimmed)
+        ? "json"
+        : "other";
+  const diagnostic: Record<string, unknown> = {
+    op: "inference.usage.missing",
+    status: response.status,
+    content_type: contentType,
+    content_encoding: response.headers.get("content-encoding") ?? "",
+    body_kind: bodyKind,
+    body_bytes: new TextEncoder().encode(body).byteLength,
+  };
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const root = parsed as Record<string, unknown>;
+      diagnostic.top_level_keys = Object.keys(root).slice(0, 20);
+      if (root.usage && typeof root.usage === "object" && !Array.isArray(root.usage)) {
+        diagnostic.usage_keys = Object.keys(root.usage as Record<string, unknown>).slice(0, 20);
+      }
+    }
+  } catch {
+    diagnostic.parse_error = "invalid_json";
+  }
+  console.warn(JSON.stringify(diagnostic));
+}
+
 /** Map OpenAI / Anthropic / Gemini JSON usage objects into domain TokenUsage. */
 export function inferenceUsageFromJson(body: unknown): TokenUsage | null {
   if (!body || typeof body !== "object") return null;
@@ -86,7 +119,9 @@ export function inferenceUsageFromSse(text: string): TokenUsage | null {
 export function observeInferenceResponseUsage(
   response: Response,
   onUsage: (usage: TokenUsage) => void | Promise<void>,
+  durable = false,
 ): Response {
+  if (durable && response.body) return observeDurableUsage(response, onUsage);
   if (!response.body) {
     void response
       .clone()
@@ -132,6 +167,8 @@ export function observeInferenceResponseUsage(
  * the in-process `modelEgress(gate)`.
  */
 export type HostedInferenceEgress = {
+  /** A successful response EOF waits for canonical usage persistence. */
+  durable?: boolean;
   begin(): boolean | Promise<boolean>;
   complete(usage: TokenUsage): void | Promise<void>;
 };
@@ -150,7 +187,7 @@ export async function withHostedInferenceBudget(
   if (!egress) return send();
   if (!(await egress.begin())) return exhaustedResponse();
   const response = await send();
-  return observeInferenceResponseUsage(response, (usage) => egress.complete(usage));
+  return observeInferenceResponseUsage(response, (usage) => egress.complete(usage), "durable" in egress && egress.durable === true);
 }
 
 /** Generic host admission decision for one hosted model request. */
@@ -175,4 +212,50 @@ export async function withHostedInferenceAdmission(
     }
   }
   return send();
+}
+
+/** Bounded incremental observation. One upstream stream, no detached promise:
+ * EOF is committed only after canonical metering. Cancellation never invents
+ * completed usage. Unknown/oversized metering frames fail closed. */
+function observeDurableUsage(response: Response, onUsage: (usage: TokenUsage) => void | Promise<void>): Response {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const sse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+  let pending = "";
+  let usage: TokenUsage | null = null;
+  const observeLine = (line: string) => {
+    const next = inferenceUsageFromSse(line);
+    if (next) usage = {...usage,...next};
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (!chunk.done) {
+          pending += decoder.decode(chunk.value,{stream:true});
+          if (sse) {
+            let end: number;
+            while ((end = pending.indexOf("\n")) >= 0) {
+              observeLine(pending.slice(0,end));
+              pending = pending.slice(end+1);
+            }
+          }
+          if (pending.length > 1_048_576) throw new Error("Model usage frame exceeds meter limit");
+          controller.enqueue(chunk.value);
+          return;
+        }
+        pending += decoder.decode();
+        if (sse) observeLine(pending);
+        else { try { usage = inferenceUsageFromJson(JSON.parse(pending)); } catch { /* rejected below */ } }
+        if (response.ok && usage === null) {
+          logMissingUsage(response, pending);
+          throw new Error("Completed model response has no usage");
+        }
+        if (usage) await onUsage(usage);
+        controller.close();
+      } catch (error) { await reader.cancel(error).catch(()=>{}); controller.error(error); }
+    },
+    cancel: reason => reader.cancel(reason),
+  });
+  return new Response(body,response);
 }

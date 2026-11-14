@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createManagedRuntimeHost } from "../src/host";
-import { MemoryRuntimeResourceFencePort, MemoryRuntimeOrphanPort } from "../src/testing";
+import { MemoryEnvironmentWorkClaimPort, MemoryRuntimeOrphanPort } from "../src/testing";
 
 const scope = {
   workspaceId: "workspace_1", environmentId: "environment_1",
@@ -25,11 +25,13 @@ function fixture(input: {
   intervalMs?: number;
   onRun?: (value: any) => Promise<{ type: "completed" }>;
 }) {
-  const fences = new MemoryRuntimeResourceFencePort();
+  const claims = new MemoryEnvironmentWorkClaimPort();
+  const workClaim = claims.claim(scope);
+  const claim = { generation: workClaim.generation, token: workClaim.token };
   const candidate = vi.fn(async () => ({ id: "candidate", contentHash: "sha256:abc", revision: 1 }));
   let periodicSleeps = 0;
   const host = createManagedRuntimeHost({
-    ownerId: "worker_1", leaseTtlMs: 90_000, heartbeatIntervalMs: 30_000,
+    ownerId: "worker_1", heartbeatIntervalMs: 30_000,
     ...(input.intervalMs === undefined ? {} : { checkpointIntervalMs: input.intervalMs }),
     scheduler: {
       sleep: (ms: number, signal: AbortSignal) => ms === input.intervalMs && periodicSleeps++ === 0
@@ -38,7 +40,7 @@ function fixture(input: {
           signal.addEventListener("abort", () => reject(signal.reason), { once: true });
         }),
     },
-    fences,
+    claims,
     orphans: new MemoryRuntimeOrphanPort(),
     sandbox: {
       capabilities: vi.fn(async () => ({
@@ -69,7 +71,7 @@ function fixture(input: {
       run: vi.fn(input.onRun ?? (async () => ({ type: "completed" as const }))),
     },
   });
-  return { host, fences, candidate, periodicSleeps: () => periodicSleeps };
+  return { host, claims, claim, candidate, periodicSleeps: () => periodicSleeps };
 }
 
 describe("opt-in periodic workspace checkpoint requests", () => {
@@ -83,11 +85,11 @@ describe("opt-in periodic workspace checkpoint requests", () => {
       return { type: "completed" as const };
     });
     const disabled = fixture({ onRun: defaultRun });
-    await expect(disabled.host.run({ scope, profile })).resolves.toMatchObject({ type: "completed" });
+    await expect(disabled.host.run({ scope, claim: disabled.claim, profile })).resolves.toMatchObject({ type: "completed" });
     expect(disabled.periodicSleeps()).toBe(0);
 
     const mount = fixture({ intervalMs: 100, strategy: "durable_mount", onRun: defaultRun });
-    await expect(mount.host.run({ scope, profile: {
+    await expect(mount.host.run({ scope, claim: mount.claim, profile: {
       ...profile, workspace: { requirement: "durable", preferredStrategies: ["durable_mount"] },
     } })).resolves.toMatchObject({ type: "completed" });
     expect(mount.periodicSleeps()).toBe(0);
@@ -95,12 +97,12 @@ describe("opt-in periodic workspace checkpoint requests", () => {
 
   it("rejects unsupported direct-worker cadence instead of claiming scheduled checkpoints", async () => {
     const result = fixture({ intervalMs: 100 });
-    await expect(result.host.run({ scope, profile: {
+    await expect(result.host.run({ scope, claim: result.claim, profile: {
       ...profile, driver: { type: "ama_worker", process: { command: "node" } },
     } })).rejects.toThrow("Periodic workspace checkpoints require the supervised harness driver");
   });
 
-  it("requests one safe-point checkpoint at a time and publishes only through the fence", async () => {
+  it("requests one safe-point checkpoint at a time and publishes only through the Work claim", async () => {
     let safePoint!: () => void;
     const reachedSafePoint = new Promise<void>((resolve) => { safePoint = resolve; });
     let checkpointCommitted!: () => void;
@@ -120,8 +122,8 @@ describe("opt-in periodic workspace checkpoint requests", () => {
       await committed;
       return { type: "completed" };
     } });
-    const publish = vi.spyOn(fixtureResult.fences, "publish");
-    await expect(fixtureResult.host.run({ scope, profile })).resolves.toMatchObject({ type: "completed" });
+    const publish = vi.spyOn(fixtureResult.claims, "publish");
+    await expect(fixtureResult.host.run({ scope, claim: fixtureResult.claim, profile })).resolves.toMatchObject({ type: "completed" });
     expect(fixtureResult.candidate).toHaveBeenCalledTimes(2); // safe point and final
     expect(publish).toHaveBeenCalledTimes(2);
   });
@@ -137,11 +139,9 @@ describe("opt-in periodic workspace checkpoint requests", () => {
       return { type: "completed" };
     } });
     fixtureResult.candidate.mockRejectedValueOnce(new Error("upload failed"));
-    const publish = vi.spyOn(fixtureResult.fences, "publish");
-    await expect(fixtureResult.host.run({ scope, profile })).resolves.toMatchObject({ type: "failed" });
+    const publish = vi.spyOn(fixtureResult.claims, "publish");
+    await expect(fixtureResult.host.run({ scope, claim: fixtureResult.claim, profile })).resolves.toMatchObject({ type: "failed" });
     expect(publish).not.toHaveBeenCalled();
-    const acquired = await fixtureResult.fences.acquire({ scope, ownerId: "reader", ttlMs: 10_000 });
-    expect(acquired.type).toBe("acquired");
-    if (acquired.type === "acquired") expect(acquired.publication).toBeNull();
+    expect(fixtureResult.claims.inspect(scope)?.publication).toBeNull();
   });
 });

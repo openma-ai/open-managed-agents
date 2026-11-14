@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type {
   Environment,
   Session,
@@ -62,6 +63,25 @@ const managedEnvironment = {
 } satisfies Environment;
 
 describe("Environment-aware Session lifecycle router", () => {
+  it("workspace composition binds interrupt target and stop to the accepted workspace", async () => {
+    const calls:string[]=[];
+    const router=EnvironmentAwareSessionEventDispatchRouter.forWorkspace({sessionEventsAccepted:async()=>{throw Error("wrong brain");}}, workspaceId=>({
+      stop:async input=>{calls.push(`${workspaceId}:${input.workId}`);return {type:"stopped"} as never;},
+      interruptTarget:async()=>{calls.push(workspaceId+":bind");return "work_bound";}
+    }));
+    const accepted={workspaceId:"workspace_exact",sessionId:session.id,session,environment:selfHostedEnvironment};
+    expect(await router.bindInterruptTarget(accepted)).toBe("work_bound");
+    await router.sessionEventsAccepted({...accepted,events:[{id:"interrupt",type:"user.interrupt",environmentWorkId:"work_bound"}] as never});
+    expect(calls).toEqual(["workspace_exact:bind","workspace_exact:work_bound"]);
+  });
+  it.each([
+    ["cloud","acp-sandbox","environment_work","all"],
+    ["cloud","default","session_execution","egress"],
+    ["self_hosted","acp-sandbox","environment_work","all"],
+    ["self_hosted","default","environment_work","egress"],
+  ])("selects authority and initial scope together for %s/%s",(type,harness,authority,sandboxTokenScope)=>{
+    expect(sessionExecutionPlacement({config:{type}}, {agent:{openma:{harness}}})).toMatchObject({authority,sandboxTokenScope});
+  });
   it("selects exactly one execution authority from environment placement", () => {
     expect(environmentExecutionAuthority(selfHostedEnvironment)).toBe(
       "environment_work",
@@ -69,6 +89,17 @@ describe("Environment-aware Session lifecycle router", () => {
     expect(environmentExecutionAuthority(managedEnvironment)).toBe(
       "session_execution",
     );
+  });
+
+  it("routes managed ACP starts, events and stops to Work without changing environment type", async () => {
+    const acp = {...session,environmentId:managedEnvironment.id,agent:{...session.agent,openma:{harness:"acp-sandbox"}}} as Session;
+    const calls:string[]=[];
+    const router=new EnvironmentAwareSessionLifecycleRouter({environments:{find:async()=>managedEnvironment},runtime:{sessionStarted:async()=>{calls.push("runtime");},sessionStopped:async()=>{calls.push("runtime-stop");}},selfHostedWork:{enqueue:async input=>{expect(input.environment.config.type).toBe("cloud");calls.push("work");return {type:"queued",work:{} as never};},stop:async()=>{calls.push("work-stop");return {type:"not_found"};}}});
+    await router.sessionStarted({workspaceId:"workspace",sessionId:acp.id,session:acp,environment:managedEnvironment,initialEvents:[]});
+    const dispatch=new EnvironmentAwareSessionEventDispatchRouter({selfHostedWork:{stop:async()=>({type:"not_found"})},runtime:{sessionEventsAccepted:async()=>{calls.push("runtime-events");}}});
+    await dispatch.sessionEventsAccepted({workspaceId:"workspace",sessionId:acp.id,session:acp,environment:managedEnvironment,events:[]} as never);
+    await router.sessionStopped({workspaceId:"workspace",sessionId:acp.id,session:acp,reason:"archived"});
+    expect(calls).toEqual(["work","work-stop"]);
   });
 
   it("starts managed environments through Session execution without queuing Work", async () => {
@@ -214,6 +245,7 @@ describe("Environment-aware Session event dispatch router", () => {
   it("delegates managed events to the host runtime", async () => {
     const accepted: object[] = [];
     const router = new EnvironmentAwareSessionEventDispatchRouter({
+      selfHostedWork: { stop: async () => { throw new Error("Unexpected Work stop for ordinary input"); } },
       runtime: {
         async sessionEventsAccepted(input) { accepted.push(input); },
       },
@@ -234,6 +266,7 @@ describe("Environment-aware Session event dispatch router", () => {
   it("does not start a second host brain for self-hosted events", async () => {
     const runtimeCalls: object[] = [];
     const router = new EnvironmentAwareSessionEventDispatchRouter({
+      selfHostedWork: { enqueue: async () => ({ type: "queued", work: {} as never }), stop: async () => { throw new Error("Unexpected Work stop for ordinary input"); } },
       runtime: {
         async sessionEventsAccepted(input) { runtimeCalls.push(input); },
       },

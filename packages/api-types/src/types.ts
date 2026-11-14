@@ -102,7 +102,7 @@ export interface AgentConfig {
   mcp_servers?: Array<
     | {
         name: string;
-        type: "url" | "http" | "sse";
+        type: "url" | "http";
         url: string;
         authorization_token?: string;
       }
@@ -156,6 +156,8 @@ export interface AgentConfig {
       max_restarts?: number;
       window_ms?: number;
     };
+    /** acp-proxy only: how long the local daemon keeps an idle ACP child.
+     * Ignored for acp-sandbox, whose child lives one execution (design §0.6). */
     idle_timeout_ms?: number;
     per_turn_timeout_ms?: number;
   };
@@ -493,6 +495,7 @@ export interface AgentToolResultEvent extends EventBase {
   // downstream consumers (UI, scorers, projections) should extract a
   // text representation if they only need text.
   content: string | ContentBlock[];
+  is_error?: boolean;
 }
 
 export interface SessionRunningEvent extends EventBase {
@@ -509,8 +512,6 @@ export interface SessionStatusEvent extends EventBase {
   stop_reason?: {
     type: "end_turn" | "requires_action" | "retries_exhausted" | "budget_reached";
     event_ids?: string[];
-    // requires_action sub-type for SDK routing
-    action_type?: "tool_confirmation" | "custom_tool_result";
   };
 }
 
@@ -630,16 +631,19 @@ export interface AgentThreadMessageEvent extends EventBase {
   content: ContentBlock[];
 }
 
-// Agent thread events (multi-agent)
+// Agent thread events (multi-agent; AMA BetaManagedAgentsAgentThreadMessage{Sent,Received}Event)
 export interface AgentThreadMessageSentEvent extends EventBase {
   type: "agent.thread_message_sent";
-  to_thread_id: string;
+  to_session_thread_id: string;
+  to_agent_name?: string | null;
   content: ContentBlock[];
 }
 
 export interface AgentThreadMessageReceivedEvent extends EventBase {
   type: "agent.thread_message_received";
-  from_thread_id: string;
+  from_session_thread_id: string;
+  from_agent_name?: string | null;
+  from_message_id?: string;
   content: ContentBlock[];
 }
 
@@ -660,7 +664,7 @@ export interface AgentThreadContextCompactedEvent extends EventBase {
    * Optional for backward compat: an event without `summary` is a pure
    * notification (UI signal), and derive falls back to "no compaction
    * happened" — i.e. it shows the full pre-boundary history. New events
-   * emitted by DefaultHarness always include `summary`.
+   * emitted by the host harness always include `summary`.
    */
   summary?: ContentBlock[];
   /**

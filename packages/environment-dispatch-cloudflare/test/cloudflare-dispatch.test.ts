@@ -62,6 +62,8 @@ describe("Cloudflare Managed Agents Work dispatcher", () => {
       sessionId: "session_01",
       signal: expect.any(AbortSignal),
       workId: "work_01",
+      workspaceId: "workspace_01",
+      workSecret: "opaque-work-secret",
     });
     expect(dispatch.mock.calls[0]?.[0]).not.toHaveProperty("environmentKey");
   });
@@ -91,6 +93,23 @@ describe("Cloudflare Managed Agents Work dispatcher", () => {
     });
   });
 
+  it.each([undefined, "", "  "])("rejects invalid workspace %s before backend/runtime access", async workspaceId => {
+    let backendCalls = 0, runtimeCalls = 0, dispatchCalls = 0;
+    const port = createManagedEnvironmentWorkDispatchPort({
+      resolveBackend: async () => { backendCalls++; return "microvm"; },
+      getRuntime: () => { runtimeCalls++; return { dispatch: async () => { dispatchCalls++; return { created: true }; } }; },
+    });
+    const input = { apiBaseUrl: "https://api.test", environmentKey: "standing-key", workspaceId, work, signal: new AbortController().signal };
+    await expect(port.dispatch(input as Parameters<typeof port.dispatch>[0])).rejects.toThrow("workspace");
+    expect([backendCalls, runtimeCalls, dispatchCalls]).toEqual([0, 0, 0]);
+  });
+
+  it("rejects a missing claim secret before provider dispatch",async()=>{
+    let dispatched=false;
+    const port=createManagedEnvironmentWorkDispatchPort({resolveBackend:async()=>"microvm",getRuntime:()=>({dispatch:async()=>{dispatched=true;return {created:true};}})});
+    await expect(port.dispatch({apiBaseUrl:"https://api.test",environmentKey:"standing-key",workspaceId:"workspace",work:{...work,secret:null},signal:new AbortController().signal})).rejects.toThrow("claim secret");
+    expect(dispatched).toBe(false);
+  });
   it("fails closed before runtime creation when backend resolution is invalid", async () => {
     const getRuntime = vi.fn();
     const port = createManagedEnvironmentWorkDispatchPort({

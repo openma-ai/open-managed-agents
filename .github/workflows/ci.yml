@@ -28,6 +28,10 @@ jobs:
       cf: ${{ steps.classify.outputs.cf }}
       node: ${{ steps.classify.outputs.node }}
       meta_only: ${{ steps.classify.outputs.meta_only }}
+      # Multi-platform parity gate (design §0.7 gate 4): platforms whose
+      # dependency graph a change reaches, from pnpm "...[<merge-base>]".
+      parity_cf: ${{ steps.parity.outputs.parity_cf }}
+      parity_node: ${{ steps.parity.outputs.parity_node }}
       console_e2e: ${{ steps.console_scope.outputs.console_e2e }}
       console_domains: ${{ steps.console_scope.outputs.console_domains }}
       console_local_specs: ${{ steps.console_scope.outputs.console_local_specs }}
@@ -38,6 +42,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -81,6 +88,23 @@ jobs:
           set -euo pipefail
           node --test scripts/ci-impact-surfaces.test.mjs
           node scripts/ci-impact-surfaces.mjs --write-github-output < /tmp/ci-changed-files.txt
+
+      # Changed files -> owning packages -> reverse dependents -> affected
+      # platforms, by pnpm's own "...[<merge-base>]" filter (no install
+      # needed; reads the workspace manifests). The merge base is explicit
+      # because pnpm 11 has no merge-base comparison (added in v12.7.0,
+      # https://pnpm.io/filtering). Root files no package owns (runner files,
+      # test/fakes the suite imports) are matched against the change list.
+      - name: Select platforms for the parity gate
+        id: parity
+        shell: bash
+        env:
+          BASE: ${{ steps.files.outputs.base }}
+        run: |
+          set -euo pipefail
+          MERGE_BASE="$(git merge-base "$BASE" HEAD)"
+          echo "parity merge base: $MERGE_BASE"
+          node scripts/check-platform-parity.mjs affected --base "$MERGE_BASE" --write-github-output < /tmp/ci-changed-files.txt
 
       # Console browser E2E is scoped by domain: the changed domain's Console
       # specs and suites for the changed layer plus its adjacent layers
@@ -151,7 +175,7 @@ jobs:
 
   cf:
     needs: changes
-    if: needs.changes.outputs.cf == 'true'
+    if: needs.changes.outputs.cf == 'true' || needs.changes.outputs.parity_cf == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -184,7 +208,7 @@ jobs:
 
   node:
     needs: changes
-    if: needs.changes.outputs.node == 'true'
+    if: needs.changes.outputs.node == 'true' || needs.changes.outputs.parity_node == 'true'
     runs-on: ubuntu-24.04
     # Full Node suite plus browser, storage and MySQL integration; allow cleanup.
     timeout-minutes: 45
@@ -210,8 +234,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install native storage test dependency
+        run: bash scripts/install-ci-rclone.sh
+
       - name: Node typecheck
         run: pnpm typecheck:ci:node
+
+      # The native management daemon requires uid 0. A user namespace gives
+      # these tests that identity without root authority over the CI host.
+      # OMA_REQUIRE_NATIVE_BOOTSTRAP makes unavailable isolation fail, not skip.
+      - name: Native sandbox bootstrap safety
+        timeout-minutes: 2
+        working-directory: packages/sandbox-adapter-e2b
+        # ubuntu-24.04 runners block unprivileged user namespaces (AppArmor)
+        # until this sysctl is set; unshare -Ur then fails writing uid_map.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare -Ur env OMA_REQUIRE_NATIVE_BOOTSTRAP=1 node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts test/managed-bootstrap.test.ts
 
       - name: Node tests
         run: pnpm test:ci:node
@@ -308,6 +347,26 @@ jobs:
 
       - name: MySQL integration tests
         run: pnpm test:integration:mysql
+
+      - name: MySQL custom-tool authority integration
+        env:
+          MYSQL_DATABASE: openma_custom_test_ci
+          MYSQL_ROOT_PASSWORD: openma-ci
+          CUSTOM_INVOCATIONS_MYSQL_URL: mysql://root:openma-ci@127.0.0.1:3307/openma_custom_test_ci
+        run: |
+          set -euo pipefail
+          container="openma-custom-authority-${GITHUB_RUN_ID}"
+          cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach --name "$container" --publish 127.0.0.1:3307:3306 \
+            --env MYSQL_DATABASE="$MYSQL_DATABASE" --env MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql:8.4
+          for attempt in $(seq 1 60); do
+            if docker exec "$container" mysqladmin ping --host=127.0.0.1 --user=root --password="$MYSQL_ROOT_PASSWORD" --silent; then break; fi
+            if [ "$attempt" = 60 ]; then echo 'MySQL did not become ready' >&2; exit 1; fi
+            sleep 2
+          done
+          export CUSTOM_INVOCATIONS_MYSQL_URL
+          pnpm --filter @open-managed-agents/managed-agents-adapters-sql exec vitest run --config vitest.custom-mysql.config.ts
 
       - name: PostgreSQL MCP access-loss integration
         run: pnpm --filter @open-managed-agents/main-node test:integration:postgres

@@ -1,61 +1,76 @@
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
+import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
 import {
-  authenticateEnvironmentWorkSessionBearer,
-  SealedEnvironmentWorkSessionCredentialIssuer,
-  type EnvironmentWorkSessionTokenCrypto,
-} from "@open-managed-agents/managed-agents-adapters-runtime";
-import type { SessionExecution, SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
+  attemptSandboxTokens,
+  issueSandboxToken,
+  sandboxHarnessPlacement,
+  sandboxTokenAuthDecision,
+  sandboxTokenScopeFor,
+  sandboxTokenSha256,
+  type SandboxTokenStore,
+  type SessionExecutionAttemptRef,
+} from "@open-managed-agents/sandbox-gateway";
+import { createSqlGatewaySandboxTokenStore, createSqlEnvironmentWorkSandboxTokenStore, environmentWorkSandboxTokenRef, type EnvironmentWorkTokenClaim } from "@open-managed-agents/sandbox-gateway-sql";
+import type { SqlClient } from "@open-managed-agents/sql-client";
 
-/** Reuse the Work credential envelope for Node-owned execution attempts. A
- * separate crypto purpose plus a proxy-only gate prevents this capability from
- * authorizing Work lifecycle, Session writes, or any standing workspace API. */
+/** The sandbox token (#561) on Node: issued once per execution attempt into the
+ * attempt row and checked by the shared @open-managed-agents/sandbox-gateway
+ * code (design §0.0 rule 10) on every request, one database read, no cache.
+ * The scope follows where the harness runs (sandboxHarnessPlacement). */
 export function createNodeManagedAcpCapabilities(dependencies: {
-  crypto: EnvironmentWorkSessionTokenCrypto | null;
   gatewayBaseUrl?: string;
   now(): Date;
-  findExecution(input: { workspaceId: string; executionId: string }): Promise<SessionExecution | null>;
-  findSession(input: { workspaceId: string; sessionId: string }): Promise<Session | null>;
+  /** The token store (tests pass one); else SQL over `sql`, verifying both
+   * lanes (execution attempt, Environment Work claim). */
+  tokens?: SandboxTokenStore;
+  sql?: SqlClient;
 }) {
-  const issuer = dependencies.crypto === null ? null : new SealedEnvironmentWorkSessionCredentialIssuer({
-    crypto: dependencies.crypto, now: dependencies.now, apiBaseUrl: dependencies.gatewayBaseUrl,
-  });
+  const now = () => dependencies.now().getTime();
+  const tokens = dependencies.tokens ?? (dependencies.sql === undefined ? null : createSqlGatewaySandboxTokenStore(dependencies.sql));
+  if (tokens === null) throw new Error("Node sandbox tokens need a store or a SQL client");
+  // One token per attempt, shared by the harness channels and the relay.
+  const attemptTokens = attemptSandboxTokens();
+  const workTokens = dependencies.sql === undefined ? null : createSqlEnvironmentWorkSandboxTokenStore(dependencies.sql);
   return {
-    async issue(input: { workspaceId: string; session: Session; environment: Environment; executionFence?: SessionExecutionFence }) {
-      if (!issuer) throw new Error("PLATFORM_ROOT_SECRET is required for Node ACP sandbox capabilities");
-      if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for Node ACP sandbox capabilities (must be reachable from the sandbox)");
+    tokens,
+    /** The in-sandbox ACP harness's channels: scope `all`. */
+    async issue(input: { workspaceId: string; session: Session; executionSession?: Session; environment: Environment; executionFence?: SessionExecutionFence }) {
+      if (!dependencies.gatewayBaseUrl) throw new Error("PUBLIC_BASE_URL is required for ACP sandbox model and MCP channels (must be reachable from the sandbox)");
+      const session = input.executionSession ?? input.session;
+      if (session.id !== input.session.id || session.environmentId !== input.session.environmentId) throw new Error("Child must share the execution Session and environment");
       const fence = input.executionFence;
-      if (!fence || fence.workspaceId !== input.workspaceId || fence.sessionId !== input.session.id || !(Date.parse(fence.expiresAt) > dependencies.now().getTime())) {
-        throw new Error("Node ACP sandbox requires a current Session Execution fence");
+      if (fence !== undefined && (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.session.id)) {
+        throw new Error("Sandbox token fence does not name this Session");
       }
-      const execution = await dependencies.findExecution({ workspaceId: input.workspaceId, executionId: fence.executionId });
-      const session = await dependencies.findSession({ workspaceId: input.workspaceId, sessionId: input.session.id });
-      if (!session) throw new Error(`Session ${input.session.id} was not found`);
-      if (session.archivedAt !== null) throw new Error(`Session ${input.session.id} is archived and cannot receive new events`);
-      if (session.environmentId !== input.environment.id) {
-        throw new Error("Node ACP sandbox requires the Session environment (child ACP capabilities are not supported)");
-      }
-      if (session.agent.id !== input.session.agent.id || session.agent.version !== input.session.agent.version) {
-        throw new Error("Node ACP sandbox requires the pinned Session agent (child ACP capabilities are not supported)");
-      }
-      if (execution?.state !== "running" || execution.sessionId !== fence.sessionId || execution.attempt?.id !== fence.attemptId || execution.attempt.ownerId !== fence.ownerId || execution.attempt.generation !== fence.generation || !(Date.parse(execution.attempt.leaseExpiresAt) > dependencies.now().getTime())) {
-        throw new Error("Node ACP sandbox Session Execution fence is stale");
-      }
-      const issued = await issuer.issue({ workspaceId: input.workspaceId, session: input.session, environment: input.environment, workId: execution.id });
-      if (issued.type !== "issued") throw new Error(issued.message);
-      const bound = await issuer.bindToClaim({ secret: issued.secret, claimedAt: execution.attempt.claimedAt, generation: execution.attempt.generation });
-      return { gatewayBaseUrl: dependencies.gatewayBaseUrl, sessionsToken: bound.secret.sessionsToken };
+      if (fence === undefined) throw new Error("Sandbox token requires a current Session Execution fence");
+      const sessionsToken = await attemptTokens.token(fence, () => issueSandboxToken(tokens, fence, {
+        scope: sandboxTokenScopeFor(sandboxHarnessPlacement(session.agent.openma?.harness)),
+        expected: { environmentId: input.environment.id, agent: { id: session.agent.id, version: session.agent.version } },
+        now,
+      }));
+      return { gatewayBaseUrl: dependencies.gatewayBaseUrl, sessionsToken };
     },
-    async authenticate(input: { token: string; method: string; path: string }) {
-      if (!dependencies.crypto || !/^\/v1\/oma\/(?:mcp-proxy|inference-proxy)\//u.test(input.path)) return null;
-      return authenticateEnvironmentWorkSessionBearer({
-        ...input, crypto: dependencies.crypto, now: dependencies.now,
-        isCurrent: async claim => {
-          const execution = await dependencies.findExecution({ workspaceId: claim.workspaceId, executionId: claim.workId });
-          if (execution?.state !== "running" || execution.sessionId !== claim.sessionId || execution.attempt?.generation !== claim.generation || execution.attempt.claimedAt !== claim.claimedAt || !(Date.parse(execution.attempt.leaseExpiresAt) > dependencies.now().getTime())) return false;
-          const session = await dependencies.findSession({ workspaceId: claim.workspaceId, sessionId: claim.sessionId });
-          return session !== null && session.archivedAt === null && session.environmentId === claim.environmentId;
-        },
-      });
+    /** The token for one delivery to the in-sandbox egress forwarder of
+     * `attempt` (shared with the harness, rotated only for a new sandbox); `harness` is
+     * the Session agent's harness name (scope all / egress). */
+    async issueEgress(attempt: SessionExecutionAttemptRef, harness: string | null | undefined, sandbox?: object | string) {
+      return attemptTokens.relayDelivery(attempt, () => issueSandboxToken(tokens, attempt, { scope: sandboxTokenScopeFor(sandboxHarnessPlacement(harness)), now }), sandbox);
+    },
+    /** Work bootstrap uses the same holder but an explicit Work-only issuer.
+     * Revalidate cached delivery against the claim: a live process is not a lease. */
+    async issueWork(claim: EnvironmentWorkTokenClaim, harness: string | null | undefined, sandbox: object | string) {
+      if (workTokens === null) throw new Error("Work sandbox tokens require SQL");
+      const attempt = environmentWorkSandboxTokenRef(claim);
+      const scope = sandboxTokenScopeFor(sandboxHarnessPlacement(harness));
+      const token = await attemptTokens.relayDelivery(attempt, () => issueSandboxToken(workTokens, attempt, { scope, now }), sandbox);
+      if (!await workTokens.isCurrentDelivery({ claim, tokenSha256: (await sandboxTokenSha256(token))!, scope, nowMs: now() })) {
+        throw new Error("Work sandbox token claim is stale or scope differs");
+      }
+      return token;
+    },
+    /** authMiddleware: the sandbox token on the model gateway, MCP gateway and sandbox API. */
+    authenticateToken(request: { headers: Headers; method: string; path: string }) {
+      return sandboxTokenAuthDecision(tokens, request, now);
     },
   };
 }

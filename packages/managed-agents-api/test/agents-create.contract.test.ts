@@ -63,13 +63,13 @@ describe("Managed Agents API — POST /v1/agents", () => {
     expect(createCalls).toEqual([]);
   });
 
-  it("rejects requests that omit the managed-agents beta header", async () => {
+  it("accepts requests without the anthropic-beta header", async () => {
     const createCalls: unknown[] = [];
     const api = buildAgentsTestApi(
       makeAgentsPort({
         createAgent: async (input) => {
           createCalls.push(input);
-          throw new Error("agent create port must not run without the beta header");
+          return { type: "created", agent: agentView };
         },
       }),
     );
@@ -83,15 +83,8 @@ describe("Managed Agents API — POST /v1/agents", () => {
       }),
     });
 
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({
-      type: "error",
-      error: {
-        type: "invalid_request_error",
-        message: expect.stringContaining("managed-agents-2026-04-01"),
-      },
-    });
-    expect(createCalls).toEqual([]);
+    expect(response.status).toBe(201);
+    expect(createCalls).toEqual([{ name: "Coding Assistant", model: "claude-opus-5" }]);
   });
 
   it("passes an official create request to the application port and returns the agent resource", async () => {
@@ -522,7 +515,7 @@ describe("Managed Agents API — POST /v1/agents", () => {
       harness: "acp-sandbox",
       acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
     });
-    expect((await response.json())._oma).toEqual({
+    expect(await response.json()).toHaveProperty("_oma", {
       harness: "acp-sandbox",
       acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
     });

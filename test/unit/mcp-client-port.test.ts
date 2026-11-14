@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as harnessTools from "../../apps/agent/src/harness/tools";
+import * as harnessTools from "../../packages/agent-harness/src/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
 
@@ -103,7 +103,7 @@ describe("OpenMA MCP client port", () => {
       model: "claude-sonnet-4-6",
       system: "",
       tools: [{ type: "agent_toolset_20260401" }],
-      mcp_servers: [{ name: "demo", type: "sse", url: "https://mcp.example.test/rpc" }],
+      mcp_servers: [{ name: "demo", type: "http", url: "https://mcp.example.test/rpc" }],
       version: 1,
       created_at: new Date().toISOString(),
     }, new TestSandbox(), {
@@ -150,7 +150,7 @@ describe("OpenMA MCP client port", () => {
           configs: [{ name: "echo", enabled: false }],
         },
       ],
-      mcp_servers: [{ name: "demo", type: "sse", url: "https://mcp.example.test/rpc" }],
+      mcp_servers: [{ name: "demo", type: "http", url: "https://mcp.example.test/rpc" }],
       version: 1,
       created_at: new Date().toISOString(),
     }, new TestSandbox(), {
@@ -171,7 +171,7 @@ describe("OpenMA MCP client port", () => {
       model: "claude-sonnet-4-6",
       system: "",
       tools: [{ type: "agent_toolset_20260401" }],
-      mcp_servers: [{ name: "demo", type: "sse", url: "https://mcp.example.test/rpc" }],
+      mcp_servers: [{ name: "demo", type: "http", url: "https://mcp.example.test/rpc" }],
       version: 1,
       created_at: new Date().toISOString(),
     }, new TestSandbox(), {
@@ -198,7 +198,7 @@ describe("OpenMA MCP client port", () => {
       model: "claude-sonnet-4-6",
       system: "",
       tools: [{ type: "agent_toolset_20260401" }],
-      mcp_servers: [{ name: "demo", type: "sse", url: "https://mcp.example.test/rpc" }],
+      mcp_servers: [{ name: "demo", type: "http", url: "https://mcp.example.test/rpc" }],
       version: 1,
       created_at: new Date().toISOString(),
     }, new TestSandbox())).rejects.toThrow(

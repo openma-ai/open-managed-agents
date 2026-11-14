@@ -3,7 +3,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { FILES_API_BETA, requireBeta } from "../beta";
 import {
   deletedFileResponseSchema,
   fileListQuerySchema,
@@ -25,7 +24,6 @@ export function buildFileRoutes(
   source: ApplicationPortSource<FilesApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(FILES_API_BETA));
 
   app.get("/", async (c) => {
     const query = fileListQuerySchema.safeParse({

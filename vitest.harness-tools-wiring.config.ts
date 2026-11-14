@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: "@cloudflare/sandbox", replacement: "./test/sandbox-stub.ts" },
+      { find: "@open-managed-agents/shared/log", replacement: "./packages/shared/src/log.ts" },
       { find: "@open-managed-agents/shared", replacement: "./packages/shared/src/index.ts" },
       { find: "@open-managed-agents/mcp", replacement: "./packages/mcp/src/index.ts" },
       { find: "@open-managed-agents/markdown", replacement: "./packages/markdown/src/index.ts" },
@@ -19,7 +20,7 @@ export default defineConfig({
     testTimeout: 60_000,
     coverage: {
       provider: "v8",
-      include: ["apps/agent/src/harness/tools.ts"],
+      include: ["packages/agent-harness/src/tools.ts"],
       reporter: ["text", "json", "json-summary", "lcov"],
       reportsDirectory: "coverage/harness-tools-wiring",
     },

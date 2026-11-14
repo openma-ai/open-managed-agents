@@ -1,4 +1,5 @@
 import { validateBudgetUpdate } from "./budget";
+import { sessionBootstrapExecutionEvents } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { Agent } from "../domain/agent";
 import type { Session, SessionAgent } from "../domain/session";
 import type { SessionBootstrapEvent } from "../domain/session-bootstrap";
@@ -7,6 +8,10 @@ import {
   resolveAgentSkills,
   resolveAgentTools,
 } from "../agents/definition-resolution";
+import {
+  validateAcpStoredToolPermissions,
+  validateAcpToolPermissionInput,
+} from "../agents/acp-tool-permissions";
 import type { AgentModelInput } from "../ports/agents";
 import type {
   ArchiveSessionCommand,
@@ -311,6 +316,15 @@ export class SessionsApplicationService
         message: `A multiagent roster member for Agent ${agent.id} was not found`,
       };
     }
+    // Same rule as agent create/update: a stored ACP agent with per-tool
+    // permissions is rejected here rather than run with them ignored.
+    const invalidAcpPermissions =
+      command.agent.type === "overrides" && command.agent.tools !== undefined
+        ? validateAcpToolPermissionInput(agent.openma?.harness, command.agent.tools)
+        : validateAcpStoredToolPermissions(agent.openma?.harness, agent.tools);
+    if (invalidAcpPermissions !== null) {
+      return { type: "invalid_request", message: invalidAcpPermissions };
+    }
 
     const environment = await this.dependencies.environments.find({
       workspaceId: this.dependencies.workspaceId,
@@ -329,6 +343,7 @@ export class SessionsApplicationService
       environmentId: environment.id,
       isLocalRuntime:
         environment.config.type === "self_hosted" || agent.openma?.runtimeBinding != null,
+      vaultIds: command.vaultIds ?? [],
     });
     if (admission.type !== "admitted") return admission;
 
@@ -352,7 +367,15 @@ export class SessionsApplicationService
       createdAt: timestamp,
       environmentId: command.environmentId,
       metadata: command.metadata ?? {},
-      outcomeEvaluations: [],
+      // Bootstrap definitions use the same stable identity as canonical input
+      // encoding. End spans update this aggregate; they must not invent it.
+      outcomeEvaluations: sessionBootstrapExecutionEvents({
+        sessionId, createdAt: timestamp, initialEvents: command.initialEvents,
+      }).flatMap(event => event.type === "user.define_outcome" ? [{
+        type: "outcome_evaluation" as const, completedAt: null,
+        description: event.description, explanation: null, iteration: 0,
+        outcomeId: event.outcomeId, result: "pending" as const,
+      }] : []),
       resources: resolvedResources.resources,
       stats: {},
       status: "running",
@@ -492,6 +515,15 @@ export class SessionsApplicationService
         type: "invalid_request",
         message: "Session must be idle to update the agent configuration",
       };
+    }
+    const invalidAcpPermissions = command.agent?.tools === undefined
+      ? null
+      : validateAcpToolPermissionInput(
+          current.session.agent.openma?.harness,
+          command.agent.tools,
+        );
+    if (invalidAcpPermissions !== null) {
+      return { type: "invalid_request", message: invalidAcpPermissions };
     }
 
     const next: Session = {

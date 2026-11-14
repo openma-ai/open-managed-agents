@@ -4,6 +4,18 @@ This document covers the core concepts, lifecycle, and configuration of agents i
 
 ---
 
+## Storage and domain merge gates
+
+Write the domain first, and keep core domain logic storage-independent. Tests and fixtures may use SQLite to fire behavior. Core product code must be integrated with every storage backend this repository already supports before it may be merged. That set is the project-supported backends — currently the Node PostgreSQL and MySQL control-plane paths and Cloudflare D1 — not every conceivable vendor. A local or test-only SQLite path does not certify those backends.
+
+Do not replace a required implementation with a hard-coded SQLite-only admission check, or by rejecting a supported production database, so the requirement looks closed. Fail-closed behavior remains valid for truly unsafe or unconfigured cases, but it must expose an incomplete capability; it must not define the requirement away. Rejection or negative tests never count as positive functional acceptance. Legitimate configuration and input validation is unchanged.
+
+Dialect or backend support is mergeable only when the actual adapter, schema or migration, composition, and the full lifecycle of the feature (including admission, publication, and cancellation where the feature has them) are wired and verified on each supported backend.
+
+Validation must stay proportional. Small, localized changes require only targeted regressions on the affected paths. Do not rerun a full orthogonal storage × harness × topology matrix on every iteration, and do not demand repeated mutants or a full matrix as a default. Reuse already verified evidence for unchanged paths. When a change touches a shared domain contract, a storage backend, or a runtime boundary, expand coverage to those affected boundaries. Consolidate the necessary acceptance evidence before merge. This does not waive the all-supported-storage implementation gate above.
+
+Concrete gate for a storage-backend adapter change, such as adding PostgreSQL or MySQL support: run real PostgreSQL and MySQL targeted authority tests, plus one already-working representative official harness full call chain per affected backend. That is sufficient. Do not block backend work on rerunning all twelve official harness lifecycle rows, and do not require a Cartesian product of every storage backend with every harness. Reuse existing unchanged harness evidence. If the harness protocol or harness adapter itself changes, run regressions for the affected harnesses only.
+
 ## Core Concepts
 
 Open Managed Agents is built around a **meta-harness** architecture with four key abstractions:
@@ -190,7 +202,7 @@ Set permission policies:
 
 ### Custom Tools
 
-Define tools with JSON Schema input validation. Custom tools pause the session with `stop_reason: { type: "requires_action", event_ids: ["<agent.custom_tool_use id>"] }` (official CMA shape; `event_ids` lists the blocking events). Any `action_type` field is an internal/legacy OMA detail — the public mapper drops it and clients must not rely on it and wait for the client to provide the result:
+Define tools with JSON Schema input validation. Custom tools pause the session with `stop_reason: { type: "requires_action", event_ids: ["<agent.custom_tool_use id>"] }` (official CMA shape; `event_ids` lists the blocking events) and wait for the client to provide the result:
 
 ```json
 {

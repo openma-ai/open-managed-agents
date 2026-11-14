@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     pool: "threads",
     include: ["test/**/*.test.ts"],
-    exclude: ["test/**/*.pg.test.ts"],
+    exclude: ["test/**/*.pg.test.ts", "test/**/*.native.test.ts"],
     testTimeout: 30_000,
   },
 });

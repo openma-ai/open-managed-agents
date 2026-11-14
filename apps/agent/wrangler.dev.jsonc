@@ -3,14 +3,19 @@
   "name": "sandbox-default",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-15",
-  "compatibility_flags": ["nodejs_compat"],
+  // Work webhook polling must reach same-zone public Worker routes, just as cron does.
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports", "global_fetch_strictly_public"],
 
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./node_modules/@cloudflare/sandbox/Dockerfile",
-      "instance_type": "lite",
-      "max_instances": 5
+      "name": "sandbox-default-do-v1-dev",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "sandbox": {
+          "dockerfile": "./Dockerfile.sandbox"
+        }
+      }
     }
   ],
 

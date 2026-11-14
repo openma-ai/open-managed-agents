@@ -178,7 +178,7 @@ export const OMA_OVERLAY_AGENTS: KnownAgentEntry[] = [
     label: "Kimi Code",
     spec: { command: "kimi", args: ["acp"] },
     installHint: "install Kimi Code, then run `kimi acp`",
-    homepage: "https://github.com/MoonshotAI/kimi-cli",
+    homepage: "https://github.com/MoonshotAI/kimi-code",
   },
   // MiMo Code is OpenCode-derived and exposes its own ACP stdio command.
   // Keep the entry overlay-only until the upstream ACP registry publishes a
@@ -191,18 +191,17 @@ export const OMA_OVERLAY_AGENTS: KnownAgentEntry[] = [
     installHint: "npm install -g @mimo-ai/cli",
     homepage: "https://github.com/XiaomiMiMo/MiMo-Code",
   },
-  // pi-acp is in the official registry. Keep an overlay entry as well so
-  // network-isolated hosts can still discover it, and so wrapper audit knows
-  // that the adapter also requires the upstream `pi` binary.
+  // Keep the persisted harness id, but override the official registry
+  // adapter: only our pinned package advertises HTTP MCP support.
   {
     id: "pi-acp",
     label: "Pi",
-    spec: { command: "pi-acp" },
+    spec: { command: "openma-pi-acp" },
     wraps: "pi",
-    install: { kind: "npm", package: "pi-acp" },
+    install: { kind: "npm", package: "@openma/pi-acp@0.1.8" },
     installHint:
-      "npm install -g @earendil-works/pi-coding-agent pi-acp",
-    homepage: "https://github.com/svkozak/pi-acp",
+      "npm install -g @openma/pi-acp@0.1.8",
+    homepage: "https://github.com/openma-ai/pi-acp",
   },
   // MiniMax Code already exposes a native ACP server (`mcode acp`) but has
   // not landed in the upstream ACP registry yet. Remove this overlay once the

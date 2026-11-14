@@ -284,35 +284,14 @@ function authorized(claims: EnvironmentWorkSessionTokenClaims, method: string, p
     && parts[1] === "oma"
     && parts[2] === "sessions"
     && parts[3] === claims.sessionId
-    && parts[4] === "runtime-events"
+    && (parts[4] === "runtime-events" || parts[4] === "startup-boundary" || parts[4] === "startup-failed"
+      // Private Work input feed (#545). Holder comes from trusted claim state
+      // and SQL re-checks the whole fence inside the consumption transaction.
+      || parts[4] === "inputs-read" || parts[4] === "inputs-consume"
+      || ["work-bootstrap", "work-recovery", "work-checkpoint", "work-finalize", "work-publish", "work-failed"].includes(parts[4] ?? ""))
   ) return verb === "POST";
 
-  // An in-sandbox harness must never receive an upstream MCP credential.
-  // It connects to OpenMA's HTTP MCP gateway with the already-scoped Work
-  // bearer instead.  The gateway path is deliberately part of the same
-  // claim: reclaiming the Work rotates `sessions_token`, and `isCurrent`
-  // fences the old sandbox before the gateway resolves any Vault material.
-  if (
-    parts.length === 5
-    && parts[0] === "v1"
-    && parts[1] === "oma"
-    && parts[2] === "mcp-proxy"
-    && parts[3] === claims.sessionId
-    && parts[4]!.length > 0
-  ) {
-    return verb === "GET" || verb === "POST" || verb === "DELETE";
-  }
-
-  if (
-    parts.length >= 5
-    && parts[0] === "v1"
-    && parts[1] === "oma"
-    && parts[2] === "inference-proxy"
-    && parts[3] === claims.sessionId
-    && parts[4]!.length > 0
-  ) {
-    return verb === "GET" || verb === "POST" || verb === "DELETE" || verb === "PATCH";
-  }
+  // Model and MCP gateways require oma_sbx_; the Work bearer is protocol-only.
 
   if (parts[0] === "v1" && parts[1] === "skills" && verb === "GET") {
     const skill = claims.skills.find((candidate) => candidate.skillId === parts[2]);
@@ -401,4 +380,79 @@ export async function authenticateEnvironmentWorkSessionBearer(
   } catch {
     return null;
   }
+}
+
+/** The sealed bearer as a @open-managed-agents/sandbox-gateway SandboxBearerCodec
+ * (structural): the same envelope, crypto purpose chosen by the caller. */
+export function sealedSandboxBearerCodec(crypto: EnvironmentWorkSessionTokenCrypto, now: () => Date) {
+  return {
+    open: (
+      request: { token: string; method: string; path: string },
+      isCurrent: (claim: EnvironmentWorkSessionClaim) => Promise<boolean>,
+    ) => authenticateEnvironmentWorkSessionBearer({ ...request, crypto, now, isCurrent }),
+  };
+}
+
+/** Private input capability. Never accept a holder supplied by the caller or
+ * resolve it from a second, potentially newer claim after authentication. */
+export async function authenticateWorkInputBearer(input: {
+  token: string; method: string; path: string;
+  crypto: EnvironmentWorkSessionTokenCrypto;
+  now(): Date;
+  find(claim: EnvironmentWorkSessionClaim): Promise<{
+    work: { data: { type: string; id: string }; state: string };
+    secret: { sessionsToken: string };
+    claim: { workerId: string | null; generation: number; claimedAt: string } | null;
+    heartbeatTtlSeconds: number;
+  } | null>;
+}): Promise<import("@open-managed-agents/managed-agents-application").WorkInputClaim | null> {
+  let holder: string | null = null;
+  let lookupFailure: { error: unknown } | undefined;
+  const resolved = await authenticateEnvironmentWorkSessionBearer({
+    ...input,
+    isCurrent: async claim => {
+      if (input.method !== "POST" || !["inputs-read", "inputs-consume"].some(action =>
+        input.path === `/v1/oma/sessions/${encodeURIComponent(claim.sessionId)}/${action}`)) return false;
+      let current;
+      try { current = await input.find(claim); }
+      catch (error) { lookupFailure = { error }; return false; }
+      if (!current || current.work.data.type !== "session" || current.work.data.id !== claim.sessionId ||
+        !["starting", "active"].includes(current.work.state) || current.secret.sessionsToken !== input.token ||
+        current.claim?.generation !== claim.generation || !current.claim.workerId ||
+        !(Date.parse(current.claim.claimedAt) + current.heartbeatTtlSeconds * 1000 > input.now().getTime())) return false;
+      holder = current.claim.workerId;
+      return true;
+    },
+  });
+  if (lookupFailure) throw lookupFailure.error;
+  return resolved && holder ? { workspaceId: resolved.workspaceId, sessionId: resolved.sessionId,
+    environmentId: resolved.environmentId, workId: resolved.workId, generation: resolved.generation, holder } : null;
+}
+
+/** Finalization capability shares the sealed Work envelope and persisted holder
+ * authority. Stopping remains usable for cleanup, never stopped/reclaimed work. */
+export async function authenticateWorkFinalizationBearer(
+  input: Parameters<typeof authenticateWorkInputBearer>[0],
+): Promise<import("@open-managed-agents/managed-agents-application").WorkFinalizationClaim | null> {
+  let holder: string | null = null;
+  let lookupFailure: { error: unknown } | undefined;
+  const resolved = await authenticateEnvironmentWorkSessionBearer({
+    ...input,
+    isCurrent: async claim => {
+      if (input.method !== "POST" || !["work-bootstrap", "work-recovery", "work-checkpoint", "work-finalize", "work-publish", "work-failed"].some(action =>
+        input.path === `/v1/oma/sessions/${encodeURIComponent(claim.sessionId)}/${action}`)) return false;
+      let current;
+      try { current = await input.find(claim); }
+      catch (error) { lookupFailure = { error }; return false; }
+      if (!current || current.work.data.type !== "session" || current.work.data.id !== claim.sessionId ||
+        !["starting", "active", "stopping"].includes(current.work.state) || current.secret.sessionsToken !== input.token ||
+        current.claim?.generation !== claim.generation || !current.claim.workerId ||
+        !(Date.parse(current.claim.claimedAt) + current.heartbeatTtlSeconds * 1000 > input.now().getTime())) return false;
+      holder = current.claim.workerId;
+      return true;
+    },
+  });
+  if (lookupFailure) throw lookupFailure.error;
+  return resolved && holder ? { workspaceId: resolved.workspaceId, sessionId: resolved.sessionId,
+    environmentId: resolved.environmentId, workId: resolved.workId, generation: resolved.generation, holder } : null;
 }

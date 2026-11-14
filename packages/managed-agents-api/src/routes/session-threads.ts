@@ -4,7 +4,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   sessionEventPageResponseSchema,
   sessionStreamEventResponseSchema,
@@ -41,7 +40,6 @@ export function buildSessionThreadRoutes(
   eventSource: ApplicationPortSource<SessionThreadEventsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/:sessionId/threads", async (c) => {
     const query = sessionThreadListQuerySchema.safeParse({

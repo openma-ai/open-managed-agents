@@ -85,6 +85,36 @@ type ToolDefinition =
     };
 ```
 
+### ACP sandbox permission mode
+
+For an Agent using `_oma.harness: "acp-sandbox"`, configure one global mode in
+`agent_toolset_20260401.default_config.permission_policy.type`:
+
+- `always_ask`: select the adapter's verified interactive permission preset.
+  This does not guarantee that every native tool invocation asks a question.
+- `auto`: use the native harness's automatic permission mode, not OpenMA's
+  separate per-tool automatic evaluator.
+- `always_allow`: select the adapter's verified permissive preset.
+
+Explicit per-tool `configs[].permission_policy` is rejected, even when it equals
+that global mode. Another toolset's default permission must be omitted or match
+the global mode. Tool availability and non-permission settings remain separate.
+The Console exposes the global mode and tool availability, not per-tool ACP
+permission selectors.
+
+Agent creation/update and Session creation/configuration updates validate these
+rules and return `400 invalid_request_error` with the offending field path.
+Recognizable conflicts in stored Agent versions are rejected before Session
+creation. Older stored definitions did not retain whether a permission was
+explicit or inherited, so equivalent historical values cannot always be
+classified; the API does not claim to reconstruct that missing provenance.
+
+Before dispatch, the worker checks the native adapter's advertised mode and its
+configuration response. Unsupported versions, unavailable modes, or downgraded
+responses fail closed rather than silently selecting a more permissive mode.
+This is a runtime contract, not a claim that every adapter/provider combination
+has completed live certification.
+
 ### MCP server config
 
 ```ts

@@ -75,16 +75,40 @@ export interface BoxLiteBoxSdkPort {
   copyOut(containerSrc: string, hostDest: string, options?: unknown): Promise<void>;
 }
 
+export interface BoxLiteCheckpointInfo {
+  id: string;
+  name: string;
+  sourceBoxId: string;
+  state: "creating" | "ready" | "failed" | "deleting";
+  errorReason?: string;
+}
+
+/** The managed checkpoint surface exposed by BoxLite REST (BoxRun).
+ * Embedded BoxLite exposes the property too, but its implementation rejects
+ * portable checkpoint operations; the provider only wires this port for REST.
+ */
+export interface BoxLiteCheckpointPort {
+  create(source: string, name?: string | null): Promise<BoxLiteCheckpointInfo>;
+  get(key: string): Promise<BoxLiteCheckpointInfo>;
+}
+
 export interface BoxLiteClientPort {
+  create?(
+    options: BoxLiteCreateOptions,
+    name?: string | null,
+  ): Promise<BoxLiteBoxSdkPort>;
   getOrCreate(
     options: BoxLiteCreateOptions,
     name?: string | null,
   ): Promise<{ created: boolean; box: BoxLiteBoxSdkPort }>;
   get(idOrName: string): Promise<BoxLiteBoxSdkPort | null>;
   remove(idOrName: string, force?: boolean | null): Promise<void>;
+  readonly checkpoints?: BoxLiteCheckpointPort;
 }
 
 export interface BoxLiteCreateOptions {
+  /** A REST-managed checkpoint to create from. No other create options may be combined with it. */
+  checkpoint?: string;
   image?: string;
   cpus?: number;
   memoryMib?: number;
@@ -125,6 +149,9 @@ export interface BoxLiteProviderOptions {
   cpus?: number;
   memoryMib?: number;
   diskSizeGb?: number;
+  /** Upper bound for the provider's REST checkpoint create/poll operation. */
+  checkpointTimeoutMs?: number;
+  checkpointPollIntervalMs?: number;
   allocationOptions?(input: ProviderManagedRuntimeAcquisitionContext & {
     name: string;
   }): Promise<SafeAllocationOptions> | SafeAllocationOptions;
@@ -265,6 +292,9 @@ export class BoxLiteManagedRuntime
   readonly #client: BoxLiteClientPort;
   readonly #box: BoxLiteBoxSdkPort;
   readonly #expectedName: string;
+  readonly #checkpoints?: BoxLiteCheckpointPort;
+  readonly #checkpointTimeoutMs: number;
+  readonly #checkpointPollIntervalMs: number;
   #destroyed = false;
 
   constructor(input: {
@@ -272,11 +302,17 @@ export class BoxLiteManagedRuntime
     client: BoxLiteClientPort;
     box: BoxLiteBoxSdkPort;
     expectedName: string;
+    checkpoints?: BoxLiteCheckpointPort;
+    checkpointTimeoutMs?: number;
+    checkpointPollIntervalMs?: number;
   }) {
     this.#providerId = input.providerId;
     this.#client = input.client;
     this.#box = input.box;
     this.#expectedName = input.expectedName;
+    this.#checkpoints = input.checkpoints;
+    this.#checkpointTimeoutMs = input.checkpointTimeoutMs ?? 120_000;
+    this.#checkpointPollIntervalMs = input.checkpointPollIntervalMs ?? 250;
   }
 
   runtimeHandle() {
@@ -284,7 +320,11 @@ export class BoxLiteManagedRuntime
   }
 
   runtimeCapabilities() {
-    return { lease: false, suspend: ["filesystem" as const], checkpoint: [] };
+    return {
+      lease: false,
+      suspend: ["filesystem" as const],
+      checkpoint: this.#checkpoints === undefined ? [] : ["filesystem" as const],
+    };
   }
 
   async status(): Promise<SandboxRuntimeStatus> {
@@ -326,10 +366,47 @@ export class BoxLiteManagedRuntime
     await this.#box.start();
   }
 
-  async checkpoint(): Promise<SandboxCheckpointHandle> {
-    throw new Error(
-      "BoxLite native snapshots are host-local and are not advertised as portable workspace checkpoints",
-    );
+  async checkpoint(input: { name?: string } = {}): Promise<SandboxCheckpointHandle> {
+    const checkpoints = this.#checkpoints;
+    if (checkpoints === undefined) {
+      throw new Error(
+        "BoxLite embedded runtime does not support portable workspace checkpoints; use BoxRun REST",
+      );
+    }
+    const wasRunning = this.#box.info().state.running;
+    if (wasRunning) await this.#box.stop();
+    try {
+      const created = await checkpoints.create(
+        this.#box.id,
+        input.name ?? this.#expectedName,
+      );
+      const deadline = Date.now() + this.#checkpointTimeoutMs;
+      let info = created;
+      while (info.state === "creating") {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `BoxLite checkpoint ${info.id} did not become ready within ${this.#checkpointTimeoutMs}ms`,
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, this.#checkpointPollIntervalMs));
+        info = await checkpoints.get(info.id);
+      }
+      if (info.state !== "ready") {
+        throw new Error(
+          `BoxLite checkpoint ${info.id} failed: ${info.errorReason ?? info.state}`,
+        );
+      }
+      return {
+        provider: this.#providerId,
+        checkpointId: info.id,
+        sourceRuntimeId: this.#box.id,
+        kind: "filesystem",
+        scope: "portable",
+        metadata: { name: info.name },
+      };
+    } finally {
+      if (wasRunning) await this.#box.start();
+    }
   }
 
   async exec(command: string, timeoutMs = 120_000): Promise<string> {
@@ -480,6 +557,15 @@ function createBoxLiteProviderWithClient(
     client: sdk,
     box,
     expectedName,
+    ...(options.connection?.type === "rest" && sdk.checkpoints !== undefined
+      ? { checkpoints: sdk.checkpoints }
+      : {}),
+    ...(options.checkpointTimeoutMs === undefined
+      ? {}
+      : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+    ...(options.checkpointPollIntervalMs === undefined
+      ? {}
+      : { checkpointPollIntervalMs: options.checkpointPollIntervalMs }),
   });
 
   return {
@@ -489,6 +575,11 @@ function createBoxLiteProviderWithClient(
       }
       acquisition.signal.throwIfAborted();
       const sdk = await client();
+      if (options.connection?.type === "rest" && sdk.checkpoints === undefined) {
+        throw new Error(
+          "BoxLite REST managed checkpoints require @boxlite-ai/boxlite 0.13 or newer",
+        );
+      }
       const name = stableName(options.providerId, context.sessionId);
       const extra = await options.allocationOptions?.({ ...acquisition, name }) ?? {};
       acquisition.signal.throwIfAborted();
@@ -533,10 +624,39 @@ function createBoxLiteProviderWithClient(
       return runtime(sdk, box, name);
     },
 
-    async restore() {
-      throw new Error(
-        "BoxLite managed runtime does not advertise portable workspace restore",
-      );
+    async restore(checkpoint, context, _environment, acquisition) {
+      if (
+        checkpoint.provider !== options.providerId
+        || checkpoint.scope !== "portable"
+        || checkpoint.kind !== "filesystem"
+        || checkpoint.checkpointId === ""
+      ) {
+        throw new Error("BoxLite provider received an incompatible portable checkpoint");
+      }
+      if (options.connection?.type !== "rest") {
+        throw new Error(
+          "BoxLite embedded runtime does not support portable workspace restore; use BoxRun REST",
+        );
+      }
+      acquisition?.signal.throwIfAborted();
+      const sdk = await client();
+      if (sdk.checkpoints === undefined) {
+        throw new Error("BoxLite REST client does not expose managed checkpoints");
+      }
+      const name = stableName(options.providerId, context.sessionId);
+      const result = sdk.create === undefined
+        ? await sdk.getOrCreate({ checkpoint: checkpoint.checkpointId }, name)
+        : { created: true, box: await sdk.create({ checkpoint: checkpoint.checkpointId }, name) };
+      try {
+        validateBox(result.box, name);
+        await ensureRunning(result.box);
+        await ensureWorkspace(result.box);
+        acquisition?.signal.throwIfAborted();
+        return runtime(sdk, result.box, name);
+      } catch (error) {
+        if (result.created) await Promise.allSettled([sdk.remove(result.box.id, true)]);
+        throw error;
+      }
     },
   };
 }
@@ -548,6 +668,7 @@ export function createBoxLiteProvider(
 }
 
 export function createBoxLiteManagedRuntime(options: BoxLiteManagedRuntimeOptions) {
+  const supportsPortableCheckpoints = options.connection?.type === "rest";
   const client = createClientResolver(options);
   const provider = createBoxLiteProviderWithClient(options, client);
   return createProviderManagedRuntime({
@@ -568,11 +689,17 @@ export function createBoxLiteManagedRuntime(options: BoxLiteManagedRuntimeOption
     sandboxCapabilities: {
       suspendResume: "supported",
       hardTerminate: "supported",
+      // BoxLite checkpoints are workspace restore points. RuntimeCheckpointPort
+      // is intentionally not wired until the host publication transaction has
+      // an explicit provider implementation for them.
       runtimeCheckpoints: [],
     },
     workspace: {
-      strategies: ["retained_runtime"],
+      strategies: supportsPortableCheckpoints
+        ? ["retained_runtime", "checkpoint_restore"]
+        : ["retained_runtime"],
       retainedSuspendKind: "filesystem",
+      ...(supportsPortableCheckpoints ? { portableCheckpointKind: "filesystem" as const } : {}),
     },
     ...(options.outputStore === undefined || options.outputStore === null
       ? {}
@@ -600,6 +727,7 @@ export function createBoxLiteManagedRuntime(options: BoxLiteManagedRuntimeOption
 export function createBoxLiteManagedRuntimeDriver(
   options: BoxLiteManagedRuntimeOptions,
 ): ManagedRuntimeProviderDriverPort {
+  const supportsPortableCheckpoints = options.connection?.type === "rest";
   const hasOutputs = options.outputStore !== undefined && options.outputStore !== null;
   return {
     descriptor() {
@@ -613,7 +741,11 @@ export function createBoxLiteManagedRuntimeDriver(
             hardTerminate: "supported",
             runtimeCheckpoints: [],
           },
-          workspace: { strategies: ["retained_runtime"] },
+          workspace: {
+            strategies: supportsPortableCheckpoints
+              ? ["retained_runtime", "checkpoint_restore"]
+              : ["retained_runtime"],
+          },
           outputs: {
             strategies: hasOutputs
               ? [{ strategy: "final_collect", durability: "durable" }]

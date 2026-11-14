@@ -15,11 +15,11 @@
 #   - Compiled JS bundle. We run via tsx in the container too — same toolchain
 #     as `pnpm --filter main-node start`. Adds ~30MB tsx + slows cold start
 #     by ~150ms vs a pre-bundled dist; trivial relative to LLM round-trips.
-#   - Distroless / scratch base. node:22-slim is ~150MB, fine for a self-host
+#   - Distroless / scratch base. node:24-slim is ~150MB, fine for a self-host
 #     audience. Switch to distroless when packaging matters.
 
 # ─── Stage 1: deps (and native compile) ────────────────────────────────────
-FROM node:22-slim AS deps
+FROM node:24-slim AS deps
 
 # better-sqlite3 loads its bundled prebuilt addon (pnpm-workspace.yaml
 # disables its source build). python3 + build-essential stay for native
@@ -91,9 +91,9 @@ RUN if [ "$SKIP_CONSOLE" != "1" ]; then \
     fi
 
 # ─── Stage 2: runtime ──────────────────────────────────────────────────────
-FROM node:22-slim AS runtime
+FROM node:24-slim AS runtime
 
-# Tools the agent's bash subprocess relies on. node:22-slim ships almost
+# Tools the agent's bash subprocess relies on. node:24-slim ships almost
 # nothing — `curl`, `git`, `ca-certificates` are the bare minimum for the
 # harness's bash + read/write/web_fetch tools to do anything useful.
 # `python3` is here so build-tooling that shells out to `python` (mostly

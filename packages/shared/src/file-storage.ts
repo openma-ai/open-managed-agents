@@ -6,7 +6,7 @@
  * - apps/main/src/routes/files.ts        (upload/download/delete)
  * - apps/main/src/routes/sessions.ts     (file_id resolver in events POST,
  *                                         scoped-copy in createSession resources)
- * - apps/agent/src/runtime/resource-mounter.ts (mount file_id to sandbox FS)
+ * - packages/session-runtime/src/session-resource-mount.ts (mount file_id to sandbox FS)
  */
 export function fileR2Key(tenantId: string, fileId: string): string {
   return `t/${tenantId}/files/${fileId}`;

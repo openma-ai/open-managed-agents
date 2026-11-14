@@ -2,6 +2,7 @@ import {
   MODEL_PROVIDER_SECRET_ENV_KEYS,
   projectHostedInferenceEnv,
 } from "@open-managed-agents/inference-proxy";
+import { parseExecResult } from "@open-managed-agents/sandbox";
 
 import {
   ACP_NATIVE_STATE_PROFILES,
@@ -74,7 +75,7 @@ export type AcpSandboxAgentReleaseReason = "replace" | "shutdown" | "destroy";
 
 export interface ManagedUrlMcpServerForSandbox {
   readonly name: string;
-  readonly type: "url" | "sse" | "http";
+  readonly type: "url" | "http";
   readonly url: string;
 }
 
@@ -223,7 +224,11 @@ export async function materializeHostedInferenceConfigFiles(
   files: readonly InferenceConfigFile[],
 ): Promise<void> {
   for (const file of files) {
-    await sandbox.writeFile(file.path, file.content);
+    // Native config lives outside the task workspace. Use the process Port,
+    // like native capture/restore, rather than widening the file API allowlist.
+    const path = sandboxShellPath(file.path);
+    const result = parseExecResult(await sandbox.exec(`umask 077; mkdir -p -- ${shellQuote(posixDirname(path))} && printf %s ${shellQuote(file.content)} > ${shellQuote(path)}`));
+    if (result.exitCode !== 0) throw new Error("Failed to materialize ACP inference configuration");
   }
 }
 
@@ -397,6 +402,9 @@ export async function installAcpSandboxAgent(
   try {
     output = await sandbox.exec(buildAcpSandboxInstallScript(install), INSTALL_TIMEOUT_MS);
   } catch (error) {
+    // Preserve adapter certainty across the installation caller. Rewrapping
+    // this as an ordinary error would permit an automatic blind rerun.
+    if (error !== null && typeof error === "object" && "outcome" in error && error.outcome === "dispatched_unknown") throw error;
     throw new Error(
       `ACP agent install failed for ${label}: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -549,7 +557,10 @@ export async function hasRequiredAcpSandboxAgentState(
       const result = await sandbox.exec(
         `if [ ${predicate} ${shellQuote(sandboxShellPath(artifact.path))} ]; then printf present; else printf missing; fi`,
       );
-      if (result.trim() !== "present") return false;
+      // Exec ports report status as a prefix (Cloudflare, CF E2B executor:
+      // "exit=N\n...") or a failure suffix ("[exit N]"); read stdout only.
+      const { exitCode, stdout } = parseExecResult(result);
+      if (exitCode !== 0 || stdout.trim() !== "present") return false;
     } catch {
       return false;
     }

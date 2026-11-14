@@ -5,7 +5,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
 import { CfDoStreamRepo, ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/cf-do";
-import { SqliteHistory } from "../../apps/agent/src/runtime/history";
+import { SqliteHistory } from "../../apps/agent/src/runtime/sqlite-history";
 
 // ============================================================
 // recoverInterruptedState — DO-level integration
@@ -24,6 +24,145 @@ import { SqliteHistory } from "../../apps/agent/src/runtime/history";
 //   5. Read events back via the DO's own GET /events endpoint.
 
 registerTestHarnesses();
+
+describe("canonical continuation reconciliation", () => {
+  it("keeps consumed custom answers before the next model turn after canonical backfill", async () => {
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName("custom_order_" + crypto.randomUUID()));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      const use = { id: "custom", type: "agent.custom_tool_use", name: "approve", input: {} };
+      const receipt = { id: "receipt", type: "user.custom_tool_result", custom_tool_use_id: "custom", content: [{ type: "text", text: "APPROVED" }] };
+      const answer = { id: "transcript", type: "agent.tool_result", tool_use_id: "custom", content: "APPROVED", transcript_only: true };
+      const next = { id: "next-model", type: "agent.message", content: [{ type: "text", text: "CONTINUED" }] };
+      history.append(use); history.append(receipt); history.append(answer); history.append(next);
+      await history.reconcileCanonicalEvents([use, receipt, next]);
+      const restored = new SqliteHistory(state.storage.sql);
+      expect(restored.getEvents().map(event => event.id)).toEqual(["custom", "receipt", "transcript", "next-model"]);
+      const messages = restored.getMessages();
+      expect(messages.map(message => message.role)).toEqual(["assistant", "tool", "assistant"]);
+      expect(JSON.stringify(messages)).toContain("APPROVED");
+      expect(JSON.stringify(messages)).not.toContain("interrupted");
+      // A receipt without a consumed transcript must not become a tool result.
+      history.append({ id: "pending", type: "agent.custom_tool_use", name: "approve", input: {} });
+      history.append({ id: "unconsumed", type: "user.custom_tool_result", custom_tool_use_id: "pending", content: [] });
+      expect(history.getEvents().filter(event => event.type === "agent.tool_result")).toHaveLength(1);
+    });
+  });
+
+  it.each([false, true])("keeps spill identity, canonical middle order and one broadcast (legacy: %s)", async legacy => {
+    const { backfillStaleTurnEvents } = await import("../../apps/agent/src/runtime/stale-turn-settlement");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName("spill_" + crypto.randomUUID()));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const objects = new Map(), puts: string[] = [], reads: string[] = [], sent: string[] = [];
+      const r2 = { put: async (key, text) => { puts.push(key); objects.set(key, text); }, get: async key => { reads.push(key); const text = objects.get(key); return text === undefined ? null : { text: async () => text }; } };
+      const history = new SqliteHistory(state.storage.sql, r2, "t/tenant/sessions/spill");
+      const before = { id: "before", type: "agent.message", content: [{ type: "text", text: "BEFORE" }] };
+      const large = { id: "large", type: "agent.tool_result", tool_use_id: "tool", content: "x".repeat(510_000), processed_at: "2026-01-01T00:00:00Z" };
+      const after = { id: "after", type: "agent.message", content: [{ type: "text", text: "AFTER" }] };
+      history.append(before); history.append(after);
+      if (legacy) {
+        objects.set("t/tenant/sessions/spill/events/legacy", JSON.stringify(large));
+        state.storage.sql.exec("INSERT INTO events(type,data,processed_at,session_thread_id) VALUES (?,?,1,?)", large.type, JSON.stringify({ type: large.type, _spilled: { r2_key: "t/tenant/sessions/spill/events/legacy", original_bytes: 510_000 } }), "sthr_primary");
+      }
+      const input = { binding: { managedSessionCanonicalEvents: async () => [before, large, after] }, workspaceId: "tenant", sessionId: "spill", history, sockets: () => [{ send: data => sent.push(data) }] };
+      await backfillStaleTurnEvents(input); await backfillStaleTurnEvents(input); await backfillStaleTurnEvents(input);
+      expect(history.getEvents().map(e => e.id)).toEqual(["before", "large", "after"]);
+      expect((await history.resolveSpilledEvents(history.getEvents()))[1].content).toHaveLength(510_000);
+      expect(state.storage.sql.exec("SELECT canonical_order FROM events WHERE json_extract(data, '$.id') = 'large'").toArray()).toEqual([{ canonical_order: 1 }]);
+      expect(sent.map(text => JSON.parse(text).id)).toEqual(legacy ? [] : ["large"]);
+      expect(puts).toHaveLength(legacy ? 0 : 1);
+      expect(reads.every(key => key.startsWith("t/tenant/sessions/spill/events/"))).toBe(true);
+    });
+  });
+  it.each(["throw", "missing", "invalid"])("fails closed on legacy R2 %s then retries without duplicates", async mode => {
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName("spill_failure_" + crypto.randomUUID()));
+    await runInDurableObject(stub, async (_instance, state) => {
+      let unavailable = true;
+      const event = { id: "legacy", type: "agent.tool_result", tool_use_id: "tool", content: "x".repeat(510_000) };
+      const r2 = { put: async () => { throw new Error("must not create a duplicate spill"); }, get: async () => {
+        if (unavailable && mode === "throw") throw new Error("R2 unavailable");
+        if (unavailable && mode === "missing") return null;
+        return { text: async () => unavailable ? "{}" : JSON.stringify(event) };
+      } };
+      const history = new SqliteHistory(state.storage.sql, r2, "t/tenant/sessions/failure");
+      state.storage.sql.exec("INSERT INTO events(type,data,processed_at) VALUES (?,?,1)", event.type, JSON.stringify({ type: event.type, _spilled: { r2_key: "t/tenant/sessions/failure/events/legacy", original_bytes: 510_000 } }));
+      await expect(Promise.resolve().then(() => history.reconcileCanonicalEvents([{ id: "new-small", type: "agent.message", content: [] }, event]))).rejects.toThrow();
+      expect(state.storage.sql.exec("SELECT seq FROM events").toArray()).toHaveLength(1);
+      unavailable = false;
+      expect(await history.reconcileCanonicalEvents([event])).toEqual([]);
+      expect(await history.reconcileCanonicalEvents([event])).toEqual([]);
+      expect(history.getEvents().map(e => e.id)).toEqual(["legacy"]);
+    });
+  });
+
+  it("promotes canonical consumed inputs and preserves source order across a middle gap", async () => {
+    await api("/health");
+    const sessionId = await newSessionDirect("canonical_order");
+    const now = Date.now(), stamp = new Date(now).toISOString();
+    await env.AUTH_DB.prepare("INSERT INTO managed_sessions (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at) VALUES (?,?,?,1,?,1,?,?,?,?)")
+      .bind("default", sessionId, "{}", "agent_test", "env_test", "idle", now, now).run();
+    const canonical = [
+      { id: "consumed", type: "user.message", content: [{ type: "text", text: "CONSUMED_INPUT" }], processedAt: stamp },
+      { id: "use", type: "agent.tool_use", name: "bash", input: {}, processedAt: stamp },
+      { id: "result", type: "agent.tool_result", toolUseId: "use", content: [{ type: "text", text: "REAL_RESULT" }], processedAt: stamp },
+      { id: "next", type: "user.message", content: [{ type: "text", text: "NEXT_INPUT" }], processedAt: stamp },
+    ];
+    for (const [i, event] of canonical.entries()) await env.AUTH_DB.prepare("INSERT INTO managed_session_events (workspace_id,session_id,thread_id,id,type,document,processed_at) VALUES (?,?,?,?,?,?,?)")
+      .bind("default", sessionId, "sthr_primary", event.id, event.type, JSON.stringify({ ...event, source_position: { revision: i + 2, index: 0 } }), now).run();
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      state.storage.sql.exec("INSERT INTO events(type,data,processed_at,session_thread_id) VALUES (?,?,NULL,?)", "user.message", JSON.stringify({ id: "consumed", type: "user.message", content: [{ type: "text", text: "CONSUMED_INPUT" }] }), "sthr_primary");
+      history.append({ id: "use", type: "agent.tool_use", name: "bash", input: {} });
+      history.append({ id: "next", type: "user.message", content: [{ type: "text", text: "NEXT_INPUT" }] });
+    });
+    await stub.fetch(new Request("http://do/events"));
+    await stub.fetch(new Request("http://do/events"));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      expect(history.getEvents().map(e => e.id)).toEqual(["consumed", "use", "result", "next"]);
+      const text = JSON.stringify(history.getMessages());
+      expect(text).toContain("CONSUMED_INPUT");
+      expect(text).toContain("REAL_RESULT");
+      expect(text).not.toContain("interrupted");
+      expect(state.storage.sql.exec("SELECT seq FROM events WHERE processed_at IS NULL").toArray()).toHaveLength(0);
+    });
+  });
+  it("restores committed ordinary facts after local loss/reset without promoting queued or cancelled inputs", async () => {
+    await api("/health");
+    const sessionId = await newSessionDirect("canonical_gap");
+    const now = Date.now(), stamp = new Date(now).toISOString();
+    await env.AUTH_DB.prepare("INSERT INTO managed_sessions (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at) VALUES (?,?,?,1,?,1,?,?,?,?)")
+      .bind("default", sessionId, "{}", "agent_test", "env_test", "idle", now, now).run();
+    const events = [
+      { id: "canonical-use", type: "agent.tool_use", name: "bash", input: { command: "already executed" }, processedAt: stamp },
+      { id: "canonical-result", type: "agent.tool_result", toolUseId: "canonical-use", content: [{ type: "text", text: "DONE_ONCE" }], processedAt: stamp },
+      { id: "future", type: "user.message", content: [{ type: "text", text: "MUST_NOT_RUN" }], processedAt: null },
+      { id: "cancelled", type: "user.message", content: [{ type: "text", text: "CANCELLED_MUST_NOT_RUN" }], processedAt: null },
+    ];
+    for (const [i, event] of events.entries()) await env.AUTH_DB.prepare("INSERT INTO managed_session_events (workspace_id,session_id,thread_id,id,type,document,processed_at) VALUES (?,?,?,?,?,?,?)")
+      .bind("default", sessionId, "sthr_primary", event.id, event.type, JSON.stringify({ ...event, source_position: { revision: i + 2, index: 0 } }), now).run();
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ id: "future", type: "user.message", content: [{ type: "text", text: "MUST_NOT_RUN" }] });
+      state.storage.sql.exec("DELETE FROM events");
+      instance.initialized = false;
+    });
+    await stub.fetch(new Request("http://do/events"));
+    await stub.fetch(new Request("http://do/events"));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const history = new SqliteHistory(state.storage.sql);
+      const events = history.getEvents();
+      expect(events.filter(e => e.id === "canonical-result")).toHaveLength(1);
+      const messages = JSON.stringify(history.getMessages());
+      expect(messages).toContain("DONE_ONCE");
+      expect(messages).not.toContain("MUST_NOT_RUN");
+      expect(messages).not.toContain("CANCELLED_MUST_NOT_RUN");
+    });
+  });
+});
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 function api(path: string, init?: RequestInit) {
@@ -66,20 +205,17 @@ async function newSessionDirect(idHint: string): Promise<string> {
   )
     .bind(sessionId, "default", "agent_test", "env_test", "", "idle", now, now)
     .run();
-  // Warm the DO so its storage.sql exists when we go to seed event-log
-  // state and so the runtimeAdapter resolves its lazy state on first
-  // alarm() call.
+  // Persist identity through the normal state API before seeding recovery
+  // records; a cold incarnation must reload it from durable storage.
   const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
   await runInDurableObject(stub, async (instance, _state) => {
-    // _state is loaded lazily inside the DO; force it by reading sessions
-    // through a synthetic POST /init shape. Easiest path: directly set
-    // the field that the runtimeAdapter getter requires.
-    (instance as { _state: unknown })._state = {
+    instance.setState({
+      ...instance.state,
       session_id: sessionId,
       tenant_id: "default",
       agent_id: "agent_test",
       environment_id: "env_test",
-    };
+    });
   });
   return sessionId;
 }
@@ -567,9 +703,8 @@ describe("SessionDO recovery — DO-level", () => {
   it("orphan turn + dangling tool_use in same session: alarm reconciles row AND injects placeholder", async () => {
     // The full crash-recovery story end-to-end on CF: a turn died with
     // unflushed event-log state (orphan tool_use) AND the sessions row
-    // marked running. _checkOrphanTurns calls onFiberRecovered →
-    // recoverAgentTurn (which does the event-log recovery) THEN flips
-    // status to idle. Both effects must occur in the same alarm pass.
+    // marked running. The alarm finalizes stale event-log state and clears
+    // the orphan marker. Both effects must occur in the same alarm pass.
     const sessionId = await newSessionDirect("orphan_combined");
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
 
@@ -907,35 +1042,23 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   it("fresh-instance alarm finalizes a turn left running by an isolate reset", async () => {
-    // Start a real turn (armed alarm + D1 running marker), then simulate
-    // the isolate being replaced while harness.run() is still in flight:
-    // the in-memory active/drain sets are gone and the turn predates the
-    // new instance. The surviving alarm must run _finalizeStaleTurns,
-    // flip D1 to idle, and abort the unpaired non-parked tool_use.
-    const sessionId = await newSession("alarm-hold-harness");
+    // turn-anchor awaits harness completion in alarm(). Clearing sets on a
+    // still-running instance is not an isolate reset: the old alarm can resume,
+    // renew its lease and complete while the probe runs. Seed only the durable
+    // state a replacement isolate inherits, with no surviving old JS promise.
+    // The preceding test separately proves a real turn arms its durable alarm.
+    const sessionId = await newSessionDirect("fresh_reset");
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
-
-    const deadline = Date.now() + 8_000;
-    let row: { status?: string; turn_id?: string | null } | null = null;
-    while (Date.now() < deadline) {
-      row = await env.AUTH_DB
-        .prepare(`SELECT status, turn_id FROM sessions WHERE id=?`)
-        .bind(sessionId)
-        .first();
-      if (row?.status === "running" && row.turn_id) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(row?.status, "turn should mark D1 running").toBe("running");
-    expect(row?.turn_id, "turn should have a durable turn marker").toBeTruthy();
-
-    const armed = await runInDurableObject(stub, (_instance, state) =>
-      state.storage.getAlarm(),
-    );
-    expect(armed, "the surviving alarm is what must wake the new instance").not.toBeNull();
+    const now = Date.now();
+    await env.AUTH_DB.prepare("UPDATE sessions SET status='running', turn_id=?, turn_started_at=? WHERE id=?")
+      .bind("dead_turn", now - 10_000, sessionId).run();
 
     await runInDurableObject(stub, async (instance, state) => {
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      const plan = state.storage.sql.exec("EXPLAIN QUERY PLAN SELECT 1 FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1", "stale:probe").toArray();
+      expect(plan.some(row => String(row.detail).includes("idx_events_event_id"))).toBe(true);
       // A model call emitted this just before the reset and never paired it.
       history.append({
         type: "agent.tool_use",
@@ -1026,12 +1149,13 @@ describe("SessionDO recovery — DO-level", () => {
     // (status_running + a custom_tool_use emitted right before death)
     // and arm a due alarm in the same RPC.
     await runInDurableObject(stub, async (instance, state) => {
-      (instance as { _state: unknown })._state = {
+      instance.setState({
+        ...instance.state,
         session_id: sessionId,
         tenant_id: "default",
         agent_id: "agent_test",
         environment_id: "env_test",
-      };
+      });
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
       history.append({ type: "session.status_running" });
@@ -1349,12 +1473,13 @@ describe("SessionDO recovery — DO-level", () => {
 
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
     await runInDurableObject(stub, async (instance, state) => {
-      (instance as { _state: unknown })._state = {
+      instance.setState({
+        ...instance.state,
         session_id: sessionId,
         tenant_id: "default",
         agent_id: "agent_test",
         environment_id: "env_test",
-      };
+      });
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
       history.append({ type: "session.status_running" });
@@ -1430,12 +1555,13 @@ describe("SessionDO recovery — DO-level", () => {
 
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
     await runInDurableObject(stub, async (instance, state) => {
-      (instance as { _state: unknown })._state = {
+      instance.setState({
+        ...instance.state,
         session_id: sessionId,
         tenant_id: "default",
         agent_id: "agent_test",
         environment_id: "env_test",
-      };
+      });
       ensureEventLogSchema(state.storage.sql);
       const history = new SqliteHistory(state.storage.sql);
       history.append({ type: "session.status_running" });
@@ -1638,7 +1764,7 @@ describe("SessionDO recovery — DO-level", () => {
     expect(outcomes[1]).toEqual(outcomes[0]);
   });
 
-  it("applied-but-unfinished turn is interrupted from the canonical stream, not requeued", async () => {
+  it("applied-but-unfinished turn requeues and preserves canonical output for continuation", async () => {
     const sessionId = await newSessionDirect("stream_applied");
     const now = Date.now();
     const eventId = `sevt_${crypto.randomUUID()}`;
@@ -1693,8 +1819,8 @@ describe("SessionDO recovery — DO-level", () => {
       `SELECT state, failure FROM managed_session_executions
         WHERE workspace_id='default' AND id=?`,
     ).bind(eventId).first<{ state: string; failure: string }>();
-    expect(execution?.state).toBe("failed");
-    expect(execution?.failure).toBe("execution interrupted after applied input");
+    expect(execution?.state).toBe("queued");
+    expect(execution?.failure).toBe("requeued after owner lease expired");
 
     // Completed output is reused, never duplicated or re-dispatched.
     const ev = await stub.fetch(new Request("http://internal/events"));
@@ -1754,11 +1880,9 @@ describe("SessionDO recovery — DO-level", () => {
       `SELECT state, failure FROM managed_session_executions
         WHERE workspace_id='default' AND id=?`,
     ).bind(eventId).first<{ state: string; failure: string }>();
-    expect(execution?.state).toBe("failed");
-    // The cold-start stream scan pairs the tool_use with a synthetic aborted
-    // result before the sweep decides, so the stream says "applied work was
-    // persisted" — either way it is interrupted, never re-dispatched.
-    expect(execution?.failure).toMatch(/^execution interrupted /);
+    expect(execution?.state).toBe("queued");
+    // Pair the unknown tool outcome, then continue the model from history.
+    expect(execution?.failure).toBe("requeued after owner lease expired");
 
     const ev = await stub.fetch(new Request("http://internal/events"));
     const { data } = await ev.json() as {
@@ -1926,8 +2050,8 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   it("alarm() with no inflight turn calls deleteAlarm (no leaked heartbeat)", async () => {
-    // Negative case — proves the heartbeat is conditional on
-    // _hasInflightTurn(), not unconditional.
+    // Heartbeat-first recovery may arm a temporary backstop, but a
+    // completed idle pass must clear it rather than leak periodic wakes.
     const sessionId = await newSessionDirect("no_heartbeat_when_idle");
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
 
@@ -1943,7 +2067,8 @@ describe("SessionDO recovery — DO-level", () => {
       const origDel = ctx.storage.deleteAlarm.bind(ctx.storage);
 
       await state.storage.deleteAlarm();
-      await state.storage.setAlarm(Date.now() - 1000);
+      // Keep a future slot so the platform cannot pre-clear it before the spy.
+      await state.storage.setAlarm(Date.now() + 60_000);
 
       spyArmed = true;
       ctx.storage.setAlarm = async (t: number) => {
@@ -1955,11 +2080,12 @@ describe("SessionDO recovery — DO-level", () => {
         return origDel();
       };
     });
-    await runDurableObjectAlarm(stub);
+    await runInDurableObject(stub, async (instance) => instance.alarm());
     await new Promise((r) => setTimeout(r, 50));
     spyArmed = false;
-    // No setAlarm — nothing to keep alive.
-    expect(setAlarmInside.length).toBe(0);
+    // Backstop precedes external maintenance, then quiescence clears it.
+    expect(setAlarmInside.length).toBeGreaterThan(0);
+    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBeNull();
     // deleteAlarm DID fire — _scheduleNextAlarm cleared the slot
     // because nothing's scheduled and no heartbeat needed.
     expect(deleteCallsInside).toBeGreaterThan(0);
@@ -2174,7 +2300,7 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   it("hintTurnEnded is idempotent — double-fire from endTurn + outer finally is safe", async () => {
-    // turn-runtime.ts fires hintTurnEnded in its outer finally as a
+    // turn-lifetime.ts fires hintTurnEnded in its outer finally as a
     // safety net for endTurn throwing; adapter.endTurn ALSO fires it
     // on success. Double-fire happens on the happy path. Set.delete
     // on a missing key is a no-op (idempotent), but pin the contract.

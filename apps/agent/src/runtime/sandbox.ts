@@ -1,3 +1,4 @@
+import type { NativeWorkProcess, NativeWorkCheckpoint, NativeWorkIO } from "./cf-native-work-process";
 import type {
   SandboxCheckpointHandle,
   SandboxDuplexProcess,
@@ -11,9 +12,16 @@ import type {
   ProcessHandle,
 } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
-import { getSandbox as cfGetSandbox } from "@cloudflare/sandbox";
-import { sessionOutputsPrefix } from "@open-managed-agents/shared";
+import { managedMcpProxyFromWorkEnvironment } from "@open-managed-agents/acp-runtime/sandbox-agent";
+import { r2FilesCredentials } from "./r2-files-credentials";
+import { log, logError, sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { cloudflareWorkspaceMountPrefix } from "@open-managed-agents/managed-runtime-cloudflare";
+import type {
+  OmaMountBucketRequest,
+  OmaProvisionResult,
+  OmaSandboxDescription,
+} from "../oma-sandbox";
+import type { WorkspaceBackupHandle } from "./workspace-backups";
 // `bash-parser` is CJS; the bundler handles interop for worker builds.
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
@@ -64,9 +72,17 @@ const parseShellCommand = parseShell as (command: string) => {
   commands?: Array<Record<string, any>>;
 };
 
+/** Vitest override — see test/sandbox-stub + cloudflare-sandbox-duplex.test.ts */
+let cloudflareSandboxTestOverride: unknown;
+export function setCloudflareSandboxForTest(sandbox: unknown): void {
+  cloudflareSandboxTestOverride = sandbox;
+}
+
+
+
 export class CloudflareSandbox
   implements SandboxExecutor, SandboxDuplexProcessPort, SandboxRuntimePort {
-  private sandboxPromise: Promise<any>;
+  private sandboxPromise: Promise<any> | null = null;
   private env: Env;
   private sessionId: string;
   private mounted = false;
@@ -76,6 +92,7 @@ export class CloudflareSandbox
   private controlPlaneHostname: string | null = null;
   private readonly image: CloudflareSandboxImage | null;
   private readonly namespace: unknown;
+  private readonly namespaceError: unknown;
   /** Workdir from the catalog entry; null keeps the SDK default /workspace. */
   private readonly workdir: string | null;
 
@@ -84,25 +101,29 @@ export class CloudflareSandbox
     this.sessionId = sessionId;
     this.image = image ?? null;
     this.workdir = this.image?.workdir ?? null;
-    let namespace: unknown;
+    // An invalid or undeclared image fails on first use, never falls back to
+    // the default SANDBOX container (resolveCloudflareSandboxNamespace).
     try {
-      namespace = resolveCloudflareSandboxNamespace(env, this.image);
+      this.namespace = resolveCloudflareSandboxNamespace(env, this.image);
+      this.namespaceError = null;
     } catch (err) {
       this.namespace = undefined;
-      this.sandboxPromise = Promise.reject(err);
-      // Surface on first use, not as an unhandled rejection at construction.
-      this.sandboxPromise.catch(() => {});
-      return;
+      this.namespaceError = err;
     }
-    this.namespace = namespace;
-    try {
-      this.sandboxPromise = Promise.resolve(cfGetSandbox(namespace as any, sessionId));
-    } catch (err: any) {
-      const binding = this.image?.binding ?? "SANDBOX";
-      this.sandboxPromise = Promise.reject(
-        new Error(`getSandbox failed (${binding}: ${typeof namespace}, id: ${sessionId}): ${err?.message || err}`)
-      );
+  }
+
+  /** Resolve DO stub (or vitest override). Lazy so capability probes work without a binding. */
+  private resolveSandboxStub(): Promise<any> {
+    if (cloudflareSandboxTestOverride !== undefined) {
+      return Promise.resolve(cloudflareSandboxTestOverride);
     }
+    const ns = this.namespace as DurableObjectNamespace | undefined;
+    const binding = this.image?.binding ?? "SANDBOX";
+    if (!ns || typeof (ns as any).getByName !== "function") {
+      throw new Error(`${binding} binding missing getByName (got ${typeof ns})`);
+    }
+    // Sandbox SDK 1.0: Durable Object stub via getByName (replaces getSandbox).
+    return Promise.resolve((ns as any).getByName(this.sessionId));
   }
 
   /** ADR 0016: the catalog entry's declared workdir, else /workspace. The
@@ -112,6 +133,19 @@ export class CloudflareSandbox
   }
 
   private async getSandbox() {
+    // An invalid or undeclared image fails every call with the stored error.
+    // Thrown from this async function rather than cached as a rejected
+    // promise: a detached rejected promise is reported as unhandled.
+    if (cloudflareSandboxTestOverride === undefined && this.namespaceError !== null) throw this.namespaceError;
+    if (!this.sandboxPromise) {
+      try {
+        this.sandboxPromise = this.resolveSandboxStub();
+      } catch (err: any) {
+        this.sandboxPromise = Promise.reject(
+          new Error(`getSandbox failed (${this.image?.binding ?? "SANDBOX"}, id: ${this.sessionId}): ${err?.message || err}`),
+        );
+      }
+    }
     return this.sandboxPromise;
   }
 
@@ -163,6 +197,9 @@ export class CloudflareSandbox
       scope: "portable",
       metadata: {
         dir: backup.dir,
+        ...(backup.size !== undefined && { size: backup.size }),
+        ...(backup.sha256 !== undefined && { sha256: backup.sha256 }),
+        ...(backup.format !== undefined && { format: backup.format }),
         ...(backup.localBucket !== undefined && {
           localBucket: backup.localBucket,
         }),
@@ -194,9 +231,13 @@ export class CloudflareSandbox
     if (localBucket !== undefined && typeof localBucket !== "boolean") {
       throw new Error("Cloudflare sandbox checkpoint localBucket is invalid");
     }
+    const { size, sha256, format } = checkpoint.metadata ?? {};
     const restored = await this.restoreWorkspaceBackup({
       id: checkpoint.checkpointId,
       dir,
+      ...(typeof size === "number" && { size }),
+      ...(typeof sha256 === "string" && { sha256 }),
+      ...(typeof format === "string" && { format }),
       ...(typeof localBucket === "boolean" && { localBucket }),
     });
     if (!restored.ok) {
@@ -231,49 +272,129 @@ export class CloudflareSandbox
   /** Opt-in, live R2-backed /workspace. Mount contents are not included in
    * sandbox checkpoints and this path provides no version/rollback semantics.
    * Never substitute localBucket mode for a durable mount. */
-  async mountDurableWorkspace(input: { workspaceId: string; sessionId: string }): Promise<void> {
+  durableWorkspaceMount(input: { workspaceId: string; sessionId: string }): OmaMountBucketRequest {
     const prefix = `/${cloudflareWorkspaceMountPrefix(input.workspaceId, input.sessionId)}`;
     const fuse = this.fuseR2ConfigOrNull();
     const bucketName = this.env.WORKSPACE_BUCKET_NAME?.trim();
     if (!this.env.WORKSPACE_BUCKET || !bucketName || !fuse) {
       throw new Error("Workspace R2 credentials and bucket binding are required for durable_mount");
     }
+    // Sandbox SDK 1.0 S3Gateway signs each request in the Worker; the
+    // container never receives bucket credentials.
+    return {
+      bucket: bucketName,
+      mountPath: "/workspace",
+      options: {
+        endpoint: fuse.endpoint,
+        provider: "r2",
+        credentials: fuse.credentials,
+        prefix,
+        readOnly: false,
+      },
+    };
+  }
+
+  async mountDurableWorkspace(input: { workspaceId: string; sessionId: string }): Promise<void> {
+    const mount = this.durableWorkspaceMount(input);
     const sandbox = await this.getSandbox();
     if (typeof sandbox.mountBucket !== "function") {
       throw new Error("Cloudflare sandbox does not expose the workspace R2 mount primitive");
     }
-    // SDK mount bookkeeping can outlive a stopped container. Clear a stale
-    // record while the new container is alive, as with the output mount.
-    if (typeof sandbox.unmountBucket === "function") {
-      await sandbox.unmountBucket("/workspace").catch(() => {});
+    await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
+  }
+
+  /** Reads the container state without starting it. */
+  async describeSandbox(): Promise<OmaSandboxDescription> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.describe !== "function") {
+      // An SDK-shaped double without the provisioning RPC starts lazily.
+      return { running: false, incarnation: null, mounts: [] };
     }
-    await sandbox.mountBucket(bucketName, "/workspace", {
-      endpoint: fuse.endpoint,
-      provider: "r2",
-      credentials: fuse.credentials,
-      prefix,
-      readOnly: false,
-      // The agent must not read bucket-wide R2 keys from s3fs's password file.
-      // The SDK keeps real keys in the DO and enforces this mount's prefix.
-      credentialProxy: true,
-    });
+    return await sandbox.describe();
+  }
+
+  /** Starts a container with its complete mount set, or reports the running
+   * one. Sandbox SDK 1.0 attaches mounts only while a container starts. */
+  async provisionSandbox(input: {
+    incarnation: string;
+    mounts: OmaMountBucketRequest[];
+    autoStart?: boolean;
+    containerSnapshot?: ContainerSnapshotRestoreParams;
+  }): Promise<OmaProvisionResult> {
+    const fields = { session_id: this.sessionId, sandbox_id: this.sessionId, path: "r2_fuse",
+      object_prefixes: input.mounts.map(mount => mount.options.prefix), mount_paths: input.mounts.map(mount => mount.mountPath) };
+    log({ ...fields, op: "sandbox.persistence.mount.start" }, "Provisioning configured mounts");
+    try {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.provision !== "function") {
+      if (input.containerSnapshot !== undefined) throw new Error("This sandbox cannot start from a container snapshot");
+      for (const mount of input.mounts) {
+        if (typeof sandbox.mountBucket !== "function") throw new Error("Managed persistence mount interface unavailable");
+        await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
+      }
+      log({ ...fields, op: "sandbox.persistence.mount.complete" }, "Configured mounts attached");
+      return { incarnation: input.incarnation, started: true, pendingMounts: [] };
+    }
+    const result = await sandbox.provision({
+      incarnation: input.incarnation,
+      mounts: input.mounts,
+      autoStart: input.autoStart ?? false,
+      ...(input.containerSnapshot === undefined ? {} : { containerSnapshot: input.containerSnapshot }),
+      // A new container starts with an empty process environment; warmup
+      // publishes the current contract again.
+      env: {},
+      ...(input.containerSnapshot === undefined ? {} : { containerSnapshot: input.containerSnapshot }),
+    }) as OmaProvisionResult;
+    if (result.pendingMounts.length) throw new Error(`Managed persistence mounts not attached: ${result.pendingMounts.join(", ")}`);
+    log({ ...fields, op: "sandbox.persistence.mount.complete", started: result.started }, "Configured mounts attached");
+    if (result.started) this.processEnv = {};
+    return result;
+    } catch (error) {
+      logError({ ...fields, op: "sandbox.persistence.mount.error", error_name: error instanceof Error ? error.name : "UnknownError" }, "Configured mount attachment failed");
+      throw error;
+    }
+  }
+
+  /** Snapshot the running container's root filesystem (environment cache). */
+  async snapshotEnvironment(input: { name: string }): Promise<{ id: string; size: number }> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.snapshotEnvironment !== "function") throw new Error("This sandbox cannot snapshot its container");
+    return sandbox.snapshotEnvironment(input);
+  }
+
+  /** Digest-pinned image reference this sandbox starts from, or null when unknown. */
+  async sandboxImage(): Promise<string | null> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.sandboxImage !== "function") return null;
+    return sandbox.sandboxImage();
+  }
+
+  /** Limit egress to these hosts, without credentials (environment snapshot build). */
+  async restrictOutboundToHosts(hosts: string[]): Promise<void> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.restrictOutboundToHosts !== "function") throw new Error("This sandbox cannot restrict its egress to package sources");
+    await sandbox.restrictOutboundToHosts(hosts);
+  }
+
+  /** Native full filesystem snapshot; capability errors must reach the caller. */
+  async createContainerSnapshot(options?: ContainerSnapshotOptions): Promise<ContainerSnapshot> {
+    const sandbox = await this.getSandbox();
+    return sandbox.createContainerSnapshot(options);
   }
 
   /**
-   * Snapshot /workspace into R2 via squashfs. Returns a handle the caller
-   * persists in D1 (workspace_backups table). Best-effort: failure is
-   * logged but does not raise — losing a backup is recoverable (worst
-   * case: next session starts from empty workspace).
+   * Portable /workspace backup through OmaSandbox's DirectoryBackup binding.
+   * Returns the handle persisted in D1; upload failures propagate to callers.
+   * The independent lifecycle's full-container snapshot is a separate path.
    */
   async createWorkspaceBackup(opts: {
     name?: string;
     ttlSec: number;
-  }): Promise<{ id: string; dir: string; localBucket?: boolean } | null> {
+  }): Promise<WorkspaceBackupHandle | null> {
     const sandbox = await this.getSandbox();
-    // Detect dev mode: in wrangler dev there are no R2 S3 keys (no
-    // presigned URLs available), so the SDK requires localBucket: true
-    // which uses BACKUP_BUCKET binding directly. In prod we omit it and
-    // the SDK uses presigned URLs.
+    // Compatibility metadata for older callers. OmaSandbox's SDK 1.0
+    // DirectoryBackup uses BACKUP_BUCKET in both cases; this flag never
+    // selects local filesystem persistence or suppresses upload failures.
     const isDev = !this.env.R2_ENDPOINT || !this.env.R2_ACCESS_KEY_ID;
     // Don't catch — let caller surface the SDK error in trajectory.
     // Earlier swallowed errors made silent backup failures look identical
@@ -290,10 +411,15 @@ export class CloudflareSandbox
       gitignore: true,
       ...(isDev ? { localBucket: true } : {}),
     });
+    // Sandbox SDK 1.0 restore verifies size and sha256; keep the record whole.
     return {
       id: backup.id,
       dir: backup.dir,
-      localBucket: backup.localBucket,
+      ...(backup.size !== undefined && { size: backup.size }),
+      ...(backup.sha256 !== undefined && { sha256: backup.sha256 }),
+      ...(backup.format !== undefined && { format: backup.format }),
+      ...(backup.name !== undefined && { name: backup.name }),
+      ...(backup.localBucket !== undefined && { localBucket: backup.localBucket }),
     };
   }
 
@@ -309,11 +435,7 @@ export class CloudflareSandbox
    * existed" — diagnosed during 2026-05-02 TB pilot when hello-world
    * file vanished post-recycle but no error surfaced.
    */
-  async restoreWorkspaceBackup(handle: {
-    id: string;
-    dir: string;
-    localBucket?: boolean;
-  }): Promise<{ ok: boolean; error?: string }> {
+  async restoreWorkspaceBackup(handle: WorkspaceBackupHandle): Promise<{ ok: boolean; error?: string }> {
     try {
       const sandbox = await this.getSandbox();
       await sandbox.restoreBackup(handle);
@@ -340,72 +462,38 @@ export class CloudflareSandbox
    * Anthropic Managed Agents Memory contract: the agent reads/writes via
    * standard file tools — no bespoke memory_* tools (those were removed).
    *
-   * Mode selection:
-   *   - Production (FUSE / s3fs): used when R2_ENDPOINT + R2_ACCESS_KEY_ID
-   *     + R2_SECRET_ACCESS_KEY are all bound. Writes flow synchronously
-   *     over the S3 API and trigger R2 Event Notifications → CF Queue →
-   *     consumer → D1 audit. This is the contract the rest of the memory
-   *     subsystem assumes.
-   *   - wrangler dev (`localBucket: true`): R2 binding-sync. Reads work,
-   *     writes do NOT persist to R2 in real CF — only used here as a dev
-   *     fallback so `pnpm wrangler dev` keeps working without R2 keys.
+   * Managed Memory requires a real R2 mount. Missing credentials or a
+   * rejected mount must fail preparation; a container directory is not storage.
    */
+  memoryStoreMount(opts: {
+    storeName: string;
+    storeId: string;
+    readOnly: boolean;
+  }): OmaMountBucketRequest {
+    const required = ["MEMORY_BUCKET", "MEMORY_BUCKET_NAME", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"] as const;
+    const configuration = Object.fromEntries(required.map(name => [name, Boolean(this.env[name])]));
+    const missing = required.filter(name => !configuration[name]);
+    log({ op: "sandbox.persistence.select", sandbox_id: this.sessionId, path: "memory_r2_fuse", configuration }, "Managed Memory persistence configuration");
+    if (missing.length) throw new Error(`Managed Memory persistence requires: ${missing.join(", ")}`);
+    const fuse = this.fuseR2ConfigOrNull()!;
+    return {
+      bucket: this.env.MEMORY_BUCKET_NAME!,
+      mountPath: `/mnt/memory/${opts.storeName}`,
+      options: { endpoint: fuse.endpoint, provider: "r2", credentials: fuse.credentials,
+        prefix: `/${opts.storeId}/`, readOnly: opts.readOnly },
+    };
+  }
+
   async mountMemoryStore(opts: {
     storeName: string;
     storeId: string;
     readOnly: boolean;
   }): Promise<void> {
-    if (!this.env.MEMORY_BUCKET) {
-      throw new Error(
-        `MEMORY_BUCKET binding missing — cannot mount memory store ${opts.storeName}`,
-      );
-    }
+    const mount = this.memoryStoreMount(opts);
     const sandbox = await this.getSandbox();
-    const mountPath = `/mnt/memory/${opts.storeName}`;
-    // Trailing slash on the prefix ensures we don't accidentally match
-    // sibling prefixes (e.g. "abc/" vs "abcd/...").
-    const prefix = `/${opts.storeId}/`;
-
-    const fuse = this.fuseR2ConfigOrNull();
-    const bucketName = this.env.MEMORY_BUCKET_NAME;
-
-    // Defensive cleanup: SDK keeps a per-isolate mount table that survives
-    // container restarts. If a previous mount at the same path is still
-    // registered (container went onStop without an explicit unmount —
-    // happens on sleepAfter teardown + every Container DO restart), the
-    // mountBucket below throws InvalidMountConfigError "already in use".
-    // Idempotent unmount first; ignore errors (path wasn't mounted —
-    // that's the happy case for a fresh isolate).
-    // `unmountBucket` is an optional SDK capability on local/fake sandbox
-    // implementations.  Mount cleanup is best-effort; absence must not turn
-    // a valid mount request into an opaque warning or fail a session warmup.
-    if (typeof sandbox.unmountBucket === "function") {
-      await sandbox.unmountBucket(mountPath).catch(() => {});
-    }
-
-    if (fuse && bucketName) {
-      await sandbox.mountBucket(bucketName, mountPath, {
-        endpoint: fuse.endpoint,
-        provider: "r2",
-        credentials: fuse.credentials,
-        prefix,
-        readOnly: opts.readOnly,
-      });
-    } else {
-      // Dev fallback. In production this branch means agent writes won't
-      // persist — log loudly so the operator catches the misconfig.
-      console.warn(
-        "[sandbox] mountMemoryStore: R2 FUSE creds missing (R2_ENDPOINT / " +
-        "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / MEMORY_BUCKET_NAME) — " +
-        "falling back to localBucket mode. Agent writes to /mnt/memory/ will " +
-        "NOT persist to R2 in real CF; this is dev-only behavior.",
-      );
-      await sandbox.mountBucket("MEMORY_BUCKET", mountPath, {
-        localBucket: true,
-        prefix,
-        readOnly: opts.readOnly,
-      });
-    }
+    // Sandbox SDK 1.0 reuses a matching mount and rejects a conflicting one;
+    // the 0.12 unmount-before-mount cleanup would detach a live mount here.
+    await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
   }
 
   /**
@@ -434,74 +522,59 @@ export class CloudflareSandbox
     };
   }
 
-  async mountSessionOutputs(opts: {
+  sessionOutputsMount(opts: {
     tenantId: string;
     sessionId: string;
-  }): Promise<void> {
-    if (!this.env.FILES_BUCKET) {
-      console.warn(
-        "[sandbox] mountSessionOutputs: FILES_BUCKET binding missing — skipping",
-      );
-      return;
-    }
-    const sandbox = await this.getSandbox();
+  }): OmaMountBucketRequest | null {
+    const required = ["FILES_BUCKET", "FILES_BUCKET_NAME", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"] as const;
+    const configuration = Object.fromEntries(required.map(name => [name, Boolean(this.env[name])]));
+    const missing = required.filter(name => !configuration[name]);
+    log({ op: "sandbox.persistence.select", session_id: opts.sessionId, tenant_id: opts.tenantId,
+      sandbox_id: this.sessionId, path: "r2_fuse", configuration, complete: missing.length === 0 }, "Managed outputs persistence configuration");
+    if (missing.length) throw new Error(`Managed outputs persistence requires: ${missing.join(", ")}`);
     const mountPath = `/mnt/session/outputs`;
     // s3fs wants a leading-slash prefix for directory scope; the shared
     // helper returns the R2-key form (no leading slash) so we prepend.
     const prefix = `/${sessionOutputsPrefix(opts.tenantId, opts.sessionId)}`;
     const fuse = this.fuseR2ConfigOrNull();
-    const bucketName = "managed-agents-files";
-
-    // workerd's local Sandbox stub does not implement bucket mounts. Keep
-    // the filesystem contract testable without claiming durability: create
-    // the directory explicitly and advertise `best_effort` via the
-    // capability method above. Production (FUSE configured) never takes
-    // this branch and still fails hard when the mount primitive is absent.
-    if (!fuse && typeof sandbox.mountBucket !== "function") {
-      await sandbox.exec("mkdir -p /mnt/session/outputs", { timeout: 5000 });
-      console.warn(
-        "[sandbox] mountSessionOutputs: local dev stub has no bucket mount; " +
-        "created a non-durable /mnt/session/outputs directory",
-      );
-      return;
-    }
-
-    // Defensive cleanup before mount — see mountMemoryStore for details.
-    // Real prod symptom: container restart after sleepAfter teardown
-    // throws InvalidMountConfigError "Mount path already in use" because
-    // the SDK's per-isolate mount table still has the old entry. Caught
-    // in sess-fa7j85x / sess-pkgiwl7 (2026-05-13 incident).
-    if (typeof sandbox.unmountBucket === "function") {
-      await sandbox.unmountBucket(mountPath).catch(() => {});
-    }
-
-    try {
-      if (fuse) {
-        await sandbox.mountBucket(bucketName, mountPath, {
+    if (fuse) {
+      // A key scoped to another bucket is AccessDenied here, which the shim
+      // reports as "cannot verify the new FUSE connection".
+      if (!this.env.FILES_BUCKET_NAME) {
+        throw new Error("Session outputs mount requires FILES_BUCKET_NAME (the files bucket name)");
+      }
+      const credentials = r2FilesCredentials(this.env);
+      return {
+        bucket: this.env.FILES_BUCKET_NAME!,
+        mountPath,
+        options: {
           endpoint: fuse.endpoint,
           provider: "r2",
-          credentials: fuse.credentials,
+          credentials,
           prefix,
           readOnly: false,
-        });
-      } else {
-        // Dev fallback. Writes won't reach R2 in real CF without keys —
-        // log loudly so the operator sees the misconfig.
-        console.warn(
-          "[sandbox] mountSessionOutputs: R2 FUSE creds missing — falling " +
-          "back to localBucket. Agent writes to /mnt/session/outputs/ will " +
-          "NOT persist to R2; this is dev-only behavior.",
-        );
-        await sandbox.mountBucket("FILES_BUCKET", mountPath, {
-          localBucket: true,
-          prefix,
-          readOnly: false,
-        });
-      }
+        },
+      };
+    }
+    throw new Error("Managed outputs persistence requires R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY");
+  }
+
+  async mountSessionOutputs(opts: {
+    tenantId: string;
+    sessionId: string;
+  }): Promise<void> {
+    const mount = this.sessionOutputsMount(opts);
+    if (mount === null) throw new Error("Managed outputs persistence requires FILES_BUCKET");
+    const sandbox = await this.getSandbox();
+    const fields = { session_id: opts.sessionId, tenant_id: opts.tenantId, sandbox_id: this.sessionId,
+      path: "r2_fuse", object_prefix: mount.options.prefix };
+    log({ ...fields, op: "sandbox.persistence.mount.start" }, "Attaching managed outputs");
+
+    try {
+      await sandbox.mountBucket(mount.bucket, mount.mountPath, mount.options);
+      log({ ...fields, op: "sandbox.persistence.mount.complete" }, "Managed outputs attached");
     } catch (err) {
-      console.error(
-        `[sandbox] mountSessionOutputs failed: ${(err as Error).message ?? err}`,
-      );
+      logError({ ...fields, op: "sandbox.persistence.mount.error", error_name: err instanceof Error ? err.name : "UnknownError" }, "Managed outputs attachment failed");
       // The Port caller decides whether this capability is required.
       // Swallowing here made a failed mount indistinguishable from a durable
       // attachment.
@@ -553,6 +626,72 @@ export class CloudflareSandbox
     }
   }
 
+  /** Start a preinstalled Work runner only. Work HTTP owns ACK/heartbeat and
+   * execution IO; this management handle cannot carry ACP frames or logs.
+   * Caller owns dispatch identity/recovery: a launch failure is never retried. */
+  async startWorkRunner(input: {
+    resources?: { incarnation: string; mounts: OmaMountBucketRequest[] };
+    command: string;
+    controlPlaneOrigin: string;
+    /** Local authority guard, never serialized into provider env/RPC. */
+    beforeLaunch?: () => Promise<void>;
+    signal?: AbortSignal;
+    env: Record<string, string>;
+  }): Promise<Pick<ProcessHandle, "id" | "pid" | "kill" | "getStatus">> {
+    const beforeLaunch = input.beforeLaunch;
+    const signal = input.signal;
+    signal?.throwIfAborted();
+    const environment = { ...input.env };
+    const command = input.command;
+    const origin = new URL(input.controlPlaneOrigin);
+    if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== input.controlPlaneOrigin || origin.username || origin.password) throw new TypeError("Work runner requires a control-plane origin");
+    if (!/^\/[A-Za-z0-9_./-]+$/.test(command) || command.split("/").includes("..")) throw new TypeError("Work runner command must be an installed absolute path");
+    const allowed = new Set(["ANTHROPIC_BASE_URL", "ANTHROPIC_ENVIRONMENT_ID", "ANTHROPIC_SESSION_ID", "ANTHROPIC_WORK_ID", "ANTHROPIC_WORK_SECRET", "OPENMA_HARNESS_ID", "OPENMA_HARNESS_VERSION", "OPENMA_WORKSPACE_ID", "OPENMA_OUTPUT_PATH", "OPENMA_SANDBOX_TOKEN", "OPENMA_ACP_HARNESSES"]);
+    for (const [key, value] of Object.entries(environment)) {
+      if (!allowed.has(key) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Work runner bootstrap environment is invalid");
+    }
+    for (const key of ["ANTHROPIC_ENVIRONMENT_ID", "ANTHROPIC_SESSION_ID", "ANTHROPIC_WORK_ID", "ANTHROPIC_WORK_SECRET", "OPENMA_HARNESS_ID", "OPENMA_WORKSPACE_ID"]) {
+      if (!environment[key]?.trim()) throw new TypeError("Work runner scope is incomplete");
+    }
+    if (environment.ANTHROPIC_BASE_URL !== origin.origin || environment.ANTHROPIC_SESSION_ID !== this.sessionId) throw new TypeError("Work runner scope differs from its sandbox");
+    // Decode the existing official Work wire; this is structural validation,
+    // NOT claim authority. The trusted dispatcher must validate the current
+    // reservation; runner ACK/CAS remains the execution admission barrier.
+    const delivery = managedMcpProxyFromWorkEnvironment(environment);
+    if (!delivery || delivery.gatewayBaseUrl !== origin.origin || !delivery.sessionsToken.startsWith("sk-ant-req-v1.")) throw new TypeError("Work runner requires an origin-bound Work delivery");
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.restrictOutboundToHosts !== "function" || typeof sandbox.startProcess !== "function") throw new Error("Work runner requires network enforcement and managed process launch");
+    await sandbox.restrictOutboundToHosts([origin.hostname]);
+    signal?.throwIfAborted();
+    await beforeLaunch?.();
+    signal?.throwIfAborted();
+    if (input.resources && typeof sandbox.startNativeWorkProcess !== "function") throw new Error("Native Work resource launch capability unavailable");
+    const process = typeof sandbox.startNativeWorkProcess === "function"
+      ? await sandbox.startNativeWorkProcess("exec " + shellQuote(command), environment, input.resources)
+      : await sandbox.startProcess("exec " + shellQuote(command), { env: environment, cwd: "/workspace", environmentMode: "replace" });
+    if (!process?.id || typeof process.kill !== "function" || typeof process.getStatus !== "function") throw new Error("Work runner dispatch is unconfirmed");
+    return { id: process.id, pid: process.pid, kill: (signal: string) => process.kill(signal), getStatus: () => process.getStatus() };
+  }
+
+  /** Read-only native attachment: none of these ports provision or resume. */
+  async inspectWorkProcess(): Promise<NativeWorkProcess | null> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.describe === "function" && !(await sandbox.describe()).running) return null;
+    return typeof sandbox.inspectWorkProcess === "function" ? sandbox.inspectWorkProcess() : null;
+  }
+
+  async workProcessIO(expected: NativeWorkProcess, operation: NativeWorkIO): Promise<unknown> {
+    return (await this.getSandbox()).workProcessIO(expected, operation);
+  }
+
+  async checkpointWorkProcess(expected: NativeWorkProcess): Promise<NativeWorkCheckpoint> {
+    return (await this.getSandbox()).checkpointWorkProcess(expected);
+  }
+
+  async discardWorkCheckpoint(expected: NativeWorkProcess, candidate: NativeWorkCheckpoint): Promise<void> {
+    await (await this.getSandbox()).discardWorkCheckpoint(expected, candidate);
+  }
+
   async startProcess(command: string): Promise<ProcessHandle | null> {
     const sandbox = await this.getSandbox();
     if (typeof sandbox.startProcess !== "function") return null;
@@ -578,6 +717,9 @@ export class CloudflareSandbox
     spec: SandboxDuplexProcessSpec,
   ): Promise<SandboxDuplexProcess> {
     const sandbox = await this.getSandbox();
+    if (typeof sandbox.spawnDuplex === "function") {
+      return this.spawnPipedDuplexProcess(sandbox, spec);
+    }
     if (typeof sandbox.startProcess !== "function") {
       throw new Error("Cloudflare sandbox does not support background processes");
     }
@@ -649,9 +791,7 @@ export class CloudflareSandbox
       cleanup();
     };
 
-    const command = [spec.command, ...(spec.args ?? [])]
-      .map(shellQuote)
-      .join(" ");
+    const command = duplexCommand(spec);
     let process: {
       kill(signal?: string): Promise<void>;
     };
@@ -714,6 +854,50 @@ export class CloudflareSandbox
         killSignal = signal;
         await process.kill(signal);
         finish(null, killSignal);
+      },
+    };
+  }
+
+  /** Sandbox SDK 1.0: OmaSandbox pipes the process's stdio over RPC. */
+  private async spawnPipedDuplexProcess(
+    sandbox: { spawnDuplex(spec: { command: string; cwd?: string; env?: Record<string, string> }): Promise<any> },
+    spec: SandboxDuplexProcessSpec,
+  ): Promise<SandboxDuplexProcess> {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries({
+      ...this.processEnv,
+      ...this.getSecretsForCommand(spec.command),
+      ...spec.env,
+    })) {
+      if (value !== undefined) env[key] = value;
+    }
+    const command = `exec ${duplexCommand(spec)}`;
+    const process = await sandbox.spawnDuplex({
+      command,
+      ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
+      env,
+    });
+    const [stdin, stdout, stderr] = await Promise.all([
+      process.stdin as Promise<WritableStream<Uint8Array>>,
+      process.stdout as Promise<ReadableStream<Uint8Array>>,
+      process.stderr as Promise<ReadableStream<Uint8Array>>,
+    ]);
+    let killSignal: string | null = null;
+    const exited = Promise.resolve(process.wait() as Promise<number | null>).then(
+      (code) => ({ code: killSignal === null ? code : null, signal: killSignal }),
+      () => ({ code: null, signal: killSignal }),
+    );
+    void exited.finally(() => {
+      (process as { [Symbol.dispose]?: () => void })[Symbol.dispose]?.();
+    });
+    return {
+      stdin,
+      stdout,
+      stderr,
+      exited,
+      kill: async (signal = "SIGTERM") => {
+        killSignal = signal;
+        await process.kill(signal === "SIGKILL" ? 9 : 15);
       },
     };
   }
@@ -798,10 +982,10 @@ export class CloudflareSandbox
     tenantId: string;
     environmentId?: string;
     sessionId: string;
+    /** Routing only (a Work runtime's control-plane paths). */
     workId?: string;
-    ownerId?: string;
-    generation?: number;
-    fenceToken?: string;
+    /** The current sandbox token's digest (#561); absent = no Vault. */
+    tokenSha256?: string;
     required?: boolean;
     controlPlaneBaseUrl?: string;
   }): Promise<void> {
@@ -841,9 +1025,7 @@ export class CloudflareSandbox
         environmentId: opts.environmentId,
         sessionId: opts.sessionId,
         workId: opts.workId,
-        ownerId: opts.ownerId,
-        generation: opts.generation,
-        fenceToken: opts.fenceToken,
+        tokenSha256: opts.tokenSha256,
         required: this.outboundRequired,
       });
       if (typeof sandbox.setOutboundByHost === "function") {
@@ -852,9 +1034,7 @@ export class CloudflareSandbox
           environmentId: opts.environmentId,
           sessionId: opts.sessionId,
           workId: opts.workId,
-          ownerId: opts.ownerId,
-          generation: opts.generation,
-          fenceToken: opts.fenceToken,
+          tokenSha256: opts.tokenSha256,
           required: this.outboundRequired,
           controlPlaneOrigin: controlPlane?.origin,
         };
@@ -987,16 +1167,14 @@ export class CloudflareSandbox
       if (typeof sandbox.destroy === "function") await sandbox.destroy();
     } catch {}
     // Invalidate the cached stub. Next `getSandbox()` call will rebuild via
-    // `cfGetSandbox(env.SANDBOX, sessionId)`, which returns the same logical
-    // Sandbox DO (sessionId-keyed) but with a fresh RPC connection. Without
-    // this, the wrapper would hand the next caller a stub pointing at the
-    // container we just destroyed — followup exec calls would hit a stale
-    // RPC handle (observed staging 2026-05-19: "An RPC stub was not
-    // disposed properly" warning preceded the 53-min container wedge by
-    // ~12s, suggesting stale-stub reuse plays a role in the hang loop).
-    this.sandboxPromise = this.namespace === undefined
-      ? this.sandboxPromise
-      : Promise.resolve(cfGetSandbox(this.namespace as any, this.sessionId));
+    // getByName (or the vitest override), yielding a fresh RPC connection to
+    // the same sessionId-keyed DO. Without this, the wrapper would hand the
+    // next caller a stub pointing at the container we just destroyed —
+    // followup exec calls would hit a stale RPC handle (observed staging
+    // 2026-05-19: "An RPC stub was not disposed properly" warning preceded
+    // the 53-min container wedge by ~12s, suggesting stale-stub reuse plays
+    // a role in the hang loop).
+    this.sandboxPromise = null;
     this.mounted = false;
   }
 
@@ -1186,4 +1364,15 @@ export function createSandbox(
   image?: CloudflareSandboxImage | null,
 ): SandboxExecutor {
   return new CloudflareSandbox(env, sessionId, image);
+}
+
+/** Explicit undefined must also unset container-inherited variables, not only
+ * omit them from the RPC environment overlay. Same duplex Port semantics on
+ * piped and FIFO SDK transports. */
+function duplexCommand(spec: SandboxDuplexProcessSpec): string {
+  const unset = Object.entries(spec.env ?? {}).filter(([, value]) => value === undefined).map(([key]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error("Invalid process environment variable name");
+    return key;
+  });
+  return [...(unset.length ? ["env", ...unset.flatMap(key => ["-u", key]), "--"] : []), spec.command, ...(spec.args ?? [])].map(shellQuote).join(" ");
 }

@@ -65,7 +65,32 @@ export const ENVIRONMENT_PACKAGE_PATHS = [
   "/workspace/.go/bin",
 ] as const;
 
+/**
+ * PATH for every later command: the installed tools first, then the image's
+ * own PATH. The image PATH is read from PID 1 (the container's configured
+ * env): a login shell resets PATH through /etc/profile, which drops image
+ * entries such as /opt/venv/bin. Falls back to the shell's PATH, then a
+ * minimal default. One implementation for every control plane.
+ */
+export async function environmentCommandPath(sandbox: PackageSandbox): Promise<string> {
+  const probe = parseExecResult(await sandbox.exec(
+    `p=$(tr '\\0' '\\n' < /proc/1/environ 2>/dev/null | sed -n 's/^PATH=//p'); printf '%s\\n%s' "$p" "$PATH"`,
+    15_000,
+  ));
+  const [image = "", shell = ""] = probe.exitCode === 0 ? probe.stdout.split("\n") : [];
+  const seen = new Set<string>();
+  const dirs = [...ENVIRONMENT_PACKAGE_PATHS, ...image.split(":"), ...shell.split(":")]
+    .map((dir) => dir.trim())
+    .filter((dir) => dir !== "" && !seen.has(dir) && (seen.add(dir), true));
+  return dirs.length > ENVIRONMENT_PACKAGE_PATHS.length ? dirs.join(":") : [...ENVIRONMENT_PACKAGE_PATHS, "/usr/local/bin", "/usr/bin", "/bin"].join(":");
+}
+
 const WARM_MARKER = "/tmp/.oma-setup-warm";
+/** The same marker on the root filesystem, next to /usr where apt installs:
+ * a filesystem snapshot (environment cache) keeps it but not /tmp, while a
+ * /workspace backup carries neither. $HOME when /var/lib is not writable. */
+const ROOTFS_WARM_MARKER = "/var/lib/oma/setup-warm";
+const HOME_WARM_MARKER = "$HOME/.cache/oma-setup-warm";
 const RESTORED_MARKER = "/workspace/.oma-setup-restored";
 
 /** A sandbox that runs shell commands. */
@@ -267,7 +292,7 @@ async function probeSetupState(
 ): Promise<{ path: EnvironmentPackagesPath; restoredMarker: string }> {
   try {
     const raw = await sandbox.exec(
-      `WARM=$(cat ${WARM_MARKER} 2>/dev/null || echo MISSING); ` +
+      `WARM=$(cat ${WARM_MARKER} 2>/dev/null || cat ${ROOTFS_WARM_MARKER} 2>/dev/null || cat "${HOME_WARM_MARKER}" 2>/dev/null || echo MISSING); ` +
       `REST=$(cat ${RESTORED_MARKER} 2>/dev/null || echo MISSING); ` +
       `echo "WARM=$WARM"; echo "REST=$REST"`,
       15_000,
@@ -300,10 +325,30 @@ export async function ensureEnvironmentPackages(
 ): Promise<{ path: EnvironmentPackagesPath; durationMs: number; error?: string }> {
   const startMs = Date.now();
   const { full, lang } = setupMarkers(packages, options.sandboxImage);
-  const markers = `echo "${full}" > ${WARM_MARKER}; mkdir -p /workspace; echo "${lang}" > ${RESTORED_MARKER}`;
+  const markers = `echo "${full}" > ${WARM_MARKER}; { mkdir -p /var/lib/oma && echo "${full}" > ${ROOTFS_WARM_MARKER}; } 2>/dev/null || { mkdir -p "$HOME/.cache" && echo "${full}" > "${HOME_WARM_MARKER}"; } 2>/dev/null || true; mkdir -p /workspace; echo "${lang}" > ${RESTORED_MARKER}`;
 
   const probe = await probeSetupState(sandbox, full, lang);
-  const state = probe.path;
+  let state = probe.path;
+  // Workspace-only restores can retain the marker but exclude node_modules.
+  // Even a prepared-base /tmp marker is not proof that the restored packages exist.
+  if (state !== "fresh" && packages?.npm?.length) {
+    // npm ls with multiple filters succeeds when ANY filter matches. Query
+    // each declared spec separately: npm applies its own version/range filter,
+    // and we also require that spec's dependency in the machine-readable tree.
+    for (const spec of packages.npm) {
+      const name = /^(?:(@[^/]+\/[^@]+)|([^@/]+))(?:@.*)?$/.exec(spec)?.slice(1).find(Boolean);
+      if (!name) { state = "fresh"; break; }
+      try {
+        const result = parseExecResult(await sandbox.exec("npm ls --global --prefix /workspace/.npm-global --depth=0 --json " + shellQuote(spec), 30_000));
+        const tree = JSON.parse(result.stdout) as {dependencies?: Record<string, {version?: string; missing?: boolean; invalid?: unknown}>};
+        const installed = tree.dependencies?.[name];
+        if (result.exitCode !== 0 || !installed?.version || installed.missing || installed.invalid) { state = "fresh"; break; }
+      } catch {
+        state = "fresh";
+        break;
+      }
+    }
+  }
   if (state === "warm") {
     onProgress?.({ kind: "done", path: "warm", durationMs: Date.now() - startMs });
     return { path: "warm", durationMs: Date.now() - startMs };

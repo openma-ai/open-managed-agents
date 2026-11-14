@@ -1,4 +1,24 @@
-import { SessionSandboxRuntime, type SessionSandboxMode } from "@open-managed-agents/session-runtime";
+import { isSandboxLossError, sessionErrorMessage } from "@open-managed-agents/session-runtime";
+import {
+  classifyTurnFailure,
+  classifyTurnInput,
+  finishTurn,
+  planRequiresActionAnswers,
+  reportTurnFailure,
+  runTurnAttempts,
+  TURN_RETRY,
+  SessionSandboxRuntime,
+  type SessionSandboxMode,
+  type TurnFailureClass,
+  type TurnFailureEventsPort,
+} from "@open-managed-agents/session-runtime";
+import { abortedError, linkAbort, untilAborted } from "@open-managed-agents/session-runtime-contract";
+import {
+  answeredToolCallIds,
+  asWireEvents,
+  knownToolCallIds,
+  stillPending,
+} from "@open-managed-agents/session-runtime-contract/requires-action";
 import {
   probeSandboxLiveness,
   startSandboxHeartbeat,
@@ -9,11 +29,10 @@ import {
   type SandboxLiveness,
 } from "@open-managed-agents/sandbox";
 import { randomUUID } from "node:crypto";
-import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
-import type {
-  HarnessContext,
-  HarnessInterface,
-} from "@open-managed-agents/agent/harness/interface";
+import { SessionExecutionLostError, SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import {
+  parkUnknownToolRetry, requestUnknownToolRetry, type HarnessContext, type HarnessInterface,
+} from "@open-managed-agents/agent-harness";
 import type {
   Environment,
   Session,
@@ -21,12 +40,8 @@ import type {
   SpanModelUsageView,
   ToolResultContentBlock,
 } from "@open-managed-agents/managed-agents-application";
-import { consumedListCostPico } from "@open-managed-agents/managed-agents-application";
+import { budgetReachedStopEvents, openSessionBudgetGate } from "@open-managed-agents/managed-agents-application";
 import {
-  abortedError,
-  abortableDelay,
-  linkAbort,
-  untilAborted,
   type NodeManagedSessionRunner,
   type NodeManagedSessionRunnerAcceptInput,
   type StartNodeManagedSessionRuntime,
@@ -36,13 +51,9 @@ import {
 } from "./node-managed-session-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
-import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
-import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { encodeRuntimeHistoryEvent, encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/api-types";
-import {
-  createSessionBudgetGate,
-  type SessionBudgetGate,
-} from "@open-managed-agents/domain/sessions";
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import {
   clearNodeSessionBudgetGate,
   registerNodeSessionBudgetGate,
@@ -51,6 +62,7 @@ import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
+import { createSessionOutcomes } from "@open-managed-agents/session-outcomes";
 import {
   ManagedNodeSubagents,
   managedEventThread,
@@ -61,6 +73,9 @@ import {
 } from "./node-managed-subagents.js";
 
 export type { ManagedNodeSubagentControl } from "./node-managed-subagents.js";
+
+/** Abort reason of a turn ended by user.interrupt (worker cancel and accept). */
+const INTERRUPT_REQUESTED = "interrupt_requested";
 
 interface ManagedRunnerSubagentContext {
   subagents?: ManagedNodeSubagentControl;
@@ -103,8 +118,6 @@ export type ManagedNodeConfirmableToolUse = Extract<
 >;
 
 import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
-import { answeredToolCallIds, asWireEvents,
-  outstandingRequiresAction, stillPending } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
@@ -116,6 +129,7 @@ export interface ExecuteManagedNodeConfirmedTool {
 }
 
 export interface ManagedNodeConfirmedToolExecutionResult {
+  outcome?: "dispatched_unknown";
   content?: ToolResultContentBlock[];
   isError?: boolean | null;
 }
@@ -163,6 +177,7 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
    * Default: 3 attempts, backoff min(30s, 2s * 2^(n-1)).
    */
   harnessRetry?: { attempts: number; delayMs(attempt: number): number };
+  isExecutionFenceActive?(fence: SessionExecutionFence): Promise<boolean>;
   subagentThreads?: ManagedNodeSubagentThreads;
   subagentPolicy?(input: ManagedRunnerContext): ManagedNodeSubagentPolicy | Promise<ManagedNodeSubagentPolicy>;
   resolveSubagentSession?(input: ManagedRunnerContext & { request: ManagedNodeCreateSubagent }): Promise<Session>;
@@ -171,7 +186,13 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   sandboxMode?(input: ManagedRunnerContext): SessionSandboxMode | Promise<SessionSandboxMode>;
   /** Start Pi's sandbox alongside the model; only sandbox operations wait for readiness. */
   backgroundPiSandbox?: boolean;
-  buildSandbox(input: ManagedRunnerContext & { signal?: AbortSignal; allocationId?: string }): Promise<SandboxExecutor>;
+  /** `runtimeGeneration` and `executionFence`: the allocation and execution this sandbox opens for. */
+  buildSandbox(input: ManagedRunnerContext & {
+    signal?: AbortSignal;
+    allocationId?: string;
+    runtimeGeneration?: string;
+    executionFence?: SessionExecutionFence;
+  }): Promise<SandboxExecutor>;
   /** Liveness probe used before reusing a warm sandbox and after a failed
    * sandbox operation. Default: the provider runtime Port's `status()`. */
   probeSandbox?(sandbox: SandboxExecutor): Promise<SandboxLiveness>;
@@ -194,6 +215,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
    * warm reuse, without restaging resources or rebuilding the sandbox. */
   refreshSandboxEnvironment?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
+    /** The execution the sandbox serves; its relay pass binds to it (design §0.0 rule 10). */
+    executionFence?: SessionExecutionFence;
     /** Cleanup receives the raw, allocation-bound sandbox after refresh drains. */
     registerCleanup(cleanup: (sandbox: SandboxExecutor) => Promise<void>): void;
   }): Promise<void>;
@@ -202,6 +225,13 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
    * shared Session outputs advanced by another replica). */
   isSandboxCurrent?(input: ManagedRunnerContext & { runtimeGeneration: string }): Promise<boolean>;
   synchronizeSandbox?(input: ManagedRunnerContext & {
+    sandbox: SandboxExecutor;
+    runtimeGeneration: string;
+    executionFence: SessionExecutionFence;
+  }): Promise<void>;
+  /** A failed (not aborted) execution: replaces `synchronizeSandbox` so
+   * nothing is published (design §0.0 rule 16). Omitted: synchronizeSandbox. */
+  failSandbox?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
     runtimeGeneration: string;
     executionFence: SessionExecutionFence;
@@ -223,6 +253,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   disposeTools?(tools: HarnessContext["tools"]): Promise<void>;
   buildHarness(): HarnessInterface;
   buildHarnessContext(input: ManagedRunnerContext & ManagedRunnerSubagentContext & {
+    /** Physical execution owner, never the child thread agent authorization. */
+    executionSession?: Session;
     acceptedEvents: NodeManagedSessionRunnerAcceptInput["events"];
     executionFence?: SessionExecutionFence;
     sandbox: SandboxExecutor;
@@ -391,7 +423,7 @@ export class DefaultNodeManagedSessionRunner
   }
 
   private async refreshSandboxEnvironment(
-    context: ManagedRunnerContext,
+    context: ManagedRunnerContext & { executionFence?: SessionExecutionFence },
     sandbox: SandboxExecutor,
     signal: AbortSignal,
   ): Promise<void> {
@@ -439,8 +471,9 @@ export class DefaultNodeManagedSessionRunner
       mode: () => this.dependencies.sandboxMode?.(context) ?? "sandbox",
       create: () => {
         if (signal.aborted) throw abortedError(signal);
-        return this.dependencies.buildSandbox({ ...context, signal,
+        return this.dependencies.buildSandbox({ ...context, signal, runtimeGeneration,
           ...(this.dependencies.workspaceCheckpoints === undefined ? {} : { allocationId: runtimeGeneration }),
+          ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
         });
       },
       prepare: async (sandbox) => {
@@ -453,7 +486,10 @@ export class DefaultNodeManagedSessionRunner
           ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
         });
         if (signal.aborted) throw abortedError(signal);
-        await this.refreshSandboxEnvironment(context, sandbox, signal);
+        await this.refreshSandboxEnvironment({
+          ...context,
+          ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
+        }, sandbox, signal);
       },
     });
     const allocation = runtime.acquire();
@@ -534,7 +570,11 @@ export class DefaultNodeManagedSessionRunner
     this.installSandbox(input, acquired, fingerprint);
     const root = await workspaceRootOf(acquired.sandbox);
     if (acquired.workspace === undefined) {
-      return `Files created in ${root} before the restart are gone.`;
+      // The Session sandbox core started it from its latest snapshot (design §0.0b A.4).
+      const restored = (acquired.sandbox as { restoredFromSnapshot?(): boolean }).restoredFromSnapshot?.() === true;
+      return restored
+        ? `${root} is back to its latest snapshot; files changed after that are gone.`
+        : `Files created in ${root} before the restart are gone.`;
     }
     return acquired.restoredFromMs === null
       ? `${root} is back to its initial state; files created before the restart are gone.`
@@ -618,6 +658,7 @@ export class DefaultNodeManagedSessionRunner
     const timeout = setTimeout(() => cleanup.abort(), 5_000);
     try {
       const results = await untilAborted(Promise.allSettled([release(), destroy]), cleanup.signal);
+      if (results === undefined) throw new Error("Sandbox cleanup timed out");
       for (const result of results) {
         if (result.status === "rejected") throw result.reason;
       }
@@ -627,76 +668,31 @@ export class DefaultNodeManagedSessionRunner
   }
 
   async accept(input: NodeManagedSessionRunnerAcceptInput): Promise<void> {
-    if (input.events.some((event) => event.type === "user.interrupt")) {
-      const active = this.abortControllers.get(input);
-      active?.abort();
-      if (active === undefined) {
-        // Official CMA: interrupt against an already-idle session is a no-op
-        // (including idle requires_action). interruptRequiresActionClosure
-        // returns no frames; pending event_ids stay outstanding.
-        const wire = input.historyEvents.map((event) => encodeRuntimeHistoryEvent(event) as SessionEvent);
-        for (const frame of interruptRequiresActionClosure(wire)) {
-          await input.output({
-            ...frame,
-            id: this.dependencies.ids.nextEventId(),
-            processed_at: (this.dependencies.sessionClocks ?? processSessionClocks)
-              .forSession(input.workspaceId, input.sessionId)
-              .stampIso(this.dependencies.clock.now().getTime()),
-          });
-        }
-      }
+    const turnInput = classifyTurnInput(input.events);
+    if (turnInput.type === "interrupt") {
+      // Only the running turn is the runner's: it is aborted and emits its own
+      // idle end_turn. The interrupt row and fencing are the execution
+      // worker's, and the store keeps queued inputs. With no turn here the
+      // lane is idle (including idle requires_action), so nothing changes.
+      this.abortControllers.get(input)?.abort(INTERRUPT_REQUESTED);
       return;
     }
-    const event = findLastMatching(
-      input.events,
-      (candidate) => candidate.type !== "system.message",
-    );
-    if (event === undefined) {
-      throw new Error("Managed Node runner received no actionable event");
-    }
-    if (
-      event.type !== "user.message" &&
-      event.type !== "user.custom_tool_result" &&
-      event.type !== "user.tool_result" &&
-      event.type !== "user.tool_confirmation" &&
-      event.type !== "user.define_outcome" &&
-      // A budget update that lifted a budget_reached pause: continue the
-      // harness from history with no new user input.
-      !(event.type === "session.updated" && event.resume === true)
-    ) {
-      throw new Error(
-        `Managed Node runner does not yet support ${event.type}`,
-      );
-    }
+    const event = turnInput.trigger;
     if (input.committedTerminal !== undefined && input.executionFence !== undefined) {
       await this.finishCommittedExecution(input, input.executionFence, input.committedTerminal);
       return;
     }
-    // requires_action answers (CMA): only answers to the parked idle's
-    // outstanding calls have effect. A late answer to a closed call is a
-    // no-effect (already stamped processed_at on accept); a partial batch
-    // re-announces the remaining ids without sampling.
-    let remainingAfterAnswers: string[] | null = null;
-    const actionable = input.events.filter((candidate) => candidate.type !== "system.message");
-    if (actionable.length > 0 && actionable.every((candidate) =>
-      candidate.type === "user.custom_tool_result" || candidate.type === "user.tool_confirmation")) {
-      const batchIds = new Set(input.events.map((candidate) => candidate.id));
-      const priorWire = asWireEvents(input.historyEvents
-        .filter((candidate) => !batchIds.has(candidate.id))
-        .map((candidate) => encodeRuntimeHistoryEvent(candidate)));
-      const before = outstandingRequiresAction(priorWire);
-      const closedBefore = answeredToolCallIds(priorWire);
-      const answeredNow = new Set(actionable.map((candidate) =>
-        candidate.type === "user.custom_tool_result" ? candidate.customToolUseId
-          : candidate.type === "user.tool_confirmation" ? candidate.toolUseId : ""));
-      // Every call in the batch was already closed (interrupt/steer/earlier
-      // answer): no effect, nothing resumes.
-      if ([...answeredNow].every((id) => closedBefore.has(id))) return;
-      if (before !== null) {
-        if (![...answeredNow].some((id) => before.includes(id))) return;
-        remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
-      }
-    }
+    const batchWire = asWireEvents(input.events.map((candidate) => encodeRuntimeSessionEvent(candidate) as { type?: string }));
+    const priorWire = () => asWireEvents(input.historyEvents
+      .filter((candidate) => !input.laterAnswerEventIds?.has(candidate.id))
+      .map((candidate) => encodeRuntimeHistoryEvent(candidate)));
+    // Admission accepts custom results without checking the call exists. A
+    // batch that answers only calls this Session never made has nothing to
+    // resume: running it would sample the model for a turn nobody asked for.
+    if (answersOnlyUnknownCalls(batchWire, priorWire)) return;
+    const answers = planRequiresActionAnswers(batchWire, priorWire);
+    if (answers.type === "no_effect") return;
+    const remainingAfterAnswers = answers.remaining;
     const deferred = this.canOverlapSandboxStartup(input);
     // Only the three execution primitives are needed by Pi's host-side tools.
     // Capability inspection must not allocate a provider resource.
@@ -754,8 +750,9 @@ export class DefaultNodeManagedSessionRunner
       maxReplacements: this.dependencies.maxSandboxReplacements,
       onGiveUp: (error) => {
         console.warn(`[managed-runner] session ${input.sessionId}: ${error.message}`, error.cause);
+        // Provider recovery owns this failure. Each affected tool receives its
+        // error; it cannot revoke the independent Session execution lease.
         sandboxLost = true;
-        abortController.abort(error);
       },
     });
     let sandboxReady = !deferred;
@@ -772,6 +769,8 @@ export class DefaultNodeManagedSessionRunner
       ? recovery.sandbox
       : withSandboxExecutionGuard(recovery.sandbox, {
           signal: abortController.signal,
+          isValid: this.dependencies.isExecutionFenceActive === undefined ? undefined
+            : () => this.dependencies.isExecutionFenceActive!(input.executionFence!),
         });
     let acquisition: Promise<void> | undefined;
     const ensureSandbox = (): Promise<void> => acquisition ??= this.beginSandboxStartup({
@@ -808,19 +807,26 @@ export class DefaultNodeManagedSessionRunner
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
       ...(input.takeSteeringInputs !== undefined && { takeSteeringInputs: input.takeSteeringInputs }),
+      usage: input.session.usage,
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
     let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
+    // The retry loop already announced this turn's final failure.
+    let failureReported = false;
+    // user.interrupt ended the turn (abort reason INTERRUPT_REQUESTED).
+    let interrupted = false;
     try {
+      const batchConfirmations = new Set(input.events.filter(event => event.type === "user.tool_confirmation").map(event => event.id));
+      const consumed = answeredToolCallIds(asWireEvents(input.historyEvents
+        .filter(candidate => !batchConfirmations.has(candidate.id))
+        .map(candidate => encodeRuntimeHistoryEvent(candidate))));
       for (const event of input.events) {
         if (event.type !== "user.tool_confirmation") continue;
-        if (remainingAfterAnswers !== null && answeredToolCallIds(asWireEvents(input.historyEvents
-          .filter((candidate) => candidate.id !== event.id)
-          .map((candidate) => encodeRuntimeHistoryEvent(candidate))))
-          .has(event.toolUseId)) continue;
+        if (consumed.has(event.toolUseId)) continue;
+        consumed.add(event.toolUseId);
         const toolUse = findLastMatching(
           input.historyEvents,
           (candidate): candidate is ManagedNodeConfirmableToolUse =>
@@ -850,6 +856,7 @@ export class DefaultNodeManagedSessionRunner
               toolUse,
               abortSignal: abortController.signal,
             });
+        if (result.outcome === "dispatched_unknown") requestUnknownToolRetry(runtime,toolUse.id);
         runtime.broadcastProducedEvent(
           toolUse.type === "agent.mcp_tool_use"
             ? {
@@ -883,20 +890,19 @@ export class DefaultNodeManagedSessionRunner
           policy,
           resolveSession: this.dependencies.resolveSubagentSession === undefined ? undefined :
             (request) => this.dependencies.resolveSubagentSession!({ ...context, request }),
-          run: async ({ session, runtime: childRuntime, sandbox: childSandbox }) => {
+          run: async ({ session, runtime: childRuntime, sandbox: childSandbox, acceptedEvents }) => {
             const childContext = { ...context, session };
             let childTools: HarnessContext["tools"] | undefined;
             try {
               const model = await this.dependencies.buildModel(childContext);
               childTools = await this.dependencies.buildTools({ ...childContext, sandbox: childSandbox });
               const harnessContext = await this.dependencies.buildHarnessContext({
-                ...childContext, acceptedEvents: [], sandbox: childSandbox,
+                ...childContext, executionSession: input.session, acceptedEvents, executionFence: input.executionFence, sandbox: childSandbox,
                 runtime: childRuntime, model, tools: childTools,
               });
               // One session egress meter: child model calls are gated and
               // recorded by the same gate instance as the parent's.
-              harnessContext.budget = budgetGate;
-              childRuntime.setBudgetGate(budgetGate);
+              harnessContext.budget = childRuntime.turnBudgetGate;
               await this.dependencies.buildHarness().run(harnessContext);
             } finally {
               if (childTools !== undefined) await this.dependencies.disposeTools?.(childTools);
@@ -909,12 +915,7 @@ export class DefaultNodeManagedSessionRunner
         this.subagentExecutions.set(input, subagents);
         subagentContext = {
           subagents,
-          delegateToAgent: async (agentId, message) => {
-            const child = await subagents.create({ agentId, message });
-            const result = (await subagents.wait({ threadIds: [child.threadId] })).subagents[0]!;
-            if (result.status === "failed") throw new Error(`Subagent ${child.threadId} failed`);
-            return result.output ?? "(sub-agent produced no text output)";
-          },
+          delegateToAgent: (agentId, message) => subagents.delegate({ agentId, message }),
         };
       }
       const toolsPromise = this.dependencies
@@ -931,6 +932,7 @@ export class DefaultNodeManagedSessionRunner
         const harnessContext = await this.dependencies.buildHarnessContext({
           ...context,
           ...subagentContext,
+          executionSession: input.session,
           acceptedEvents: input.events,
           executionFence: input.executionFence,
           sandbox,
@@ -939,175 +941,100 @@ export class DefaultNodeManagedSessionRunner
           tools,
         });
         if (harnessContext.budget === undefined) {
-          const sessionBudget = input.session.budget ?? null;
-          const pricing = sessionBudget === null
-            ? null
-            : await this.dependencies.resolveModelPricing?.(context) ?? null;
-          // Domain gate; Node ListCostPicoStore persists session.usage.list_cost_pico.
-          const store = {
-            // Sessions persisted before list_cost_pico survived the runtime
-            // boundary resume from their rounded cents rather than from 0.
-            load: (): string => consumedListCostPico(input.session).toString(),
-            save: (list_cost_pico: string): void => {
-              const usage = { ...runtime.usageSnapshot(), list_cost_pico };
-              if (input.session.usage) {
-                input.session.usage.list_cost_pico = list_cost_pico;
-              } else {
-                input.session.usage = { list_cost_pico };
-              }
-              runtime.broadcastProducedEvent({ type: "session.usage", usage });
+          // Application gate opener; the Node ListCostPicoStore persists
+          // session.usage.list_cost_pico and publishes each save.
+          harnessContext.budget = await openSessionBudgetGate({
+            session: input.session,
+            pricing: async () => await this.dependencies.resolveModelPricing?.(context) ?? null,
+            store: {
+              load: (): string | null => input.session.usage?.list_cost_pico ?? null,
+              save: (list_cost_pico: string): void => {
+                const usage = { ...runtime.usageSnapshot(), list_cost_pico };
+                if (input.session.usage) {
+                  input.session.usage.list_cost_pico = list_cost_pico;
+                } else {
+                  input.session.usage = { list_cost_pico };
+                }
+                runtime.broadcastProducedEvent({ type: "session.usage", usage });
+              },
             },
-          };
-          harnessContext.budget = createSessionBudgetGate(
-            sessionBudget === null
-              ? null
-              : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
-            pricing,
-            store,
-          );
+          });
         }
         budgetGate = harnessContext.budget ?? null;
         runtime.setBudgetGate(budgetGate);
         subagentContext.subagents?.setBudgetGate?.(budgetGate);
         // Harness-in-sandbox inference-proxy meters via the same gate.
         registerNodeSessionBudgetGate(input.session.id, budgetGate);
-        const retry = this.dependencies.harnessRetry ??
-          { attempts: 3, delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)) };
-        for (let attempt = 1; ; attempt += 1) {
-          const agentEventsBefore = runtime.agentEventCount;
-          try {
-            await this.dependencies.buildHarness().run(harnessContext);
-            return;
-          } catch (error) {
-            if (!(error instanceof Error)) throw error;
-            const sideEffectFree = runtime.agentEventCount === agentEventsBefore;
-            if (
-              !sideEffectFree
-              || attempt >= retry.attempts
-              || abortController.signal.aborted
-              || isNonRetryableHarnessError(error)
-            ) {
-              throw error;
-            }
-            runtime.broadcastProducedEvent({
-              type: "session.error",
-              error: {
-                type: "unknown_error",
-                message: error instanceof Error ? error.message : String(error),
-                retryStatus: "retrying",
-              },
-            });
-            runtime.broadcastProducedEvent({ type: "session.status_rescheduled" });
-            await abortableDelay(retry.delayMs(attempt), abortController.signal);
-            if (abortController.signal.aborted) throw error;
-          }
-        }
+        const retry = this.dependencies.harnessRetry ?? TURN_RETRY;
+        const result = await runTurnAttempts({
+          run: () => this.dependencies.buildHarness().run(harnessContext),
+          agentEventCount: () => runtime.agentEventCount,
+          isCancelled: () => abortController.signal.aborted,
+          classify: nodeTurnFailureClass,
+          retry,
+          signal: abortController.signal,
+          events: nodeTurnFailureEvents(runtime),
+          describe: (error) => error.message,
+        });
+        if (result.type === "completed") return;
+        failureReported = result.type === "exhausted";
+        throw result.error;
       };
-      if (!parkedStill) await runHarness();
+      if (!parkedStill && !parkUnknownToolRetry(runtime)) await runHarness();
       if (event.type === "user.define_outcome") {
-        const maxIterations = Math.min(
-          20,
-          Math.max(1, event.maxIterations ?? 3),
-        );
-        for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-          const evaluationHistory = runtime.getApplicationHistoryEvents();
-          const startId = runtime.broadcastProducedEvent({
-            type: "span.outcome_evaluation_start",
-            outcomeId: event.outcomeId,
-            iteration,
-          });
-          runtime.broadcastProducedEvent({
-            type: "span.outcome_evaluation_ongoing",
-            outcomeId: event.outcomeId,
-            iteration,
-          });
-          let evaluation: ManagedNodeOutcomeEvaluationResult;
-          try {
-            evaluation = await this.dependencies.outcomes.evaluate({
-              workspaceId: input.workspaceId,
-              session: input.session,
-              environment: input.environment,
-              outcome: event,
-              historyEvents: evaluationHistory,
-              iteration,
-              abortSignal: abortController.signal,
-            });
-          } catch (error) {
-            const interrupted = abortController.signal.aborted ||
-              (error instanceof Error && error.name === "AbortError");
-            evaluation = {
-              result: "failed",
-              explanation: interrupted
-                ? "outcome evaluation interrupted by user"
-                : `outcome evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
-              usage: {
-                cacheCreationInputTokens: 0,
-                cacheReadInputTokens: 0,
-                inputTokens: 0,
-                outputTokens: 0,
-              },
-            };
-            runtime.broadcastProducedEvent({
-              type: "span.outcome_evaluation_end",
-              outcomeId: event.outcomeId,
-              outcomeEvaluationStartId: startId,
-              iteration,
-              result: interrupted ? "interrupted" : "failed",
-              explanation: evaluation.explanation,
-              usage: evaluation.usage,
-            });
-            break;
-          }
-          const needsRevision = evaluation.result === "needs_revision";
-          const result = needsRevision && iteration === maxIterations - 1
-            ? "max_iterations_reached"
-            : evaluation.result;
-          runtime.broadcastProducedEvent({
-            type: "span.outcome_evaluation_end",
-            outcomeId: event.outcomeId,
-            outcomeEvaluationStartId: startId,
-            iteration,
-            result,
-            explanation: evaluation.explanation,
-            usage: evaluation.usage,
-          });
-          if (!needsRevision || result === "max_iterations_reached") break;
-          runtime.appendOutcomeFeedback(iteration, evaluation.explanation);
-          await runHarness();
-        }
+        await this.evaluateOutcome({
+          input, event, runtime, runHarness, abortSignal: abortController.signal,
+        });
       }
       // The turn's sandbox work is done. A sandbox replaced after the agent's
       // last operation took this turn's unpublished changes with it, and the
       // agent was never told: the turn must not end as if they existed.
       const unreported = await recovery.close();
       if (unreported !== null) {
-        throw new Error(`The environment restarted after the agent's last step. ${unreported.split(" Background processes")[0].replace(/^This tool call was interrupted because the environment restarted\. /, "")} The changes made in this turn were lost.`);
+        runtime.broadcastProducedEvent({ type: "session.warning", source: "sandbox.persistence",
+          message: `The environment restarted after the agent's last step. ${unreported} Unpublished changes may have been lost.` });
       }
     } catch (error) {
+      if (error instanceof SessionExecutionLostError) {
+        sandboxLost = true; runFailed = true;
+        abortController.abort("lease_lost");
+        throw error;
+      }
       await recovery.close();
-      runFailed = true;
-      if (abortController.signal.reason === "lease_lost") throw error;
-      runtime.broadcastProducedEvent({
-        type: "session.error",
-        error: {
-          type: "unknown_error",
-          message: error instanceof Error ? error.message : String(error),
-          // The turn may have produced side effects (tool calls), so it is not
-          // retried automatically: CMA semantics for a dead turn are `exhausted`.
-          retryStatus: "exhausted",
-        },
-      });
-      throw new SessionRetriesExhaustedError(
-        error instanceof Error ? error.message : String(error),
-      );
+      if (abortController.signal.reason === INTERRUPT_REQUESTED) {
+        // Official CMA: user.interrupt "pauses agent execution and returns
+        // control to the user" (BetaManagedAgentsUserInterruptEvent). It is
+        // not an execution error (no session.error type covers it) and not
+        // retries_exhausted ("repeated errors exhausted the retry budget");
+        // the turn ends idle end_turn, as on Cloudflare.
+        interrupted = true;
+      } else {
+        runFailed = true;
+        if (abortController.signal.reason === "lease_lost") throw error;
+        // The turn may have produced side effects (tool calls), so it is not
+        // retried automatically: CMA semantics for a dead turn are `exhausted`.
+        if (!failureReported) {
+          reportTurnFailure(
+            { type: "exhausted" },
+            sessionErrorMessage(error, "turn.execution"),
+            nodeTurnFailureEvents(runtime),
+          );
+        }
+        throw new SessionRetriesExhaustedError(
+          sessionErrorMessage(error, "turn.execution"),
+        );
+      }
     } finally {
       let finalizationError: Error | undefined;
+      let persistenceError: Error | undefined;
+      // An interrupted or fenced-out turn is not a failed one.
+      const executionFailed = runFailed && !abortController.signal.aborted;
       const subagents = this.subagentExecutions.get(input);
       try {
         if (runFailed) abortController.abort();
         await subagents?.drain();
       } catch (error) {
-        finalizationError = error instanceof Error ? error : new Error(String(error));
+        finalizationError = new Error(sessionErrorMessage(error, "subagents.drain"), { cause: error });
       } finally {
         if (this.subagentExecutions.get(input) === subagents) this.subagentExecutions.delete(input);
       }
@@ -1116,17 +1043,20 @@ export class DefaultNodeManagedSessionRunner
           await this.dependencies.disposeTools?.(turnTools);
         }
       } catch (error) {
-        finalizationError = error instanceof Error ? error : new Error(String(error));
+        finalizationError = new Error(sessionErrorMessage(error, "tools.dispose"), { cause: error });
       }
       try {
+        const barrier = executionFailed
+          ? this.dependencies.failSandbox ?? this.dependencies.synchronizeSandbox
+          : this.dependencies.synchronizeSandbox;
         if (
           sandboxReady && !sandboxLost &&
           input.executionFence !== undefined &&
-          this.dependencies.synchronizeSandbox !== undefined
+          barrier !== undefined
         ) {
           const executionFence = input.executionFence;
           await this.sandboxRuntimes.get(input)?.withSandbox(async () => {
-            await this.dependencies.synchronizeSandbox!({
+            await barrier.call(this.dependencies, {
               workspaceId: input.workspaceId,
               session: input.session,
               environment: input.environment,
@@ -1137,14 +1067,14 @@ export class DefaultNodeManagedSessionRunner
           });
         }
       } catch (error) {
-        finalizationError ??= error instanceof Error ? error : new Error(String(error));
+        persistenceError = new Error(sessionErrorMessage(error, "sandbox.turn_end"), { cause: error });
       }
       // Turn completion is a safe point: all harness/subagent activity has
       // drained. The interval is a target between such points, not a timer
       // that snapshots files while tools are still writing.
       // A lost sandbox replaced mid-turn brings its own workspace binding.
       const turnWorkspace = this.workspaces.get(input) ?? workspace;
-      if (!runFailed && finalizationError === undefined && checkpointService !== undefined && turnWorkspace !== undefined && input.executionFence !== undefined) {
+      if (!runFailed && finalizationError === undefined && persistenceError === undefined && checkpointService !== undefined && turnWorkspace !== undefined && input.executionFence !== undefined) {
         const workspace = turnWorkspace;
         try {
           const active = await checkpointService.active(workspace.scope);
@@ -1167,58 +1097,81 @@ export class DefaultNodeManagedSessionRunner
             workspace.activeId = candidate.id;
           }
         } catch (error) {
-          finalizationError = error instanceof Error ? error : new Error(String(error));
+          persistenceError = new Error(sessionErrorMessage(error, "workspace.checkpoint"), { cause: error });
         }
       }
       const leaseLost = abortController.signal.reason === "lease_lost";
+      // Execution completion and artifact durability are separate. When the
+      // provider is confirmed lost after the turn completed, the turn stands:
+      // keep the runtime/dirty publication state for retry, expose the
+      // failure, and never replay a consumed model turn because an upload
+      // failed. A persistence failure on a sandbox that is not confirmed lost
+      // is a failed finalization (exhausted).
+      let persistenceProviderLost = false;
+      let lostAtPersistence: SandboxExecutor | undefined;
+      if (persistenceError !== undefined && !leaseLost) {
+        const persisted = currentSandbox();
+        // Loss is the provider's verdict: reported by an operation (the cause
+        // chain) or confirmed by a probe now. Only a confirmed-lost runtime
+        // is uninstalled; one that answers again stays for the next turn.
+        // A probe that fails is not a confirmed loss.
+        const confirmedLost = sandboxLost
+          || await this.probe(persisted).then(liveness => liveness === "lost", () => false);
+        persistenceProviderLost = confirmedLost || isSandboxLossError(persistenceError);
+        if (confirmedLost) lostAtPersistence = persisted;
+        if (persistenceProviderLost) {
+          runtime.broadcastProducedEvent({ type: "session.warning", source: "sandbox.persistence",
+            message: sessionErrorMessage(persistenceError, "turn.persistence") });
+        } else {
+          runtime.broadcastProducedEvent({ type: "session.error", error: {
+            type: "unknown_error", message: sessionErrorMessage(persistenceError, "turn.finalization"), retryStatus: "exhausted",
+          } });
+        }
+      }
       if (finalizationError !== undefined && !runFailed && !leaseLost) {
         runtime.broadcastProducedEvent({
           type: "session.error",
           error: {
             type: "unknown_error",
-            message: finalizationError instanceof Error
-              ? finalizationError.message
-              : String(finalizationError),
+            message: sessionErrorMessage(finalizationError, "turn.finalization"),
             retryStatus: "exhausted",
           },
         });
       }
-      if (
-        !leaseLost && !runFailed && finalizationError === undefined
-        && budgetGate?.reached === true
-      ) {
-        // Official budget stop: thread idle → usage → session idle (budget_reached).
-        // requires_action parking is skipped: budget_reached outranks end_turn but
-        // requires_action already short-circuits earlier when tools are pending.
-        const stopReason = { type: "budget_reached" as const };
-        runtime.broadcastProducedEvent({
-          type: "session.thread_status_idle",
-          agentName: input.session.agent.name,
-          sessionThreadId: "sthr_primary",
-          stopReason,
-        });
-        runtime.broadcastProducedEvent({
-          type: "session.usage",
-          usage: runtime.usageSnapshot(),
-          budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
-        });
-        runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
-      } else if (!leaseLost) {
-        const failed = runFailed || finalizationError !== undefined;
-        const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
-          runtime.pendingConfirmations,
+      if (!leaseLost) {
+        const failed = runFailed || finalizationError !== undefined || (persistenceError !== undefined && !persistenceProviderLost);
+        const parkIds = failed || interrupted ? [] : stillPending(
+          [...(parkedStill ? remainingAfterAnswers! : []), ...runtime.pendingConfirmations],
           asWireEvents(runtime.history.getEvents()),
         );
-        runtime.broadcastProducedEvent({
-          type: "session.status_idle",
-          stopReason: failed ? { type: "retries_exhausted" }
-            : parkIds.length > 0 ? { type: "requires_action", eventIds: parkIds }
-            : { type: "end_turn" },
-        });
+        if (failed) {
+          runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason: { type: "retries_exhausted" } });
+        } else {
+          finishTurn({ parkedOnClient: parkIds.length > 0, budgetReached: budgetGate?.reached === true }, {
+            requiresAction: () => {
+              runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason: { type: "requires_action", eventIds: parkIds } });
+            },
+            // Thread idle → usage → session idle (budget_reached). Usage
+            // source on Node: the primary runtime's meter.
+            budgetReached: () => {
+              for (const event of budgetReachedStopEvents({
+                agentName: input.session.agent.name,
+                sessionThreadId: "sthr_primary",
+                usage: runtime.usageSnapshot(),
+                budget: budgetGate!.maxListCost,
+              })) {
+                runtime.broadcastProducedEvent(event);
+              }
+            },
+            endTurn: () => {
+              runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason: { type: "end_turn" } });
+            },
+          });
+        }
       }
       try {
         await runtime.drain();
-        if (sandboxReady && !sandboxLost && input.executionFence !== undefined) {
+        if (sandboxReady && !sandboxLost && persistenceError === undefined && input.executionFence !== undefined) {
           await this.dependencies.afterExecution?.({
             workspaceId: input.workspaceId,
             session: input.session,
@@ -1236,15 +1189,125 @@ export class DefaultNodeManagedSessionRunner
         if (this.abortControllers.get(input) === abortController) {
           this.abortControllers.delete(input);
         }
+        // A runtime confirmed lost is not a prepared live runtime: uninstall
+        // it so the next turn acquires a replacement restored from the last
+        // committed workspace instead of reporting the dead one as connected.
+        if (lostAtPersistence !== undefined && this.sandboxes.get(input) === lostAtPersistence) {
+          await this.discardSandbox(input, { abortTurn: false }).catch(() => undefined);
+        }
       }
       if (finalizationError !== undefined && !runFailed) {
         throw finalizationError;
       }
+      if (persistenceError !== undefined && !persistenceProviderLost && !runFailed && !abortController.signal.aborted) {
+        throw persistenceError;
+      }
       const finalWorkspace = this.workspaces.get(input);
-      if (finalWorkspace !== undefined && !runFailed && !abortController.signal.aborted) {
+      if (finalWorkspace !== undefined && !runFailed && persistenceError === undefined && !abortController.signal.aborted) {
         finalWorkspace.trusted = true;
       }
     }
+  }
+
+  /** The `user.define_outcome` grader loop (#545 §0.7: one implementation in
+   * @open-managed-agents/session-outcomes). Node supplies the per-iteration
+   * evaluation Port, the persisted span events and the revision turn. The
+   * history snapshot is taken before each start span so the evaluator judges
+   * the turn, not its own spans. Node keeps no outcome state across turns. */
+  private async evaluateOutcome(turn: {
+    input: NodeManagedSessionRunnerAcceptInput;
+    event: ManagedNodeDefinedOutcome;
+    runtime: ManagedNodeHarnessRuntime;
+    runHarness(): Promise<void>;
+    abortSignal: AbortSignal;
+  }): Promise<void> {
+    const { input, event, runtime } = turn;
+    let lastStartId: string | null = null;
+    const outcomes = createSessionOutcomes<SessionEventView[]>({
+      snapshot: () => runtime.getApplicationHistoryEvents(),
+      evaluator: {
+        prepare: async ({ outcome }) => ({
+          type: "ready",
+          outcome,
+          evaluator: {
+            evaluate: async ({ iteration, abortSignal, snapshot }) => {
+              const evaluation = await this.dependencies.outcomes.evaluate({
+                workspaceId: input.workspaceId,
+                session: input.session,
+                environment: input.environment,
+                outcome: event,
+                historyEvents: snapshot ?? [],
+                iteration,
+                abortSignal,
+              });
+              return {
+                result: evaluation.result,
+                explanation: evaluation.explanation,
+                usage: {
+                  input_tokens: evaluation.usage.inputTokens,
+                  output_tokens: evaluation.usage.outputTokens,
+                  cache_creation_input_tokens: evaluation.usage.cacheCreationInputTokens,
+                  cache_read_input_tokens: evaluation.usage.cacheReadInputTokens,
+                },
+              };
+            },
+          },
+        }),
+      },
+      events: {
+        evaluationStarted: ({ outcomeId, iteration }) => {
+          lastStartId = runtime.broadcastProducedEvent({
+            type: "span.outcome_evaluation_start",
+            outcomeId,
+            iteration,
+          });
+          return { startEventId: lastStartId };
+        },
+        evaluationOngoing: ({ outcomeId, iteration }) => {
+          runtime.broadcastProducedEvent({
+            type: "span.outcome_evaluation_ongoing",
+            outcomeId,
+            iteration,
+          });
+        },
+        evaluationEnded: ({ verdict, started }) => {
+          // The Node end span requires a start link; a verdict without its
+          // own start span (crashed revision) links the last evaluation.
+          const startId = started?.startEventId ?? lastStartId;
+          if (startId === null) return;
+          runtime.broadcastProducedEvent({
+            type: "span.outcome_evaluation_end",
+            outcomeId: verdict.outcomeId,
+            outcomeEvaluationStartId: startId,
+            iteration: verdict.iteration,
+            result: verdict.result,
+            explanation: verdict.explanation,
+            usage: {
+              cacheCreationInputTokens: verdict.usage?.cache_creation_input_tokens ?? 0,
+              cacheReadInputTokens: verdict.usage?.cache_read_input_tokens ?? 0,
+              inputTokens: verdict.usage?.input_tokens ?? 0,
+              outputTokens: verdict.usage?.output_tokens ?? 0,
+            },
+          });
+        },
+      },
+      progress: { persist: () => undefined },
+      revision: {
+        revise: async ({ feedback }) => {
+          runtime.appendOutcomeFeedback(feedback);
+          await turn.runHarness();
+        },
+      },
+    });
+    await outcomes.evaluate({
+      outcome: {
+        outcomeId: event.outcomeId,
+        description: event.description,
+        rubric: event.rubric,
+        maxIterations: event.maxIterations,
+      },
+      abortSignal: turn.abortSignal,
+    });
   }
 
   /** Recovery of an execution whose terminal idle committed before its
@@ -1293,6 +1356,36 @@ export class DefaultNodeManagedSessionRunner
 }
 
 /** Non-retryable harness failures use ConfigError (detected by error.name). */
-function isNonRetryableHarnessError(error: Error): boolean {
-  return error.name === "ConfigError";
+function nodeTurnFailureEvents(runtime: ManagedNodeHarnessRuntime): TurnFailureEventsPort {
+  return {
+    sessionError: (message, retryStatus) => {
+      runtime.broadcastProducedEvent({
+        type: "session.error",
+        error: { type: "unknown_error", message: message.trim() || "turn.execution: Error: (empty message)", retryStatus },
+      });
+    },
+    rescheduled: () => {
+      runtime.broadcastProducedEvent({ type: "session.status_rescheduled" });
+    },
+  };
+}
+
+/** Node has no terminated Session state yet, so a session-terminal failure
+ * ends only this turn (exhausted). */
+function nodeTurnFailureClass(error: Error, producedAgentEvents: boolean): TurnFailureClass {
+  if (error.name === "ConfigError") return "turn_dead";
+  const failureClass = classifyTurnFailure(error, producedAgentEvents);
+  return failureClass === "session_terminal" ? "turn_dead" : failureClass;
+}
+
+/** True when every event of a non-empty batch is a custom result for a tool
+ *  use the Session history has never contained. */
+function answersOnlyUnknownCalls(
+  batch: ReturnType<typeof asWireEvents>,
+  history: () => ReturnType<typeof asWireEvents>,
+): boolean {
+  const actionable = batch.filter((event) => event.type !== "system.message");
+  if (actionable.length === 0 || actionable.some((event) => event.type !== "user.custom_tool_result")) return false;
+  const known = knownToolCallIds(history());
+  return actionable.every((event) => typeof event.custom_tool_use_id === "string" && !known.has(event.custom_tool_use_id));
 }

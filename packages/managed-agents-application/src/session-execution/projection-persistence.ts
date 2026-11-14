@@ -4,6 +4,8 @@ import type {
   EnvironmentWorkExecutionFence,
   RuntimeProducedSessionEvent,
   SessionExecutionFence,
+  WorkRuntimeRootProof,
+  WorkCustomInvocationBinding,
 } from "./port";
 
 export interface FindRuntimeProjectionSession {
@@ -12,11 +14,18 @@ export interface FindRuntimeProjectionSession {
 }
 
 export interface ProjectSessionRuntimeState extends FindRuntimeProjectionSession {
+  customInvocations?: WorkCustomInvocationBinding[];
   expectedRevision: number;
   events: RuntimeProducedSessionEvent[];
+  /** Original Work publication, before usage/budget/failure normalization.
+   * Persist alongside the facts so response-loss replay is state-independent. */
+  sourceEvents?: RuntimeProducedSessionEvent[];
   next: Session;
   executionFence?: SessionExecutionFence;
   environmentWorkFence?: EnvironmentWorkExecutionFence;
+  workFinalization?: WorkFinalizationProjectionGuard;
+  workRoot?: WorkRuntimeRootProof;
+  workRootDialect?: "sqlite" | "postgres" | "mysql";
 }
 
 /**
@@ -80,3 +89,18 @@ export interface SessionRuntimeProjectionPersistencePort {
     input: ProjectSessionRuntimeState,
   ): Promise<ProjectSessionRuntimeStateResult>;
 }
+
+/** Additional CAS evidence for Work finalization only. Kept on the existing
+ * projection transaction, not a second terminal/receipt ledger. */
+export interface WorkFinalizationProjectionGuard {
+  holder: string;
+  turnId: string;
+  inputId: string;
+  inputDocument: string;
+  bootstrapSequence?: number;
+  dialect: "sqlite" | "postgres" | "mysql";
+}
+
+export { inspectWorkApprovalResolution, type WorkApprovalResolutionInput, type WorkApprovalResolution } from "./work-approval-resolution";
+
+export { validateWorkThreadLineage } from "./work-thread-lineage";

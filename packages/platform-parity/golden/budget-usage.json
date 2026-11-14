@@ -1,0 +1,209 @@
+{
+  "event_types": [
+    "user.message",
+    "session.status_running",
+    "span.model_request_start",
+    "agent.tool_use",
+    "span.model_request_end",
+    "span.model_request_start",
+    "agent.message",
+    "span.model_request_end",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "Budget turn done.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "agent.tool_result": [
+      {
+        "content": [
+          {
+            "text": "budget",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "tool_use_id": "parity_bash_1",
+        "type": "agent.tool_result"
+      }
+    ],
+    "agent.tool_use": [
+      {
+        "id": "parity_bash_1",
+        "input": {
+          "command": "echo budget"
+        },
+        "name": "bash",
+        "processed_at": "<time>",
+        "type": "agent.tool_use"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "end_turn"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "session.usage": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.usage",
+        "usage": {
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": "<token_count>"
+          },
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        }
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      },
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      },
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Spend a little.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
+  "session": {
+    "budget": {
+      "max_list_cost": {
+        "amount": "5",
+        "currency": "USD"
+      },
+      "type": "limit"
+    },
+    "outcome_evaluations": [],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": "<token_count>"
+      },
+      "cache_read_input_tokens": "<token_count>",
+      "input_tokens": "<token_count>",
+      "output_tokens": "<token_count>"
+    }
+  },
+  "reads": {
+    "message_status": 200,
+    "session_create_status": 201
+  },
+  "models": {
+    "parity-agent": {
+      "calls": 2,
+      "unconsumed_steps": 0,
+      "aborted": 0,
+      "timed_out": 0
+    }
+  },
+  "timeouts": []
+}

@@ -4,19 +4,20 @@
 // A non-idle session fails fast and does not receive the event.
 
 import { env, exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
-import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { PiHarness } from "../../packages/agent-harness/src/pi-loop";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
+import type { HarnessContext } from "../../packages/agent-harness/src/interface";
 import {
-  createScriptedLanguageModel,
   finishChunk,
   streamStep,
   textChunks,
   toolCallChunks,
 } from "../fakes/scripted-language-model";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
+import { createScriptedPiRuntime } from "@open-managed-agents/platform-parity/scripted-pi-model";
 
 beforeAll(() => ensureModelCards(["resume-mcp-mock", "claude-sonnet-4-6"]));
 
@@ -25,14 +26,16 @@ const H = { "x-api-key": "test-key", "content-type": "application/json" };
 const MCP_ORIGIN = "https://resume-mcp.example.test";
 const HARNESS = "resume-mcp-refresh";
 
-let turnModel: ReturnType<typeof createScriptedLanguageModel> | null = null;
+const testSessions: string[] = [];
+
+let turnModel: ReturnType<typeof createScriptedPiRuntime> | null = null;
 
 registerHarness(HARNESS, () => {
-  const harness = new DefaultHarness();
+  const harness = new PiHarness();
   return {
     async run(ctx: HarnessContext) {
       if (!turnModel) throw new Error("resume MCP fake LLM was not installed");
-      await harness.run({ ...ctx, model: turnModel.model });
+      await harness.run({ ...ctx, pi: turnModel.runtime });
     },
   };
 });
@@ -83,7 +86,18 @@ function installMcp() {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  for (const id of testSessions.splice(0)) {
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(id));
+    await runInDurableObject(stub, async (instance, state) => {
+      const room = instance as unknown as { _sandboxWarm: Promise<void>; _recoveryRun: Promise<void> | null; _finalizePromise: Promise<void> | null; _maintenanceRuns: Map<string,Promise<void>> };
+      await room._sandboxWarm;
+      await room._recoveryRun;
+      await room._finalizePromise;
+      await Promise.all(room._maintenanceRuns.values());
+      await state.storage.deleteAlarm();
+    });
+  }
   turnModel = null;
 });
 
@@ -114,13 +128,14 @@ async function seedUser(userId: string) {
 describe("Cloudflare session resume picks up published MCP tools", () => {
   it("calls the MCP tool published after the session was created", async () => {
     const external = installMcp();
+    try {
     const toolChunks = toolCallChunks({
       id: "mcp-call-resume",
       toolName: "mcp__slack__ping",
       inputDeltas: ['{"value":', '"published"}'],
     });
     const finalChunks = textChunks("text-resume", ["published ping ", "done"]);
-    turnModel = createScriptedLanguageModel([
+    turnModel = createScriptedPiRuntime([
       streamStep([
         toolChunks[0],
         { type: "response-metadata", id: "mock-resume-tool" },
@@ -176,6 +191,7 @@ describe("Cloudflare session resume picks up published MCP tools", () => {
     }, { "content-type": "application/json", "x-internal-secret": SECRET });
     expect(created.status).toBe(200);
     const sessionId = ((await created.json()) as { sessionId: string }).sessionId;
+    testSessions.push(sessionId);
 
     const before = await env.MAIN_DB.prepare(
       `SELECT agent_snapshot, status FROM sessions WHERE id = ?`,
@@ -215,7 +231,16 @@ describe("Cloudflare session resume picks up published MCP tools", () => {
     }
     expect(sawTool).toBe(true);
     expect(external.seenUrls.some((url) => url.startsWith(`${MCP_ORIGIN}/mcp`))).toBe(true);
-    external.restore();
+    // A tool result precedes the final model turn and persistence. Keep the
+    // transport and model alive until the resumed turn really settles.
+    await expect.poll(async () => {
+      const response = await api(`/v1/oma/sessions/${sessionId}/events?limit=100&order=asc`, { headers: H });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { data: Array<Record<string, unknown>> };
+      return JSON.stringify(body.data).includes("published ping done") && body.data.some(event =>
+        event.type === "session.status_idle" && ((event.data as {stop_reason?:{type?:string}})?.stop_reason)?.type === "end_turn");
+    }, {timeout:10000}).toBe(true);
+    } finally { external.restore(); }
   }, 60_000);
 
   it("fails fast when the session is not idle and does not append the event", async () => {
@@ -243,6 +268,7 @@ describe("Cloudflare session resume picks up published MCP tools", () => {
     }, { "content-type": "application/json", "x-internal-secret": SECRET });
     expect(created.status).toBe(200);
     const sessionId = ((await created.json()) as { sessionId: string }).sessionId;
+    testSessions.push(sessionId);
     await env.MAIN_DB.prepare(`UPDATE sessions SET status = 'running' WHERE id = ?`).bind(sessionId).run();
 
     const resumed = await post(`/v1/oma/internal/sessions/${sessionId}/events`, {

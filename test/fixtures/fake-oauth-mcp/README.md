@@ -1,6 +1,6 @@
 # Fake OAuth + MCP server (test fixture)
 
-A throwaway Cloudflare Worker that **plays both** OAuth provider and MCP server, used to exercise OMA's `forwardWithRefresh` 401-triggered refresh path end-to-end without needing real Linear/Notion/etc. dev OAuth apps.
+A throwaway Cloudflare Worker that **plays both** OAuth provider and MCP server, used to exercise OMA's `forwardMcpProxyTarget` 401-triggered refresh path end-to-end without needing real Linear/Notion/etc. dev OAuth apps.
 
 **Not for production.** No real authentication, no rate limits, no encryption at rest beyond what KV gives you. Intended to live on a sandbox CF account or a clearly-labeled subdomain (e.g. `oma-fake-oauth-mcp.<your>.workers.dev`).
 
@@ -53,8 +53,8 @@ curl -sX POST "https://app.staging.openma.dev/v1/vaults/<vault-id>/credentials" 
 Create a cloud agent with `mcp_servers: [{name:"fake", type:"http", url:"${ORIGIN}/mcp"}]` and a session bound to the vault. Fire a prompt asking the agent to use `fake_echo`. Expected behavior:
 
 1. First MCP request from cloud agent → fake server returns 401 (token is `"stale-deliberately"`, current is `"stale-bootstrap"`)
-2. `forwardWithRefresh` calls `${ORIGIN}/oauth/token` with `refresh_token=refresh-0` → fake returns `{access_token:"fresh-1", refresh_token:"refresh-1"}`
-3. `services.credentials.refreshAuth` writes new tokens to D1
+2. `forwardMcpProxyTarget` calls `${ORIGIN}/oauth/token` with `refresh_token=refresh-0` → fake returns `{access_token:"fresh-1", refresh_token:"refresh-1"}`
+3. `services.credentials.refreshAuthCAS` writes new tokens to D1
 4. Retry MCP request with `Bearer fresh-1` → fake returns valid response
 5. main worker audit log: `op=mcp_proxy.forward refreshed=true status=200`
 

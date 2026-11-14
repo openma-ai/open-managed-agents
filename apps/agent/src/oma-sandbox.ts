@@ -1,4 +1,8 @@
-// OMA Sandbox subclass — wires the @cloudflare/sandbox 0.8.x outbound
+import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
+import { sameNativeWorkProcess, type NativeWorkProcess, type NativeWorkIO, type NativeWorkCheckpoint } from "./runtime/cf-native-work-process";
+import { nativeWorkLaunchAuthority, nativeWorkProcessIsCurrent } from "./runtime/cf-native-work-authority";
+// OMA Sandbox Durable Object for @cloudflare/sandbox 1.x.
+// Legacy note: wires the @cloudflare/sandbox 0.8.x outbound
 // handler API so vault credentials get injected into outbound requests
 // (e.g. Bearer header for MCP server calls). The handler is bound at
 // runtime via `sandbox.setOutboundHandler("inject_vault_creds", { ... })`
@@ -7,7 +11,9 @@
 // Architectural property (mirrors Anthropic Managed Agents' "credential
 // proxy outside the harness" pattern): this handler runs in the trusted
 // agent Worker, outside the untrusted container. Its durable binding contains
-// only the complete runtime scope + fence. A live lookup may return plaintext
+// only the Session and the digest of the current sandbox token (#561; the
+// binding is stored, so never the token). Every injection checks that token
+// like the E2B / Node relay's does. A live lookup may return plaintext
 // to this trusted handler long enough to construct the upstream request, but
 // the credential is never placed in handler params, container memory, process
 // env, checkpoints, or logs.
@@ -26,7 +32,14 @@ import {
   EGRESS_SANDBOX_CONTROL_HEADERS,
   egressRequestHeaders,
 } from "@open-managed-agents/managed-credential-resolver";
-import { Sandbox } from "@cloudflare/sandbox";
+import { carriesVaultPlaceholder } from "@open-managed-agents/sandbox-gateway/vault-substitution";
+import {
+  DirectoryBackup,
+  type DirectoryBackupRecord,
+  Files,
+  S3Mount,
+} from "@cloudflare/sandbox";
+import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
 import {
   buildCfTenantDbProvider,
@@ -67,42 +80,24 @@ interface SdkContext<P = unknown> {
 
 export interface OutboundContextParams {
   tenantId?: string;
-  environmentId?: string;
   sessionId?: string;
+  /** Routing only: the Work a Work runtime binding serves (control-plane paths). */
+  environmentId?: string;
   workId?: string;
-  ownerId?: string;
-  generation?: number;
-  fenceToken?: string;
+  /** SHA-256 of the current sandbox token (sandboxTokenSha256): the only
+   * authority for Vault and GitHub injection. Absent between turns. */
+  tokenSha256?: string;
+  /** Provider-enforced egress: without a bound token nothing leaves. */
   required?: boolean;
   /** Exact trusted API origin for the Work capability (scheme + host + port). */
   controlPlaneOrigin?: string;
 }
 
-interface RuntimeFenceLookupClaim {
-  environmentId: string;
-  workId: string;
-  ownerId: string;
-  generation: number;
-  token: string;
-}
-
-function runtimeFenceClaim(params: OutboundContextParams): RuntimeFenceLookupClaim | null {
-  if (
-    typeof params.environmentId !== "string" || params.environmentId.length === 0
-    || typeof params.workId !== "string" || params.workId.length === 0
-    || typeof params.ownerId !== "string" || params.ownerId.length === 0
-    || !Number.isSafeInteger(params.generation) || (params.generation ?? 0) < 1
-    || typeof params.fenceToken !== "string" || params.fenceToken.length === 0
-  ) {
-    return null;
-  }
-  return {
-    environmentId: params.environmentId,
-    workId: params.workId,
-    ownerId: params.ownerId,
-    generation: params.generation!,
-    token: params.fenceToken,
-  };
+/** What main checks the binding by; null with no token bound (between turns). */
+function boundToken(params: OutboundContextParams, env: Env): { tenantId: string; sessionId: string; tokenSha256: string } | null {
+  return params.tenantId && params.sessionId && params.tokenSha256 && env.MAIN_MCP !== undefined
+    ? { tenantId: params.tenantId, sessionId: params.sessionId, tokenSha256: params.tokenSha256 }
+    : null;
 }
 
 /**
@@ -130,58 +125,53 @@ export const handleCredentialEgressRequest = async (
   // HTTP semantics (HEAD Content-Length, SigV4 signed headers,
   // Transfer-Encoding: chunked, streaming, Trailer, etc).
   const required = params.required === true;
-  const fence = runtimeFenceClaim(params);
-  if (required && (
-    !params.tenantId
-    || !params.sessionId
-    || fence === null
-    || e.MAIN_MCP === undefined
-  )) {
-    return new Response("credential egress denied: invalid runtime binding", {
-      status: 403,
-    });
+  const bound = boundToken(params, e);
+  if (required && bound === null) {
+    return new Response("credential egress denied: no sandbox token bound", { status: 403 });
   }
+  // Materialize body — Workers needs a known-length body to set
+  // Content-Length on the outbound request.
+  const bodyBytes = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
+  const placeholder = carriesVaultPlaceholder(request.headers, bodyBytes);
 
   // Native interception shares the ordinary relay application. The binding
   // returns only forwarding results/metadata, never the upstream token.
   // Vault credentials are only ever injected over HTTPS (the relay rejects
   // any other scheme with 400), so plain HTTP (e.g. apt mirrors) skips the
   // lookup and is forwarded below with sandbox authorization stripped.
+  // No token bound (between turns, before the first turn) → no Vault.
   const injectable = url.protocol === "https:";
-  if (injectable && params.tenantId && params.sessionId && e.MAIN_MCP) {
+  if (injectable && bound !== null) {
     try {
-      const scope = { tenantId: params.tenantId, sessionId: params.sessionId,
-        ...(fence === null ? {} : { runtimeFence: fence }) };
-      const resolved = await e.MAIN_MCP.credentialEgress(scope, "resolve", new Request(request.url));
-      if (!resolved.ok) return resolved;
-      const { inject } = await resolved.json() as { inject: boolean };
-      if (inject) return e.MAIN_MCP.credentialEgress(scope, "forward", request);
+      const resolved = await e.MAIN_MCP!.credentialEgress(bound, "resolve", new Request(request.url));
+      if (!resolved.ok) {
+        // Only a token that is no longer current (401: a background process
+        // after its turn) keeps ordinary egress; a request carrying a Vault
+        // placeholder, a required binding, or any other failure is refused.
+        if (resolved.status !== 401 || placeholder || required) return resolved;
+      } else if ((await resolved.json() as { inject: boolean }).inject) {
+        return e.MAIN_MCP!.credentialEgress(bound, "forward", new Request(request.url, {
+          method: request.method, headers: request.headers, ...(bodyBytes === null ? {} : { body: bodyBytes }), redirect: "manual",
+        }));
+      }
     } catch {
       return new Response("credential egress unavailable", { status: 502 });
     }
-  } else if (injectable && required) {
-    return new Response("credential egress unavailable", { status: 502 });
   }
   const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required || !injectable });
-
-  let upstreamReq: Request;
-  if (request.method === "GET" || request.method === "HEAD") {
-    upstreamReq = new Request(request.url, {
-      method: request.method,
-      headers: outHeaders,
-      redirect: "manual",
-    });
-  } else {
-    // Materialize body — Workers needs a known-length body to set
-    // Content-Length on the outbound request.
-    const bodyBytes = await request.arrayBuffer();
-    upstreamReq = new Request(request.url, {
-      method: request.method,
-      headers: outHeaders,
-      body: bodyBytes,
-      redirect: "manual",
-    });
+  // A Vault placeholder the gateway did not take (wrong host, plain HTTP, no
+  // current token) is refused, never sent on (design §8.4 rule 2).
+  if (placeholder) {
+    console.warn(`[oma-sandbox] vault placeholder refused host=${url.hostname} rule=credential_host_mismatch`);
+    return new Response("Credential relay request denied: credential_host_mismatch", { status: 403 });
   }
+
+  const upstreamReq = new Request(request.url, {
+    method: request.method,
+    headers: outHeaders,
+    ...(bodyBytes === null ? {} : { body: bodyBytes }),
+    redirect: "manual",
+  });
 
   console.log(
     `[oma-sandbox] outbound passthrough host=${url.hostname} method=${request.method}`,
@@ -276,9 +266,17 @@ export const handleOpenmaControlPlaneRequest = async (
   }
   const url = new URL(request.url);
   const authorization = request.headers.get("authorization") ?? "";
+  // The sandbox token as Bearer / Basic; the sealed Work token (ADR 0005)
+  // only on a Work runtime's binding. The main API checks the credential,
+  // its Session and its scope on every request.
+  const sandboxToken = authorization.startsWith("Bearer oma_sbx_") || authorization.startsWith("Basic ");
+  const workToken = typeof params.workId === "string" && params.workId.length > 0 && authorization.startsWith("Bearer sk-ant-req-v1.");
+  if (url.origin === expectedOrigin && workToken && /^\/v1\/oma\/(?:mcp-proxy|inference-proxy)\//u.test(url.pathname)) {
+    return new Response("sandbox gateway requires a sandbox token", { status: 401 });
+  }
   if (
     url.origin !== expectedOrigin
-    || !authorization.startsWith("Bearer sk-ant-req-v1.")
+    || !(sandboxToken || workToken)
     || !isAllowedWorkCapabilityPath(url.pathname, params)
   ) {
     return new Response("control-plane egress denied", { status: 403 });
@@ -300,281 +298,6 @@ export const handleOpenmaControlPlaneRequest = async (
 
 const injectVaultCredsHandler = handleCredentialEgressRequest;
 
-export class OmaSandbox extends Sandbox {
-  // Required by sandbox-container PID 1: with interceptHttps=true, the
-  // container's trustRuntimeCert() polls cloudflare-containers-ca.crt for
-  // 5s on startup. The cert is only pushed by the platform once
-  // setOutboundHandler has been called from the worker side — so
-  // session-do.ts must call setOutboundContext for every session, vault
-  // or not, before the 5s deadline. See cert-race bisection 2026-05-04
-  // (cf-sandbox-cert-demo): containers without the handler call exit(1)
-  // with "Certificate not found, refusing to start without HTTPS
-  // interception enabled" 100% of the time.
-  override interceptHttps = true;
-
-  // Every HTTP(S) request must traverse a registered handler. This blocks a
-  // compromised harness from bypassing Vault through a direct socket. R2 and
-  // other provider-owned exceptions remain explicit outboundByHost handlers.
-  override enableInternet = false;
-
-  // Container lifecycle: 5-minute idle TTL. Cost-friendly default.
-  override sleepAfter = "5m";
-
-  /**
-   * SessionDO calls this once per warmup with the (tenant, env, session)
-   * tuple. Stashed in this DO's storage so snapshotWorkspaceNow() (called
-   * from onActivityExpired or directly from /destroy) can record the
-   * backup against the right (tenant, env) scope. Container DO is keyed
-   * by sessionId via getSandbox(env, sessionId), so the stored context
-   * belongs to exactly one logical session.
-   */
-  async setBackupContext(ctx: BackupContext): Promise<void> {
-    await this.ctx.storage.put(BACKUP_CTX_KEY, ctx);
-  }
-
-  /**
-   * Per-container billing context. SessionDO calls this once per warmup
-   * with (tenant, session, agent). We use it to attribute the
-   * sandbox_active_seconds emit at onStop time — without context the
-   * emit silently no-ops (self-host / dev path).
-   *
-   * startedAt is mint-or-fetch: if a context already exists in storage
-   * we keep its startedAt (containers within one logical session may
-   * stop/restart on idle teardown — we credit the user only for the
-   * fresh window). Actual lifecycle events come through onStart / onStop
-   * below.
-   */
-  async setBillingContext(ctx: Omit<BillingContext, "startedAt">): Promise<void> {
-    const existing = (await this.ctx.storage.get(BILLING_CTX_KEY)) as
-      | BillingContext
-      | undefined;
-    if (existing && existing.sessionId === ctx.sessionId) {
-      // Same session, container still warm — keep the original startedAt
-      // so we don't double-bill on a no-op re-warm.
-      return;
-    }
-    await this.ctx.storage.put(BILLING_CTX_KEY, {
-      tenantId: ctx.tenantId,
-      sessionId: ctx.sessionId,
-      agentId: ctx.agentId,
-      startedAt: Date.now(),
-    });
-  }
-
-  /**
-   * Snapshot /workspace into BACKUP_BUCKET + record the handle in MAIN_DB
-   * scoped to the stored backup context. Best-effort: any failure logs
-   * and returns; never throws because all callers (sleepAfter teardown,
-   * explicit /destroy) need to proceed even if backup fails.
-   *
-   * Single source of truth for the actual backup operation. Both the
-   * sleepAfter pre-stop hook and SessionDO's explicit-destroy path call
-   * this — there used to be a parallel impl on SessionDO that drifted.
-   */
-  async snapshotWorkspaceNow(): Promise<void> {
-    try {
-      const env = this.env as Env;
-      const ctx = (await this.ctx.storage.get(BACKUP_CTX_KEY)) as
-        | BackupContext
-        | undefined;
-      if (!ctx || !env.MAIN_DB) return;
-      const startMs = Date.now();
-      const isDev = !env.R2_ENDPOINT || !env.R2_ACCESS_KEY_ID;
-      const backup = await this.createBackup({
-        dir: "/workspace",
-        name: `session-${ctx.sessionId}`,
-        ttl: BACKUP_TTL_SEC,
-        excludes: ["node_modules", ".cache", "__pycache__", ".next", "target"],
-        gitignore: true,
-        ...(isDev ? { localBucket: true } : {}),
-      });
-      const elapsedMs = Date.now() - startMs;
-      if (!backup) return;
-      // Route to the tenant's shard — workspace_backups is per-tenant data.
-      // The CF tenant-DB provider is the wiring boundary; resolve once and
-      // pass the resolved DB into the (port-shaped) recordBackup function.
-      const provider = buildCfTenantDbProvider(env);
-      const backupDb = await provider.resolve(ctx.tenantId);
-      await recordBackup(backupDb, {
-        tenantId: ctx.tenantId,
-        environmentId: ctx.environmentId,
-        handle: { id: backup.id, dir: backup.dir, localBucket: backup.localBucket },
-        nowMs: Date.now(),
-        ttlSec: BACKUP_TTL_SEC,
-        sessionId: ctx.sessionId,
-      });
-      console.log(
-        `[oma-sandbox] backup recorded id=${backup.id} session=${ctx.sessionId.slice(0, 12)} elapsed_ms=${elapsedMs}`,
-      );
-    } catch (err) {
-      console.error(
-        `[oma-sandbox] snapshotWorkspaceNow failed: ${(err as Error).message ?? err}`,
-      );
-    }
-  }
-
-  /**
-   * Pre-stop hook: SDK calls this when sleepAfter elapses, default impl
-   * just calls this.stop(). We override to:
-   *   1. snapshotWorkspaceNow() — preserve /workspace state to R2
-   *   2. unmount every active bucket — keep the SDK's `activeMounts`
-   *      table consistent with actual container state. Without this,
-   *      the SDK's bookkeeping survives container teardown but the
-   *      fuse mounts inside the container do not; the next warmup's
-   *      `mountBucket(...)` call hits InvalidMountConfigError("already
-   *      in use") because `activeMounts.has(path)` is true while the
-   *      new container has nothing mounted. Calling unmountBucket WHILE
-   *      the container is still alive lets fusermount succeed and the
-   *      SDK properly clears the table. Caught 2026-05-13 — every
-   *      sleepAfter recycle bricked /mnt/session/outputs for the rest
-   *      of the session.
-   *   3. defer to default super impl so the container actually shuts down
-   */
-  override async onActivityExpired(): Promise<void> {
-    await this.snapshotWorkspaceNow();
-    await this.unmountAllBuckets();
-    // Wedged-container guard: super.onActivityExpired() → container.stop()
-    // sends SIGTERM and waits for the process tree to exit. If the shim
-    // is in a stuck state (in-flight exec never resolved, FDs exhausted),
-    // SIGTERM is ignored → super.stop() never returns → onStop never
-    // fires → CF runtime keeps the instance "active" in billing → we
-    // pay for nothing. Observed staging 2026-05-19 sandbox-6af21a79:
-    // sleepAfter fired twice (08:43, 09:42), backup.create succeeded
-    // both times, but no onStop ever emitted; container stayed active
-    // for ~1.5h burning idle billing.
-    //
-    // Probe shim health with a 5s exec("true"). If unresponsive, skip
-    // SIGTERM (it'll just hang) and go straight to destroy() which
-    // sends SIGKILL via the SDK. SIGKILL is uncatchable → guaranteed
-    // teardown → onStop fires within seconds.
-    const responsive = await this.probeShimAlive(5_000);
-    if (!responsive) {
-      console.warn(`[oma-sandbox] onActivityExpired: shim unresponsive, force-destroying`);
-      try {
-        await this.destroy();
-      } catch (err) {
-        console.warn(`[oma-sandbox] force-destroy failed:`, err);
-      }
-      return;
-    }
-    await super.onActivityExpired();
-  }
-
-  /**
-   * Quick health probe. Returns true if the container's shim answers
-   * `exec("true")` within timeoutMs. Used by onActivityExpired to decide
-   * whether to attempt graceful SIGTERM via super.stop() or skip
-   * straight to force-destroy.
-   */
-  private async probeShimAlive(timeoutMs: number): Promise<boolean> {
-    try {
-      await this.exec("true", { timeout: timeoutMs });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Best-effort: unmount every entry in the SDK's `activeMounts` table.
-   * Idempotent + per-path failures swallowed — we run this from
-   * onActivityExpired right before container shutdown, so even if
-   * fusermount on one path fails the container's about to die anyway
-   * and the SDK table will be effectively reset on next warmup (the
-   * container won't have those mounts to conflict with the entries we
-   * couldn't clear). Logs failures so a recurring leak shows up in
-   * observability.
-   */
-  private async unmountAllBuckets(): Promise<void> {
-    const self = this as unknown as { activeMounts?: Map<string, unknown> };
-    const paths = Array.from(self.activeMounts?.keys() ?? []);
-    if (!paths.length) return;
-    await Promise.all(
-      paths.map((p) =>
-        this.unmountBucket(p).catch((err: Error) =>
-          console.warn(
-            `[oma-sandbox] pre-stop unmount ${p} failed: ${err?.message ?? err}`,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Lightweight visibility: log every container exit so we can see why
-  // containers recycle without the SQL table from the prior diagnostic
-  // scaffolding. CF Workers Logs captures these.
-  // The Sandbox base class narrows onStop to `() => Promise<void>` (drops
-  // the params), but the underlying Container.callOnStop DOES pass
-  // `{ exitCode, reason }` at runtime (container.js:1520). Use rest args to
-  // satisfy TS while still capturing the runtime payload.
-  override async onStop(...args: unknown[]): Promise<void> {
-    const params = (args[0] ?? {}) as { exitCode?: number; reason?: string };
-    const ec = typeof params.exitCode === "number" ? params.exitCode : -1;
-    const reason = typeof params.reason === "string" ? params.reason : "unknown";
-    // 137 = SIGKILL (likely OOM or destroy()); 143 = SIGTERM (graceful)
-    console.log(`[oma-sandbox] onStop exit=${ec} reason=${reason}`);
-    await this.recordSandboxActiveOnStop();
-  }
-
-  /**
-   * Public entry point for the SessionDO `/destroy` path to emit the
-   * sandbox_active_seconds row BEFORE calling `sandbox.destroy()`. The
-   * CF Containers SDK fires `onStop` async to destroy() — by the time
-   * SessionDO returns 200, the onStop callback may still be inflight or
-   * may have been dropped if the DO got evicted. Calling this explicitly
-   * gives us a synchronous emit in the SessionDO's request lifecycle.
-   *
-   * Idempotent via storage-delete-after-emit — a later onStop fires this
-   * again but reads `undefined` from storage and no-ops.
-   */
-  async emitSandboxActiveNow(): Promise<void> {
-    await this.recordSandboxActiveOnStop();
-  }
-
-  /**
-   * Compute container active-seconds from the stored billing context's
-   * startedAt and emit one usage_events row of kind=sandbox_active_seconds.
-   * Resets the startedAt cursor so a re-start in the same session DO
-   * doesn't re-bill the previous window.
-   *
-   * Best-effort: any failure logs and returns. We do NOT block the
-   * container teardown on a billing emit (that would couple billing
-   * availability to sandbox availability — wrong direction).
-   */
-  private async recordSandboxActiveOnStop(): Promise<void> {
-    try {
-      const env = this.env as Env;
-      const ctx = (await this.ctx.storage.get(BILLING_CTX_KEY)) as
-        | BillingContext
-        | undefined;
-      if (!ctx) return;
-      const elapsedMs = Date.now() - ctx.startedAt;
-      if (elapsedMs <= 0) return;
-      const seconds = Math.floor(elapsedMs / 1000);
-      if (seconds <= 0) return;
-      const services = await getCfServicesForTenant(env, ctx.tenantId);
-      await services.usage.recordUsage({
-        tenantId: ctx.tenantId,
-        sessionId: ctx.sessionId,
-        agentId: ctx.agentId,
-        kind: "sandbox_active_seconds",
-        value: seconds,
-      });
-      // Drop the stored context so a re-start in the same DO mints a
-      // fresh window (re-warm = new billing window, not "continue prior
-      // window"). The next setBillingContext() call from SessionDO at
-      // warmup will repopulate.
-      await this.ctx.storage.delete(BILLING_CTX_KEY);
-      console.log(
-        `[oma-sandbox] usage emit sandbox_active_seconds=${seconds} session=${ctx.sessionId.slice(0, 12)}`,
-      );
-    } catch (err) {
-      console.error(
-        `[oma-sandbox] recordSandboxActiveOnStop failed: ${(err as Error).message ?? err}`,
-      );
-    }
-  }
-}
 
 // Per-host bypass for R2 — createBackup / restoreBackup do raw S3-style
 // PUT/GET/HEAD against `*.r2.cloudflarestorage.com` from inside the
@@ -641,7 +364,7 @@ const r2OutboundPassthrough = async (request: Request): Promise<Response> => {
 // declared repo's token. Cross-token mutations (graphql to repo B with
 // token A's scope) return GitHub's standard error envelope; we don't
 // retry.
-const githubAuthHandler = async (
+export const githubAuthHandler = async (
   request: Request,
   env: unknown,
   ctx: SdkContext<OutboundContextParams>,
@@ -650,37 +373,24 @@ const githubAuthHandler = async (
   const params = ctx.params ?? {};
   const e = env as Env;
   const required = params.required === true;
-  const fence = runtimeFenceClaim(params);
-  if (required && (
-    !params.tenantId
-    || !params.sessionId
-    || fence === null
-    || e.MAIN_MCP === undefined
-  )) {
-    return new Response("credential egress denied: invalid runtime binding", {
-      status: 403,
-    });
+  const bound = boundToken(params, e);
+  if (required && bound === null) {
+    return new Response("credential egress denied: no sandbox token bound", { status: 403 });
   }
 
   let cred: { scheme: "Basic" | "Bearer"; token: string; slug: string } | null = null;
 
-  // ① per-repo first
-  if (params.tenantId && params.sessionId && e.MAIN_MCP) {
+  // ① per-repo first, only for a current sandbox token (none bound or not
+  // current: null, and the Vault handler below decides). A token that
+  // cannot be checked fails the request.
+  if (bound !== null) {
     try {
-      cred = await e.MAIN_MCP.lookupGithubCredential({
-        tenantId: params.tenantId,
-        sessionId: params.sessionId,
-        hostname: url.hostname,
-        pathname: url.pathname,
-        ...(fence === null ? {} : { runtimeFence: fence }),
-      });
+      cred = await e.MAIN_MCP!.lookupGithubCredential({ ...bound, hostname: url.hostname, pathname: url.pathname });
     } catch (err) {
       console.error(
         `[oma-sandbox] lookupGithubCredential threw host=${url.hostname}: ${(err as Error)?.message ?? err}`,
       );
-      if (required) {
-        return new Response("credential egress unavailable", { status: 502 });
-      }
+      return new Response("credential egress unavailable", { status: 502 });
     }
   }
 
@@ -724,55 +434,1444 @@ const githubAuthHandler = async (
   return fetch(upstreamReq);
 };
 
-// Static handler-to-method-name registrations. Both maps are inherited
-// get/set accessors on Sandbox/Container; class field syntax `static
-// outboundHandlers = {...}` would shadow without triggering the setter,
-// leaving the SDK unable to find the handler at runtime.
-//
-// inject_vault_creds: catch-all, params bound at runtime via
-//   sandbox.setOutboundHandler("inject_vault_creds", { tenantId, sessionId })
-//   in session-do.ts:setOutboundContext.
-//
-// github_auth: per-host, params bound at runtime via
-//   sandbox.setOutboundByHost("api.github.com", "github_auth", ...)
-//   (and same for "github.com") in session-do.ts:setOutboundContext.
-//   Pre-fix the github handler was registered directly in static
-//   `outboundByHost` as a function reference; per CF Containers SDK,
-//   handlers in the static map are invoked with `ctx.params = undefined`
-//   — so the handler's `params.tenantId && params.sessionId` guard
-//   always failed, MAIN_MCP credential lookups never fired, and gh /
-//   git push attempts silently sent the `__cap_managed__` sentinel
-//   through unauthenticated. Caught 2026-05-13 testing `gh repo list`.
-//
-// r2OutboundPassthrough doesn't need params (purely streams the request
-// to R2 unchanged), so it stays as a direct function reference in
-// outboundByHost below.
-const OMA_OUTBOUND_HANDLERS: Record<string, typeof injectVaultCredsHandler> = {
-  inject_vault_creds: injectVaultCredsHandler,
+
+
+/** Idle reclaim backstop: snapshot and stop a container after this long
+ * without a Durable Object request. The core's idle pause (5 min, design
+ * §0.0b A.1) stops it first; this only runs if that pause never did, so it is
+ * idlePauseMs + SANDBOX_LEASE_MARGIN_MS. Override with the
+ * SANDBOX_IDLE_TIMEOUT_MS variable. */
+export const OMA_SANDBOX_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
+/** Extra time before the platform stops a container whose idle alarm could
+ * not run. Cloudflare counts Durable Object requests, not container traffic,
+ * as activity. */
+const CONTAINER_BACKSTOP_GRACE_MS = 5 * 60 * 1000;
+
+export function sandboxIdleTimeoutMs(env: { SANDBOX_IDLE_TIMEOUT_MS?: string }): number {
+  const configured = Number(env.SANDBOX_IDLE_TIMEOUT_MS);
+  return Number.isSafeInteger(configured) && configured > 0
+    ? configured
+    : OMA_SANDBOX_IDLE_TIMEOUT_MS;
+}
+const RULES_KEY = "OUTBOUND_CONFIGURATION";
+const PLAN_KEY = "oma_sandbox_plan";
+const PROCESS_ENV_KEY = "oma_process_env";
+const LAST_ACTIVITY_KEY = "oma_last_activity_ms";
+const DIRTY_KEY = "oma_workspace_dirty";
+/** Written once per container incarnation; SessionDO probes it to detect a
+ * replaced container. */
+export const OMA_SANDBOX_WARM_MARKER_PATH = "/tmp/.oma-warm";
+const HEALTH_PROBE_TIMEOUT_MS = 5_000;
+/** Stable prefixes: Workers RPC keeps an error's message, not its class. */
+export const OMA_SANDBOX_NOT_RUNNING = "SANDBOX_NOT_RUNNING";
+export const OMA_SANDBOX_MOUNT_AFTER_START = "MOUNT_AFTER_START";
+export const OMA_SANDBOX_LEGACY_BACKUP = "LEGACY_BACKUP";
+/** A container snapshot to start from is gone (expired, deleted or never
+ * existed): start() does not throw for it, the container's monitor rejects. */
+export const OMA_SANDBOX_SNAPSHOT_GONE = "SNAPSHOT_GONE";
+/** First exec after a snapshot start, measured 0.2-5 s (cross-DO probe). */
+const SNAPSHOT_READY_TIMEOUT_MS = 120_000;
+const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
+const BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
+const SYSTEM_CA = "/etc/ssl/certs/ca-certificates.system.crt";
+/** bash -l rereads /etc/profile, which resets PATH: a PATH set through
+ * setEnvVars is exported again after it. No PATH leaves the command as is. */
+export function loginCommand(command: string, env: Record<string, string>): string {
+  return env.PATH === undefined ? command : `export PATH='${env.PATH.replaceAll("'", "'\\''")}'; ${command}`;
+}
+
+// OpenSSL clients (python urllib, curl builds without a compiled-in path)
+// read SSL_CERT_FILE; the bundle already carries the container CA.
+const CONTAINER_ENV = {
+  NODE_EXTRA_CA_CERTS: CA,
+  SSL_CERT_FILE: BUNDLE,
+  REQUESTS_CA_BUNDLE: BUNDLE,
+};
+const DEFAULT_BACKUP_TTL_SECONDS = BACKUP_TTL_SEC;
+const metaKey = (id: string) => `backups/${id}.meta.json`;
+const EXPIRY_MARGIN_MS = 60_000;
+
+/** Credentials for one planned mount. `worker_env` resolves the Worker's
+ * R2 secrets when the container starts, so they are never persisted. */
+export type OmaMountCredentials =
+  | { source: "worker_env" }
+  | { source: "inline"; accessKeyId: string; secretAccessKey: string };
+
+/** A mount attached when the container starts, before the catch-all
+ * outbound intercept. Without `endpoint` it is a local, non-durable
+ * directory (wrangler dev without R2 keys). */
+export interface OmaPlannedMount {
+  mountPath: string;
+  bucket: string;
+  /** No leading or trailing slash. */
+  keyPrefix: string;
+  access: "read-only" | "read-write";
+  endpoint?: string;
+  credentials?: OmaMountCredentials;
+}
+
+interface OmaSandboxPlan {
+  /** Identity of the running container; null while stopped. */
+  incarnation: string | null;
+  mounts: OmaPlannedMount[];
+  /** false: only provision() starts a stopped container. */
+  autoStart: boolean;
+}
+
+/** Same arguments as `mountBucket()`. */
+export interface OmaMountBucketRequest {
+  bucket: string;
+  mountPath: string;
+  options: OmaMountBucketOptions;
+}
+
+export interface OmaMountBucketOptions {
+  endpoint?: string;
+  provider?: string;
+  credentials?: { accessKeyId: string; secretAccessKey: string };
+  prefix?: string;
+  readOnly?: boolean;
+  credentialProxy?: boolean;
+  localBucket?: boolean;
+}
+
+export interface OmaProvisionRequest {
+  /** Identity to give a new container. Ignored when one is already running. */
+  incarnation?: string;
+  /** Complete mount set for a new container. Omit to keep planned mounts. */
+  mounts?: OmaMountBucketRequest[];
+  /** Process environment. Replaces it for a new container, merges otherwise. */
+  env?: Record<string, string>;
+  autoStart?: boolean;
+  /** Full native filesystem snapshot, never a DirectoryBackup. */
+  containerSnapshot?: ContainerSnapshotRestoreParams;
+}
+
+export interface OmaProvisionResult {
+  incarnation: string;
+  /** true when this call started a new container. */
+  started: boolean;
+  /** Requested mount paths the already-running container does not have. */
+  pendingMounts: string[];
+}
+
+export interface OmaSandboxDescription {
+  running: boolean;
+  incarnation: string | null;
+  mounts: string[];
+}
+
+function sameMount(a: OmaPlannedMount, b: OmaPlannedMount): boolean {
+  return a.mountPath === b.mountPath
+    && a.bucket === b.bucket
+    && a.keyPrefix === b.keyPrefix
+    && a.access === b.access
+    && a.endpoint === b.endpoint;
+}
+
+function newIncarnation(): string {
+  return crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+}
+
+function isFullBackupRecord(handle: {
+  sha256?: unknown;
+  size?: unknown;
+  format?: unknown;
+}): boolean {
+  return typeof handle.sha256 === "string"
+    && handle.sha256.length > 0
+    && typeof handle.size === "number"
+    && typeof handle.format === "string";
+}
+
+type HandlerRef = { method: string; params?: unknown };
+type StoredRules = {
+  outboundByHostOverrides?: Record<string, HandlerRef>;
+  outboundHandlerOverride?: HandlerRef;
+  allowedHosts?: string[];
+  deniedHosts?: string[];
+};
+
+type OutboundHandlerFn = (
+  request: Request,
+  env: unknown,
+  ctx: SdkContext<any>,
+) => Response | Promise<Response>;
+
+const HANDLERS: Record<string, OutboundHandlerFn> = {
+  inject_vault_creds: handleCredentialEgressRequest,
   github_auth: githubAuthHandler,
   openma_control_plane: handleOpenmaControlPlaneRequest,
   deny_outbound: denyCredentialEgressRequest,
 };
 
-const OMA_OUTBOUND_BY_HOST: Record<string, (req: Request, env: unknown, ctx: SdkContext<OutboundContextParams>) => Promise<Response>> = {
-  "*.r2.cloudflarestorage.com": r2OutboundPassthrough,
-  // github.com / api.github.com handled at runtime via
-  // sandbox.setOutboundByHost("...", "github_auth", { tenantId, sessionId })
-  // from session-do.ts:setOutboundContext — see comment on outboundHandlers
-  // above for why the static-map shape can't carry the params we need.
-};
-
-/** Register OMA's outbound handlers on a container class. @cloudflare/containers
- *  keys both registries by class name (`this.name`), so a subclass of
- *  OmaSandbox does NOT inherit them: without this call its sandbox has no
- *  `inject_vault_creds` and no R2 passthrough, setOutboundContext fails, R2
- *  mounts fail behind `enableInternet = false` and the container exits.
- *  Every operator container class (operator-sandboxes.ts) must call it. */
-export function withOmaOutbound<T extends abstract new (...args: never[]) => OmaSandbox>(cls: T): T {
-  const registries = cls as unknown as { outboundHandlers: typeof OMA_OUTBOUND_HANDLERS; outboundByHost: typeof OMA_OUTBOUND_BY_HOST };
-  registries.outboundHandlers = OMA_OUTBOUND_HANDLERS;
-  registries.outboundByHost = OMA_OUTBOUND_BY_HOST;
-  return cls;
+// Populated by live certification worker and tests that register extra handlers.
+export function registerOmaOutboundHandler(name: string, fn: OutboundHandlerFn): void {
+  HANDLERS[name] = fn;
 }
 
-withOmaOutbound(OmaSandbox);
+/** Public package sources for an environment snapshot build sandbox: the
+ * request as sent, no Vault credential and no platform gateway. */
+const packageSourcePassthrough: OutboundHandlerFn = async (request) => {
+  const headers = new Headers(request.headers);
+  for (const h of HOP_BY_HOP_OR_CF_HEADERS) headers.delete(h);
+  for (const h of SANDBOX_CONTROL_HEADERS) headers.delete(h);
+  const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
+  return fetch(new Request(request.url, { method: request.method, headers, body, redirect: "manual" }));
+};
+HANDLERS.package_source_passthrough = packageSourcePassthrough;
+
+const STATIC_OUTBOUND_BY_HOST: Record<string, HandlerRef | OutboundHandlerFn> = {
+  "*.r2.cloudflarestorage.com": r2OutboundPassthrough,
+};
+
+function matches(pattern: string, hostname: string): boolean {
+  const escaped = pattern
+    .split("*")
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`^${escaped.join(".*")}$`).test(hostname);
+}
+
+function lookupHandler(
+  handlers: Record<string, HandlerRef> | undefined,
+  hostname: string,
+): HandlerRef | undefined {
+  if (!handlers) return undefined;
+  if (handlers[hostname]) return handlers[hostname];
+  const hit = Object.entries(handlers).find(([pattern]) => matches(pattern, hostname));
+  return hit?.[1];
+}
+
+function lookupStaticHost(
+  hostname: string,
+): HandlerRef | OutboundHandlerFn | undefined {
+  if (STATIC_OUTBOUND_BY_HOST[hostname]) return STATIC_OUTBOUND_BY_HOST[hostname];
+  const hit = Object.entries(STATIC_OUTBOUND_BY_HOST).find(([pattern]) =>
+    matches(pattern, hostname),
+  );
+  return hit?.[1];
+}
+
+/**
+ * Outbound WorkerEntrypoint — replaces 0.x ContainerProxy + outboundByHost /
+ * setOutboundHandler. Props carry runtime rules (session fence, handler names).
+ */
+export class OmaOutbound extends WorkerEntrypoint<Env, StoredRules> {
+  async fetch(request: Request): Promise<Response> {
+    const rules = this.ctx.props ?? {};
+    const url = new URL(request.url);
+    const hostname = url.hostname.replace(/\.+$/, "");
+    const blocked = new Response("Origin is disallowed", { status: 520 });
+
+    if (rules.deniedHosts?.some((p) => matches(p, hostname))) return blocked;
+    if (rules.allowedHosts && !rules.allowedHosts.some((p) => matches(p, hostname))) {
+      return blocked;
+    }
+
+    const staticHost = lookupStaticHost(hostname);
+    if (typeof staticHost === "function") {
+      return staticHost(request, this.env, {
+        containerId: "oma",
+        className: "Sandbox",
+        params: {},
+      });
+    }
+
+    const handler =
+      lookupHandler(rules.outboundByHostOverrides, hostname) ??
+      (typeof staticHost === "object" ? staticHost : undefined) ??
+      rules.outboundHandlerOverride;
+
+    if (handler && HANDLERS[handler.method]) {
+      return HANDLERS[handler.method]!(request, this.env, {
+        containerId: "oma",
+        className: "Sandbox",
+        params: (handler.params ?? {}) as OutboundContextParams,
+      });
+    }
+
+    // enableInternet=false in 0.x OMA — block anything without a handler.
+    return blocked;
+  }
+}
+
+/** Live stdio of one container process, returned over Durable Object RPC.
+ * Sandbox SDK 1.0 `exec()` pipes stdin, so no FIFO relay is needed. */
+export class OmaDuplexProcess extends RpcTarget {
+  readonly #process: ExecProcess;
+  readonly #exited: Promise<number | null>;
+
+  constructor(process: ExecProcess, exited: Promise<number | null>) {
+    super();
+    this.#process = process;
+    this.#exited = exited;
+  }
+
+  get stdin(): WritableStream {
+    return this.#process.stdin!;
+  }
+
+  get stdout(): ReadableStream {
+    return this.#process.stdout!;
+  }
+
+  get stderr(): ReadableStream {
+    return this.#process.stderr!;
+  }
+
+  /** Exit code, or null when the process could not report one. */
+  wait(): Promise<number | null> {
+    return this.#exited;
+  }
+
+  kill(signal: number): void {
+    this.#process.kill(signal);
+  }
+}
+
+export class OmaSandbox extends DurableObject<Env> {
+  private setup: Promise<void> | null = null;
+  private setupPending = false;
+  /** In-flight RPCs; the idle alarm never stops a container under one. */
+  private inflight = 0;
+  /** Coalesce warm alarm/RPC checks; durable wake + slot survive eviction. */
+  private nativeMaintenance: Promise<boolean> | null = null;
+  private readonly files = new Files(this.container);
+  private readonly backups = new DirectoryBackup(
+    this.container,
+    (this.ctx.exports as unknown as { DirectoryBackupGateway: ConstructorParameters<typeof DirectoryBackup>[1] }).DirectoryBackupGateway,
+    { binding: "BACKUP_BUCKET", prefix: "backups/" },
+  );
+  private readonly mounts = new S3Mount(
+    this.container,
+    (this.ctx.exports as unknown as { S3Gateway: ConstructorParameters<typeof S3Mount>[1] }).S3Gateway,
+  );
+
+  private coldMaintenanceRestored = false;
+
+  // Activation may be an operator read: do not arm maintenance or renew here.
+  private restoreColdMaintenance(): void {
+    if (this.coldMaintenanceRestored) return;
+    this.coldMaintenanceRestored = true;
+    const container = this.ctx.container;
+    if (container?.running) {
+      void this.ctx.blockConcurrencyWhile(async () => {
+        const work = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+        if (work && work.status !== "exited") await this.ctx.storage.setAlarm(Date.now());
+        else await container.setInactivityTimeout(this.backstopTimeoutMs());
+      });
+    }
+  }
+
+  private idleTimeoutMs(): number {
+    return sandboxIdleTimeoutMs(this.env);
+  }
+
+  private backstopTimeoutMs(): number {
+    return this.idleTimeoutMs() + CONTAINER_BACKSTOP_GRACE_MS;
+  }
+
+  private get container(): Container {
+    const container = this.ctx.container;
+    if (!container) throw new Error("No container is configured");
+    return container;
+  }
+
+  private rules(): StoredRules {
+    return (this.ctx.storage.kv.get(RULES_KEY) as StoredRules | undefined) ?? {};
+  }
+
+  private async saveRules(next: StoredRules): Promise<void> {
+    this.ctx.storage.kv.put(RULES_KEY, next);
+  }
+
+  private plan(): OmaSandboxPlan {
+    const stored = this.ctx.storage.kv.get(PLAN_KEY) as Partial<OmaSandboxPlan> | undefined;
+    return {
+      incarnation: stored?.incarnation ?? null,
+      mounts: stored?.mounts ?? [],
+      autoStart: stored?.autoStart ?? true,
+    };
+  }
+
+  private savePlan(plan: OmaSandboxPlan): void {
+    this.ctx.storage.kv.put(PLAN_KEY, plan);
+  }
+
+  private processEnv(): Record<string, string> {
+    return (this.ctx.storage.kv.get(PROCESS_ENV_KEY) as Record<string, string> | undefined) ?? {};
+  }
+
+  /** First registration for a new container: the backup gateway and every
+   * mount route must exist before the catch-all, which takes each hostname
+   * registered after it. */
+  private async intercept(): Promise<void> {
+    await this.backups.intercept();
+    await this.interceptOutbound();
+  }
+
+  /** Re-registering the catch-all keeps routes registered before it. */
+  private async interceptOutbound(): Promise<void> {
+    const outbound = (this.ctx.exports as unknown as { OmaOutbound: (o: { props: StoredRules }) => Fetcher }).OmaOutbound({ props: this.rules() });
+    await this.container.interceptAllOutboundHttp(outbound);
+    await this.container.interceptOutboundHttps("*", outbound);
+  }
+
+  private async trustCa(): Promise<void> {
+    const trust = await this.container.exec([
+      "sh",
+      "-c",
+      `[ -e ${SYSTEM_CA} ] || { cp ${BUNDLE} ${SYSTEM_CA}.tmp && mv ${SYSTEM_CA}.tmp ${SYSTEM_CA}; }
+timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${CA} >${BUNDLE}.tmp && mv ${BUNDLE}.tmp ${BUNDLE}`,
+    ]);
+    if ((await trust.exitCode) !== 0) {
+      throw new Error("The container did not trust the intercept CA");
+    }
+  }
+
+  private async writeWarmMarker(incarnation: string): Promise<void> {
+    const write = await this.container.exec([
+      "sh",
+      "-c",
+      'printf "%s\\n" "$1" > "$2"',
+      "sh",
+      incarnation,
+      OMA_SANDBOX_WARM_MARKER_PATH,
+    ]);
+    if ((await write.exitCode) !== 0) {
+      throw new Error("The container did not record its incarnation marker");
+    }
+  }
+
+  private mountCredentials(mount: OmaPlannedMount): { accessKeyId: string; secretAccessKey: string } {
+    if (mount.credentials?.source === "inline") {
+      return {
+        accessKeyId: mount.credentials.accessKeyId,
+        secretAccessKey: mount.credentials.secretAccessKey,
+      };
+    }
+    const accessKeyId = this.env.R2_ACCESS_KEY_ID;
+    const secretAccessKey = this.env.R2_SECRET_ACCESS_KEY;
+    if (!accessKeyId || !secretAccessKey) {
+      throw new Error(`Mount ${mount.mountPath} requires R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY`);
+    }
+    return { accessKeyId, secretAccessKey };
+  }
+
+  private async attachMounts(mounts: readonly OmaPlannedMount[]): Promise<void> {
+    for (const mount of mounts) {
+      if (mount.endpoint === undefined) {
+        // Local directory only: there is no bucket behind it.
+        await this.files.mkdir(mount.mountPath, { recursive: true });
+        continue;
+      }
+      const credentials = this.mountCredentials(mount);
+      await this.mounts.mount({
+        mountPath: mount.mountPath,
+        source: {
+          type: "s3",
+          endpoint: mount.endpoint,
+          region: "auto",
+          bucket: mount.bucket,
+          credentials: { type: "static", ...credentials },
+        },
+        keyPrefix: mount.keyPrefix,
+        access: mount.access,
+      } as any);
+    }
+  }
+
+  private async startContainer(requestedIncarnation?: string, snapshot?: ContainerSnapshotRestoreParams): Promise<void> {
+    const newContainer = !this.container.running;
+    const plan = this.plan();
+    const fromSnapshot = newContainer && snapshot !== undefined;
+    if (newContainer) {
+      this.container.start({
+        ...(snapshot === undefined ? { image: this.container.images.sandbox } : { containerSnapshot: snapshot }),
+        instance: "standard-1",
+        env: { ...CONTAINER_ENV, ...this.processEnv() },
+        enableInternet: false,
+      });
+    }
+    try {
+      // A missing snapshot is reported by the monitor only; without this the
+      // mount below would wait on a container that never runs.
+      if (fromSnapshot) await this.awaitSnapshotStart(snapshot.id);
+      const incarnation = !newContainer && plan.incarnation !== null
+        ? plan.incarnation
+        : requestedIncarnation ?? newIncarnation();
+      if (newContainer) {
+        await this.ctx.storage.put(BILLING_CTX_KEY + ":started", Date.now());
+        this.ctx.storage.kv.delete(DIRTY_KEY);
+      }
+      // A restarted Durable Object repeats this for a running container:
+      // mount() reuses a matching mount and re-registers its route.
+      await this.attachMounts(plan.mounts);
+      await this.intercept();
+      await this.trustCa();
+      if (newContainer || plan.incarnation !== incarnation) {
+        await this.writeWarmMarker(incarnation);
+      }
+      this.savePlan({ ...this.plan(), incarnation });
+      await this.container.setInactivityTimeout(this.backstopTimeoutMs());
+      this.watch(incarnation);
+      this.recordActivity(false);
+    } catch (error) {
+      this.savePlan({ ...this.plan(), incarnation: null });
+      await this.container.destroy().catch(() => {});
+      throw error;
+    }
+  }
+
+  private startSetup(incarnation?: string, snapshot?: ContainerSnapshotRestoreParams): Promise<void> {
+    this.setupPending = true;
+    const setup = this.startContainer(incarnation, snapshot).then(
+      () => {
+        this.setupPending = false;
+      },
+      (error) => {
+        this.setupPending = false;
+        if (this.setup === setup) this.setup = null;
+        throw error;
+      },
+    );
+    this.setup = setup;
+    return setup;
+  }
+
+  private ensureRunning(): Promise<void> {
+    this.restoreColdMaintenance();
+    if (this.setup !== null && (this.setupPending || this.container.running)) {
+      return this.setup;
+    }
+    if (!this.container.running && !this.plan().autoStart) {
+      return Promise.reject(new Error(
+        `${OMA_SANDBOX_NOT_RUNNING}: the sandbox container is stopped; provision it again`,
+      ));
+    }
+    return this.startSetup();
+  }
+
+  private watch(incarnation: string): void {
+    this.container.monitor().then(
+      async () => {
+        console.log("[oma-sandbox] container exited 0");
+        await this.onContainerStopped(incarnation);
+      },
+      async (error: unknown) => {
+        console.error("[oma-sandbox] container stopped", error);
+        await this.onContainerStopped(incarnation);
+      },
+    );
+  }
+
+  private async onContainerStopped(incarnation: string): Promise<void> {
+    if (!this.setupPending) this.setup = null;
+    const plan = this.plan();
+    if (plan.incarnation === incarnation) {
+      this.savePlan({ ...plan, incarnation: null });
+    }
+    await this.recordSandboxActiveOnStop();
+  }
+
+  private recordActivity(dirty: boolean): void {
+    const now = Date.now();
+    this.ctx.storage.kv.put(LAST_ACTIVITY_KEY, now);
+    if (dirty) this.ctx.storage.kv.put(DIRTY_KEY, true);
+    void this.scheduleIdleCheck(now + this.idleTimeoutMs()).catch((error: unknown) => {
+      console.warn(`[oma-sandbox] idle alarm scheduling failed: ${(error as Error)?.message ?? error}`);
+    });
+  }
+
+  private async scheduleIdleCheck(at: number): Promise<void> {
+    // The alarm reads the latest activity when it fires and moves itself.
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(at);
+    }
+  }
+
+  /** Counts as Durable Object activity; dirty operations may change
+   * /workspace. Dirt is recorded afterwards: the operation may have started
+   * the container, which begins clean. */
+  private async track<T>(dirty: boolean, operation: () => Promise<T>): Promise<T> {
+    this.restoreColdMaintenance();
+    this.inflight += 1;
+    this.recordActivity(false);
+    try {
+      return await operation();
+    } finally {
+      this.inflight -= 1;
+      this.recordActivity(dirty && this.ctx.container?.running === true);
+    }
+  }
+
+  /** Idle reclaim. Sandbox SDK 1.0 has no onActivityExpired hook. This also
+   * absorbs an alarm the 0.12 Container class left behind at the switch. */
+  async alarm(): Promise<void> {
+    if (!this.ctx.container?.running) return;
+    if (await this.maintainNativeWork()) return;
+    if (this.inflight > 0) {
+      await this.ctx.storage.setAlarm(Date.now() + this.idleTimeoutMs());
+      return;
+    }
+    const last = (this.ctx.storage.kv.get(LAST_ACTIVITY_KEY) as number | undefined) ?? 0;
+    const due = last + this.idleTimeoutMs();
+    if (Date.now() < due) {
+      await this.ctx.storage.setAlarm(due);
+      return;
+    }
+    await this.onActivityExpired();
+  }
+
+  private async scheduleNativeWorkCheck(): Promise<void> {
+    const at = Date.now() + Math.min(30_000, Math.max(1, Math.floor(this.idleTimeoutMs() / 3)));
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || existing <= Date.now() || existing > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  private maintainNativeWork(): Promise<boolean> {
+    if (this.nativeMaintenance) return this.nativeMaintenance;
+    const task = this.checkNativeWork();
+    this.nativeMaintenance = task;
+    return task.finally(() => { if (this.nativeMaintenance === task) this.nativeMaintenance = null; });
+  }
+
+  private async checkNativeWork(): Promise<boolean> {
+    const saved = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (!saved || saved.status === "exited") return false;
+    // Schedule BEFORE remote/SQL IO: an interrupted request is not the clock.
+    await this.scheduleNativeWorkCheck();
+    try {
+      const physical = await this.inspectWorkProcess();
+      if (!physical) {
+        const current = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+        if (current && sameNativeWorkProcess(current, saved) && current.status === "exited") this.recordActivity(false);
+        return true;
+      }
+      if (!sameNativeWorkProcess(saved, physical)) return true;
+      if (!await nativeWorkProcessIsCurrent(this.env, physical)) return true;
+      const checked = await this.inspectWorkProcess();
+      if (!checked || !sameNativeWorkProcess(checked, physical)) return true;
+      // Recheck SQL after physical IO, then compare the local slot without an
+      // await before issuing provider renewal. Never renew from an old closure.
+      if (!await nativeWorkProcessIsCurrent(this.env, physical)) return true;
+      const latest = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+      if (!latest || latest.status !== "running" || !sameNativeWorkProcess(latest, physical)
+        || this.plan().incarnation !== physical.epoch || !this.container.running) return true;
+      await this.container.setInactivityTimeout(this.backstopTimeoutMs());
+      return true;
+    } catch {
+      // Unknown is not gone. No renewal, destroy, slot clear, or broad cleanup.
+      // Confirmed loss likewise leaves the provider backstop to expire; only
+      // exact process cleanup could be safe, never container destruction here.
+      return true;
+    } finally {
+      // An alarm may have fired while remote IO was pending and joined this
+      // single flight. Restore a future durable wake after that consumed alarm.
+      await this.scheduleNativeWorkCheck();
+    }
+  }
+
+  private retireNativeWork(expected: NativeWorkProcess): void {
+    const current = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (current && sameNativeWorkProcess(current, expected) && current.status === expected.status
+      && this.container.running && this.plan().incarnation === expected.epoch) {
+      this.ctx.storage.kv.put("oma_work_process", { ...current, status: "exited" });
+    }
+  }
+
+  /** Starts a container with its complete mount set, or reports the running
+   * one. Mounts cannot be added to a running container in Sandbox SDK 1.0. */
+  async provision(request: OmaProvisionRequest = {}): Promise<OmaProvisionResult> {
+    const requested = request.mounts?.map((mount) =>
+      this.plannedMount(mount.bucket, mount.mountPath, mount.options));
+    return this.track(false, async () => {
+      const autoStart = request.autoStart ?? this.plan().autoStart;
+      if (this.container.running) {
+        await this.ensureRunning();
+        if (await this.probeShimAlive(HEALTH_PROBE_TIMEOUT_MS)) {
+          const current = this.plan();
+          this.savePlan({ ...current, autoStart });
+          if (request.env) this.mergeProcessEnv(request.env);
+          const pendingMounts = (requested ?? [])
+            .filter((mount) => !current.mounts.some((existing) => sameMount(existing, mount)))
+            .map((mount) => mount.mountPath);
+          return { incarnation: current.incarnation!, started: false, pendingMounts };
+        }
+        console.warn("[oma-sandbox] provision: running container is unresponsive; replacing it");
+        await this.discardContainer();
+      }
+      const previous = this.plan();
+      this.savePlan({
+        incarnation: null,
+        mounts: requested ?? previous.mounts,
+        autoStart,
+      });
+      if (request.env) this.ctx.storage.kv.put(PROCESS_ENV_KEY, { ...request.env });
+      await this.startSetup(request.incarnation, request.containerSnapshot);
+      return { incarnation: this.plan().incarnation!, started: true, pendingMounts: [] };
+    });
+  }
+
+  /** Waits for the first exec of a container started from a snapshot. A
+   * monitor rejection naming the snapshot means it is gone. */
+  private async awaitSnapshotStart(id: string): Promise<void> {
+    let monitorError: unknown;
+    const stopped = this.container.monitor().then(
+      () => { monitorError = new Error("the container exited during start"); },
+      (error: unknown) => { monitorError = error; },
+    );
+    const deadline = Date.now() + SNAPSHOT_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const ready = await Promise.race([
+        stopped.then(() => false),
+        (async () => {
+          try {
+            const proc = await this.container.exec(["true"]);
+            return (await proc.exitCode) === 0;
+          } catch {
+            return false;
+          }
+        })(),
+      ]);
+      if (monitorError !== undefined) {
+        const message = monitorError instanceof Error ? monitorError.message : String(monitorError);
+        if (/snapshot/i.test(message) && /not found|expired|does not exist/i.test(message)) {
+          throw new Error(`${OMA_SANDBOX_SNAPSHOT_GONE}: container snapshot ${id}: ${message}`);
+        }
+        throw new Error(`Starting from container snapshot ${id} failed: ${message}`);
+      }
+      if (ready) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`Container snapshot ${id} did not start within ${SNAPSHOT_READY_TIMEOUT_MS} ms`);
+  }
+
+  /** Environment cache: snapshot this container's root filesystem (not
+   * mounts, memory, processes or /run). Never starts a container. Waits for
+   * no other call: the build sandbox runs only its setup, then this. */
+  async snapshotEnvironment(input: { name: string }): Promise<{ id: string; size: number }> {
+    if (!this.ctx.container?.running) {
+      throw new Error(`${OMA_SANDBOX_NOT_RUNNING}: there is no running container to snapshot`);
+    }
+    if (this.inflight > 0) throw new Error("The container is busy; an environment snapshot needs it idle");
+    this.recordActivity(false);
+    const snapshot = await this.container.snapshotContainer({ name: input.name });
+    this.recordActivity(false);
+    return { id: snapshot.id, size: snapshot.size };
+  }
+
+  /** The digest-pinned reference of the image this class starts, or null
+   * (a class without a durable_object images map). */
+  async sandboxImage(): Promise<string | null> {
+    const image = (this.ctx.container as { images?: Record<string, string | undefined> } | undefined)?.images?.sandbox;
+    return typeof image === "string" && image.length > 0 ? image : null;
+  }
+
+  /** Environment snapshot build sandbox: only these hosts, passed through
+   * without credentials; everything else is blocked (R2 included). */
+  async restrictOutboundToHosts(hosts: string[]): Promise<void> {
+    await this.saveRules({
+      allowedHosts: [...hosts],
+      outboundHandlerOverride: { method: "package_source_passthrough" },
+    });
+    if (this.container.running) await this.interceptOutbound();
+  }
+
+  /** Full filesystem only; memory/processes are not captured. Errors propagate. */
+  async createContainerSnapshot(options?: ContainerSnapshotOptions): Promise<ContainerSnapshot> {
+    if (!this.container.running) throw new Error("Cannot snapshot a stopped container");
+    return this.container.snapshotContainer(options);
+  }
+
+  async describe(): Promise<OmaSandboxDescription> {
+    const plan = this.plan();
+    const running = this.ctx.container?.running === true;
+    return {
+      running,
+      incarnation: running ? plan.incarnation : null,
+      mounts: plan.mounts.map((mount) => mount.mountPath),
+    };
+  }
+
+  /** 0.x-compatible: string command → bash -lc, return buffered result. */
+  async exec(
+    command: string,
+    options?: { timeout?: number; cwd?: string; env?: Record<string, string>; environmentMode?: "replace" },
+  ): Promise<{ stdout: string; stderr: string; exitCode: number; success: boolean }> {
+    return this.track(true, async () => {
+      await this.ensureRunning();
+      const replace = options?.environmentMode === "replace";
+      const env = { ...CONTAINER_ENV, ...(replace ? {} : this.processEnv()), ...(options?.env ?? {}) };
+      const timeoutMs = options?.timeout;
+      // env -i also drops image/init-process inheritance before bash starts.
+      const argv = replace
+        ? ["/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), "/bin/bash", "--noprofile", "--norc", "-c", command]
+        : ["/bin/bash", "-lc", loginCommand(command, env)];
+      const proc = await this.container.exec(argv, {
+        cwd: options?.cwd ?? "/workspace",
+        env,
+        ...(timeoutMs ? { timeout: timeoutMs } : {}),
+      } as any);
+      const result = await proc.output();
+      const stdout = new TextDecoder().decode(result.stdout ?? new Uint8Array());
+      const stderr = new TextDecoder().decode(result.stderr ?? new Uint8Array());
+      const exitCode = result.exitCode ?? 1;
+      return { stdout, stderr, exitCode, success: exitCode === 0 };
+    });
+  }
+
+  async readFile(
+    path: string,
+    _options?: { encoding?: string },
+  ): Promise<{ content: string; success: boolean }> {
+    return this.track(false, async () => {
+      await this.ensureRunning();
+      const response = await this.files.readFile(path, {
+        cwd: path.startsWith("/") ? undefined : "/workspace",
+      } as any);
+      const content = await response.text();
+      return { content, success: true };
+    });
+  }
+
+  async writeFile(
+    path: string,
+    content: string,
+    options?: { encoding?: string },
+  ): Promise<{ success: boolean }> {
+    return this.track(true, async () => {
+      await this.ensureRunning();
+      const abs = path.startsWith("/") ? path : `/workspace/${path}`;
+      const parent = abs.slice(0, abs.lastIndexOf("/")) || "/";
+      // Sandbox SDK 1.0 writeFile no longer creates parent directories.
+      await this.files.mkdir(parent, { recursive: true }).catch(() => {});
+      if (options?.encoding === "base64") {
+        const bin = Uint8Array.from(atob(content), (c) => c.charCodeAt(0));
+        await this.files.writeFile(abs, bin);
+      } else {
+        await this.files.writeFile(abs, content);
+      }
+      return { success: true };
+    });
+  }
+
+  /** Returns the full Sandbox SDK 1.0 record; restore needs size, sha256
+   * and format, so callers must persist all of it. */
+  async createBackup(options: {
+    dir: string;
+    name?: string;
+    excludes?: string[];
+    gitignore?: boolean;
+    ttl?: number;
+    localBucket?: boolean;
+  }): Promise<DirectoryBackupRecord & { localBucket?: boolean; expiresAt: number }> {
+    return this.track(false, async () => {
+      await this.ensureRunning();
+      const ttl = options.ttl ?? DEFAULT_BACKUP_TTL_SECONDS;
+      const backup = await this.backups.backup({
+        dir: options.dir,
+        name: options.name,
+        gitignore: options.gitignore,
+        exclude: options.excludes?.map((pattern) =>
+          pattern.includes("/") ? pattern : `**/${pattern}`,
+        ),
+      });
+      const expiresAt = Date.now() + ttl * 1000;
+      const bucket = (this.env as Env & { BACKUP_BUCKET?: R2Bucket }).BACKUP_BUCKET;
+      if (bucket) {
+        await bucket.put(metaKey(backup.id), JSON.stringify({ expiresAt }));
+      }
+      return {
+        ...backup,
+        // 1.0 always uses the R2 binding; the field stays for older callers.
+        ...(options.localBucket !== undefined ? { localBucket: options.localBucket } : {}),
+        expiresAt,
+      };
+    });
+  }
+
+  async restoreBackup(handle: {
+    id: string;
+    dir: string;
+    localBucket?: boolean;
+    sha256?: string;
+    size?: number;
+    format?: string;
+    name?: string;
+  }): Promise<{ success: boolean; dir: string; id: string }> {
+    if (!isFullBackupRecord(handle)) {
+      // Handles written before Sandbox SDK 1.0 carry only {id, dir}; their
+      // squashfs archives are not tar+zstd and cannot be restored by 1.0.
+      throw new Error(
+        `${OMA_SANDBOX_LEGACY_BACKUP}: backup ${handle.id} predates Sandbox SDK 1.0 and cannot be restored`,
+      );
+    }
+    return this.track(false, async () => {
+      await this.ensureRunning();
+      const bucket = (this.env as Env & { BACKUP_BUCKET?: R2Bucket }).BACKUP_BUCKET;
+      if (bucket) {
+        const meta = await bucket.get(metaKey(handle.id));
+        if (meta) {
+          const { expiresAt } = await meta.json<{ expiresAt: number }>();
+          if (Date.now() + EXPIRY_MARGIN_MS > expiresAt) {
+            throw new Error(`Backup ${handle.id} has expired`);
+          }
+        }
+      }
+      const record: DirectoryBackupRecord = {
+        id: handle.id,
+        dir: handle.dir,
+        size: handle.size!,
+        sha256: handle.sha256!,
+        format: handle.format as DirectoryBackupRecord["format"],
+        ...(handle.name !== undefined ? { name: handle.name } : {}),
+      };
+      await this.backups.restore(record);
+      // /workspace now equals the backup; nothing new to snapshot yet.
+      this.ctx.storage.kv.delete(DIRTY_KEY);
+      return { success: true, dir: handle.dir, id: handle.id };
+    });
+  }
+
+  /** On a stopped container this only plans the mount: it is attached when
+   * the container starts, before the catch-all intercept. On a running
+   * container it succeeds only when the same mount was attached at start. */
+  async mountBucket(
+    bucket: string,
+    mountPath: string,
+    options: OmaMountBucketOptions = {},
+  ): Promise<void> {
+    const mount = this.plannedMount(bucket, mountPath, options);
+    if (!this.container.running) {
+      const plan = this.plan();
+      this.savePlan({
+        ...plan,
+        mounts: [...plan.mounts.filter((existing) => existing.mountPath !== mount.mountPath), mount],
+      });
+      return;
+    }
+    await this.ensureRunning();
+    if (this.plan().mounts.some((existing) => sameMount(existing, mount))) return;
+    throw new Error(
+      `${OMA_SANDBOX_MOUNT_AFTER_START}: ${mount.mountPath} was not mounted when this container started; Sandbox SDK 1.0 cannot add a mount to a running container`,
+    );
+  }
+
+  private plannedMount(
+    bucket: string,
+    mountPath: string,
+    options: OmaMountBucketOptions,
+  ): OmaPlannedMount {
+    if (!mountPath.startsWith("/")) {
+      throw new TypeError("mountPath must be an absolute path");
+    }
+    const keyPrefix = (options.prefix ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const access = options.readOnly ? "read-only" : "read-write";
+    if (options.localBucket) {
+      return { mountPath, bucket, keyPrefix, access };
+    }
+    const { endpoint, credentials } = options;
+    if (!endpoint || !credentials) {
+      throw new Error("mountBucket requires endpoint and credentials in Sandbox SDK 1.0");
+    }
+    const workerCredentials = credentials.accessKeyId === this.env.R2_ACCESS_KEY_ID
+      && credentials.secretAccessKey === this.env.R2_SECRET_ACCESS_KEY;
+    return {
+      mountPath,
+      bucket,
+      keyPrefix,
+      access,
+      endpoint,
+      credentials: workerCredentials
+        ? { source: "worker_env" }
+        : { source: "inline", accessKeyId: credentials.accessKeyId, secretAccessKey: credentials.secretAccessKey },
+    };
+  }
+
+  async unmountBucket(mountPath: string): Promise<void> {
+    const plan = this.plan();
+    const mount = plan.mounts.find((existing) => existing.mountPath === mountPath);
+    this.savePlan({
+      ...plan,
+      mounts: plan.mounts.filter((existing) => existing.mountPath !== mountPath),
+    });
+    if (mount?.endpoint === undefined || !this.container.running) return;
+    await this.mounts.unmount(mountPath);
+  }
+
+  /** Pre-stop: let s3fs flush. Plans stay so a restart mounts them again. */
+  private async unmountAllBuckets(): Promise<void> {
+    const remote = this.plan().mounts.filter((mount) => mount.endpoint !== undefined);
+    await Promise.all(
+      remote.map((mount) =>
+        this.mounts.unmount(mount.mountPath).catch((err: Error) =>
+          console.warn(`[oma-sandbox] pre-stop unmount ${mount.mountPath} failed: ${err?.message ?? err}`),
+        ),
+      ),
+    );
+  }
+
+  private mergeProcessEnv(envVars: Record<string, string>): void {
+    this.ctx.storage.kv.put(PROCESS_ENV_KEY, { ...this.processEnv(), ...envVars });
+  }
+
+  /** Persisted: Sandbox SDK 1.0 has no container env API, so each exec gets
+   * these, and a restarted Durable Object must still have them. */
+  async setEnvVars(envVars: Record<string, string>): Promise<void> {
+    this.mergeProcessEnv(envVars);
+  }
+
+  async renewActivityTimeout(): Promise<void> {
+    this.recordActivity(false);
+    if (this.container.running) {
+      await this.container.setInactivityTimeout(this.backstopTimeoutMs());
+    }
+  }
+
+  async setOutboundHandler(method: string, params?: unknown): Promise<void> {
+    const cur = this.rules();
+    await this.saveRules({
+      ...cur,
+      outboundHandlerOverride: { method, params },
+    });
+    if (this.container.running) await this.interceptOutbound();
+  }
+
+  async setOutboundByHost(
+    host: string,
+    method: string,
+    params?: unknown,
+  ): Promise<void> {
+    const cur = this.rules();
+    await this.saveRules({
+      ...cur,
+      outboundByHostOverrides: {
+        ...(cur.outboundByHostOverrides ?? {}),
+        [host]: { method, params },
+      },
+    });
+    if (this.container.running) await this.interceptOutbound();
+  }
+
+  async setBackupContext(ctx: BackupContext): Promise<void> {
+    await this.ctx.storage.put(BACKUP_CTX_KEY, ctx);
+  }
+
+  async setBillingContext(ctx: Omit<BillingContext, "startedAt">): Promise<void> {
+    const existing = (await this.ctx.storage.get(BILLING_CTX_KEY)) as
+      | BillingContext
+      | undefined;
+    if (existing && existing.sessionId === ctx.sessionId) return;
+    await this.ctx.storage.put(BILLING_CTX_KEY, {
+      tenantId: ctx.tenantId,
+      sessionId: ctx.sessionId,
+      agentId: ctx.agentId,
+      startedAt: Date.now(),
+    });
+  }
+
+  /** Best-effort /workspace snapshot. Never starts a container: backing up
+   * a fresh, empty /workspace would replace the session's real backup. */
+  async snapshotWorkspaceNow(): Promise<void> {
+    try {
+      if (!this.ctx.container?.running) return;
+      if (this.ctx.storage.kv.get(DIRTY_KEY) !== true) return;
+      const env = this.env as Env;
+      const ctx = (await this.ctx.storage.get(BACKUP_CTX_KEY)) as
+        | BackupContext
+        | undefined;
+      if (!ctx || !env.MAIN_DB) return;
+      const startMs = Date.now();
+      const backup = await this.createBackup({
+        dir: "/workspace",
+        name: `session-${ctx.sessionId}`,
+        ttl: BACKUP_TTL_SEC,
+        excludes: ["node_modules", ".cache", "__pycache__", ".next", "target"],
+        gitignore: true,
+      });
+      const elapsedMs = Date.now() - startMs;
+      const provider = buildCfTenantDbProvider(env);
+      const backupDb = await provider.resolve(ctx.tenantId);
+      await recordBackup(backupDb, {
+        tenantId: ctx.tenantId,
+        environmentId: ctx.environmentId,
+        handle: {
+          id: backup.id,
+          dir: backup.dir,
+          size: backup.size,
+          sha256: backup.sha256,
+          format: backup.format,
+          ...(backup.name !== undefined ? { name: backup.name } : {}),
+        },
+        nowMs: Date.now(),
+        ttlSec: BACKUP_TTL_SEC,
+        sessionId: ctx.sessionId,
+      });
+      this.ctx.storage.kv.delete(DIRTY_KEY);
+      console.log(
+        `[oma-sandbox] backup recorded id=${backup.id} session=${ctx.sessionId.slice(0, 12)} elapsed_ms=${elapsedMs}`,
+      );
+    } catch (err) {
+      console.error(
+        `[oma-sandbox] snapshotWorkspaceNow failed: ${(err as Error).message ?? err}`,
+      );
+    }
+  }
+
+  async emitSandboxActiveNow(): Promise<void> {
+    await this.recordSandboxActiveOnStop();
+  }
+
+  async destroy(): Promise<void> {
+    if (this.ctx.container?.running) {
+      try {
+        await this.snapshotWorkspaceNow();
+        await this.unmountAllBuckets();
+      } catch {
+        /* best-effort */
+      }
+    }
+    await this.discardContainer();
+  }
+
+  /** Stops without a snapshot; used for an unresponsive container. */
+  private async discardContainer(): Promise<void> {
+    await this.recordSandboxActiveOnStop();
+    if (this.ctx.container?.running) {
+      await this.container.destroy();
+    }
+    if (!this.setupPending) this.setup = null;
+    this.savePlan({ ...this.plan(), incarnation: null });
+    this.ctx.storage.kv.delete(DIRTY_KEY);
+  }
+
+  /** Idle teardown: snapshot changed /workspace, then stop the container. */
+  async onActivityExpired(): Promise<void> {
+    console.log(`[oma-sandbox] idle for ${this.idleTimeoutMs()}ms; stopping container`);
+    if (!(await this.probeShimAlive(HEALTH_PROBE_TIMEOUT_MS))) {
+      console.warn("[oma-sandbox] onActivityExpired: shim unresponsive, discarding without snapshot");
+      await this.discardContainer();
+      return;
+    }
+    await this.destroy();
+  }
+
+  private async probeShimAlive(timeoutMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const probe = (async () => {
+        const proc = await this.container.exec(["true"]);
+        return (await proc.exitCode) === 0;
+      })();
+      const timeout = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      });
+      return await Promise.race([probe, timeout]);
+    } catch {
+      return false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async recordSandboxActiveOnStop(): Promise<void> {
+    try {
+      const env = this.env as Env;
+      const ctx = (await this.ctx.storage.get(BILLING_CTX_KEY)) as
+        | BillingContext
+        | undefined;
+      if (!ctx) return;
+      const elapsedMs = Date.now() - ctx.startedAt;
+      if (elapsedMs <= 0) return;
+      const seconds = Math.floor(elapsedMs / 1000);
+      if (seconds <= 0) return;
+      const services = await getCfServicesForTenant(env, ctx.tenantId);
+      await services.usage.recordUsage({
+        tenantId: ctx.tenantId,
+        sessionId: ctx.sessionId,
+        agentId: ctx.agentId,
+        kind: "sandbox_active_seconds",
+        value: seconds,
+      });
+      await this.ctx.storage.delete(BILLING_CTX_KEY);
+      console.log(
+        `[oma-sandbox] usage emit sandbox_active_seconds=${seconds} session=${ctx.sessionId.slice(0, 12)}`,
+      );
+    } catch (err) {
+      console.error(
+        `[oma-sandbox] recordSandboxActiveOnStop failed: ${(err as Error).message ?? err}`,
+      );
+    }
+  }
+
+  async startNativeWorkProcess(command: string, environment: Record<string, string>, resources?: { incarnation: string; mounts: OmaMountBucketRequest[] }) {
+    const authority = await nativeWorkLaunchAuthority(this.env, environment);
+    const assertResources = () => {
+      if (!resources) return;
+      const plan = this.plan();
+      if (!this.container.running || plan.incarnation !== resources.incarnation
+        || resources.mounts.some(m => !plan.mounts.some(actual => sameMount(actual, this.plannedMount(m.bucket, m.mountPath, m.options))))) {
+        throw new Error("Native Work resource generation or mounts changed before launch");
+      }
+    };
+    assertResources();
+    await this.ensureRunning();
+    assertResources();
+    const epoch = this.plan().incarnation;
+    if (!epoch) throw new Error("Native Work requires container incarnation");
+    // Serial reservation in DO storage before any await/native launch. No
+    // second Work ledger; this is the single managed process slot.
+    await this.inspectWorkProcess(); // only positive exact death retires the slot
+    const previous = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (previous?.epoch === epoch && previous.status !== "exited") throw new Error("Native Work process slot occupied");
+    const id = crypto.randomUUID();
+    const pending: NativeWorkProcess = { ...authority.binding, id, epoch, pid: 0, startTicks: "", status: "starting", mounts: this.plan().mounts.filter(m => m.endpoint !== undefined).map(({ mountPath, keyPrefix, access }) => ({ mountPath, keyPrefix, access })) };
+    this.ctx.storage.kv.put("oma_work_process", pending);
+    await this.scheduleNativeWorkCheck();
+    await authority.assertCurrent();
+    assertResources();
+    // ExecProcess gives the kernel PID, unlike the legacy shell background
+    // shim. env -i drops image/inherited credentials; no shell-owned pidfile.
+    const env = { ...CONTAINER_ENV, ...environment };
+    const process = await this.container.exec(["/usr/bin/env", "-i", ...Object.entries(env).map(([k,v]) => `${k}=${v}`), "/bin/bash", "--noprofile", "--norc", "-c", command], { cwd: "/workspace", env, stdout: "ignore", stderr: "ignore" });
+    if (!Number.isSafeInteger(process.pid) || process.pid < 1) throw new Error("Native process launch unconfirmed");
+    const stat = await (await this.container.exec(["cat", `/proc/${process.pid}/stat`])).output();
+    const text = new TextDecoder().decode(stat.stdout).trim();
+    const startTicks = text.slice(text.lastIndexOf(")") + 2).split(/\s+/)[19];
+    if (stat.exitCode !== 0 || !text.startsWith(`${process.pid} (`) || !/^\d+$/.test(startTicks ?? "")
+      || !["R", "S", "D", "I"].includes(text.slice(text.lastIndexOf(")") + 2).split(/\s+/)[0])) throw new Error("Native process launch unconfirmed");
+    await authority.assertCurrent();
+    const current = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (current?.id !== id || this.plan().incarnation !== epoch) throw new Error("Native process reservation lost");
+    const locator = { ...pending, pid: process.pid, startTicks, status: "running" as const };
+    this.ctx.storage.kv.put("oma_work_process", locator);
+    await this.scheduleNativeWorkCheck();
+    return { id, pid: process.pid, getStatus: async () => {
+      if ((await this.inspectWorkProcess())?.id === id) return "running";
+      const stored = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+      if (stored && sameNativeWorkProcess(stored, locator) && stored.status === "exited") return "exited";
+      throw new Error("Native Work process status unknown");
+    },
+      getLogs: async () => ({ stdout: "", stderr: "" }),
+      kill: async (signal = "SIGTERM") => { await this.assertWorkProcess(locator); process.kill(signal === "SIGKILL" ? 9 : 15); },
+    };
+  }
+
+  /** Operator-only physical observation. Unlike maintenance inspection, this
+   * never retires a slot, updates an alarm, attaches, or renews the container.
+   * The caller must authenticate before RPC and separately recheck SQL claim
+   * authority. Unknown is never proof that the old runner has exited. */
+  async observeWorkProcess(scope: Pick<NativeWorkProcess, "workspaceId" | "environmentId" | "sessionId" | "workId" | "generation" | "holder">) {
+    const unknown = { status: "unknown" as const };
+    try {
+      const saved = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+      if (!saved || saved.status !== "running" || !this.ctx.container?.running || !saved.epoch || this.plan().incarnation !== saved.epoch
+        || !Number.isSafeInteger(saved.pid) || saved.pid < 1 || !/^\d+$/.test(saved.startTicks)
+        || !/^[a-f0-9]{64}$/.test(saved.holderHash) || !saved.id
+        || (["workspaceId", "environmentId", "sessionId", "workId", "generation", "holder"] as const).some(k => saved[k] !== scope[k])) return unknown;
+      // Two kernel samples plus a persisted identity recheck. Direct native exec
+      // cannot start a stopped container; never call ensureRunning()/run().
+      for (let sample = 0; sample < 2; sample++) {
+        const result = await (await this.container.exec(["cat", `/proc/${saved.pid}/stat`])).output();
+        const stat = new TextDecoder().decode(result.stdout).trim();
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
+        if (result.exitCode !== 0 || !stat.startsWith(`${saved.pid} (`) || !["R", "S", "D", "I"].includes(fields[0]) || fields[19] !== saved.startTicks) return unknown;
+        const latest = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+        if (!latest || latest.status !== "running" || !sameNativeWorkProcess(saved, latest) || !this.container.running || this.plan().incarnation !== saved.epoch) return unknown;
+      }
+      // Explicit allowlist: no bearer/hash, mount endpoints, or arbitrary metadata.
+      return { status: "running" as const,
+        process: { id: saved.id, epoch: saved.epoch, pid: saved.pid, startTicks: saved.startTicks },
+        work: { workspaceId: saved.workspaceId, environmentId: saved.environmentId, sessionId: saved.sessionId,
+          workId: saved.workId, generation: saved.generation, holder: saved.holder, attemptId: `environment-work-claim:${saved.generation}` } };
+    } catch { return unknown; }
+  }
+
+  /** Only trusted DO state plus a live /proc start time can identify a Work
+   * process. A new container, PID reuse, stopped/paused process fails closed.
+   * Direct container.exec never starts a stopped container. */
+  async inspectWorkProcess(): Promise<NativeWorkProcess | null> {
+    const saved = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (!saved || saved.status !== "running" || !this.container.running || !saved.epoch || this.plan().incarnation !== saved.epoch
+      || !Number.isSafeInteger(saved.pid) || saved.pid < 1) return null;
+    const result = await (await this.container.exec(["cat", `/proc/${saved.pid}/stat`])).output();
+    if (result.exitCode !== 0) {
+      // cat failure can be transport/permission/IO: not proof of death. A
+      // separate successful kernel-directory absence probe is affirmative.
+      const absent = await (await this.container.exec(["/bin/sh", "-c", `test ! -d /proc/${saved.pid}`])).output();
+      if (absent.exitCode === 0) this.retireNativeWork(saved);
+      return null;
+    }
+    const stat = new TextDecoder().decode(result.stdout).trim();
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
+    if (!stat.startsWith(`${saved.pid} (`) || !/^\d+$/.test(fields[19] ?? "")) return null;
+    if (["Z", "X", "x"].includes(fields[0]) || fields[19] !== saved.startTicks) {
+      this.retireNativeWork(saved);
+      return null;
+    }
+    if (!["R", "S", "D", "I"].includes(fields[0])) return null;
+    for (const binding of saved.mounts) {
+      const planned = this.plan().mounts.find(m => m.mountPath === binding.mountPath);
+      if (!planned?.endpoint || planned.keyPrefix !== binding.keyPrefix || planned.access !== binding.access) return null;
+      const inspection = await this.mounts.inspect(binding.mountPath);
+      if (inspection.attachment.status !== "managed" || !("fuse" in inspection) || inspection.fuse.status !== "connected"
+        || inspection.gateway.status !== "reachable" || inspection.gateway.upstream.status !== "usable") return null;
+      const config = inspection.attachment.configuration;
+      if (config.source.bucket !== planned.bucket || config.source.endpoint !== planned.endpoint || config.access !== planned.access
+        || (config.keyPrefix ?? "").replace(/\/$/, "") !== planned.keyPrefix) return null;
+    }
+    const latest = this.ctx.storage.kv.get("oma_work_process") as NativeWorkProcess | undefined;
+    if (!latest || !sameNativeWorkProcess(saved, latest) || latest.status !== "running" || !this.container.running || this.plan().incarnation !== saved.epoch) return null;
+    return saved;
+  }
+
+  private async assertWorkProcess(expected: NativeWorkProcess): Promise<void> {
+    const actual = await this.inspectWorkProcess();
+    if (!actual || !sameNativeWorkProcess(expected, actual)) throw new Error("Native Work process lost");
+  }
+
+  async workProcessIO(expected: NativeWorkProcess, operation: NativeWorkIO): Promise<unknown> {
+    return this.track(false, async () => {
+      await this.assertWorkProcess(expected);
+      let result: unknown;
+      if (operation.type === "run") {
+        const output = await (await this.container.exec(["/bin/bash", "--noprofile", "--norc", "-c", operation.command], { cwd: "/workspace" })).output();
+        result = { exitCode: output.exitCode, stdout: new TextDecoder().decode(output.stdout), stderr: new TextDecoder().decode(output.stderr) };
+      } else if (operation.type === "write") {
+        const parent = operation.path.slice(0, operation.path.lastIndexOf("/")) || "/";
+        await this.files.mkdir(parent, { recursive: true });
+        await this.files.writeFile(operation.path, operation.encoding === "base64" ? Uint8Array.from(atob(operation.content), c => c.charCodeAt(0)) : operation.content);
+      } else {
+        const response = await this.files.readFile(operation.path);
+        result = operation.type === "read" ? await response.text() : new Uint8Array(await response.arrayBuffer());
+      }
+      await this.assertWorkProcess(expected);
+      return result;
+    });
+  }
+
+  async checkpointWorkProcess(expected: NativeWorkProcess): Promise<NativeWorkCheckpoint> {
+    return this.track(false, async () => {
+      await this.assertWorkProcess(expected);
+      const backup = await this.backups.backup({ dir: "/workspace" });
+      // SDK allocates a fresh UUID per backup, and waits for verified multipart
+      // completion. Seal an exact allocation receipt; no extra ledger.
+      if (!this.env.PLATFORM_ROOT_SECRET) throw new Error("Native allocation signing unavailable");
+      const allocationId = await new WebCryptoAesGcm(this.env.PLATFORM_ROOT_SECRET, "native-work.checkpoint-allocation").encrypt(JSON.stringify({ process: expected, backup }));
+      const candidate = { allocationId, backup };
+      try { await this.assertWorkProcess(expected); }
+      catch (error) { await this.discardWorkCheckpoint(expected, candidate); throw error; }
+      return candidate;
+    });
+  }
+
+  async discardWorkCheckpoint(expected: NativeWorkProcess, candidate: NativeWorkCheckpoint): Promise<void> {
+    if (!this.env.PLATFORM_ROOT_SECRET) return;
+    let proof: { process: NativeWorkProcess; backup: DirectoryBackupRecord };
+    try { proof = JSON.parse(await new WebCryptoAesGcm(this.env.PLATFORM_ROOT_SECRET, "native-work.checkpoint-allocation").decrypt(candidate.allocationId)); }
+    catch { return; }
+    if (!sameNativeWorkProcess(proof.process, expected) || JSON.stringify(proof.backup) !== JSON.stringify(candidate.backup)) return;
+    const db = await buildCfTenantDbProvider(this.env).resolve(expected.workspaceId);
+    const referenced = await db.prepare("SELECT id FROM workspace_backups WHERE json_extract(backup_handle,'$.id')=? LIMIT 1").bind(proof.backup.id).first();
+    if (referenced) return;
+    // Exact allocation proof survives claim/slot replacement. No live slot,
+    // successor, mount, alarm or credentials are mutated by this deletion.
+    await this.backups.delete(proof.backup);
+  }
+
+  /** Starts a process with piped stdio for ACP-style protocols. The idle
+   * alarm treats it as in flight until it exits. */
+  async spawnDuplex(spec: {
+    command: string;
+    cwd?: string;
+    env?: Record<string, string>;
+  }): Promise<OmaDuplexProcess> {
+    await this.ensureRunning();
+    this.inflight += 1;
+    this.recordActivity(false);
+    let process: ExecProcess;
+    try {
+      const env = { ...CONTAINER_ENV, ...this.processEnv(), ...(spec.env ?? {}) };
+      process = await this.container.exec(["/bin/bash", "-lc", loginCommand(spec.command, env)], {
+        cwd: spec.cwd ?? "/workspace",
+        env,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (error) {
+      this.inflight -= 1;
+      throw error;
+    }
+    const exited = process.exitCode.then(
+      (code) => code,
+      () => null,
+    ).finally(() => {
+      this.inflight -= 1;
+      this.recordActivity(this.ctx.container?.running === true);
+    });
+    return new OmaDuplexProcess(process, exited);
+  }
+
+  /**
+   * Minimal startProcess shim for duplex / ACP — background bash writing to
+   * log files. Not a full 0.x Process port; enough for CloudflareSandbox
+   * spawnDuplexProcess when wired. Returns null-shaped failure via throw.
+   */
+  async startProcess(
+    command: string,
+    options?: { env?: Record<string, string>; cwd?: string; environmentMode?: "replace" },
+  ): Promise<{
+    id: string;
+    pid?: number;
+    kill: (signal?: string) => Promise<void>;
+    getLogs: () => Promise<{ stdout: string; stderr: string }>;
+    getStatus: () => Promise<string>;
+  }> {
+    await this.ensureRunning();
+    this.recordActivity(true);
+    const id = crypto.randomUUID();
+    const dir = `/tmp/oma-proc-${id}`;
+    const replace = options?.environmentMode === "replace";
+    const env = { ...CONTAINER_ENV, ...(replace ? {} : this.processEnv()), ...(options?.env ?? {}) };
+    await this.exec(
+      `mkdir -p ${dir} && nohup /bin/bash ${replace ? "--noprofile --norc -c" : "-lc"} ${JSON.stringify(loginCommand(command, env))} >${dir}/stdout 2>${dir}/stderr & echo $! >${dir}/pid`,
+      { timeout: 30_000, cwd: options?.cwd ?? "/workspace", env, ...(replace ? { environmentMode: "replace" as const } : {}) },
+    );
+    const pidText = await this.readFile(`${dir}/pid`);
+    const pid = Number.parseInt(pidText.content.trim(), 10) || undefined;
+    return {
+      id,
+      pid,
+      kill: async (signal = "SIGTERM") => {
+        const sig = signal === "SIGKILL" ? "9" : "15";
+        await this.exec(
+          `kill -${sig} $(cat ${dir}/pid) 2>/dev/null || true`,
+          { timeout: 10_000 },
+        );
+      },
+      getLogs: async () => {
+        const out = await this.readFile(`${dir}/stdout`).catch(() => ({ content: "" }));
+        const err = await this.readFile(`${dir}/stderr`).catch(() => ({ content: "" }));
+        return { stdout: out.content, stderr: err.content };
+      },
+      getStatus: async () => {
+        const r = await this.exec(
+          `kill -0 $(cat ${dir}/pid) 2>/dev/null && echo running || echo exited`,
+          { timeout: 5_000 },
+        );
+        return r.stdout.includes("running") ? "running" : "exited";
+      },
+    };
+  }
+}
+
+/** Kept for operator container classes written against #544
+ * (operator-sandboxes.ts). With Sandbox SDK 1.0 outbound interception is an
+ * instance-level OmaOutbound entrypoint bound in intercept(), so a subclass
+ * of OmaSandbox already inherits the Vault egress and R2 routes; there are
+ * no per-class static registries to copy. */
+export function withOmaOutbound<T extends abstract new (...args: never[]) => OmaSandbox>(cls: T): T {
+  return cls;
+}

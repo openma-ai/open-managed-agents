@@ -12,7 +12,8 @@ import type {
   AgentToolInput,
 } from "../domain/agent-definition";
 
-const DEFAULT_PERMISSION_POLICY: AgentPermissionPolicy = {
+/** Policy the system fills in for any toolset default left unset. */
+export const DEFAULT_PERMISSION_POLICY: AgentPermissionPolicy = {
   type: "always_allow",
 };
 

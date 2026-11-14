@@ -1,7 +1,7 @@
+export * from "./harness-context-state";
 export type * from "./context";
 export type * from "./coordination";
 export { sessionExecutionId } from "./coordination";
-export * from "./coordination-policy";
 export type * from "./dispatch";
 export type * from "./history";
 export type * from "./lifecycle";
@@ -23,3 +23,4 @@ export type {
   InterruptedTurnStopReason,
   SessionTurnCancelReason,
 } from "./cancellation";
+export { abortableDelay, abortedError, cancellationError, isAbortError, linkAbort, untilAborted } from "./turn-abort";

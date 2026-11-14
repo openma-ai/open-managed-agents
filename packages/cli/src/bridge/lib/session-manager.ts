@@ -147,7 +147,7 @@ export interface SessionManagerRuntimeDependencies {
 interface BundleFile { path: string; content: string }
 interface BundleMcpServer {
   name: string;
-  type: "http" | "sse";
+  type: "http";
   url: string;
 }
 interface BundleEnvVar {

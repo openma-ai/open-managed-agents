@@ -113,6 +113,7 @@ describe("Managed harness HTTP control channel", () => {
         sessionId: scope.sessionId,
         turnId: "new_prompt",
         text: "inspect\n[image file: file_1]",
+        input: {eventId:"new_prompt",event:{id:"new_prompt",type:"user.message",processed_at:"2026-09-08T01:00:02.000Z",content:[{type:"text",text:"inspect"},{type:"image",source:{type:"file",file_id:"file_1"}}]}},
       },
       { type: "session.dispose", sessionId: scope.sessionId },
       { type: "control.complete", workId: scope.workId },
@@ -225,6 +226,7 @@ describe("Managed harness HTTP control channel", () => {
         sessionId: scope.sessionId,
         turnId: "turn_1",
         text: "wait",
+        input:{eventId:"turn_1",event:{id:"turn_1",type:"user.message",processed_at:"2026-09-08T01:00:00.000Z",content:[{type:"text",text:"wait"}]}},
       },
     });
     await expect(iterator.next()).resolves.toEqual({
@@ -296,12 +298,14 @@ describe("Managed harness HTTP control channel", () => {
       sessionId: scope.sessionId,
       turnId: "turn_1",
       text: "start the analysis",
+      input:{eventId:"turn_1",event:{id:"turn_1",type:"user.message",processed_at:"2026-09-08T01:00:00.000Z",content:[{type:"text",text:"start the analysis"}]}},
     });
     expect(commands).toContainEqual({
       type: "session.steer",
       sessionId: scope.sessionId,
       eventId: "steer_1",
       text: "focus on the cache path",
+      input:{eventId:"steer_1",event:{id:"steer_1",type:"user.message",processed_at:"2026-09-08T01:00:01.000Z",content:[{type:"text",text:"focus on the cache path"}]}},
     });
   });
 
@@ -475,7 +479,7 @@ describe("Managed harness HTTP control channel", () => {
     expect(request.headers.get("authorization")).toBe("Bearer session-token");
   });
 
-  it("maps every canonical user input shape and ignores an idle interrupt", async () => {
+  it("maps canonical runnable input and refuses unaddressed tool answers and idle interrupt", async () => {
     let eventRequest = 0;
     const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
       const request = new Request(input, init);
@@ -549,20 +553,15 @@ describe("Managed harness HTTP control channel", () => {
       commands.push(command);
     }
     expect(commands.filter((command) => command.type === "session.cancel")).toEqual([]);
+    // 0.14 routes confirmations only to the original callback and drops
+    // unaddressed custom results; neither can become a fabricated model prompt.
+    expect(commands.some(command=>"input" in command && ["custom_unknown","confirmation"].includes(command.input?.eventId ?? ""))).toBe(false);
     expect(commands.filter((command) => command.type === "session.prompt")).toEqual([
       expect.objectContaining({ turnId: "system", text: "" }),
       expect.objectContaining({ turnId: "tool", text: "Tool result for unknown:\n[redacted]" }),
       expect.objectContaining({
         turnId: "custom",
         text: "Custom tool result for custom_1:\n[image chart url: https://image.test]",
-      }),
-      expect.objectContaining({
-        turnId: "custom_unknown",
-        text: "Custom tool result for unknown:\n[image inline]",
-      }),
-      expect.objectContaining({
-        turnId: "confirmation",
-        text: "Tool unknown was answered.",
       }),
       expect.objectContaining({ turnId: "outcome", text: "Outcome requested: " }),
     ]);

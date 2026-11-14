@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# fly.toml's Dockerfile and all COPY inputs are relative to this checkout.
+repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+
 if ! command -v fly >/dev/null 2>&1; then
   echo "flyctl is required: https://fly.io/docs/flyctl/install/" >&2
   exit 1
@@ -71,8 +75,35 @@ emit_provider_configuration() {
   esac
 }
 
-# Validate provider-specific configuration before creating or changing a Fly app.
+# A Fly volume is the default durable store. If S3 is supplied, stage a
+# complete configuration rather than silently dropping it or mixing backends.
+emit_storage_configuration() {
+  local prefix suffix name present value
+  for prefix in FILES_S3 MEMORY_S3; do
+    present=0
+    for suffix in ENDPOINT BUCKET ACCESS_KEY SECRET_KEY REGION PREFIX FORCE_PATH_STYLE CONDITIONAL_CREATE REQUEST_CHECKSUM_CALCULATION; do
+      name="${prefix}_${suffix}"
+      [[ -z "${!name:-}" ]] || present=1
+    done
+    [[ "$present" == "1" ]] || continue
+    for suffix in ENDPOINT BUCKET ACCESS_KEY SECRET_KEY; do
+      name="${prefix}_${suffix}"
+      if [[ -z "${!name:-}" ]]; then echo "$name is required for $prefix storage" >&2; return 1; fi
+    done
+    name="${prefix}_FORCE_PATH_STYLE"; value="${!name:-}"
+    if [[ -n "$value" && "$value" != "0" && "$value" != "1" ]]; then
+      echo "$name must be 0 or 1" >&2; return 1
+    fi
+    for suffix in ENDPOINT BUCKET ACCESS_KEY SECRET_KEY REGION PREFIX FORCE_PATH_STYLE CONDITIONAL_CREATE REQUEST_CHECKSUM_CALCULATION; do
+      name="${prefix}_${suffix}"
+      [[ -z "${!name:-}" ]] || printf '%s=%s\n' "$name" "${!name}"
+    done
+  done
+}
+
+# Validate before creating or changing a Fly app. Values go only to secrets import.
 emit_provider_configuration >/dev/null
+emit_storage_configuration >/dev/null
 
 build_from_source="${OPENMA_FLY_BUILD_FROM_SOURCE:-0}"
 if [[ "$build_from_source" != "0" && "$build_from_source" != "1" ]]; then
@@ -131,6 +162,7 @@ fi
   fi
   printf 'SANDBOX_PROVIDER=%s\n' "$sandbox_provider"
   emit_provider_configuration
+  emit_storage_configuration
 } | fly secrets import --stage >/dev/null
 unset better_auth_secret platform_root_secret
 

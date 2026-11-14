@@ -39,6 +39,7 @@ interface SelectProps {
   disabled?: boolean;
   /** Optional name; emitted as the underlying form input. */
   name?: string;
+  "aria-label"?: string;
   "aria-describedby"?: string;
   "aria-invalid"?: boolean;
   /** Override the trigger className. Default uses shadcn's full-width
@@ -55,6 +56,7 @@ export function Select({
   position,
   disabled,
   name,
+  "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
   "aria-invalid": ariaInvalid,
   className,
@@ -69,7 +71,7 @@ export function Select({
     >
       <SelectTrigger
         id={id}
-        aria-label={placeholder}
+        aria-label={ariaLabel ?? placeholder}
         aria-describedby={ariaDescribedBy}
         aria-invalid={ariaInvalid}
         // Override shadcn's default w-fit so the trigger fills the form

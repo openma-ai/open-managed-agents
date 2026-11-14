@@ -10,7 +10,7 @@ export const PROXY = {
 
 export const DEEPSEEK_ENDPOINTS: InferenceProtocolEndpoint[] = [
   {
-    protocol: "openai-chat",
+    protocol: "openai-responses",
     proxyPathSegment: "openai/v1",
     upstreamBaseUrl: "https://api.deepseek.com",
   },
@@ -22,11 +22,6 @@ export const DEEPSEEK_ENDPOINTS: InferenceProtocolEndpoint[] = [
 ];
 
 export const OPENAI_ENDPOINTS: InferenceProtocolEndpoint[] = [
-  {
-    protocol: "openai-chat",
-    proxyPathSegment: "openai/v1",
-    upstreamBaseUrl: "https://api.openai.com",
-  },
   {
     protocol: "openai-responses",
     proxyPathSegment: "openai/v1",

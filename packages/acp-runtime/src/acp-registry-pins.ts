@@ -37,7 +37,36 @@ export const PINNED_ACP_REGISTRY_AGENTS: readonly OfficialRegistryAgent[] = [
       npx: { package: "@agentclientprotocol/claude-agent-acp@0.94.0" },
     },
   },
+  // npm @agentclientprotocol/codex-acp, version 1.8.0 (OpenMA pin; same package as the registry entry).
+  {
+    id: "codex-acp",
+    name: "Codex CLI",
+    version: "1.8.0",
+    description: "ACP adapter for OpenAI's Codex CLI",
+    repository: "https://github.com/agentclientprotocol/codex-acp",
+    distribution: {
+      npx: { package: "@agentclientprotocol/codex-acp@1.8.0" },
+    },
+  },
+  // OpenMA pi ACP adapter (npm @openma/pi-acp), version 0.1.8.
+  {
+    id: "pi-acp",
+    name: "pi (OpenMA ACP)",
+    version: "0.1.8",
+    description: "ACP adapter for the pi coding agent, built in-process on the pi SDK",
+    repository: "https://github.com/openma-ai/pi-acp",
+    distribution: {
+      npx: { package: "@openma/pi-acp@0.1.8" },
+    },
+  },
 ];
+
+/** Where an Environment-setup ACP install leaves its launcher for `home`
+ * (the sandbox user's HOME). Must match the install script's `$HOME` layout. */
+export function acpInstalledLauncherPath(home: string, id: string, version: string): string {
+  if (!home.startsWith("/") || /["'$`\\\s]/.test(home + id + version)) throw new Error("Invalid ACP launcher location");
+  return `${home.replace(/\/+$/u, "")}/.oma/installed-agent/${id}/${version}/acp-launch.sh`;
+}
 
 /** The npx distribution selected for a pinned registry agent. */
 export interface PinnedAcpRegistryAgent {

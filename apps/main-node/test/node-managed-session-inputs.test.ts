@@ -4,11 +4,14 @@ import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session } from "@open-managed-agents/managed-agents-application";
 
 import { ZipSkillPackageCompiler } from "../../../packages/managed-agents-adapters-runtime/src/skill-package-compiler.js";
-import { planSkillExposure } from "../../agent/src/harness/assembly/strategies/skill-exposure.js";
+import { planSkillExposure } from "../../../packages/agent-harness/src/assembly/strategies/skill-exposure.js";
 import { NodeManagedSessionInputPreparer } from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
 import * as nodeManagedInputs from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
+// Stands in for node-repository-egress: git only ever sees this, never the token.
+const repositoryPlaceholder = async ({ resourceId }: { resourceId: string }) => `oma_vault_placeholder_${resourceId}`;
+const basicFor = (secret: string) => `Authorization: Basic ${Buffer.from(`x-access-token:${secret}`).toString("base64")}`;
 
 function managedSession(): Session {
   return {
@@ -133,10 +136,13 @@ describe("NodeManagedSessionInputPreparer", () => {
         expect.soft(written.get(advertisedPath!)).toEqual(manifest);
         expect.soft(written.get(`${mounts[0]!.mountRoot}references/guide.md`)).toEqual(guide);
         expect.soft(await nodeManagedInputs.buildNodeManagedSkillMounts(session, skillVersions)).toEqual(mounts);
-        expect.soft(await nodeManagedInputs.buildNodeManagedSkillReminders(session, skillVersions)).toEqual([{
-          source: "skill:skill_inputs",
-          text: `Custom skill skill_inputs is mounted at ${mountRoot}. Locate and read its SKILL.md before applying it.`,
-        }]);
+        const [skillFact] = await nodeManagedInputs.resolveNodeManagedSkillFacts(session, skillVersions);
+        expect.soft(skillFact?.manifestPath).toBe(`${mountRoot}SKILL.md`);
+        expect.soft(written.get(skillFact!.manifestPath)).toEqual(manifest);
+        expect.soft(written.get(`${skillFact!.directory}/references/guide.md`)).toEqual(guide);
+        const reminders = await nodeManagedInputs.buildNodeManagedResourceReminders(session, skillVersions, { skills: true });
+        expect.soft(reminders.map((reminder) => reminder.source)).toEqual(["skill_files:skill_inputs"]);
+        expect.soft(reminders[0]?.text).toContain(`installed at ${mountRoot} (manifest: ${mountRoot}SKILL.md)`);
       }
       if (requestedVersion === "123") {
         expect(skillVersions.retrieveSkillVersion).toHaveBeenCalledWith({ skillId: "skill_inputs", version: "123" });
@@ -256,6 +262,7 @@ describe("NodeManagedSessionInputPreparer", () => {
       files,
       skillVersions,
       repositoryCredentials,
+      repositoryPlaceholder,
       memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
@@ -282,8 +289,9 @@ describe("NodeManagedSessionInputPreparer", () => {
     expect(sandbox.registerCommandSecrets).toHaveBeenCalledWith("git", {
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "http.http://git.example.test/repository.git.extraHeader",
-      GIT_CONFIG_VALUE_0: "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hwX3ByaXZhdGU=",
+      GIT_CONFIG_VALUE_0: basicFor("oma_vault_placeholder_resource_repo_01"),
     });
+    expect(JSON.stringify(vi.mocked(sandbox.registerCommandSecrets).mock.calls)).not.toContain("ghp_private");
     expect(exec).toHaveBeenCalledWith(
       "git -C 'repository' checkout --detach 'abcdef0123456789'",
       60_000,
@@ -358,6 +366,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         }),
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+      repositoryPlaceholder,
       memoryStores: {
         mode: "native",
         snapshots: {
@@ -399,6 +408,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+      repositoryPlaceholder,
       memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
@@ -413,6 +423,31 @@ describe("NodeManagedSessionInputPreparer", () => {
       30_000,
     );
     expect(sandbox.gitCheckout).not.toHaveBeenCalled();
+  });
+
+  it("refuses a credentialed repository when no egress placeholder is wired", async () => {
+    const session = managedSession();
+    session.agent.skills = [];
+    session.resources = [session.resources[1]!];
+    const sandbox = {
+      sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
+      mountSessionOutputs: vi.fn(async () => undefined),
+      readFile: vi.fn(async () => { throw new Error("missing"); }),
+      exec: vi.fn(async () => ""),
+      gitCheckout: vi.fn(async () => undefined),
+      registerCommandSecrets: vi.fn(),
+    } as unknown as SandboxExecutor;
+    const preparer = new NodeManagedSessionInputPreparer({
+      files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
+      skillVersions: {
+        listSkillVersions: async () => { throw new Error("unexpected skill listing"); },
+        downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
+      },
+      repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
+    });
+    await expect(preparer.prepare({ workspaceId: "workspace_inputs", session, sandbox })).rejects.toThrow(/credential egress/);
+    expect(sandbox.registerCommandSecrets).not.toHaveBeenCalled();
   });
 
   it("fails closed when retained repository identity does not match the Session resource", async () => {
@@ -433,6 +468,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+      repositoryPlaceholder,
       memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
@@ -477,6 +513,7 @@ describe("NodeManagedSessionInputPreparer", () => {
           downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
         },
         repositoryCredentials: { findGithubToken: async () => { throw new Error("a Bond repository has no stored token"); } },
+        repositoryPlaceholder,
         memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
         ...(repositoryBonds === undefined ? {} : { repositoryBonds }),
       });
@@ -496,10 +533,11 @@ describe("NodeManagedSessionInputPreparer", () => {
       expect(sandbox.registerCommandSecrets).toHaveBeenCalledWith("git", {
         GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "http.https://gitlab.example.test/group/app.git.extraHeader",
-        GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from("x-access-token:glpat-bond").toString("base64")}`,
+        GIT_CONFIG_VALUE_0: basicFor("oma_vault_placeholder_resource_repo_bond"),
       });
+      expect(JSON.stringify(sandbox.registerCommandSecrets.mock.calls)).not.toContain("glpat-bond");
       const commands = sandbox.exec.mock.calls.map(([command]) => command);
-      expect(commands).toContain("git clone -- 'https://gitlab.example.test/group/app.git' 'app'");
+      expect(commands).toContain("git clone -- 'https://gitlab.example.test/group/app.git' 'app' 2>&1");
       expect(commands.join("\n")).not.toContain("glpat-bond");
     });
 
@@ -530,6 +568,7 @@ describe("NodeManagedSessionInputPreparer", () => {
           downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
         },
         repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+        repositoryPlaceholder,
         repositoryBonds: { repositoryToken: async () => { throw new Error("a token repository never asks a Bond"); } },
         memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
       }).prepare({ workspaceId: "workspace_inputs", session, sandbox: sandbox as unknown as SandboxExecutor });
@@ -538,12 +577,28 @@ describe("NodeManagedSessionInputPreparer", () => {
       ]);
     });
 
-    it("fails closed without a Bond source or when the Bond refuses", async () => {
+    it("clones anonymously, with no credential, when the deployment has no Bonds", async () => {
+      const sandbox = sandboxWith(false);
+      await preparerWith().prepare({
+        workspaceId: "workspace_inputs",
+        session: bondSession(),
+        sandbox: sandbox as unknown as SandboxExecutor,
+      });
+      expect(sandbox.registerCommandSecrets).toHaveBeenCalledWith("git", { GIT_TERMINAL_PROMPT: "0" });
+      expect(sandbox.exec.mock.calls.map(([command]) => command)).toContain("git clone -- 'https://gitlab.example.test/group/app.git' 'app' 2>&1");
+    });
+
+    it("reports a failed anonymous clone as a repository that may be private", async () => {
+      const sandbox = sandboxWith(false);
+      sandbox.exec = vi.fn(async (command: string) => command.startsWith("git clone") ? "exit=128\nfatal: Authentication failed" : "");
       await expect(preparerWith().prepare({
         workspaceId: "workspace_inputs",
         session: bondSession(),
-        sandbox: sandboxWith(false) as unknown as SandboxExecutor,
-      })).rejects.toThrow(/has no token, and this deployment has no Bonds/);
+        sandbox: sandbox as unknown as SandboxExecutor,
+      })).rejects.toThrow(/has no token.*private/s);
+    });
+
+    it("fails closed when the Bond refuses", async () => {
       const sandbox = sandboxWith(false);
       await expect(preparerWith({
         repositoryToken: async () => { throw new Error("No Bond credential for repository x: no GitLab Bond for this host"); },
@@ -734,5 +789,38 @@ describe("NodeManagedSessionInputPreparer", () => {
       session,
       sandbox,
     })).rejects.toThrow(/unsafe skill archive path/i);
+  });
+
+  // Characterization (design §0.7 regression rule 1), locked before the
+  // repository checkout moved into packages/session-runtime.
+  // Behaviour change (shared checkout, CF semantics): the default branch is
+  // cloned, then the branch is fetched + checked out, or created locally when
+  // the remote lacks it, instead of failing the clone.
+  it("clones the default branch, then checks out or creates the requested branch", async () => {
+    const session = managedSession();
+    session.agent.skills = [];
+    session.resources = [{ ...session.resources[1]!, checkout: { type: "branch", name: "topic" } } as Session["resources"][number]];
+    const gitCheckout = vi.fn(async () => undefined);
+    const exec = vi.fn(async () => "");
+    await new NodeManagedSessionInputPreparer({
+      files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
+      skillVersions: {} as never,
+      repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+      repositoryPlaceholder,
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
+    }).prepareInputs({
+      workspaceId: "workspace_inputs",
+      session,
+      sandbox: {
+        exec, gitCheckout,
+        readFile: async () => { throw new Error("missing"); },
+        registerCommandSecrets: vi.fn(),
+      } as unknown as SandboxExecutor,
+    });
+    expect(gitCheckout).toHaveBeenCalledWith("http://git.example.test/repository.git", { targetDir: "/workspace/repository" });
+    expect(exec.mock.calls.map(([command]) => command)).toEqual([
+      "git -C 'repository' config user.name \"Agent\" && git -C 'repository' config user.email \"agent@managed-agents.dev\"",
+      "(git -C 'repository' fetch origin 'topic:refs/remotes/origin/topic' 2>/dev/null && git -C 'repository' checkout 'topic') || git -C 'repository' checkout -b 'topic'",
+    ]);
   });
 });

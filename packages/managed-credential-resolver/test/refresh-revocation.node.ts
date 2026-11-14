@@ -306,8 +306,7 @@ for (const backend of ["memory", "sql"] as const) {
           const h = await setup(backend, authType);
           const seen: Array<{ token: string | null; body: string; method: string }> = [];
           const relay = createCredentialEgressRelay({
-            passes: { issue: async () => "pass", verify: async () => ({ workspaceId: "ws", sessionId: "s", expiresAt: Date.now() + 60000 }) },
-            findSession: async () => ({ vaultIds: ["v"], archivedAt: null }), credentials: h.resolver,
+            authenticate: async () => ({ type: "accepted", scope: { workspaceId: "ws", sessionId: "s", vaultIds: ["v"] } }), credentials: h.resolver,
             send: async request => {
               seen.push({ token: request.headers.get("authorization"), body: await request.text(), method: request.method });
               await h.archive(kind);
@@ -316,7 +315,7 @@ for (const backend of ["memory", "sql"] as const) {
           });
           const request = () => new Request("https://control.example/v1/oma/egress/forward", {
             method: "POST", body: "write operation", headers: {
-              authorization: "Bearer pass",
+              authorization: "Basic c2Vzc2lvbjp0b2tlbg==",
               "x-oma-egress-target": authType === "mcp_oauth" ? "https://mcp.example/mcp" : "https://api.github.com/user",
               "x-oma-egress-method": "POST",
               "x-oma-egress-headers": JSON.stringify({ authorization: "Bearer __cap_managed__" }),

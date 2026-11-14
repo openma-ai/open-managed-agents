@@ -218,6 +218,41 @@
       "when": 1793521172700,
       "tag": "0030_elite_mother_askani",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1794168375781,
+      "tag": "0031_runtime_resource_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1794189208428,
+      "tag": "0032_sandbox_token_hashes",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1794206576749,
+      "tag": "0033_work_claim_publication",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1794300000000,
+      "tag": "0034_work_inputs",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1794556800000,
+      "tag": "0035_custom_invocations",
+      "breakpoints": true
     }
   ]
 }

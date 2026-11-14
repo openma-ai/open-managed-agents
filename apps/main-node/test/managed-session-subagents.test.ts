@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
+import type { HarnessContext } from "@open-managed-agents/agent-harness";
 import type { Environment, Session, SessionEventView } from "@open-managed-agents/managed-agents-application";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
@@ -32,6 +32,9 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
   maxConcurrentSubagents?: number;
   native?: boolean;
   output?(frame: Record<string, unknown>): Promise<void>;
+  executionFence?: import("@open-managed-agents/session-runtime-contract/coordination").SessionExecutionFence;
+  isExecutionFenceActive?: DefaultNodeManagedSessionRunnerDependencies["isExecutionFenceActive"];
+  inspectContext?(input: Parameters<DefaultNodeManagedSessionRunnerDependencies["buildHarnessContext"]>[0]): void;
 } = {}) {
   const activeSession = structuredClone(session);
   if (options.native) activeSession.agent.multiagent = { type: "multiagent_20261001", advisor: { type: "disabled" }, workflows: { type: "disabled" }, subagents: { type: "enabled", inlineAgents: { type: "enabled" }, predefinedAgents: [] } };
@@ -40,9 +43,10 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
   let id = 0;
   const deps: DefaultNodeManagedSessionRunnerDependencies = {
     buildSandbox: async () => sandbox,
+    isExecutionFenceActive: options.isExecutionFenceActive,
     buildModel: async () => ({}) as HarnessContext["model"],
     buildTools: async () => ({}),
-    buildHarnessContext: async (input) => input as unknown as HarnessContext,
+    buildHarnessContext: async (input) => { options.inspectContext?.(input); return input as unknown as HarnessContext; },
     buildHarness: () => ({ run: async (context) => run(context as unknown as Context) }),
     confirmedTools: { execute: async () => { throw new Error("Unexpected confirmed tool"); } },
     outcomes: { evaluate: async () => { throw new Error("Unexpected outcome"); } },
@@ -60,13 +64,103 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
       const message = { id: `input_${++id}`, type: "user.message" as const,
         content: [{ type: "text" as const, text: "Parent task" }], processedAt: session.createdAt };
       await runner.accept({ workspaceId: "workspace", sessionId: session.id, session: activeSession, environment,
-        initialEvents: [], historyEvents: [...history, message], events: [message],
+        initialEvents: [], historyEvents: [...history, message], events: [message], executionFence: options.executionFence,
         output: async (frame) => { frames.push(frame as Record<string, unknown>); await options.output?.(frame as Record<string, unknown>); } });
     },
   };
 }
 
 describe("Managed Node native subagents", () => {
+  it("builds each child turn from its own newly received input and the current parent execution fence", async () => {
+    const fence = { workspaceId: "workspace", sessionId: session.id, executionId: "execution", attemptId: "attempt", ownerId: "owner", generation: 1, expiresAt: "2099-01-01T00:00:00Z" };
+    const inputs: Array<{ text: string; fence: unknown; threadId: string }> = [];
+    const f = fixture(async ({ session: active, runtime, subagents }) => {
+      if (active.agent.name === "Parent") {
+        const child = await subagents!.create({ name: "Child", message: "First child request" });
+        await subagents!.wait({ threadIds: [child.threadId] });
+        await subagents!.send({ threadId: child.threadId, message: "Follow-up child request" });
+        await subagents!.wait({ threadIds: [child.threadId] });
+      } else runtime.broadcast({ type: "agent.message", content: [{type:"text",text:"Child reply"}] });
+    }, undefined, { executionFence: fence, inspectContext(input) {
+      if (input.session.agent.name === "Parent") return;
+      inputs.push({ text: input.acceptedEvents.flatMap(e => e.type === "user.message" ? e.content.flatMap(c => c.type === "text" ? [c.text] : []) : []).join("\n"), fence: input.executionFence, threadId: input.runtime.sessionThreadId });
+    } });
+    await f.run();
+    expect(inputs.map(i => i.text)).toEqual(["First child request", "Follow-up child request"]);
+    expect(inputs.map(i => i.fence)).toEqual([fence, fence]);
+    expect(inputs[0]!.threadId).not.toBe("sthr_primary");
+    expect(inputs[1]!.threadId).toBe(inputs[0]!.threadId);
+  });
+  it("shares the root execution identity without replacing the child's control-plane agent", async () => {
+    const fence = { workspaceId: "workspace", sessionId: session.id, executionId: "exec", attemptId: "attempt", ownerId: "owner", generation: 1, expiresAt: "2099-01-01T00:00:00Z" };
+    const contexts: Array<Parameters<DefaultNodeManagedSessionRunnerDependencies["buildHarnessContext"]>[0]> = [];
+    const f = fixture(async ({ session: active, subagents, runtime }) => {
+      if (active.agent.name === "Parent") {
+        const child = await subagents!.create({ name: "Restricted", instructions: "Child instructions", message: "Child input" });
+        await subagents!.wait({ threadIds: [child.threadId] });
+      } else runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Child output" }] });
+    }, undefined, { executionFence: fence, inspectContext: input => { contexts.push(input); } });
+    await f.run();
+    expect(contexts).toHaveLength(2);
+    const [parent, child] = contexts;
+    expect(child!.executionSession).toBe(parent!.session);
+    expect(child!.executionFence).toBe(parent!.executionFence);
+    expect(child!.session.agent.name).toBe("Restricted");
+    expect(child!.session.agent.system).toBe("Child instructions");
+    expect(child!.session.id).toBe(parent!.session.id);
+    expect(JSON.stringify(child!.runtime.history.getMessages())).not.toContain("Parent task");
+  });
+  it("refuses a child's sandbox call after the parent's durable execution fence is revoked", async () => {
+    const fence = { workspaceId: "workspace", sessionId: session.id, executionId: "exec", attemptId: "attempt", ownerId: "owner", generation: 1, expiresAt: "2099-01-01T00:00:00Z" };
+    let active = true, rejected = false;
+    const f = fixture(async ({ session: current, sandbox, subagents, runtime }) => {
+      if (current.agent.name === "Parent") {
+        const child = await subagents!.create({ name: "Worker", message: "Work" });
+        await subagents!.wait({ threadIds: [child.threadId] });
+      } else {
+        expect(await sandbox.exec("pwd")).toMatchObject({ stdout: "shared" });
+        active = false;
+        try { await sandbox.exec("must not dispatch"); }
+        catch (error) { rejected = error instanceof Error && error.name === "SandboxExecutionFencedError"; }
+        runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Done" }] });
+      }
+    }, undefined, { executionFence: fence, isExecutionFenceActive: async received => { expect(received).toBe(fence); return active; } });
+    await f.run();
+    expect(rejected).toBe(true);
+  });
+  it("cancels the actual child runner while its parent authority lookup is stalled", async () => {
+    let entered!:()=>void, release!:(value:boolean)=>void;
+    const reading = new Promise<void>(resolve=>{entered=resolve;});
+    const authority = new Promise<boolean>(resolve=>{release=resolve;});
+    const fence = {workspaceId:"workspace",sessionId:session.id,executionId:"exec",attemptId:"attempt",ownerId:"owner",generation:1,expiresAt:"2099-01-01T00:00:00Z"};
+    const f = fixture(async ({session:current,subagents,sandbox})=>{
+      if(current.agent.name==="Parent") {const child=await subagents!.create({name:"Worker",message:"Work"});await subagents!.wait({threadIds:[child.threadId]});}
+      else {try {await sandbox.exec("must not dispatch");} catch {}}
+    },undefined,{executionFence:fence,isExecutionFenceActive:async()=>{entered();return authority;}});
+    let settled=false;
+    const run=f.run().finally(()=>{settled=true;});
+    await reading;f.runner.cancel({workspaceId:"workspace",sessionId:session.id});
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const cancelled=settled;release(true);await run;
+    expect(cancelled).toBe(true);
+  });
+  it("propagates the child's actual budget short circuit to its external idle event", async () => {
+    const {createSessionBudgetGate,memoryListCostPicoStore,beginModelEgress}=await import("../../../packages/agent-harness/src/budget");
+    const gate=createSessionBudgetGate({amount:"1",currency:"USD"},{version:1,currency:"USD",input_per_mtok:"1",output_per_mtok:"1"},memoryListCostPicoStore("10000000000"));
+    let childId="",modelRequests=0;
+    const f=fixture(async({session:active,subagents,runtime})=>{
+      if(active.agent.name==="Parent"){
+        subagents!.setBudgetGate!(gate);
+        childId=(await subagents!.create({name:"Worker",message:"Work"})).threadId;
+        await subagents!.wait({threadIds:[childId]});
+      } else { if(beginModelEgress(runtime.turnBudgetGate))modelRequests++; }
+    });
+    await f.run();
+    expect(modelRequests).toBe(0);
+    expect(f.frames.filter(frame=>frame.type==="session.thread_status_idle"&&frame.session_thread_id===childId)).toEqual([
+      expect.objectContaining({stop_reason:{type:"budget_reached"}}),
+    ]);
+  });
   it("executes an inline-only native session through the production policy and resolver", async () => {
     const f = fixture(async ({ session: active, runtime, subagents, sandbox }) => {
       if (active.agent.name === "Parent") {
@@ -93,6 +187,7 @@ describe("Managed Node native subagents", () => {
         expect(result).toMatchObject({ timedOut: false, subagents: [{ threadId: childId, status: "completed", output: "Found answer" }] });
         expect(JSON.stringify(runtime.history.getMessages())).not.toContain("Found answer");
       } else {
+        expect(runtime.sessionThreadId).toBe(childId);
         expect(active.agent.system).toBe("Inspect files");
         expect(active.agent.model.id).toBe("local-model");
         expect(await sandbox.exec("pwd")).toMatchObject({ stdout: "shared" });

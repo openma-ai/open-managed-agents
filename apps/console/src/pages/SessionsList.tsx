@@ -216,7 +216,7 @@ export function SessionsList() {
   const [agentMcpUrls, setAgentMcpUrls] = useState<string[]>([]);
   // Per-vault credential hostnames cache. Populated lazily as the user
   // toggles vaults. Lookups are by hostname (matches outbound proxy logic
-  // in apps/main/src/routes/mcp-proxy.ts:resolveOutboundCredentialByHost).
+  // in apps/main/src/lib/outbound-credential.ts:resolveOutboundCredentialByHost).
   const [vaultCredHosts, setVaultCredHosts] = useState<Record<string, Set<string>>>({});
   const [envs, setEnvs] = useState<Array<{ id: string; name: string }>>([]);
   const [vaults, setVaults] = useState<Vault[]>([]);

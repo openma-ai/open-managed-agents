@@ -11,15 +11,21 @@
 // response pump reject unobserved on any client cancel/abort — reproducible
 // with a bare ReadableStream and no OMA code — so that path cannot prove
 // anything about this route.
-import { registerCoreHarnesses } from "../../apps/agent/src/harness/builtins";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import { setSandboxForTest } from "../sandbox-stub";
+import { registerCoreHarnesses } from "../../packages/agent-harness/src/builtins";
+import { registerHarness } from "../../packages/agent-harness/src/registry";
+import { setCloudflareSandboxForTest } from "../../apps/agent/src/runtime/sandbox";
 import { env, exports } from "cloudflare:workers";
-import { createExecutionContext } from "cloudflare:test";
+import { artifactPublicationModel } from "../../packages/agent-harness/test/artifact-publication-model";
+import { appendStaleTurnEvent } from "../../apps/agent/src/runtime/stale-turn-settlement";
+import { PiHarness } from "../../packages/agent-harness/src/pi-loop";
+import { createExecutionContext, runInDurableObject } from "cloudflare:test";
 import mainApp from "../../apps/main/src/index";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 
+// Bindings supplied by vitest.config.ts's composed test Worker.
+const testEnv = env as unknown as { MAIN_DB: D1Database; SESSION_DO: DurableObjectNamespace;
+  MAIN_MCP: NonNullable<import("../../packages/shared/src/env").Env["MAIN_MCP"]> };
 const headers = { Authorization: "Bearer test-key", "OpenAI-Beta": "agents=v1", "Content-Type": "application/json" };
 const request = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`http://localhost/openai/v1${path}`, { ...init, headers: init?.headers ?? headers }));
 const json = async <T>(response: Response): Promise<T> => {
@@ -32,17 +38,34 @@ const json = async <T>(response: Response): Promise<T> => {
 const workspace = new Map<string, Uint8Array>();
 const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 const ok = (stdout: string) => ({ stdout, stderr: "", exitCode: 0, success: true });
+/** Sandbox SDK 1.0 container: mounts are attached when it starts. */
+let failedReads = 0;
+let failPublicationRead = false;
+let container: { incarnation: string; mounts: string[]; marker: string } | null = null;
 
 beforeAll(async () => {
   await ensureModelCards(["claude-sonnet-4-6"]);
-  setSandboxForTest({
+  setCloudflareSandboxForTest({
+    describe: async () => ({ running: container !== null, incarnation: container?.incarnation ?? null, mounts: container?.mounts ?? [] }),
+    provision: async (input: { incarnation: string; mounts: Array<{ mountPath: string }> }) => {
+      if (container !== null) return { incarnation: container.incarnation, started: false, pendingMounts: [] };
+      container = { incarnation: input.incarnation, mounts: input.mounts.map(mount => mount.mountPath), marker: input.incarnation };
+      return { incarnation: input.incarnation, started: true, pendingMounts: [] };
+    },
     exec: async (command: string) => {
+      const marker = command.match(/^echo (\S+) > \/tmp\/\.oma-warm$/);
+      if (marker && container !== null) container.marker = marker[1]!;
+      if (command.startsWith("cat /tmp/.oma-warm")) return ok(container?.marker ?? "");
       if (command.includes("find ./outputs")) {
         const paths = [...workspace.keys()].filter(path => path.startsWith("/workspace/outputs/")).sort();
         return ok(base64(new TextEncoder().encode(paths.map(path => `.${path.slice("/workspace".length)}\0`).join(""))));
       }
       const read = command.match(/^base64 -w0 -- '([^']+)'/);
       if (read) {
+        if (failPublicationRead && read[1] === "/workspace/outputs/failure.txt") {
+          failedReads++;
+          throw new Error("derived read unavailable PRIVATE_PROVIDER_DETAIL");
+        }
         const bytes = workspace.get(read[1]!);
         return bytes ? ok(base64(bytes)) : { stdout: "", stderr: "No such file", exitCode: 1, success: false };
       }
@@ -56,11 +79,62 @@ beforeAll(async () => {
   });
 });
 afterAll(() => {
-  setSandboxForTest(undefined);
+  setCloudflareSandboxForTest(undefined);
   registerCoreHarnesses();
 });
 
 describe("Cloudflare Agents API automatic artifact publication", () => {
+  it("durably reports a derived publication read failure after completion and DO recreation", async () => {
+    workspace.clear(); failedReads = 0; failPublicationRead = true;
+    const { faux, models } = artifactPublicationModel();
+    registerHarness("default", () => ({ async run(ctx) {
+      workspace.set("/workspace/outputs/failure.txt", new TextEncoder().encode("retained"));
+      await new PiHarness().run({ ...ctx, pi: { models, model: faux.getModel(), thinkingLevel: "off", speed: "standard" } });
+    } }));
+    try {
+      const session = await json<{id:string}>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6" }, environment: { type: "openai_hosted" }, input: "write" }) }));
+      await expect.poll(() => failedReads, { timeout: 15_000 }).toBe(1);
+      await expect.poll(async () => (await testEnv.MAIN_DB.prepare("SELECT state FROM managed_session_executions WHERE session_id=? ORDER BY admitted_at_ms DESC LIMIT 1").bind(session.id).first<{state:string}>())?.state, {timeout:15_000}).toBe("completed");
+      const verify = async () => {
+        const response = await exports.default.fetch(new Request(`http://localhost/v1/sessions/${session.id}/events?limit=1000`, {headers:{"x-api-key":"test-key"}}));
+        const events = (await json<{data:any[]}>(response)).data;
+        const warnings = events.filter(e=>e.type === "session.warning" && e.source === "agents_api.artifact_publication");
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0].message).toContain("derived");
+        expect(events.indexOf(warnings[0])).toBeGreaterThan(events.findIndex(e=>e.type === "session.status_idle"));
+        expect(JSON.stringify(warnings)).not.toContain("PRIVATE_PROVIDER_DETAIL");
+        expect(events.filter(e=>e.type === "session.status_idle")).toEqual([expect.objectContaining({stop_reason:{type:"end_turn"}})]);
+        expect((await json<{data:unknown[]}>(await request(`/agents/sessions/${session.id}/artifacts`))).data).toEqual([]);
+        expect(faux.state.callCount).toBe(1);
+        expect(new TextDecoder().decode(workspace.get("/workspace/outputs/failure.txt"))).toBe("retained");
+      };
+      await verify();
+      // A completed execution no longer owns append authority. Exercise the
+      // same production commit helper against real D1, not a mock reporter.
+      const settled = await testEnv.MAIN_DB.prepare("SELECT * FROM managed_session_executions WHERE session_id=? ORDER BY admitted_at_ms DESC LIMIT 1").bind(session.id).first<any>();
+      const local: unknown[] = [];
+      expect(await appendStaleTurnEvent({binding:testEnv.MAIN_MCP,workspaceId:"default",sessionId:session.id,
+        append:event=>{local.push(event);},sockets:()=>[]},
+        {type:"session.warning",source:"agents_api.artifact_publication",message:"stale owner must not publish"},
+        {workspaceId:"default",sessionId:session.id,executionId:settled.id,attemptId:settled.attempt_id,ownerId:settled.owner_id,generation:settled.generation,expiresAt:new Date(Date.now()+60_000).toISOString()})).toBe(false);
+      expect(local).toEqual([]);
+      const stub = testEnv.SESSION_DO.get(testEnv.SESSION_DO.idFromName(JSON.stringify(["default",session.id])));
+      await runInDurableObject(stub, async (instance: any, state) => {
+        await instance._finalizePromise; await instance._recoveryPromise; await instance._recoveryRun;
+        await Promise.all(instance._maintenanceRuns.values()); await state.storage.deleteAlarm();
+        instance._a5IncarnationProbe = true;
+      });
+      await runInDurableObject(stub, async (_instance, state) => { state.abort("A5 controlled recreation"); }).catch(error => { if (!String(error).includes("A5 controlled recreation")) throw error; });
+      const recreated = testEnv.SESSION_DO.get(testEnv.SESSION_DO.idFromName(JSON.stringify(["default",session.id])));
+      await runInDurableObject<DurableObject, void>(recreated, async (instance: any) => {
+        expect(instance._a5IncarnationProbe).toBeUndefined();
+        await instance._recoveryPromise;
+        expect(instance.openHistory().getEvents().filter((e:any)=>e.type === "session.warning" && e.source === "agents_api.artifact_publication")).toHaveLength(1);
+      });
+      await verify();
+      console.info("A5_CF_DURABLE_WARNING", JSON.stringify({session:session.id,modelRequests:faux.state.callCount,recreated:true}));
+    } finally { failPublicationRead = false; workspace.clear(); }
+  }, 60_000);
   it("publishes completed-turn outputs to D1/R2 once, survives an SSE disconnect, and deduplicates by path + content", async () => {
     const files: Array<Record<string, Uint8Array>> = [
       { "/workspace/outputs/report.bin": new Uint8Array([0, 1, 127, 255]) },

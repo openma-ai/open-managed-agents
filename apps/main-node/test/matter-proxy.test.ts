@@ -221,7 +221,11 @@ describe("control plane /matter mount", () => {
 });
 
 describe("MATTER_* config", () => {
-  const base = { NODE_ENV: "test", ANTHROPIC_API_KEY: "unused" };
+  const base = {
+    NODE_ENV: "test",
+    ANTHROPIC_API_KEY: "unused",
+    MEMORY_BLOB_DIR: "/tmp/oma-matter-test-memory",
+  };
   it("needs a secret and an http(s) URL", () => {
     expect(() => loadNodeConfig({ ...base, MATTER_URL: "http://matter:4720" })).toThrow(/MATTER_PROXY_SECRET is required/);
     expect(() => loadNodeConfig({ ...base, MATTER_URL: "matter:4720/x y", MATTER_PROXY_SECRET: "s" })).toThrow(/absolute http\(s\) URL/);

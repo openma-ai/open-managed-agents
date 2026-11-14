@@ -26,7 +26,7 @@ interface BundleFile {
 
 interface BundleMcpServer {
   name: string;
-  type: "http" | "sse";
+  type: "http";
   url: string;
 }
 

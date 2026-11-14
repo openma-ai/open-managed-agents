@@ -1,3 +1,9 @@
+import { nodeCoreCustomToolsHttp } from "../lib/node-core-custom-tools-http.js";
+import { nodeWorkBootstrapRoutes } from "./node-work-bootstrap.js";
+import { SqlWorkFinalization } from "@open-managed-agents/managed-agents-adapters-sql";
+import { WorkFinalizationApplication, type WorkFinalizationHostPort } from "@open-managed-agents/managed-agents-application";
+import { buildWorkFinalizationRoutes } from "@open-managed-agents/http-routes";
+import { authenticateWorkFinalizationBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 /**
  * apps/main-node — Node control-plane assembly for the Open Managed Agents API.
@@ -15,11 +21,18 @@
  * index.ts is the executable entrypoint (process.env, listen, signals).
  */
 
+import { SqlWorkModelEgress, SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
+import { authenticateSandboxToken } from "@open-managed-agents/sandbox-gateway";
+import { extractHostedInferenceProxyToken } from "@open-managed-agents/inference-proxy";
+import { SqlSessionRuntimeProjectionPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
+import { buildWorkInputRoutes, buildWorkStartupFailureRoutes } from "@open-managed-agents/http-routes";
+import { authenticateWorkInputBearer, authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { nodeExecutionChannelsHttp } from "../lib/node-execution-channels-http.js";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
 import { Hono } from "hono";
 import { mountKimiKhaCompat } from "../kimi-kha/index.js";
-import { getHarnessCatalog } from "@open-managed-agents/agent/harness/registry";
+import { getHarnessCatalog } from "@open-managed-agents/agent-harness";
 import { OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createArtifactsHandler, createManagedSessionMapping, createResourcesHandler, createSessionsHandler } from "@open-managed-agents/openai-agents-compat";
 
@@ -45,7 +58,8 @@ import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplic
 
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 
-import { ingestEnvironmentWorkRuntimeEvents, authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { ingestEnvironmentWorkRuntimeEvents, sealedSandboxBearerCodec } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { authenticateSandboxBearer } from "@open-managed-agents/sandbox-gateway";
 import { isCurrentEnvironmentWorkClaim } from "@open-managed-agents/environment-work-store";
 
 import { buildOmaModelsHttpRoutes } from "@open-managed-agents/managed-agents-adapters-http";
@@ -77,16 +91,14 @@ import { execManagedSandbox, ManagedSandboxExecError } from "../lib/managed-sand
 import { buildSkillSourcesRoutes, createSourceFetcher } from "../lib/skill-sources.js";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 
-import { buildNodeHttpInferenceProxyRoutes } from "../lib/http-inference-proxy.js";
-import { buildNodeHttpMcpProxyRoutes } from "../lib/http-mcp-proxy.js";
-import { createNodeAccessLossRuntime } from "../lib/mcp-access-loss.js";
+import { createInferenceProxyRoutes, createMcpProxyRoutes } from "@open-managed-agents/http-routes/proxy";
 
 import { Disposables } from "../lifecycle.js";
 
 import type { NodeRuntime } from "./node-runtime.js";
 import type { NodeControlPlaneApp } from "./node-assembly.js";
 
-export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposables): Promise<NodeControlPlaneApp> {
+export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposables, workFinalizationHost?: WorkFinalizationHostPort): Promise<NodeControlPlaneApp> {
   const {
     config,
     ownsLongLivedProcesses,
@@ -121,8 +133,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     realtimeDescription,
     sessionRegistry,
     resolveDreamModelCredentials,
-    resolveNodeMcpProxyTarget,
-    resolveNodeInferenceUpstream,
+    mcpProxyPorts,
+    inferenceProxyPorts,
     managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
@@ -253,23 +265,23 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
         credential: rec.credential,
       };
     },
+    // The sandbox token (#561): one execution-row read, scope + route checked.
+    resolveSandboxToken: (request) => managedAcpCapabilities.authenticateToken(request),
     resolveBearerToken: async ({ token, method, path }) => {
       if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
-      const scoped = await managedAcpCapabilities.authenticate({ token, method, path })
-        ?? await authenticateEnvironmentWorkSessionBearer({
-        token,
-        method,
-        path,
-        crypto: managedEnvironmentWorkSessionTokenCrypto,
-        now: () => new Date(),
-        isCurrent: (claim) => isCurrentEnvironmentWorkClaim({
+      // The shared sealed bearer check (design §0.0 rule 10, §0.0b B.4): the Work token only.
+      const decision = await authenticateSandboxBearer({ work: {
+        codec: sealedSandboxBearerCodec(managedEnvironmentWorkSessionTokenCrypto, () => new Date()),
+        isCurrentClaim: (claim) => isCurrentEnvironmentWorkClaim({
           store: managedEnvironmentWorkStore,
           now: () => new Date(),
         }, claim),
-      });
-      return scoped === null
-        ? null
-        : {
+      } }, { token, method, path });
+      // A database error is not a rejection: the middleware answers 503.
+      if (decision.type === "unavailable") throw decision.error instanceof Error ? decision.error : new Error("sealed bearer could not be checked");
+      if (decision.type === "none") return null;
+      const scoped = decision.resolution;
+      return {
             tenantId: scoped.workspaceId,
             credential: {
               type: "environment_work_session",
@@ -305,6 +317,41 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   app.route("/v1/oma/egress", managedCredentialEgressRoutes);
   app.use("/v1/oma/oauth/callback", managedMcpOAuthCliCallback);
 
+  app.route("/v1/oma/sessions", nodeWorkBootstrapRoutes(runtime));
+
+  app.route("/v1/oma/sessions", buildWorkFinalizationRoutes({
+    authenticate: async (token, method, path) => managedEnvironmentWorkSessionTokenCrypto === null ? null
+      : authenticateWorkFinalizationBearer({ token, method, path, crypto: managedEnvironmentWorkSessionTokenCrypto,
+          now: () => new Date(), find: claim => managedEnvironmentWorkStore.find(claim) }),
+    applicationFor: async () => new WorkFinalizationApplication({
+      persistence: new SqlWorkFinalization(sql, { dialect }), host: workFinalizationHost,
+    }),
+  }));
+
+  app.route("/v1/oma/sessions", buildWorkInputRoutes({
+    authenticate: async (token, method, path) => managedEnvironmentWorkSessionTokenCrypto === null ? null
+      : authenticateWorkInputBearer({ token, method, path, crypto: managedEnvironmentWorkSessionTokenCrypto,
+          now: () => new Date(), find: claim => managedEnvironmentWorkStore.find(claim) }),
+    applicationFor: async () => managedSessionsComposition.workInputs(),
+  }));
+
+  app.route("/v1/oma/sessions", buildWorkStartupFailureRoutes({
+    authenticate: async (token, path) => {
+      if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
+      return authenticateEnvironmentWorkSessionBearer({ token, path, method: "POST",
+        crypto: managedEnvironmentWorkSessionTokenCrypto, now: () => new Date(),
+        isCurrent: async claim => {
+          const work = await managedEnvironmentWorkStore.find(claim);
+          return work !== null && work.secret.sessionsToken === token &&
+            work.work.data.type === "session" && work.work.data.id === claim.sessionId;
+        },
+      });
+    },
+    persistenceFor: async () => new SqlSessionRuntimeProjectionPersistence(sql, { dialect }),
+  }));
+  app.route("/v1/oma/sessions", nodeCoreCustomToolsHttp(sql, dialect));
+  app.route("/v1/oma/sessions", nodeExecutionChannelsHttp({ tokens: managedAcpCapabilities.tokens, sql, modelCards: modelCardsService, gatewayBaseUrl: config.http.gatewayOrigin }));
+
   const v1 = new Hono<{
     Variables: {
       tenant_id: string;
@@ -327,6 +374,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       return c.json({ error: "Request body must be valid JSON" }, 400);
     }
     const result = await ingestEnvironmentWorkRuntimeEvents({
+      dialect: dialect === "postgres" || dialect === "mysql" ? dialect : "sqlite",
       claim: {
         workspaceId: c.get("tenant_id"),
         environmentId: credential.environmentId,
@@ -538,12 +586,25 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       } as unknown as import("@open-managed-agents/shared").EnvironmentConfig;
     },
   }));
-  v1.route("/oma/mcp-proxy", buildNodeHttpMcpProxyRoutes({
-    resolveTarget: resolveNodeMcpProxyTarget,
-    accessLoss: await createNodeAccessLossRuntime(sql),
-  }));
-  v1.route("/oma/inference-proxy", buildNodeHttpInferenceProxyRoutes({
-    resolveUpstream: resolveNodeInferenceUpstream,
+  // The parent v1 middleware authenticates the caller (sandbox-gateway) and
+  // sets tenant_id; the gateways never take the workspace from the request.
+  v1.route("/oma/mcp-proxy", createMcpProxyRoutes(() => mcpProxyPorts));
+  v1.route("/oma/inference-proxy", createInferenceProxyRoutes(async (workspaceId,c) => {
+    const sessionId = c.req.param("sessionId") ?? "";
+    const credential = c.get("auth_credential" as never) as ApiKeyResolution["credential"];
+    if (credential?.type !== "environment_work_session") return inferenceProxyPorts;
+    const presented = extractHostedInferenceProxyToken(c.req.raw.headers);
+    if (presented.status !== "ok") throw new Error("Model credential unavailable");
+    const work = await authenticateSandboxToken(managedAcpCapabilities.tokens, {sessionId,token:presented.token,channel:"api"});
+    if (work.type === "unavailable") throw new Error("Work model authority unavailable");
+    if (work.type !== "accepted") return {...inferenceProxyPorts,budget:()=>({begin:()=>false,complete:()=>{}})};
+    if (!work.attempt.attemptId.startsWith("environment-work-claim:")) return inferenceProxyPorts;
+    const session = await new SqlSessionSource(sql).find({workspaceId,sessionId});
+    if (!session) throw new Error("Work model Session unavailable");
+    const model = session.agent.model;
+    const card = await modelCardsService.findByModelId({tenantId:workspaceId,modelId:typeof model === "string" ? model : model.id});
+    const meter = await new SqlWorkModelEgress(sql, { dialect }).open(work.resolution,card?.archived_at ? null : card?.pricing ?? null);
+    return {...inferenceProxyPorts,budget:()=>meter};
   }));
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);

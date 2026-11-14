@@ -27,15 +27,14 @@ import type {
   SandboxFactoryContext,
   SandboxFactoryEnv,
   SandboxPort,
-  SandboxPreparedBaseHandle,
-  SandboxPreparedBasePort,
   SandboxProviderPort,
   SandboxRuntimeCapabilities,
   SandboxRuntimeHandle,
   SandboxRuntimePort,
   SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
-import { readS3MemoryBucket } from "@open-managed-agents/sandbox";
+import { SandboxGoneError, readS3MemoryBucket, type SandboxManagedProcessSpec, type SandboxManagedProcessHandle, type SandboxManagedProcessPort } from "@open-managed-agents/sandbox";
+import { startE2BManagedProcess, inspectE2BManagedSlot, restoreE2BManagedProcess, type E2BManagedIdentity, type E2BManagedLocator, type E2BManagedBootstrapOptions } from "./managed-bootstrap";
 
 // Structural types so this file compiles without `e2b` installed. The
 // driver shape is matched at runtime; mismatches surface as adapter
@@ -48,6 +47,7 @@ interface E2BCommandResult {
 interface E2BCommandHandle {
   pid: number;
   kill(): Promise<boolean | void>;
+  disconnect?(): Promise<void>;
   wait?(): Promise<E2BCommandResult>;
   sendStdin?(data: string | Uint8Array): Promise<void>;
   closeStdin?(): Promise<void>;
@@ -60,32 +60,61 @@ interface E2BCommandOptions {
   onStdout?: (data: string) => void | Promise<void>;
   onStderr?: (data: string) => void | Promise<void>;
   stdin?: boolean;
+  user?: string;
 }
-interface E2BSandboxLike {
+interface E2BCommandConnectOptions {
+  timeoutMs?: number;
+  onStdout?: (data: string) => void | Promise<void>;
+  onStderr?: (data: string) => void | Promise<void>;
+}
+
+interface ActiveDuplexProcess {
+  pid: () => number;
+  suspendForCheckpoint: () => Promise<() => Promise<void>>;
+}
+/** The template start step (template/template.mjs), with pins read from the
+ * root-owned installation manifest the template build already verified. */
+export const E2B_MANAGED_LAUNCHER_START = [
+  "set -eu",
+  "pins=$(/usr/bin/python3 -I -S -c 'import json; m = json.load(open(\"/opt/oma-managed/installation.json\")); print(m[\"sourceSha\"], m[\"sourceLockSha256\"])')",
+  "set -- $pins",
+  "/usr/bin/python3 -I -S /opt/oma-managed/verify-install.py --source-sha \"$1\" --lock-sha256 \"$2\" >/dev/null",
+  "exec /usr/bin/python3 -I -S /opt/oma-managed/launcher.py",
+].join("\n");
+
+export interface E2BSandboxLike {
   sandboxId?: string;
   commands: {
     run(
       cmd: string,
       opts?: E2BCommandOptions,
     ): Promise<E2BCommandResult | E2BCommandHandle>;
+    /** Reattach to a still-running command after a provider transport reset.
+     * E2B full snapshots briefly pause the sandbox and can terminate the
+     * original stdout/stderr stream without killing the command. */
+    connect?(pid: number, opts?: E2BCommandConnectOptions): Promise<E2BCommandHandle>;
   };
   files: {
-    read(path: string): Promise<string>;
-    write(path: string, data: string | Uint8Array): Promise<void>;
+    read(path: string, opts?: { user?: string }): Promise<string>;
+    write(path: string, data: string | Uint8Array, opts?: { user?: string }): Promise<unknown>;
     makeDir?(path: string): Promise<void>;
   };
-  kill(): Promise<void>;
+  kill(): Promise<unknown>;
+  /** Atomic replacement of the sandbox egress rules. */
+  updateNetwork?(network: { allowOut?: string[]; denyOut?: string[] }): Promise<void>;
   getInfo?(): Promise<{ state?: string }>;
   setTimeout?(timeoutMs: number): Promise<void>;
   pause?(opts?: { keepMemory?: boolean }): Promise<boolean>;
   connect?(): Promise<E2BSandboxLike>;
-  createSnapshot?(opts?: { name?: string }): Promise<{
+  createSnapshot?(opts?: { name?: string; mode?: "full" | "filesystem" }): Promise<{
     snapshotId: string;
     names: string[];
   }>;
 }
 
 export interface E2BSandboxOptions {
+  /** Opt-in trusted template-native launcher; never uses SDK shell launch. */
+  managedBootstrap?: E2BManagedBootstrapOptions;
   /** Probe the new sandbox with a no-op command before returning it. Some
    * E2B-compatible providers (Haven) briefly reject envd calls right after
    * create, e.g. `[unauthenticated] invalid username: 'user'`. Only such
@@ -111,11 +140,11 @@ export interface E2BSandboxOptions {
    *   Template().fromImage("ubuntu:latest").aptInstall(["s3fs"])
    */
   templateId?: string;
-  /** E2B snapshot id to create the sandbox from instead of `templateId`
-   * (a prepared base captured by {@link E2BSandboxExecutor.capturePreparedBase}). */
-  preparedBaseId?: string;
   /** Default per-command timeout in ms. */
   defaultTimeoutMs?: number;
+  /** Sandbox user for commands and file operations. Defaults to the SDK's
+   * default user. */
+  user?: string;
   /**
    * Initial sandbox lifetime in ms (E2B's sandbox `timeoutMs`). Hosts extend
    * it through `renewLease` while a turn runs (OpenMA's sandbox heartbeat).
@@ -147,21 +176,50 @@ export interface E2BSandboxOptions {
  */
 export async function createE2BSandbox(
   opts: E2BSandboxOptions = {},
+  /** An already-imported SDK (Workers bundle it statically); loaded lazily otherwise. */
+  module?: E2BModule,
 ): Promise<E2BSandboxExecutor> {
-  const mod = await loadE2BModule();
+  const mod = module ?? await loadE2BModule();
   const sb = await mod.Sandbox.create(
-    opts.preparedBaseId ?? opts.templateId ?? "base",
+    opts.templateId ?? "base",
     creationOptions(opts),
   );
   if (opts.readiness !== false) {
     try {
       await waitForSandboxReady(sb, opts.readiness ?? {});
+      await prepareWorkspace(sb);
     } catch (error) {
-      await sb.kill?.().catch(() => undefined);
+      try { await sb.kill?.(); } catch { /* cleanup must not mask the launch error */ }
+      throw error;
+    }
+  } else {
+    try {
+      await prepareWorkspace(sb);
+    } catch (error) {
+      try { await sb.kill?.(); } catch { /* cleanup must not mask the launch error */ }
       throw error;
     }
   }
   return new E2BSandboxExecutor(sb, opts);
+}
+
+/** The base template runs commands as an unprivileged user and does not
+ * guarantee OpenMA's portable workspace mount points. Create them once as
+ * root so the executor's fixed `/workspace` cwd is valid for every template.
+ */
+async function prepareWorkspace(sandbox: E2BSandboxLike): Promise<void> {
+  // Minimal injected SDKs used by composition tests may intentionally omit
+  // command execution when readiness is disabled. A real E2B sandbox always
+  // exposes commands.run; preserve that provider path and remain compatible
+  // with the smaller legacy test shape.
+  if (typeof sandbox.commands?.run !== "function") return;
+  const result = await settleCommand(Promise.resolve(sandbox.commands.run(
+    "install -d -m 0777 /workspace /mnt/session/outputs /mnt/memory",
+    { user: "root", timeoutMs: 30_000 },
+  ) as Promise<E2BCommandResult>));
+  if (result.exitCode !== 0) {
+    throw new Error(`E2B workspace setup failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+  }
 }
 
 const TRANSIENT_READINESS = /\[(unauthenticated|unavailable|deadline_exceeded)\]|invalid username|connection refused|ECONNRESET|ECONNREFUSED|socket hang up|\b50[234]\b/iu;
@@ -187,7 +245,13 @@ async function waitForSandboxReady(
 }
 
 export class E2BSandboxExecutor
-  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort, SandboxPreparedBasePort {
+  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort, SandboxManagedProcessPort {
+  private managedClosed = false;
+  private managedDestroyed = false;
+  private readonly managedRecovery = new Set<Promise<unknown>>();
+  private readonly managedStarts = new Set<Promise<SandboxManagedProcessHandle>>();
+  private readonly activeDuplexProcesses = new Set<ActiveDuplexProcess>();
+  private readonly managedBootstrap?: E2BManagedBootstrapOptions;
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -197,16 +261,66 @@ export class E2BSandboxExecutor
    *  just symlink prefixes. */
   private memoryBucketMounted = false;
   private memoryBucketConfig?: NonNullable<E2BSandboxOptions["memoryBucket"]>;
+  private readonly user: { user?: string };
 
   constructor(
     private sandbox: E2BSandboxLike,
     opts: E2BSandboxOptions,
   ) {
+    if (opts.managedBootstrap && opts.user !== undefined && opts.user !== "oma-worker") throw new Error("Managed E2B templates require the unprivileged oma-worker user");
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 120_000;
     this.logger = opts.logger ?? {
-      warn: (msg) => console.warn(`[e2b-sandbox] ${msg}`),
+      warn: (msg, ctx) => ctx === undefined
+        ? console.warn(`[e2b-sandbox] ${msg}`)
+        : console.warn(`[e2b-sandbox] ${msg}`, ctx),
+    };
+    this.managedBootstrap = opts.managedBootstrap === undefined ? undefined : {
+      ...opts.managedBootstrap,
+      observe: event => {
+        // A stable message plus allowlisted event; no Files payload or spec.
+        try { this.logger.warn("management.rpc", event); } catch { /* Diagnostics only. */ }
+        try { opts.managedBootstrap?.observe?.(event); } catch { /* Diagnostics only. */ }
+      },
     };
     this.memoryBucketConfig = opts.memoryBucket;
+    this.user = opts.managedBootstrap ? { user: "oma-worker" } : opts.user === undefined ? {} : { user: opts.user };
+  }
+
+  /** Structured command result. Extra `envs` reach only this process and
+   * never appear in its command line; `user` overrides the sandbox user.
+   * `sessionEnv: false` leaves out the Session env set with setEnvVars (Vault
+   * placeholders, the egress relay's proxy and CA variables): platform
+   * commands such as storage mounts must not run through the agent's relay. */
+  async run(
+    command: string,
+    opts: { envs?: Record<string, string>; timeoutMs?: number; user?: string; sessionEnv?: false } = {},
+  ): Promise<E2BCommandResult> {
+    return runCommand(this.sandbox, command, {
+      timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
+      envs: { ...(opts.sessionEnv === false ? {} : this.buildCommandEnv(command)), ...opts.envs },
+      ...(opts.user === undefined ? this.user : { user: opts.user }),
+    });
+  }
+
+  /** Binary-safe read; `null` when the file does not exist. */
+  async readBytes(path: string): Promise<Uint8Array | null> {
+    const files = this.sandbox.files as unknown as {
+      read(path: string, opts: { format: "bytes"; user?: string }): Promise<Uint8Array>;
+    };
+    try {
+      return await files.read(path, { format: "bytes", ...this.user });
+    } catch (error) {
+      const name = (error as { name?: unknown } | null)?.name;
+      if (name === "FileNotFoundError" || name === "NotFoundError") return null;
+      throw error;
+    }
+  }
+
+  async updateNetwork(network: { allowOut: string[]; denyOut: string[] }): Promise<void> {
+    if (typeof this.sandbox.updateNetwork !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.updateNetwork");
+    }
+    await this.sandbox.updateNetwork(network);
   }
 
   runtimeHandle(): SandboxRuntimeHandle {
@@ -275,43 +389,66 @@ export class E2BSandboxExecutor
     kind: "filesystem" | "memory";
     name?: string;
   }): Promise<SandboxCheckpointHandle> {
-    if (input.kind !== "memory") {
-      throw new Error("E2B durable checkpoints currently support memory state only");
-    }
     if (typeof this.sandbox.createSnapshot !== "function") {
       throw new Error("E2B SDK does not expose sandbox.createSnapshot");
     }
     const runtimeId = this.requireRuntimeId();
-    const snapshot = await this.sandbox.createSnapshot(
-      input.name ? { name: input.name } : undefined,
-    );
-    return {
-      provider: "e2b",
-      checkpointId: snapshot.snapshotId,
-      sourceRuntimeId: runtimeId,
-      kind: "memory",
-      scope: "portable",
-    };
+    // memory: the SDK default (full); filesystem: disk only, the sandbox
+    // started from it cold-boots.
+    const opts = { ...(input.name ? { name: input.name } : {}), ...(input.kind === "filesystem" ? { mode: "filesystem" as const } : {}) };
+    const resumes: Array<() => Promise<void>> = [];
+    try {
+      // Full snapshots pause the guest while the SDK's live command streams
+      // remain attached to the old transport. Detach those streams first so
+      // the command stays alive and can be reattached after the snapshot.
+      for (const process of this.activeDuplexProcesses) {
+        resumes.push(await process.suspendForCheckpoint());
+      }
+      const snapshot = await this.sandbox.createSnapshot(Object.keys(opts).length === 0 ? undefined : opts);
+      return {
+        provider: "e2b",
+        checkpointId: snapshot.snapshotId,
+        sourceRuntimeId: runtimeId,
+        kind: input.kind,
+        scope: "portable",
+      };
+    } finally {
+      for (const resume of resumes.reverse()) {
+        try { await resume(); }
+        catch (error) {
+          this.logger.warn("E2B duplex command stream failed to reattach after snapshot", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
   }
 
-  /** Snapshot this sandbox as a reusable creation source. Reusing a name
-   * appends a new build under it; the returned id pins this exact build. */
-  async capturePreparedBase(input: { name: string }): Promise<SandboxPreparedBaseHandle> {
+  /** Snapshot this sandbox's filesystem only (`mode: "filesystem"`) as a
+   * reusable creation source: sandboxes created from it boot from the disk,
+   * without this sandbox's memory or processes. Reusing a name appends a new
+   * build under it; the returned snapshot id pins this exact build. A project
+   * without filesystem-only snapshots gets E2B's 400
+   * `snapshot_filesystem_only_disabled`; it is surfaced, never retried as a
+   * full (memory) snapshot. */
+  async snapshotEnvironment(input: { name: string }): Promise<string> {
     if (typeof this.sandbox.createSnapshot !== "function") {
       throw new Error("E2B SDK does not expose sandbox.createSnapshot");
     }
-    const snapshot = await this.sandbox.createSnapshot({ name: input.name });
+    const snapshot = await this.sandbox.createSnapshot({ name: input.name, mode: "filesystem" });
     if (!snapshot.snapshotId) {
-      throw new Error("E2B SDK did not return a snapshotId for the prepared base");
+      throw new Error("E2B SDK did not return a snapshotId for the environment snapshot");
     }
-    return { provider: "e2b", id: snapshot.snapshotId };
+    return snapshot.snapshotId;
   }
 
   async exec(command: string, timeout?: number): Promise<string> {
     const wrapped = this.applyEnv(command);
-    const result = await settleCommand(this.sandbox.commands.run(wrapped, {
+    const result = await runCommand(this.sandbox, wrapped, {
+      cwd: "/workspace",
       timeoutMs: timeout ?? this.defaultTimeoutMs,
-    }) as Promise<E2BCommandResult>);
+      ...this.user,
+    });
     // Match @cloudflare/sandbox's behaviour: combined stdout+stderr,
     // newline-trimmed, plus an exit-code suffix.
     const separator = result.stdout.length > 0 && !result.stdout.endsWith("\n") ? "\n" : "";
@@ -321,10 +458,75 @@ export class E2BSandboxExecutor
     return combined;
   }
 
+  /**
+   * A sandbox created from a filesystem environment snapshot cold-boots
+   * without the template start command, so the trusted launcher is not
+   * running. Re-run exactly that root start step (verify the root-owned
+   * installation against its manifest pins, then exec the launcher) and wait
+   * for its ready marker. No-op without managed bootstrap or when ready.
+   */
+  async ensureManagedLauncher(timeoutMs = 30_000): Promise<void> {
+    if (!this.managedBootstrap) return;
+    const directory = this.managedBootstrap.directory ?? "/run/oma-managed";
+    const ready = async () => {
+      try { return await this.sandbox.files.read(directory + "/ready", { user: "root" }) === "oma-managed-v2"; }
+      catch { return false; }
+    };
+    if (await ready()) return;
+    await this.sandbox.commands.run(E2B_MANAGED_LAUNCHER_START, { background: true, user: "root", timeoutMs: 0 });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await ready()) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error("Trusted E2B management launcher did not become ready after environment snapshot start");
+  }
+
+  async startManagedProcess(spec: SandboxManagedProcessSpec, identity?: E2BManagedIdentity): Promise<SandboxManagedProcessHandle> {
+    if (this.managedClosed) throw new Error("E2B management launcher is closed");
+    if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
+    const starting = startE2BManagedProcess(this.sandbox, this.managedBootstrap, spec, identity);
+    this.managedStarts.add(starting);
+    try {
+      const handle = await starting;
+      if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+      return handle;
+    }
+    catch (error) {
+      // A failed acknowledgement may hide a dispatched launch. Fail closed until destroy.
+      if ((error as { outcome?: string }).outcome === "unknown") this.managedClosed = true;
+      throw error;
+    } finally { this.managedStarts.delete(starting); }
+  }
+
+  private async recoverManaged<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+    const pending = operation();
+    this.managedRecovery.add(pending);
+    try {
+      const value = await pending;
+      if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+      return value;
+    } finally { this.managedRecovery.delete(pending); }
+  }
+
+  async inspectManagedProcessSlot(): Promise<E2BManagedLocator> {
+    if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+    if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
+    return this.recoverManaged(() => inspectE2BManagedSlot(this.sandbox, this.managedBootstrap!));
+  }
+
+  async restoreManagedProcess(locator: E2BManagedLocator): Promise<SandboxManagedProcessHandle> {
+    if (this.managedDestroyed) throw new Error("E2B management launcher is closed");
+    if (!this.managedBootstrap) throw new Error("Trusted E2B management template is required");
+    return this.recoverManaged(() => restoreE2BManagedProcess(this.sandbox, this.managedBootstrap!, locator));
+  }
+
   async startProcess(command: string): Promise<ProcessHandle | null> {
     const wrapped = this.applyEnv(command);
     const handle = (await this.sandbox.commands.run(wrapped, {
       background: true,
+      ...this.user,
     })) as E2BCommandHandle;
     if (!handle.pid) return null;
     const id = `proc_${handle.pid}_${Date.now()}`;
@@ -381,7 +583,7 @@ export class E2BSandboxExecutor
     const command = [...(unset.length ? ["env", ...unset, "--"] : []), spec.command, ...(spec.args ?? [])]
       .map(shellEscape)
       .join(" ");
-    const handle = (await this.sandbox.commands.run(command, {
+    let handle = (await this.sandbox.commands.run(command, {
       background: true,
       stdin: true,
       // E2B otherwise closes the process event stream after 60 seconds.
@@ -389,6 +591,7 @@ export class E2BSandboxExecutor
       timeoutMs: 0,
       cwd: spec.cwd,
       envs: this.buildCommandEnv(spec.command, spec.env),
+      ...this.user,
       onStdout: (data) => enqueue(stdoutController, data),
       onStderr: (data) => enqueue(stderrController, data),
     })) as E2BCommandHandle;
@@ -416,8 +619,13 @@ export class E2BSandboxExecutor
       (resolve, reject) => { resolveExited = resolve; rejectExited = reject; },
     );
     void exited.catch(() => undefined);
+    let checkpointing = false;
+    let checkpointResume: Promise<void> | null = null;
+    let resolveCheckpointResume: (() => void) | null = null;
+    let rejectCheckpointResume: ((error: unknown) => void) | null = null;
     const finish = (code: number | null, signal: string | null, error?: Error) => {
       settleStreams(error);
+      this.activeDuplexProcesses.delete(activeProcess);
       if (exitedSettled) return;
       exitedSettled = true;
       if (error) rejectExited(error);
@@ -426,18 +634,115 @@ export class E2BSandboxExecutor
         resolveExited({ code, signal });
       }
     };
-    void handle.wait().then(
-      (result) => finish(result.exitCode, requestedSignal),
-      (cause: unknown) => {
-        const exitCode = readExitCode(cause);
-        if (exitCode !== null) {
-          finish(exitCode, requestedSignal);
+    const reconnectAfterTransportLoss = async (cause: unknown): Promise<boolean> => {
+      const connect = this.sandbox.commands.connect;
+      if (typeof connect !== "function") return false;
+      const deadline = Date.now() + 60_000;
+      let delayMs = 100;
+      while (Date.now() < deadline && !exitedSettled) {
+        try {
+          const next = await connect.call(this.sandbox.commands, handle.pid, {
+            timeoutMs: 0,
+            onStdout: (data) => enqueue(stdoutController, data),
+            onStderr: (data) => enqueue(stderrController, data),
+          });
+          if (!next || next.pid !== handle.pid || typeof next.wait !== "function") return false;
+          handle = next;
+          this.logger.warn("E2B duplex command stream reconnected after transport loss", {
+            pid: handle.pid,
+            cause: cause instanceof Error ? cause.name : typeof cause,
+          });
+          return true;
+        } catch (error) {
+          // A snapshot can leave the sandbox briefly unavailable. A confirmed
+          // process/sandbox loss is handled by the caller's next failure path;
+          // retry only while the provider may still be resuming the same PID.
+          if (Date.now() >= deadline) return false;
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          delayMs = Math.min(2_000, delayMs * 2);
+          void error;
+        }
+      }
+      return false;
+    };
+    const activeProcess: ActiveDuplexProcess = {
+      pid: () => handle.pid,
+      suspendForCheckpoint: async () => {
+        if (exitedSettled || typeof handle.disconnect !== "function" || typeof this.sandbox.commands.connect !== "function") {
+          if (!exitedSettled) this.logger.warn("E2B snapshot left duplex stream attached; SDK lacks detach/reattach", { pid: handle.pid });
+          return async () => {};
+        }
+        if (checkpointing && checkpointResume) {
+          await checkpointResume;
+          return async () => {};
+        }
+        checkpointing = true;
+        checkpointResume = new Promise<void>((resolve, reject) => {
+          resolveCheckpointResume = resolve;
+          rejectCheckpointResume = reject;
+        });
+        void checkpointResume.catch(() => undefined);
+        try {
+          await handle.disconnect();
+          this.logger.warn("E2B duplex command stream detached before snapshot", { pid: handle.pid });
+        } catch (error) {
+          checkpointing = false;
+          rejectCheckpointResume?.(error);
+          checkpointResume = null;
+          resolveCheckpointResume = null;
+          rejectCheckpointResume = null;
+          throw error;
+        }
+        return async () => {
+          try {
+            if (!await reconnectAfterTransportLoss(new Error("snapshot handoff"))) {
+              throw new Error(`E2B command ${handle.pid} could not be reattached after snapshot`);
+            }
+            this.logger.warn("E2B duplex command stream reattached after snapshot", { pid: handle.pid });
+            resolveCheckpointResume?.();
+          } catch (error) {
+            rejectCheckpointResume?.(error);
+            throw error;
+          } finally {
+            checkpointing = false;
+            checkpointResume = null;
+            resolveCheckpointResume = null;
+            rejectCheckpointResume = null;
+          }
+        };
+      },
+    };
+    this.activeDuplexProcesses.add(activeProcess);
+    const waitForExit = async () => {
+      while (!exitedSettled) {
+        try {
+          const result = await handle.wait!();
+          finish(result.exitCode, requestedSignal);
+          return;
+        } catch (cause) {
+          if (checkpointing && checkpointResume) {
+            try {
+              await checkpointResume;
+              continue;
+            } catch (error) {
+              const failure = error instanceof Error ? error : new Error(String(error));
+              finish(null, null, failure);
+              return;
+            }
+          }
+          const exitCode = readExitCode(cause);
+          if (exitCode !== null) {
+            finish(exitCode, requestedSignal);
+            return;
+          }
+          if (await reconnectAfterTransportLoss(cause)) continue;
+          const error = cause instanceof Error ? cause : new Error(String(cause));
+          finish(null, null, error);
           return;
         }
-        const error = cause instanceof Error ? cause : new Error(String(cause));
-        finish(null, null, error);
-      },
-    );
+      }
+    };
+    void waitForExit();
 
     const stdin = new WritableStream<Uint8Array>({
       write: async (chunk) => {
@@ -480,7 +785,7 @@ export class E2BSandboxExecutor
   }
 
   async readFile(path: string): Promise<string> {
-    return this.sandbox.files.read(path);
+    return this.user.user === undefined ? this.sandbox.files.read(path) : this.sandbox.files.read(path, this.user);
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
@@ -499,12 +804,14 @@ export class E2BSandboxExecutor
   }
 
   async writeFile(path: string, content: string): Promise<string> {
-    await this.sandbox.files.write(path, content);
+    if (this.user.user === undefined) await this.sandbox.files.write(path, content);
+    else await this.sandbox.files.write(path, content, this.user);
     return path;
   }
 
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
-    await this.sandbox.files.write(path, bytes);
+    if (this.user.user === undefined) await this.sandbox.files.write(path, bytes);
+    else await this.sandbox.files.write(path, bytes, this.user);
     return path;
   }
 
@@ -631,9 +938,13 @@ export class E2BSandboxExecutor
   }
 
   async destroy(): Promise<void> {
+    this.managedDestroyed = true;
+    this.managedClosed = true;
+    await Promise.allSettled([...this.managedStarts, ...this.managedRecovery]);
     try {
       await this.sandbox.kill();
     } catch (err) {
+      if (this.managedBootstrap) throw err;
       this.logger.warn(`destroy failed: ${(err as Error).message}`);
     }
   }
@@ -672,6 +983,36 @@ export class E2BSandboxExecutor
     }
     return env;
   }
+}
+
+/** Split start from wait: the SDK uses the SAME error types in both stages.
+ * A PID-bearing handle proves dispatch even if its stream failed immediately. */
+async function runCommand(sandbox: E2BSandboxLike, command: string, options: E2BCommandOptions): Promise<E2BCommandResult> {
+  let started = false;
+  try {
+    const result = await settleCommand(sandbox.commands.run(command, { ...options, background: true }) as Promise<E2BCommandResult>);
+    if ("exitCode" in result && typeof result.exitCode === "number") return result;
+    started = true;
+    const handle = result as unknown as E2BCommandHandle;
+    if (!handle.pid || handle.wait === undefined) throw new Error("SDK supplied no waitable command handle");
+    return await settleCommand(handle.wait());
+  } catch (cause) {
+    if (!started && isRejectedCommandStart(cause)) throw cause;
+    // Physical liveness and effect certainty are independent: a terminated
+    // sandbox must be replaced for the NEXT call, but this call may already
+    // have committed external effects and must never be automatically replayed.
+    const name = (cause as { name?: unknown } | null)?.name;
+    const error = name === "SandboxNotRunningError" || name === "SandboxNotFoundError"
+      ? new SandboxGoneError("Dispatched command outcome is unknown; sandbox terminated", { cause })
+      : new Error("Dispatched command outcome is unknown", { cause });
+    throw Object.assign(error, { outcome: "dispatched_unknown" });
+  }
+}
+
+// Only used in the explicit start stage, never to classify wait errors.
+function isRejectedCommandStart(error: unknown): boolean {
+  const name = error !== null && typeof error === "object" && "name" in error ? error.name : undefined;
+  return name === "AuthenticationError" || name === "InvalidArgumentError";
 }
 
 class E2BProcessHandle implements ProcessHandle {
@@ -754,21 +1095,21 @@ function readExitCode(cause: unknown): number | null {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-type E2BConnectionOptions = Pick<
+export type E2BConnectionOptions = Pick<
   E2BSandboxOptions,
   "apiKey" | "apiUrl" | "sandboxUrl" | "domain"
 >;
 
-type E2BCreateOptions = E2BConnectionOptions & {
+export type E2BCreateOptions = E2BConnectionOptions & {
   metadata?: Record<string, string>;
   timeoutMs?: number;
   lifecycle: {
     onTimeout: { action: "pause"; keepMemory: true };
-    autoResume: true;
+    autoResume: boolean;
   };
 };
 
-interface E2BModule {
+export interface E2BModule {
   Sandbox: {
     create(template: string, args?: E2BCreateOptions): Promise<E2BSandboxLike>;
     connect(sandboxId: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
@@ -820,7 +1161,7 @@ function creationOptions(opts: E2BSandboxOptions): E2BCreateOptions {
     // next command or stdin write.
     lifecycle: {
       onTimeout: { action: "pause", keepMemory: true },
-      autoResume: true,
+      autoResume: opts.managedBootstrap?.disableAutoResume !== true,
     },
   };
 }
@@ -846,14 +1187,8 @@ function parseCreateMetadata(value: string | undefined): Record<string, string> 
 
 function optionsFromFactory(
   env: SandboxFactoryEnv,
-  ctx?: Pick<SandboxFactoryContext, "image" | "preparedBase">,
+  ctx?: Pick<SandboxFactoryContext, "image">,
 ): E2BSandboxOptions {
-  const preparedBase = ctx?.preparedBase;
-  if (preparedBase !== undefined && (preparedBase.provider !== "e2b" || !preparedBase.id)) {
-    throw new Error(
-      `E2B provider cannot create a sandbox from a ${preparedBase.provider} prepared base`,
-    );
-  }
   return {
     apiKey: env.E2B_API_KEY,
     apiUrl: env.E2B_API_URL,
@@ -863,47 +1198,60 @@ function optionsFromFactory(
     lifetimeMs: parseLifetime(env.E2B_SANDBOX_TIMEOUT_MS),
     // An Environment-selected catalog image overrides the process default.
     templateId: ctx?.image?.reference ?? env.SANDBOX_IMAGE,
-    // A prepared base was built from that same image, so it wins over it.
-    ...(preparedBase === undefined ? {} : { preparedBaseId: preparedBase.id }),
     memoryBucket: readS3MemoryBucket(env),
   };
 }
 
-export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
-  create: async (ctx, env) => createE2BSandbox(optionsFromFactory(env, ctx)),
-  resume: async (handle, _ctx, env) => {
-    if (handle.provider !== "e2b" || !handle.runtimeId) {
-      throw new Error("E2B provider received an incompatible runtime handle");
-    }
-    const options = optionsFromFactory(env);
-    const mod = await loadE2BModule();
-    const sandbox = await mod.Sandbox.connect(
-      handle.runtimeId,
-      connectionOptions(options),
-    );
-    return new E2BSandboxExecutor(sandbox, options);
-  },
-  restore: async (checkpoint, _ctx, env) => {
-    if (
-      checkpoint.provider !== "e2b"
-      || checkpoint.scope !== "portable"
-      || !checkpoint.checkpointId
-    ) {
-      throw new Error("E2B provider received an incompatible portable checkpoint");
-    }
-    const options = optionsFromFactory(env);
-    const mod = await loadE2BModule();
-    const sandbox = await mod.Sandbox.create(
-      checkpoint.checkpointId,
-      creationOptions(options),
-    );
-    return new E2BSandboxExecutor(sandbox, options);
-  },
-};
+/** The v1 provider. `module`: the SDK a composition root that depends on
+ * `e2b` itself loaded (the adapter only declares it as an optional peer, so
+ * an application's own install is the one that resolves); omitted = loaded
+ * lazily from this package. */
+export function createE2BSandboxProvider(module?: E2BModule): SandboxProviderPort<E2BSandboxExecutor> {
+  const load = () => module === undefined ? loadE2BModule() : Promise.resolve(module);
+  return {
+    create: async (ctx, env) => createE2BSandbox(optionsFromFactory(env, ctx), await load()),
+    resume: async (handle, _ctx, env) => {
+      if (handle.provider !== "e2b" || !handle.runtimeId) {
+        throw new Error("E2B provider received an incompatible runtime handle");
+      }
+      const options = optionsFromFactory(env);
+      const mod = await load();
+      const sandbox = await mod.Sandbox.connect(
+        handle.runtimeId,
+        connectionOptions(options),
+      );
+      return new E2BSandboxExecutor(sandbox, options);
+    },
+    restore: async (checkpoint, _ctx, env) => {
+      if (
+        checkpoint.provider !== "e2b"
+        || checkpoint.scope !== "portable"
+        || !checkpoint.checkpointId
+      ) {
+        throw new Error("E2B provider received an incompatible portable checkpoint");
+      }
+      const options = optionsFromFactory(env);
+      const mod = await load();
+      const sandbox = await mod.Sandbox.create(
+        checkpoint.checkpointId,
+        creationOptions(options),
+      );
+      return new E2BSandboxExecutor(sandbox, options);
+    },
+  };
+}
+
+export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = createE2BSandboxProvider();
 
 /** Each create receives a new provider-assigned id; no Session-name attach.
- * Snapshot support remains opt-in for E2B-compatible services. */
-export const sandboxFactory: SandboxFactory = Object.assign((
-  ctx: SandboxFactoryContext,
-  env: SandboxFactoryEnv,
-) => sandboxProvider.create(ctx, env), { capabilities: { allocationIsolation: true } });
+ * Snapshot support remains opt-in for E2B-compatible services. `module`:
+ * as for createE2BSandboxProvider. */
+export function createE2BSandboxFactory(module?: E2BModule): SandboxFactory {
+  const provider = module === undefined ? sandboxProvider : createE2BSandboxProvider(module);
+  return Object.assign((
+    ctx: SandboxFactoryContext,
+    env: SandboxFactoryEnv,
+  ) => provider.create(ctx, env), { capabilities: { allocationIsolation: true } });
+}
+
+export const sandboxFactory: SandboxFactory = createE2BSandboxFactory();

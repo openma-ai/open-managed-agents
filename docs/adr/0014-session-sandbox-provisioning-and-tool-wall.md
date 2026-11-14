@@ -64,6 +64,57 @@ Claude Managed Agents provisions when the session is created and blocks
 sandbox tools, not model output, while it is not ready. That is the model this
 ADR adopts (details in the research gist).
 
+## Restricted legacy factory adapters
+
+The bare v1 factory deployments for Daytona, Litebox, Boxrun and Sprites are
+**restricted adapters**: they have neither durable handle reattachment nor
+independent Session snapshots. They do not meet lifecycle design §0.0b A.4
+(recovery chain) or A.6 (vendor snapshots). A missing in-process runtime uses
+the shared core recreation path with a warning, preserving main behaviour.
+No provider-name branches are added to the core. This limitation does not
+apply to a deployment supplying a full v2 adapter or a reattachable provider.
+
+## Implemented recovery entry point (2026-11-10 integration)
+
+Acquisition is centralized in `packages/session-runtime/src/session-sandbox-open.ts`:
+`openSandbox → start → startNew → firstCreate`. Node callers enter through
+`NodeSessionSandbox.open` in `packages/control-plane-node/src/lib/node-session-sandbox.ts`;
+provider attach/wake/resume stays behind `SandboxLifecyclePort`. There is no
+parallel dispatcher recovery policy or second getSandbox authority.
+
+Current order: persisted physical handle (attach wakes paused compute), recorded
+self pause point, host/record Session snapshot, then the configured Environment
+preparation path. An explicit snapshot `gone` reaches the final fallback; an
+exception is not evidence of absence. Classified retryable attach/self-resume
+errors receive at most three calls and two backoffs of at most one second, with
+fence checks. Unknown errors or exhausted retries do not retire the original
+allocation. Retry count/backoff bounds do not bound provider transport duration.
+
+`firstCreate` uses `SessionEnvironmentCache.acquire` when composed. Node
+`NodeEnvironmentCache.forSession` (`lib/environment-cache.ts`) keys this cache
+by workspace, image and Environment setup. A hit starts the prepared Environment
+snapshot. A miss/expired/deleted entry starts the configured image, reruns setup,
+and only successful preparation may publish a cache. The existing Node prepare
+path in `modules/node-managed.ts` installs Environment packages then prepares
+Session inputs; setup failure does not establish agent readiness. Cache builds
+are best effort/asynchronous, not guaranteed complete at acquisition return.
+
+Prepared-base fallback is **not full Session workspace restoration**. It emits
+a lost-changes warning, does not mark Session-snapshot restoration, and does not
+invent an agent-native completed-turn watermark. Canonical context recovery and
+unknown-side-effect verification remain required; fallback is not authorization
+to replay completed or unknown side effects.
+
+Current limitations: native Session CAS holds `latestSnapshot` and `pauseRef`,
+not ordered retained history. Replaced snapshots enter `pendingDiscards` and
+are deleted. Node separately retains timestamped tar history in
+`workspace_backups`, but this native lifecycle path does not enumerate/restore
+it. Latest-to-oldest retained Session snapshot fallback is **not yet supported**
+here; no synthetic history index is implied. Cross-host managed-worker discovery
+is distinct from persisted physical-handle recovery. A busy OS lock without an
+exact trusted locator fails safely; it never authorizes guessing a PID or
+replacing the physical sandbox.
+
 ## Decision
 
 ### 1. Provisioning starts at Session create
@@ -116,7 +167,11 @@ lost sandbox goes through ADR 0005 recovery.
   nothing and have no wall. Native `/v1` sessions remain sandboxed; this ADR
   does not add a native `none`.
 - A Session's sandbox mode does not change after create.
-- `self_hosted` / Environment Work keeps its current behaviour.
+- `self_hosted` / Environment Work keeps its current behaviour. Its one
+  authority is the official Work claim (ADR 0005, amended 2026-11-09): the
+  sandbox token and the restore pointer live on the Work row and end with the
+  claim. A Session sandbox's single authority is its Session Execution
+  attempt. There is no separate runtime resource fence on either lane.
 
 
 ### 6. New sandbox port shape (`packages/sandbox`)
@@ -167,6 +222,24 @@ tool-error-not-session.error, post-turn sync only if ready). Cloudflare and
 Node differ only in triggers and storage adapters (standing user lock). One
 shared port-level certification suite (the test list in Consequences) runs
 against both wrapped legacy adapters and native ones.
+
+Turn execution follows the same rule (#545). The business decisions of one
+turn are one implementation in `packages/session-runtime`, Node's where the
+hosts differed: which event runs and how a `session.updated` resume continues
+(`classifyTurnInput`), requires_action answer filtering
+(`planRequiresActionAnswers`), retry and failure endings (`runTurnAttempts`,
+`settleTurnFailure`) and the idle ending (`finishTurn`). Interrupt has one
+meaning on both: an idle lane, idle requires_action included, is left as it
+is, and queued inputs survive. Its steps are infrastructure: on Cloudflare
+the SessionDO records the interrupt and ends the lane through `interruptTurn`;
+on Node the execution worker owns the durable interrupt and the runner only
+aborts its running turn, which emits its own idle. Only platform
+infrastructure stays per host: checkpoint, restore and barrier, sandbox
+acquisition, DO state / queue / turn-marker storage, and the wire shape of
+events. The one kept difference is failure
+classification: a Payment / Auth / Config failure terminates the Session on
+Cloudflare (`retry_status: terminal`) and ends only the turn on Node, which
+has no terminated state.
 
 ### 10. Cloudflare is the first native implementation
 

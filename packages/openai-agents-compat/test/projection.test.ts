@@ -96,3 +96,14 @@ describe('Ordered managed event projection', () => {
     expect(onlyTurn(done.state).status).toBe('completed');
   });
 });
+
+it('projects a released deferred message before its settlement source row into the waiting Turn', () => {
+  let state = applyManagedEvents(fresh(), [message('input')], { observedAt: 1, executionId: 'input', consumedByExecutionId: 'input' }).state;
+  state = applyManagedEvents(state, [running('start'), { id: 'call', type: 'agent.custom_tool_use', name: 'lookup', input: {} }, { id: 'wait', type: 'session.status_idle', stopReason: { type: 'requires_action', eventIds: ['call'] } }], { observedAt: 2, executionId: 'input' }).state;
+  const originalTurn = onlyTurn(state).id;
+  state = applyManagedEvents(state, [message('steer', 'after answer', { continuationToolUseIds: ['call'], processedAt: '2026-01-01T00:00:03Z' })], { observedAt: 3, executionId: 'settle', consumedByExecutionId: 'settle' }).state;
+  state = applyManagedEvents(state, [{ id: 'settle', type: 'user.custom_tool_result', customToolUseId: 'call', content: [{ type: 'text', text: 'answer' }] }, running('resume'), output('answer', 'done'), idle('end')], { observedAt: 4, executionId: 'settle', consumedByExecutionId: 'settle' }).state;
+  expect(state.turnOrder).toEqual([originalTurn]);
+  expect(state.items.steer.turn_id).toBe(originalTurn);
+  expect(onlyTurn(state).status).toBe('completed');
+});

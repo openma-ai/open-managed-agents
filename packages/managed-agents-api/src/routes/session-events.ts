@@ -4,7 +4,6 @@ import {
   resolveApplicationPort,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   sessionEventListQuerySchema,
   sessionEventPageResponseSchema,
@@ -30,7 +29,6 @@ export function buildSessionEventRoutes(
   source: ApplicationPortSource<SessionEventsApplicationPort>,
 ): Hono {
   const app = new Hono();
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/:sessionId/events", async (c) => {
     const query = sessionEventListQuerySchema.safeParse({

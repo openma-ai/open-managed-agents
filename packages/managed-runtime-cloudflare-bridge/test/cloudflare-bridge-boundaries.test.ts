@@ -60,6 +60,22 @@ async function consumeProcess(process: Awaited<ReturnType<CloudflareBridgeRuntim
 }
 
 describe("Cloudflare Sandbox Bridge boundary contracts", () => {
+  it.each(["transport", "no-exit", "invalid-exit"])("marks dispatched exec %s as unknown and never dispatches again", async failure => {
+    let effects = 0;
+    const instance = runtime(async () => {
+      effects++;
+      if (failure === "transport") throw new Error("disconnected");
+      return sseText(failure === "no-exit" ? "event: stdout\ndata: b2s=\n\n" : "event: exit\ndata: {\"exit_code\":null}\n\n");
+    });
+    await expect(instance.exec("effect")).rejects.toMatchObject({outcome:"dispatched_unknown"});
+    expect(effects).toBe(1);
+  });
+  it("keeps an explicit nonzero terminal exit an ordinary failure", async () => {
+    const instance = runtime(async () => sseText("event: exit\ndata: {\"exit_code\":2}\n\n"));
+    const error = await instance.exec("exit 2").catch(error => error);
+    expect(error.message).toContain("exited with 2");
+    expect(error.outcome).toBeUndefined();
+  });
   it("validates constructor, checkpoint prefix, and hydrate limits", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const required = { checkpointStore: new InMemoryBlobStore(), fetch };
@@ -85,7 +101,7 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
 
   it("validates workspace, output, and working-directory paths", async () => {
     const ok = sseText("event: exit\ndata: {\"exit_code\":0}\n\n");
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => ok.clone());
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => String(url).endsWith("/process") ? Response.json({id:"p"}) : ok.clone());
     const instance = runtime(fetch);
 
     await expect(instance.readFile("/workspace/")).rejects.toThrow("file path is unsafe");
@@ -100,12 +116,41 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
 
     const process = await instance.spawnDuplexProcess({ command: "x" });
     await expect(consumeProcess(process)).resolves.toEqual(["", "", { code: 0, signal: null }]);
-    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetch.mock.calls.find(([url]) => String(url).endsWith("/process"))?.[1]?.body))).toEqual({
       argv: ["x"],
       cwd: "/workspace",
     });
     const processWithEnv = await instance.spawnDuplexProcess({ command: "x", env: { KEY: "value" } });
     await consumeProcess(processWithEnv);
+  });
+
+  it("writes binary Session outputs through exec without broadening file access", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(sseText(`event: exit
+data: {"exit_code":0}
+
+`));
+    const instance = runtime(fetch);
+    await expect(instance.writeFileBytes("/mnt/session/outputs/a b/data.bin", Uint8Array.of(0, 255, 10)))
+      .resolves.toBe("/mnt/session/outputs/a b/data.bin");
+    const body = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    expect(body.argv).toEqual([
+      "sh", "-c", 'mkdir -p -- "$(dirname -- "$2")" && printf %s "$1" | base64 -d > "$2"',
+      "oma-output-write", "AP8K", "/mnt/session/outputs/a b/data.bin",
+    ]);
+    expect(body.cwd).toBe("/workspace");
+    for (const path of ["/mnt/other/file", "/mnt/session/outputs/../secret", "/mnt/session/outputs/"]) {
+      await expect(instance.writeFileBytes(path, Uint8Array.of(1))).rejects.toThrow();
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fetch.mockResolvedValue(sseText(`event: stderr
+data: ZGVuaWVk
+
+event: exit
+data: {"exit_code":1}
+
+`));
+    await expect(instance.writeFileBytes("/mnt/session/outputs/fail", Uint8Array.of(1)))
+      .rejects.toThrow("output write exited with 1: denied");
   });
 
   it("cleans up the per-process env session when session creation or exec fails", async () => {
@@ -121,7 +166,7 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
       .mockResolvedValueOnce(new Response("bad", { status: 500 }))
       .mockResolvedValue(Response.json({ success: true }));
     await expect(runtime(execFails).spawnDuplexProcess({ command: "x", env: { KEY: "value" } })).rejects.toThrow("500: bad");
-    expect(urls(execFails)).toEqual(["POST /session", "POST /exec", expect.stringMatching(/^DELETE \/session\/oma-spawn-/)]);
+    expect(urls(execFails)).toEqual(["POST /session", "POST /process", expect.stringMatching(/^DELETE \/session\/oma-spawn-/)]);
     expect(String(execFails.mock.calls[1]?.[1]?.body)).not.toContain("value");
 
     const execThrows = vi.fn<typeof globalThis.fetch>()
@@ -255,8 +300,8 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
 
   it("handles all duplex terminal events and stream framing", async () => {
     const cases: Array<{ response: Response; error: string }> = [
-      { response: new Response("bad", { status: 500 }), error: "500: bad" },
-      { response: new Response(null), error: "200" },
+      { response: new Response("bad", { status: 500 }), error: "HTTP 500" },
+      { response: new Response(null), error: "did not return an SSE" },
       { response: sseText("", 200, "text/plain"), error: "did not return an SSE" },
       { response: sseText("event: exit\ndata: {}\n\n"), error: "invalid exit event" },
       { response: sseText("event: error\ndata: {\"code\":\"E_FAIL\",\"error\":\"failed\"}\n\n"), error: "(E_FAIL): failed" },
@@ -264,7 +309,7 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
       { response: sseText("event: progress\ndata: ignored\n\n"), error: "without a terminal event" },
     ];
     for (const entry of cases) {
-      const instance = runtime(vi.fn<typeof globalThis.fetch>().mockResolvedValue(entry.response));
+      const instance = runtime(vi.fn<typeof globalThis.fetch>().mockImplementation(async url => String(url).endsWith("/process") ? Response.json({id:"p"}) : String(url).endsWith("/signal") ? Response.json({exit_code:137}) : entry.response));
       if (!entry.response.ok || entry.response.body === null || !entry.response.headers.get("content-type")?.includes("text/event-stream")) {
         await expect(instance.spawnDuplexProcess({ command: "x" })).rejects.toThrow(entry.error);
       } else {
@@ -276,40 +321,23 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
     const framed = sseText(
       "\r\nevent: stdout\r\ndata: YQ==\r\n\r\nevent: exit\r\ndata: {\"exit_code\":0}",
     );
-    const process = await runtime(vi.fn<typeof globalThis.fetch>().mockResolvedValue(framed))
+    const process = await runtime(vi.fn<typeof globalThis.fetch>().mockImplementation(async url => String(url).endsWith("/process") ? Response.json({id:"p"}) : framed))
       .spawnDuplexProcess({ command: "x" });
     await expect(consumeProcess(process)).resolves.toEqual(["a", "", { code: 0, signal: null }]);
 
-    const stdinProcess = await runtime(vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      sseText("event: exit\ndata: {\"exit_code\":0}\n\n"),
-    )).spawnDuplexProcess({ command: "x" });
-    const writer = stdinProcess.stdin.getWriter();
-    await expect(writer.write(encoder.encode("input"))).rejects.toThrow("has no stdin");
-    await consumeProcess(stdinProcess);
   });
 
-  it("uses SIGTERM by default when a duplex request is cancelled", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_input, init) =>
-      new Response(new ReadableStream({
-        start(controller) {
-          init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true });
-        },
-      }), { headers: { "content-type": "text/event-stream" } }),
-    );
-    const process = await runtime(fetch).spawnDuplexProcess({ command: "x" });
+  it("uses remote SIGTERM by default and checks confirmed exit payload", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async url => {
+      if(String(url).endsWith("/process")) return Response.json({id:"p"});
+      if(String(url).endsWith("/signal")) return Response.json({exit_code:143});
+      return sseText('event: exit\ndata: {"exit_code":143}\n\n');
+    });
+    const process = await runtime(fetch).spawnDuplexProcess({command:"x"});
+    const consumed = consumeProcess(process);
     await process.kill();
-    await expect(process.exited).resolves.toEqual({ code: null, signal: "SIGTERM" });
-
-    const closesOnAbort = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_input, init) =>
-      new Response(new ReadableStream({
-        start(controller) {
-          init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
-        },
-      }), { headers: { "content-type": "text/event-stream" } }),
-    );
-    const closing = await runtime(closesOnAbort).spawnDuplexProcess({ command: "x" });
-    await closing.kill("SIGKILL");
-    await expect(closing.exited).resolves.toEqual({ code: null, signal: "SIGKILL" });
+    expect(JSON.parse(String(fetch.mock.calls.find(([url]) => String(url).endsWith("/signal"))?.[1]?.body))).toEqual({signal:"SIGTERM"});
+    await expect(consumed).resolves.toEqual(["","",{code:143,signal:null}]);
   });
 
   it("handles command and output failures without hiding stderr", async () => {
@@ -382,6 +410,7 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
       const url = String(input);
       if (url.endsWith("/v1/sandbox") && init?.method === "POST") return Response.json({ id: "sb-1" });
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.endsWith("/claim")) return new Response(null, {status:204});
       if (url.endsWith("/running")) return Response.json({ running: true });
       return new Response("unexpected", { status: 500 });
     });

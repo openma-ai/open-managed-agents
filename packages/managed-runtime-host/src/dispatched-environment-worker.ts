@@ -1,3 +1,4 @@
+import { log, logError } from "@open-managed-agents/shared/log";
 import type { BetaWebhookEvent } from "@anthropic-ai/sdk/resources/beta/webhooks";
 import type { BetaSelfHostedWork } from "@anthropic-ai/sdk/resources/beta/environments/work";
 
@@ -157,10 +158,14 @@ export function createDispatchedManagedEnvironmentWorker(
   const drainOnce = async (signal: AbortSignal): Promise<"drained" | "dispatch_failed"> => {
     let handled = 0;
     while (!signal.aborted && handled < maxWorkItemsPerDrain) {
+      const callId = crypto.randomUUID();
+      const context = { environment_id: options.environmentId, tenant_id: options.workspaceId, worker_id: options.workerId, call_id: callId };
+      log({ ...context, op: "work.poll.request", reclaim_older_than_ms: options.reclaimOlderThanMs ?? 5000 }, "Requesting Work claim");
       const work = await runnerClient.beta.environments.work.poll(
         options.environmentId,
         {
-          block_ms: null,
+          // Omit block_ms for the SDK non-blocking default. null becomes an
+          // empty query value, which is not a valid 1-999ms wait.
           ...(options.reclaimOlderThanMs === undefined
             ? {}
             : { reclaim_older_than_ms: options.reclaimOlderThanMs }),
@@ -170,6 +175,7 @@ export function createDispatchedManagedEnvironmentWorker(
         },
         { signal },
       );
+      log({ ...context, op: "work.poll.result", work_id: work?.id, session_id: work?.data.type === "session" ? work.data.id : undefined, result: work === null ? "empty" : "reserved" }, "Work poll result");
       if (work === null) return "drained";
       handled += 1;
       if (work.data.type !== "session") {
@@ -192,6 +198,7 @@ export function createDispatchedManagedEnvironmentWorker(
         if (isAbort(error, signal)) throw error;
         // Do not ACK or stop. The server-side reservation timeout is the
         // authority that makes this Work available to a replacement.
+        logError({ ...context, op: "work.drain.stopped", work_id: work.id, session_id: work.data.id, reason: "dispatch_failed", remaining_queue_not_polled: true }, "Drain stopped after failed dispatch; reservation remains unacknowledged");
         await reportError(error);
         return "dispatch_failed";
       }
@@ -234,7 +241,8 @@ export function createDispatchedManagedEnvironmentWorker(
       ) {
         return { type: "ignored", eventId: identity.eventId };
       }
-      input.waitUntil(drain().catch(reportError));
+      log({ op: "work.wake.request", environment_id: options.environmentId, tenant_id: options.workspaceId, event_id: identity.eventId }, "Accepted wake requests drain; does not confirm a claim");
+      input.waitUntil(drain().then(() => log({ op: "work.wake.result", environment_id: options.environmentId, event_id: identity.eventId, result: "drain_returned" }, "Wake drain returned"), reportError));
       return { type: "triggered", eventId: identity.eventId };
     },
 

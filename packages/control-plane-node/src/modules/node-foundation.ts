@@ -35,15 +35,12 @@ import { createSqliteModelCardService, resolveWorkspaceModelCredentials } from "
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import { generateEventId } from "@open-managed-agents/shared";
-import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
-import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
-import { buildTools } from "@open-managed-agents/agent/harness/tools";
-import { assertRuntimeAgentSnapshot } from "@open-managed-agents/agent/runtime/multiagent";
-import { createPiModelRuntime, toAiSdkLanguageModel } from "@open-managed-agents/agent/harness/pi-provider";
-import type { PiModelConfig } from "@open-managed-agents/agent/harness/pi-provider";
+import {
+  registerCoreHarnesses, resolveHarness, buildTools, assertRuntimeAgentSnapshot,
+  createPiModelRuntime, toAiSdkLanguageModel, type PiModelConfig, composeSystemPrompt,
+  type HarnessContext,
+} from "@open-managed-agents/agent-harness";
 
-import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform-guidance";
-import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 import { nodeToMarkdown } from "@open-managed-agents/markdown/adapters/node";
 
 import { SqlAgentPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
@@ -61,6 +58,8 @@ import { startMemoryBlobWatcher } from "../lib/memory-blob-watcher.js";
 
 import { startNodeMemoryQueue } from "../lib/node-memory-queue.js";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import type { NodeSessionSandboxOptions } from "../lib/node-session-sandbox.js";
 
 import type { EventStreamHub } from "../lib/event-stream-hub";
 import { NodeHarnessRuntime } from "../lib/node-harness-runtime";
@@ -273,39 +272,37 @@ export async function createNodeFoundation(
 
   // ─── Sandbox factory ────────────────────────────────────────────────────
 
+  /** The factory context of a Session sandbox: the same one the factory and
+   * a v1 provider (resume / restore by handle) are called with. */
+  function sandboxFactoryContext(
+    sessionId: string,
+    workdir: string,
+    scope: Pick<
+      import("@open-managed-agents/sandbox").SandboxFactoryContext,
+      "environmentId" | "workspaceId" | "image" | "allocationId"
+    > = {},
+  ): import("@open-managed-agents/sandbox").SandboxFactoryContext {
+    return { ...scope, sessionId, workdir, memoryRoot: memoryBlobLocalDir ?? "", outputsRoot };
+  }
+
   async function buildSandbox(
     sessionId: string,
     workdir: string,
-    scope: Pick<
-      import("@open-managed-agents/sandbox").SandboxFactoryContext,
-      "environmentId" | "workspaceId" | "image" | "preparedBase" | "allocationId"
-    > = {},
+    scope: Parameters<typeof sandboxFactoryContext>[2] = {},
   ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
-    return components.sandbox(
-      {
-        ...scope,
-        sessionId,
-        workdir,
-        memoryRoot: memoryBlobLocalDir ?? "",
-        outputsRoot,
-      },
-      sandboxEnvironment,
-    );
+    return components.sandbox(sandboxFactoryContext(sessionId, workdir, scope), sandboxEnvironment);
   }
 
-  /** A prepared-base builder: same factory and scope as a Session sandbox,
-   * deliberately without memory, outputs or any Session context, so nothing
-   * Session-owned can end up in the snapshot. */
-  async function buildPreparedBaseSandbox(
-    sessionId: string,
-    workdir: string,
-    scope: Pick<
-      import("@open-managed-agents/sandbox").SandboxFactoryContext,
-      "environmentId" | "workspaceId" | "image"
-    >,
-  ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
-    return components.sandbox({ ...scope, sessionId, workdir }, sandboxEnvironment);
-  }
+  /** The deployment's v1 provider (when its module exports one) with the
+   * factory context and env it is called with: Session sandboxes are found
+   * again by handle through it (design §0.0b A.8). */
+  const sessionSandboxProvider: NodeSessionSandboxOptions["provider"] = components.sessionSandboxProvider === undefined ? undefined : {
+    ...components.sessionSandboxProvider,
+    context: ({ workspaceId, session, environment }) => sandboxFactoryContext(
+      session.id, join(config.paths.sandboxWorkdir, session.id), { workspaceId, environmentId: environment.id },
+    ),
+    env: sandboxEnvironment,
+  };
 
   // ─── Session registry ───────────────────────────────────────────────────
 
@@ -398,6 +395,10 @@ export async function createNodeFoundation(
   const legacySessionMcpProxy = createLegacySessionMcpProxy({
     sessions: sessionsService,
     credentials: credentialService,
+    log: {
+      info: (fields, message) => logger.info(fields, message),
+      warn: (fields, message) => logger.warn(fields, message),
+    },
   });
 
   const sessionRegistry = new SessionRegistry({
@@ -533,7 +534,7 @@ export async function createNodeFoundation(
     hub,
     realtimeDescription,
     buildSandbox,
-    buildPreparedBaseSandbox,
+    sessionSandboxProvider,
     resolveNodeModelCreds,
     resolveDreamModelCredentials,
     buildNodeLanguageModel,

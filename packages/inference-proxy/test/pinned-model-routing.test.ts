@@ -10,16 +10,42 @@ async function sendPlan({ fetcher, ...input }: HostedInferenceRequestInput & { f
 
 const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
 describe("pinned hosted model routing", () => {
+  it.each(["https://private-model.test/anthropic", "https://api.minimaxi.com.evil.test/anthropic", "https://api.minimaxi.com/custom"])("requires explicit protocol endpoints for a custom MiniMax base: %s", baseUrl => {
+    expect(() => resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl })).toThrow(/protocolEndpoints/);
+    const explicit = [{ protocol: "openai-responses" as const, proxyPathSegment: "openai/v1", upstreamBaseUrl: baseUrl }];
+    expect(resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl, protocolEndpoints: explicit })).toEqual(explicit);
+  });
+  it.each([null, "https://api.minimaxi.com", "https://api.minimaxi.com/v1/", "https://api.minimaxi.com/anthropic/"])("maps only known official MiniMax bases: %s", baseUrl => {
+    expect(resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl }).map(e => e.upstreamBaseUrl)).toEqual(["https://api.minimaxi.com/v1", "https://api.minimaxi.com/anthropic"]);
+  });
+  it("routes a MiniMax China card's chat calls to its OpenAI endpoint, not the card's Anthropic base", async () => {
+    const baseUrl = "https://api.minimaxi.com/anthropic";
+    expect(resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl }).map((e) => [e.protocol, e.upstreamBaseUrl])).toEqual([
+      ["openai-responses", "https://api.minimaxi.com/v1"],
+      ["anthropic-messages", baseUrl],
+    ]);
+    const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(url, init);
+      expect(request.url).toBe("https://api.minimaxi.com/v1/responses");
+      expect(request.headers.get("authorization")).toBe("Bearer private-key");
+      expect(await request.json()).toEqual({ model: "MiniMax-M3.1-Flash", messages: [] });
+      return new Response("ok");
+    });
+    const response = await sendPlan({ upstream: { wireModel: "MiniMax-M3.1-Flash", apiKey: "private-key", provider: "minimax-cn", baseURL: baseUrl, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "minimax-cn", baseUrl }) }, method: "POST", subPath: "openai/v1/responses", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle", messages: [] }), fetcher });
+    expect(response.status).toBe(200);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("keeps custom DeepSeek credentials on the explicitly configured chat upstream", async () => {
     const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(url, init);
-      expect(request.url).toBe("https://private-model.test/inference/v1/chat/completions");
+      expect(request.url).toBe("https://private-model.test/inference/v1/responses");
       expect(request.headers.get("authorization")).toBe("Bearer private-key");
       expect(await request.json()).toEqual({ model: "deepseek-wire", messages: [] });
       return new Response("ok");
     });
     const baseURL = "https://private-model.test/inference";
-    const response = await sendPlan({ upstream: { wireModel: "deepseek-wire", apiKey: "private-key", provider: "deepseek", baseURL, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "deepseek", baseUrl: baseURL }) }, method: "POST", subPath: "openai/v1/chat/completions", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle", messages: [] }), fetcher });
+    const response = await sendPlan({ upstream: { wireModel: "deepseek-wire", apiKey: "private-key", provider: "deepseek", baseURL, protocolEndpoints: resolveProtocolEndpointsFromModelCard({ providerId: "deepseek", baseUrl: baseURL }) }, method: "POST", subPath: "openai/v1/responses", inboundHeaders: new Headers({ "content-type": "application/json" }), body: json({ model: "workspace-handle", messages: [] }), fetcher });
     expect(response.status).toBe(200);
     expect(fetcher).toHaveBeenCalledOnce();
   });

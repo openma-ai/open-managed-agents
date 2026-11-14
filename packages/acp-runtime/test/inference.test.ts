@@ -8,7 +8,7 @@ import {
 
 const deepseekEndpoints: InferenceProtocolEndpoint[] = [
   {
-    protocol: "openai-chat",
+    protocol: "openai-responses",
     proxyPathSegment: "openai/v1",
     upstreamBaseUrl: "https://api.deepseek.com",
   },
@@ -18,6 +18,7 @@ const deepseekEndpoints: InferenceProtocolEndpoint[] = [
     upstreamBaseUrl: "https://api.deepseek.com/anthropic",
   },
 ];
+const deepseekWithoutResponses = deepseekEndpoints.filter((endpoint) => endpoint.protocol !== "openai-responses");
 
 const codexStubAdapter: InferenceConfigAdapter = {
   id: "codex",
@@ -32,10 +33,10 @@ const codexStubAdapter: InferenceConfigAdapter = {
 };
 
 describe("selectInferenceProtocol", () => {
-  it("prefers adapter.supportedProtocols order over endpoint list order", () => {
+  it("prefers Messages when both supported endpoints are present", () => {
     const adapter: InferenceConfigAdapter = {
       id: "test",
-      supportedProtocols: ["anthropic-messages", "openai-chat"],
+      supportedProtocols: ["openai-responses", "anthropic-messages"],
       matches: () => true,
       plan: () => ({
         protocol: "anthropic-messages",
@@ -50,7 +51,7 @@ describe("selectInferenceProtocol", () => {
   });
 
   it("fails fast when codex requires responses but DeepSeek lacks it", () => {
-    expect(() => selectInferenceProtocol(codexStubAdapter, deepseekEndpoints)).toThrow(
+    expect(() => selectInferenceProtocol(codexStubAdapter, deepseekWithoutResponses)).toThrow(
       InferenceProtocolUnsupportedError,
     );
   });

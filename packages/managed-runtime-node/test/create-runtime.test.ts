@@ -7,6 +7,8 @@ import type {
   CredentialEgressPort,
   SessionInputMaterializerPort,
 } from "@open-managed-agents/runtime-resource-contract";
+import { SqlEnvironmentWorkClaimPort } from "@open-managed-agents/environment-work-store-sql";
+import { MemoryEnvironmentWorkClaimPort } from "@open-managed-agents/managed-runtime-host/testing";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 
 import * as nodeRuntime from "../src/create-runtime";
@@ -62,12 +64,13 @@ describe("createNodeManagedRuntime", () => {
       synchronize: vi.fn(async () => undefined),
     };
 
+    const claims = new MemoryEnvironmentWorkClaimPort();
     const options = {
       rootDir,
       sql,
-      initializeFenceSchema: true,
+      claims,
+      initializeOrphanSchema: true,
       ownerId: "node-worker-complete",
-      leaseTtlMs: 30_000,
       heartbeatIntervalMs: 10_000,
       image: "node:24-alpine",
       network: "openma-network",
@@ -83,6 +86,7 @@ describe("createNodeManagedRuntime", () => {
       .rejects.toThrow(/checkpointIntervalMs/);
     const runtime = await createNodeManagedRuntime(options);
 
+    expect(runtime.claims).toBe(claims);
     expect(runtime).toMatchObject({
       runtimeCheckpoint,
       credentialEgress,
@@ -127,7 +131,6 @@ describe("createNodeManagedRuntime", () => {
       rootDir,
       sql: await createBetterSqlite3SqlClient(":memory:"),
       ownerId: "node-worker-1",
-      leaseTtlMs: 30_000,
       heartbeatIntervalMs: 10_000,
       image: "node:24-alpine",
     });
@@ -171,7 +174,6 @@ describe("createNodeManagedRuntime", () => {
         rootDir,
         sql: await createBetterSqlite3SqlClient(":memory:"),
         ownerId: "node-worker-1",
-        leaseTtlMs: 30_000,
         heartbeatIntervalMs: 10_000,
         image: "node:24-alpine",
       },
@@ -211,13 +213,14 @@ describe("createNodeManagedRuntime", () => {
       rootDir,
       sql: await createBetterSqlite3SqlClient(":memory:"),
       ownerId: "node-worker-1",
-      leaseTtlMs: 30_000,
       heartbeatIntervalMs: 10_000,
       image: "node:24-alpine",
       sessionInputs,
     });
 
     expect(runtime.sessionInputs).toBe(sessionInputs);
+    // Without an injected Port the host is authorized by the Work rows in `sql`.
+    expect(runtime.claims).toBeInstanceOf(SqlEnvironmentWorkClaimPort);
   });
 
   it("exposes an operator-supplied credential-egress Port without downgrading it", async () => {
@@ -239,7 +242,6 @@ describe("createNodeManagedRuntime", () => {
       rootDir,
       sql: await createBetterSqlite3SqlClient(":memory:"),
       ownerId: "node-worker-1",
-      leaseTtlMs: 30_000,
       heartbeatIntervalMs: 10_000,
       image: "node:24-alpine",
       credentialEgress,

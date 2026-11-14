@@ -119,10 +119,8 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
 
-        if self.path == "/v1/chat/completions":
-            self._handle_chat(body)
-        elif self.path == "/v1/completions":
-            self._handle_completion(body)
+        if self.path == "/v1/responses":
+            self._handle_response(body)
         elif self.path == "/reload":
             lora_path = body.get("lora_path", "")
             if lora_path:
@@ -133,11 +131,34 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": "not found"}, 404)
 
-    def _handle_chat(self, body: dict):
-        messages = body.get("messages", [])
-        max_tokens = body.get("max_tokens", 1024)
+    def _handle_response(self, body: dict):
+        instructions = body.get("instructions")
+        raw_input = body.get("input", "")
+        if isinstance(raw_input, str):
+            messages = ([{"role": "system", "content": instructions}] if isinstance(instructions, str) and instructions else [])
+            messages.append({"role": "user", "content": raw_input})
+        elif isinstance(raw_input, list):
+            messages = []
+            if isinstance(instructions, str) and instructions:
+                messages.append({"role": "system", "content": instructions})
+            for item in raw_input:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    content = "".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") in {"input_text", "output_text"}
+                    )
+                messages.append({"role": item.get("role", "user"), "content": str(content)})
+        else:
+            self._send_json({"error": "input must be a string or message list"}, 400)
+            return
+
+        max_tokens = body.get("max_output_tokens", 1024)
         temperature = body.get("temperature", 0.7)
-        stop = body.get("stop", None)
+        stop = body.get("stop")
 
         t0 = time.time()
         text, num_tokens = state.generate(messages, max_tokens, temperature, stop)
@@ -145,35 +166,21 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[gen] {num_tokens} tokens in {duration:.1f}s ({num_tokens/max(duration,0.01):.0f} tok/s)")
 
         self._send_json({
-            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
+            "id": f"resp_{uuid.uuid4().hex[:8]}",
+            "object": "response",
+            "status": "completed",
             "model": state.model_name,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text}],
             }],
             "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": num_tokens,
+                "input_tokens": 0,
+                "output_tokens": num_tokens,
                 "total_tokens": num_tokens,
             },
-        })
-
-    def _handle_completion(self, body: dict):
-        prompt = body.get("prompt", "")
-        messages = [{"role": "user", "content": prompt}]
-        max_tokens = body.get("max_tokens", 1024)
-        temperature = body.get("temperature", 0.7)
-
-        text, num_tokens = state.generate(messages, max_tokens, temperature)
-
-        self._send_json({
-            "id": f"cmpl-{uuid.uuid4().hex[:8]}",
-            "object": "text_completion",
-            "choices": [{"text": text, "index": 0, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": num_tokens, "total_tokens": num_tokens},
         })
 
 

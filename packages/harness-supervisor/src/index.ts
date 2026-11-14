@@ -2,6 +2,7 @@ import type {
   HarnessSupervisorCommand,
   HarnessSupervisorEvent,
   RuntimeResourceScope,
+  AbsoluteWorkspacePath,
 } from "@open-managed-agents/runtime-resource-contract";
 
 export interface HarnessSupervisorRun {
@@ -14,7 +15,7 @@ export interface HarnessSupervisorHarness {
   start(input: {
     scope: RuntimeResourceScope;
     harness: { id: string; version: string };
-    workspacePath: "/workspace";
+    workspacePath: AbsoluteWorkspacePath;
     outputPath: "/mnt/session/outputs" | null;
     checkpoint(input: { sessionId: string; turnId?: string }): Promise<void>;
     signal: AbortSignal;

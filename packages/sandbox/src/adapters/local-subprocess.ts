@@ -28,11 +28,13 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { Buffer } from "node:buffer";
+import { createServer } from "node:net";
 import { Readable, Writable } from "node:stream";
 import { promises as fs } from "node:fs";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readlinkSync,
@@ -44,14 +46,23 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type {
   ProcessHandle,
+  SandboxManagedProcessSpec,
+  SandboxManagedProcessHandle,
+  SandboxCheckpointHandle,
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
   SandboxDuplexProcessSpec,
   SandboxExecutor,
   SandboxFactory,
+  SandboxFactoryContext,
+  SandboxProviderPort,
+  SandboxRuntimeCapabilities,
+  SandboxRuntimeHandle,
+  SandboxRuntimePort,
+  SandboxRuntimeStatus,
 } from "../ports";
+import { randomUUID } from "node:crypto";
 import { rejectSandboxImageSelection } from "../sandbox-images";
-import { rejectPreparedBase } from "../ports";
 import { getLogger } from "@open-managed-agents/observability";
 
 const moduleLogger = getLogger("local-sandbox");
@@ -113,13 +124,25 @@ interface OutputsMount {
   mountRel: string;
 }
 
+/** Managed exits were not confirmed; the caller may retry destroy(). */
+export class ManagedProcessCleanupError extends AggregateError {
+  readonly code = "MANAGED_PROCESS_CLEANUP_FAILED";
+  constructor(readonly processIds: readonly string[], errors: unknown[]) {
+    super(errors, "Managed process cleanup failed; retry destroy to confirm exit");
+    this.name = "ManagedProcessCleanupError";
+  }
+}
+
 export class LocalSubprocessSandbox
-  implements SandboxExecutor, SandboxDuplexProcessPort {
+  implements SandboxExecutor, SandboxDuplexProcessPort, SandboxRuntimePort {
   private workdir: string;
+  private readonly relayPort: Promise<number>;
   private defaultTimeoutMs: number;
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private processes = new Map<string, BackgroundProcess>();
+  private closing: Promise<void> | undefined;
+  private closeFailed = false;
   private duplexProcesses = new Set<SandboxDuplexProcess>();
   private mounts = new Map<string, MemoryMount>();
   private outputsMount: OutputsMount | null = null;
@@ -140,6 +163,31 @@ export class LocalSubprocessSandbox
       log: (msg) => moduleLogger.info(msg),
     };
     mkdirSync(this.workdir, { recursive: true });
+    this.relayPort = this.allocateRelayPort();
+    // Acquisition may never reach egress (e.g. rejected runtime settings).
+    // Observe rejection now, but preserve it for egressRelayPort to fail closed.
+    void this.relayPort.catch(() => undefined);
+  }
+
+  egressRelayPort(): Promise<number> { return this.relayPort; }
+
+  private async allocateRelayPort(): Promise<number> {
+    const state = join(this.workdir, ".oma-relay-port");
+    const read = async () => {
+      const value = Number(await fs.readFile(state, "utf8"));
+      if (!Number.isSafeInteger(value) || value < 1 || value > 65535) throw new Error("Invalid persisted sandbox relay port");
+      return value;
+    };
+    try { return await read(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const server = createServer();
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
+    });
+    try {
+      try { await fs.writeFile(state, String(port), { flag: "wx", mode: 0o600 }); return port; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; return await read(); }
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   }
 
   async exec(command: string, timeout?: number): Promise<string> {
@@ -208,6 +256,33 @@ export class LocalSubprocessSandbox
     return proc;
   }
 
+  async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
+    if (this.closing !== undefined) throw new Error("Sandbox is closing");
+    if (!isAbsolute(spec.command) || spec.command.includes("\0")) throw new TypeError("Managed process requires an absolute executable");
+    // Managed process environments are replacement environments. Inherited
+    // session/image values (especially NODE_OPTIONS, hooks, and credentials)
+    // must not reach a native argv launch unless the caller explicitly passes
+    // them in spec.env.
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(spec.env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Invalid managed process environment");
+      // Managed ACP processes receive provider-logical paths (for example
+      // `/tmp/openma-harness-state`). Keep the local fixture in the same
+      // provider-owned filesystem snapshot as ordinary exec calls.
+      env[key] = this.resolveProcessEnvValue(value);
+    }
+    if (spec.args?.some(value => typeof value !== "string" || value.includes("\0"))) throw new TypeError("Invalid managed process argv");
+    const child = spawn(spec.command, [...(spec.args ?? [])], {cwd:spec.cwd ? this.resolvePath(spec.cwd) : this.workdir, env, stdio:"ignore", detached:false});
+    const ready = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    // Register before yielding: destroy owns starting children as well as running ones.
+    const id = "managed_" + randomUUID();
+    const proc = new BackgroundProcess(id, child, true);
+    this.processes.set(id, proc);
+    child.once("close", () => this.processes.delete(id));
+    await ready;
+    return {id, pid:child.pid!, kill:signal=>proc.kill(signal), getStatus:()=>proc.getStatus()};
+  }
+
   async spawnDuplexProcess(
     spec: SandboxDuplexProcessSpec,
   ): Promise<SandboxDuplexProcess> {
@@ -249,9 +324,7 @@ export class LocalSubprocessSandbox
   async setEnvVars(envVars: Record<string, string>): Promise<void> {
     this.envVars = {
       ...this.envVars,
-      ...Object.fromEntries(Object.entries(envVars).map(([key, value]) =>
-        [key, this.resolveProcessEnvValue(value)]
-      )),
+      ...envVars,
     };
   }
 
@@ -447,17 +520,85 @@ export class LocalSubprocessSandbox
     return full;
   }
 
-  async destroy(): Promise<void> {
+  // ── runtime lifecycle (SandboxRuntimePort) ───────────────────────────────
+  // The workdir is the sandbox: its path is the handle, so a new process
+  // finds it again (sandboxProvider.resume). A snapshot is a copy of the
+  // workdir (without the .mnt mount links) under <parent>/.oma-snapshots/.
+
+  runtimeHandle(): SandboxRuntimeHandle {
+    return { provider: LOCAL_PROVIDER, runtimeId: this.workdir };
+  }
+
+  runtimeCapabilities(): SandboxRuntimeCapabilities {
+    return { lease: false, suspend: [], checkpoint: ["filesystem"] };
+  }
+
+  async status(): Promise<SandboxRuntimeStatus> {
+    return existsSync(this.workdir) ? "running" : "stopped";
+  }
+
+  async renewLease(): Promise<void> {}
+
+  async suspend(): Promise<SandboxCheckpointHandle> {
+    throw new Error("local-subprocess sandboxes cannot be suspended");
+  }
+
+  async resume(): Promise<void> {
+    throw new Error("local-subprocess sandboxes cannot be suspended");
+  }
+
+  async checkpoint(): Promise<SandboxCheckpointHandle> {
+    if (!existsSync(this.workdir)) throw new Error(`local-subprocess workdir ${this.workdir} is gone`);
+    const id = `lsnap_${randomUUID()}`;
+    const path = join(localSnapshotsRoot(this.workdir), id);
+    await fs.cp(this.workdir, path, {
+      recursive: true,
+      verbatimSymlinks: true,
+      // Runtime-owned mounts and the credential relay are incarnation state,
+      // not Session files. Replaying either leaves a dead relay/consumed
+      // binding in a restored native snapshot and prevents the next execution
+      // from installing its fresh fence-bound binding.
+      filter: (source) => source !== join(this.workdir, ".mnt") && source !== join(this.workdir, ".oma-egress") && source !== join(this.workdir, ".oma-relay-port"),
+    });
+    return { provider: LOCAL_PROVIDER, checkpointId: id, sourceRuntimeId: this.workdir, kind: "filesystem", scope: "portable", metadata: { path } };
+  }
+
+  destroy(): Promise<void> {
+    // Keep the closing barrier after failure, but let a later call retry.
+    // Concurrent callers share one attempt; successful destroy stays idempotent.
+    if (this.closing === undefined || this.closeFailed) {
+      this.closeFailed = false;
+      this.closing = this.close().catch(error => {
+        this.closeFailed = true;
+        throw error;
+      });
+    }
+    return this.closing;
+  }
+
+  private async close(): Promise<void> {
+    // Port allocation is not a prerequisite for releasing owned processes.
+    await this.relayPort.catch(() => undefined);
     await Promise.all(
       [...this.duplexProcesses].map((proc) =>
         proc.kill("SIGKILL").catch(() => undefined)
       ),
     );
     this.duplexProcesses.clear();
-    for (const proc of this.processes.values()) {
-      try { await proc.kill("SIGKILL"); } catch { /* best-effort */ }
+    const failedIds: string[] = [];
+    const errors: unknown[] = [];
+    for (const [id, proc] of this.processes) {
+      try { await proc.kill("SIGKILL"); } catch (error) {
+        if (proc.managed) {
+          failedIds.push(id);
+          errors.push(error);
+          continue; // Retain ownership until exit or a successful retry.
+        }
+        // Legacy log processes keep their best-effort cleanup semantics.
+      }
+      this.processes.delete(id);
     }
-    this.processes.clear();
+    if (failedIds.length) throw new ManagedProcessCleanupError(failedIds, errors);
     for (const mount of this.mounts.values()) {
       if (mount.readOnly) makeWritableRecursive(mount.targetDir);
     }
@@ -502,6 +643,12 @@ export class LocalSubprocessSandbox
       // Platform root (ADR 0016): harness state and agent homes. Kept under
       // the workdir's .mnt tree so concurrent local sessions never share it.
       normalised = normalised === "/oma" ? ".mnt/oma" : ".mnt/oma/" + normalised.slice("/oma/".length);
+    } else if (normalised.startsWith("/tmp/openma-harness-state/") || normalised === "/tmp/openma-harness-state") {
+      // ACP native state uses /tmp in real containers, but is part of the
+      // provider-owned full snapshot contract. Keep this known OMA state root
+      // inside the local sandbox so native resume survives a snapshot restore;
+      // unrelated /tmp remains host-ephemeral as before.
+      normalised = normalised === "/tmp/openma-harness-state" ? ".oma-native-state" : ".oma-native-state/" + normalised.slice("/tmp/openma-harness-state/".length);
     } else if (normalised.startsWith("/workspace/")) normalised = normalised.slice("/workspace/".length);
     else if (normalised === "/workspace") normalised = "";
     else if (normalised.startsWith("/")) normalised = normalised.slice(1);
@@ -517,7 +664,8 @@ export class LocalSubprocessSandbox
    * local conformance tests.
    */
   private resolveProcessEnvValue(value: string): string {
-    return SANDBOX_ROOTS.some((root) => value === root || value.startsWith(`${root}/`))
+    return (SANDBOX_ROOTS.some((root) => value === root || value.startsWith(`${root}/`))
+      || value === "/tmp/openma-harness-state" || value.startsWith("/tmp/openma-harness-state/"))
       ? this.resolvePath(value)
       : value;
   }
@@ -531,9 +679,13 @@ export class LocalSubprocessSandbox
    * workdir is inserted verbatim; keep it free of shell metacharacters.
    */
   private resolveCommandPaths(command: string): string {
-    return command.replace(
+    const roots = command.replace(
       SANDBOX_ROOT_TOKEN,
       (_match, lead: string, root: string) => `${lead}${this.resolvePath(root)}`,
+    );
+    return roots.replace(
+      TMP_OMA_STATE_TOKEN,
+      (_match, lead: string) => `${lead}${this.resolvePath("/tmp/openma-harness-state")}`,
     );
   }
 
@@ -601,7 +753,7 @@ export class LocalSubprocessSandbox
   private buildEnv(command: string): NodeJS.ProcessEnv {
     const base: Record<string, string> = {
       ...process.env as Record<string, string>,
-      ...this.envVars,
+      ...Object.fromEntries(Object.entries(this.envVars).map(([key, value]) => [key, this.resolveProcessEnvValue(value)])),
       PWD: this.workdir,
     };
     for (const { prefix, secrets } of this.commandSecrets) {
@@ -615,6 +767,8 @@ export class LocalSubprocessSandbox
 const SANDBOX_ROOTS = ["/workspace", "/mnt/memory", "/mnt/session/outputs", "/oma"] as const;
 const SANDBOX_ROOT_TOKEN =
   /(^|[\s'"=:(`])(\/workspace|\/mnt\/memory|\/mnt\/session\/outputs|\/oma)(?=$|[\/\s'"`;:)|&<>])/g;
+const TMP_OMA_STATE_TOKEN =
+  /(^|[\s'"=:(`])(\/tmp\/openma-harness-state)(?=$|[\/\s'"`;:)|&<>])/g;
 
 function makeReadOnlyRecursive(path: string): void {
   let info;
@@ -691,23 +845,29 @@ class BackgroundProcess implements ProcessHandle {
   private stderr = "";
   private exitCode: number | null = null;
   private exitSignal: NodeJS.Signals | null = null;
+  private readonly exited: Promise<void>;
 
-  constructor(public id: string, child: ChildProcess) {
+  constructor(public id: string, child: ChildProcess, readonly managed = false) {
     this.child = child;
     this.pid = child.pid ?? 0;
     child.stdout?.on("data", (b: Buffer) => { this.stdout += b.toString(); });
     child.stderr?.on("data", (b: Buffer) => { this.stderr += b.toString(); });
-    child.on("close", (code, signal) => {
-      this.exitCode = code;
-      this.exitSignal = signal as NodeJS.Signals | null;
+    child.on("close", (code, signal) => { this.exitCode = code; this.exitSignal = signal; });
+    this.exited = new Promise(resolve => {
+      child.once("exit", (code, signal) => {
+        if (this.managed) { this.exitCode = code; this.exitSignal = signal; }
+        resolve();
+      });
+      child.once("error", () => resolve());
     });
   }
 
   async kill(signal: string): Promise<void> {
     try {
       this.child.kill(signal as NodeJS.Signals);
+      if (this.managed && signal === "SIGKILL" && !await childExitedWithin(this.exited, 2_000)) throw new Error("Managed process exit timed out");
     } catch (err) {
-      throw new Error(`kill failed: ${(err as Error).message}`);
+      throw Object.assign(new Error(`kill failed: ${(err as Error).message}`), { code: "MANAGED_PROCESS_CLEANUP_FAILED" });
     }
   }
 
@@ -718,7 +878,7 @@ class BackgroundProcess implements ProcessHandle {
   async getStatus(): Promise<string> {
     if (this.exitCode === null && this.exitSignal === null) return "running";
     // Match the status vocabulary @cloudflare/sandbox uses — pollWithStrategies
-    // in apps/agent/src/harness/tools.ts checks for "completed" / "error" /
+    // in packages/agent-harness/src/tools.ts checks for "completed" / "error" /
     // "killed" exactly. Returning "exited:0" / "signaled:SIGTERM" silently
     // hangs the harness's tool-call wait loop until the watchdog fires.
     if (this.exitSignal) return "killed";
@@ -728,12 +888,53 @@ class BackgroundProcess implements ProcessHandle {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
+const LOCAL_PROVIDER = "local-subprocess";
+
+/** Snapshots live next to the Session workdirs, never inside one. */
+function localSnapshotsRoot(workdir: string): string {
+  return join(dirname(resolve(workdir)), ".oma-snapshots");
+}
+
+/** A snapshot's copy, which must sit directly under the snapshots root. */
+function localSnapshotPath(checkpoint: SandboxCheckpointHandle): string {
+  const path = checkpoint.metadata?.path;
+  if (checkpoint.provider !== LOCAL_PROVIDER || checkpoint.scope !== "portable" || typeof path !== "string"
+    || !/^lsnap_[0-9a-f-]+$/u.test(checkpoint.checkpointId) || resolve(path) !== join(localSnapshotsRoot(checkpoint.sourceRuntimeId), checkpoint.checkpointId)) {
+    throw new Error("local-subprocess received a checkpoint it did not take");
+  }
+  return path;
+}
+
+function localSandbox(ctx: SandboxFactoryContext): LocalSubprocessSandbox {
+  return new LocalSubprocessSandbox({ workdir: ctx.workdir, memoryRoot: ctx.memoryRoot, outputsRoot: ctx.outputsRoot });
+}
+
 export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0]) => {
   rejectSandboxImageSelection("local-subprocess", ctx.image);
-  rejectPreparedBase("local-subprocess", ctx.preparedBase);
-  return new LocalSubprocessSandbox({
-    workdir: ctx.workdir,
-    memoryRoot: ctx.memoryRoot,
-    outputsRoot: ctx.outputsRoot,
-  });
+  return localSandbox(ctx);
 }, { capabilities: { allocationIsolation: true } });
+
+/** Finds a sandbox again by its handle (the workdir) and starts a new one
+ * from a snapshot copy, so a restarted host keeps the Session's files. */
+export const sandboxProvider: SandboxProviderPort<LocalSubprocessSandbox> = {
+  async create(ctx) {
+    rejectSandboxImageSelection("local-subprocess", ctx.image);
+    return localSandbox(ctx);
+  },
+  async resume(handle, ctx) {
+    if (handle.provider !== LOCAL_PROVIDER || resolve(handle.runtimeId) !== resolve(ctx.workdir) || !existsSync(handle.runtimeId)) {
+      throw new Error(`local-subprocess sandbox ${handle.runtimeId} is gone`);
+    }
+    return localSandbox(ctx);
+  },
+  async restore(checkpoint, ctx) {
+    const path = localSnapshotPath(checkpoint);
+    if (!existsSync(path)) throw new Error(`local-subprocess snapshot ${checkpoint.checkpointId} is gone`);
+    rmSync(ctx.workdir, { recursive: true, force: true });
+    await fs.cp(path, ctx.workdir, { recursive: true, verbatimSymlinks: true });
+    return localSandbox(ctx);
+  },
+  async discard(checkpoint) {
+    rmSync(localSnapshotPath(checkpoint), { recursive: true, force: true });
+  },
+};

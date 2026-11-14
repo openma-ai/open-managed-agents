@@ -1,3 +1,4 @@
+import { sessionExecutionPlacement } from "@open-managed-agents/domain/environment-work";
 import type {
   EnqueueEnvironmentSessionWork,
   EnqueueEnvironmentSessionWorkResult,
@@ -35,7 +36,7 @@ export class EnvironmentWorkEnqueuerService
       };
     }
     if (
-      input.environment.config.type !== "self_hosted" ||
+      sessionExecutionPlacement(input.environment, input.session).authority !== "environment_work" ||
       input.environment.archivedAt !== null
     ) {
       return {
@@ -73,8 +74,11 @@ export class EnvironmentWorkEnqueuerService
       stopRequestedAt: null,
       stoppedAt: null,
     };
-    const inserted = await this.dependencies.store.insert({
+    if (!this.dependencies.store.ensureSession) throw new Error("Atomic Session Work ensure is not configured");
+    const inserted = await this.dependencies.store.ensureSession({
       workspaceId: this.dependencies.workspaceId,
+      ...(input.expectedSessionRevision === undefined ? {} : { expectedSessionRevision: input.expectedSessionRevision }),
+      ...(input.recoveryEventIds === undefined ? {} : { recoveryEventIds: input.recoveryEventIds }),
       record: {
         work,
         secret: issued.secret,
@@ -88,10 +92,16 @@ export class EnvironmentWorkEnqueuerService
       workspaceId: this.dependencies.workspaceId,
       environmentId: input.environment.id,
       sessionId: input.session.id,
-      workId,
-      occurredAt: work.createdAt,
+      workId: inserted.work.id,
+      occurredAt: inserted.work.createdAt,
     }).catch(() => {});
     return { type: "queued", work: inserted.work };
+  }
+
+  async interruptTarget(input: { workspaceId: string; session: import("../domain/session").Session }): Promise<string | null> {
+    if (input.workspaceId !== this.dependencies.workspaceId) throw new Error("Environment Work workspace mismatch");
+    const current = await this.dependencies.store.findActiveSession({ workspaceId: input.workspaceId, sessionId: input.session.id });
+    return current?.work.environmentId === input.session.environmentId ? current.work.id : null;
   }
 
   async stop(
@@ -103,47 +113,55 @@ export class EnvironmentWorkEnqueuerService
         message: "Environment Work workspace does not match its application scope",
       };
     }
-    const current = await this.dependencies.store.findActiveSession({
-      workspaceId: this.dependencies.workspaceId,
-      sessionId: input.session.id,
-    });
-    if (current === null) return { type: "not_found" };
-    if (
-      current.work.data.type !== "session" ||
-      current.work.data.id !== input.session.id ||
-      current.work.environmentId !== input.session.environmentId
-    ) {
-      return {
-        type: "conflict",
-        message: `Active work does not match Session ${input.session.id}`,
-      };
-    }
-    const timestamp = this.dependencies.clock.now().toISOString();
-    const stopsImmediately = current.work.state === "queued";
-    const replaced = await this.dependencies.store.replace({
-      workspaceId: this.dependencies.workspaceId,
-      environmentId: current.work.environmentId,
-      workId: current.work.id,
-      expectedRevision: current.revision,
-      next: {
-        work: {
-          ...current.work,
-          state: stopsImmediately ? "stopped" : "stopping",
-          stopRequestedAt: current.work.stopRequestedAt ?? timestamp,
-          ...(stopsImmediately && { stoppedAt: timestamp }),
+    // ACK/reclaim/heartbeat share this revision. Re-read after a lost CAS,
+    // but never follow a different Work created while the old one settles.
+    if (input.workId === null) return { type: "not_found" };
+    let targetWorkId: string | undefined = input.workId;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await this.dependencies.store.findActiveSession({
+        workspaceId: this.dependencies.workspaceId,
+        sessionId: input.session.id,
+      });
+      if (current === null || (targetWorkId !== undefined && current.work.id !== targetWorkId)) return { type: "not_found" };
+      targetWorkId = current.work.id;
+      if (
+        current.work.data.type !== "session" ||
+        current.work.data.id !== input.session.id ||
+        current.work.environmentId !== input.session.environmentId
+      ) {
+        return {
+          type: "conflict",
+          message: `Active work does not match Session ${input.session.id}`,
+        };
+      }
+      if (current.work.state === "stopping" || current.work.state === "stopped") {
+        return { type: "stopped", work: current.work };
+      }
+      const timestamp = this.dependencies.clock.now().toISOString();
+      const stopsImmediately = current.work.state === "queued";
+      const replaced = await this.dependencies.store.replace({
+        workspaceId: this.dependencies.workspaceId,
+        environmentId: current.work.environmentId,
+        workId: current.work.id,
+        expectedRevision: current.revision,
+        next: {
+          work: {
+            ...current.work,
+            state: stopsImmediately ? "stopped" : "stopping",
+            stopRequestedAt: current.work.stopRequestedAt ?? timestamp,
+            ...(stopsImmediately && { stoppedAt: timestamp }),
+          },
+          secret: current.secret,
+          claim: stopsImmediately ? null : current.claim,
+          heartbeatTtlSeconds: current.heartbeatTtlSeconds,
         },
-        secret: current.secret,
-        claim: stopsImmediately ? null : current.claim,
-        heartbeatTtlSeconds: current.heartbeatTtlSeconds,
-      },
-    });
-    if (replaced.type === "not_found") return { type: "not_found" };
-    if (replaced.type === "revision_conflict") {
-      return {
-        type: "conflict",
-        message: `Work changed concurrently at revision ${replaced.actualRevision}`,
-      };
+      });
+      if (replaced.type === "not_found") return { type: "not_found" };
+      if (replaced.type === "revision_conflict") {
+        continue;
+      }
+      return { type: "stopped", work: replaced.record.work };
     }
-    return { type: "stopped", work: replaced.record.work };
+    return { type: "conflict", message: "Work changed concurrently while stopping Session " + input.session.id };
   }
 }

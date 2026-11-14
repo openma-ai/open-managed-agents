@@ -40,7 +40,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "pnpm run clean && tsc -p tsconfig.build.json && esbuild src/node-cli.ts src/node-work-item-cli.ts --bundle --platform=node --format=esm --target=node20 --outdir=dist --banner:js=\"#!/usr/bin/env node\"",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json && esbuild src/node-core-custom-mcp-cli.ts src/node-cli.ts src/node-work-item-cli.ts src/node-e2b-work-item-cli.ts --metafile=dist/bundle-meta.json --bundle --platform=node --format=esm --target=node20 --outdir=dist --banner:js=\"#!/usr/bin/env node\"",
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --config vitest.coverage.config.ts --coverage",
     "typecheck": "tsc --noEmit",
@@ -59,13 +59,18 @@
   "dependencies": {
     "@anthropic-ai/sdk": "1.3.0",
     "@open-managed-agents/acp-runtime": "workspace:*",
+    "@open-managed-agents/agent-harness": "workspace:*",
     "@open-managed-agents/harness-inference-adapters": "workspace:*",
     "@open-managed-agents/harness-supervisor": "workspace:*",
     "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
+    "@open-managed-agents/session-outcomes": "workspace:*",
+    "@open-managed-agents/shared": "workspace:*",
+    "@open-managed-agents/sandbox-gateway": "workspace:*",
     "@open-managed-agents/runtime": "workspace:*",
-    "@openma/common": "^0.9.1",
-    "fflate": "^0.8.2"
+    "@openma/common": "^0.14.0",
+    "fflate": "^0.8.2",
+    "@modelcontextprotocol/sdk": "1.29.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

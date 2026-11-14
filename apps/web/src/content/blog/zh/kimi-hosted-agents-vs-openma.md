@@ -145,7 +145,7 @@ curl -X POST "$OMA_BASE_URL/v1/oma/model_cards" \
   }'
 ```
 
-Agent 里写 `"model": { "id": "kimi" }`。内置目录里还没有的新模型，用 `base_url` 加 `pi_config.api: "openai-completions"` 建卡，见 [Model Cards 文档](https://docs.openma.ai/reference/api/#model-cards)。token 费用直接走你的 Moonshot 账户。
+Agent 里写 `"model": { "id": "kimi" }`。内置目录里还没有的新模型，用 `base_url` 加 `pi_config.api: "openai-responses"` 建卡，见 [Model Cards 文档](https://docs.openma.ai/reference/api/#model-cards)。token 费用直接走你的 Moonshot 账户。
 
 ### 第五步：哪些带不走
 

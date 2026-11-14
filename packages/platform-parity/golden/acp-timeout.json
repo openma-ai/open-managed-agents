@@ -1,0 +1,122 @@
+{
+  "event_types": [
+    "user.message",
+    "session.status_running",
+    "span.model_request_start",
+    "session.warning",
+    "agent.message",
+    "span.model_request_end",
+    "session.error",
+    "session.status_idle"
+  ],
+  "events": {
+    "agent.message": [
+      {
+        "content": [
+          {
+            "text": "working",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "agent.message"
+      }
+    ],
+    "session.error": [
+      {
+        "error": {
+          "message": "ACP prompt exceeded its 20ms turn deadline",
+          "retry_status": {
+            "type": "exhausted"
+          },
+          "type": "unknown_error"
+        },
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.error"
+      }
+    ],
+    "session.status_idle": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "stop_reason": {
+          "type": "retries_exhausted"
+        },
+        "type": "session.status_idle"
+      }
+    ],
+    "session.status_running": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "session.status_running"
+      }
+    ],
+    "session.warning": [
+      {
+        "details": {
+          "acpSessionId": "pi-session",
+          "checkpointFingerprint": "",
+          "configurationSha256": "66498340aeba5908e81006fb8842ec5d4fb5b5400bfeeb2a22c69d76944ffb82",
+          "state": "started"
+        },
+        "id": "<id>",
+        "message": "ACP session started; context checkpoint is not yet committed.",
+        "processed_at": "<time>",
+        "source": "oma.acp_context",
+        "type": "session.warning"
+      }
+    ],
+    "span.model_request_end": [
+      {
+        "id": "<id>",
+        "is_error": false,
+        "model_request_start_id": "<id>",
+        "model_usage": {
+          "cache_creation_input_tokens": "<token_count>",
+          "cache_read_input_tokens": "<token_count>",
+          "input_tokens": "<token_count>",
+          "output_tokens": "<token_count>"
+        },
+        "processed_at": "<time>",
+        "type": "span.model_request_end"
+      }
+    ],
+    "span.model_request_start": [
+      {
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "span.model_request_start"
+      }
+    ],
+    "user.message": [
+      {
+        "content": [
+          {
+            "text": "Start.",
+            "type": "text"
+          }
+        ],
+        "id": "<id>",
+        "processed_at": "<time>",
+        "type": "user.message"
+      }
+    ]
+  },
+  "session": {
+    "budget": null,
+    "outcome_evaluations": [],
+    "resources": [],
+    "stats": {},
+    "status": "idle",
+    "usage": {}
+  },
+  "reads": {
+    "message_status": 200,
+    "session_create_status": 201
+  },
+  "models": {},
+  "timeouts": []
+}

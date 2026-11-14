@@ -1,8 +1,8 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
-import { buildTools, ToolFailureError } from "../../apps/agent/src/harness/tools";
-import * as toolHttpFetch from "../../apps/agent/src/harness/tool-http-fetch";
+import { buildTools, ToolFailureError } from "../../packages/agent-harness/src/tools";
+import * as toolHttpFetch from "../../packages/agent-harness/src/tool-http-fetch";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import type { AgentConfig } from "@open-managed-agents/shared";
 

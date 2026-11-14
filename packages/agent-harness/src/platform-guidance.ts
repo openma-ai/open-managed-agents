@@ -1,0 +1,59 @@
+import { SESSION_OUTPUTS_PATH, sessionOutputsReminder } from "@open-managed-agents/sandbox";
+
+// Platform guidance appended to every agent's system prompt. Single source
+// of truth — both CF SessionDO and the self-host Node main read these.
+// Keep additions surgical: every line is sent on every turn for every
+// agent, so it sits on the prompt-cache prefix path. Don't expand without
+// proportional benefit.
+
+export const authenticatedCommandGuidance =
+  "For commands that may require authentication, prefer issuing a single command instead of a chained shell command. If an authenticated chained command fails, retry with a simpler single-command form.";
+
+// Loop-stop guidance: prod incidents have shown agents retrying the same
+// failing tool call indefinitely when an upstream credential is missing or
+// an external API is down. Cap retries explicitly and require a structured
+// failure report so the human (or calling system) can intervene.
+export const loopStopGuidance =
+  "If the same tool call fails three times in a row with substantively the same error, stop retrying. Report (a) what you were trying to do, (b) the exact error, and (c) what you would need to make progress (a missing credential, a corrected input, an upstream service to recover), then end the turn instead of looping.";
+
+// AMA-aligned `/mnt/session/outputs/` convention: the platform mounts a
+// per-session R2-backed (or host-fs-backed on Node) directory at this path.
+// Files written here are listable via GET /v1/sessions/:id/outputs and
+// downloadable by the caller. Without this hint, agents historically wrote
+// final artefacts to the working directory where they vanish on container recycle.
+export const sessionOutputsGuidance = sessionOutputsReminder({ path: SESSION_OUTPUTS_PATH }).text;
+
+export const platformGuidance =
+  `${authenticatedCommandGuidance}\n\n${loopStopGuidance}\n\n${sessionOutputsGuidance}`;
+
+/**
+ * Compose agent.system + platform guidance + optional platform reminders
+ * (skills / memory_prompts / appendable_prompts).
+ *
+ * Reminders are appended to the system prompt instead of broadcast as
+ * `<system-reminder>` user.message events. The legacy approach
+ * leaked the raw skill bodies into the visible conversation feed and
+ * the event log — operators correctly objected that skill content is
+ * static-per-session context and belongs in the system prompt where
+ * Claude already knows to treat it as such.
+ *
+ * Each reminder is wrapped in an XML-ish `<source name="…">…</source>`
+ * block so the model still has a structural cue about where each chunk
+ * came from (matching Anthropic's scratchpad / source convention) and so
+ * downstream consumers can grep the prompt for a specific skill.
+ *
+ * If the agent has no system prompt of its own AND no reminders, the
+ * guidance alone becomes the system prompt.
+ */
+export function composeSystemPrompt(
+  rawSystemPrompt: string | null | undefined,
+  reminders?: ReadonlyArray<{ source: string; text: string }>,
+): string {
+  const raw = rawSystemPrompt ?? "";
+  const base = raw ? `${raw}\n\n${platformGuidance}` : platformGuidance;
+  if (!reminders?.length) return base;
+  const blocks = reminders
+    .map((r) => `<source name="${r.source}">\n${r.text}\n</source>`)
+    .join("\n\n");
+  return `${base}\n\n${blocks}`;
+}

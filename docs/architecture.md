@@ -173,7 +173,7 @@ All of them get the same tools, skills, sandbox, and history from the platform. 
 
 ## Current Implementation Notes
 
-Our `DefaultHarness` currently mixes some platform concerns (tool building, skill mounting) that should ideally be in SessionDO's context preparation. This is tracked as technical debt — the harness works correctly, but custom harness authors currently need to duplicate this setup code. A future refactor would move tool/skill preparation into `HarnessContext` construction so harnesses receive a fully-prepared context.
+Our `PiHarness` currently mixes some platform concerns (tool building, skill mounting) that should ideally be in SessionDO's context preparation. This is tracked as technical debt — the harness works correctly, but custom harness authors currently need to duplicate this setup code. A future refactor would move tool/skill preparation into `HarnessContext` construction so harnesses receive a fully-prepared context.
 
 ## Package Layering (P2 — shared HTTP routes + supporting abstractions)
 

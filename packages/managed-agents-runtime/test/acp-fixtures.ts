@@ -35,6 +35,8 @@ export function acpSessionFixture(
     initializeMeta: null,
     sessionSetupMeta: null,
     configOptions: [],
+    legacyModels: null,
+    forkSupport: { level: "none", reason: "session-fork-not-advertised", message: "Session fork is not supported by this fixture." },
     modes: null,
     promptCapabilities: {},
     supportsSessionFork: false,

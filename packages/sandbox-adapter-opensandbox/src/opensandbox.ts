@@ -247,10 +247,8 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     if (kind === "memory" && this.options.suspendKind !== "memory") {
       throw new Error("OpenSandbox memory suspend requires OPENSANDBOX_RUNTIME=docker or fast");
     }
-    // Hot pause only: expires_at stays absolute while paused. Renew to the
-    // normal active window so pause starts with a full one; a failed renewal
-    // never leaves a doomed pause. Long-lived state belongs in volumes or snapshots.
-    await this.call(() => this.client.renew(this.options.timeoutSeconds));
+    // A.10: suspend is also called from idle pause. Never renew here.
+    // expires_at stays absolute; independent snapshots provide recovery.
     await this.call(() => this.client.pause());
     const deadline = Date.now() + this.options.readyTimeoutMs;
     while (true) {

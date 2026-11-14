@@ -386,3 +386,71 @@ describe("OpenMA-owned ACP native session durability", () => {
     await state.release({ sessionId: start.sessionId, reason: "destroy" });
   });
 });
+
+it("resident native validity checks live artifact paths, not only the durable checkpoint copy", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "oma-resident-native-"));
+  const sessionId = `resident-${crypto.randomUUID()}`;
+  const agent = {id:"claude-acp", command:"claude-acp"};
+  const binding = bindAcpAgentState({sessionId,agent});
+  const state = createAcpNativeSessionState({io:createNodeAcpHarnessStateIo({workspacePath:workspace}),resolveSession:async()=>({agent})});
+  try {
+    await state.beforeStart({type:"session.start",sessionId,agentId:"agent",runtime:"cloud"});
+    const artifact = binding.sessionArtifacts.find(item=>item.requiredForResume)!;
+    const durable = join(workspace, artifact.path.slice("/workspace/".length));
+    await mkdir(durable,{recursive:true});
+    await writeFile(join(durable,"retained.json"),"durable checkpoint exists");
+    expect(await state.hasRuntimeState(sessionId)).toBe(false);
+    await mkdir(artifact.runtimePath,{recursive:true});
+    await writeFile(join(artifact.runtimePath,"current.json"),"actual native artifact");
+    expect(await state.hasRuntimeState(sessionId)).toBe(true);
+    await rm(artifact.runtimePath,{recursive:true,force:true});
+    expect(await state.hasRuntimeState(sessionId)).toBe(false);
+    expect(await readFile(join(durable,"retained.json"),"utf8")).toBe("durable checkpoint exists");
+  } finally {
+    await rm(workspace,{recursive:true,force:true});
+    await rm(join(tmpdir(),"openma-harness-state/acp",sessionId),{recursive:true,force:true});
+  }
+});
+
+it.each([1024, 2048, 32000])("restarts a missing resident native session once before each new root, preserving identical historical text and bounded recovery (%i characters)", async maximum => {
+  const { createRecoverableNativeSession } = await import("../src/node");
+  const workspace = await mkdtemp(join(tmpdir(), "oma-recovery-prompt-"));
+  const sessionId = crypto.randomUUID();
+  const state = createAcpNativeSessionState({io:createNodeAcpHarnessStateIo({workspacePath:workspace}),resolveSession:async()=>({agent:{id:"claude-acp",command:"claude-acp"}})});
+  const events: string[] = [];
+  const prompts: unknown[] = [];
+  let generation = 0;
+  const session = () => ({acpSessionId:`native-${generation}`,configOptions:[],async dispose(){events.push(`dispose-${generation}`);},async *prompt(text:unknown){prompts.push(text);yield {type:"done"};}});
+  const first = session();
+  const native = createRecoverableNativeSession({session:first as never,sessionOptions:{agent:{command:"claude-acp"}},runtime:{async start(options:Record<string,unknown>){expect(options.resumeAcpSessionId).toBeUndefined();events.push(`start-${++generation}`);return session();}} as never,state,sessionId:()=>sessionId,nativeReady:()=>{events.push("ready");},instructions:()=>"Pinned",history:async()=>[...(generation < 2 ? [] : [{type:"agent.message" as const,content:[{type:"text" as const,text:"old-".repeat(maximum)}]}]),{id:"old",type:"user.message",content:[{type:"text",text:"same"}]},{type:"agent.message",content:[{type:"text",text:"completed result"}]}],maxCharacters:maximum});
+  try {
+    await state.beforeStart({type:"session.start",sessionId,agentId:"agent",runtime:"cloud"});
+    await state.onReady({type:"session.ready",sessionId,acpSessionId:"native-0"});
+    await native.beforeRootPrompt();
+    for await (const _ of native.session.prompt("first")) { /* drain */ }
+    expect(prompts).toEqual(["<openma-platform>\nPinned\n</openma-platform>\n\nfirst"]);
+    await native.beforeRootPrompt();
+    for await (const _ of native.session.prompt("same")) { /* drain */ }
+    expect(events).toEqual(["dispose-0","start-1","ready"]);
+    expect(String(prompts[1])).toContain("User: same");
+    expect(String(prompts[1])).toContain("Assistant: completed result");
+    expect(String(prompts[1])).toContain("Current request:\nsame\n</openma-recovery>");
+    // A continuation uses the same native process and carries no recovery wrapper.
+    for await (const _ of native.session.prompt("continuation")) { /* drain */ }
+    expect(prompts[2]).toBe("continuation");
+    expect(events).toHaveLength(3);
+    await native.beforeRootPrompt();
+    for await (const _ of native.session.prompt("head-" + "x".repeat(maximum * 4) + "-tail")) { /* drain */ }
+    expect(String(prompts[3]).length).toBeLessThanOrEqual(maximum);
+    expect(String(prompts[3])).toContain("Assistant: completed result");
+    expect(String(prompts[3])).toContain("earlier history omitted");
+    expect(String(prompts[3])).toContain("[current request truncated]");
+    expect(String(prompts[3])).toContain("Current request:\nhead-");
+    expect(String(prompts[3])).toMatch(/-tail\n<\/openma-recovery>$/);
+    expect(events).toEqual(["dispose-0","start-1","ready","dispose-1","start-2","ready"]);
+    expect(String(prompts[3])).toContain("</openma-recovery>");
+  } finally {
+    await rm(workspace,{recursive:true,force:true});
+    await rm(join(tmpdir(),"openma-harness-state/acp",sessionId),{recursive:true,force:true});
+  }
+});

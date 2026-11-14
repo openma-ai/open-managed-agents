@@ -4,7 +4,6 @@ import {
   type ApplicationPortResolver,
   type ApplicationPortSource,
 } from "../application-port-source";
-import { MANAGED_AGENTS_BETA, requireBeta } from "../beta";
 import {
   agentCreateBodySchema,
   agentListQuerySchema,
@@ -54,7 +53,6 @@ function serializeAgentPage(page: ListAgentsPage): object | null {
 export function buildAgentRoutes(source: AgentsApplicationPortSource): Hono {
   const app = new Hono();
 
-  app.use("*", requireBeta(MANAGED_AGENTS_BETA));
   app.get("/", async (c) => {
     const query = agentListQuerySchema.safeParse({
       limit: c.req.query("limit"),

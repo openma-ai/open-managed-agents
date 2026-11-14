@@ -65,6 +65,12 @@ const cfWorkerOptions = {
   miniflare: {
     bindings: {
       API_KEY: "test-key",
+      // The local Sandbox stub models a configured managed mount. These are
+      // inert fixture values, never credentials for an external object store.
+      FILES_BUCKET_NAME: "test-files",
+      R2_ENDPOINT: "https://r2.test.invalid",
+      R2_ACCESS_KEY_ID: "test-r2-access",
+      R2_SECRET_ACCESS_KEY: "test-r2-secret",
       DREAM_CURATOR_MODE: "dedup",
       BETTER_AUTH_SECRET: "test-auth-secret-for-vitest",
       // Required by buildServices for at-rest encryption of credentials.auth
@@ -78,11 +84,19 @@ const cfWorkerOptions = {
   },
 };
 
+const oauthMcpTestPort = Number(process.env.OMA_OAUTH_MCP_TEST_PORT ?? 47651);
+if (!Number.isInteger(oauthMcpTestPort) || oauthMcpTestPort < 1 || oauthMcpTestPort > 65534) {
+  throw new Error("OMA_OAUTH_MCP_TEST_PORT must be a TCP port number below 65535 (the Pi peer uses the next port)");
+}
+process.env.OMA_OAUTH_MCP_TEST_PORT = String(oauthMcpTestPort);
+
 export default defineConfig({
   // cloudflareTest registers the `cloudflare:test` virtual module
   // (runInDurableObject, listDurableObjectIds, etc.) — the pool runner
   // alone doesn't expose it, only the plugin does.
   plugins: [stripUnpublishedDependencySourcemaps(), cloudflareTest(cfWorkerOptions)],
+  // test/fixtures/oauth-mcp-local-endpoint.ts reads this; see OAUTH_MCP_TEST_PORT.
+  define: { __OMA_OAUTH_MCP_TEST_PORT__: String(oauthMcpTestPort) },
   resolve: {
     // vitest-plugin bridges these into the miniflare/workerd runtime
     // by string match — RegExp entries only work for the vitest module graph
@@ -107,6 +121,7 @@ export default defineConfig({
       { find: "@open-managed-agents/cost-attribution-vercel", replacement: "./packages/cost-attribution-vercel/src/index.ts" },
       { find: "@open-managed-agents/cf-billing", replacement: "./packages/cf-billing/src/index.ts" },
       { find: "@open-managed-agents/eval-core", replacement: "./packages/eval-core/src/index.ts" },
+      { find: "@open-managed-agents/shared/log", replacement: "./packages/shared/src/log.ts" },
       { find: "@open-managed-agents/shared", replacement: "./packages/shared/src/index.ts" },
       { find: "@open-managed-agents/memory-store/test-fakes", replacement: "./packages/memory-store/src/test-fakes.ts" },
       { find: "@open-managed-agents/memory-store/adapters/local-fs-blob", replacement: "./packages/memory-store/src/adapters/local-fs-blob.ts" },
@@ -221,13 +236,21 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime-contract/lifecycle", replacement: "./packages/session-runtime-contract/src/lifecycle.ts" },
       { find: "@open-managed-agents/session-runtime-contract/stream", replacement: "./packages/session-runtime-contract/src/stream.ts" },
       { find: "@open-managed-agents/session-runtime-contract/settle-events", replacement: "./packages/session-runtime-contract/src/settle-events.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/requires-action", replacement: "./packages/session-runtime-contract/src/requires-action.ts" },
       { find: "@open-managed-agents/session-runtime-contract", replacement: "./packages/session-runtime-contract/src/index.ts" },
       { find: "@open-managed-agents/session-runtime-sql/context", replacement: "./packages/session-runtime-sql/src/context.ts" },
       { find: "@open-managed-agents/session-runtime-sql/coordination", replacement: "./packages/session-runtime-sql/src/coordination.ts" },
       { find: "@open-managed-agents/session-runtime-sql/history", replacement: "./packages/session-runtime-sql/src/history.ts" },
+      { find: "@open-managed-agents/session-runtime-sql/execution-lease", replacement: "./packages/session-runtime-sql/src/execution-lease.ts" },
       { find: "@open-managed-agents/session-runtime-sql", replacement: "./packages/session-runtime-sql/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-gateway-sql", replacement: "./packages/sandbox-gateway-sql/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-gateway/vault-substitution", replacement: "./packages/sandbox-gateway/src/vault-substitution.ts" },
+      { find: "@open-managed-agents/sandbox-gateway", replacement: "./packages/sandbox-gateway/src/index.ts" },
       { find: "@open-managed-agents/session-realtime", replacement: "./packages/session-realtime/src/index.ts" },
       { find: "@open-managed-agents/session-realtime-memory", replacement: "./packages/session-realtime-memory/src/index.ts" },
+      { find: "@open-managed-agents/agent-harness", replacement: "./packages/agent-harness/src/index.ts" },
+      { find: "@open-managed-agents/session-outcomes", replacement: "./packages/session-outcomes/src/index.ts" },
+      { find: "@open-managed-agents/session-subagents", replacement: "./packages/session-subagents/src/index.ts" },
       { find: "@open-managed-agents/session-wakeup", replacement: "./packages/session-wakeup/src/index.ts" },
       { find: "@open-managed-agents/session-wakeup-memory", replacement: "./packages/session-wakeup-memory/src/index.ts" },
       { find: "@open-managed-agents/session-wakeup-cloudflare", replacement: "./packages/session-wakeup-cloudflare/src/index.ts" },
@@ -293,11 +316,17 @@ export default defineConfig({
       { find: "@open-managed-agents/sandbox-adapter-litebox", replacement: "./packages/sandbox-adapter-litebox/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-daytona", replacement: "./packages/sandbox-adapter-daytona/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-opensandbox", replacement: "./packages/sandbox-adapter-opensandbox/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-adapter-e2b/v2", replacement: "./packages/sandbox-adapter-e2b/src/v2.ts" },
       { find: "@open-managed-agents/sandbox-adapter-e2b", replacement: "./packages/sandbox-adapter-e2b/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-egress", replacement: "./packages/sandbox-egress/src/install.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit/firewall", replacement: "./packages/sandbox-port-kit/src/firewall.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit/object-storage", replacement: "./packages/sandbox-port-kit/src/object-storage.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit/ports", replacement: "./packages/sandbox-port-kit/src/ports.ts" },
+      { find: "@open-managed-agents/sandbox-port-kit", replacement: "./packages/sandbox-port-kit/src/index.ts" },
       { find: "@open-managed-agents/sandbox-adapter-boxrun", replacement: "./packages/sandbox-adapter-boxrun/src/index.ts" },
       { find: "@open-managed-agents/sandbox", replacement: "./packages/sandbox/src/index.ts" },
       { find: "@open-managed-agents/runtime-resource-contract", replacement: "./packages/runtime-resource-contract/src/index.ts" },
-      { find: "@open-managed-agents/runtime-resource-fence-sql", replacement: "./packages/runtime-resource-fence-sql/src/index.ts" },
+      { find: "@open-managed-agents/sandbox-orphan-store-sql", replacement: "./packages/sandbox-orphan-store-sql/src/index.ts" },
       { find: "@open-managed-agents/managed-runtime-host", replacement: "./packages/managed-runtime-host/src/index.ts" },
       { find: "@open-managed-agents/managed-runtime-cloudflare-bridge", replacement: "./packages/managed-runtime-cloudflare-bridge/src/index.ts" },
       { find: "@open-managed-agents/managed-runtime-cloudflare", replacement: "./packages/managed-runtime-cloudflare/src/index.ts" },
@@ -347,11 +376,15 @@ export default defineConfig({
       { find: "@open-managed-agents/markdown", replacement: "./packages/markdown/src/index.ts" },
       { find: "@open-managed-agents/session-runtime/settle-batch", replacement: "./packages/session-runtime/src/settle-batch.ts" },
       { find: "@open-managed-agents/session-runtime/recovery", replacement: "./packages/session-runtime/src/recovery.ts" },
+      { find: "@open-managed-agents/session-runtime/execution-lease", replacement: "./packages/session-runtime/src/execution-lease.ts" },
+      { find: "@open-managed-agents/session-runtime/session-sandbox-fence", replacement: "./packages/session-runtime/src/session-sandbox-fence.ts" },
       { find: "@open-managed-agents/session-runtime", replacement: "./packages/session-runtime/src/index.ts" },
       { find: "@open-managed-agents/acp-runtime/cf-sandbox", replacement: "./packages/acp-runtime/src/cf-sandbox.ts" },
       { find: "@open-managed-agents/acp-runtime/known-agents", replacement: "./packages/acp-runtime/src/known-agents.ts" },
       { find: "@open-managed-agents/acp-runtime/native-state", replacement: "./packages/acp-runtime/src/native-state.ts" },
       { find: "@open-managed-agents/acp-runtime/placement", replacement: "./packages/acp-runtime/src/placement.ts" },
+      { find: "@open-managed-agents/acp-runtime/installed-harnesses", replacement: "./packages/acp-runtime/src/installed-harnesses.ts" },
+      { find: "@open-managed-agents/acp-runtime/environment-setup", replacement: "./packages/acp-runtime/src/environment-setup.ts" },
       { find: "@open-managed-agents/acp-runtime/sandbox-agent", replacement: "./packages/acp-runtime/src/sandbox-agent.ts" },
       { find: "@open-managed-agents/acp-runtime/registry-pins", replacement: "./packages/acp-runtime/src/acp-registry-pins.ts" },
       { find: "@open-managed-agents/acp-runtime/sandbox-spawner", replacement: "./packages/acp-runtime/src/spawners/sandbox.ts" },
@@ -439,19 +472,34 @@ export default defineConfig({
     // across files in this suite.
     fsModuleCache: false,
     exclude: [
+      // Historical source snapshots and independent probes run explicitly.
+      "**/.validation/**",
+      "**/probe.validation/**",
       "**/node_modules/**",
       "**/.git/**",
       "**/.claude/worktrees/**",
       "**/.pnpm-store/**",
       // This is a node:test architecture suite and is run explicitly by
       // test:architecture, not inside workerd/Vitest.
+      "scripts/build-cf-work-runner.test.mjs",
+      "scripts/prepare-cf-work-runner.test.mjs",
+      "apps/agent/tests/cf-webhook-native-fetch.test.mjs",
+      "apps/agent/tests/cf-work-poll-routing.test.mjs",
       "scripts/provider-package-boundaries.test.mjs",
       "scripts/check-dependency-sources.test.mjs",
       "scripts/migration-compatibility.test.mjs",
       "scripts/ci-impact-surfaces.test.mjs",
+      "scripts/check-platform-parity.test.mjs",
       "scripts/ci-console-e2e-scope.test.mjs",
       "scripts/ci-console-e2e-scope.test.mjs",
       "scripts/release-check.test.mjs",
+      // Test wiring gate (node:test, spawns vitest/git); run by test:architecture.
+      "scripts/test-wiring-commands.test.mjs",
+      "scripts/check-test-wiring.test.mjs",
+      // Session structure ratchets (node:test); run by test:architecture.
+      "scripts/check-session-ratchets.test.mjs",
+      // Node git subprocess test; executed by test:architecture in both CI jobs.
+      "scripts/record-worker-source.test.mjs",
       // Needs full git history and tags. The release-check CI job runs it;
       // workerd cannot import node:child_process from this file.
       "scripts/release-check.history.test.mjs",
@@ -515,11 +563,12 @@ export default defineConfig({
       "packages/sandbox-adapter-e2b/**",
       "packages/sandbox-adapter-opensandbox/**",
       "packages/sandbox-adapter-litebox/**",
+      "packages/sandbox-port-kit/**",
       // Real Node fetch (undici) behaviour of the shared proxy hop.
       "packages/http-routes/test/node/**",
       "packages/harness-supervisor/**",
       "packages/harness-runtime-acp/**",
-      "packages/runtime-resource-fence-sql/**",
+      "packages/sandbox-orphan-store-sql/**",
       "packages/session-runtime-sql/test/**",
       "packages/managed-agents-api/test/official-environment-worker.contract.test.ts",
       "packages/sandbox/test/**",

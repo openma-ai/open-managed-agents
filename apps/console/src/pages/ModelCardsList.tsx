@@ -522,7 +522,7 @@ export function ModelCardsList() {
               value={form.pi_config}
               onChange={(e) => setForm({ ...form, pi_config: e.target.value })}
               className={`${inputCls} min-h-24 font-mono`}
-              placeholder={'{"api":"openai-completions","reasoning":false,"contextWindow":128000,"maxTokens":16384}'}
+              placeholder={'{"api":"openai-responses","reasoning":false,"contextWindow":128000,"maxTokens":16384}'}
               spellCheck={false}
             />
           </div>

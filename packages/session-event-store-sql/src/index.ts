@@ -1,3 +1,4 @@
+import {customInvocationCancellationStatements} from './custom-invocation-cancellation';
 import { decodeSessionEventDocument, encodeSessionEventDocument } from '@open-managed-agents/session-runtime-contract/history';
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
@@ -75,8 +76,9 @@ function stableJson(value: unknown): string {
 }
 
 export interface SqlSessionEventStoreOptions {
+  dialect?: 'sqlite'|'postgres'|'mysql';
   /** Atomically append accepted events and their Node execution outbox row. */
-  executionOutbox?: boolean | ((scope: { workspaceId: string; environmentId: string }) => Promise<boolean>);
+  executionOutbox?: boolean | ((scope: { workspaceId: string; environmentId: string; session: AppendSessionEvents["nextSession"] }) => Promise<boolean>);
   executionPolicy?: {
     maxAttempts: number;
     timeoutMs: number;
@@ -96,11 +98,22 @@ export class SqlSessionEventStore
       throw new Error("Next Session ID does not match the event target");
     }
     const executionOutbox = typeof this.options.executionOutbox === "function"
-      ? await this.options.executionOutbox({ workspaceId: input.workspaceId, environmentId: input.nextSession.environmentId })
+      ? await this.options.executionOutbox({ workspaceId: input.workspaceId, environmentId: input.nextSession.environmentId, session: input.nextSession })
       : this.options.executionOutbox;
-    if (executionOutbox === true && input.events.length > 0) {
+    if (executionOutbox === true && (input.events.length > 0 || (input.executionEvents?.length ?? 0) > 0)) {
       return this.appendWithExecutionOutbox(input);
     }
+    // One acceptance transaction/revision is the batch boundary. Keep source
+    // dispatch IDs distinct; Work consumes the declared message group under its
+    // first input root atomically, without a second outbox/ledger.
+    const messageGroups = sessionExecutionEventBatches(input.events)
+      .filter(batch => batch.events.length > 1 && batch.events.every(event => event.type === "user.message"));
+    const workDocument = (event: SentSessionEvent, index: number) => {
+      const document = JSON.parse(encodeSessionEventDocument(event, {revision:input.expectedRevision+1,index}));
+      const batch = messageGroups.find(batch => batch.events.some(member => member.id === event.id));
+      if (batch) document.source_position.input_batch = {rootId:batch.id,ids:batch.events.map(member=>member.id)};
+      return JSON.stringify(document);
+    };
     const eventStatements = input.events.map((event, index) =>
         this.client
           .prepare(
@@ -119,7 +132,7 @@ export class SqlSessionEventStore
             relatedThreadId(event),
             event.id,
             event.type,
-            encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }),
+            workDocument(event, index),
             timestamp(sortTime(event, input.nextSession.updatedAt)),
             input.workspaceId,
             input.sessionId,
@@ -146,7 +159,7 @@ export class SqlSessionEventStore
       `UPDATE managed_sessions SET revision = revision
         WHERE workspace_id = ? AND id = ? AND revision = ?`,
     ).bind(input.workspaceId, input.sessionId, input.expectedRevision);
-    const results = await this.client.batch([revisionGuard, ...eventStatements, update]);
+    const results = await this.client.batch([revisionGuard, ...eventStatements, ...await this.replacements(input), ...await customInvocationCancellationStatements(this.client,input,this.options.dialect??'sqlite'), update]);
     const updateResult = results[results.length - 1];
     if (updateResult === undefined) {
       throw new Error("Session event append returned no Session update result");
@@ -178,10 +191,25 @@ export class SqlSessionEventStore
     };
   }
 
+  private async replacements(input: AppendSessionEvents) {
+    const statements = [];
+    for (const event of input.replaceEvents ?? []) {
+      const row = await this.client.prepare('SELECT document FROM managed_session_events WHERE workspace_id = ? AND session_id = ? AND id = ?')
+        .bind(input.workspaceId, input.sessionId, event.id).first<{ document: string }>();
+      if (!row) throw new Error("Deferred canonical input disappeared");
+      const old = decodeSessionEventDocument(row.document);
+      if (!old.position) throw new Error("Deferred canonical input has no source position");
+      statements.push(this.client.prepare(
+        'UPDATE managed_session_events SET document = ? WHERE workspace_id = ? AND session_id = ? AND id = ? AND EXISTS (SELECT 1 FROM managed_sessions WHERE workspace_id = ? AND id = ? AND revision = ?)',
+      ).bind(encodeSessionEventDocument(event, old.position, old.executionId ?? input.executionEvents?.[0]?.id, old.consumedByExecutionId), input.workspaceId, input.sessionId, event.id, input.workspaceId, input.sessionId, input.expectedRevision));
+    }
+    return statements;
+  }
+
   private async appendWithExecutionOutbox(
     input: AppendSessionEvents,
   ): Promise<AppendSessionEventsResult> {
-    const executionBatches = sessionExecutionEventBatches(input.events);
+    const executionBatches = sessionExecutionEventBatches(input.executionEvents ?? input.events);
     const controlTimestamp = sortTime(input.events[0]!, input.nextSession.updatedAt);
     const policy = this.options.executionPolicy ?? {
       maxAttempts: 10,
@@ -338,6 +366,8 @@ export class SqlSessionEventStore
     const results = await this.client.batch([
       revisionGuard,
       ...eventStatements,
+      ...await this.replacements(input),
+      ...await customInvocationCancellationStatements(this.client,input,this.options.dialect??'sqlite'),
       ...interrupt,
       ...outbox,
       update,

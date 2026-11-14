@@ -130,9 +130,9 @@ Issue [#262](https://github.com/openma-ai/open-managed-agents/issues/262) 跟踪
 
 | 操作 | 托管运行时 | 工具沙箱 | Cloudflare 容器 |
 |---|---|---|---|
-| 创建 | `ManagedSandboxPort.acquire` → `ManagedSandboxLease` `{ provider, runtimeId, metadata? }` | `SandboxProviderPort.create`，或 `sandboxFactory` | `getSandbox(env.SANDBOX, sessionId)` 在首次使用时启动容器 DO。runtime id 就是 session id |
-| 心跳 | `heartbeat` → `{ type: "alive" }` 或 `{ type: "lost" }` | `SandboxRuntimePort.renewLease({ ttlMs })`。`SandboxPort.renewActivityTimeout` 是更早的可选钩子 | `renewLease` 调用 `renewActivityTimeout`，重置容器的 `sleepAfter` 计时器。`runtimeCapabilities().lease` 为 `true` |
-| 停止 / 挂起 | `retained_runtime` 成功发布之后，宿主调用 `suspend`。否则调用 `terminate` | `SandboxRuntimePort.suspend({ kind })` 返回 `SandboxCheckpointHandle` | `suspend` 先写文件系统检查点，再 `destroy`。空闲关闭是平台的 `sleepAfter` 钩子，不是可移植的 stop 方法 |
+| 创建 | `ManagedSandboxPort.acquire` → `ManagedSandboxLease` `{ provider, runtimeId, metadata? }` | `SandboxProviderPort.create`，或 `sandboxFactory` | `env.SANDBOX.getByName(sessionId)` 返回 `OmaSandbox` Durable Object。Sandbox SDK 1.0 只在容器启动时挂载，所以预热用完整的挂载集（outputs 和 Memory Store）调用 `provision()`。runtime id 就是 session id |
+| 心跳 | `heartbeat` → `{ type: "alive" }` 或 `{ type: "lost" }` | `SandboxRuntimePort.renewLease({ ttlMs })`。`SandboxPort.renewActivityTimeout` 是更早的可选钩子 | `renewLease` 调用 `renewActivityTimeout`，为空闲 alarm 记录一次 Durable Object 活动。`runtimeCapabilities().lease` 为 `true` |
+| 停止 / 挂起 | `retained_runtime` 成功发布之后，宿主调用 `suspend`。否则调用 `terminate` | `SandboxRuntimePort.suspend({ kind })` 返回 `SandboxCheckpointHandle` | `suspend` 先写文件系统检查点，再 `destroy`。空闲关闭是 `OmaSandbox` 的 alarm，不是可移植的 stop 方法：5 分钟没有请求时，若 `/workspace` 有改动就先快照，然后停掉容器 |
 | 恢复 | 没有 `resume` 方法。下一次运行重新 `acquire`。保留型适配器可以在 `acquire` 内部按稳定名字重连。可选的 `RuntimeCheckpointPort.restore` 存在但未接线：每个已发布的符合性行都是 `runtimeCheckpoints: []` | `SandboxProviderPort.resume(handle)` 与 `restore(checkpoint)`。`SandboxRuntimePort.resume(checkpoint)` | 通过 `restoreBackup` 做可移植的文件系统恢复。`status()` 不探测就返回 `"unknown"`，因为探测会唤醒睡眠中的容器。符合性记录为 `suspendResume: "unsupported"` |
 | 销毁 | 持有栅栏时 `terminate({ reason })`。`reap({ reason })` 是幂等重试，且不接收栅栏令牌 | 可选的 `SandboxPort.destroy` | `CloudflareSandbox.destroy`。`OmaSandbox.emitSandboxActiveNow` 在销毁前记录用量 |
 | 查看 | `inspect` → `running` \| `suspended` \| `stopped` \| `unknown` | `SandboxRuntimePort.status` | `"unknown"` |
@@ -185,7 +185,7 @@ Scope 是 `{ workspaceId, environmentId, sessionId, workId }`。一份租约对�
 | Workspace | 托管的 `WorkspacePersistencePort`，路径 `/workspace` | 策略：`durable_mount`、`retained_runtime`、`checkpoint_restore`、`ephemeral`。提交点见持久化页 |
 | 网络策略 | 公开的 `Environment.config.networking`：`unrestricted` 或 `limited`，带 `allowed_hosts`、`allow_mcp_servers`、`allow_package_managers` | 存在 environment 上，并映射进 Managed Agents 的 networking 对象。强制执行因后端而异（Cloudflare 出站处理器、provider 允许列表、Docker 网络）。存下来的允许列表本身不是包过滤器 |
 | Vault 出站 | `CredentialEgressPort` | 与公开的 networking 对象分开。级别：`enforced`、`advisory`、`unsupported`。`required` 只接受 `enforced` |
-| 浏览器 | `browser` 是可选的 harness 工具（`apps/agent/src/harness/tools.ts`），背后是 Workers 的 `BROWSER` 绑定和 `@open-managed-agents/browser-harness` | **不是沙箱 port。** 新的 VM 后端不会因为实现了 `ManagedSandboxPort` 就获得浏览器。打开页面的计费是 `browser_active_seconds`，由 Cloudflare SessionDO 发出 |
+| 浏览器 | `browser` 是可选的 harness 工具（`packages/agent-harness/src/tools.ts`），背后是 Workers 的 `BROWSER` 绑定和 `@open-managed-agents/browser-harness` | **不是沙箱 port。** 新的 VM 后端不会因为实现了 `ManagedSandboxPort` 就获得浏览器。打开页面的计费是 `browser_active_seconds`，由 Cloudflare SessionDO 发出 |
 | GPU | — | **缺口。** `Environment.config`、`SandboxPort`、`ManagedSandboxPort` 和符合性目录上都没有该字段 |
 | 多 session | 每个 `(workspace, environment, session, work)` 一份租约。Cloudflare 用 session id 作为容器键 | 跨 session 共享一个沙箱是**缺口**，把一个沙箱 fork 成第二个 session 也是**缺口**。子 agent 共享父沙箱 |
 | ACP 恢复 | `/workspace/.openma/…` 下的文件，加上 ACP `session/resume` | 需要 `writeFile` 和 `exec`。原生恢复按 agent profile 而定。opaque 适配器不承诺它 |
@@ -221,7 +221,7 @@ Scope 是 `{ workspaceId, environmentId, sessionId, workId }`。一份租约对�
 
 | 制品 | 钉死方式 |
 |---|---|
-| `apps/agent/Dockerfile` | `FROM docker.io/cloudflare/sandbox:0.12.10`。该文件中的注释要求这个 tag 与 `@cloudflare/sandbox` 锁步，否则容器 HTTP 路由漂移，`exec` 返回 500 |
+| `apps/agent/Dockerfile` | `FROM docker.io/node:24-trixie-slim`，再从 `docker.io/cloudflare/sandbox:1.0.3` `COPY` 出 `/usr/local/bin/sandbox-shim`。`Files`、`S3Mount` 和 `DirectoryBackup` 都运行这个助手，所以它的 tag 与 `@cloudflare/sandbox` 锁步。`S3Mount` 通过 FUSE 驱动 `s3fs`，所以镜像还安装 `fuse3` 和 `s3fs`。shim 固定传 `-o compat_dir`，s3fs 1.92 起才有：bookworm 是 1.90，所以基础镜像用 trixie（1.95） |
 | `.github/workflows/build-sandbox-image.yml` | 把该 Dockerfile 构建为 `docker.io/openma/sandbox-base`，打上 `latest`、git SHA、从 Dockerfile 解析出的 `cloudflare/sandbox` 版本，以及 Dockerfile 的 sha256。缓存只属于这个 workflow 的 GitHub Actions cache（`type=gha`）。平台是 `linux/amd64`。触发方式是 `workflow_dispatch`，或推到 `main` 且改动了 `apps/agent/Dockerfile` |
 | `apps/agent/Dockerfile.sandbox` | `FROM docker.io/openma/sandbox-base:<64 字符内容哈希>`。Wrangler 把容器类指向这个文件 |
 | Node 托管运行时 | `createNodeManagedRuntime({ image })` 要求显式的镜像字符串。没有默认值 |
@@ -274,7 +274,7 @@ HOSTED_INFERENCE_TOKEN = sessions_token
 
 `projectHostedInferenceForAcpAgent` 接着让 `@open-managed-agents/harness-inference-adapters` 写出 harness 原生的环境变量和配置文件。当前已发布的适配器：`pi`、`dsh`、`claude`、`codex`、`gemini`、`opencode`、`kimi`。文件通过 `AcpSandboxAgentStatePort.writeFile` 落盘。代理令牌从环境引用（`proxyTokenEnvVar: "HOSTED_INFERENCE_TOKEN"`），不复制进持久的原生状态允许列表。
 
-网关是 `apps/main` 与 Node 控制面（`apps/main/src/routes/inference-proxy.ts` 与 `packages/control-plane-node/src/lib/http-inference-proxy.ts`）上的 `/v1/oma/inference-proxy/:sessionId/*`，方法为 `POST` 以及其他方法。两者都经过 `sendHostedInference`（`packages/http-routes`）和 `planHostedInferenceRequest`（`packages/inference-proxy`）：
+网关是 `apps/main` 与 Node 控制面上的 `/v1/oma/inference-proxy/:sessionId/*`，方法为 `POST` 以及其他方法。两边挂的是同一个路由 `createInferenceProxyRoutes`（`packages/http-routes/src/proxy/inference-proxy-routes.ts`），各自只注入自己的存储。它经过 `sendHostedInference`（`packages/http-routes`）和 `planHostedInferenceRequest`（`packages/inference-proxy`）：
 
 - 丢弃入站的 `authorization`、`x-api-key`、`api-key`、`x-goog-api-key` 和 `proxy-authorization`；
 - 在宿主上解析该 session 的模型卡；
@@ -302,7 +302,7 @@ HOSTED_INFERENCE_TOKEN = sessions_token
 | 层 | 键 | 谁读取 |
 |---|---|---|
 | 公开 environment | `config.type`、`config.packages`、`config.networking`、`config.dockerfile` | API 校验；两边控制面都通过 `ensureEnvironmentPackages` 安装 packages |
-| 公开 agent | `harness`、`acp.agent`（`command`、`args`、`env`、`cwd`、可选的注册表 `id`）、`acp.restart`、超时，以及 `acp-proxy` 的 `runtime_binding` | Harness 注册表。`acp-sandbox` 注册在 `apps/agent/src/harness/builtins.ts` |
+| 公开 agent | `harness`、`acp.agent`（`command`、`args`、`env`、`cwd`、可选的注册表 `id`）、`acp.restart`、超时，以及 `acp-proxy` 的 `runtime_binding` | Harness 注册表。`acp-sandbox` 注册在 `packages/agent-harness/src/builtins.ts` |
 | 公开 session | `environment_id`、`vault_ids`、文件/git/memory 资源 | 资源物化器和出站范围。不是后端 id |
 | Node 进程环境 | `SANDBOX_PROVIDER` 加上该 factory 自己的键（`E2B_*`、`DAYTONA_*`、`BOXRUN_URL`、`SANDBOX_IMAGE`、`MEMORY_S3_*`、`FILES_S3_*` 等） | 选中的 `sandboxFactory` 或托管预设。`readS3MemoryBucket` 是共享的 S3 助手 |
 | 托管驱动 | `providerConfig: Readonly<Record<string, unknown>>`，以及传给 `createManagedRuntimeProviderDriver` 的 `factoryOptions` | 适配器。宿主转发它们，不检查 SDK 形状 |

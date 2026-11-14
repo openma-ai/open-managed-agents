@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { harnessExecutionPlacement } from "../../../../../packages/managed-agents-domain/src/environment-work/execution-placement";
 
 // Public deployment metadata only; never accept factory or private configuration into the UI.
 const descriptorSchema = z.object({
@@ -20,6 +21,11 @@ export type HarnessDescriptor = HarnessCatalog["data"][number];
 export function openMaFields(config: Record<string, unknown> | null | undefined): Record<string, unknown> {
   const value = config?._oma;
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** Reuse the server's pure placement predicate, without importing a runtime barrel. */
+export function isAcpHarness(value: unknown): boolean {
+  return harnessExecutionPlacement(typeof value === "string" ? value : undefined) === "in_sandbox";
 }
 
 export function resolvedHarness(catalog: HarnessCatalog, value: unknown): HarnessDescriptor | undefined {

@@ -145,11 +145,6 @@ describe("Environment Work Session credential issuer", () => {
       ["POST", "/v1/sessions/session_01/events"],
       ["GET", "/v1/sessions/session_01/events/stream"],
       ["POST", "/v1/oma/sessions/session_01/runtime-events"],
-      ["GET", "/v1/oma/mcp-proxy/session_01/linear"],
-      ["POST", "/v1/oma/mcp-proxy/session_01/linear"],
-      ["DELETE", "/v1/oma/mcp-proxy/session_01/linear"],
-      ["POST", "/v1/oma/inference-proxy/session_01/v1/chat/completions"],
-      ["GET", "/v1/oma/inference-proxy/session_01/v1/models"],
       ["GET", "/v1/skills/skill_allowed/versions/3"],
       ["GET", "/v1/skills/skill_allowed/versions/3/content"],
       ["GET", "/v1/skills/skill_latest/versions"],
@@ -172,6 +167,11 @@ describe("Environment Work Session credential issuer", () => {
     }
 
     for (const [method, path] of [
+      ["GET", "/v1/oma/mcp-proxy/session_01/linear"],
+      ["POST", "/v1/oma/mcp-proxy/session_01/linear"],
+      ["DELETE", "/v1/oma/mcp-proxy/session_01/linear"],
+      ["POST", "/v1/oma/inference-proxy/session_01/v1/responses"],
+      ["GET", "/v1/oma/inference-proxy/session_01/v1/models"],
       ["POST", "/v1/environments/env_self_01/work/work_other/ack"],
       ["POST", "/v1/environments/env_other/work/work_01/ack"],
       ["GET", "/v1/environments/env_self_01/work/work_01/ack"],
@@ -180,7 +180,7 @@ describe("Environment Work Session credential issuer", () => {
       ["GET", "/v1/sessions/session_other"],
       ["POST", "/v1/oma/mcp-proxy/session_other/linear"],
       ["POST", "/v1/oma/mcp-proxy/session_01"],
-      ["POST", "/v1/oma/inference-proxy/session_other/v1/chat/completions"],
+      ["POST", "/v1/oma/inference-proxy/session_other/v1/responses"],
       ["POST", "/v1/oma/inference-proxy/session_01"],
       ["POST", "/v1/sessions/session_01"],
       ["GET", "/v1/oma/sessions/session_01/runtime-events"],

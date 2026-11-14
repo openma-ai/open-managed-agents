@@ -1,7 +1,7 @@
 # @open-managed-agents/mcp
 
 Runtime-neutral MCP client Port for OpenMA. The HTTP adapter delegates protocol
-negotiation, Streamable HTTP/SSE, pagination, sessions, and schema validation to
+negotiation, Streamable HTTP (including event-stream response framing), pagination, sessions, and schema validation to
 the official `@modelcontextprotocol/client` v2 package.
 
 The package does not depend on a harness or model SDK. Applications provide the
