@@ -259,9 +259,11 @@ export class LocalSubprocessSandbox
   async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
     if (this.closing !== undefined) throw new Error("Sandbox is closing");
     if (!isAbsolute(spec.command) || spec.command.includes("\0")) throw new TypeError("Managed process requires an absolute executable");
-    const env: Record<string, string> = Object.fromEntries(
-      Object.entries(this.envVars).map(([key, value]) => [key, this.resolveProcessEnvValue(value)]),
-    );
+    // Managed process environments are replacement environments. Inherited
+    // session/image values (especially NODE_OPTIONS, hooks, and credentials)
+    // must not reach a native argv launch unless the caller explicitly passes
+    // them in spec.env.
+    const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(spec.env)) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Invalid managed process environment");
       // Managed ACP processes receive provider-logical paths (for example

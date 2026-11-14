@@ -15,6 +15,7 @@ function receipt(v:unknown,turnId:string):v is Receipt {
 }
 export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:string;sessionsToken:string;signal:AbortSignal;fetch?:typeof globalThis.fetch;requestTimeoutMs?:number}) {
  const admitted=new Set<string>();const prepared=new Map<string,number>();const terminals=new Map<string,{revision:number;terminal:Receipt}>();
+ const operationTails=new Map<string,Promise<unknown>>();
  const requestTimeoutMs=options.requestTimeoutMs??30_000;
  if(!Number.isSafeInteger(requestTimeoutMs)||requestTimeoutMs<=0)throw new TypeError("Work finalization request timeout must be a positive integer");
  async function wait(ms:number){await new Promise<void>((resolve,reject)=>{let settled=false;const timer=setTimeout(()=>{settled=true;options.signal.removeEventListener("abort",abort);resolve();},ms);const abort=()=>{if(settled)return;settled=true;clearTimeout(timer);reject(options.signal.reason??new Error("Work finalization aborted"));};if(options.signal.aborted)abort();else options.signal.addEventListener("abort",abort,{once:true});});}
@@ -58,18 +59,29 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
  }
  const sameTerminal=(a:Receipt,b:Receipt)=>a.eventId===b.eventId&&a.turnId===b.turnId&&a.workId===b.workId&&a.generation===b.generation&&a.revision===b.revision&&
   a.stopReason.type===b.stopReason.type&&JSON.stringify(a.stopReason.eventIds)===JSON.stringify(b.stopReason.eventIds);
+ function enqueue<T>(turnId:string,operation:()=>Promise<T>):Promise<T>{
+  const previous=operationTails.get(turnId)??Promise.resolve();
+  const next=previous.catch(()=>undefined).then(operation);
+  operationTails.set(turnId,next);
+  void next.finally(()=>{if(operationTails.get(turnId)===next)operationTails.delete(turnId);}).catch(()=>undefined);
+  return next;
+ }
  return {
   admitted(turnId:string){admitted.add(turnId);},
-  async checkpoint(turnId:string){
+  checkpoint(turnId:string){return enqueue(turnId,async()=>{
    if(!admitted.has(turnId))throw new Error("Cannot finalize a turn not admitted by this process");
-   // A periodic safe-point request can cross the terminal finalization
-   // boundary. Once this turn has a prepared physical checkpoint, or its
-   // terminal ACK is already recorded, the second request is a duplicate
-   // observation of the same turn. Re-reading and mutating the Work row here
-   // races the terminal CAS and can turn a valid turn into turn_revision.
-   if(prepared.has(turnId)||terminals.has(turnId))return;
+   // Checkpoint, terminal finalization, and publication share a per-turn
+   // queue. A periodic safe-point request can otherwise enter while terminal
+   // finalization is preparing the same Work row and lose the authority CAS.
+   if(terminals.has(turnId))return;
    const current=await post("work-recovery",{turnId},true);
    if(current.type!=="gap"||current.reason!=="consumed_turn_without_terminal"||!revision(current.revision))throw new Error("Active turn has no uncommitted canonical boundary");
+   const previous=prepared.get(turnId);
+   // A second request is a duplicate only when authority still names the
+   // exact prepared revision. If same-turn facts landed meanwhile, refresh
+   // the physical checkpoint before terminal finalization.
+   if(previous!==undefined&&current.revision===previous)return;
+   if(previous!==undefined&&current.revision<previous)throw new Error("Work checkpoint authority moved backwards");
    const result=await postCheckpoint({turnId,revision:current.revision});
    if(result.type!=="prepared"||result.turnId!==turnId||!revision(result.revision)||result.revision<current.revision)throw new Error("Invalid Work checkpoint receipt");
    // Physical persistence may allow the same canonical turn to append its
@@ -77,8 +89,8 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    // prepared revision returned by the authority, never the stale recovery
    // revision captured before that IO began.
    prepared.set(turnId,result.revision);
-  },
-  async complete(turnId:string){
+  })},
+  complete(turnId:string){return enqueue(turnId,async()=>{
    const current=prepared.get(turnId);if(current===undefined)throw new Error("Work checkpoint must precede terminal");
    // Invalidate before IO so callers cannot repeat an unknown terminal write.
    prepared.delete(turnId);
@@ -86,8 +98,8 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    if(!["committed","parked"].includes(String(result.type))||!revision(result.revision)||!receipt(result.terminal,turnId)||result.terminal.revision>result.revision||
      (result.type==="parked")!==(result.terminal.stopReason.type!=="end_turn"))throw new Error("Invalid Work terminal receipt");
    terminals.set(turnId,{revision:result.revision,terminal:result.terminal});
-  },
-  async publish(turnId:string){
+  })},
+  publish(turnId:string){return enqueue(turnId,async()=>{
    const terminal=terminals.get(turnId);if(!terminal)throw new Error("Durable Work terminal ACK required");
    // Publication is fenced on the Session revision captured at terminal ACK.
    // An ordinary Session update (budget raise, metadata, a queued input) can
@@ -111,6 +123,6 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    // turn, Work, generation, original revision and stop reason).
    if(result.type!=="published"||result.revision!==current||!receipt(result.terminal,turnId)||!sameTerminal(result.terminal,terminal.terminal))throw new Error("Invalid Work publication receipt");
    terminals.delete(turnId);admitted.delete(turnId);
-  },
+  })},
  };
 }

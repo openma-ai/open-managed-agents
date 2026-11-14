@@ -35,7 +35,40 @@ it("coalesces a periodic checkpoint that crosses terminal finalization",async()=
   return Response.json({type:action==="work-finalize"?"committed":"published",revision:9,terminal});
  }});
  f.admitted("t");await f.checkpoint("t");await f.checkpoint("t");await f.complete("t");await f.checkpoint("t");await f.publish("t");
- expect(calls).toEqual(["work-recovery","work-checkpoint","work-finalize","work-publish"]);
+ expect(calls).toEqual(["work-recovery","work-checkpoint","work-recovery","work-finalize","work-publish"]);
+});
+it("serializes concurrent checkpoints and sends one physical checkpoint",async()=>{
+ const calls:string[]=[];let release!:()=>void;let checkpointStarted!:()=>void;
+ const checkpointReady=new Promise<void>(resolve=>{checkpointStarted=resolve});
+ const checkpointGate=new Promise<void>(resolve=>{release=resolve});
+ const f=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async url=>{
+  const action=String(url).split('/').at(-1)!;calls.push(action);
+  if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:8},{status:409});
+  if(action==="work-checkpoint"){checkpointStarted();await checkpointGate;return Response.json({type:"prepared",turnId:"t",revision:8});}
+  const terminal={eventId:"terminal",turnId:"t",workId:"w",generation:2,revision:9,stopReason:{type:"end_turn"}};
+  return Response.json({type:action==="work-finalize"?"committed":"published",revision:9,terminal});
+ }});
+ f.admitted("t");const first=f.checkpoint("t");await checkpointReady;const second=f.checkpoint("t");release();await Promise.all([first,second]);await f.complete("t");await f.publish("t");
+ expect(calls).toEqual(["work-recovery","work-checkpoint","work-recovery","work-finalize","work-publish"]);
+});
+it("rechecks a prepared revision before coalescing a later checkpoint",async()=>{
+ const calls:unknown[]=[];let recoveryCount=0;
+ const f=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async(url,init)=>{
+  const action=String(url).split('/').at(-1)!;const body=JSON.parse(String(init?.body));calls.push([action,body]);
+  if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:recoveryCount++===0?8:9},{status:409});
+  if(action==="work-checkpoint")return Response.json({type:"prepared",turnId:"t",revision:body.revision});
+  const terminal={eventId:"terminal",turnId:"t",workId:"w",generation:2,revision:9,stopReason:{type:"end_turn"}};
+  return Response.json({type:action==="work-finalize"?"committed":"published",revision:9,terminal});
+ }});
+ f.admitted("t");await f.checkpoint("t");await f.checkpoint("t");await f.complete("t");await f.publish("t");
+ expect(calls).toEqual([
+  ["work-recovery",{turnId:"t"}],
+  ["work-checkpoint",{turnId:"t",revision:8}],
+  ["work-recovery",{turnId:"t"}],
+  ["work-checkpoint",{turnId:"t",revision:9}],
+  ["work-finalize",{turnId:"t",revision:9,stopReason:{type:"end_turn"}}],
+  ["work-publish",{turnId:"t",revision:9,terminalEventId:"terminal"}],
+ ]);
 });
 it("retries a checkpoint only after an unknown response, never a terminal mutation",async()=>{
  const calls:string[]=[];let checkpointAttempts=0;
