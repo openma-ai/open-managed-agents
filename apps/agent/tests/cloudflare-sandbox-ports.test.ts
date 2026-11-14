@@ -135,4 +135,13 @@ describe("Cloudflare v2 adapter", () => {
     expect(await adapter.vendor.readFile(none.runtime, "/missing")).toBeNull();
     expect(await adapter.vendor.readFile(none.runtime, "/present")).toEqual(new Uint8Array([9]));
   });
+
+  it("preserves SANDBOX_NOT_RUNNING as a typed sandbox loss", async () => {
+    const cf = fakeCf();
+    (cf.runtime as { exec: unknown }).exec = async () => {
+      throw new Error("SANDBOX_NOT_RUNNING: the sandbox container is stopped; provision it again");
+    };
+    const adapter = createCloudflareSandboxAdapter({ sandbox: () => cf.runtime, backups });
+    await expect(adapter.vendor.exec(cf.runtime, "true")).rejects.toMatchObject({ name: "SandboxGoneError" });
+  });
 });

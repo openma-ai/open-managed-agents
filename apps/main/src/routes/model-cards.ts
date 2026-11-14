@@ -51,8 +51,8 @@ function toApiShape(card: ModelCardRow) {
  * Provider routing:
  *   - "ant" / "anthropic" / "ant-compatible"  → POST {base}/v1/messages with
  *       max_tokens: 1, model: <model>, messages: [{role:user, content:"hi"}]
- *   - "oai" / "openai" / "oai-compatible"     → POST {base}/v1/chat/completions
- *       with max_completion_tokens: 1, model: <model>
+ *   - "oai" / "openai" / "oai-compatible"     → POST {base}/v1/responses
+ *       with max_output_tokens: 1, model: <model>
  *   - anything else                            → ok=null (skipped, can't probe)
  */
 async function probeModelCard(opts: {
@@ -85,8 +85,8 @@ async function probeModelCard(opts: {
     headers["authorization"] = `Bearer ${opts.apiKey}`;
     body = JSON.stringify({
       model: opts.model,
-      max_completion_tokens: 1,
-      messages: [{ role: "user", content: "hi" }],
+      max_output_tokens: 1,
+      input: "hi",
     });
   }
 

@@ -23,7 +23,7 @@ import {
 } from "@open-managed-agents/managed-agents-application/agents/pi-model-catalog";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
 export { toAiSdkLanguageModel } from "./pi-ai-sdk";
 
@@ -238,7 +238,7 @@ export function withPiRuntimeRequestOptions(
       throw new TypeError("Pi provider payload must be an object to apply Managed Agents speed");
     }
     if (api === "anthropic-messages") return { ...projected, speed: "fast" };
-    if (api === "openai-completions") {
+    if (api === "openai-responses") {
       return { ...projected, service_tier: "priority" };
     }
     return projected;
@@ -259,7 +259,7 @@ export function withPiRuntimeRequestOptions(
       serviceTier: "priority",
     } as SimpleStreamOptions;
   }
-  if (api === "openai-completions") {
+  if (api === "openai-responses") {
     return { ...merged, fetch: baseFetch, onPayload };
   }
   throw new Error(
@@ -327,8 +327,8 @@ function resolveProviderPlan(
       return {
         id: "openai-compatible",
         name: "OpenAI-compatible",
-        api: "openai-completions",
-        streams: openAICompletionsApi(),
+        api: "openai-responses",
+        streams: openAIResponsesApi(),
         catalog: requireBuiltin(getBuiltin("openai"), "openai"),
       };
   }

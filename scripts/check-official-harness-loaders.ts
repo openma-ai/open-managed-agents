@@ -21,7 +21,7 @@ assert.equal(await hash(kimi),"cb912b23358e7b3160e95dc29a82bf5ddd3847cd6f287b34c
 assert.equal(await hash(opencodeBinary),"d480918f23dbca3b06b3607266fecfbf26d55736691291cb4ed71c495b62ee41");
 const root = await mkdtemp(join(tmpdir(),"oma-official-loaders-"));
 const results: object[] = [];
-const protocols = { "anthropic-messages":"anthropic", "openai-responses":"openai/v1", gemini:"gemini", "openai-chat":"openai/v1" };
+const protocols = { "anthropic-messages":"anthropic", "openai-responses":"openai/v1", gemini:"gemini" };
 try {
   for (const adapter of [kimiCodeInferenceAdapter,opencodeInferenceAdapter]) for (const [protocol,proxyPathSegment] of Object.entries(protocols)) {
     const home = join(root,adapter.id,protocol); await mkdir(home,{recursive:true});
@@ -35,7 +35,7 @@ try {
       env.KIMI_DISABLE_TELEMETRY="true";
       await exec("unshare",["-Urn",process.execPath,kimi,"doctor","config"],{cwd:home,env,timeout:30_000});
       const loaded=JSON.parse((await exec("unshare",["-Urn",process.execPath,kimi,"provider","list","--json"],{cwd:home,env,timeout:30_000})).stdout);
-      assert.deepEqual(loaded.providers.oma,{baseUrl:`https://proxy.invalid/v1/oma/inference-proxy/test-session/${proxyPathSegment}`,type:{"anthropic-messages":"anthropic","openai-responses":"openai_responses",gemini:"google-genai","openai-chat":"openai"}[protocol],apiKeyEnv:"HOSTED_INFERENCE_TOKEN"});
+      assert.deepEqual(loaded.providers.oma,{baseUrl:`https://proxy.invalid/v1/oma/inference-proxy/test-session/${proxyPathSegment}`,type:{"anthropic-messages":"anthropic","openai-responses":"openai_responses",gemini:"google-genai"}[protocol],apiKeyEnv:"HOSTED_INFERENCE_TOKEN"});
       assert.deepEqual(loaded.models.oma,{provider:"oma",model:"chosen-model",maxContextSize:262144});
       await writeFile(plan.files![0]!.path,"[providers.oma\n");
       await assert.rejects(exec("unshare",["-Urn",process.execPath,kimi,"doctor","config"],{cwd:home,env,timeout:30_000}),error => (error as {code?:number}).code === 1);

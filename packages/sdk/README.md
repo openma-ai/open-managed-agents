@@ -235,7 +235,7 @@ await client.oma.modelCards.create({
   base_url: "https://llm.example/v1",
   api_key: process.env.PRIVATE_LLM_KEY!,
   pi_config: {
-    api: "openai-completions",
+    api: "openai-responses",
     name: "Private model",
     reasoning: false,
     input: ["text"],

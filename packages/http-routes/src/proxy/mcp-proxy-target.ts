@@ -53,7 +53,6 @@ export async function resolveMcpProxyTarget(
   const server = agent.mcpServers
     .find((candidate) => candidate.name === request.serverName);
   if (server === undefined || server.url === null) return null;
-  if (server.type === "sse") throw new UnsupportedMcpTransportError();
   const upstreamUrl = server.url;
   const credentialsForServer = async (): Promise<McpProxyTarget | null> => {
     if (server.authorizationToken !== null) {
@@ -123,8 +122,4 @@ function legacyVaultTarget(
     }
   }
   return null;
-}
-
-export class UnsupportedMcpTransportError extends Error {
-  constructor() { super("MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio."); }
 }

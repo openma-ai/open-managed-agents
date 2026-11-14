@@ -223,7 +223,7 @@ curl -X POST "$OMA_BASE_URL/v1/oma/model_cards" \
 
 Agents then reference it with `"model": { "id": "kimi" }`. For a model
 the built-in catalog does not list yet, create the card with `base_url`
-and `pi_config.api: "openai-completions"`, as described in the
+and `pi_config.api: "openai-responses"`, as described in the
 [Model Cards reference](https://docs.openma.ai/reference/api/#model-cards).
 Token charges then go straight to your Moonshot account.
 

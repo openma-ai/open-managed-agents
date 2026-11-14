@@ -50,7 +50,7 @@ function assistant(text: string, timestamp: number): AssistantMessage {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
-    api: "openai-completions",
+    api: "openai-responses",
     provider: "deepseek",
     model: MODEL,
     usage: emptyUsage(),

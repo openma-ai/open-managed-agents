@@ -246,6 +246,8 @@ describe("preinstalled Node managed ACP supervisor", () => {
   });
 
   it.each(["always_allow", "always_ask"] as const)("keeps legacy permission policy characterization but fences production callbacks without an admitted Work root: %s", async (defaultPolicy) => {
+    const workspace = await mkdtemp(join(tmpdir(), "oma-permission-policy-"));
+    roots.push(workspace);
     const seen: SessionOptions[] = [];
     const session: BetaManagedAgentsSession = {
       id: scope.sessionId, environment_id: scope.environmentId, type: "session",
@@ -276,6 +278,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
     const control = productionFetch({});
     const app = createNodeManagedAcpSupervisorApp({
       environment: claimedEnvironment,
+      workspacePath: workspace,
       agentId: "codex-acp",
       acpRuntime: fakeAcpRuntime(seen),
       stateIo: {
@@ -909,6 +912,8 @@ describe("preinstalled Node managed ACP supervisor", () => {
   );
 
   it("falls back from a missing native checkpoint to bounded Managed Events history", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "oma-node-recovery-"));
+    roots.push(workspace);
     const prompts: string[] = [];
     const seen: SessionOptions[] = [];
     const writes: string[] = [];
@@ -969,6 +974,7 @@ describe("preinstalled Node managed ACP supervisor", () => {
     });
     const app = createNodeManagedAcpSupervisorApp({
       environment: claimedEnvironment,
+      workspacePath: workspace,
       stateIo,
       acpRuntime: fakeAcpRuntime(seen, prompts),
       fetch,

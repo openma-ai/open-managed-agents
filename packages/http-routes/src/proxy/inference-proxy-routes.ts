@@ -23,7 +23,7 @@ export interface InferenceProxyPorts extends SessionModelPorts {
 
 /**
  * `/:sessionId/*`, mounted under `/v1/oma/inference-proxy`: a provider call
- * (`v1/messages`, `chat/completions`, …) for the model the Session is
+ * (`v1/messages`, `responses`, …) for the model the Session is
  * pinned to, paid for with the workspace's own model card. The parent
  * middleware authenticates the caller and sets `tenant_id`.
  */

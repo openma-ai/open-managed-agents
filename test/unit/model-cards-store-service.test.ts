@@ -87,7 +87,7 @@ describe("ModelCardService — create + read", () => {
   it("persists Pi-native model configuration for custom providers", async () => {
     const { service } = createInMemoryModelCardService();
     const piConfig = {
-      api: "openai-completions",
+      api: "openai-responses",
       reasoning: true,
       contextWindow: 262_144,
       maxTokens: 65_536,

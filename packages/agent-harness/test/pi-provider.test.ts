@@ -48,7 +48,7 @@ describe("createPiModelRuntime", () => {
     expect(runtime.model).toMatchObject({
       id: "custom-model",
       provider: "openai-compatible",
-      api: "openai-completions",
+      api: "openai-responses",
       baseUrl: "https://models.example.test/v1",
     });
     expect(runtime.models.getProvider("openai-compatible")?.headers).toEqual({
@@ -66,7 +66,7 @@ describe("createPiModelRuntime", () => {
     expect(runtime.model).toMatchObject({
       id: "deepseek-v4-pro",
       provider: "deepseek",
-      api: "openai-completions",
+      api: "openai-responses",
       baseUrl: "https://api.deepseek.com",
     });
     expect(runtime.model.contextWindow).toBeGreaterThan(0);
@@ -80,7 +80,7 @@ describe("createPiModelRuntime", () => {
       baseURL: "https://models.example.test/v1",
       modelMaxTokens: 50_000,
       piConfig: {
-        api: "openai-completions",
+        api: "openai-responses",
         contextWindow: 8_192,
         maxTokens: 50_000,
       },
@@ -119,7 +119,7 @@ describe("createPiModelRuntime", () => {
       await streamText({ model, prompt: "hello" }).text;
 
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("https://api.deepseek.com/chat/completions"),
+        expect.stringContaining("https://api.deepseek.com/responses"),
       );
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("status=404"));
       expect(JSON.stringify(warn.mock.calls)).not.toContain("tenant-secret");
@@ -276,7 +276,7 @@ describe("createPiModelRuntime", () => {
     expect(runtime.model).toMatchObject({
       id: "aion-labs/aion-2.0",
       provider: "openrouter",
-      api: "openai-completions",
+      api: "openai-responses",
       baseUrl: "https://openrouter.ai/api/v1",
     });
     await expect(runtime.models.getAuth(runtime.model)).resolves.toMatchObject({
@@ -291,7 +291,7 @@ describe("createPiModelRuntime", () => {
       provider: "my-gateway",
       baseURL: "https://models.example.test/v1",
       piConfig: {
-        api: "openai-completions",
+        api: "openai-responses",
         reasoning: true,
         input: ["text"],
         contextWindow: 262_144,
@@ -315,7 +315,7 @@ describe("createPiModelRuntime", () => {
 
     expect(runtime.model).toMatchObject({
       provider: "my-gateway",
-      api: "openai-completions",
+      api: "openai-responses",
       reasoning: true,
       input: ["text"],
       contextWindow: 262_144,

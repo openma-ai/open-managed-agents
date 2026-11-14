@@ -86,7 +86,7 @@ describe("createInferenceProxyRoutes", () => {
 
   it("rejects unsupported protocols without falling back to provider URLs", async () => {
     const fetch = vi.fn() as unknown as typeof globalThis.fetch;
-    const response = await app(() => ports(fetch, PROTOCOL)).request("/v1/oma/inference-proxy/session/openai/v1/chat/completions", { method: "POST", body: "{}" });
+    const response = await app(() => ports(fetch, PROTOCOL)).request("/v1/oma/inference-proxy/session/openai/v1/responses", { method: "POST", body: "{}" });
     expect(response.status).toBe(409);
     expect(fetch).not.toHaveBeenCalled();
   });

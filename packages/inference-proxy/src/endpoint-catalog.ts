@@ -33,13 +33,13 @@ export const DEFAULT_INFERENCE_ENDPOINT_CONTRIBUTORS: readonly InferenceEndpoint
   {
     providerIds: ["deepseek"],
     endpoints: ({ baseUrl }) => baseUrl == null ? [
-      endpoint("openai-chat", "https://api.deepseek.com"),
+      endpoint("openai-responses", "https://api.deepseek.com"),
       endpoint("anthropic-messages", "https://api.deepseek.com/anthropic"),
     ] : [
       // A configured DeepSeek base denotes its OpenAI-compatible endpoint.
       // Do not infer an Anthropic sibling (or send its key to the public API).
       // Deployments with both protocols must supply explicit protocolEndpoints.
-      endpoint("openai-chat", baseUrl),
+      endpoint("openai-responses", baseUrl),
     ],
   },
   {
@@ -56,7 +56,7 @@ export const DEFAULT_INFERENCE_ENDPOINT_CONTRIBUTORS: readonly InferenceEndpoint
         throw new Error("Custom minimax-cn baseUrl requires explicit protocolEndpoints");
       }
       return [
-        endpoint("openai-chat", "https://api.minimaxi.com/v1"),
+        endpoint("openai-responses", "https://api.minimaxi.com/v1"),
         endpoint("anthropic-messages", "https://api.minimaxi.com/anthropic"),
       ];
     },
@@ -75,7 +75,6 @@ export const DEFAULT_INFERENCE_ENDPOINT_CONTRIBUTORS: readonly InferenceEndpoint
     endpoints: ({ baseUrl }) => {
       const root = baseUrl?.replace(/\/v1\/?$/, "") ?? "https://api.openai.com";
       return [
-        endpoint("openai-chat", root),
         endpoint("openai-responses", root),
       ];
     },
@@ -108,14 +107,16 @@ export function resolveProtocolEndpointsFromModelCard(
     const resolved = resolvePiModelCardRouting({ provider: fields.providerId, model: fields.wireModel,
       baseURL: fields.baseUrl ?? undefined, piConfig: fields.piConfig });
     const protocols: Record<string, InferenceWireProtocol> = {
-      "anthropic-messages": "anthropic-messages", "openai-completions": "openai-chat",
-      "openai-responses": "openai-responses", "google-generative-ai": "gemini",
+      "anthropic-messages": "anthropic-messages", "openai-responses": "openai-responses",
+      "google-generative-ai": "gemini",
     };
-    const protocol = protocols[resolved.api];
+    const protocol = String(resolved.api).startsWith("openai-")
+      ? "openai-responses"
+      : protocols[resolved.api];
     if (!protocol) throw new Error(`Hosted inference does not support Pi API "${resolved.api}"`);
     return [endpoint(protocol,
       protocol === "gemini" ? resolved.baseUrl.replace(/\/v1beta\/?$/, "")
-        : protocol === "openai-chat" || protocol === "openai-responses" || protocol === "anthropic-messages"
+        : protocol === "openai-responses" || protocol === "anthropic-messages"
           ? resolved.baseUrl.replace(/\/v1\/?$/, "")
           : resolved.baseUrl)];
   }

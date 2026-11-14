@@ -2,18 +2,18 @@ import { expect, it } from "vitest";
 import * as module from "../src/node-work-outcomes.js";
 const outcome={id:"out",description:"write hello",rubric:{type:"text",content:"must say hello"},maxIterations:2};
 // The control plane advertises the card's wire protocol. This fixture's model
-// speaks OpenAI chat completions (an `openai` card without it routes through
-// Pi's Responses API); other protocols are covered by the advertised-protocol test.
-const channels={mcpProxy:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture"},hostedInference:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture",model:{providerId:"openai",baseUrl:null,wireModel:"judge",protocolEndpoints:[{protocol:"openai-chat" as const,proxyPathSegment:"openai/v1",upstreamBaseUrl:"https://must-not-contact"}]}}};
+// speaks the OpenAI Responses API; other protocols are covered by the
+// advertised-protocol test.
+const channels={mcpProxy:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture"},hostedInference:{gatewayBaseUrl:"https://gateway",sessionsToken:"oma_sbx_fixture",model:{providerId:"openai",baseUrl:null,wireModel:"judge",protocolEndpoints:[{protocol:"openai-responses" as const,proxyPathSegment:"openai/v1",upstreamBaseUrl:"https://must-not-contact"}]}}};
 it.each(["satisfied","max","abort","failed"])("shared default outcome grader %s preserves spans, usage and awaited revision",async mode=>{
  const events:any[]=[]; const requests:string[]=[]; const controller=new AbortController(); let grades=0,revisions=0;
  const complete=module.createWorkOutcomeCompletion({sessionId:"s",apiBaseUrl:"https://control",sessionsToken:"work-token",channels:()=>channels,
   fetch:async(raw,init)=>{const url=new URL(String(raw));requests.push(url.pathname);
    if(url.pathname.includes("/events"))return Response.json({data:[{type:"agent.message",content:[{type:"text",text:revisions?"hello":"draft"}]}],next_page:null});
    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer oma_sbx_fixture");
-   expect(JSON.parse(String(init?.body)).messages[1].content).toContain(revisions?"hello":"draft");
+   expect(JSON.stringify(JSON.parse(String(init?.body)).input)).toContain(revisions?"hello":"draft");
    grades++;if(mode==="abort"){controller.abort();throw new DOMException("aborted","AbortError");}
-   return Response.json({choices:[{message:{content:JSON.stringify({result: mode==="satisfied"&&grades>1?"satisfied":"needs_revision",explanation:"fix hello"})}}],usage:{prompt_tokens:11,completion_tokens:3}});
+   return Response.json({output:[{content:[{type:"output_text",text:JSON.stringify({result: mode==="satisfied"&&grades>1?"satisfied":"needs_revision",explanation:"fix hello"})}]}],usage:{input_tokens:11,output_tokens:3}});
   }});
  await complete({command:{sessionId:"s",turnId:"root",input:{eventId:"root",event:{},outcome:mode==="failed"?{...outcome,rubric:{type:"text",content:""}}:outcome}},signal:controller.signal,flush:async()=>{},cancel:async()=>{},
   publishOutcomeEvents:async (batch:any[])=>{events.push(...batch);},runRevision:async({turnId,text}:{turnId:string;text:string})=>{expect(turnId).not.toBe("root");expect(text).toContain("fix hello");revisions++;}} as never);
@@ -52,7 +52,7 @@ it("an already-cancelled outcome does not start model or fabricate evaluation ev
 });
 it("a real revision failure records linked failed verdict then propagates instead of claiming successful drain",async()=>{
  const events:any[]=[];
- const complete=module.createWorkOutcomeCompletion({sessionId:"s",apiBaseUrl:"https://control",sessionsToken:"work-token",channels:()=>channels,fetch:async(raw)=>String(raw).includes("/events")?Response.json({data:[{id:"m1",type:"agent.message",content:[{type:"text",text:"hello"}]}],next_page:null}):Response.json({choices:[{message:{content:JSON.stringify({result:"needs_revision",explanation:"fix it"})}}],usage:{prompt_tokens:1,completion_tokens:2}})});
+ const complete=module.createWorkOutcomeCompletion({sessionId:"s",apiBaseUrl:"https://control",sessionsToken:"work-token",channels:()=>channels,fetch:async(raw)=>String(raw).includes("/events")?Response.json({data:[{id:"m1",type:"agent.message",content:[{type:"text",text:"hello"}]}],next_page:null}):Response.json({output:[{content:[{type:"output_text",text:JSON.stringify({result:"needs_revision",explanation:"fix it"})}]}],usage:{input_tokens:1,output_tokens:2}})});
  await expect(complete({command:{sessionId:"s",turnId:"root",input:{eventId:"root",event:{},outcome}},signal:new AbortController().signal,flush:async()=>{},cancel:async()=>{},publishOutcomeEvents:async (batch:any[])=>{events.push(...batch);},runRevision:async()=>{throw Error("native revision failed");}} as never)).rejects.toThrow("native revision failed");
  expect(events.at(-1)).toMatchObject({type:"span.outcome_evaluation_end",result:"failed",outcome_evaluation_start_id:events[0].id});
 });
@@ -80,15 +80,15 @@ it("reads file rubric with scoped Work authorization and gives the shared grader
   const url=new URL(String(raw));
   if(url.pathname.includes("/events")) return Response.json({data:[{id:"m1",type:"agent.message",content:[{type:"text",text:"hello"}]}],next_page:null});
   if(url.pathname === "/v1/files/file_1/content"){expect(new Headers(init?.headers).get("authorization")).toBe("Bearer work-token");return new Response("file rubric criterion");}
-  expect(JSON.parse(String(init?.body)).messages[1].content).toContain("file rubric criterion");
-  return Response.json({choices:[{message:{content:JSON.stringify({result:"satisfied",explanation:"matches file"})}}],usage:{prompt_tokens:1,completion_tokens:2}});
+  expect(JSON.stringify(JSON.parse(String(init?.body)).input)).toContain("file rubric criterion");
+  return Response.json({output:[{content:[{type:"output_text",text:JSON.stringify({result:"satisfied",explanation:"matches file"})}]}],usage:{input_tokens:1,output_tokens:2}});
  }});
  await complete({command:{sessionId:"s",turnId:"root",input:{eventId:"root",event:{},outcome:{...outcome,rubric:{type:"file",file_id:"file_1"}}}},signal:new AbortController().signal,flush:async()=>{},cancel:async()=>{},publishOutcomeEvents:async(batch:any[])=>{events.push(...batch);},runRevision:async()=>{throw Error("must not revise");}} as never);
  expect(events.at(-1).result).toBe("satisfied");
 });
 it("does not hide a missing durable outcome end receipt behind a terminal verdict",async()=>{
  let ends=0;
- const complete=module.createWorkOutcomeCompletion({sessionId:"s",apiBaseUrl:"https://control",sessionsToken:"work-token",channels:()=>channels,fetch:async(raw)=>String(raw).includes("/events")?Response.json({data:[{id:"m1",type:"agent.message",content:[{type:"text",text:"hello"}]}],next_page:null}):Response.json({choices:[{message:{content:'{"result":"satisfied","explanation":"ok"}'}}],usage:{prompt_tokens:1,completion_tokens:1}})});
+ const complete=module.createWorkOutcomeCompletion({sessionId:"s",apiBaseUrl:"https://control",sessionsToken:"work-token",channels:()=>channels,fetch:async(raw)=>String(raw).includes("/events")?Response.json({data:[{id:"m1",type:"agent.message",content:[{type:"text",text:"hello"}]}],next_page:null}):Response.json({output:[{content:[{type:"output_text",text:'{"result":"satisfied","explanation":"ok"}'}]}],usage:{input_tokens:1,output_tokens:1}})});
  await expect(complete({command:{sessionId:"s",turnId:"root",input:{eventId:"root",event:{},outcome}},signal:new AbortController().signal,flush:async()=>{},cancel:async()=>{},publishOutcomeEvents:async(batch:any[])=>{if(batch[0].type==="span.outcome_evaluation_end"){ends++;throw Error("end receipt lost");}},runRevision:async()=>{throw Error("must not revise");}} as never)).rejects.toThrow("end receipt lost");
  expect(ends).toBe(1);
 });

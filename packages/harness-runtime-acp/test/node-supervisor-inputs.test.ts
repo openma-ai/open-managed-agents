@@ -70,7 +70,9 @@ async function fixture(scenario:"prompt"|"approval"|"resume"|"steer"|"interrupt"
   for(const [index,proof] of [{...root,turnId:"forged"},{...root,expectedDocument:first.rows[0]!.document},{...root,inputId:"fake"}].entries()){
    expect((await post("runtime-events",{events:[{...events[0],id:"rejected-"+index}],root:proof})).status).toBeGreaterThanOrEqual(400);
   }
-  expect((await post("runtime-events",{events,root})).status).toBe(409); // no blind receipt replay
+  // Exact byte replays acknowledge the already projected receipt. Only a
+  // changed event body or root proof is a collision.
+  expect((await post("runtime-events",{events,root})).status).toBe(200);
   for(const [id,mutation,restore] of [
    ["ttl","claim_at=0",`claim_at=${Date.parse(now)}`],
    ["generation","claim_generation=3","claim_generation=2"],

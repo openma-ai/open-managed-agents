@@ -385,14 +385,3 @@ it("returns a disabled batch call's error when the forwarded notification has no
   ]) }));
   expect(await response.json()).toEqual([{ jsonrpc: "2.0", id: 2, error: { code: -32601, message: "MCP tool is not enabled: hidden" } }]);
 });
-
-it.each([managedSession, legacySession])('rejects persisted legacy SSE before proxy credentials or fetch', async makeSession => {
- const fetch = upstream();
- const p = ports(makeSession === managedSession ? {managed:makeSession([server('old',{type:'sse'})]),fetch} : {legacy:makeSession([server('old',{type:'sse'})]),fetch});
- const binding = createMcpProxyBinding(() => p);
- const response = await binding.fetch(new Request(SERVER,{method:'POST',body:'{}',headers:routing('session','old')}));
- expect(response.status).toBe(400);
- expect(await response.text()).toContain('MCP_SSE_UNSUPPORTED');
- expect(fetch).not.toHaveBeenCalled();
- expect(p.legacyCredentials.listByVaults).not.toHaveBeenCalled();
-});

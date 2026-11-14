@@ -476,9 +476,6 @@ export async function buildTools(
     enforcePermissions?: boolean;
   },
 ): Promise<Record<string, any>> {
-  if (agentConfig.mcp_servers?.some(server => (server as { type?: string }).type === "sse")) {
-    throw new Error("MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio.");
-  }
   const enabled = getEnabledTools(agentConfig.tools);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: Record<string, any> = {};

@@ -403,7 +403,7 @@ export interface HarnessContext {
          * `model` is the card handle. */
         wireModel?: string;
         protocolEndpoints?: readonly {
-          protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
+          protocol: "anthropic-messages" | "openai-responses" | "gemini";
           proxyPathSegment: string;
           upstreamBaseUrl: string;
         }[];

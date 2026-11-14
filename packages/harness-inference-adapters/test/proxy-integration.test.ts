@@ -49,7 +49,7 @@ describe("hosted inference proxy integration", () => {
     const upstreamBase = "http://127.0.0.1:9";
     const patched = endpoints.map((endpoint) => ({
       ...endpoint,
-      upstreamBaseUrl: endpoint.protocol === "openai-chat"
+      upstreamBaseUrl: endpoint.protocol === "openai-responses"
         ? upstreamBase
         : `${upstreamBase}/anthropic`,
     }));
@@ -63,7 +63,7 @@ describe("hosted inference proxy integration", () => {
     await sendPlan({
       upstream,
       method: "POST",
-      subPath: "openai/v1/chat/completions",
+      subPath: "openai/v1/responses",
       inboundHeaders: new Headers({ authorization: "Bearer work-token" }),
       body: new TextEncoder().encode("{}").buffer,
       fetcher,
@@ -80,14 +80,14 @@ describe("hosted inference proxy integration", () => {
       (call) => (call as unknown as [string, RequestInit])[0],
     );
     expect(urls).toEqual([
-      "http://127.0.0.1:9/v1/chat/completions",
+      "http://127.0.0.1:9/v1/responses",
       "http://127.0.0.1:9/anthropic/v1/messages",
     ]);
   });
 
   it("applies protocol-specific upstream auth headers", () => {
     const openai = new Headers();
-    applyUpstreamCredentialsForProtocol(openai, "openai-chat", "key");
+    applyUpstreamCredentialsForProtocol(openai, "openai-responses", "key");
     expect(openai.get("authorization")).toBe("Bearer key");
 
     const anthropic = new Headers();

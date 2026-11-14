@@ -13,7 +13,7 @@ import {
 import { planFor, PROXY, assertNoSecretInFiles } from "./helpers.js";
 
 const protocols: InferenceWireProtocol[] = [
-  "anthropic-messages", "openai-responses", "gemini", "openai-chat",
+  "anthropic-messages", "openai-responses", "gemini",
 ];
 const endpointFor = (protocol: InferenceWireProtocol) => ({
   protocol,
@@ -37,7 +37,6 @@ describe("native protocol configuration contracts", () => {
       "anthropic-messages": "anthropic",
       "openai-responses": "openai_responses",
       gemini: "google-genai",
-      "openai-chat": "openai",
     }[protocol];
     const config = p.files.find((f) => f.path.endsWith("/config.toml"))!;
     expect(config.content).toContain(`type = "${type}"`);
@@ -59,7 +58,6 @@ describe("native protocol configuration contracts", () => {
       "anthropic-messages": "@ai-sdk/anthropic",
       "openai-responses": "@ai-sdk/openai",
       gemini: "@ai-sdk/google",
-      "openai-chat": "@ai-sdk/openai-compatible",
     }[protocol]);
     // A custom provider needs a model entry: selecting oma/<id> alone is insufficient.
     expect(c.provider.oma.models["chosen-model"].name).toBe("chosen-model");

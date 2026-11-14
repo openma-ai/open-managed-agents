@@ -18,7 +18,7 @@ export interface ManagedAcpExecutionChannels {
       /** The card's upstream model id, not its handle. */
       wireModel?: string;
       protocolEndpoints?: readonly {
-        protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
+        protocol: "anthropic-messages" | "openai-responses" | "gemini";
         proxyPathSegment: string;
         upstreamBaseUrl: string;
       }[];

@@ -19,7 +19,6 @@ import {
 import { resolveProtocolEndpointsFromModelCard } from "../src/endpoint-catalog.js";
 import { projectHostedInferenceForAcpAgent } from "@open-managed-agents/acp-runtime/inference-config";
 import { InferenceConfigAdapterRegistry } from "@open-managed-agents/acp-runtime/inference-config";
-import { InferenceProtocolUnsupportedError } from "@open-managed-agents/acp-runtime/inference-config";
 
 describe("golden harness inference adapters", () => {
   it("pi", () => {
@@ -150,16 +149,16 @@ describe("endpoint catalog", () => {
     });
     expect(endpoints.map((item) => item.protocol).sort()).toEqual([
       "anthropic-messages",
-      "openai-chat",
+      "openai-responses",
     ]);
     expect(endpoints.find((item) => item.protocol === "anthropic-messages")?.upstreamBaseUrl)
       .toBe("https://api.deepseek.com/anthropic");
   });
 
-  it("fails codex projection for DeepSeek cards", () => {
+  it("projects the Responses endpoint for DeepSeek cards", () => {
     const registry = new InferenceConfigAdapterRegistry();
     registry.register(codexInferenceAdapter);
-    expect(() => projectHostedInferenceForAcpAgent({
+    expect(projectHostedInferenceForAcpAgent({
       sessionId: "s",
       gatewayBaseUrl: "https://api.openma.test",
       sessionsToken: "token",
@@ -175,6 +174,6 @@ describe("endpoint catalog", () => {
         }),
       },
       adapterRegistry: registry,
-    })).toThrow(InferenceProtocolUnsupportedError);
+    }).files[0]?.content).toContain('wire_api = "responses"');
   });
 });

@@ -5,7 +5,7 @@ import { proxyUrl } from "../helpers.js";
 
 export const opencodeInferenceAdapter: InferenceConfigAdapter = {
   id: "opencode",
-  supportedProtocols: ["anthropic-messages", "openai-responses", "gemini", "openai-chat"],
+  supportedProtocols: ["anthropic-messages", "openai-responses", "gemini"],
   matches: (agent) => matchesAgentIdentity(agent, ["opencode"]),
   plan(context) {
     const { target, proxy, endpoint, protocol } = context;
@@ -16,7 +16,6 @@ export const opencodeInferenceAdapter: InferenceConfigAdapter = {
       "anthropic-messages": "@ai-sdk/anthropic",
       "openai-responses": "@ai-sdk/openai",
       gemini: "@ai-sdk/google",
-      "openai-chat": "@ai-sdk/openai-compatible",
     }[protocol];
     const config = {
       share: "disabled",

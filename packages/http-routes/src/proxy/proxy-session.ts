@@ -185,7 +185,6 @@ function proxyAgent(
     toolSelection: { tools: tools ?? [] },
     mcpServers: (servers ?? []).map((server) => ({
       name: server.name,
-      type: server.type,
       url: typeof server.url === "string" && server.url.length > 0 ? server.url : null,
       authorizationToken: server.authorization_token || server.authorizationToken || null,
     })),

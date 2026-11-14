@@ -393,7 +393,3 @@ What each Worker needs in its `wrangler.jsonc`:
   href="/reference/glossary/"
   description="Every term, alphabetized."
 />
-
-### MCP transport policy
-
-MCP URL servers use Streamable HTTP. Stdio servers require a harness and execution placement that support stdio. Legacy MCP SSE (`type: "sse"`) is rejected with `MCP_SSE_UNSUPPORTED` before launch, including previously stored configurations. There is no automatic transport conversion. This does not remove Session SSE event streaming or event-stream responses within Streamable HTTP.

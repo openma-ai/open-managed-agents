@@ -24,14 +24,14 @@ describe("bindStoredModelCardCredentials", () => {
       baseURL: "https://models.example.test/v1",
       provider: "my-provider",
       customHeaders: { "x-tenant": "tenant-1" },
-      piConfig: { api: "openai-completions" },
+      piConfig: { api: "openai-responses" },
     })).toMatchObject({
       model: "custom-model",
       apiKey: "custom-key",
       baseURL: "https://models.example.test/v1",
       provider: "my-provider",
       customHeaders: { "x-tenant": "tenant-1" },
-      piConfig: { api: "openai-completions" },
+      piConfig: { api: "openai-responses" },
     });
   });
 });

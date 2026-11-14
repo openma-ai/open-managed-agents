@@ -13,7 +13,7 @@
 // Environment cache uses separate per-workspace rootfs snapshots. Missing
 // environment snapshots rebuild; missing Session snapshots fail closed.
 
-import type { ResumeRef, SandboxHandle, SandboxLifecyclePort, SandboxPlan } from "@open-managed-agents/sandbox";
+import { SandboxGoneError, type ResumeRef, type SandboxHandle, type SandboxLifecyclePort, type SandboxPlan } from "@open-managed-agents/sandbox";
 import { parseExecResult } from "@open-managed-agents/sandbox";
 import type { RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { SandboxAdapterPort } from "@open-managed-agents/sandbox-port-kit/ports";
@@ -36,6 +36,33 @@ export const CLOUDFLARE_SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const SNAPSHOT_GONE = "SNAPSHOT_GONE";
 export const isSnapshotGoneError = (error: unknown): boolean =>
   (error instanceof Error ? error.message : String(error)).includes(SNAPSHOT_GONE);
+
+/** Workers RPC preserves the provider error message but not its class. Keep
+ * the provider's confirmed loss as SandboxGoneError so Session runtime enters
+ * its lost-sandbox recovery path instead of treating it as a model failure. */
+export function isCloudflareSandboxNotRunningError(error: unknown): boolean {
+  for (let current = error, depth = 0; current !== null && depth < 8; depth += 1) {
+    if (typeof current === "object") {
+      const candidate = current as { name?: unknown; message?: unknown; cause?: unknown };
+      if (candidate.name === "SandboxNotRunningError" || String(candidate.message ?? "").includes("SANDBOX_NOT_RUNNING")) return true;
+      current = candidate.cause;
+    } else {
+      return String(current).includes("SANDBOX_NOT_RUNNING");
+    }
+  }
+  return false;
+}
+
+async function runtimeCall<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (isCloudflareSandboxNotRunningError(error)) {
+      throw new SandboxGoneError("Cloudflare sandbox is not running", { cause: error });
+    }
+    throw error;
+  }
+}
 
 export function createCloudflareSandboxAdapter(input: {
   /** The DO-named sandbox of a Session: the handle is fixed. */
@@ -163,21 +190,21 @@ export function createCloudflareSandboxAdapter(input: {
         let command = cmd;
         if (opts?.stdin !== undefined) {
           const path = `/tmp/.oma-stdin-${crypto.randomUUID()}`;
-          await runtime.writeFileBytes(path, new TextEncoder().encode(opts.stdin));
+          await runtimeCall(() => runtime.writeFileBytes(path, new TextEncoder().encode(opts.stdin)));
           command = `(${cmd}) < ${path}; s=$?; rm -f ${path}; exit $s`;
         }
-        return parseExecResult(await runtime.exec(command, opts?.timeoutMs));
+        return parseExecResult(await runtimeCall(() => runtime.exec(command, opts?.timeoutMs)));
       },
       /** base64 over exec (the shim's file API is text-only). */
       async readFile(runtime, path) {
         const quoted = `'${path.replaceAll("'", "'\\''")}'`;
-        const result = parseExecResult(await runtime.exec(`if [ -e ${quoted} ]; then base64 -w0 -- ${quoted}; else exit 44; fi`, 60_000));
+        const result = parseExecResult(await runtimeCall(() => runtime.exec(`if [ -e ${quoted} ]; then base64 -w0 -- ${quoted}; else exit 44; fi`, 60_000)));
         if (result.exitCode === 44) return null;
         if (result.exitCode !== 0) throw new Error(`Reading ${path} failed (exit ${result.exitCode}): ${result.stderr.slice(0, 200)}`);
         return Uint8Array.from(atob(result.stdout.trim()), (char) => char.charCodeAt(0));
       },
       async writeFile(runtime, path, bytes) {
-        await runtime.writeFileBytes(path, bytes);
+        await runtimeCall(() => runtime.writeFileBytes(path, bytes));
       },
       setEnv: (runtime, env) => runtime.setEnvVars(env),
     },

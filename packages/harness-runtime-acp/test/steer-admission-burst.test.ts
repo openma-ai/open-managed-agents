@@ -1,6 +1,7 @@
 import {expect,it} from 'vitest';
 import {mkdir} from 'node:fs/promises';
 import {lifecycleFixture} from "../../../apps/main-node/test/session-lifecycle-parity-worker.helper";
+import {firstNativePrompt} from "../../../apps/main-node/test/session-lifecycle-parity-worker.helper";
 import {parityPeer,parityModules} from '../../../apps/main-node/test/session-lifecycle-parity-acp.fixture';
 import {runNodeWorkItemCli} from '../src/node-work-item-cli';
 import {createNodeAcpHarnessStateIo} from '../src/node';
@@ -10,7 +11,7 @@ it('two same-page inputs must serialize permission gates and continue FIFO, not 
  const prompts:string[]=[],steers:string[]=[],receipts:any[]=[];let running:Promise<any>|undefined;let modeCount=0;
  try{
   await f.message('root');await f.claim(false);await f.prepareSandbox();
-  const peer=parityPeer({async *prompt(text){prompts.push(text);if(text==='root'){root.resolve();await release.promise}yield {type:'promptComplete'}},async steer(text){steers.push(text);if(steers.length===2)release.resolve()}});
+  const peer=parityPeer({async *prompt(text){prompts.push(text);if(text==='root'||text.endsWith("\n\nroot")){root.resolve();await release.promise}yield {type:'promptComplete'}},async steer(text){steers.push(text);if(steers.length===2)release.resolve()}});
   // Real SDK wire: delay only the first steer's set_config_option response.
   // No product hooks, mode mapping, CAS, or native session objects are mocked.
   const spawner={async spawn(spec:any){const p=await peer.spawn(spec);let buf='';return {...p,stdout:p.stdout.pipeThrough(new TransformStream({async transform(bytes,out){buf+=new TextDecoder().decode(bytes);while(buf.includes('\n')){const i=buf.indexOf('\n'),m=JSON.parse(buf.slice(0,i));buf=buf.slice(i+1);
@@ -27,7 +28,7 @@ it('two same-page inputs must serialize permission gates and continue FIFO, not 
   const observed=await Promise.race([running,new Promise(r=>setTimeout(()=>r({timeout:true}),2000))]);
   console.log('BURST_EVIDENCE',JSON.stringify({prompts,steers,modeCount,receipts,error:String(observed?.error)}));
   expect(observed?.error,'supported FIFO input must not fail closed with permission busy').toBeUndefined();
-  await expect.poll(()=>prompts).toEqual(['root','a','b']);
+  await expect.poll(()=>prompts).toEqual([firstNativePrompt('root'),'a','b']);
   await expect.poll(()=>receipts.filter(r=>r.action==='work-publish'&&r.status===200).length).toBe(1);
  }finally{release.resolve();controller.abort();await running;await f.dispose()}
 },10000);

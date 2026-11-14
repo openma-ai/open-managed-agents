@@ -1,4 +1,3 @@
-import { rejectLegacyMcpSse } from "@open-managed-agents/acp-runtime";
 /**
  * SessionManager — owns the ACP child processes the daemon is currently
  * running on this machine. Slice-2 minimum: one ACP runtime per session
@@ -458,7 +457,6 @@ export class SessionManager {
       // inline) regardless of which alias the AgentConfig row stores.
       const bundle = await this.#fetchBundle(p.session_id, agent.id);
       if (bundle) {
-      rejectLegacyMcpSse(bundle.mcp_servers);
         if (bundle.runtime?.placement === "sandbox") throw new Error("Sandbox placement requires Node session runtime dependencies");
         managedSkills = await materializeManagedSkills({
           sessionDir: scratchDir, skills: bundle.managed_skills ?? [],

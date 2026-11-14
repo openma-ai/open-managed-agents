@@ -138,7 +138,7 @@ async function judgeThroughGateway(channels: ManagedAcpExecutionChannels | undef
   const inference = channels?.hostedInference;
   if (!inference?.sessionsToken.startsWith("oma_sbx_") || !inference.model.wireModel) throw new Error("Outcome execution channels/model capability unavailable");
   const endpoints = resolveProtocolEndpointsFromModelCard(inference.model);
-  const endpoint = endpoints.find(e => e.protocol === "openai-chat") ?? endpoints.find(e => e.protocol === "anthropic-messages") ?? endpoints[0];
+  const endpoint = endpoints.find(e => e.protocol === "openai-responses") ?? endpoints.find(e => e.protocol === "anthropic-messages") ?? endpoints[0];
   if (!endpoint) throw new Error("Outcome model protocol unavailable");
   // Only gateway path fragments from authority; never contact upstreamBaseUrl.
   if (!/^[a-zA-Z0-9/_-]+$/.test(endpoint.proxyPathSegment) || endpoint.proxyPathSegment.includes("..")) throw new Error("Invalid outcome model gateway path");
@@ -150,7 +150,7 @@ async function judgeThroughGateway(channels: ManagedAcpExecutionChannels | undef
     case "anthropic-messages": path = "/v1/messages"; body = { model, max_tokens: 4096, system: prompt.system, messages: [{ role: "user", content: prompt.user }], stream: false }; break;
     case "openai-responses": path = "/responses"; body = { model, instructions: prompt.system, input: prompt.user, stream: false }; break;
     case "gemini": path = `/v1beta/models/${encodeURIComponent(model)}:generateContent`; body = { systemInstruction: { parts: [{ text: prompt.system }] }, contents: [{ role: "user", parts: [{ text: prompt.user }] }] }; break;
-    default: path = "/chat/completions"; body = { model, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }], stream: false };
+    default: throw new Error("Outcome model protocol unavailable");
   }
   let response: Response;
   try {
@@ -168,9 +168,8 @@ async function judgeThroughGateway(channels: ManagedAcpExecutionChannels | undef
   const input = u.prompt_tokens ?? u.input_tokens ?? u.promptTokenCount;
   const output = u.completion_tokens ?? u.output_tokens ?? u.candidatesTokenCount;
   if (!Number.isFinite(input) || !Number.isFinite(output)) throw new Error("Outcome model usage unavailable");
-  const text = endpoint.protocol === "openai-chat" ? result.choices?.[0]?.message?.content
+  const text = endpoint.protocol === "openai-responses" ? result.output?.flatMap((item: any) => item.content ?? []).filter((c: any) => c.type === "output_text").map((c: any) => c.text).join("")
     : endpoint.protocol === "anthropic-messages" ? result.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("")
-    : endpoint.protocol === "openai-responses" ? result.output?.flatMap((item: any) => item.content ?? []).filter((c: any) => c.type === "output_text").map((c: any) => c.text).join("")
     : result.candidates?.[0]?.content?.parts?.map((c: any) => c.text ?? "").join("");
   if (typeof text !== "string") throw new Error("Outcome model text unavailable");
   return { text, usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: u.cache_read_input_tokens ?? object(u.prompt_tokens_details).cached_tokens ?? u.cachedContentTokenCount ?? 0, cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0 } };

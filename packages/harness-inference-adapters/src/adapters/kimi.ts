@@ -6,7 +6,7 @@ import { proxyUrl } from "../helpers.js";
 
 export const kimiCodeInferenceAdapter: InferenceConfigAdapter = {
   id: "kimi-code",
-  supportedProtocols: ["anthropic-messages", "openai-responses", "gemini", "openai-chat"],
+  supportedProtocols: ["anthropic-messages", "openai-responses", "gemini"],
   matches: (agent) => matchesAgentIdentity(agent, ["kimi-code", "kimi-code-acp"]),
   plan(context) {
     const { nativePath, target, proxy, endpoint, protocol } = context;
@@ -15,7 +15,6 @@ export const kimiCodeInferenceAdapter: InferenceConfigAdapter = {
       "anthropic-messages": "anthropic",
       "openai-responses": "openai_responses",
       gemini: "google-genai",
-      "openai-chat": "openai",
     }[protocol];
     const home = join(nativePath, "kimi-code");
     return {

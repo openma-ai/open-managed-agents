@@ -37,11 +37,11 @@ it.each(["joined", "pending", "sync", "sync-claude", "sync-command", "sync-agent
  const provider=createServer(async(req,res)=>{
    let raw="";for await(const bytes of req)raw+=bytes;
    const body=JSON.parse(raw || "{}");
-   const judging=body.messages?.some((m:any)=>typeof m.content === "string" && m.content.includes("## Rubric"));
-   if(judging){expect(JSON.stringify(body.messages)).toContain(prompts>1?"hello":"draft");grades++;}
+   const judging=JSON.stringify(body).includes("## Rubric");
+   if(judging){expect(JSON.stringify(body)).toContain(prompts>1?"hello":"draft");grades++;}
    if(judging&&mode === "outcome-interrupt") { await interrupt!(); return; }
    if(judging&&mode === "outcome-abort") { controller.abort(new DOMException("test abort","AbortError"));res.statusCode=499;res.end("cancelled");return; }
-   res.setHeader("content-type","application/json");res.end(JSON.stringify({id:"chatcmpl-fixture",object:"chat.completion",created:1,model:"judge",choices:[{index:0,message:{role:"assistant",content:JSON.stringify({result:(mode === "outcome-satisfied" || mode === "outcome-post") && grades>1?"satisfied":"needs_revision",explanation:"write hello"})},finish_reason:"stop"}],usage:{prompt_tokens:11,completion_tokens:3}}));
+   res.setHeader("content-type","application/json");res.end(JSON.stringify({id:"resp-fixture",object:"response",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:JSON.stringify({result:(mode === "outcome-satisfied" || mode === "outcome-post") && grades>1?"satisfied":"needs_revision",explanation:"write hello"})}]}],usage:{input_tokens:11,output_tokens:3}}));
  });
  if(outcomeMode){await new Promise<void>(resolve=>provider.listen(0,"127.0.0.1",resolve));cleanup.push(()=>new Promise<void>(resolve=>{provider.closeAllConnections();provider.close(()=>resolve());}));}
  const controlServer=createServer(); await new Promise<void>(resolve=>controlServer.listen(0,"127.0.0.1",resolve));
@@ -56,7 +56,8 @@ it.each(["joined", "pending", "sync", "sync-claude", "sync-command", "sync-agent
   return cp.fetch(request);
  }));
  async function create(path:string,body:unknown):Promise<Record<string,unknown>>{const r=await fetch(base+path,{method:"POST",headers:{"content-type":"application/json","x-api-key":"test-admin"},body:JSON.stringify(body)});expect(r.status,await r.clone().text()).toBeLessThan(300);return await r.json() as Record<string,unknown>;}
- if(outcomeMode) await create("/v1/oma/model_cards",{model_id:"test",model:"judge",provider:"openai",pi_config:{api:"openai-completions"},base_url:"http://127.0.0.1:"+(provider.address() as {port:number}).port,api_key:"fixture-not-a-real-key",pricing:{version:1,currency:"USD",input_per_mtok:mode === "outcome-budget" ? "10000" : "1",output_per_mtok:"1"}});
+ const modelBaseUrl=outcomeMode ? "http://127.0.0.1:"+(provider.address() as {port:number}).port : "http://127.0.0.1:1";
+ await create("/v1/oma/model_cards",{model_id:"test",model:"judge",provider:"openai",pi_config:{api:"openai-responses"},base_url:modelBaseUrl,api_key:"fixture-not-a-real-key",pricing:{version:1,currency:"USD",input_per_mtok:mode === "outcome-budget" ? "10000" : "1",output_per_mtok:"1"}});
  const env=await create("/v1/environments",{name:"inputs",config:{type:"cloud",networking:{type:"unrestricted"}}});
  const agent=await create("/v1/agents",{name:"inputs",model:"test",_oma:{harness:"acp-sandbox",acp:{agent:{registry:"claude-acp@0.94.0"}}}});
  const session=await create("/v1/sessions",{...(mode === "outcome-budget" ? {budget:{type:"limit",max_list_cost:{amount:"1",currency:"USD"}}} : {}),agent:agent.id,environment_id:env.id,initial_events:(mode === "outcome-post" || mode === "outcome-interrupt") ? [] : outcomeMode ? [{type:"user.define_outcome",description:"write hello",rubric:{type:"text",content:mode === "outcome-failed" ? "" : "must say hello"},max_iterations:2}] : [{type:"user.message",content:[{type:"text",text:"first"}]}]});

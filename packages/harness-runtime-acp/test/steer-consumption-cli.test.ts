@@ -1,5 +1,5 @@
 import {expect,it} from "vitest";
-import {lifecycleFixture,lifecycleWorker} from "../../../apps/main-node/test/session-lifecycle-parity-worker.helper";
+import {firstNativePrompt,lifecycleFixture,lifecycleWorker} from "../../../apps/main-node/test/session-lifecycle-parity-worker.helper";
 
 it("default CLI consumes injected input under original root and publishes only that root",async()=>{
  const f=await lifecycleFixture();let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
@@ -16,7 +16,7 @@ it("default CLI consumes injected input under original root and publishes only t
   expect(correction.source_position.consumption_claim).toEqual(root.source_position.consumption_claim);
   const receipts=worker.responses.filter(r=>r.action==="inputs-consume");expect(receipts).toHaveLength(2);
   expect(receipts[1]).toMatchObject({status:200,body:{consumingTurnId:root.source_position.consumed_by_execution_id}});
-  release();await worker.published();expect(prompts).toEqual(["root task"]);
+  release();await worker.published();expect(prompts).toEqual([firstNativePrompt("root task")]);
   const terminals=(await f.events()).filter(e=>e.type==="session.status_idle"&&e.stop_reason?.type==="end_turn");expect(terminals).toHaveLength(1);
   expect(worker.responses.filter(r=>r.action==="work-publish"&&r.status===200)).toHaveLength(1);
  }finally{release?.();await worker?.stop();await f.dispose();}
@@ -63,12 +63,12 @@ it.each(["promptRequired","permission","startedNewTurn","failed"] as const)("nat
   await expect.poll(()=>prompts.length).toBe(1);await f.message("fallback correction");
   if(outcome==="promptRequired"||outcome==="permission"){
    await expect.poll(()=>receipts.filter(r=>r.action==="work-publish"&&r.status===200).length,{timeout:7000}).toBe(1);
-   expect(prompts).toEqual(["root before fallback","fallback correction"]);
+   expect(prompts).toEqual([firstNativePrompt("root before fallback"),"fallback correction"]);
    expect((await f.events()).filter(e=>e.type==="session.status_idle"&&e.stop_reason?.type==="end_turn")).toHaveLength(1);
   }else{
    const result=await running;expect(result).toBeInstanceOf(Error);
    if(outcome==="startedNewTurn")expect(String(result)).toContain("unknown dispatch outcome");
-   expect(prompts).toEqual(["root before fallback"]);
+   expect(prompts).toEqual([firstNativePrompt("root before fallback")]);
   }
   expect(steers).toEqual(["fallback correction"]);
   const consumption=receipts.filter(r=>r.action==="inputs-consume");

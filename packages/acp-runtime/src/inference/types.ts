@@ -3,13 +3,11 @@ import type { AcpStatefulAgentSpec } from "../native-state.js";
 /** Closed set of wire protocols supported by hosted inference routing. */
 export type InferenceWireProtocol =
   | "anthropic-messages"
-  | "openai-chat"
   | "openai-responses"
   | "gemini";
 
 /** Sandbox-relative path suffix on the session hosted-inference base URL. */
 export const INFERENCE_PROTOCOL_PROXY_PATH: Record<InferenceWireProtocol, string> = {
-  "openai-chat": "openai/v1",
   "openai-responses": "openai/v1",
   "anthropic-messages": "anthropic",
   gemini: "gemini",

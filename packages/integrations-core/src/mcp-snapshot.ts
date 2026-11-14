@@ -35,9 +35,6 @@ export function injectMcpServersIntoSnapshot(
   snapshot: AgentConfig,
   servers: ReadonlyArray<IntegrationMcpServer>,
 ): AgentConfig {
-  if ([...(snapshot.mcp_servers ?? []), ...servers].some(server => (server as { type?: string }).type === "sse")) {
-    throw new Error("MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio.");
-  }
   if (servers.length === 0) return snapshot;
   const existingServers = snapshot.mcp_servers ?? [];
   const existingTools = snapshot.tools ?? [];
@@ -94,9 +91,6 @@ export function refreshIntegrationMcpServers(
   servers: ReadonlyArray<IntegrationMcpServer>,
   options?: { preserveUrls?: readonly string[] },
 ): AgentConfig {
-  if ([...(snapshot.mcp_servers ?? []), ...servers].some(server => (server as { type?: string }).type === "sse")) {
-    throw new Error("MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio.");
-  }
   if (servers.length === 0) return snapshot;
   const preserve = new Set(options?.preserveUrls ?? []);
   const mcpServers = [...(snapshot.mcp_servers ?? [])];

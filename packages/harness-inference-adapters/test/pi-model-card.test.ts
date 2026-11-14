@@ -4,7 +4,6 @@ import { wireHostedInferenceForAcpLaunch } from '../src/wire';
 it.each([
  ['ant-compatible','MiniMax-M3.1-Flash',undefined,'anthropic-messages','anthropic'],
  ['custom','wire','openai-responses','openai-responses','openai/v1'],
- ['custom','wire','openai-completions','openai-chat','openai/v1'],
  ['custom','wire','google-generative-ai','gemini','gemini'],
 ] as const)('projects Pi card %s %s %s through the host proxy', (providerId,wireModel,api,protocol,path)=>{
  const model={providerId,wireModel,baseUrl:'https://private.test/endpoint',...(api?{piConfig:{api}}:{})};

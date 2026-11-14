@@ -546,7 +546,7 @@ Linear webhook  ──▶  apps/integrations /linear/webhook
 | 接入新第三方平台 | 新建 `packages/<provider>/` 实现 `integrations-core` ports；在 `apps/integrations/wire.ts` 注册；加 `routes/<provider>/` | `docs/linear-integration-design.md` |
 | 改用自托管 Postgres | 新增 `buildNodeServices`；改 `apps/main/src/index.ts` 工厂调用 | `packages/services/README.md` |
 | 让 agent 跑在用户机器 | 已支持：用户 `oma bridge setup && bridge daemon`；agent 配置 `harness: "acp-proxy"` | `docs/archive/external-agent-runtime.md` |
-| 训练自有模型 | 用 `rl/cli.ts rollout` + `rl/verl/verl_trainer.py`；Model Card 以自定义 provider + `pi_config.api=openai-completions` 指向 vLLM | `rl/README.md`、`docs/trajectory-v1-spec.md` |
+| 训练自有模型 | 用 `rl/cli.ts rollout` + `rl/verl/verl_trainer.py`；Model Card 以自定义 provider + `pi_config.api=openai-responses` 指向 vLLM | `rl/README.md`、`docs/trajectory-v1-spec.md` |
 
 ## 9. 小结
 

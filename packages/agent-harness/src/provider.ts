@@ -134,15 +134,7 @@ export function resolveModel(
       headers: customHeaders,
       fetch: observingFetch,
     });
-    // Use chat/completions endpoint, not Responses API.
-    // Reasons:
-    //   - Third-party OpenAI-compat gateways (CF AI Gateway, Groq, DeepSeek,
-    //     xAI Grok, etc.) only support /v1/chat/completions
-    //   - Responses API requires server-side persistence of function call IDs;
-    //     orgs with Zero Data Retention enabled get "Item with id 'fc_...' not
-    //     found" errors mid-loop
-    //   - chat/completions is the de-facto standard contract for OpenAI-compat
-    return openai.chat(modelId);
+    return openai.responses(modelId);
   }
 
   // ant / ant-compatible

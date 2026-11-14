@@ -4,7 +4,7 @@ Harbor-style per-harness translation from OpenMA hosted inference (`HOSTED_INFER
 
 ## DeepSeek harness (`dsh`)
 
-`DEEPSEEK_BASE_URL` points at the **Anthropic Messages** API root for DeepSeek (for example `https://api.deepseek.com/anthropic` upstream, or `{hosted}/anthropic` through the session proxy). It is **not** an OpenAI-compatible Chat Completions base URL.
+`DEEPSEEK_BASE_URL` points at the **Anthropic Messages** API root for DeepSeek (for example `https://api.deepseek.com/anthropic` upstream, or `{hosted}/anthropic` through the session proxy). It is **not** an OpenAI Responses base URL.
 
 See `dshInferenceAdapter` for the hosted-proxy mapping.
 

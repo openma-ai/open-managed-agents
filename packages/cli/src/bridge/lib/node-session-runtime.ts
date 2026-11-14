@@ -1,4 +1,3 @@
-import { rejectLegacyMcpSse } from "@open-managed-agents/acp-runtime";
 import { materializeManagedSkills, configureManagedSkills, managedSkillInstructions, type SkillBinding, type MaterializedSkill } from "./managed-skills.js";
 import { spawn as childSpawn } from "node:child_process";
 
@@ -112,7 +111,6 @@ async function prepareNodeSession(input: SessionManagerPreparationInput, bundle:
   let bundleEnv: BundleEnvVar[] = [];
   try {
     if (bundle) {
-      rejectLegacyMcpSse(bundle.mcp_servers);
       managedSkills = await materializeManagedSkills({
         sessionDir: scratchDir, skills: bundle.managed_skills ?? [],
         apiUrl: input.environment.apiUrl, tenantId: input.scope.id, agentApiKey: input.scope.agentApiKey,

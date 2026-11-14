@@ -297,7 +297,7 @@ describe("Work supervisor resource guidance (deterministic agent fixture, real l
     const sandbox = await sandboxRoots(roots);
     const observed: AgentObservation[] = [];
     const app = supervisor({
-      environment, stateIo,
+      environment, stateIo, workspacePath: sandbox.workspace,
       acpRuntime: guidanceDrivenAgent(sandbox, seen, prompts, observed),
       fetch: sessionFetch({
         resources: [MEMORY_RESOURCES[1]],

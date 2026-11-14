@@ -256,15 +256,3 @@ describe("OpenMA MCP client port", () => {
     expect(fake.state.counts.DELETE).toBe(1);
   });
 });
-
-it('rejects legacy SSE before tool construction even when MCP networking is disabled', async () => {
-  const fake = createFakeMcpFetch();
-  await expect(harnessTools.buildTools({
-    id:'agent_sse',name:'Legacy',model:'fixture',system:'',tools:[],version:1,created_at:'2026-11-13',
-    mcp_servers:[{name:'old',type:'sse',url:'http://localhost/mcp'}],
-  } as never, new TestSandbox(), {
-    mcpBinding:{fetch:fake.fetch},tenantId:'tenant',sessionId:'session',
-    environmentConfig:{networking:{allow_mcp_servers:false}},
-  })).rejects.toThrow('MCP_SSE_UNSUPPORTED');
-  expect(fake.state.requests).toHaveLength(0);
-});

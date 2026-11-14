@@ -742,9 +742,6 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
   // the Skills API. Older daemons retain the legacy text bundle layout.
   const skillCache = c.req.query("skill_cache") === "1";
   if (skillCache) console.log("[runtime.bundle] managed skill references", { sessionId: sid, count: agent.skills?.length ?? 0 });
-  if (agent.mcp_servers?.some(server => (server as { type?: string }).type === "sse")) {
-    return c.json({ error: "MCP_SSE_UNSUPPORTED: Legacy MCP SSE transport is unsupported; use streamable HTTP or stdio." }, 400);
-  }
   const files = await renderSessionBundle(skillCache ? { ...agent, skills: [] } : agent, acpAgentId, services, ok.tenant_id);
   // Per-agent blocklist of LOCAL skills the user has on their machine
   // — daemon enforces by NOT symlinking these into the spawn-cwd's

@@ -348,6 +348,26 @@ jobs:
       - name: MySQL integration tests
         run: pnpm test:integration:mysql
 
+      - name: MySQL custom-tool authority integration
+        env:
+          MYSQL_DATABASE: openma_custom_test_ci
+          MYSQL_ROOT_PASSWORD: openma-ci
+          CUSTOM_INVOCATIONS_MYSQL_URL: mysql://root:openma-ci@127.0.0.1:3307/openma_custom_test_ci
+        run: |
+          set -euo pipefail
+          container="openma-custom-authority-${GITHUB_RUN_ID}"
+          cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach --name "$container" --publish 127.0.0.1:3307:3306 \
+            --env MYSQL_DATABASE="$MYSQL_DATABASE" --env MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql:8.4
+          for attempt in $(seq 1 60); do
+            if docker exec "$container" mysqladmin ping --host=127.0.0.1 --user=root --password="$MYSQL_ROOT_PASSWORD" --silent; then break; fi
+            if [ "$attempt" = 60 ]; then echo 'MySQL did not become ready' >&2; exit 1; fi
+            sleep 2
+          done
+          export CUSTOM_INVOCATIONS_MYSQL_URL
+          pnpm --filter @open-managed-agents/managed-agents-adapters-sql exec vitest run --config vitest.custom-mysql.config.ts
+
       - name: PostgreSQL MCP access-loss integration
         run: pnpm --filter @open-managed-agents/main-node test:integration:postgres
 

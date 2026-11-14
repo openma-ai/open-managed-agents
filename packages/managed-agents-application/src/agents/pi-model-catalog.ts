@@ -44,15 +44,19 @@ export function resolvePiModelCardRouting(input: {
 }): { api: Api; baseUrl: string } {
   const requested = (input.provider ?? "ant").toLowerCase();
   const compatible = ["ant-compatible", "anthropic-compatible"].includes(requested)
-    ? "anthropic-messages" : ["oai-compatible", "openai-compatible"].includes(requested) ? "openai-completions" : undefined;
+    ? "anthropic-messages" : ["oai-compatible", "openai-compatible"].includes(requested) ? "openai-responses" : undefined;
   const id = requested === "ant" || compatible === "anthropic-messages" ? "anthropic"
-    : requested === "oai" || compatible === "openai-completions" ? "openai" : requested;
+    : requested === "oai" || compatible === "openai-responses" ? "openai" : requested;
   const provider = getBuiltinProviders().find(p => p === id);
   if (!provider && !input.piConfig?.api) throw new Error(`Custom Pi provider "${id}" requires pi_config.api`);
   const models = provider ? getBuiltinModels(provider) : [];
   const model = models.find(m => m.id === resolvePiCatalogModelId(input.model)) ?? findPiCatalogModel(input.model);
   const apis = new Set(models.map(m => m.api));
-  const api = input.piConfig?.api ?? compatible ?? model?.api ?? (apis.size === 1 ? apis.values().next().value : undefined);
+  const catalogApi = model?.api;
+  const api = input.piConfig?.api
+    ?? compatible
+    ?? (catalogApi !== undefined && String(catalogApi).startsWith("openai-") ? "openai-responses" : catalogApi)
+    ?? (apis.size === 1 ? apis.values().next().value : undefined);
   if (!api) throw new Error(`Model is not in Pi's ${id} catalog and its API cannot be inferred; use pi_config.api`);
   const baseUrls = new Set(models.map(m => m.baseUrl));
   const baseUrl = input.baseURL ?? model?.baseUrl ?? (baseUrls.size === 1 ? baseUrls.values().next().value : undefined);
