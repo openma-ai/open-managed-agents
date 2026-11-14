@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, copyFile, writeFile, symlink, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, writeFile, readFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,18 @@ async function probe(provider: "e2b" | "opensandbox", withSdk: boolean) {
     const adapter = "@open-managed-agents/sandbox-adapter-" + provider;
     const entry = requireFromApp.resolve(adapter);
     await symlink(dirname(dirname(entry)), join(modules, adapter));
+    if (provider === "e2b") {
+      const manifest = JSON.parse(await readFile(join(dirname(dirname(entry)), "package.json"), "utf8")) as {
+        dependencies?: Record<string, unknown>;
+        peerDependencies?: Record<string, unknown>;
+      };
+      if (manifest.dependencies?.e2b !== undefined) {
+        throw new Error("adapter must not own E2B as a production dependency");
+      }
+      if (manifest.peerDependencies?.e2b === undefined) {
+        throw new Error("adapter must declare E2B as an optional peer");
+      }
+    }
     if (withSdk) {
       const sdk = requireFromApp.resolve("e2b/package.json");
       await symlink(dirname(sdk), join(modules, "e2b"));
@@ -34,8 +46,6 @@ async function probe(provider: "e2b" | "opensandbox", withSdk: boolean) {
       const adapter = ${JSON.stringify(adapter)};
       if (${withSdk}) {
         console.log("app SDK", app.resolve("e2b"));
-        try { createRequire(app.resolve(adapter)).resolve("e2b"); throw new Error("adapter unexpectedly has E2B"); }
-        catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; console.log("adapter SDK MODULE_NOT_FOUND"); }
       }
       assertSandboxProviderSdk({ provider: ${JSON.stringify(provider)}, modulePath: adapter });
       if (${withSdk}) {
@@ -54,7 +64,6 @@ describe("native SDK resolution in an isolated pnpm layout", () => {
   it("accepts main-node's injected E2B SDK without an adapter peer install", async () => {
     const result = await probe("e2b", true);
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("adapter SDK MODULE_NOT_FOUND");
     expect(result.stdout).toContain("factory function");
   });
 
