@@ -35,6 +35,12 @@ const POSTGRES_DATABASES = {
 
 function databaseUrl(connectionUri: string, database: string): string {
   const url = new URL(connectionUri);
+  // The authority gates deliberately require a loopback URL so a test cannot
+  // accidentally point at a shared or production database. Testcontainers
+  // may return `localhost` (or a host override) here even though the mapped
+  // port is local to the runner; normalize the host while retaining the
+  // container's mapped port and credentials.
+  url.hostname = "127.0.0.1";
   url.pathname = `/${database}`;
   return url.toString();
 }
