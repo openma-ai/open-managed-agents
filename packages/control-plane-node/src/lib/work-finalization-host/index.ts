@@ -27,6 +27,15 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
     : "(CAST(strftime('%s','now') AS INTEGER)*1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
   // Serializes retries only; this is not authority or a completion ledger.
   const pending = new Map<string, Promise<unknown>>();
+  // E2B can complete a full snapshot and lose the tunnel response while the
+  // guest is paused. Reuse the completed physical preparation for the exact
+  // Work/turn/holder on a bounded retry; every reuse still checks both fences.
+  const prepared = new Map<string, { expiresAt: number; current: () => Promise<boolean> }>();
+  const preparedKey = (scope: WorkFinalizationScope) => JSON.stringify([
+    scope.claim.workspaceId, scope.claim.environmentId, scope.claim.sessionId,
+    scope.claim.workId, scope.claim.generation, scope.claim.holder, scope.turnId,
+  ]);
+  const preparedTtlMs = 10 * 60 * 1000;
   function serial<T>(scope: WorkFinalizationScope, action: () => Promise<T>): Promise<T> {
     const key = JSON.stringify([scope.claim.workspaceId, scope.claim.sessionId]);
     const next = (pending.get(key) ?? Promise.resolve()).catch(() => {}).then(action);
@@ -127,6 +136,12 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
   };
   return {
     prepare: scope => serial(scope, async () => {
+      const key = preparedKey(scope);
+      const cached = prepared.get(key);
+      if (cached !== undefined) {
+        if (cached.expiresAt > Date.now() && await scope.isCurrent() && await cached.current()) return {type:"prepared"};
+        prepared.delete(key);
+      }
       const captured = await stage(scope, "finalize-capture", () => capture(scope));
       if (captured === "unavailable") return {type:"unavailable"};
       const {facade, physical, assertCurrent} = captured;
@@ -142,6 +157,7 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
       await assertCurrent();
       await stage(scope, "finalize-native-snapshot", () => deps.sandboxes.checkpointNativeWork(physical, assertCurrent));
       await assertCurrent();
+      prepared.set(key, {expiresAt: Date.now() + preparedTtlMs, current: async () => await captured.current() && await scope.isCurrent()});
       return {type:"prepared"};
     }),
     publish: scope => serial(scope, async () => {
@@ -150,6 +166,7 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
       const {physical,current,assertCurrent} = captured;
       await stage(scope, "publish-artifacts", () => deps.afterExecution({...physical, terminal:scope.terminal, isCurrent:current}));
       await assertCurrent();
+      prepared.delete(preparedKey(scope));
       return {type:"published"};
     }),
   };

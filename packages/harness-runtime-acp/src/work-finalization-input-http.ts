@@ -4,29 +4,57 @@
 const record=(v:unknown):v is Record<string,unknown>=>v!==null&&typeof v==="object"&&!Array.isArray(v);
 const revision=(v:unknown):v is number=>typeof v==="number"&&Number.isSafeInteger(v)&&v>0;
 interface Receipt {eventId:string;turnId:string;workId:string;generation:number;revision:number;stopReason:{type:string;eventIds?:string[]}}
+class WorkFinalizationTransportError extends Error {
+ readonly outcome="unknown";
+ constructor(readonly action:string,cause:unknown){super(`Work ${action} response unknown; do not replay`,{cause});this.name="WorkFinalizationTransportError";}
+}
 function receipt(v:unknown,turnId:string):v is Receipt {
  return record(v)&&v.turnId===turnId&&typeof v.eventId==="string"&&v.eventId.length>0&&typeof v.workId==="string"&&v.workId.length>0&&revision(v.generation)&&revision(v.revision)&&record(v.stopReason)&&
   (v.stopReason.type==="end_turn"||v.stopReason.type==="budget_reached"||
     v.stopReason.type==="requires_action"&&Array.isArray(v.stopReason.eventIds)&&v.stopReason.eventIds.length>0&&v.stopReason.eventIds.every(id=>typeof id==="string"&&id.length>0));
 }
-export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:string;sessionsToken:string;signal:AbortSignal;fetch?:typeof globalThis.fetch}) {
+export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:string;sessionsToken:string;signal:AbortSignal;fetch?:typeof globalThis.fetch;requestTimeoutMs?:number}) {
  const admitted=new Set<string>();const prepared=new Map<string,number>();const terminals=new Map<string,{revision:number;terminal:Receipt}>();
+ const requestTimeoutMs=options.requestTimeoutMs??30_000;
+ if(!Number.isSafeInteger(requestTimeoutMs)||requestTimeoutMs<=0)throw new TypeError("Work finalization request timeout must be a positive integer");
+ async function wait(ms:number){await new Promise<void>((resolve,reject)=>{let settled=false;const timer=setTimeout(()=>{settled=true;options.signal.removeEventListener("abort",abort);resolve();},ms);const abort=()=>{if(settled)return;settled=true;clearTimeout(timer);reject(options.signal.reason??new Error("Work finalization aborted"));};if(options.signal.aborted)abort();else options.signal.addEventListener("abort",abort,{once:true});});}
  async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false):Promise<Record<string,unknown>> {
   options.signal.throwIfAborted();
   let response:Response;
   const startedAt=Date.now();
-  try {response=await (options.fetch??globalThis.fetch)(new URL(`/v1/oma/sessions/${encodeURIComponent(options.sessionId)}/${action}`,options.apiBaseUrl),{method:"POST",redirect:"error",signal:options.signal,headers:{authorization:`Bearer ${options.sessionsToken}`,"content-type":"application/json"},body:JSON.stringify(body)});}
-  catch (error) {
-   console.warn(JSON.stringify({op:"work.finalization.input_http",action,session_id:options.sessionId,duration_ms:Date.now()-startedAt,error:error instanceof Error?{name:error.name,message:error.message}:String(error)}));
-   throw new Error(`Work ${action} response unknown; do not replay`);
+  const controller=new AbortController();
+  const abort=()=>controller.abort(options.signal.reason);
+  const timer=setTimeout(()=>controller.abort(new Error(`Work ${action} request timed out after ${requestTimeoutMs}ms`)),requestTimeoutMs);
+  if(options.signal.aborted)abort();else options.signal.addEventListener("abort",abort,{once:true});
+  try {
+   try {response=await (options.fetch??globalThis.fetch)(new URL(`/v1/oma/sessions/${encodeURIComponent(options.sessionId)}/${action}`,options.apiBaseUrl),{method:"POST",redirect:"error",signal:controller.signal,headers:{authorization:`Bearer ${options.sessionsToken}`,"content-type":"application/json"},body:JSON.stringify(body)});}
+   catch (error) {
+    console.warn(JSON.stringify({op:"work.finalization.input_http",action,session_id:options.sessionId,duration_ms:Date.now()-startedAt,error:error instanceof Error?{name:error.name,message:error.message}:String(error)}));
+    throw new WorkFinalizationTransportError(action,error);
+   }
+   let value:unknown;
+   try {value=await response.json();}catch(error){throw new WorkFinalizationTransportError(action,error);}
+   options.signal.throwIfAborted();
+   if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")
+     &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed")))) {
+    const reason=record(value)&&typeof value.reason==="string"?`: ${value.reason}`:"";
+    throw new Error(`Work ${action} rejected (${response.status})${reason}`);
+   }
+   return value;
+  } finally {
+   clearTimeout(timer);options.signal.removeEventListener("abort",abort);
   }
-  const value:unknown=await response.json();options.signal.throwIfAborted();
-  if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")
-    &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed")))) {
-   const reason=record(value)&&typeof value.reason==="string"?`: ${value.reason}`:"";
-   throw new Error(`Work ${action} rejected (${response.status})${reason}`);
+ }
+ async function postCheckpoint(body:object){
+  for(let attempt=0;attempt<2;attempt++){
+   try{return await post("work-checkpoint",body);}
+   catch(error){
+    if(!(error instanceof WorkFinalizationTransportError)||attempt!==0||options.signal.aborted)throw error;
+    console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,retry:1,reason:"response_unknown"}));
+    await wait(250);
+   }
   }
-  return value;
+  throw new Error("Unreachable checkpoint retry state");
  }
  const sameTerminal=(a:Receipt,b:Receipt)=>a.eventId===b.eventId&&a.turnId===b.turnId&&a.workId===b.workId&&a.generation===b.generation&&a.revision===b.revision&&
   a.stopReason.type===b.stopReason.type&&JSON.stringify(a.stopReason.eventIds)===JSON.stringify(b.stopReason.eventIds);
@@ -36,7 +64,7 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    if(!admitted.has(turnId))throw new Error("Cannot finalize a turn not admitted by this process");
    const current=await post("work-recovery",{turnId},true);
    if(current.type!=="gap"||current.reason!=="consumed_turn_without_terminal"||!revision(current.revision))throw new Error("Active turn has no uncommitted canonical boundary");
-   const result=await post("work-checkpoint",{turnId,revision:current.revision});
+   const result=await postCheckpoint({turnId,revision:current.revision});
    if(result.type!=="prepared"||result.turnId!==turnId||!revision(result.revision)||result.revision<current.revision)throw new Error("Invalid Work checkpoint receipt");
    // Physical persistence may allow the same canonical turn to append its
    // terminal facts while the snapshot is in flight. Continue with the

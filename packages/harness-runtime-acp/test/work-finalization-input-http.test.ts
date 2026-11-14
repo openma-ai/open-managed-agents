@@ -25,6 +25,19 @@ it("uses a newer same-turn revision returned after physical checkpoint IO",async
  f.admitted("t");await f.checkpoint("t");await f.complete("t");await f.publish("t");
  expect(calls).toEqual([["work-recovery",{turnId:"t"}],["work-checkpoint",{turnId:"t",revision:8}],["work-finalize",{turnId:"t",revision:9,stopReason:{type:"end_turn"}}],["work-publish",{turnId:"t",revision:9,terminalEventId:"terminal"}]])
 });
+it("retries a checkpoint only after an unknown response, never a terminal mutation",async()=>{
+ const calls:string[]=[];let checkpointAttempts=0;
+ const f=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,requestTimeoutMs:5,fetch:async(url,init)=>{
+  const action=String(url).split('/').at(-1)!;calls.push(action);
+  if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:8},{status:409});
+  if(action==="work-checkpoint"&&checkpointAttempts++===0)return await new Promise<Response>((_resolve,reject)=>init?.signal?.addEventListener("abort",()=>reject(new Error("snapshot response lost")),{once:true}));
+  if(action==="work-checkpoint")return Response.json({type:"prepared",turnId:"t",revision:8});
+  const terminal={eventId:"terminal",turnId:"t",workId:"w",generation:2,revision:9,stopReason:{type:"end_turn"}};
+  return Response.json({type:action==="work-finalize"?"committed":"published",revision:9,terminal});
+ }});
+ f.admitted("t");await f.checkpoint("t");await f.complete("t");await f.publish("t");
+ expect(calls).toEqual(["work-recovery","work-checkpoint","work-checkpoint","work-finalize","work-publish"]);
+});
 it.each(["rejected","lost"])("never refreshes or retries a %s terminal mutation",async mode=>{
  let calls=0;const finalizer=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async(url)=>{
  if(String(url).endsWith("work-recovery"))return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:2},{status:409});
