@@ -33,6 +33,21 @@ export async function loadNodeManagedAcpRecoveryHistory(input: {
   for (const event of input.acceptedEvents) consumedInputs.delete(event.id);
   const history = await input.history.load({ workspaceId: fence.workspaceId, sessionId: fence.sessionId });
   if (!history) throw new Error("Node ACP recovery history was not found");
+  // Steering settles the source execution before the harness receives the
+  // returned events. If the process dies in that gap, the source event is
+  // already marked consumed by the recovering execution but it has no
+  // execution-owned output row yet. Keep that input in the rebuilt ACP
+  // context; `consumed_by_execution_id` is an ownership/processing marker,
+  // not proof that the model observed it.
+  const currentHistory = [
+    ...(history.orderedInitialEvents ?? []),
+    ...(history.orderedEvents ?? []),
+  ];
+  for (const row of currentHistory) {
+    if (row.consumedByExecutionId === fence.executionId) {
+      consumedInputs.add(row.event.id);
+    }
+  }
   const initial = history.initialEvents.flatMap((event, index) =>
     consumedInputs.has(`bootstrap_${fence.sessionId}:${index}`)
       ? [encodeRuntimeSessionEvent(event) as SessionEvent] : []);

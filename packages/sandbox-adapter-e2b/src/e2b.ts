@@ -172,12 +172,34 @@ export async function createE2BSandbox(
   if (opts.readiness !== false) {
     try {
       await waitForSandboxReady(sb, opts.readiness ?? {});
+      await prepareWorkspace(sb);
+    } catch (error) {
+      await sb.kill?.().catch(() => undefined);
+      throw error;
+    }
+  } else {
+    try {
+      await prepareWorkspace(sb);
     } catch (error) {
       await sb.kill?.().catch(() => undefined);
       throw error;
     }
   }
   return new E2BSandboxExecutor(sb, opts);
+}
+
+/** The base template runs commands as an unprivileged user and does not
+ * guarantee OpenMA's portable workspace mount points. Create them once as
+ * root so the executor's fixed `/workspace` cwd is valid for every template.
+ */
+async function prepareWorkspace(sandbox: E2BSandboxLike): Promise<void> {
+  const result = await settleCommand(Promise.resolve(sandbox.commands.run(
+    "install -d -m 0777 /workspace /mnt/session/outputs /mnt/memory",
+    { user: "root", timeoutMs: 30_000 },
+  ) as Promise<E2BCommandResult>));
+  if (result.exitCode !== 0) {
+    throw new Error(`E2B workspace setup failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).slice(0, 300)}`);
+  }
 }
 
 const TRANSIENT_READINESS = /\[(unauthenticated|unavailable|deadline_exceeded)\]|invalid username|connection refused|ECONNRESET|ECONNREFUSED|socket hang up|\b50[234]\b/iu;
@@ -227,7 +249,9 @@ export class E2BSandboxExecutor
     if (opts.managedBootstrap && opts.user !== undefined && opts.user !== "oma-worker") throw new Error("Managed E2B templates require the unprivileged oma-worker user");
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 120_000;
     this.logger = opts.logger ?? {
-      warn: (msg, ctx) => console.warn(`[e2b-sandbox] ${msg}`, ctx ?? ""),
+      warn: (msg, ctx) => ctx === undefined
+        ? console.warn(`[e2b-sandbox] ${msg}`)
+        : console.warn(`[e2b-sandbox] ${msg}`, ctx),
     };
     this.managedBootstrap = opts.managedBootstrap === undefined ? undefined : {
       ...opts.managedBootstrap,

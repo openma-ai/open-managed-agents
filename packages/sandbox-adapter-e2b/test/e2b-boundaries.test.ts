@@ -459,7 +459,7 @@ describe("E2B sandbox readiness after create", () => {
     sdk.create.mockResolvedValueOnce(sandbox);
     const executor = await createE2BSandbox({ apiKey: "k", readiness: { attempts: 5, delayMs: 0 } });
     expect(executor).toBeDefined();
-    expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(4);
     expect(sandbox.kill).not.toHaveBeenCalled();
   });
 
