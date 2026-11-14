@@ -244,10 +244,12 @@ export function createE2BV2Adapter(options: E2BV2AdapterOptions): SandboxAdapter
 
     async checkpoint(input) {
       input.signal.throwIfAborted();
-      // Disk only: the snapshot must outlive this sandbox (a pause in place
-      // does not), and what a new sandbox needs from it is the workspace.
-      const checkpoint = await lifecycleCall(() => input.runtime.checkpoint({ kind: "filesystem" }));
-      return { provider: "e2b", ref: checkpoint.checkpointId, kind: "snapshot", metadata: { source: input.handle.runtimeId } };
+      // Work finalization and Session recovery share one provider-native
+      // restore point: E2B's complete container snapshot (the SDK's full
+      // snapshot mode). A workspace archive would omit the runtime state and
+      // is not a valid Session sandbox restore point.
+      const checkpoint = await lifecycleCall(() => input.runtime.checkpoint({ kind: "memory" }));
+      return { provider: "e2b", ref: checkpoint.checkpointId, kind: "snapshot", metadata: { kind: "container", source: input.handle.runtimeId } };
     },
 
     async pause(input) {

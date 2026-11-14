@@ -102,6 +102,7 @@ export async function readNodeWorkRuntime(
   return new E2BSandboxExecutor({sandboxId:sandbox.sandboxId,
     files:{read:(path,opts)=>sandbox.files.read(path,opts),write:(path,bytes,opts)=>sandbox.files.write(path,bytes,opts)},
     commands:{run:(cmd,opts)=>sandbox.commands.run(cmd,opts)},
+    createSnapshot: sandbox.createSnapshot === undefined ? undefined : (opts) => sandbox.createSnapshot!(opts),
     kill:async()=>{throw new Error("Finalization cannot destroy a sandbox");},
   },{...options,user:"oma-worker",managedBootstrap:{disableAutoResume:true}});
 }

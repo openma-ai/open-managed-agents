@@ -59,7 +59,7 @@ export async function handleCfWorkFinalization(request: Request, env: Env, owner
     const claim = await auth();
     if (!claim || claim.holder !== request.headers.get("x-oma-work-holder") || claim.workspaceId !== workspaceId || env.SESSION_DO?.idFromName(JSON.stringify([claim.workspaceId, claim.sessionId])).toString() !== owner.id || owner.hasSessionExecution) return new Response(null, { status: 401 });
     if ((env.SANDBOX_ADAPTER ?? "cloudflare") === "cloudflare") {
-      return await finalizeCfNativeWork({ env, sql, token, claim, auth, body, phase: phase as "prepare" | "publish" });
+      return await finalizeCfNativeWork({ env, sql, token, claim, storage: owner.storage, auth, body, phase: phase as "prepare" | "publish" });
     }
     if (env.SANDBOX_ADAPTER !== "e2b" || !env.E2B_API_KEY) return Response.json({ type: "unavailable" }, { status: 503 });
     const state = durableObjectSandboxState(owner.storage, STATE_KEY);
@@ -108,14 +108,14 @@ export async function handleCfWorkFinalization(request: Request, env: Env, owner
     await synchronizeCfWorkStorage({ env, sql, claim, session, runtime, runtimeGeneration: generation, record: captured, authorize: physicalCurrent,
       fence: { ...claim, ownerId: claim.holder, token, expiresAt: new Date(Date.parse(row.claim.claimedAt) + row.heartbeatTtlSeconds * 1000).toISOString() } });
     await assertPhysical();
-    diagnosticStage = "workspace_checkpoint";
-    const checkpoint = await runtime.checkpoint({ kind: "filesystem" });
-    if (!checkpoint.checkpointId || checkpoint.sourceRuntimeId !== captured.handle.runtimeId || checkpoint.provider !== "e2b" || checkpoint.kind !== "filesystem") throw new Error("Invalid physical checkpoint");
+    diagnosticStage = "container_snapshot";
+    const checkpoint = await runtime.checkpoint({ kind: "memory" });
+    if (!checkpoint.checkpointId || checkpoint.sourceRuntimeId !== captured.handle.runtimeId || checkpoint.provider !== "e2b" || checkpoint.kind !== "memory") throw new Error("Invalid physical container snapshot");
     try {
       // Strict existing owner-record CAS. Retain a possibly published candidate
       // on ambiguous storage outcomes; cleanup never accepts a caller ID.
       await assertPhysical();
-      const next = transition(captured, { type: "publishSnapshot", ref: { provider: "e2b", kind: "snapshot", ref: checkpoint.checkpointId, metadata: { source: captured.handle.runtimeId } } });
+      const next = transition(captured, { type: "publishSnapshot", ref: { provider: "e2b", kind: "snapshot", ref: checkpoint.checkpointId, metadata: { kind: "container", source: captured.handle.runtimeId } } });
       if (!await state.save(next, captured.version)) throw new Refused("Workspace checkpoint CAS lost");
       await assertPhysical();
     } catch (error) {

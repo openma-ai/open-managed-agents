@@ -259,10 +259,15 @@ export class LocalSubprocessSandbox
   async startManagedProcess(spec: SandboxManagedProcessSpec): Promise<SandboxManagedProcessHandle> {
     if (this.closing !== undefined) throw new Error("Sandbox is closing");
     if (!isAbsolute(spec.command) || spec.command.includes("\0")) throw new TypeError("Managed process requires an absolute executable");
-    const env: Record<string, string> = {};
+    const env: Record<string, string> = Object.fromEntries(
+      Object.entries(this.envVars).map(([key, value]) => [key, this.resolveProcessEnvValue(value)]),
+    );
     for (const [key, value] of Object.entries(spec.env)) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0")) throw new TypeError("Invalid managed process environment");
-      env[key] = value;
+      // Managed ACP processes receive provider-logical paths (for example
+      // `/tmp/openma-harness-state`). Keep the local fixture in the same
+      // provider-owned filesystem snapshot as ordinary exec calls.
+      env[key] = this.resolveProcessEnvValue(value);
     }
     if (spec.args?.some(value => typeof value !== "string" || value.includes("\0"))) throw new TypeError("Invalid managed process argv");
     const child = spawn(spec.command, [...(spec.args ?? [])], {cwd:spec.cwd ? this.resolvePath(spec.cwd) : this.workdir, env, stdio:"ignore", detached:false});
@@ -317,9 +322,7 @@ export class LocalSubprocessSandbox
   async setEnvVars(envVars: Record<string, string>): Promise<void> {
     this.envVars = {
       ...this.envVars,
-      ...Object.fromEntries(Object.entries(envVars).map(([key, value]) =>
-        [key, this.resolveProcessEnvValue(value)]
-      )),
+      ...envVars,
     };
   }
 
@@ -549,7 +552,11 @@ export class LocalSubprocessSandbox
     await fs.cp(this.workdir, path, {
       recursive: true,
       verbatimSymlinks: true,
-      filter: (source) => source !== join(this.workdir, ".mnt"),
+      // Runtime-owned mounts and the credential relay are incarnation state,
+      // not Session files. Replaying either leaves a dead relay/consumed
+      // binding in a restored native snapshot and prevents the next execution
+      // from installing its fresh fence-bound binding.
+      filter: (source) => source !== join(this.workdir, ".mnt") && source !== join(this.workdir, ".oma-egress") && source !== join(this.workdir, ".oma-relay-port"),
     });
     return { provider: LOCAL_PROVIDER, checkpointId: id, sourceRuntimeId: this.workdir, kind: "filesystem", scope: "portable", metadata: { path } };
   }
@@ -634,6 +641,12 @@ export class LocalSubprocessSandbox
       // Platform root (ADR 0016): harness state and agent homes. Kept under
       // the workdir's .mnt tree so concurrent local sessions never share it.
       normalised = normalised === "/oma" ? ".mnt/oma" : ".mnt/oma/" + normalised.slice("/oma/".length);
+    } else if (normalised.startsWith("/tmp/openma-harness-state/") || normalised === "/tmp/openma-harness-state") {
+      // ACP native state uses /tmp in real containers, but is part of the
+      // provider-owned full snapshot contract. Keep this known OMA state root
+      // inside the local sandbox so native resume survives a snapshot restore;
+      // unrelated /tmp remains host-ephemeral as before.
+      normalised = normalised === "/tmp/openma-harness-state" ? ".oma-native-state" : ".oma-native-state/" + normalised.slice("/tmp/openma-harness-state/".length);
     } else if (normalised.startsWith("/workspace/")) normalised = normalised.slice("/workspace/".length);
     else if (normalised === "/workspace") normalised = "";
     else if (normalised.startsWith("/")) normalised = normalised.slice(1);
@@ -649,7 +662,8 @@ export class LocalSubprocessSandbox
    * local conformance tests.
    */
   private resolveProcessEnvValue(value: string): string {
-    return SANDBOX_ROOTS.some((root) => value === root || value.startsWith(`${root}/`))
+    return (SANDBOX_ROOTS.some((root) => value === root || value.startsWith(`${root}/`))
+      || value === "/tmp/openma-harness-state" || value.startsWith("/tmp/openma-harness-state/"))
       ? this.resolvePath(value)
       : value;
   }
@@ -663,9 +677,13 @@ export class LocalSubprocessSandbox
    * workdir is inserted verbatim; keep it free of shell metacharacters.
    */
   private resolveCommandPaths(command: string): string {
-    return command.replace(
+    const roots = command.replace(
       SANDBOX_ROOT_TOKEN,
       (_match, lead: string, root: string) => `${lead}${this.resolvePath(root)}`,
+    );
+    return roots.replace(
+      TMP_OMA_STATE_TOKEN,
+      (_match, lead: string) => `${lead}${this.resolvePath("/tmp/openma-harness-state")}`,
     );
   }
 
@@ -733,7 +751,7 @@ export class LocalSubprocessSandbox
   private buildEnv(command: string): NodeJS.ProcessEnv {
     const base: Record<string, string> = {
       ...process.env as Record<string, string>,
-      ...this.envVars,
+      ...Object.fromEntries(Object.entries(this.envVars).map(([key, value]) => [key, this.resolveProcessEnvValue(value)])),
       PWD: this.workdir,
     };
     for (const { prefix, secrets } of this.commandSecrets) {
@@ -747,6 +765,8 @@ export class LocalSubprocessSandbox
 const SANDBOX_ROOTS = ["/workspace", "/mnt/memory", "/mnt/session/outputs", "/oma"] as const;
 const SANDBOX_ROOT_TOKEN =
   /(^|[\s'"=:(`])(\/workspace|\/mnt\/memory|\/mnt\/session\/outputs|\/oma)(?=$|[\/\s'"`;:)|&<>])/g;
+const TMP_OMA_STATE_TOKEN =
+  /(^|[\s'"=:(`])(\/tmp\/openma-harness-state)(?=$|[\/\s'"`;:)|&<>])/g;
 
 function makeReadOnlyRecursive(path: string): void {
   let info;

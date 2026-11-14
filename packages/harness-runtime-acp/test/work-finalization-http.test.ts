@@ -50,6 +50,22 @@ it("does not retry an ambiguous terminal mutation", async () => {
   expect(mutations).toBe(1);
 });
 
+it("keeps non-JSON gateway responses diagnosable without replaying the mutation", async () => {
+  let mutations = 0;
+  const client = createWorkFinalizationHttpClient({
+    apiBaseUrl: "https://host", sessionId: "s", sessionsToken: "scoped",
+    fetch: async () => {
+      mutations += 1;
+      return new Response("<!doctype html><title>Bad Gateway</title>", {
+        status: 502, headers: { "content-type": "text/html" },
+      });
+    },
+  });
+  await expect(client.finalize({ turnId: "turn", revision: 3, stopReason: { type: "end_turn" } }, new AbortController().signal))
+    .rejects.toMatchObject({ outcome: "unknown", diagnostics: { action: "work-finalize", status: 502, bodyKind: "html" } });
+  expect(mutations).toBe(1);
+});
+
 it("actual CLI and SDK use loopback HTTP to recover and publish without a model", async () => {
   const { createServer } = await import("node:http");
   const { runNodeWorkItemCli } = await import("../src/node-work-item-cli.js");

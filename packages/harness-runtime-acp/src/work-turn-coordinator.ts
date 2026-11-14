@@ -62,6 +62,10 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
   let callbackOwnerTurnId: string | undefined;
   let verifiedMode: string | undefined;
   let finalizer: ReturnType<typeof createWorkTurnFinalizer> | undefined;
+  let workInputClient: ReturnType<typeof createWorkInputsHttpClient> | undefined;
+  let finalizationBlocked = false;
+  let releaseFinalizationBlock: (() => void) | undefined;
+  let finalizationBlock = Promise.resolve();
   // Keep cancelled-turn mappings until its output drains; clearing them at
   // interrupt would turn the pending native notification into a second tool.
   const priorPermissionBridges: WorkPermissionBridge[] = [];
@@ -100,10 +104,18 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
       // Capture this connection's authenticated claim; callbacks from an older
       // connection must not acquire a replacement claim through mutable state.
       const connectionClaim = workClaimScope;
+      const waitForFinalization = async (signal: AbortSignal) => {
+        if (!finalizationBlocked) return;
+        await Promise.race([
+          finalizationBlock,
+          new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+        ]);
+      };
       const client = createWorkInputsHttpClient({
         apiBaseUrl: input.apiBaseUrl, sessionId: input.scope.sessionId,
-        sessionsToken: input.sessionsToken, fetch: options.fetch,
+        sessionsToken: input.sessionsToken, fetch: options.fetch, beforeRead: waitForFinalization,
       });
+      workInputClient = client;
       const reader = createWorkInputReader(client);
       // A native session accepts one mode setter at a time. Preserve input
       // admission order through mode verification and the consuming CAS.
@@ -325,6 +337,9 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
           if (event.type === "session.complete" || event.type === "session.disposed") { await options.coreMcp?.clear(); priorPermissionBridges.length = 0; activeRootProof = undefined; emittedParentTools.clear(); readyChildLanes.clear(); }
         },
         async close() {
+          finalizationBlocked = false;
+          releaseFinalizationBlock?.();
+          releaseFinalizationBlock = undefined;
           await options.coreMcp?.clear();
           closePermissions();
           input.signal.removeEventListener("abort", closePermissions);
@@ -334,12 +349,31 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
     },
     async checkpoint(turnId) {
       if (!finalizer || !turnId) throw new Error("Work canonical checkpoint turn is unavailable");
-      await finalizer.checkpoint(turnId);
+      finalizationBlocked = true;
+      finalizationBlock = new Promise(resolve => { releaseFinalizationBlock = resolve; });
+      try {
+        // Quiesce the hot input reader before snapshotting. A page already in
+        // flight may finish, but no new page can race the cold snapshot path.
+        if (!workInputClient) throw new Error("Work input connection is unavailable");
+        await workInputClient.waitForReadsIdle();
+        await finalizer.checkpoint(turnId);
+      } catch (error) {
+        finalizationBlocked = false;
+        releaseFinalizationBlock?.();
+        releaseFinalizationBlock = undefined;
+        throw error;
+      }
     },
     async afterTerminal(turnId) {
       if (!finalizer) throw new Error("Work finalization connection is unavailable");
-      await finalizer.publish(turnId);
-      options.onTurnPublished?.(turnId);
+      try {
+        await finalizer.publish(turnId);
+        options.onTurnPublished?.(turnId);
+      } finally {
+        finalizationBlocked = false;
+        releaseFinalizationBlock?.();
+        releaseFinalizationBlock = undefined;
+      }
     },
   };
 }

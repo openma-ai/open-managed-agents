@@ -187,7 +187,7 @@ describe("E2B v2 lifecycle", () => {
     expect(restored).toMatchObject({ handle: { runtimeId: "sbx-2" } });
     const environment = await lifecycle.snapshotEnvironment!({ ...acquired, signal });
     expect(environment).toEqual({ adapter: "e2b", ref: "snap-oma-env-sbx-1" });
-    expect(fake.calls.snapshotModes).toEqual(["filesystem", "filesystem"]);
+    expect(fake.calls.snapshotModes).toEqual(["full", "filesystem"]);
     await lifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: environment } }, signal });
     expect(fake.calls.create.at(-1)![0]).toBe("snap-oma-env-sbx-1");
     await expect(lifecycle.acquire({ scope, plan: { ...plan, from: { environmentSnapshot: { adapter: "fake", ref: "x" } } }, signal })).rejects.toThrow(/adapter fake/);

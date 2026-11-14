@@ -2102,9 +2102,6 @@ importers:
 
   packages/environment-work-store-sql:
     dependencies:
-      '@open-managed-agents/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
@@ -2114,6 +2111,9 @@ importers:
       '@open-managed-agents/runtime-resource-contract':
         specifier: workspace:*
         version: link:../runtime-resource-contract
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
@@ -2253,12 +2253,12 @@ importers:
 
   packages/files-store:
     dependencies:
-      '@open-managed-agents/managed-agents-application':
-        specifier: workspace:*
-        version: link:../managed-agents-application
       '@open-managed-agents/db-schema':
         specifier: workspace:*
         version: link:../db-schema
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
@@ -2318,12 +2318,12 @@ importers:
 
   packages/harness-runtime-acp:
     dependencies:
-      '@modelcontextprotocol/sdk':
-        specifier: 1.29.0
-        version: 1.29.0(zod@4.3.6)
       '@anthropic-ai/sdk':
         specifier: 1.3.0
         version: 1.3.0(zod@4.6.7)
+      '@modelcontextprotocol/sdk':
+        specifier: 1.29.0
+        version: 1.29.0(zod@4.3.6)
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../acp-runtime
@@ -2482,12 +2482,12 @@ importers:
 
   packages/inference-proxy:
     dependencies:
-      '@open-managed-agents/managed-agents-application':
-        specifier: workspace:*
-        version: link:../managed-agents-application
       '@open-managed-agents/domain':
         specifier: workspace:*
         version: link:../managed-agents-domain
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
     devDependencies:
       vitest:
         specifier: ^5.0.5
@@ -2923,9 +2923,6 @@ importers:
 
   packages/managed-agents-application:
     dependencies:
-      '@open-managed-agents/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@earendil-works/pi-ai':
         specifier: 1.1.0
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(@smithy/signature-v4@5.7.3)(undici@8.12.4)(ws@8.21.0)(zod@4.3.6)
@@ -2980,6 +2977,9 @@ importers:
       '@open-managed-agents/session-thread-store':
         specifier: workspace:*
         version: link:../session-thread-store
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@open-managed-agents/skill-store':
         specifier: workspace:*
         version: link:../skill-store
@@ -3074,8 +3074,8 @@ importers:
         version: link:../sandbox
     devDependencies:
       '@boxlite-ai/boxlite':
-        specifier: 0.9.0
-        version: 0.9.0(playwright-core@1.59.1)
+        specifier: 0.13.1
+        version: 0.13.1(playwright-core@1.59.1)
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
@@ -3191,9 +3191,6 @@ importers:
 
   packages/managed-runtime-host:
     dependencies:
-      '@open-managed-agents/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@anthropic-ai/sdk':
         specifier: 1.3.0
         version: 1.3.0(zod@4.6.7)
@@ -3203,6 +3200,9 @@ importers:
       '@open-managed-agents/runtime-resource-contract':
         specifier: workspace:*
         version: link:../runtime-resource-contract
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@openma/common':
         specifier: 0.14.0
         version: 0.14.0(@anthropic-ai/sdk@1.3.0(zod@4.6.7))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -4125,8 +4125,8 @@ importers:
         version: link:../sandbox
     devDependencies:
       '@boxlite-ai/boxlite':
-        specifier: 0.9.0
-        version: 0.9.0(playwright-core@1.59.1)
+        specifier: 0.13.1
+        version: 0.13.1(playwright-core@1.59.1)
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
@@ -5514,28 +5514,28 @@ packages:
   '@better-fetch/fetch@1.1.21':
     resolution: {integrity: sha512-/ImESw0sskqlVR94jB+5+Pxjf+xBwDZF/N5+y2/q4EqD7IARUTSpPfIo8uf39SYpCxyOCtbyYpUrZ3F/k0zT4A==}
 
-  '@boxlite-ai/boxlite-darwin-arm64@0.9.0':
-    resolution: {integrity: sha512-jOtoxsu/Xd4xTsLIk0t4t6aWbxhGo+wGQqGgu14liGrTN4/nt40P6j+hROmQNoqVUe1mxm2fadVQkBF1JN+XOA==}
+  '@boxlite-ai/boxlite-darwin-arm64@0.13.1':
+    resolution: {integrity: sha512-gfjyD9qJo2/jTCUnOgECciCdmzGm5oTsFG+eVc8IpDRzpu05kNd90UyATpgILguEECuM98aGL8K+klY8A+9wUA==}
     engines: {node: '>=18.0.0'}
     cpu: [arm64]
     os: [darwin]
 
-  '@boxlite-ai/boxlite-linux-arm64-gnu@0.9.0':
-    resolution: {integrity: sha512-24XIZCuhrYqtpFzGueKMmX3A1nU5zcVSJW2poFxOnqitLdKGjbJogf34w6WuIu3I14fED07nqBtwCOq4MU1dww==}
+  '@boxlite-ai/boxlite-linux-arm64-gnu@0.13.1':
+    resolution: {integrity: sha512-aUdzCStsnTCVaR+8F4wiuIjJUcfCbJ9XhnBTrGJYVCUxTQUgjomnHAzXun2eD5R5KHy2yuMALAB5v+Sc4UZtcg==}
     engines: {node: '>=18.0.0'}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@boxlite-ai/boxlite-linux-x64-gnu@0.9.0':
-    resolution: {integrity: sha512-9m46aevVeaeVFQmnRzPe4BNVFMGn18vDx/6L5pJg68rHssXnxjxbEPXtsz9qozyDopTlutdP2AAaZSkJXSpsAw==}
+  '@boxlite-ai/boxlite-linux-x64-gnu@0.13.1':
+    resolution: {integrity: sha512-J6ZJx7RaX3lhVyvj+7p+1WQgjZO3s6ERKj90NPzyo8GF7snHqxE9HG2SJzgw+xLCKYwU7aRSas3z/74aRs+K+g==}
     engines: {node: '>=18.0.0'}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@boxlite-ai/boxlite@0.9.0':
-    resolution: {integrity: sha512-ygWJFnVE1+n8W+V9Yphim+Z6zkIbrhfZMNwc+L4yVvZKtK9WZNpZwqPBMdmzJUVeHZlAhWO2C+XfNPEwavLWNw==}
+  '@boxlite-ai/boxlite@0.13.1':
+    resolution: {integrity: sha512-zl9giPFZ1MB+u1XqCB4oRjXGypD55+iyhE1jok5Daa3wqXbXk9FIWK0Z4hvMhK1UezJUFZLFFdQD7oClGbBshw==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
       playwright-core: '>=1.58.0'
@@ -15728,20 +15728,20 @@ snapshots:
 
   '@better-fetch/fetch@1.1.21': {}
 
-  '@boxlite-ai/boxlite-darwin-arm64@0.9.0':
+  '@boxlite-ai/boxlite-darwin-arm64@0.13.1':
     optional: true
 
-  '@boxlite-ai/boxlite-linux-arm64-gnu@0.9.0':
+  '@boxlite-ai/boxlite-linux-arm64-gnu@0.13.1':
     optional: true
 
-  '@boxlite-ai/boxlite-linux-x64-gnu@0.9.0':
+  '@boxlite-ai/boxlite-linux-x64-gnu@0.13.1':
     optional: true
 
-  '@boxlite-ai/boxlite@0.9.0(playwright-core@1.59.1)':
+  '@boxlite-ai/boxlite@0.13.1(playwright-core@1.59.1)':
     optionalDependencies:
-      '@boxlite-ai/boxlite-darwin-arm64': 0.9.0
-      '@boxlite-ai/boxlite-linux-arm64-gnu': 0.9.0
-      '@boxlite-ai/boxlite-linux-x64-gnu': 0.9.0
+      '@boxlite-ai/boxlite-darwin-arm64': 0.13.1
+      '@boxlite-ai/boxlite-linux-arm64-gnu': 0.13.1
+      '@boxlite-ai/boxlite-linux-x64-gnu': 0.13.1
       playwright-core: 1.59.1
 
   '@braintree/sanitize-url@7.1.2': {}

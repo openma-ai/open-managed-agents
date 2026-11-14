@@ -83,10 +83,12 @@ export async function materializeCfWorkMemory(input: {
  * at the native launch boundary; it is never a public path/env setting. */
 export async function prepareNativeWorkStorage(input: {
   env: Env; sql: SqlClient; scope: { workspaceId: string; sessionId: string };
-  runtime: Pick<CloudflareSandbox, "describeSandbox" | "inspectWorkProcess" | "sessionOutputsMount" | "memoryStoreMount" | "provisionSandbox" | "restoreWorkspaceBackup">;
+  runtime: Pick<CloudflareSandbox, "describeSandbox" | "inspectWorkProcess" | "sessionOutputsMount" | "memoryStoreMount" | "provisionSandbox">;
+  /** The Session sandbox's complete container snapshot, if one exists. */
+  containerSnapshot?: { id: string };
   assertCurrent(): Promise<void>;
 }): Promise<{ incarnation: string; mounts: OmaMountBucketRequest[] }> {
-  const { env, sql, scope, runtime, assertCurrent } = input;
+  const { env, sql, scope, runtime, assertCurrent, containerSnapshot } = input;
   await assertCurrent();
   if (!env.MEMORY_BUCKET || !env.FILES_BUCKET) throw new Error("Native Work storage buckets missing");
   const outputs = runtime.sessionOutputsMount({ tenantId: scope.workspaceId, sessionId: scope.sessionId });
@@ -106,30 +108,12 @@ export async function prepareNativeWorkStorage(input: {
   }
   await assertCurrent();
   log({ op: "work.native.resources.provision", session_id: scope.sessionId, runtime_generation: incarnation, mounts: mounts.map(m => ({ path: m.mountPath, prefix: m.options.prefix, read_only: m.options.readOnly })) }, "Provisioning native Work resource snapshots");
-  const result = await runtime.provisionSandbox({ incarnation, mounts, autoStart: false });
+  const result = await runtime.provisionSandbox({ incarnation, mounts, autoStart: false,
+    ...(description.running || containerSnapshot === undefined ? {} : { containerSnapshot }) });
   await assertCurrent();
   if (result.incarnation !== incarnation || result.pendingMounts.length) throw new Error("Native Work resource generation or mounts changed during provisioning");
-  // No process is live at this point. Restore the latest authoritative
-  // session checkpoint before starting a new Work owner. Do not use the
-  // legacy best-effort lookup: missing/expired bytes must refuse startup.
-  const checkpoint = await sql.prepare(`SELECT backup_handle,expires_at FROM workspace_backups
-    WHERE tenant_id=? AND environment_id=? AND source_session_id=? ORDER BY id DESC LIMIT 1`)
-    .bind(scope.workspaceId, session.environmentId, scope.sessionId)
-    .first<{ backup_handle: string; expires_at: number }>();
-  await assertCurrent();
-  if (checkpoint) {
-    const handle = JSON.parse(checkpoint.backup_handle) as import("../../../agent/src/runtime/workspace-backups").WorkspaceBackupHandle;
-    if (checkpoint.expires_at <= Date.now() || !handle.id || handle.dir !== "/workspace"
-      || !Number.isSafeInteger(handle.size) || handle.size! < 0
-      || !/^[a-f0-9]{64}$/.test(handle.sha256 ?? "") || handle.format !== "tar+zstd/1") {
-      throw new Error("Native Work workspace checkpoint unavailable or invalid");
-    }
-    log({ op: "work.native.workspace.restore", session_id: scope.sessionId, runtime_generation: incarnation, checkpoint_id: handle.id }, "Restoring native Work workspace checkpoint");
-    const restored = await runtime.restoreWorkspaceBackup(handle);
-    await assertCurrent();
-    if (!restored.ok) throw new Error(`Native Work workspace restore failed: ${restored.error ?? "unknown"}`);
-    const current = await runtime.describeSandbox();
-    if (!current.running || current.incarnation !== incarnation) throw new Error("Native Work generation changed during workspace restore");
+  if (!description.running && containerSnapshot !== undefined) {
+    log({ op: "work.native.rootfs.restore", session_id: scope.sessionId, runtime_generation: incarnation, snapshot_id: containerSnapshot.id }, "Restoring Session sandbox container snapshot");
   }
   return { incarnation, mounts };
 }

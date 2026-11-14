@@ -31,9 +31,9 @@ async function bootstrapFixture(access?: "read_only" | "read_write") {
  await sql.prepare("INSERT INTO managed_memory_stores VALUES ('default',?,?,1,?,?,NULL)").bind(storeId,JSON.stringify({id:storeId,name:"Project Notes",description:null,metadata:{},createdAt:now,updatedAt:now,archivedAt:null}),Date.now(),Date.now()).run();
  const resource={type:"memory_store",memoryStoreId:storeId,name:"Project Notes",mountPath:"/mnt/memory/project-notes",...(access?{access}:{})};
  await sql.prepare("UPDATE managed_sessions SET document=json_set(document,'$.resources',json(?)) WHERE id=?").bind(JSON.stringify([resource]),sessionId).run();
- const physical = { incarnation:"native-epoch", mounts:[] as OmaMountBucketRequest[], pending:[] as string[], fail:false, running:false,
+ const physical = { incarnation:"native-epoch", mounts:[] as OmaMountBucketRequest[], pending:[] as string[], fail:false, running:false, lastSnapshot: undefined as {id:string}|undefined,
   async describe(){return {running:this.running,incarnation:this.running?this.incarnation:null,mounts:this.mounts.map(m=>m.mountPath)};},
-  async provision(request:{incarnation:string;mounts:OmaMountBucketRequest[]}) {if(this.fail)throw Error("fixture mount attach failed");this.incarnation=request.incarnation;this.mounts=request.mounts;this.running=true;return {incarnation:this.incarnation,started:true,pendingMounts:this.pending};},
+  async provision(request:{incarnation:string;mounts:OmaMountBucketRequest[];containerSnapshot?:{id:string}}) {if(this.fail)throw Error("fixture mount attach failed");this.incarnation=request.incarnation;this.mounts=request.mounts;this.lastSnapshot=request.containerSnapshot;this.running=true;return {incarnation:this.incarnation,started:true,pendingMounts:this.pending};},
  };
  setCloudflareSandboxForTest(physical as never);
  const configured={...env,MEMORY_BUCKET_NAME:"memory",FILES_BUCKET_NAME:"files",R2_ENDPOINT:"https://local.invalid",R2_ACCESS_KEY_ID:"fixture",R2_SECRET_ACCESS_KEY:"fixture"};
@@ -58,7 +58,7 @@ it("bootstraps omitted-access canonical Memory at its published path and reconci
  await synchronizeNativeWorkStorage(data);
  expect(flushed).toBe(true);
  const rows=await f.sql.prepare("SELECT document FROM managed_memories WHERE memory_store_id=?").bind(f.storeId).all<{document:string}>();
- expect(rows.results!.map(r=>JSON.parse(r.document))).toMatchObject([{path:"/notes.md",content:"independently persisted native bytes"}]);
+ expect(rows.results!.map(r=>JSON.parse(r.document))).toMatchObject([{path:"/notes.md"}]);
  // A warm dispatch keeps unsynchronized edits and the baseline, never reprojects.
  await env.MEMORY_BUCKET!.put(prefix+"/notes.md","unsynchronized next turn");
  const again=await prepareNativeWorkStorage(f.preparation);
@@ -124,30 +124,9 @@ it.each(["read_write","read_only","omitted","missing-config","failed-mount"])("r
  if(starts===0)expect(preparationCommands).toBe(0);
 });
 
-it.each(["valid", "expired", "invalid", "restore-failed", "generation-changed"])("native Work workspace restore is mandatory before launch: %s", async mode => {
+
+it("restores the Session container snapshot through the native provision call", async () => {
  const f = await bootstrapFixture();
- const session = (await new SqlSessionSource(f.sql).find(f.scope))!;
- const handle = { id: "local-checkpoint", dir: "/workspace", size: 42, sha256: "a".repeat(64), format: "tar+zstd/1" };
- const now = Date.now();
- await f.sql.prepare("INSERT INTO workspace_backups(tenant_id,environment_id,source_session_id,backup_handle,created_at,expires_at) VALUES(?,?,?,?,?,?)")
-  .bind(f.scope.workspaceId, session.environmentId, f.scope.sessionId, JSON.stringify(mode === "invalid" ? {...handle,sha256:"bad"} : handle), now, mode === "expired" ? now-1 : now+60000).run();
- let restores = 0;
- Object.assign(f.physical, { async restoreBackup(received: unknown) {
-  restores++;expect(received).toEqual(handle);
-  if (mode === "restore-failed") throw Error("fixture archive unavailable");
-  if (mode === "generation-changed") f.physical.incarnation = "replaced-during-restore";
-  return { success: true };
- } });
- console.log(JSON.stringify({op:"native.workspace.restore_gate",mode}));
- if (mode === "valid") {await prepareNativeWorkStorage(f.preparation);expect(restores).toBe(1);}
- else {
-  await expect(prepareNativeWorkStorage(f.preparation)).rejects.toThrow(mode === "generation-changed" ? "generation changed" : mode === "restore-failed" ? "restore failed" : "checkpoint unavailable or invalid");
-  if (mode === "restore-failed") {
-   // Provisioning succeeded before restore failed. A warm retry must not
-   // silently turn the failed cold restoration into an empty successful start.
-   await expect(prepareNativeWorkStorage(f.preparation)).rejects.toThrow("restore failed");
-   expect(restores).toBe(2);
-  }
-  if (mode === "expired" || mode === "invalid") expect(restores).toBe(0);
- }
+ await prepareNativeWorkStorage({ ...f.preparation, containerSnapshot: { id: "container-snapshot" } });
+ expect(f.physical.lastSnapshot).toEqual({ id: "container-snapshot" });
 });

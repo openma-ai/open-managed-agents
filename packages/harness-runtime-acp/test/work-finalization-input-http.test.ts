@@ -13,6 +13,18 @@ it("uses current consumed-turn recovery revision, joins checkpoint and terminal 
  finalizer.admitted("turn");await finalizer.checkpoint("turn");await finalizer.complete("turn");await finalizer.publish("turn");
  expect(calls).toEqual([["work-recovery",{turnId:"turn"}],["work-checkpoint",{turnId:"turn",revision:8}],["work-finalize",{turnId:"turn",revision:8,stopReason:{type:"end_turn"}}],["work-publish",{turnId:"turn",revision:9,terminalEventId:"terminal"}]]);
 });
+it("uses a newer same-turn revision returned after physical checkpoint IO",async()=>{
+ const calls:unknown[]=[];
+ const f=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async(url,init)=>{
+  const action=String(url).split('/').at(-1)!;const body=JSON.parse(String(init?.body));calls.push([action,body]);
+  if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:8},{status:409});
+  if(action==="work-checkpoint")return Response.json({type:"prepared",turnId:"t",revision:9});
+  const terminal={eventId:"terminal",turnId:"t",workId:"w",generation:2,revision:9,stopReason:{type:"end_turn"}};
+  return Response.json({type:action==="work-finalize"?"committed":"published",revision:9,terminal});
+ }});
+ f.admitted("t");await f.checkpoint("t");await f.complete("t");await f.publish("t");
+ expect(calls).toEqual([["work-recovery",{turnId:"t"}],["work-checkpoint",{turnId:"t",revision:8}],["work-finalize",{turnId:"t",revision:9,stopReason:{type:"end_turn"}}],["work-publish",{turnId:"t",revision:9,terminalEventId:"terminal"}]])
+});
 it.each(["rejected","lost"])("never refreshes or retries a %s terminal mutation",async mode=>{
  let calls=0;const finalizer=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async(url)=>{
  if(String(url).endsWith("work-recovery"))return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:2},{status:409});

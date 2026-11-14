@@ -76,7 +76,12 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env, ow
           const sandbox = new CloudflareSandbox(env, delivery.sessionId);
           sandbox.sessionOutputsMount({ tenantId: delivery.workspaceId, sessionId: delivery.sessionId });
           log({ ...diagnostic, op: "work.native.resources.bootstrap", claim_generation: authority.generation, sandbox: await sandbox.describeSandbox() }, "Native Work resource bootstrap observation");
-          const resources = await prepareNativeWorkStorage({ env, sql, scope: delivery, runtime: sandbox, assertCurrent: authority.assertCurrent });
+          const stored = owner?.storage.kv.get("cloudflare_sandbox_state") as import("@open-managed-agents/session-runtime").SessionSandboxState | undefined;
+          const latest = stored?.latestSnapshot;
+          const containerSnapshot = latest?.status === "taken" && latest.ref.provider === "cloudflare"
+            && latest.ref.kind === "snapshot" && latest.ref.metadata?.kind === "container"
+            ? { id: latest.ref.ref } : undefined;
+          const resources = await prepareNativeWorkStorage({ env, sql, scope: delivery, runtime: sandbox, containerSnapshot, assertCurrent: authority.assertCurrent });
           const preparedAcp = await prepareCloudflareEnvironmentRuntime({ runtime: sandbox, setup, agent: authority.agent, installedHarnesses: inventoryRaw, sessionId: delivery.sessionId, assertCurrent: authority.assertCurrent });
           const start = sandbox.startWorkRunner.bind(sandbox);
           return Object.assign(sandbox, { preparedAcp, startWorkRunner: (input: Parameters<CloudflareSandbox["startWorkRunner"]>[0]) => start({ ...input, resources }) });

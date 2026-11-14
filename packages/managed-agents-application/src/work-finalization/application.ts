@@ -28,10 +28,12 @@ export class WorkFinalizationApplication {
       : {type:"run",turnId:input.turnId,revision:state.revision};
   }
 
-  private scope(input:WorkTurnRevision,terminalEventId?:string):WorkFinalizationScope {
+  private scope(input:WorkTurnRevision,terminalEventId?:string,allowRevisionAdvance=false):WorkFinalizationScope {
     return {...input,isCurrent:async()=>{
       const state=await this.dependencies.persistence.inspect(input);
-      return state.type==="current" && state.revision===input.revision &&
+      if(state.type!=="current") return false;
+      const revisionOk=allowRevisionAdvance ? state.revision>=input.revision : state.revision===input.revision;
+      return revisionOk &&
         (terminalEventId===undefined ? state.terminal===null && state.consumed : state.terminal?.eventId===terminalEventId);
     }};
   }
@@ -42,11 +44,19 @@ export class WorkFinalizationApplication {
     if(state.terminal)return terminalResult(state);
     if(state.revision!==input.revision || !state.consumed)return rejected("turn_revision");
     if(!this.dependencies.host)return {type:"unavailable",phase:"finalization"};
-    const scope=this.scope(input);
+    // Physical persistence can take long enough for the same turn to append
+    // its final canonical facts. Rebase the checkpoint to that newer
+    // revision; SqlWorkFinalization still rejects a successor consumed by a
+    // different turn, so this does not widen authority across turns.
+    const scope=this.scope(input,undefined,true);
     try {
       const result=await this.dependencies.host.prepare(scope);
-      if(!await scope.isCurrent())return rejected("authority_changed");
-      return result.type==="prepared" ? {type:"prepared",turnId:input.turnId,revision:state.revision}
+      const after=await this.dependencies.persistence.inspect(input);
+      if(after.type!=="current" || after.revision<state.revision || after.terminal!==null || !after.consumed) {
+        console.warn(JSON.stringify({op:"work.finalization.checkpoint_authority_changed",session_id:input.claim.sessionId,work_id:input.claim.workId,generation:input.claim.generation,turn_id:input.turnId,initial_revision:state.revision,after_type:after.type,after_revision:after.type==="current"?after.revision:undefined,after_reason:after.type!=="current"&&"reason" in after?after.reason:undefined}));
+        return rejected("authority_changed");
+      }
+      return result.type==="prepared" ? {type:"prepared",turnId:input.turnId,revision:after.revision}
         : {type:"unavailable",phase:"finalization"};
     } catch {
       if(!await scope.isCurrent())return rejected("authority_changed");

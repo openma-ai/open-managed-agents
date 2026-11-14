@@ -114,6 +114,16 @@ it("checkpoint acknowledges physical persistence without prematurely publishing 
  const pending=f.app.checkpoint(request);await Promise.resolve();expect(finished).toBe(false);expect(await events(f.sql)).toEqual([]);
  release();expect(await pending).toMatchObject({type:"prepared",revision:3,turnId:"input"});expect(finished).toBe(true);expect(await events(f.sql)).toEqual([]);
 });
+it("rebases a checkpoint after same-turn canonical facts arrive during physical persistence",async()=>{
+ const f=await fixture();
+ f.setPrepare(async()=>{
+  await f.insert({id:"late-fact",type:"agent.message",content:[],processedAt:now},4,{execution_id:"input"});
+  await f.sql.exec("UPDATE managed_sessions SET revision=4");
+  return {type:"prepared"};
+ });
+ expect(await f.app.checkpoint(request)).toMatchObject({type:"prepared",revision:4,turnId:"input"});
+ expect(await f.app.recover({claim,turnId:"input"})).toMatchObject({type:"gap",reason:"consumed_turn_without_terminal",revision:4});
+});
 it("recovers a lost persistence response from exact canonical receipt without rerunning host barrier",async()=>{
  const f=await fixture();let lost=true;
  const sql:SqlClient={prepare:q=>f.sql.prepare(q),exec:q=>f.sql.exec(q),batch:ss=>f.sql.batch(ss),batchChecked:async(ss,validate)=>{const result=await f.sql.batchChecked!(ss,validate);if(lost){lost=false;throw Error("response lost");}return result;}};

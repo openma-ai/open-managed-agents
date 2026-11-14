@@ -70,7 +70,11 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
         .bind(c.workspaceId,c.workId).first<{state:string}>();
       if(work?.state==="stopping")return {state:reject("work_stopping")};
     }
-    if(await this.revision(input)!==revision)return {state:reject("authority_changed")};
+    const latestRevision = await this.revision(input);
+    if(latestRevision!==revision) {
+      console.warn(JSON.stringify({op:"work.finalization.authority_changed",session_id:c.sessionId,work_id:c.workId,generation:c.generation,turn_id:input.turnId,initial_revision:revision,latest_revision:latestRevision}));
+      return {state:reject("authority_changed")};
+    }
     return {state:{type:"current",revision,consumed:source.decoded.consumedByExecutionId===input.turnId,terminal},source,pendingRequestIds:plan.pendingRequestIds};
   }
   async inspect(input:WorkTurnRequest):Promise<WorkTurnState>{return (await this.load(input)).state;}

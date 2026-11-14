@@ -1,3 +1,5 @@
+import { logWarn } from "@open-managed-agents/shared/log";
+
 /** Private Work protocol. Transport uncertainty is not proof of non-commit. */
 export type WorkStopReason = {type:"end_turn"|"budget_reached"|"retries_exhausted"|"interrupted"}
   | {type:"requires_action";eventIds:string[]};
@@ -12,7 +14,19 @@ export type WorkFinalizationResult =
   | {type:"failed";phase:"run"|"finalization";terminal?:WorkTerminalReceipt};
 export class WorkFinalizationTransportError extends Error {
   readonly outcome = "unknown";
-  constructor(cause:unknown) { super("Work finalization response unavailable", {cause}); }
+  readonly diagnostics?: WorkFinalizationTransportDiagnostics;
+  constructor(cause:unknown, diagnostics?:WorkFinalizationTransportDiagnostics) {
+    super("Work finalization response unavailable", {cause});
+    this.name = "WorkFinalizationTransportError";
+    this.diagnostics = diagnostics;
+  }
+}
+export interface WorkFinalizationTransportDiagnostics {
+  action: string;
+  status?: number;
+  contentType?: string;
+  bodyKind: "json" | "html" | "empty" | "other";
+  bodyBytes?: number;
 }
 const record = (v:unknown):v is Record<string,unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const text = (v:unknown):v is string => typeof v === "string" && v.length > 0;
@@ -53,12 +67,31 @@ export function createWorkFinalizationHttpClient(options:{apiBaseUrl:string;sess
     signal.throwIfAborted();
     let response:Response;
     let value:unknown;
+    let diagnostics: WorkFinalizationTransportDiagnostics = { action, bodyKind: "empty" };
     try {
       response = await (options.fetch ?? globalThis.fetch)(new URL(`/v1/oma/sessions/${encodeURIComponent(options.sessionId)}/${action}`,base),{
         method:"POST",redirect:"error",signal,headers:{authorization:`Bearer ${options.sessionsToken}`,"content-type":"application/json"},body:JSON.stringify(body),
       });
-      value = await response.json();
-    } catch (error) { throw new WorkFinalizationTransportError(error); }
+      const raw = await response.text();
+      const contentType = response.headers.get("content-type") ?? "";
+      const trimmed = raw.trimStart();
+      diagnostics = {
+        action,
+        status: response.status,
+        contentType,
+        bodyKind: trimmed.length === 0 ? "empty" : contentType.toLowerCase().includes("html") || /^<(?:!doctype\s+)?html[\s>]/i.test(trimmed) ? "html" : /^[{[]/.test(trimmed) ? "json" : "other",
+        bodyBytes: Buffer.byteLength(raw),
+      };
+      try { value = raw.length === 0 ? null : JSON.parse(raw); }
+      catch (error) {
+        logWarn({op:"work.finalization.transport",session_id:options.sessionId,...diagnostics,err:error},"Work finalization response was not JSON");
+        throw new WorkFinalizationTransportError(error, diagnostics);
+      }
+    } catch (error) {
+      if (error instanceof WorkFinalizationTransportError) throw error;
+      logWarn({op:"work.finalization.transport",session_id:options.sessionId,...diagnostics,err:error},"Work finalization response unavailable");
+      throw new WorkFinalizationTransportError(error, diagnostics);
+    }
     // Read the ACK even if cancellation raced it; callers still recheck lease
     // before further I/O. Never erase a committed receipt with an abort error.
     return decode(value,body.turnId,response.status,action);

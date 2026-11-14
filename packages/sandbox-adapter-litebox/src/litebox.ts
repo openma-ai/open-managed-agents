@@ -10,7 +10,7 @@
 // Driver dep is a peer with peerDependenciesMeta.optional — caller installs:
 //   pnpm add @boxlite-ai/boxlite
 //
-// SDK shape (as of @boxlite-ai/boxlite ^0.8):
+// SDK shape (as of @boxlite-ai/boxlite 0.13.x):
 //   const box = new SimpleBox({ image, env, volumes, ... })
 //   await box.exec("sh", ["-c", command], env, { timeoutSecs })
 //   await box.copyIn(hostPath, containerPath)

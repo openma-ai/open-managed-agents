@@ -14,11 +14,18 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
  async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false):Promise<Record<string,unknown>> {
   options.signal.throwIfAborted();
   let response:Response;
+  const startedAt=Date.now();
   try {response=await (options.fetch??globalThis.fetch)(new URL(`/v1/oma/sessions/${encodeURIComponent(options.sessionId)}/${action}`,options.apiBaseUrl),{method:"POST",redirect:"error",signal:options.signal,headers:{authorization:`Bearer ${options.sessionsToken}`,"content-type":"application/json"},body:JSON.stringify(body)});}
-  catch {throw new Error(`Work ${action} response unknown; do not replay`);}
+  catch (error) {
+   console.warn(JSON.stringify({op:"work.finalization.input_http",action,session_id:options.sessionId,duration_ms:Date.now()-startedAt,error:error instanceof Error?{name:error.name,message:error.message}:String(error)}));
+   throw new Error(`Work ${action} response unknown; do not replay`);
+  }
   const value:unknown=await response.json();options.signal.throwIfAborted();
   if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")
-    &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed"))))throw new Error(`Work ${action} rejected (${response.status})`);
+    &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed")))) {
+   const reason=record(value)&&typeof value.reason==="string"?`: ${value.reason}`:"";
+   throw new Error(`Work ${action} rejected (${response.status})${reason}`);
+  }
   return value;
  }
  const sameTerminal=(a:Receipt,b:Receipt)=>a.eventId===b.eventId&&a.turnId===b.turnId&&a.workId===b.workId&&a.generation===b.generation&&a.revision===b.revision&&
@@ -30,8 +37,12 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    const current=await post("work-recovery",{turnId},true);
    if(current.type!=="gap"||current.reason!=="consumed_turn_without_terminal"||!revision(current.revision))throw new Error("Active turn has no uncommitted canonical boundary");
    const result=await post("work-checkpoint",{turnId,revision:current.revision});
-   if(result.type!=="prepared"||result.turnId!==turnId||result.revision!==current.revision)throw new Error("Invalid Work checkpoint receipt");
-   prepared.set(turnId,current.revision);
+   if(result.type!=="prepared"||result.turnId!==turnId||!revision(result.revision)||result.revision<current.revision)throw new Error("Invalid Work checkpoint receipt");
+   // Physical persistence may allow the same canonical turn to append its
+   // terminal facts while the snapshot is in flight. Continue with the
+   // prepared revision returned by the authority, never the stale recovery
+   // revision captured before that IO began.
+   prepared.set(turnId,result.revision);
   },
   async complete(turnId:string){
    const current=prepared.get(turnId);if(current===undefined)throw new Error("Work checkpoint must precede terminal");

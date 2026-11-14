@@ -10,6 +10,39 @@ function finite(n: unknown): number | undefined {
   return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : undefined;
 }
 
+function logMissingUsage(response: Response, body: string): void {
+  const contentType = response.headers.get("content-type") ?? "";
+  const trimmed = body.trimStart();
+  const bodyKind = trimmed.length === 0
+    ? "empty"
+    : contentType.toLowerCase().includes("text/event-stream") || trimmed.startsWith("data:")
+      ? "sse"
+      : /^[{[]/.test(trimmed)
+        ? "json"
+        : "other";
+  const diagnostic: Record<string, unknown> = {
+    op: "inference.usage.missing",
+    status: response.status,
+    content_type: contentType,
+    content_encoding: response.headers.get("content-encoding") ?? "",
+    body_kind: bodyKind,
+    body_bytes: new TextEncoder().encode(body).byteLength,
+  };
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const root = parsed as Record<string, unknown>;
+      diagnostic.top_level_keys = Object.keys(root).slice(0, 20);
+      if (root.usage && typeof root.usage === "object" && !Array.isArray(root.usage)) {
+        diagnostic.usage_keys = Object.keys(root.usage as Record<string, unknown>).slice(0, 20);
+      }
+    }
+  } catch {
+    diagnostic.parse_error = "invalid_json";
+  }
+  console.warn(JSON.stringify(diagnostic));
+}
+
 /** Map OpenAI / Anthropic / Gemini JSON usage objects into domain TokenUsage. */
 export function inferenceUsageFromJson(body: unknown): TokenUsage | null {
   if (!body || typeof body !== "object") return null;
@@ -214,7 +247,10 @@ function observeDurableUsage(response: Response, onUsage: (usage: TokenUsage) =>
         pending += decoder.decode();
         if (sse) observeLine(pending);
         else { try { usage = inferenceUsageFromJson(JSON.parse(pending)); } catch { /* rejected below */ } }
-        if (response.ok && usage === null) throw new Error("Completed model response has no usage");
+        if (response.ok && usage === null) {
+          logMissingUsage(response, pending);
+          throw new Error("Completed model response has no usage");
+        }
         if (usage) await onUsage(usage);
         controller.close();
       } catch (error) { await reader.cancel(error).catch(()=>{}); controller.error(error); }

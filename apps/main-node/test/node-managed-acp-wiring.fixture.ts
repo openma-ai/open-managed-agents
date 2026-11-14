@@ -78,12 +78,16 @@ export async function createWiringControl(components: Awaited<ReturnType<typeof 
       let published = 0;
       const result = runNodeWorkItemCli({ environment: env, workspacePath, signal: controller.signal, heartbeatIntervalMs: 50,
         fetch: async (raw, init) => { const response = await fetch(raw, init); if (!response.ok && !String(raw).includes("heartbeat")) responses.push({action:new URL(String(raw)).pathname.split("/").at(-1)!,status:response.status,body:await response.clone().json().catch(()=>null)}); if (String(raw).endsWith("work-publish") && response.ok) published++; return response; },
-        composition: async context => ({ ...await composition(context), resolveAgent: () => agent }),
+        // Production resolves a fresh agent snapshot for every execution.
+        // Clone the fixture so native ACP paths from the previous sandbox
+        // cannot leak into the next provider restore.
+        composition: async context => ({ ...await composition(context), resolveAgent: () => structuredClone(agent) }),
       }).catch(error => { failure = error; console.error("WIRING RUNNER FAILURE",error,"HTTP failures",responses); throw error; });
       void result.catch(() => undefined);
       active.push({ controller, result, handle, sandbox });
       return {
         result,
+        sandbox,
         async publication(count=1) { await expect.poll(() => { if (failure) throw failure; return published; }, {timeout:10000}).toBe(count); },
       };
     },

@@ -9,6 +9,7 @@ import {
   createBoxLiteManagedRuntimeDriver,
   createBoxLiteProvider,
   type BoxLiteBoxSdkPort,
+  type BoxLiteCheckpointPort,
   type BoxLiteClientPort,
   type BoxLiteExecutionPort,
   type BoxLiteInputPort,
@@ -180,7 +181,44 @@ describe("BoxLite provider boundary contracts", () => {
     }
     await expect(runtime.resume(handle)).resolves.toBeUndefined();
     expect(value.start).toHaveBeenCalledOnce();
-    await expect(runtime.checkpoint()).rejects.toThrow("not advertised as portable");
+    await expect(runtime.checkpoint()).rejects.toThrow("does not support portable workspace checkpoints");
+  });
+
+  it("creates a REST managed checkpoint and restarts the source box", async () => {
+    const { value, client: sdk } = direct({ running: true });
+    const checkpoints: BoxLiteCheckpointPort = {
+      create: vi.fn(async () => ({
+        id: "checkpoint-1",
+        name: "snapshot",
+        sourceBoxId: value.id,
+        state: "creating" as const,
+      })),
+      get: vi.fn(async () => ({
+        id: "checkpoint-1",
+        name: "snapshot",
+        sourceBoxId: value.id,
+        state: "ready" as const,
+      })),
+    };
+    const runtime = new BoxLiteManagedRuntime({
+      providerId: "boxrun",
+      client: sdk,
+      box: value,
+      expectedName: expectedName("boxrun"),
+      checkpoints,
+      checkpointPollIntervalMs: 0,
+    });
+    await expect(runtime.checkpoint()).resolves.toMatchObject({
+      provider: "boxrun",
+      checkpointId: "checkpoint-1",
+      sourceRuntimeId: value.id,
+      kind: "filesystem",
+      scope: "portable",
+    });
+    expect(checkpoints.create).toHaveBeenCalledWith(value.id, expectedName("boxrun"));
+    expect(checkpoints.get).toHaveBeenCalledWith("checkpoint-1");
+    expect(value.stop).toHaveBeenCalledOnce();
+    expect(value.start).toHaveBeenCalledOnce();
   });
 
   it("collects command streams, trims output, and reports nonzero exits", async () => {
@@ -327,7 +365,44 @@ describe("BoxLite provider boundary contracts", () => {
       { sessionId: scope.sessionId, workdir: "/workspace" }, {}, acquisition(aborted.signal),
     )).rejects.toThrow();
     await expect(provider.restore({} as never, {} as never, {}, undefined)).rejects
-      .toThrow("does not advertise portable workspace restore");
+      .toThrow("incompatible portable checkpoint");
+  });
+
+  it("restores a portable checkpoint through the REST create path", async () => {
+    const restored = box({ id: "restored", name: expectedName("boxrun"), running: false });
+    const sdk: BoxLiteClientPort = {
+      ...client(restored, false, false),
+      create: vi.fn(async (options, name) => {
+        expect(options).toEqual({ checkpoint: "checkpoint-1" });
+        expect(name).toBe(expectedName("boxrun"));
+        Object.defineProperty(restored, "name", { value: name, configurable: true });
+        return restored;
+      }),
+      checkpoints: {
+        create: vi.fn(),
+        get: vi.fn(),
+      },
+    };
+    const provider = createBoxLiteProvider({
+      providerId: "boxrun",
+      client: sdk,
+      image: "image",
+      connection: { type: "rest", url: "https://boxrun" },
+    });
+    await expect(provider.restore(
+      {
+        provider: "boxrun",
+        checkpointId: "checkpoint-1",
+        sourceRuntimeId: "source",
+        kind: "filesystem",
+        scope: "portable",
+      },
+      { sessionId: scope.sessionId, workdir: "/workspace" },
+      {},
+      acquisition(),
+    )).resolves.toBeInstanceOf(BoxLiteManagedRuntime);
+    expect(sdk.create).toHaveBeenCalledWith({ checkpoint: "checkpoint-1" }, expectedName("boxrun"));
+    expect(restored.start).toHaveBeenCalledOnce();
   });
 
   it("projects optional resources and driver placement", async () => {

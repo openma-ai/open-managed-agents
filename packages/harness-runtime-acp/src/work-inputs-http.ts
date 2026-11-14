@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { logWarn } from "@open-managed-agents/shared/log";
 /** Private, claim-authenticated canonical input transport. No mutation retry:
  * a lost consumption response is unknown, never permission to dispatch. */
 export interface WorkInputHttpRow {
@@ -17,40 +18,68 @@ export function createWorkInputsHttpClient(options: {
   sessionId: string;
   sessionsToken: string;
   fetch?: typeof globalThis.fetch;
+  beforeRead?: (signal: AbortSignal) => Promise<void>;
 }) {
   const base = new URL(options.apiBaseUrl);
   if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || !options.sessionId || !options.sessionsToken) {
     throw new TypeError("Invalid Work input connection");
   }
   const endpoint = "/v1/oma/sessions/" + encodeURIComponent(options.sessionId);
-  async function post(action: string, body: object, signal: AbortSignal): Promise<unknown> {
-    signal.throwIfAborted();
-    let response: Response;
-    try {
-      response = await (options.fetch ?? globalThis.fetch)(new URL(endpoint + "/" + action, base), {
-        method: "POST", redirect: "error", signal,
-        headers: { authorization: "Bearer " + options.sessionsToken, "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    } catch {
-      throw new Error("Work inputs transport unavailable");
+  let activeReads = 0;
+  let readsIdle = Promise.resolve();
+  let resolveReadsIdle: (() => void) | undefined;
+  const waitForReadsIdle = () => readsIdle;
+  const beginRead = () => {
+    if (activeReads++ === 0) readsIdle = new Promise(resolve => { resolveReadsIdle = resolve; });
+  };
+  const endRead = () => {
+    if (--activeReads === 0) { resolveReadsIdle?.(); resolveReadsIdle = undefined; }
+  };
+  async function post(action: string, body: object, signal: AbortSignal, readOnly = false): Promise<unknown> {
+    // Page reads are idempotent. A read can overlap native snapshot IO, so a
+    // transient transport loss may be retried without replaying consumption.
+    for (let attempt = 0; ; attempt++) {
+      signal.throwIfAborted();
+      let response: Response;
+      try {
+        response = await (options.fetch ?? globalThis.fetch)(new URL(endpoint + "/" + action, base), {
+          method: "POST", redirect: "error", signal,
+          headers: { authorization: "Bearer " + options.sessionsToken, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        if (readOnly && !signal.aborted && attempt < 2) {
+          logWarn({ op: "work.inputs.read_retry", session_id: options.sessionId, action, attempt: attempt + 1, err: error },
+            "Retrying idempotent Work input read after transport loss");
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 100 * (attempt + 1));
+            signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+          });
+          continue;
+        }
+        throw new Error("Work inputs transport unavailable");
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error("Work inputs HTTP " + response.status);
+      }
+      let value: unknown;
+      try { value = await response.json(); }
+      catch { throw new Error("Invalid Work inputs JSON"); }
+      signal.throwIfAborted();
+      return value;
     }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new Error("Work inputs HTTP " + response.status);
-    }
-    let value: unknown;
-    try { value = await response.json(); }
-    catch { throw new Error("Invalid Work inputs JSON"); }
-    signal.throwIfAborted();
-    return value;
   }
   return {
     async read(input: { cursor: string | null; limit: number; signal: AbortSignal }): Promise<{
       rows: WorkInputHttpRow[]; cursor: string | null; hasMore: boolean;
     }> {
       if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 200) throw new TypeError("Invalid Work input limit");
-      const value = await post("inputs-read", { cursor: input.cursor, limit: input.limit }, input.signal);
+      await options.beforeRead?.(input.signal);
+      beginRead();
+      let value: unknown;
+      try { value = await post("inputs-read", { cursor: input.cursor, limit: input.limit }, input.signal, true); }
+      finally { endRead(); }
       const invalid = () => new Error("Invalid Work input page");
       if (!record(value) || value.type !== "page" || !Array.isArray(value.rows) || value.rows.length > input.limit ||
           typeof value.hasMore !== "boolean" || (value.cursor !== null && (typeof value.cursor !== "string" || !value.cursor)) ||
@@ -86,5 +115,6 @@ export function createWorkInputsHttpClient(options: {
         throw new Error("Invalid Work input consumption");
       }
     },
+    waitForReadsIdle,
   };
 }

@@ -19,6 +19,30 @@ it("reads bounded canonical inputs with the sealed credential, preserving null a
   expect(fetcher).toHaveBeenCalledOnce();
 });
 
+it("retries only a transient idempotent page read", async () => {
+  let attempts = 0;
+  const client = createWorkInputsHttpClient({ ...options, fetch: async () => {
+    attempts++;
+    if (attempts === 1) throw new TypeError("fetch failed");
+    return Response.json({ type: "page", rows: [], cursor: null, hasMore: false });
+  } });
+  await expect(client.read({ cursor: null, limit: 10, signal })).resolves.toEqual({ rows: [], cursor: null, hasMore: false });
+  expect(attempts).toBe(2);
+});
+
+it("can quiesce hot page reads while the cold snapshot path runs", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const fetcher = vi.fn(async () => Response.json({ type: "page", rows: [], cursor: null, hasMore: false }));
+  const client = createWorkInputsHttpClient({ ...options, fetch: fetcher, beforeRead: () => gate });
+  const pending = client.read({ cursor: null, limit: 10, signal });
+  await Promise.resolve();
+  expect(fetcher).not.toHaveBeenCalled();
+  release();
+  await expect(pending).resolves.toEqual({ rows: [], cursor: null, hasMore: false });
+  await client.waitForReadsIdle();
+});
+
 it("retains the server cursor on an empty tail page", async () => {
   const client = createWorkInputsHttpClient({ ...options, fetch: async () => Response.json({ type: "page", rows: [], cursor: "tail", hasMore: false }) });
   expect(await client.read({ cursor: "tail", limit: 10, signal })).toEqual({ rows: [], cursor: "tail", hasMore: false });

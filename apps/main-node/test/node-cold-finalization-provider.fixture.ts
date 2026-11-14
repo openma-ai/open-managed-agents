@@ -67,10 +67,15 @@ export async function coldProvider(f: Awaited<ReturnType<typeof coldFixture>>, d
   const rpc=async(body:object)=>{const r=await fetch(url,{method:"POST",body:JSON.stringify(body)});const x=await r.json() as any;if(!r.ok)throw Error(x.error);return x.value;};
   const client=(sandboxId:string):E2BSandboxLike=>({sandboxId,
       commands:{run:command=>rpc({op:"run",command})},files:{read:path=>rpc({op:"read",path}),write:(path,data)=>rpc({op:"write",path,data:path.startsWith("/run/oma-managed/")?data:Buffer.from(data).toString("base64")})},
+      // The provider-native Session restore point is a complete E2B
+      // container snapshot. The fixture only needs the immutable reference;
+      // no archive or workspace transfer is involved.
+      createSnapshot:async()=>({snapshotId:`container-snapshot-${f.session.id}`,names:[]}),
       kill:async()=>{throw Error("must not kill runtime");}});
   const sdk={Sandbox:{connect:async(id:string):Promise<E2BSandboxLike>=>{
     const {sandboxId}=await rpc({op:"connect",id});return {sandboxId,
       commands:{run:command=>rpc({op:"run",command})},files:{read:path=>rpc({op:"read",path}),write:(path,data)=>rpc({op:"write",path,data:path.startsWith("/run/oma-managed/")?data:Buffer.from(data).toString("base64")})},
+      createSnapshot:async()=>({snapshotId:`container-snapshot-${f.session.id}`,names:[]}),
       kill:async()=>{throw Error("must not kill runtime");},setTimeout:async()=>{operations.push("renew");},getInfo:async()=>({state:"running"})};
   },create:async()=>{operations.push("create");throw Error("must not allocate");}}} as unknown as E2BV2Module;
   const adapter=createE2BV2Adapter({sdk,connection:{},leaseMs:1200000,maxLifetimeMs:3600000,managedBootstrap:{},

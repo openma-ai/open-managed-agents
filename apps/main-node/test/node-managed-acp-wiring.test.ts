@@ -6,6 +6,7 @@ import { createServer as createHttpsServer } from "node:https";
 import { getRequestListener } from "@hono/node-server";
 import { describe, expect, it } from "vitest";
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
+import { sandboxProvider } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "../../../packages/sandbox-egress/src/ca";
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
@@ -86,7 +87,25 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
         DATABASE_PATH: join(root, "db.sqlite"), AUTH_DATABASE_PATH: join(root, "auth.sqlite"),
         SANDBOX_WORKDIR: join(root, "sandboxes"), MEMORY_BLOB_DIR: join(root, "memories"), FILES_BLOB_DIR: join(root, "files"), SESSION_OUTPUTS_DIR: join(root, "outputs"),
         ANTHROPIC_API_KEY: "platform-key-must-not-be-used",
-      }), { sandbox: async () => { await sandboxReady; return sandbox; } }));
+      }), {
+        sandbox: async () => { await sandboxReady; return sandbox; },
+        // The test sandbox is deliberately local, but it still exercises the
+        // provider-native filesystem snapshot contract. This keeps the wiring
+        // test representative after the Node tar fallback was removed.
+        sessionSandboxProvider: {
+          name: "local-subprocess",
+          provider: sandboxProvider,
+          context: context => ({
+            sessionId: context.session.id,
+            workdir: join(root, "workspace"),
+            memoryRoot: join(root, "memories"),
+            outputsRoot: join(root, "outputs"),
+            environmentId: context.environment.id,
+            workspaceId: context.workspaceId,
+          }),
+          env: {},
+        },
+      }));
       gateway.on("request", getRequestListener(cp.fetch));
       const request = async (path: string, body?: unknown) => {
         const response = await cp!.fetch(new Request(base + path, { method: body === undefined ? "GET" : "POST", headers: { "x-api-key": "test-admin", "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
@@ -101,7 +120,10 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       const agentSpec = { id: "claude-acp", command: process.execPath, env: { NODE_EXTRA_CA_CERTS: join(root, "control-ca", "ca.crt") }, args: ["-e", variant === "recovered-queued-inputs" ? fakeAgent.replace("fs.mkdirSync(require('node:path').dirname(native), { recursive: true });", "").replace("fs.writeFileSync(native, 'prior-turn');", "// Deliberately lose native state but retain the ACP checkpoint.") : fakeAgent], cwd: "/workspace" };
       const agent = await request("/v1/agents", { name: "Claude sandbox", model: "workspace-model", system: "Pinned instructions", tools: [{ type: "mcp_toolset", mcp_server_name: "maxcompute" }], mcp_servers: [{ name: "maxcompute", type: "url", url: upstreamUrl + "/mcp" }], _oma: { harness: "acp-sandbox", acp: { agent: agentSpec } } });
       const session = await request("/v1/sessions", { agent: { type: "agent", id: agent.id, version: agent.version }, environment_id: env.id, vault_ids: [vault.id] });
-      const start = () => cp!.startWork(env.id,session.id,agentSpec);
+      // Each execution gets a fresh launch spec, matching the persisted agent
+      // snapshot boundary and avoiding provider-local path mutation between
+      // native restore attempts.
+      const start = () => cp!.startWork(env.id,session.id,structuredClone(agentSpec));
       let active: Awaited<ReturnType<typeof start>>;
       // Credential creation may probe MCP; measure only execution traffic.
       upstreamRequests.length = 0;
@@ -170,12 +192,12 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
         expect(JSON.stringify(events)).toMatch(variant === "missing-card" ? /active workspace model card/ : /requires \[anthropic-messages\]/);
         expect(events.some(event => event.type === "session.error")).toBe(true);
         expect(upstreamRequests).toEqual([]);
-        await expect(readFile(join(root, "workspace", "launch.json"), "utf8")).rejects.toThrow();
+        await expect(active.sandbox.readFile("launch.json")).rejects.toThrow();
         return;
       }
       expect(JSON.stringify(events)).toContain("fake-result:200:200");
       expect(events.filter(event => event.type === "session.error")).toEqual([]);
-      const launch = JSON.parse(await readFile(join(root, "workspace", "launch.json"), "utf8"));
+      const launch = JSON.parse(await active.sandbox.readFile("launch.json"));
       expect(launch.base).toBe(`${base}/v1/oma/inference-proxy/${session.id}/anthropic`);
       expect(launch.token).toMatch(/^oma_sbx_[0-9A-Za-z]{49}$/); // opaque sandbox token (#561)
       // The Vault environment_variable reaches the ACP sandbox only as its
@@ -212,7 +234,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       }
       expect(events.filter(event => event.type === "agent.message")).toHaveLength(2);
       expect(events.filter(event => event.type === "session.error")).toEqual([]);
-      const resumed = JSON.parse(await readFile(join(root, "workspace", "launch.json"), "utf8"));
+      const resumed = JSON.parse(await active.sandbox.readFile("launch.json"));
       expect(resumed.mode).toBe("resumed:prior-turn");
       expect(resumed.token).not.toBe(launch.token);
       expect(resumed.pid).not.toBe(launch.pid);

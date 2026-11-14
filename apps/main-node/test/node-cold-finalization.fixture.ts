@@ -29,7 +29,13 @@ export async function coldFixture(withMemory = false, launch = true) {
  await mkdir(join(process.cwd(),".test-artifacts"),{recursive:true});
  const root=await mkdtemp(join(process.cwd(),".test-artifacts/finalization-host-"));cleanup.push(()=>rm(root,{recursive:true,force:true}));
  const config=loadNodeConfig({NODE_ENV:"test",LOG_LEVEL:"silent",AUTH_DISABLED:"1",PLATFORM_ROOT_SECRET:"test-finalization-root-secret-32-characters",OPENMA_TEST_SANDBOX_PROVIDER:"local-subprocess",DATABASE_PATH:join(root,"db.sqlite"),AUTH_DATABASE_PATH:join(root,"auth.sqlite"),MEMORY_BLOB_DIR:join(root,"memory"),FILES_BLOB_DIR:join(root,"files"),SESSION_OUTPUTS_DIR:join(root,"outputs"),SANDBOX_WORKDIR:join(root,"sandbox"),MEMORY_QUEUE:"disabled"});
- const components=await stage("nodeDefaults", () => nodeDefaults(config));const disposables=new Disposables();cleanup.push(()=>disposables.dispose());
+ const components=await stage("nodeDefaults", () => nodeDefaults(config));
+ // This fixture intentionally exercises the bare v1 factory boundary. The
+ // positive provider-native snapshot path is covered by the E2B fixture below;
+ // keeping the session provider out here proves Node does not invent an
+ // archive fallback when no provider snapshot capability is present.
+ delete components.sessionSandboxProvider;
+ const disposables=new Disposables();cleanup.push(()=>disposables.dispose());
  const runtime=await stage("createNodeRuntime", () => createNodeRuntime(components,disposables,{current:null}));
  expect(runtime.workFinalizationHost, "production runtime must inject a physical Work host").toBeDefined();
  const app=await stage("mountNodeHttp", () => mountNodeHttp(runtime,disposables,runtime.workFinalizationHost));

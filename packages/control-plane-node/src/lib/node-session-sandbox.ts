@@ -47,6 +47,7 @@ import {
   type SandboxFactoryContext,
   type SandboxFactoryEnv,
   type SandboxImageCatalog,
+  type SandboxLifecyclePort,
   type SandboxProviderPort,
   type SandboxPort,
   type SandboxRuntimePort,
@@ -67,8 +68,10 @@ import {
   executionOfFence,
   recordedHandle,
   stateVersion,
+  transition,
   type SessionSandboxExecutor,
   type SessionSandboxState,
+  type SnapshotRef,
 } from "@open-managed-agents/session-runtime";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract";
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
@@ -226,7 +229,9 @@ export class NodeSessionSandboxes {
   configureWorkCheckpointRestore(restore: (physical: Awaited<ReturnType<NodeSessionSandbox["captureWork"]>>) => Promise<void>): void { this.restoreCheckpoint = restore; }
   async restoreWorkCheckpoint(sandbox: NodeSessionSandbox, attempt: SessionExecutionAttemptRef): Promise<void> {
     await sandbox.restoreWorkCheckpoint(async () => {
-      if (!this.restoreCheckpoint) throw new Error("Work checkpoint restore is not configured");
+      // Native Session snapshots are restored by the shared sandbox core during
+      // open/resume. There is no second workspace archive to apply here.
+      if (!this.restoreCheckpoint) return;
       await this.restoreCheckpoint(await sandbox.captureWork(attempt));
     });
   }
@@ -322,7 +327,12 @@ export class NodeSessionSandboxes {
     const isCurrent = async () => {
       if (!await authority.isCurrent() || authority.holderHash?.() !== holderHash) return false;
       const saved = await records!.load(input.workspaceId,input.session.id);
-      if (JSON.stringify(saved) !== JSON.stringify(state)) return false;
+      // Snapshot publication is an expected CAS during finalization. Keep
+      // this fence bound to the same running provider handle while allowing
+      // version/latestSnapshot metadata to advance.
+      if (!saved || saved.phase !== "running"
+        || saved.handle.provider !== state.handle.provider
+        || saved.handle.runtimeId !== state.handle.runtimeId) return false;
       const latest = await inspect();
       return fingerprint(latest) === fingerprint(locator)
         && (republish ? latest.status === "running"
@@ -340,6 +350,47 @@ export class NodeSessionSandboxes {
     if (!this.options.storage.synchronizeWork) throw new Error("Work storage synchronization unsupported");
     await this.options.storage.synchronizeWork(input);
     if (!await input.workAuthority.isCurrent()) throw new Error("Work reconnect authority lost");
+  }
+
+  /** Publish the provider-owned full filesystem snapshot for a Work attempt.
+   * This is deliberately usable for both a local facade and a cold reconnect:
+   * the provider lifecycle port is the only snapshot authority, and the
+   * Session sandbox record is the only durable restore pointer. */
+  async checkpointNativeWork(input: NodeWorkStorageInput & { handle: NonNullable<ReturnType<typeof recordedHandle>> }, assertCurrent: () => Promise<void>): Promise<void> {
+    let facade: NodeSessionSandbox | undefined;
+    try { facade = this.get({ workspaceId: input.workspaceId, session: { id: input.session.id } }); } catch { /* cold reconnect */ }
+    const lifecycle = facade?.workCheckpointLifecycle() ?? this.options.adapter?.adapter.lifecycle;
+    if (!lifecycle) throw new Error("Native Work snapshot is unavailable for this sandbox provider");
+    const records = this.options.records ?? (this.options.sql ? new SqlSessionSandboxRecords(this.options.sql) : undefined);
+    if (!records) throw new Error("Native Work snapshot requires durable Session sandbox records");
+    const scope = {
+      workspaceId: input.workspaceId,
+      environmentId: input.environment.id,
+      sessionId: input.session.id,
+      workId: input.workAuthority.attempt.executionId,
+    };
+    const signal = new AbortController().signal;
+    const ref = await lifecycle.checkpoint({ scope, runtime: input.sandbox, handle: input.handle, signal });
+    if (ref.kind !== "snapshot") {
+      await lifecycle.discard({ scope, ref }).catch(() => undefined);
+      throw new Error("Native Work snapshot provider returned a non-portable reference");
+    }
+    let committed = false;
+    try {
+      await assertCurrent();
+      const saved = await records.load(input.workspaceId, input.session.id);
+      if (!saved || saved.phase !== "running" || saved.handle.provider !== input.handle.provider
+        || saved.handle.runtimeId !== input.handle.runtimeId) throw new Error("Native Work snapshot physical runtime changed");
+      const next = transition(saved, { type: "publishSnapshot", ref: ref as SnapshotRef });
+      if (!await records.save(input.workspaceId, input.session.id, next, saved.version)) {
+        throw new Error("Native Work snapshot Session CAS lost");
+      }
+      committed = true;
+      await assertCurrent();
+    } catch (error) {
+      if (!committed) await lifecycle.discard({ scope, ref }).catch(() => undefined);
+      throw error;
+    }
   }
 
   /** Session creation (design §0.0 rule 10): acquire the sandbox and keep
@@ -419,6 +470,11 @@ export class NodeSessionSandboxes {
 
 export class NodeSessionSandbox implements SandboxPort {
   private readonly core: PortsSessionSandbox<SandboxPort>;
+  /** The lifecycle selected by composition, including v1 providers. Work
+   * finalization must use the same provider-native checkpoint contract that
+   * opened this Session. */
+  private composedLifecycle?: SandboxLifecyclePort<SandboxPort>;
+  workCheckpointLifecycle(): SandboxLifecyclePort<SandboxPort> | undefined { return this.composedLifecycle; }
   private context: NodeSessionSandboxContext;
   private executionFence: SessionExecutionFence | undefined;
   private workAuthority: NodeSandboxWorkAuthority | undefined;
@@ -521,6 +577,7 @@ export class NodeSessionSandbox implements SandboxPort {
             return result;
           },
         }};
+        this.composedLifecycle = trackedAdapter.lifecycle;
         const { ports } = createSandboxPorts({ ...trackedAdapter, native: { ...adapter.native, storage: () => this.storagePort() } }, {
           // Storage is Node's own (native above), so the generic deps are never read.
           storage: {} as never,
