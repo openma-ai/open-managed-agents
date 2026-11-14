@@ -19,7 +19,7 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
  const requestTimeoutMs=options.requestTimeoutMs??30_000;
  if(!Number.isSafeInteger(requestTimeoutMs)||requestTimeoutMs<=0)throw new TypeError("Work finalization request timeout must be a positive integer");
  async function wait(ms:number){await new Promise<void>((resolve,reject)=>{let settled=false;const timer=setTimeout(()=>{settled=true;options.signal.removeEventListener("abort",abort);resolve();},ms);const abort=()=>{if(settled)return;settled=true;clearTimeout(timer);reject(options.signal.reason??new Error("Work finalization aborted"));};if(options.signal.aborted)abort();else options.signal.addEventListener("abort",abort,{once:true});});}
- async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false):Promise<Record<string,unknown>> {
+ async function post(action:string,body:object,allowGap=false,allowStaleTerminalRevision=false,allowCheckpointRevisionRace=false):Promise<Record<string,unknown>> {
   options.signal.throwIfAborted();
   let response:Response;
   const startedAt=Date.now();
@@ -37,7 +37,8 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    try {value=await response.json();}catch(error){throw new WorkFinalizationTransportError(action,error);}
    options.signal.throwIfAborted();
    if(!record(value)||(!response.ok&&!(allowGap&&response.status===409&&value.type==="gap"&&value.reason==="consumed_turn_without_terminal")
-     &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed")))) {
+     &&!(allowStaleTerminalRevision&&response.status===409&&value.type==="rejected"&&(value.reason==="terminal_revision"||value.reason==="authority_changed"))
+     &&!(allowCheckpointRevisionRace&&response.status===409&&value.type==="rejected"&&(value.reason==="turn_revision"||value.reason==="authority_changed")))) {
     const reason=record(value)&&typeof value.reason==="string"?`: ${value.reason}`:"";
     throw new Error(`Work ${action} rejected (${response.status})${reason}`);
    }
@@ -48,7 +49,7 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
  }
  async function postCheckpoint(body:object){
   for(let attempt=0;attempt<2;attempt++){
-   try{return await post("work-checkpoint",body);}
+   try{return await post("work-checkpoint",body,false,false,true);}
    catch(error){
     if(!(error instanceof WorkFinalizationTransportError)||attempt!==0||options.signal.aborted)throw error;
     console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,retry:1,reason:"response_unknown"}));
@@ -82,13 +83,25 @@ export function createWorkTurnFinalizer(options:{apiBaseUrl:string;sessionId:str
    // the physical checkpoint before terminal finalization.
    if(previous!==undefined&&current.revision===previous)return;
    if(previous!==undefined&&current.revision<previous)throw new Error("Work checkpoint authority moved backwards");
-   const result=await postCheckpoint({turnId,revision:current.revision});
-   if(result.type!=="prepared"||result.turnId!==turnId||!revision(result.revision)||result.revision<current.revision)throw new Error("Invalid Work checkpoint receipt");
-   // Physical persistence may allow the same canonical turn to append its
-   // terminal facts while the snapshot is in flight. Continue with the
-   // prepared revision returned by the authority, never the stale recovery
-   // revision captured before that IO began.
-   prepared.set(turnId,result.revision);
+   let checkpointRevision=current.revision;
+   for(let attempt=0;attempt<2;attempt++){
+    const result=await postCheckpoint({turnId,revision:checkpointRevision});
+    if(result.type==="rejected"&&(result.reason==="turn_revision"||result.reason==="authority_changed")&&attempt===0){
+     const recovered=await post("work-recovery",{turnId},true);
+     if(recovered.type!=="gap"||recovered.reason!=="consumed_turn_without_terminal"||!revision(recovered.revision))throw new Error("Work checkpoint revision race did not recover an active gap");
+     checkpointRevision=recovered.revision;
+     console.warn(JSON.stringify({op:"work.finalization.input_http",action:"work-checkpoint",session_id:options.sessionId,turn_id:turnId,attempt:1,reason:result.reason,to_revision:checkpointRevision}));
+     continue;
+    }
+    if(result.type!=="prepared"||result.turnId!==turnId||!revision(result.revision)||result.revision<checkpointRevision)throw new Error("Invalid Work checkpoint receipt");
+    // Physical persistence may allow the same canonical turn to append its
+    // terminal facts while the snapshot is in flight. Continue with the
+    // prepared revision returned by the authority, never the stale recovery
+    // revision captured before that IO began.
+    prepared.set(turnId,result.revision);
+    return;
+   }
+   throw new Error("Work checkpoint revision retry exhausted");
   })},
   complete(turnId:string){return enqueue(turnId,async()=>{
    const current=prepared.get(turnId);if(current===undefined)throw new Error("Work checkpoint must precede terminal");

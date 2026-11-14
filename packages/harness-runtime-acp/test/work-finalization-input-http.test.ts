@@ -70,6 +70,26 @@ it("rechecks a prepared revision before coalescing a later checkpoint",async()=>
   ["work-publish",{turnId:"t",revision:9,terminalEventId:"terminal"}],
  ]);
 });
+it("retries a checkpoint after a canonical revision race",async()=>{
+ const calls:unknown[]=[];let checkpoints=0;
+ const f=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,fetch:async(url,init)=>{
+  const action=String(url).split('/').at(-1)!;const body=JSON.parse(String(init?.body));calls.push([action,body]);
+  if(action==="work-recovery")return Response.json({type:"gap",reason:"consumed_turn_without_terminal",revision:checkpoints===0?8:9},{status:409});
+  if(action==="work-checkpoint"&&checkpoints++===0)return Response.json({type:"rejected",reason:"turn_revision"},{status:409});
+  if(action==="work-checkpoint")return Response.json({type:"prepared",turnId:"t",revision:9});
+  const terminal={eventId:"terminal",turnId:"t",workId:"w",generation:2,revision:9,stopReason:{type:"end_turn"}};
+  return Response.json({type:action==="work-finalize"?"committed":"published",revision:9,terminal});
+ }});
+ f.admitted("t");await f.checkpoint("t");await f.complete("t");await f.publish("t");
+ expect(calls).toEqual([
+  ["work-recovery",{turnId:"t"}],
+  ["work-checkpoint",{turnId:"t",revision:8}],
+  ["work-recovery",{turnId:"t"}],
+  ["work-checkpoint",{turnId:"t",revision:9}],
+  ["work-finalize",{turnId:"t",revision:9,stopReason:{type:"end_turn"}}],
+  ["work-publish",{turnId:"t",revision:9,terminalEventId:"terminal"}],
+ ]);
+});
 it("retries a checkpoint only after an unknown response, never a terminal mutation",async()=>{
  const calls:string[]=[];let checkpointAttempts=0;
  const f=createWorkTurnFinalizer({apiBaseUrl:"https://host",sessionId:"s",sessionsToken:"token",signal:new AbortController().signal,requestTimeoutMs:5,fetch:async(url,init)=>{
