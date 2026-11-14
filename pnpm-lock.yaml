@@ -1225,6 +1225,9 @@ importers:
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@open-managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../session-runtime
       '@open-managed-agents/session-runtime-contract':
         specifier: workspace:*
         version: link:../session-runtime-contract

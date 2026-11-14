@@ -22,6 +22,7 @@
     "@open-managed-agents/markdown": "workspace:*",
     "@open-managed-agents/mcp": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
+    "@open-managed-agents/session-runtime": "workspace:*",
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/session-subagents": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",

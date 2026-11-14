@@ -22,7 +22,7 @@ import {
   type SubagentThread,
   type SubagentTurnResult,
 } from "@open-managed-agents/session-subagents";
-import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
+import { createStrictlyIncreasingEventStamp, ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 
 // Node adapter for @open-managed-agents/session-subagents (#545 §0.7): the
@@ -151,12 +151,17 @@ function subagentFacts(events: SessionEventView[]): SubagentFact[] {
  * Child work never escapes the parent's execution fence. */
 export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
   private readonly domain: SessionSubagents<Session>;
+  /** SQL history is ordered by processed_at then id. Subagent lifecycle
+   * frames are emitted through the runtime output path, so equal clock ticks
+   * must still retain the domain order (created before message_sent). */
+  private readonly nextStamp: () => string;
   private outputChain: Promise<void> = Promise.resolve();
   /** Per-thread application events: the child's conversation on restore. */
   private readonly threadEvents = new Map<string, SessionEventView[]>();
   private budgetGate: SessionBudgetGate | null = null;
 
   constructor(private readonly input: SubagentsInput) {
+    this.nextStamp = createStrictlyIncreasingEventStamp(input.clock);
     for (const event of input.historyEvents) this.threadLog(managedEventThread(event)).push(event);
     this.domain = new SessionSubagents<Session>({
       parentThreadId: input.parentThreadId,
@@ -275,7 +280,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     const { threadId, frame } = subagentWireFrame(event);
     return this.write({
       id: this.input.ids.nextEventId(),
-      processed_at: this.input.clock.now().toISOString(),
+      processed_at: this.nextStamp(),
       ...frame,
     }, threadId);
   }

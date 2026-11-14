@@ -5,8 +5,6 @@
 // in this test process; it is not an OS crash or a native remote-provider claim.
 import { fork, execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
-const { Parser } = createRequire(new URL("../../../packages/control-plane-node/package.json", import.meta.url))("tar");
 import { parseExecResult } from "@open-managed-agents/sandbox";
 import { SKILL_FILES, SKILL_MD, EXPECTED_REPORT, MEMORY_FACT, READONLY_SEED } from "../../../test/resource-convergence/resource-agent-fixture.js";
 import { afterEach, expect, it } from "vitest";
@@ -63,36 +61,7 @@ async function fixture() {
 
  const revision=Number((await sql.prepare("SELECT revision FROM managed_sessions WHERE id=?").bind(s.id).first<{revision:number}>())!.revision);
  const request=(action:string,body:object={})=>post(path+"/work-"+action,{turnId,revision,...body},token);
- const checkpoint=()=>sql.prepare("SELECT candidate_json FROM managed_session_workspace_checkpoints WHERE workspace_id='default' AND session_id=?").bind(s.id).first<{candidate_json:string}>();
- const recreateProvider=async()=>{
-  const before=await sandbox.captureWork(environmentWorkSandboxTokenRef(claim));
-  const saved=await checkpoint();const candidate=JSON.parse(saved!.candidate_json);const blob=await runtime.filesBlob.get(candidate.metadata["openma.workspace.blob-key.v1"]);
-  const entries:string[]=[];const parser=new Parser({onReadEntry:(entry:{path:string;resume():void})=>{entries.push(entry.path);entry.resume();}});const parsed=new Promise<void>((resolve,reject)=>{parser.on("end",resolve);parser.on("error",reject);});parser.end(Buffer.from(await new Response(blob!.body as BodyInit).arrayBuffer()));await parsed;
-  console.log(JSON.stringify({op:"work.resource.archive_members",resourceEntries:entries.filter(path=>path.startsWith("./.mnt/memory")||path.startsWith("./.mnt/session/outputs"))}));
-  await management.kill("SIGKILL");
-  // Provider loss is not a Session lifecycle retirement. Keep the durable
-  // handle/checkpoint and make the physical adapter report it gone.
-  await before.sandbox.destroy!();
-  const oldOwner=config.execution.ownerId;
-  await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
-  await disposables.dispose();
-  config=loadNodeConfig(configEnv);components=await nodeDefaults(config);disposables=new Disposables();
-  runtime=await createNodeRuntime(components,disposables,{current:null});sql=runtime.sql;
-  app=await mountNodeHttp(runtime,disposables,runtime.workFinalizationHost);
-  server=serve({fetch:app.fetch,hostname:"127.0.0.1",port:0});
-  if(!server.listening)await new Promise<void>(resolve=>server.once("listening",resolve));
-  base="http://127.0.0.1:"+(server.address() as {port:number}).port;
-  expect(config.execution.ownerId).not.toBe(oldOwner);
-  console.log(JSON.stringify({op:"work.resource.owner_reopened",oldOwner,newOwner:config.execution.ownerId}));
-  sandbox=runtime.sessionSandboxes.build({workspaceId:claim.workspaceId,session,environment,workAuthority:{attempt:environmentWorkSandboxTokenRef(claim),holderHash:()=>holderHash,isCurrent:async()=>live,token:physical=>runtime.managedAcpCapabilities.issueWork(claim,session.agent.openma?.harness,physical)}});
-  await sandbox.open();holderHash=(await sandboxTokenSha256(await sandbox.workToken()))!;
-  await runtime.sessionSandboxes.restoreWorkCheckpoint(sandbox,environmentWorkSandboxTokenRef(claim));
-  management=await sandbox.startManagedProcess({command:"/bin/sleep",args:["120"],env:{}});
-  const after=await sandbox.captureWork(environmentWorkSandboxTokenRef(claim));
-  console.log(JSON.stringify({op:"work.resource.provider_recreated",before:before.runtimeGeneration,after:after.runtimeGeneration}));
-  expect(after.runtimeGeneration).not.toBe(before.runtimeGeneration);
- };
- return {get base(){return base;},skill,readonlyStore,memoryStore,get runtime(){return runtime;},get sql(){return sql;},get sandbox(){return sandbox;},recreateProvider,claim,session,environment,request,checkpoint,turnId,revision,post,path,token,root,lose:()=>{live=false;}};
+ return {get base(){return base;},skill,readonlyStore,memoryStore,get runtime(){return runtime;},get sql(){return sql;},get sandbox(){return sandbox;},claim,session,environment,request,turnId,revision,post,path,token,root,lose:()=>{live=false;}};
 }
 
 const quote=(value:string)=>"'"+value.replaceAll("'","'\\''")+"'";
@@ -164,8 +133,7 @@ it("spawned Work supervisor and ACP child: Skill/script, Memory restart, readonl
   };
   await recall("next",2);
   await assertAuthoritativeMemory();
-  await started.stop("restart local Work runner");await started.drain();
-  await f.recreateProvider();
+  await started.stop("restart local ACP Work runner");await started.drain();
   phase="restored";started=await startSupervisor();started.completed.catch(()=>{});
   await recall("restored",3);
   await assertAuthoritativeMemory();

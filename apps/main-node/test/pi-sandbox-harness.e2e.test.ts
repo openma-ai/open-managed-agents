@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -137,6 +137,7 @@ describe(
         );
       } finally {
         await sandbox.destroy();
+        await rm(workdir, { recursive: true, force: true });
       }
     });
 
@@ -268,6 +269,8 @@ describe(
           session,
           environment,
         });
+        await sandbox.destroy();
+        await rm(workdir, { recursive: true, force: true });
       }
     });
 
@@ -360,6 +363,8 @@ describe(
           session,
           environment,
         });
+        await sandbox.destroy();
+        await rm(workdir, { recursive: true, force: true });
       }
     });
   },

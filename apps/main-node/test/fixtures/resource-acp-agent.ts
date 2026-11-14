@@ -22,8 +22,8 @@ async function handle(m:any){
  const modesText=text.split("\n");if(!modesText.some((s:string)=>s.includes(rw)&&s.includes("read-write"))||!modesText.some((s:string)=>s.includes(ro)&&s.includes("read-only")))throw Error("Child agent missing mount modes");
  const recall=text.includes("recall exact memory");let manifestRead="";let last:any;
  const label=text.includes("recall exact memory restored")?"restored":"next";
- const commands=recall?[["recall-"+label,`base64 ${shq(rw+"/fact.md")}`]]:[
-  ["skill-read",`base64 ${shq(manifest)}`],
+ const commands=recall?[["recall-"+label,`base64 < ${shq(rw+"/fact.md")}`]]:[
+  ["skill-read",`base64 < ${shq(manifest)}`],
   ["skill-script",`cd ${shq(manifest.slice(0,manifest.lastIndexOf("/")))} && sh scripts/make-report.sh ${shq(outputs+"/skill-report.txt")}`],
   ["memory-write",`printf %s ${shq(MEMORY_FACT)} > ${shq(rw+"/fact.md")}`],
   ["readonly-write",`printf MUTATION > ${shq(ro+"/seed.md")}`],
@@ -31,7 +31,7 @@ async function handle(m:any){
  if(settings.checkWorkspace){
   const workspace=/The session workspace is (\S+)\/\./.exec(text)?.[1];
   if(!workspace)throw Error("Child missing advertised workspace");
-  const operation=recall?["recall-workspace-"+label,`base64 ${shq(workspace+"/resource-workspace.txt")}`]:["workspace-write",`printf %s ${shq(MEMORY_FACT)} > ${shq(workspace+"/resource-workspace.txt")}`];
+  const operation=recall?["recall-workspace-"+label,`base64 < ${shq(workspace+"/resource-workspace.txt")}`]:["workspace-write",`printf %s ${shq(MEMORY_FACT)} > ${shq(workspace+"/resource-workspace.txt")}`];
   commands.splice(recall?0:commands.length-1,0,operation);
  }
  for(const [id,command] of commands){

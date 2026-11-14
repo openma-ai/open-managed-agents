@@ -62,7 +62,7 @@ import { createNodeRuntime } from "../../../packages/control-plane-node/src/modu
 import { mountNodeHttp } from "../../../packages/control-plane-node/src/modules/node-http.js";
 import { Disposables } from "../../../packages/control-plane-node/src/lifecycle.js";
 import { serve } from "@hono/node-server";
-it("cold Node HTTP native drain -> actual archive -> canonical terminal waits for real rclone backend",async()=>{
+it("cold Node HTTP native drain -> native snapshot -> canonical terminal waits for real rclone backend",async()=>{
  const f=await coldFixture();const child=spawn("python3",[fileURLToPath(new URL("./node-native-rclone.fixture.py",import.meta.url))],{stdio:["pipe","pipe","pipe"]});
  let stderr="";child.stderr.on("data",b=>stderr+=b);const ended=new Promise(r=>child.on("exit",r));const lines=createInterface({input:child.stdout})[Symbol.asyncIterator]();
  const first=await lines.next();expect(first.done,stderr).toBe(false);const {remote}=JSON.parse(first.value!);
@@ -73,7 +73,9 @@ it("cold Node HTTP native drain -> actual archive -> canonical terminal waits fo
   server=serve({fetch:app.fetch,hostname:"127.0.0.1",port:0});if(!server.listening)await new Promise<void>(r=>server!.once("listening",r));
   await expect(access(remote+"/proof.txt")).rejects.toThrow();
   const response=await fetch(`http://127.0.0.1:${(server.address() as {port:number}).port}${f.path}/work-finalize`,{method:"POST",headers:{authorization:"Bearer "+f.token,"content-type":"application/json"},body:JSON.stringify({turnId:f.turnId,revision:f.revision,stopReason:{type:"end_turn"}})});
-  expect(response.status,await response.clone().text()).toBe(200);expect(await response.json()).toMatchObject({terminal:{stopReason:{type:"end_turn"}}});expect(await f.checkpoint()).not.toBeNull();expect(provider.operations).not.toContain("connect");
+  expect(response.status,await response.clone().text()).toBe(200);expect(await response.json()).toMatchObject({terminal:{stopReason:{type:"end_turn"}}});
+  const state=await f.sql.prepare('SELECT value FROM kv_entries WHERE tenant_id=? AND "key"=?').bind("default",`session_sandbox_state:${f.session.id}`).first<{value:string}>();
+  expect(JSON.parse(state!.value).latestSnapshot).toMatchObject({status:"taken",ref:{kind:"snapshot",metadata:{kind:"container"}}});expect(provider.operations).not.toContain("connect");
   expect(JSON.parse((await lines.next()).value!)).toMatchObject({queue:[]});expect(await ended,stderr).toBe(0);
  }finally{if(server)await new Promise<void>((r,j)=>server!.close(e=>e?j(e):r()));await d.dispose();await provider.close();child.stdin.end();if(child.exitCode===null)child.kill("SIGTERM");}
 });
