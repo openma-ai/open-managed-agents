@@ -216,6 +216,7 @@ describe("Mysql2SqlClient", () => {
 
     const claim = `UPDATE portable_claims
       SET state = 'running', owner_id = ?, generation = generation + 1, expires_at = ?
+      -- the candidate's lease must remain fenced
       WHERE (workspace_id, id) = (
         SELECT candidate.workspace_id, candidate.id
         FROM portable_claims AS candidate

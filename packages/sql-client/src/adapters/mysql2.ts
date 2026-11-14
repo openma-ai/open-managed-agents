@@ -253,6 +253,24 @@ function findTopLevel(input: string, needle: string, wordBoundary: boolean): num
   let quote: string | null = null;
   for (let index = 0; index <= input.length - needle.length; index += 1) {
     const char = input[index];
+    // Comments are not SQL expressions. Skip them before looking for quotes,
+    // parentheses, or keywords so apostrophes and keyword-shaped text inside
+    // comments cannot corrupt the top-level scanner.
+    if (char === "-" && input[index + 1] === "-") {
+      const end = input.indexOf("\n", index + 2);
+      index = end === -1 ? input.length : end;
+      continue;
+    }
+    if (char === "#") {
+      const end = input.indexOf("\n", index + 1);
+      index = end === -1 ? input.length : end;
+      continue;
+    }
+    if (char === "/" && input[index + 1] === "*") {
+      const end = input.indexOf("*/", index + 2);
+      index = end === -1 ? input.length : end + 1;
+      continue;
+    }
     if (quote !== null) {
       if (char === "\\") {
         index += 1;
@@ -732,9 +750,14 @@ class Mysql2SqlStatement implements SqlStatement {
         `WHERE ${keyPredicate}`,
       keyParameters,
     );
+    // mysql2's affectedRows can include matched rows from the conditional
+    // mutation even when the portable RETURNING contract yields one logical
+    // row. The read-back is keyed by the selected primary key(s), so its
+    // cardinality is the authoritative portable change count.
+    const returnedRows = Array.isArray(returned) ? returned : [];
     return {
-      rows: (Array.isArray(returned) ? returned : []) as T[],
-      changes,
+      rows: returnedRows as T[],
+      changes: returnedRows.length,
     };
   }
 
