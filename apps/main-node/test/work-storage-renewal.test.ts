@@ -101,12 +101,13 @@ it("fails closed before Memory mutation when the Work output Port is not wired",
 
 // Real control-plane SQL claims + provider management Port. No cloud calls.
 it.each(["lease", "holder"] as const)("worker renews provider through stopping, bounds an unconfirmed renewal and stops on %s loss", async loss => {
-  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { mkdtemp, mkdir, rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const { loadNodeConfig } = await import("../src/config");
   const { nodeDefaults } = await import("../src/components");
   const { createNodeControlPlane } = await import("../src/control-plane");
   const { LocalSubprocessSandbox } = await import("../../../packages/sandbox/src/adapters/local-subprocess");
+  await mkdir(join(process.cwd(), ".test-artifacts"), { recursive: true });
   const root = await mkdtemp(join(process.cwd(), ".test-artifacts/work-renewal-"));
   const runtime = new LocalSubprocessSandbox({ workdir: join(root, "sandbox"), outputsRoot: join(root, "outputs") });
   const handles: Array<Awaited<ReturnType<typeof runtime.startManagedProcess>>> = [];
@@ -145,10 +146,11 @@ it.each(["lease", "holder"] as const)("worker renews provider through stopping, 
 }, 20_000);
 
 it("file-syncs real sandbox Memory at a Work barrier, not on a timer", async () => {
-  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { mkdtemp, mkdir, rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const { LocalSubprocessSandbox } = await import("../../../packages/sandbox/src/adapters/local-subprocess");
   const { materializeNodeManagedMemoryStores } = await import("../../../packages/control-plane-node/src/lib/node-managed-memory-stores.js");
+  await mkdir(join(process.cwd(), ".test-artifacts"), { recursive: true });
   const root = await mkdtemp(join(process.cwd(), ".test-artifacts/work-file-sync-"));
   const sandbox = new LocalSubprocessSandbox({ workdir: join(root, "sandbox"), outputsRoot: join(root, "outputs") });
   const f = await storageFixture();

@@ -1,4 +1,4 @@
-/** Deliberately excludes errors, request bodies, argv and environment values. */
+/** Deliberately excludes error messages, request bodies, argv and environment values. */
 export interface WorkOperationObservation {
   operation: string;
   status: "started" | "completed" | "failed";
@@ -15,16 +15,14 @@ export interface WorkOperationObservation {
   requestingGeneration?: number;
   management?: import("./work-management-rpc.js").ManagementRpcObservation;
   error_name?: string;
-  error_message?: string;
 }
-function safeError(error: unknown): { error_name?: string; error_message?: string } {
+function safeError(error: unknown): { error_name?: string } {
   if (error instanceof Error) {
-    return {
-      error_name: error.name.slice(0, 120),
-      error_message: error.message.slice(0, 240),
-    };
+    // Error messages may contain credentials, request bodies, or provider
+    // response text. Keep only the stable class/name for telemetry.
+    return { error_name: error.name.slice(0, 120) };
   }
-  if (typeof error === "string") return { error_message: error.slice(0, 240) };
+  if (typeof error === "string") return { error_name: "Error" };
   return { error_name: "UnknownError" };
 }
 export async function observeWorkOperation<T>(
