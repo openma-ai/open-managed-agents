@@ -41,6 +41,13 @@ function runCoordinatorPort<A>(effect: Effect.Effect<A, unknown>): Promise<A> {
   });
 }
 
+class SteeringCasLostError extends Error {
+  constructor() {
+    super("queued steering CAS lost");
+    this.name = "SteeringCasLostError";
+  }
+}
+
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS managed_session_executions (
     workspace_id TEXT NOT NULL,
@@ -547,7 +554,7 @@ export class SqlSessionExecutionStore
         if (!isCasConflict(error)) throw error;
       }
     }
-    const already = await this.findOwnedAttempt(input.ownerId, input.attemptId);
+    const already = await this.findOwnedAttempt(input.ownerId, input.attemptId, input.workspaceId, input.sessionId);
     return already ?? { type: "empty" };
   }
 
@@ -576,7 +583,7 @@ export class SqlSessionExecutionStore
       ? await this.claimSerial(input, claimedAt, candidate)
       : await this.claimByRevision(input, claimedAt, candidate);
     if (claimed !== null) return claimed;
-    const already = await this.findOwnedAttempt(input.ownerId, input.attemptId);
+    const already = await this.findOwnedAttempt(input.ownerId, input.attemptId, input.workspaceId, input.sessionId);
     if (already !== null) return already;
     throw new CasConflict({
       op: "session_execution.claim",
@@ -590,7 +597,7 @@ export class SqlSessionExecutionStore
     input: ClaimSessionExecution, claimedAt: number, serial: boolean,
   ): Promise<ClaimSessionExecutionResult> {
     const transactions = this.sql.rowLockTransactions!;
-    const already = await this.findOwnedAttempt(input.ownerId, input.attemptId);
+    const already = await this.findOwnedAttempt(input.ownerId, input.attemptId, input.workspaceId, input.sessionId);
     if (already?.type === "claimed" && already.execution.attempt !== null
       && Date.parse(already.execution.attempt.leaseExpiresAt) > claimedAt
       && Date.parse(already.execution.deadlineAt) > claimedAt
@@ -1020,11 +1027,18 @@ export class SqlSessionExecutionStore
   private async findOwnedAttempt(
     ownerId: string,
     attemptId: string,
+    workspaceId?: string,
+    sessionId?: string,
   ): Promise<ClaimSessionExecutionResult | null> {
     const row = await this.sql.prepare(`
       SELECT ${columns()} FROM managed_session_executions
        WHERE owner_id = ? AND attempt_id = ? AND state = 'running'
-    `).bind(ownerId, attemptId).first<ExecutionRow>();
+         AND (? = 1 OR workspace_id = ?)
+         AND (? = 1 OR session_id = ?)
+    `).bind(ownerId, attemptId,
+      workspaceId === undefined ? 1 : 0, workspaceId ?? null,
+      sessionId === undefined ? 1 : 0, sessionId ?? null,
+    ).first<ExecutionRow>();
     return row === null ? null : this.claimedResult(row);
   }
 
@@ -1268,6 +1282,10 @@ export class SqlSessionExecutionStore
     if (fence.workspaceId !== input.workspaceId || fence.sessionId !== input.sessionId || fence.executionId === input.executionId) return { type: "not_steerable" };
     const candidate = await this.find({ workspaceId: input.workspaceId, executionId: input.executionId });
     if (!candidate || candidate.sessionId !== input.sessionId || candidate.state !== "queued" || candidate.heldAfterExhaustedAt !== null) return { type: "not_steerable" };
+    // Consumer authority is a separate admission check. The CAS below only
+    // consumes the queued execution; it deliberately does not embed consumer
+    // lease predicates or touch the consumer row.
+    if (!(await this.consumerFenceIsActive(fence, candidate.laneId, steeredAt))) return { type: "not_steerable" };
     const documents = [];
     for (const id of new Set(candidate.events.map(event => event.id))) {
       const row = await this.sql.prepare(`SELECT document FROM managed_session_events
@@ -1282,56 +1300,63 @@ export class SqlSessionExecutionStore
         : JSON.stringify(event);
       documents.push({ id, previous: row.document, document, consumed: decoded.consumedByExecutionId !== undefined });
     }
-    // Use the existing per-session mutex and SqlClient's atomic batch contract
-    // (D1, SQLite, PG and MySQL). Lock rows before checking the read snapshots:
-    // concurrent claims, consumption, renewals and cancellation cannot split
-    // the queued -> completed transition from B2's document + timestamp CAS.
-    const token = crypto.randomUUID();
-    await this.sql.prepare(`INSERT INTO managed_session_claim_locks
-      (workspace_id, session_id, claim_token, version) VALUES (?, ?, ?, 0)
-      ON CONFLICT (workspace_id, session_id) DO NOTHING`)
-      .bind(input.workspaceId, input.sessionId, token).run();
-    const gate = `EXISTS (SELECT 1 FROM managed_session_claim_locks
-      WHERE workspace_id = ? AND session_id = ? AND claim_token = ? AND holder_execution_id = ?)`;
-    const gateArgs = [input.workspaceId, input.sessionId, token, input.executionId];
-    const results = await this.sql.batch([
-      this.sql.prepare(`UPDATE managed_session_claim_locks
-        SET claim_token = ?, holder_execution_id = NULL, version = version + 1
-        WHERE workspace_id = ? AND session_id = ?`).bind(token, input.workspaceId, input.sessionId),
-      this.sql.prepare(`UPDATE managed_session_executions SET revision = revision
-        WHERE workspace_id = ? AND id IN (?, ?)`)
-        .bind(input.workspaceId, fence.executionId, input.executionId),
-      ...documents.map(row => this.sql.prepare(`UPDATE managed_session_events SET document = document
-        WHERE workspace_id = ? AND session_id = ? AND id = ?`)
-        .bind(input.workspaceId, input.sessionId, row.id)),
-      this.sql.prepare(`UPDATE managed_session_claim_locks SET holder_execution_id = ?
-        WHERE workspace_id = ? AND session_id = ? AND claim_token = ?
-          AND EXISTS (SELECT 1 FROM managed_session_executions WHERE workspace_id = ? AND id = ?
-            AND session_id = ? AND lane_id = ? AND state = 'running'
-            AND attempt_id = ? AND owner_id = ? AND generation = ? AND lease_expires_at_ms > ?)
-          AND EXISTS (SELECT 1 FROM managed_session_executions WHERE workspace_id = ? AND id = ?
-            AND state = 'queued' AND held_after_exhausted_ms IS NULL AND revision = ?)
-          ${documents.map(() => `AND EXISTS (SELECT 1 FROM managed_session_events
-            WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?)`).join("\n")}`)
-        .bind(input.executionId, input.workspaceId, input.sessionId, token,
-          input.workspaceId, fence.executionId, input.sessionId, candidate.laneId,
-          fence.attemptId, fence.ownerId, fence.generation, steeredAt,
-          input.workspaceId, input.executionId, candidate.revision,
-          ...documents.flatMap(row => [input.workspaceId, input.sessionId, row.id, row.previous])),
-      ...documents.filter(row => !row.consumed).map(row => this.sql.prepare(`UPDATE managed_session_events SET document = ?, processed_at = ?
-        WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ? AND ${gate}`)
-        .bind(row.document, steeredAt, input.workspaceId, input.sessionId, row.id, row.previous, ...gateArgs)),
+    // Consume with optimistic CAS. Every event update is guarded by its
+    // document snapshot, and the queued execution update repeats those guards
+    // plus the queued revision. Adapters with batchChecked validate all row
+    // counts before commit, so a competing edit rolls back the whole batch;
+    // the fallback still has one atomic batch for D1/DO.
+    const eventStatements = documents.filter(row => !row.consumed).map(row => this.sql.prepare(`UPDATE managed_session_events
+      SET document = ?, processed_at = ?
+      WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?`)
+      .bind(row.document, steeredAt, input.workspaceId, input.sessionId, row.id, row.previous));
+    const eventGuards = documents.map(row => `AND EXISTS (SELECT 1 FROM managed_session_events
+      WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?)`).join("\n");
+    const eventGuardArgs = documents.flatMap(row => [input.workspaceId, input.sessionId, row.id, row.consumed ? row.previous : row.document]);
+    const statements = [
+      ...eventStatements,
       this.sql.prepare(`UPDATE managed_session_executions
         SET state = 'completed', settled_at_ms = ?, failure = NULL, revision = revision + 1
-        WHERE workspace_id = ? AND id = ? AND state = 'queued' AND revision = ? AND ${gate}`)
-        .bind(steeredAt, input.workspaceId, input.executionId, candidate.revision, ...gateArgs),
-    ]);
-    if (results.at(-1)?.meta.changes !== 1) return { type: "not_steerable" };
+        WHERE workspace_id = ? AND id = ? AND session_id = ? AND state = 'queued'
+          AND held_after_exhausted_ms IS NULL AND revision = ?
+          ${eventGuards}`)
+        .bind(steeredAt, input.workspaceId, input.executionId, input.sessionId, candidate.revision, ...eventGuardArgs),
+    ];
+    const validate = (results: Array<{ meta: { changes: number } }>) => {
+      if (results.length !== statements.length || results.some(result => result.meta.changes !== 1)) throw new SteeringCasLostError();
+    };
+    let results: Array<{ meta: { changes: number } }>;
+    try {
+      results = this.sql.batchChecked
+        ? await this.sql.batchChecked(statements, validate)
+        : await this.sql.batch(statements);
+    } catch (error) {
+      if (error instanceof SteeringCasLostError) return { type: "not_steerable" };
+      throw error;
+    }
+    if (results.length !== statements.length || results.some(result => result.meta.changes !== 1)) return { type: "not_steerable" };
     // Return the facts committed by the consumption CAS, not the admission
     // snapshot (whose explicit null stamp is excluded from model context).
     const consumed = new Map(documents.map(row => [row.id, decodeSessionEventDocument(row.document).event]));
     const events = candidate.events.map(event => ({ ...event, processedAt: consumed.get(event.id)!.processedAt ?? input.steeredAt }));
     return { type: "steered", execution: { ...candidate, events, state: "completed", settledAt: input.steeredAt, revision: candidate.revision + 1 } };
+  }
+
+  private async consumerFenceIsActive(
+    fence: SessionExecutionFence,
+    laneId: string,
+    atMs: number,
+  ): Promise<boolean> {
+    const consumer = await this.find({
+      workspaceId: fence.workspaceId,
+      executionId: fence.executionId,
+    });
+    const attempt = consumer?.attempt;
+    return consumer !== null && consumer !== undefined && consumer.state === "running"
+      && consumer.sessionId === fence.sessionId && consumer.laneId === laneId
+      && attempt !== null && attempt !== undefined
+      && attempt.id === fence.attemptId && attempt.ownerId === fence.ownerId
+      && attempt.generation === fence.generation
+      && Date.parse(attempt.leaseExpiresAt) > atMs;
   }
 
   async listQueued(input: {
