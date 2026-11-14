@@ -381,9 +381,24 @@ export function createNodeManagedAcpWorkItemRunner(
                 isFinalizationFailure(error) ? "finalization" : phase, error,
               );
             const errors: unknown[] = [failure];
-            try { await active?.stop(workSignal.aborted ? "aborted" : "failed"); }
-            catch (cleanupError) { errors.push(cleanupError); }
-            const completion = isFinalizationFailure(error) ? error.completion : undefined;
+            const finalizationFailure = isFinalizationFailure(error) ? error : undefined;
+            // A finalization failure still owns the physical runtime until its
+            // canonical outcome is recovered and published. Stopping the
+            // runtime first invalidates the host's physical-current fence and
+            // turns a recoverable terminal interruption into authority_changed.
+            // after-terminal is the exception: the Work terminal was already
+            // published, so there is no failure settlement left to perform.
+            const terminalPublished = finalizationFailure?.terminalState === "published" || finalizationFailure?.phase === "after-terminal";
+            const settleBeforeStop = finalizationFailure !== undefined && !terminalPublished;
+            let stopped = false;
+            const stopActive = async () => {
+              if (stopped) return;
+              stopped = true;
+              try { await active?.stop(workSignal.aborted ? "aborted" : "failed"); }
+              catch (cleanupError) { errors.push(cleanupError); }
+            };
+            if (!settleBeforeStop) await stopActive();
+            const completion = finalizationFailure?.completion;
             const turnId = completion?.sessionId === sessionId ? completion.turnId : admittedTurn;
             // A run that failed before this process admitted any canonical turn
             // (e.g. a not-dispatched permission/readiness refusal in the
@@ -396,7 +411,7 @@ export function createNodeManagedAcpWorkItemRunner(
             // Aborted, failed-run and failed-finalization paths keep Work
             // recoverable. Common finally cannot settle them, even when its
             // heartbeat has not yet observed a successor.
-            if (!workSignal.aborted && errors.length === 1 && recoveryAware && failure.phase !== "startup" && !preAdmission && !(error instanceof WorkVerifierExitUnconfirmedError) && !(isFinalizationFailure(error) && error.phase === "drain-turn")) {
+            if (!workSignal.aborted && errors.length === 1 && recoveryAware && failure.phase !== "startup" && !preAdmission && !(error instanceof WorkVerifierExitUnconfirmedError) && !(finalizationFailure?.phase === "drain-turn") && !terminalPublished) {
               try {
                 if (!turnId) throw new Error("Current canonical Work turn unavailable for failure settlement");
                 await settleFailure(turnId, failure.phase, workSignal);
@@ -410,6 +425,7 @@ export function createNodeManagedAcpWorkItemRunner(
                 catch { await requestStartup("startup-failed",body); }
               } catch (settlementError) { errors.push(settlementError); }
             }
+            if (settleBeforeStop) await stopActive();
             if (errors.length > 1) {
               throw new AggregateError(errors, failure.message, { cause: failure });
             }
@@ -422,7 +438,7 @@ export function createNodeManagedAcpWorkItemRunner(
   };
 }
 
-function isFinalizationFailure(error: unknown): error is Error & {phase?: string;completion: {sessionId:string;turnId:string}} {
+function isFinalizationFailure(error: unknown): error is Error & {phase?: string;terminalState?: "not-published"|"unknown"|"published";completion: {sessionId:string;turnId:string}} {
   if (!(error instanceof Error) || error.name !== "ManagedHarnessFinalizationError") return false;
   const completion = (error as {completion?: {sessionId?: unknown;turnId?: unknown}}).completion;
   return typeof completion?.sessionId === "string" && typeof completion.turnId === "string" && completion.turnId.length > 0;

@@ -88,20 +88,40 @@ it("runs the E2B cleanup-only CLI without loading the agent spawner", async () =
 it("unknown terminal ACK reads the original receipt and publishes without work-failed or model replay", async () => {
  const calls:string[]=[];let admission:{admitted(turnId:string):void}|undefined;
  const unknown=Object.assign(new Error("terminal response lost"),{name:"ManagedHarnessFinalizationError",phase:"terminal",terminalState:"unknown",completion:{type:"session.complete",sessionId:"s",turnId:"turn"}});
- let recovered=false;
+ let recovered=false;let stopped=false;
  const runner=createNodeManagedAcpWorkItemRunner({environment,recovery:{resolveTurn:async()=>"turn"},
-  supervisorFactory:hooks=>{admission=hooks;return {serve:async()=>{},resolveHarness:async()=>({start:async()=>{calls.push("model");admission!.admitted("turn");recovered=true;return {completed:Promise.reject(unknown),drain:async()=>{},stop:async()=>{calls.push("drained-stop");}};}})};},
+  supervisorFactory:hooks=>{admission=hooks;return {serve:async()=>{},resolveHarness:async()=>({start:async()=>{calls.push("model");admission!.admitted("turn");recovered=true;return {completed:Promise.reject(unknown),drain:async()=>{},stop:async()=>{calls.push("drained-stop");stopped=true;}};}})};},
   fetch:async(raw)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
    if(action==="startup-boundary")return Response.json({revision:3});
    if(action==="work-recovery")return Response.json(recovered?{type:"committed",revision:4,terminal}:{type:"run",turnId:"turn",revision:3});
+   if(action==="work-publish"&&stopped)throw Error("physical authority was released before terminal publication");
    if(action==="work-publish")return Response.json({type:"published",revision:4,terminal});
    throw Error("unsafe call "+action);
   },
   lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("whole-Work stop");}},
   scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))},
  });
+ // The supervisor runtime is the physical fence. The test's `stop` callback
+ // marks that fence released; Work publication must precede it.
  await expect(runner.run()).rejects.toMatchObject({phase:"finalization"});
- expect(calls).toEqual(["work-recovery","startup-boundary","model","drained-stop","work-recovery","work-publish"]);
+ expect(calls).toEqual(["work-recovery","startup-boundary","model","work-recovery","work-publish","drained-stop"]);
+});
+
+it("does not settle or republish after the Work terminal is already published", async () => {
+ const calls:string[]=[];let admission:{admitted(turnId:string):void}|undefined;
+ const published=Object.assign(new Error("post-publication cleanup failed"),{name:"ManagedHarnessFinalizationError",phase:"after-terminal",terminalState:"published",completion:{type:"session.complete",sessionId:"s",turnId:"turn"}});
+ const runner=createNodeManagedAcpWorkItemRunner({environment,recovery:{resolveTurn:async()=>"turn"},
+  supervisorFactory:hooks=>{admission=hooks;return {serve:async()=>{},resolveHarness:async()=>({start:async()=>{calls.push("model");admission!.admitted("turn");return {completed:Promise.reject(published),drain:async()=>{},stop:async()=>{calls.push("drained-stop");}};}})};},
+  fetch:async(raw)=>{const action=new URL(String(raw)).pathname.split('/').at(-1)!;calls.push(action);
+   if(action==="work-recovery")return Response.json({type:"run",turnId:"turn",revision:3});
+   if(action==="startup-boundary")return Response.json({revision:3});
+   throw Error("published terminal must not be settled again: "+action);
+  },
+  lifecycleClient:{ack:async()=>({}),heartbeat:async()=>({last_heartbeat:"one",lease_extended:true,state:"running",ttl_seconds:90}),stop:async()=>{throw Error("whole-Work stop");}},
+  scheduler:{sleep:async(_ms,signal)=>new Promise<void>((_,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))},
+ });
+ await expect(runner.run()).rejects.toMatchObject({phase:"finalization"});
+ expect(calls).toEqual(["work-recovery","startup-boundary","model","drained-stop"]);
 });
 
 it("does not settle a turn until failed-run cleanup has actually drained",async()=>{

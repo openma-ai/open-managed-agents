@@ -1,4 +1,4 @@
-import { log as logInfo } from "@open-managed-agents/shared/log";
+import { log as logInfo, logWarn } from "@open-managed-agents/shared/log";
 import { randomUUID } from "node:crypto";
 import type { AcpSession, ClientCallbacks } from "@openma/common/acp-runtime";
 import type { ManagedHarnessHttpScheduler, ManagedHarnessWireSession, RuntimeResourceScope } from "@openma/common/managed-runtime";
@@ -203,10 +203,34 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
             } else index++;
           }
           if (completingTurnId && deferredChildEvents.length) throw new Error("Native child lineage has no canonical parent tool");
-          await output.projected([...rootEvents,...children], batch.events.some(event =>
-            event.type === "session.error" || event.type === "session.status_terminated" ||
-            (event.type === "session.status_idle" && isRecord(event.stop_reason) && event.stop_reason.type === "end_turn")));
-          if (completingTurnId !== undefined) await finalizer!.complete(completingTurnId);
+          const terminalTurnId = completingTurnId;
+          if (terminalTurnId !== undefined) logInfo({op:"acp.terminal.boundary",session_id:input.scope.sessionId,
+            work_id:input.scope.workId,claim_generation:connectionClaim.generation,turn_id:terminalTurnId,
+            event_types:batch.events.map(event => event.type),projected_count:rootEvents.length+children.length},
+            "Native terminal boundary reached before Work finalization");
+          try {
+            await output.projected([...rootEvents,...children], batch.events.some(event =>
+              event.type === "session.error" || event.type === "session.status_terminated" ||
+              (event.type === "session.status_idle" && isRecord(event.stop_reason) && event.stop_reason.type === "end_turn")));
+          } catch (error) {
+            if (terminalTurnId !== undefined) logWarn({op:"acp.terminal.output_failed",session_id:input.scope.sessionId,
+              work_id:input.scope.workId,claim_generation:connectionClaim.generation,turn_id:terminalTurnId,err:error},
+              "Native terminal output projection failed before Work finalization");
+            throw error;
+          }
+          if (terminalTurnId !== undefined) {
+            logInfo({op:"acp.work_finalize.start",session_id:input.scope.sessionId,work_id:input.scope.workId,
+              claim_generation:connectionClaim.generation,turn_id:terminalTurnId},"Starting Work terminal finalization");
+            try {
+              await finalizer!.complete(terminalTurnId);
+              logInfo({op:"acp.work_finalize.complete",session_id:input.scope.sessionId,work_id:input.scope.workId,
+                claim_generation:connectionClaim.generation,turn_id:terminalTurnId},"Work terminal finalization completed");
+            } catch (error) {
+              logWarn({op:"acp.work_finalize.failed",session_id:input.scope.sessionId,work_id:input.scope.workId,
+                claim_generation:connectionClaim.generation,turn_id:terminalTurnId,err:error},"Work terminal finalization failed");
+              throw error;
+            }
+          }
           return Response.json({ recorded: batch.events.length });
         },
         eventIds: { next: () => `sevt_${randomUUID()}` },
@@ -330,7 +354,16 @@ export function createWorkTurnCoordinator(options: WorkTurnCoordinatorOptions): 
           assertMode();
           if(event.type==='session.event'&&isRecord(event.event))output.nativeTool(event.event);
           if (event.type === "session.complete") completingTurnId = event.turnId;
+          if (event.type === "session.complete") logInfo({op:"acp.terminal.publish_requested",session_id:input.scope.sessionId,
+            work_id:input.scope.workId,claim_generation:connectionClaim.generation,turn_id:event.turnId},
+            "Native terminal publication requested");
           try { await channel.publish(event); }
+          catch (error) {
+            if (event.type === "session.complete") logWarn({op:"acp.terminal.publish_failed",session_id:input.scope.sessionId,
+              work_id:input.scope.workId,claim_generation:connectionClaim.generation,turn_id:event.turnId,err:error},
+              "Native terminal publication failed");
+            throw error;
+          }
           finally { completingTurnId = undefined; }
           if (event.type === "session.disposed" || event.type === "session.error" ||
               (event.type === "session.complete" && event.turnId === callbackOwnerTurnId)) closePermissions();
