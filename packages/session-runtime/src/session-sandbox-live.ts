@@ -40,6 +40,11 @@ export function isSandboxLossError(error: unknown): boolean {
   return false;
 }
 
+/** Maintenance waits at most this long for the durable read/acknowledgement
+ * after the provider confirms release. A slow provider is still allowed to
+ * complete; a late read cannot publish an acknowledgement for that attempt. */
+const MAINTENANCE_RELEASE_WAIT_MS = 1_000;
+
 /** Owner wait for its own release outcome: longer than an adapter's bounded
  * managed-process exit confirmation (local subprocess: 2s), shorter than a
  * host's sandbox disposal cap (Node runner: 5s). */
@@ -276,15 +281,16 @@ export class LiveSessionSandbox<R> {
     if (pending.length === 0) return record;
     // Advance even on permanent failure. A hung item never monopolizes later ticks.
     const entry = pending[this.releaseCursor++ % pending.length]!;
-    const operation = this.releaseOperation(record, entry.handle, execution);
-    // Deadline bounds caller waiting, NOT the real provider/DB operation.
-    // The map retains that operation until it truly settles (no assumed abort).
+    const operation = this.releaseOperation(record, entry.handle, execution, MAINTENANCE_RELEASE_WAIT_MS);
+    // Deadline bounds caller waiting and this attempt's acknowledgement, NOT
+    // the real provider/DB operation. The map retains that operation until it
+    // truly settles (no assumed abort).
     // Maintenance never fails its caller: releaseEntry already warned, and the
     // durable retired entry stays pending for a later tick.
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([operation, new Promise<SessionSandboxState>(resolve => {
-        timer = setTimeout(() => resolve(record), 1_000);
+        timer = setTimeout(() => resolve(record), MAINTENANCE_RELEASE_WAIT_MS);
       })]);
     } catch {
       return record;
@@ -312,29 +318,32 @@ export class LiveSessionSandbox<R> {
     } finally { if (timer !== undefined) clearTimeout(timer); }
   }
 
-  private releaseOperation(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {
+  private releaseOperation(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined, acknowledgementWindowMs?: number): Promise<SessionSandboxState> {
     const key = JSON.stringify(handle);
     let operation = this.releaseInflight.get(key);
     if (operation === undefined) {
-      operation = this.releaseEntry(record, handle, execution);
+      operation = this.releaseEntry(record, handle, execution, acknowledgementWindowMs);
       this.releaseInflight.set(key, operation);
       void operation.finally(() => { if (this.releaseInflight.get(key) === operation) this.releaseInflight.delete(key); }).catch(() => undefined);
     }
     return operation;
   }
 
-  private async releaseEntry(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined): Promise<SessionSandboxState> {
+  private async releaseEntry(record: SessionSandboxState, handle: SandboxHandle, execution: SessionSandboxExecution | undefined, acknowledgementWindowMs?: number): Promise<SessionSandboxState> {
     let saved = record;
     try {
       const { ports } = await this.compose();
       if (!await this.isCurrent(execution)) return saved;
       await ports.sandbox.release({ scope: this.scope(), handle });
+      const acknowledgementDeadline = acknowledgementWindowMs === undefined ? undefined : this.now() + acknowledgementWindowMs;
       for (let attempt = 0; attempt < 3; attempt++) {
         if (!await this.isCurrent(execution)) return saved;
         const current = await this.load();
         // Caller timeout is not authority loss. Late acknowledgement still
         // requires the current fence and an exact record CAS.
+        if (acknowledgementDeadline !== undefined && this.now() >= acknowledgementDeadline) return saved;
         if (!await this.isCurrent(execution)) return saved;
+        if (acknowledgementDeadline !== undefined && this.now() >= acknowledgementDeadline) return saved;
         const next = transition(current, { type: "handleReleased", handle });
         if (await this.options.state.save(next, current.version)) {
           saved = next;
