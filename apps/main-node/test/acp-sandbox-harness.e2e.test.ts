@@ -126,9 +126,16 @@ describe("ACP sandbox harness", () => {
         agent: agent.acp!.agent,
         stateRoot: "/oma/harness-state",
       });
-      await expect(sandbox.readFile("state-path.txt")).resolves.toBe(
-        stateBinding.nativePath,
+      // LocalSubprocessSandbox translates the container's /tmp native-state
+      // root into its per-test workdir. Compare the value the child actually
+      // received with that local materialization, while keeping the binding
+      // itself in the logical container namespace.
+      const localNativePath = join(
+        workdir,
+        ".oma-native-state",
+        stateBinding.nativePath.slice("/tmp/openma-harness-state/".length),
       );
+      await expect(sandbox.readFile("state-path.txt")).resolves.toBe(localNativePath);
       const manifest = JSON.parse(await sandbox.readFile(
         "/oma/harness-state/acp/session_acp_machine/claude-code/v1/session-binding.json",
       ));
@@ -712,7 +719,7 @@ describe("ACP sandbox harness", () => {
         )) as { adapter_id: string; session_artifacts: unknown[] };
         expect(manifest.adapter_id).toBe(expectedAdapterId);
         expect(manifest.session_artifacts).toEqual(binding.sessionArtifacts);
-        await expect(readFile(`${binding.nativePath}/started`, "utf8"))
+        await expect(sandbox.readFile(`${binding.nativePath}/started`))
           .resolves.toBe(agentId);
         expect(events).toContainEqual(expect.objectContaining({
           type: "agent.message",
