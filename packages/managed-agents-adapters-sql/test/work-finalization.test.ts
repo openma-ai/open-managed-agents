@@ -100,6 +100,17 @@ describe("Work finalization canonical boundary",()=>{
   expect(await f.app.publish({claim,turnId:"input",revision:4,terminalEventId:terminal.id})).toMatchObject({type:"failed",phase:"finalization",terminal:{stopReason:{type:"end_turn"}}});
   expect(await f.app.fail({...request,revision:4,phase:"finalization"})).toMatchObject({type:"committed",terminal:{stopReason:{type:"end_turn"}}});expect(await events(f.sql)).toHaveLength(1);
  });
+ it("allows idempotent terminal publication to finish after Session archive",async()=>{
+  const f=await fixture();await f.app.finalize(request);const terminal=(await events(f.sql))[0];
+  await f.sql.exec("UPDATE managed_sessions SET archived_at=1,revision=5");
+  expect(await f.app.recover({claim,turnId:"input"})).toMatchObject({type:"committed",revision:5,terminal:{eventId:terminal.id}});
+  expect(await f.app.publish({claim,turnId:"input",revision:5,terminalEventId:terminal.id})).toMatchObject({type:"published",revision:5,terminal:{eventId:terminal.id}});
+ });
+ it("does not admit an archived consumed turn without a terminal",async()=>{
+  const f=await fixture();await f.sql.exec("UPDATE managed_sessions SET archived_at=1");
+  expect(await f.app.recover({claim,turnId:"input"})).toMatchObject({type:"rejected",reason:"session_archived"});
+  expect(await f.app.fail({...request,phase:"run"})).toMatchObject({type:"rejected",reason:"session_archived"});
+ });
  it("rolls back terminal when claim changes at the SQL CAS rather than trusting preflight",async()=>{
   const f=await fixture();let inject=true;
   const intercept=async()=>{if(inject){inject=false;await f.sql.exec("UPDATE managed_environment_work SET claim_worker_id='new'");}};

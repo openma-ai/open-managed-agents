@@ -79,6 +79,7 @@ export class WorkTurnActivities {
     this.drained = false;
     this.prompts = this.completions = this.inFlightPrompts = 0;
     this.joins.clear(); this.opaque.clear(); this.nativeTools.clear(); this.children.clear(); this.invalid = undefined;
+    workActivityDiagnostic("admit", { turnId });
   }
 
   register(turnId: string, id: string, completion: Promise<unknown>): void {
@@ -98,26 +99,60 @@ export class WorkTurnActivities {
   async drain(context: WorkFinalizationContext): Promise<void> {
     if (this.turn !== context.command.turnId) throw new Error("Work activity drain identity mismatch");
     this.closed = true;
+    workActivityDiagnostic("drain_start", {
+      turnId: context.command.turnId,
+      prompts: this.prompts,
+      completions: this.completions,
+      inFlightPrompts: this.inFlightPrompts,
+      joins: this.joins.size,
+      opaque: this.opaque.size,
+      nativeTools: this.nativeTools.size,
+      children: this.children.size,
+    });
     context.signal.throwIfAborted();
     if (this.inFlightPrompts || !this.prompts || this.prompts !== this.completions) {
+      workActivityDiagnostic("drain_rejected", {
+        turnId: context.command.turnId,
+        reason: "prompt_completion_unproven",
+        prompts: this.prompts,
+        completions: this.completions,
+        inFlightPrompts: this.inFlightPrompts,
+      });
       throw new Error("ACP prompt completion is unproven");
     }
-    await abortableJoin(Promise.all(this.joins.values()), context.signal);
-    if (this.invalid) throw this.invalid;
+    try { await abortableJoin(Promise.all(this.joins.values()), context.signal); }
+    catch (error) {
+      workActivityDiagnostic("drain_rejected", { turnId: context.command.turnId, reason: "join_failed", error: diagnosticError(error) });
+      throw error;
+    }
+    if (this.invalid) {
+      workActivityDiagnostic("drain_rejected", { turnId: context.command.turnId, reason: "invalid_activity", error: diagnosticError(this.invalid) });
+      throw this.invalid;
+    }
     for (const [id, tool] of this.nativeTools) {
       const synchronous = this.nativeContract && !tool.detached
         && (tool.status === "completed" || tool.status === "failed")
         && tool.kind !== undefined && (tool.kind !== "execute" || tool.exited || (this.terminalStatusProvesExit && tool.shell === true));
-      if (!synchronous && !this.joins.has(id)) throw new Error(`Work native activity completion unproven: ${id}`);
+      if (!synchronous && !this.joins.has(id)) {
+        workActivityDiagnostic("drain_rejected", { turnId: context.command.turnId, reason: "native_activity_unproven", id, kind: tool.kind, status: tool.status, detached: tool.detached, exited: tool.exited });
+        throw new Error(`Work native activity completion unproven: ${id}`);
+      }
     }
     for (const [id, done] of this.children) {
-      if (!done && !this.joins.has(`child:${id}`)) throw new Error(`Work native child completion unproven: ${id}`);
+      if (!done && !this.joins.has(`child:${id}`)) {
+        workActivityDiagnostic("drain_rejected", { turnId: context.command.turnId, reason: "child_completion_unproven", id });
+        throw new Error(`Work native child completion unproven: ${id}`);
+      }
     }
     for (const id of this.opaque) {
-      if (!this.joins.has(id)) throw new Error(`Work activity completion unproven: ${id}; provider must supply an actual tool/subagent join`);
+      if (!this.joins.has(id)) {
+        workActivityDiagnostic("drain_rejected", { turnId: context.command.turnId, reason: "opaque_activity_unproven", id });
+        throw new Error(`Work activity completion unproven: ${id}; provider must supply an actual tool/subagent join`);
+      }
     }
     context.signal.throwIfAborted();
     this.drained = true;
+    workActivityDiagnostic("drain_complete", { turnId: context.command.turnId });
   }
 
   wrapRuntime(runtime: AcpRuntime): AcpRuntime {
@@ -174,6 +209,7 @@ export class WorkTurnActivities {
         if (property === "prompt") return async function*(...args: Parameters<AcpSession["prompt"]>) {
           if (!activities.turn || activities.closed) throw new Error("Work prompt activity admission is closed");
           activities.prompts++; activities.inFlightPrompts++;
+          workActivityDiagnostic("prompt_start", { turnId: activities.turn, promptNumber: activities.prompts });
           let completed = false;
           try {
             for await (const event of target.prompt(...args)) {
@@ -182,6 +218,7 @@ export class WorkTurnActivities {
               yield event;
             }
             if (completed) activities.completions++;
+            workActivityDiagnostic("prompt_end", { turnId: activities.turn, completed, prompts: activities.prompts, completions: activities.completions });
           } finally { activities.inFlightPrompts--; }
         };
         const value = Reflect.get(target, property, target) as unknown;
@@ -242,6 +279,14 @@ export class WorkTurnActivities {
       if (!this.turn || this.closed) this.invalid = new Error("Unproven activity arrived after admission closed");
     }
   }
+}
+function workActivityDiagnostic(event: string, fields: Record<string, unknown>): void {
+  try { console.warn(JSON.stringify({ op: `acp.work_activity.${event}`, ...fields })); }
+  catch { /* Diagnostics cannot affect activity semantics. */ }
+}
+function diagnosticError(error: unknown): { name: string; message: string } {
+  if (error instanceof Error) return { name: error.name, message: error.message.slice(0, 300) };
+  return { name: typeof error, message: String(error).slice(0, 300) };
 }
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
 async function abortableJoin(operation: Promise<unknown>, signal: AbortSignal): Promise<void> {

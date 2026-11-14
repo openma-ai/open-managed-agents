@@ -23,19 +23,20 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
   private get clock(){return this.dialect==="postgres" ? "floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
     : this.dialect==="mysql" ? "floor(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)"
     : "(CAST(strftime('%s','now') AS INTEGER)*1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";}
-  private async revision({claim:c}:WorkTurnRequest):Promise<number|null>{
-    const row=await this.sql.prepare(`SELECT revision FROM managed_sessions s WHERE workspace_id=? AND id=? AND environment_id=? AND archived_at IS NULL
+  private async revision({claim:c}:WorkTurnRequest):Promise<{revision:number;archived:boolean}|null>{
+    const row=await this.sql.prepare(`SELECT revision, archived_at FROM managed_sessions s WHERE workspace_id=? AND id=? AND environment_id=?
       AND EXISTS(SELECT 1 FROM managed_environment_work w WHERE w.workspace_id=s.workspace_id AND w.session_id=s.id AND w.environment_id=? AND w.id=?
         AND w.state IN ('starting','active','stopping') AND w.claim_generation=? AND ${this.dialect==='mysql'?'BINARY w.claim_worker_id=BINARY ?':'w.claim_worker_id=?'} AND w.claim_at IS NOT NULL
         AND w.claim_at+w.heartbeat_ttl_seconds*1000>${this.clock})`)
-      .bind(c.workspaceId,c.sessionId,c.environmentId,c.environmentId,c.workId,c.generation,c.holder).first<{revision:number}>();
-    return row===null?null:Number(row.revision);
+      .bind(c.workspaceId,c.sessionId,c.environmentId,c.environmentId,c.workId,c.generation,c.holder).first<{revision:number;archived_at:number|null}>();
+    return row===null?null:{revision:Number(row.revision),archived:row.archived_at!==null};
   }
   private async load(input:WorkTurnRequest):Promise<{state:WorkTurnState;pendingRequestIds?:string[];source?:Row & {decoded:Source}}>{
     const c=input.claim;
     if(![c.workspaceId,c.sessionId,c.environmentId,c.workId,c.holder,input.turnId].every(v=>typeof v==="string"&&v.length>0)||!Number.isSafeInteger(c.generation)||c.generation<1)return {state:reject("claim")};
-    const revision=await this.revision(input);
-    if(revision===null)return {state:reject("claim")};
+    const revisionRow=await this.revision(input);
+    if(revisionRow===null)return {state:reject("claim")};
+    const revision=revisionRow.revision;
     const [events,initial]=await Promise.all([
       this.sql.prepare("SELECT document FROM managed_session_events WHERE workspace_id=? AND session_id=?").bind(c.workspaceId,c.sessionId).all<Row>(),
       this.sql.prepare("SELECT document,sequence FROM managed_session_initial_events WHERE workspace_id=? AND session_id=?").bind(c.workspaceId,c.sessionId).all<Row>(),
@@ -54,6 +55,11 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
     // Pending successors do not invalidate admission of the earlier root.
     // Bootstrap chooses canonical order; this read never consumes either input.
     const { rows, source, terminal } = plan;
+    // Archiving ends admission and sandbox ownership, but it must not erase a
+    // terminal already committed by this Work. Cleanup publication is
+    // idempotent and may finish after the client archives the Session; an
+    // archived, non-terminal turn can never be admitted or settled here.
+    if (revisionRow.archived && terminal === null) return {state:reject("session_archived")};
     if(!terminal && source.decoded.consumedByExecutionId===undefined) {
       // Admission is distinct from terminal evidence. Reuse the shared parked
       // call planner; its latest status is never a committed-turn receipt.
@@ -71,8 +77,8 @@ export class SqlWorkFinalization implements WorkFinalizationPersistencePort {
       if(work?.state==="stopping")return {state:reject("work_stopping")};
     }
     const latestRevision = await this.revision(input);
-    if(latestRevision!==revision) {
-      console.warn(JSON.stringify({op:"work.finalization.authority_changed",session_id:c.sessionId,work_id:c.workId,generation:c.generation,turn_id:input.turnId,initial_revision:revision,latest_revision:latestRevision}));
+    if(latestRevision===null || latestRevision.revision!==revision) {
+      console.warn(JSON.stringify({op:"work.finalization.authority_changed",session_id:c.sessionId,work_id:c.workId,generation:c.generation,turn_id:input.turnId,initial_revision:revision,latest_revision:latestRevision?.revision ?? null,latest_archived:latestRevision?.archived ?? null}));
       return {state:reject("authority_changed")};
     }
     return {state:{type:"current",revision,consumed:source.decoded.consumedByExecutionId===input.turnId,terminal},source,pendingRequestIds:plan.pendingRequestIds};

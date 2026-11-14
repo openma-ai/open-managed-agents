@@ -35,15 +35,24 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
   }
   async function capture(scope: WorkFinalizationScope & {terminal?: import("@open-managed-agents/managed-agents-application").WorkTerminalReceipt}) {
     const c = scope.claim;
-    const row = await deps.sql.prepare(`SELECT sandbox_token_hashes, claim_at, heartbeat_ttl_seconds FROM managed_environment_work
+    const diagnostic = (stage: string, details: Record<string, unknown>) => {
+      console.warn(JSON.stringify({op:"work.finalization.capture_diagnostic",stage,workspace_id:c.workspaceId,
+        environment_id:c.environmentId,session_id:c.sessionId,work_id:c.workId,generation:c.generation,...details}));
+    };
+    const row = await deps.sql.prepare(`SELECT sandbox_token_hashes, claim_at, heartbeat_ttl_seconds, state FROM managed_environment_work
       WHERE workspace_id=? AND environment_id=? AND session_id=? AND id=? AND claim_generation=? AND claim_worker_id=?
       AND state IN ('starting','active','stopping') AND claim_at+heartbeat_ttl_seconds*1000>${clock}`)
-      .bind(c.workspaceId,c.environmentId,c.sessionId,c.workId,c.generation,c.holder).first<{sandbox_token_hashes:string|null;claim_at:number;heartbeat_ttl_seconds:number}>();
+      .bind(c.workspaceId,c.environmentId,c.sessionId,c.workId,c.generation,c.holder).first<{sandbox_token_hashes:string|null;claim_at:number;heartbeat_ttl_seconds:number;state:string}>();
     const hashes: unknown = JSON.parse(row?.sandbox_token_hashes ?? "[]");
     if (!row || !Array.isArray(hashes)) throw new Error("Physical Work holder lost");
     const holderDocument = row.sandbox_token_hashes!;
     const held = hashes.filter(h => h?.s === "all" && /^[a-f0-9]{64}$/.test(h?.h));
-    if (held.length !== 1 || !await scope.isCurrent()) throw new Error("Physical Work holder lost");
+    const scopeCurrent = held.length === 1 && await scope.isCurrent();
+    if (!scopeCurrent) {
+      diagnostic("sql-fence", {held_hash_count:held.length,scope_current:scopeCurrent,
+        claim_state:row?.state ?? null});
+      throw new Error("Physical Work holder lost");
+    }
     const sqlCurrent = async () => {
       const latest = await deps.sql.prepare(`SELECT sandbox_token_hashes FROM managed_environment_work
         WHERE workspace_id=? AND environment_id=? AND session_id=? AND id=? AND claim_generation=? AND claim_worker_id=?
@@ -58,7 +67,12 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
     if (facade && !facade.boundToWorkAttempt(environmentWorkSandboxTokenRef(c))) facade = undefined;
     const physical = facade ? await facade.captureWork(environmentWorkSandboxTokenRef(c), true) : await (async () => {
       const [session, environment] = await Promise.all([new SqlSessionSource(deps.sql).find(c),new SqlSessionEnvironmentSource(deps.sql).find(c)]);
-      if (!session || session.archivedAt !== null || session.environmentId !== c.environmentId || !environment || environment.archivedAt !== null) throw new Error("Work reconnect context unavailable");
+      // A terminal publication can race the client's archive request. The
+      // terminal is already immutable at this point, so reconnect may use the
+      // archived Session's environment metadata; non-terminal finalization
+      // still requires a live Session and is rejected closed.
+      if (!session || (session.archivedAt !== null && scope.terminal === undefined)
+        || session.environmentId !== c.environmentId || !environment || environment.archivedAt !== null) throw new Error("Work reconnect context unavailable");
       return deps.sandboxes.reconnectWork({workspaceId:c.workspaceId,session,environment,
         sourceAttempt:environmentWorkSandboxTokenRef({...c,generation:scope.terminal?.generation ?? c.generation,workId:scope.terminal?.workId ?? c.workId}),
         terminal:scope.terminal !== undefined,
@@ -72,14 +86,31 @@ export async function createNodeWorkFinalizationHost(deps: NodeWorkFinalizationH
     const physicalCurrent = async () => {
       const saved = await deps.sql.prepare('SELECT value FROM kv_entries WHERE tenant_id=? AND "key"=?')
         .bind(c.workspaceId, `session_sandbox_state:${c.sessionId}`).first<{value:string}>();
-      if (!saved) return false;
+      if (!saved) {
+        diagnostic("sandbox-record", {record_present:false,physical_provider:physical.handle.provider,
+          physical_runtime_id:physical.handle.runtimeId});
+        return false;
+      }
       const state = JSON.parse(saved.value);
-      return state.phase === "running" && state.handle.provider === physical.handle.provider
+      const current = state.phase === "running" && state.handle.provider === physical.handle.provider
         && state.handle.runtimeId === physical.handle.runtimeId;
+      if (!current) diagnostic("sandbox-record", {record_present:true,record_phase:state.phase ?? null,
+        record_provider:state.handle?.provider ?? null,record_runtime_id:state.handle?.runtimeId ?? null,
+        physical_provider:physical.handle.provider,physical_runtime_id:physical.handle.runtimeId});
+      return current;
     };
     const current = async () => {
-      if (!await scope.isCurrent() || !await physical.workAuthority.isCurrent() || !await physicalCurrent()) return false;
-      if (facade && deps.sandboxes.get({workspaceId:c.workspaceId,session:{id:c.sessionId}}) !== facade) return false;
+      const scopeCurrent = await scope.isCurrent();
+      const workCurrent = await physical.workAuthority.isCurrent();
+      const runtimeCurrent = await physicalCurrent();
+      if (!scopeCurrent || !workCurrent || !runtimeCurrent) {
+        diagnostic("current-fence", {scope_current:scopeCurrent,work_current:workCurrent,runtime_current:runtimeCurrent});
+        return false;
+      }
+      if (facade && deps.sandboxes.get({workspaceId:c.workspaceId,session:{id:c.sessionId}}) !== facade) {
+        diagnostic("facade", {facade_current:false});
+        return false;
+      }
       const row = await deps.sql.prepare(`SELECT sandbox_token_hashes FROM managed_environment_work
         WHERE workspace_id=? AND environment_id=? AND session_id=? AND id=? AND claim_generation=? AND claim_worker_id=?
         AND state IN ('starting','active','stopping') AND claim_at+heartbeat_ttl_seconds*1000>${clock}`)

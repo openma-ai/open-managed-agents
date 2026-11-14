@@ -380,6 +380,13 @@ export function createNodeManagedAcpWorkItemRunner(
               ? error : new NodeManagedAcpWorkItemFailure(
                 isFinalizationFailure(error) ? "finalization" : phase, error,
               );
+            workItemDiagnostic("failure", {
+              sessionId,
+              workId,
+              turnId: admittedTurn,
+              phase: failure.phase,
+              error: diagnosticError(error),
+            });
             const errors: unknown[] = [failure];
             const finalizationFailure = isFinalizationFailure(error) ? error : undefined;
             // A finalization failure still owns the physical runtime until its
@@ -442,6 +449,16 @@ function isFinalizationFailure(error: unknown): error is Error & {phase?: string
   if (!(error instanceof Error) || error.name !== "ManagedHarnessFinalizationError") return false;
   const completion = (error as {completion?: {sessionId?: unknown;turnId?: unknown}}).completion;
   return typeof completion?.sessionId === "string" && typeof completion.turnId === "string" && completion.turnId.length > 0;
+}
+
+function workItemDiagnostic(event: string, fields: Record<string, unknown>): void {
+  try { console.warn(JSON.stringify({ op: `acp.work_item.${event}`, ...fields })); }
+  catch { /* Diagnostics cannot affect recovery. */ }
+}
+
+function diagnosticError(error: unknown): { name: string; message: string } {
+  if (error instanceof Error) return { name: error.name, message: error.message.slice(0, 300) };
+  return { name: typeof error, message: String(error).slice(0, 300) };
 }
 
 /** Capability preflight only; default composition is built automatically. */

@@ -21,6 +21,7 @@ type CommandResult = { stdout: string; stderr: string; exitCode: number };
 type CommandHandle = {
   pid: number;
   kill(): Promise<boolean | void>;
+  disconnect?(): Promise<void>;
   wait?(): Promise<CommandResult>;
   sendStdin?(data: string | Uint8Array): Promise<void>;
   closeStdin?(): Promise<void>;
@@ -34,6 +35,7 @@ type CommandOptions = {
   onStderr?(data: string): void | Promise<void>;
   stdin?: boolean;
 };
+type CommandConnectOptions = Pick<CommandOptions, "timeoutMs" | "onStdout" | "onStderr">;
 type CommandRun = (command: string, options?: CommandOptions) => Promise<CommandResult | CommandHandle>;
 
 function deferred<T>() {
@@ -287,6 +289,59 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(kill).toHaveBeenCalledOnce();
     // An acknowledged kill cannot retroactively make the failed exit barrier safe.
     await expect(child.exited).rejects.toThrow("connection reset");
+  });
+
+  it("reattaches a live command after a snapshot interrupts its stream", async () => {
+    const firstWait = deferred<CommandResult>();
+    const resumedWait = deferred<CommandResult>();
+    const first = { pid: 9, kill: vi.fn(async () => true), wait: () => firstWait.promise, sendStdin: vi.fn(async () => {}), closeStdin: vi.fn(async () => {}) };
+    const resumed = { pid: 9, kill: vi.fn(async () => true), wait: vi.fn(() => resumedWait.promise), sendStdin: vi.fn(async () => {}), closeStdin: vi.fn(async () => {}) };
+    const connect = vi.fn(async (_pid: number, _options?: CommandConnectOptions) => resumed);
+    const sb = remote({ commands: {
+      run: vi.fn<CommandRun>(async (_command: string) => first),
+      connect,
+    } });
+    const runtime = new E2BSandboxExecutor(sb as never, {});
+    const child = await runtime.spawnDuplexProcess({ command: "agent" });
+    firstWait.reject(new Error("sandbox stream interrupted by snapshot"));
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledWith(9, expect.objectContaining({ timeoutMs: 0 })));
+    resumedWait.resolve({ stdout: "", stderr: "", exitCode: 0 });
+    await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+    expect(resumed.wait).toHaveBeenCalled();
+  });
+
+  it("detaches active duplex commands around a full snapshot and reattaches them", async () => {
+    const firstWait = deferred<CommandResult>();
+    const resumedWait = deferred<CommandResult>();
+    const order: string[] = [];
+    const first = {
+      pid: 12,
+      kill: vi.fn(async () => true),
+      disconnect: vi.fn(async () => { order.push("disconnect"); firstWait.reject(new Error("detached")); }),
+      wait: () => firstWait.promise,
+      sendStdin: vi.fn(async () => {}),
+      closeStdin: vi.fn(async () => {}),
+    };
+    const resumed = {
+      pid: 12,
+      kill: vi.fn(async () => true),
+      wait: vi.fn(() => resumedWait.promise),
+      sendStdin: vi.fn(async () => {}),
+      closeStdin: vi.fn(async () => {}),
+    };
+    const sb = remote({
+      commands: {
+        run: vi.fn<CommandRun>(async () => first),
+        connect: vi.fn(async () => { order.push("connect"); return resumed; }),
+      },
+      createSnapshot: vi.fn(async () => { order.push("snapshot"); return { snapshotId: "snap-handoff", names: [] }; }),
+    });
+    const runtime = new E2BSandboxExecutor(sb as never, {});
+    const child = await runtime.spawnDuplexProcess({ command: "agent" });
+    await expect(runtime.checkpoint({ kind: "memory" })).resolves.toMatchObject({ checkpointId: "snap-handoff" });
+    expect(order).toEqual(["disconnect", "snapshot", "connect"]);
+    resumedWait.resolve({ stdout: "", stderr: "", exitCode: 0 });
+    await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
   });
 
   it("maps duplex kill/abort and all wait rejection shapes", async () => {

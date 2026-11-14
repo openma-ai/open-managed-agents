@@ -47,6 +47,7 @@ interface E2BCommandResult {
 interface E2BCommandHandle {
   pid: number;
   kill(): Promise<boolean | void>;
+  disconnect?(): Promise<void>;
   wait?(): Promise<E2BCommandResult>;
   sendStdin?(data: string | Uint8Array): Promise<void>;
   closeStdin?(): Promise<void>;
@@ -60,6 +61,16 @@ interface E2BCommandOptions {
   onStderr?: (data: string) => void | Promise<void>;
   stdin?: boolean;
   user?: string;
+}
+interface E2BCommandConnectOptions {
+  timeoutMs?: number;
+  onStdout?: (data: string) => void | Promise<void>;
+  onStderr?: (data: string) => void | Promise<void>;
+}
+
+interface ActiveDuplexProcess {
+  pid: () => number;
+  suspendForCheckpoint: () => Promise<() => Promise<void>>;
 }
 /** The template start step (template/template.mjs), with pins read from the
  * root-owned installation manifest the template build already verified. */
@@ -78,6 +89,10 @@ export interface E2BSandboxLike {
       cmd: string,
       opts?: E2BCommandOptions,
     ): Promise<E2BCommandResult | E2BCommandHandle>;
+    /** Reattach to a still-running command after a provider transport reset.
+     * E2B full snapshots briefly pause the sandbox and can terminate the
+     * original stdout/stderr stream without killing the command. */
+    connect?(pid: number, opts?: E2BCommandConnectOptions): Promise<E2BCommandHandle>;
   };
   files: {
     read(path: string, opts?: { user?: string }): Promise<string>;
@@ -230,6 +245,7 @@ export class E2BSandboxExecutor
   private managedDestroyed = false;
   private readonly managedRecovery = new Set<Promise<unknown>>();
   private readonly managedStarts = new Set<Promise<SandboxManagedProcessHandle>>();
+  private readonly activeDuplexProcesses = new Set<ActiveDuplexProcess>();
   private readonly managedBootstrap?: E2BManagedBootstrapOptions;
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
@@ -375,14 +391,32 @@ export class E2BSandboxExecutor
     // memory: the SDK default (full); filesystem: disk only, the sandbox
     // started from it cold-boots.
     const opts = { ...(input.name ? { name: input.name } : {}), ...(input.kind === "filesystem" ? { mode: "filesystem" as const } : {}) };
-    const snapshot = await this.sandbox.createSnapshot(Object.keys(opts).length === 0 ? undefined : opts);
-    return {
-      provider: "e2b",
-      checkpointId: snapshot.snapshotId,
-      sourceRuntimeId: runtimeId,
-      kind: input.kind,
-      scope: "portable",
-    };
+    const resumes: Array<() => Promise<void>> = [];
+    try {
+      // Full snapshots pause the guest while the SDK's live command streams
+      // remain attached to the old transport. Detach those streams first so
+      // the command stays alive and can be reattached after the snapshot.
+      for (const process of this.activeDuplexProcesses) {
+        resumes.push(await process.suspendForCheckpoint());
+      }
+      const snapshot = await this.sandbox.createSnapshot(Object.keys(opts).length === 0 ? undefined : opts);
+      return {
+        provider: "e2b",
+        checkpointId: snapshot.snapshotId,
+        sourceRuntimeId: runtimeId,
+        kind: input.kind,
+        scope: "portable",
+      };
+    } finally {
+      for (const resume of resumes.reverse()) {
+        try { await resume(); }
+        catch (error) {
+          this.logger.warn("E2B duplex command stream failed to reattach after snapshot", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
   }
 
   /** Snapshot this sandbox's filesystem only (`mode: "filesystem"`) as a
@@ -544,7 +578,7 @@ export class E2BSandboxExecutor
     const command = [...(unset.length ? ["env", ...unset, "--"] : []), spec.command, ...(spec.args ?? [])]
       .map(shellEscape)
       .join(" ");
-    const handle = (await this.sandbox.commands.run(command, {
+    let handle = (await this.sandbox.commands.run(command, {
       background: true,
       stdin: true,
       // E2B otherwise closes the process event stream after 60 seconds.
@@ -580,8 +614,13 @@ export class E2BSandboxExecutor
       (resolve, reject) => { resolveExited = resolve; rejectExited = reject; },
     );
     void exited.catch(() => undefined);
+    let checkpointing = false;
+    let checkpointResume: Promise<void> | null = null;
+    let resolveCheckpointResume: (() => void) | null = null;
+    let rejectCheckpointResume: ((error: unknown) => void) | null = null;
     const finish = (code: number | null, signal: string | null, error?: Error) => {
       settleStreams(error);
+      this.activeDuplexProcesses.delete(activeProcess);
       if (exitedSettled) return;
       exitedSettled = true;
       if (error) rejectExited(error);
@@ -590,18 +629,115 @@ export class E2BSandboxExecutor
         resolveExited({ code, signal });
       }
     };
-    void handle.wait().then(
-      (result) => finish(result.exitCode, requestedSignal),
-      (cause: unknown) => {
-        const exitCode = readExitCode(cause);
-        if (exitCode !== null) {
-          finish(exitCode, requestedSignal);
+    const reconnectAfterTransportLoss = async (cause: unknown): Promise<boolean> => {
+      const connect = this.sandbox.commands.connect;
+      if (typeof connect !== "function") return false;
+      const deadline = Date.now() + 60_000;
+      let delayMs = 100;
+      while (Date.now() < deadline && !exitedSettled) {
+        try {
+          const next = await connect.call(this.sandbox.commands, handle.pid, {
+            timeoutMs: 0,
+            onStdout: (data) => enqueue(stdoutController, data),
+            onStderr: (data) => enqueue(stderrController, data),
+          });
+          if (!next || next.pid !== handle.pid || typeof next.wait !== "function") return false;
+          handle = next;
+          this.logger.warn("E2B duplex command stream reconnected after transport loss", {
+            pid: handle.pid,
+            cause: cause instanceof Error ? cause.name : typeof cause,
+          });
+          return true;
+        } catch (error) {
+          // A snapshot can leave the sandbox briefly unavailable. A confirmed
+          // process/sandbox loss is handled by the caller's next failure path;
+          // retry only while the provider may still be resuming the same PID.
+          if (Date.now() >= deadline) return false;
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          delayMs = Math.min(2_000, delayMs * 2);
+          void error;
+        }
+      }
+      return false;
+    };
+    const activeProcess: ActiveDuplexProcess = {
+      pid: () => handle.pid,
+      suspendForCheckpoint: async () => {
+        if (exitedSettled || typeof handle.disconnect !== "function" || typeof this.sandbox.commands.connect !== "function") {
+          if (!exitedSettled) this.logger.warn("E2B snapshot left duplex stream attached; SDK lacks detach/reattach", { pid: handle.pid });
+          return async () => {};
+        }
+        if (checkpointing && checkpointResume) {
+          await checkpointResume;
+          return async () => {};
+        }
+        checkpointing = true;
+        checkpointResume = new Promise<void>((resolve, reject) => {
+          resolveCheckpointResume = resolve;
+          rejectCheckpointResume = reject;
+        });
+        void checkpointResume.catch(() => undefined);
+        try {
+          await handle.disconnect();
+          this.logger.warn("E2B duplex command stream detached before snapshot", { pid: handle.pid });
+        } catch (error) {
+          checkpointing = false;
+          rejectCheckpointResume?.(error);
+          checkpointResume = null;
+          resolveCheckpointResume = null;
+          rejectCheckpointResume = null;
+          throw error;
+        }
+        return async () => {
+          try {
+            if (!await reconnectAfterTransportLoss(new Error("snapshot handoff"))) {
+              throw new Error(`E2B command ${handle.pid} could not be reattached after snapshot`);
+            }
+            this.logger.warn("E2B duplex command stream reattached after snapshot", { pid: handle.pid });
+            resolveCheckpointResume?.();
+          } catch (error) {
+            rejectCheckpointResume?.(error);
+            throw error;
+          } finally {
+            checkpointing = false;
+            checkpointResume = null;
+            resolveCheckpointResume = null;
+            rejectCheckpointResume = null;
+          }
+        };
+      },
+    };
+    this.activeDuplexProcesses.add(activeProcess);
+    const waitForExit = async () => {
+      while (!exitedSettled) {
+        try {
+          const result = await handle.wait!();
+          finish(result.exitCode, requestedSignal);
+          return;
+        } catch (cause) {
+          if (checkpointing && checkpointResume) {
+            try {
+              await checkpointResume;
+              continue;
+            } catch (error) {
+              const failure = error instanceof Error ? error : new Error(String(error));
+              finish(null, null, failure);
+              return;
+            }
+          }
+          const exitCode = readExitCode(cause);
+          if (exitCode !== null) {
+            finish(exitCode, requestedSignal);
+            return;
+          }
+          if (await reconnectAfterTransportLoss(cause)) continue;
+          const error = cause instanceof Error ? cause : new Error(String(cause));
+          finish(null, null, error);
           return;
         }
-        const error = cause instanceof Error ? cause : new Error(String(cause));
-        finish(null, null, error);
-      },
-    );
+      }
+    };
+    void waitForExit();
 
     const stdin = new WritableStream<Uint8Array>({
       write: async (chunk) => {
