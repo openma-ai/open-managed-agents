@@ -100,7 +100,11 @@ export class WorkFinalizationApplication {
     if(state.type!=="current")return state;
     if(state.revision!==input.revision || state.terminal?.eventId!==input.terminalEventId)return rejected("terminal_revision");
     if(!this.dependencies.host)return {type:"unavailable",phase:"finalization"};
-    const scope=this.scope(input,input.terminalEventId);
+    // Terminal persistence is immutable for this turn, but lifecycle and
+    // usage events may be appended while physical artifacts are published.
+    // Keep the terminal event/claim fence exact while accepting a monotonic
+    // revision advance from that same turn.
+    const scope=this.scope(input,input.terminalEventId,true);
     try {
       const result=await this.dependencies.host.publish({...scope,terminal:state.terminal});
       if(!await scope.isCurrent())return rejected("authority_changed");
