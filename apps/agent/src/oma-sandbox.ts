@@ -48,6 +48,11 @@ import {
 import { recordBackup } from "./runtime/workspace-backups";
 
 const BACKUP_TTL_SEC = 7 * 24 * 3600;
+// A failed s3fs/FUSE child can daemonize and leave the SDK's interactive
+// mount exchange open forever. Bound the operation so the session receives a
+// durable mount error instead of remaining in_progress until the container is
+// reclaimed.
+const S3_MOUNT_TIMEOUT_MS = 45_000;
 const BACKUP_CTX_KEY = "oma_backup_ctx";
 // Per-container persistent storage of billing context — survives across
 // onStart/onStop cycles within the same DO. We need both the (tenant,
@@ -866,18 +871,24 @@ timeout 10 sh -c 'until [ -s ${CA} ]; do sleep 0.1; done' && cat ${SYSTEM_CA} ${
         continue;
       }
       const credentials = this.mountCredentials(mount);
-      await this.mounts.mount({
-        mountPath: mount.mountPath,
-        source: {
-          type: "s3",
-          endpoint: mount.endpoint,
-          region: "auto",
-          bucket: mount.bucket,
-          credentials: { type: "static", ...credentials },
-        },
-        keyPrefix: mount.keyPrefix,
-        access: mount.access,
-      } as any);
+      const signal = AbortSignal.timeout(S3_MOUNT_TIMEOUT_MS);
+      try {
+        await this.mounts.mount({
+          mountPath: mount.mountPath,
+          source: {
+            type: "s3",
+            endpoint: mount.endpoint,
+            region: "auto",
+            bucket: mount.bucket,
+            credentials: { type: "static", ...credentials },
+          },
+          keyPrefix: mount.keyPrefix,
+          access: mount.access,
+        } as any, { signal });
+      } catch (error) {
+        console.error(`[oma-sandbox] S3 mount failed path=${mount.mountPath} timeout_ms=${S3_MOUNT_TIMEOUT_MS}`, error);
+        throw error;
+      }
     }
   }
 

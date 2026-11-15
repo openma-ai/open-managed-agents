@@ -11,6 +11,8 @@ import { Hono } from "hono";
 import { configuredCfEnvironmentWorker } from "./runtime/cf-environment-worker";
 import { CF_WORK_DISPATCH_PATH, dispatchCfWorkRunnerRequest } from "./runtime/cf-work-runner-entry";
 import type { Env } from "@open-managed-agents/shared";
+import { S3Gateway as CloudflareS3Gateway } from "@cloudflare/sandbox";
+import { missingS3fsFolderMarker } from "./runtime/s3-folder-marker-compat";
 
 // --- Register harnesses ---
 import {
@@ -27,7 +29,13 @@ export { OmaSandbox as Sandbox, OmaOutbound } from "./oma-sandbox";
 export * from "./operator-sandboxes";
 
 // Sandbox SDK 1.0 helpers — DirectoryBackup / S3Mount reach these via ctx.exports.
-export { DirectoryBackupGateway, S3Gateway } from "@cloudflare/sandbox";
+export { DirectoryBackupGateway } from "@cloudflare/sandbox";
+export class S3Gateway extends CloudflareS3Gateway {
+  override async fetch(request: Request): Promise<Response> {
+    const marker = missingS3fsFolderMarker(request, (this.ctx as unknown as { props: unknown }).props);
+    return marker ?? await super.fetch(request);
+  }
+}
 
 // Legacy no-op stubs kept for older imports / tests.
 export { outbound, outboundByHost } from "./outbound";
