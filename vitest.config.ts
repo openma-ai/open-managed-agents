@@ -462,9 +462,13 @@ export default defineConfig({
     },
     // Each file owns a workerd/miniflare runtime. Letting Vitest scale to all
     // host CPUs exhausts the local runtime and turns trivial requests into
-    // exact 30s timeouts; two workers keeps the suite deterministic on local
-    // workerd while CI runners with fewer cores still use their natural limit.
-    maxWorkers: 2,
+    // exact 30s timeouts. CI can opt into a single worker because the
+    // workerd RPC pool must finish all pending requests before teardown;
+    // concurrent file shutdowns otherwise surface as
+    // `EnvironmentTeardownError: Closing rpc while "resolve" was pending`.
+    maxWorkers: Number(process.env.OMA_CF_VITEST_MAX_WORKERS ?? 2),
+    fileParallelism: process.env.OMA_CF_VITEST_SERIAL === "1" ? false : undefined,
+    reporters: process.env.OMA_CF_VITEST_VERBOSE === "1" ? ["verbose"] : undefined,
     // Vitest 5 fsModuleCache warm-snapshots are inlined into a single
     // workerd WebSocket frame by @cloudflare/vitest-plugin
     // (cloudflare/workers-sdk#16349). Our import graph exceeds the 32 MiB

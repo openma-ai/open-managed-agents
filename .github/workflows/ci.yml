@@ -204,7 +204,37 @@ jobs:
         run: pnpm typecheck:ci:cf
 
       - name: CF tests
-        run: pnpm test:ci:cf
+        env:
+          # Workerd's RPC pool must drain before its file environments close.
+          # Serializing root CF files removes the shutdown race while keeping
+          # the normal local developer profile at two workers.
+          OMA_CF_VITEST_MAX_WORKERS: 1
+          OMA_CF_VITEST_SERIAL: "1"
+          OMA_CF_VITEST_VERBOSE: "1"
+        run: |
+          set -o pipefail
+          pnpm test:ci:cf |& tee "$RUNNER_TEMP/cf-tests.log"
+
+      - name: CF test diagnostics
+        if: ${{ failure() }}
+        run: |
+          echo "=== CF runner diagnostics ==="
+          node --version
+          pnpm --version
+          echo "=== tail of CF test log ==="
+          if [ -f "$RUNNER_TEMP/cf-tests.log" ]; then
+            tail -240 "$RUNNER_TEMP/cf-tests.log"
+          else
+            echo "CF test log was not created"
+          fi
+
+      - name: Upload CF test log
+        if: ${{ failure() && hashFiles(format('{0}/cf-tests.log', runner.temp)) != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-tests-${{ github.run_id }}
+          path: ${{ runner.temp }}/cf-tests.log
+          if-no-files-found: error
 
   node:
     needs: changes
