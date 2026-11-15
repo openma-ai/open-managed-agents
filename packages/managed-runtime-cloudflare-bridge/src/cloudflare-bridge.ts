@@ -804,7 +804,12 @@ export function createCloudflareBridgeProvider(
       const claimed = await fetch(baseUrl + "/v1/sandbox/" + encodeURIComponent(body.id) + "/claim", {
         method: "POST", headers: { authorization: "Bearer " + options.apiKey },
       });
-      if (!claimed.ok) throw await responseError(claimed);
+      // The official Cloudflare Sandbox Bridge API owns an allocation at
+      // create time and does not expose the newer OpenMA `/claim` extension.
+      // Keep the extension when a deployment implements it, but accept a
+      // deliberate 404 so the provider can talk to the official API. Any
+      // other response is still a real allocation failure.
+      if (!claimed.ok && claimed.status !== 404) throw await responseError(claimed);
       return runtime;
     } catch (error) {
       await runtime.destroy().catch(() => undefined);

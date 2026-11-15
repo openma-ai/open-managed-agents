@@ -96,6 +96,27 @@ it("persists the runtime handle before acknowledging allocation ownership", asyn
   expect(claims).toBe(1);
 });
 
+it("accepts the official Bridge allocation when the optional claim extension is absent", async () => {
+  const { createCloudflareBridgeProvider } = await import("../src/cloudflare-bridge");
+  const store = new InMemoryBlobStore();
+  const provider = createCloudflareBridgeProvider({
+    baseUrl: "https://bridge.test",
+    apiKey: "key",
+    checkpointStore: store,
+    fetch: async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/sandbox") return Response.json({ id: "official-allocation" });
+      if (path.endsWith("/claim")) return new Response("Not Found", { status: 404 });
+      if (path.endsWith("/running")) return Response.json({ running: true });
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  const runtime = await provider.create({ sessionId: "session", workdir: "/workspace" }, {});
+  expect(runtime.runtimeHandle().runtimeId).toBe("official-allocation");
+  expect(await store.get("cloudflare-bridge-workspaces/allocations/official-allocation.json")).not.toBeNull();
+});
+
 it.each(["http", "not-sse"])("kills allocated process if events connection fails: %s", async failure => {
  let running=false;
  const store=new InMemoryBlobStore();
