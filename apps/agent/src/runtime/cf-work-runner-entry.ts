@@ -45,7 +45,7 @@ export async function dispatchCfWorkRunnerRequest(request: Request, env: Env, ow
       const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(JSON.stringify([input.workspaceId, input.sessionId])));
       return await stub.fetch(new Request("https://internal" + CF_WORK_DISPATCH_PATH, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input), signal: request.signal }));
     }
-    if (owner && (provider !== "e2b" || env.SESSION_DO?.idFromName(JSON.stringify([input.workspaceId, input.sessionId])).toString() !== owner.id || owner.hasSessionExecution)) throw new Error("Work resource owner mismatch");
+    if (owner && provider === "e2b" && (env.SESSION_DO?.idFromName(JSON.stringify([input.workspaceId, input.sessionId])).toString() !== owner.id || owner.hasSessionExecution)) throw new Error("Work resource owner mismatch");
     // Validate the complete deployment inventory before DB/token/provider work,
     // using the same pure parser as the in-sandbox supervisor.
     stage = "inventory";
