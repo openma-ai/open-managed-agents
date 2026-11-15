@@ -3,10 +3,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
+const isVitest=Boolean(globalThis.__vitest_worker__)||Boolean(process.env.VITEST);
+const { test }=await import(isVitest?"vitest":"node:test");
 let source="";
 try { source=readFileSync(join(process.cwd(),"apps/agent/src/runtime/session-do.ts"),"utf8"); } catch {}
-const sourceShapeTest = process.env.VITEST ? { skip: "source-shape checks run in the Node architecture harness" } : {};
+const sourceShapeTest = isVitest ? { skip: "source-shape checks run in the Node architecture harness" } : {};
 test("the general execution boundary cannot emit idle for a sandbox/tool job failure",sourceShapeTest,()=>{
  const run=source.slice(source.indexOf("private async runLaneExecution("),source.indexOf("private async runLaneExecution(")+12000);
  const generalCatch=run.slice(run.indexOf("} catch (err) {"),run.indexOf("} finally {"));
