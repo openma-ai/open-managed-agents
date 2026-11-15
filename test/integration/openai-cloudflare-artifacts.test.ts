@@ -87,12 +87,12 @@ describe("Cloudflare Agents API automatic artifact publication", () => {
   it("durably reports a derived publication read failure after completion and DO recreation", async () => {
     workspace.clear(); failedReads = 0; failPublicationRead = true;
     const { faux, models } = artifactPublicationModel();
-    registerHarness("default", () => ({ async run(ctx) {
+    registerHarness("artifact-failure", () => ({ async run(ctx) {
       workspace.set("/workspace/outputs/failure.txt", new TextEncoder().encode("retained"));
       await new PiHarness().run({ ...ctx, pi: { models, model: faux.getModel(), thinkingLevel: "off", speed: "standard" } });
     } }));
     try {
-      const session = await json<{id:string}>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6" }, environment: { type: "openai_hosted" }, input: "write" }) }));
+      const session = await json<{id:string}>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6", harness: "artifact-failure" }, environment: { type: "openai_hosted" }, input: "write" }) }));
       await expect.poll(() => failedReads, { timeout: 15_000 }).toBe(1);
       await expect.poll(async () => (await testEnv.MAIN_DB.prepare("SELECT state FROM managed_session_executions WHERE session_id=? ORDER BY admitted_at_ms DESC LIMIT 1").bind(session.id).first<{state:string}>())?.state, {timeout:15_000}).toBe("completed");
       const verify = async () => {
@@ -146,7 +146,7 @@ describe("Cloudflare Agents API automatic artifact publication", () => {
     let turns = 0;
     let releaseFirstTurn!: () => void;
     const firstTurnMayFinish = new Promise<void>(resolve => { releaseFirstTurn = resolve; });
-    registerHarness("default", () => ({
+    registerHarness("artifact-dedup", () => ({
       async run(ctx) {
         for (const [path, bytes] of Object.entries(files[turns++] ?? {})) workspace.set(path, bytes);
         if (turns === 1) await firstTurnMayFinish;
@@ -154,7 +154,7 @@ describe("Cloudflare Agents API automatic artifact publication", () => {
       },
     }));
 
-    const session = await json<{ id: string }>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6" }, environment: { type: "openai_hosted" } }) }));
+    const session = await json<{ id: string }>(await request("/agents/sessions", { method: "POST", body: JSON.stringify({ agent: { model: "claude-sonnet-4-6", harness: "artifact-dedup" }, environment: { type: "openai_hosted" } }) }));
     const path = `/agents/sessions/${session.id}`;
 
     // Disconnect while the first turn is running. The durable turn must still
