@@ -67,7 +67,13 @@ export async function startCfWorkPeer(){
    child=fork(supervisor,[],{stdio:["ignore","pipe","pipe","ipc"],env:{...process.env,RESOURCE_CHILD_FIXTURE:JSON.stringify(childConfig)}});exited=false;
    child.once("exit",code=>{exited=true;observations.push({type:"exit",code});});child.on("message",(m:any)=>{if(m.type==="published")publications.push(m);else if(m.type==="failed")observations.push(m);});
    child.stdout!.on("data",()=>{});child.stderr!.on("data",b=>observations.push({type:"stderr",text:String(b)}));
-   const stat=await readFile(`/proc/${child.pid}/stat`,"utf8");const startTicks=stat.slice(stat.lastIndexOf(")")+2).split(" ")[19];json({pid:child.pid,startTicks});return;
+   // Linux exposes process start ticks through /proc. The local black-box
+   // runner also executes on macOS, where /proc is absent; use a per-launch
+   // monotonic fixture token there. Production observers still validate the
+   // same numeric wire shape and Linux CI continues to use kernel ticks.
+   let startTicks=String(Date.now());
+   try { const stat=await readFile(`/proc/${child.pid}/stat`,"utf8"); startTicks=stat.slice(stat.lastIndexOf(")")+2).split(" ")[19] ?? startTicks; } catch { /* macOS fixture host */ }
+   json({pid:child.pid,startTicks});return;
   }
   if(url.pathname==="/discard"){
    if(!/^local-[a-f0-9-]+$/.test(input.id))throw Error("Unknown local snapshot");

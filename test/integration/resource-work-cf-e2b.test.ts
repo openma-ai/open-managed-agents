@@ -59,13 +59,13 @@ it("CF E2B Work executing child chain: Skill script, Memory across restart, read
  const work=new SqlEnvironmentWorkStore(sql,{seal:async({plaintext})=>({ciphertext:await cipher.encrypt(plaintext)}),open:async({ciphertext})=>({plaintext:await cipher.decrypt(ciphertext)})});
  await work.insert({workspaceId:"default",record:{work:{id:claim.workId,environmentId:environment.id,data:{type:"session",id:session.id},state:"active",createdAt:now,acknowledgedAt:now,latestHeartbeatAt:now,startedAt:now,metadata:{},stopRequestedAt:null,stoppedAt:null},secret:{sessionsToken:token},claim:{generation:1,workerId:claim.holder,claimedAt:now},heartbeatTtlSeconds:300}});
  const configured={...env,SANDBOX_ADAPTER:"e2b",PUBLIC_BASE_URL:peer,E2B_API_KEY:"fixture-only",E2B_TEMPLATE:"trusted-local",E2B_MAX_LIFETIME_MS:"3600000",R2_ACCESS_KEY_ID:undefined,R2_SECRET_ACCESS_KEY:undefined,R2_FILES_ACCESS_KEY_ID:undefined,R2_FILES_SECRET_ACCESS_KEY:undefined,MAIN_MCP:undefined,OPENMA_ACP_HARNESSES:JSON.stringify([{id:"claude-acp",version:"0.94.0",command:"/usr/bin/node"}])};
- let runtimeId="",alive=false,slot:any=null,allocation=0;const management=new Map<string,string>();
+ let runtimeId="",alive=false,slot:any=null,allocation=0;const runtimeAlive=new Map<string,boolean>(),management=new Map<string,string>();
  const io=async(method:string,...args:unknown[])=>(await remote("/io",{method,args})).result;
  e2b.handlers={
-  create:async(source:string)=>{runtimeId="local-e2b-"+(++allocation);alive=true;slot=null;management.clear();await remote("/provision",{sessionId:session.id,mounts:[]});if(source.startsWith("local-"))await remote("/restore",{id:source});return runtimeId;},
-  connect:async(id:string)=>{if(!alive||id!==runtimeId)throw Object.assign(Error("sandbox gone"),{status:404,name:"NotFoundError"});},
-  inspect:async(id:string)=>({data:alive&&id===runtimeId?{sandboxID:runtimeId,state:"running",lifecycle:{autoResume:false},envdVersion:"fixture",envdAccessToken:"fixture"}:null}),
-  kill:async()=>{await remote("/stop");alive=false;return true;},
+  create:async(source:string)=>{runtimeId="local-e2b-"+(++allocation);alive=true;runtimeAlive.set(runtimeId,true);slot=null;management.clear();await remote("/provision",{sessionId:session.id,mounts:[]});if(source.startsWith("local-"))await remote("/restore",{id:source});return runtimeId;},
+  connect:async(id:string)=>{if(!runtimeAlive.get(id))throw Object.assign(Error("sandbox gone"),{status:404,name:"NotFoundError"});},
+  inspect:async(id:string)=>({data:runtimeAlive.get(id)?{sandboxID:id,state:"running",lifecycle:{autoResume:false},envdVersion:"fixture",envdAccessToken:"fixture"}:null}),
+  kill:async(id:string)=>{if(!runtimeAlive.get(id))return true;await remote("/stop");runtimeAlive.set(id,false);if(id===runtimeId)alive=false;return true;},
   snapshot:async()=>({snapshotId:(await remote("/checkpoint")).backup.id}),
   deleteSnapshot:async(id:string)=>{await remote("/discard",{id});},
   run:async(command:string)=>{const result=parseExecResult(await io("exec",command));console.log(JSON.stringify({op:"e2b.local.run",exitCode:result.exitCode,stdout:result.stdout,stderr:result.stderr}));return {exitCode:result.exitCode,stdout:result.stdout,stderr:result.stderr};},
